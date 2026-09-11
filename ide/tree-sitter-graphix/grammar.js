@@ -896,7 +896,7 @@ module.exports = grammar({
       optional(';'),
     ),
 
-    _seq_item: $ => choice($.until, $.seq_do, $._expression),
+    _seq_item: $ => choice($.until, $._expression),
 
     // `try { stmts } with(e[: T]) { stmts }` — a seq statement
     // (design/seq_blocks.md §7.9); parsed as an expression so
@@ -917,17 +917,6 @@ module.exports = grammar({
     ),
 
     until: $ => seq('until', $._expression),
-
-    seq_do: $ => seq(
-      'do',
-      '{',
-      seq(
-        repeat(seq(choice($.until, $._expression), ';')),
-        choice($.until, $._expression),
-        optional(';'),
-      ),
-      '}',
-    ),
 
     match_arm: $ => seq(
       field('pattern', $.pattern),
@@ -1303,7 +1292,7 @@ module.exports = grammar({
     _field_name: $ => choice(
       $.identifier,
       alias(choice(
-        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'until', 'do',
+        'true', 'false', 'ok', 'null', 'mod', 'let', 'select', 'seq', 'until',
         'type',
         'fn', 'cast', 'never', 'if', 'use', 'rec', 'catch', 'try', 'any',
         'bool', 'string', 'bytes',

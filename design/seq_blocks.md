@@ -1,7 +1,8 @@
 # `seq` blocks: sequencing across cycles
 
-Status: built 2026-09-07 (straight-line, `do`, `until`, `try … with`,
-`seqq`; `if`/loops inside a seq are not built).
+Status: built 2026-09-07 (straight-line, `until`, `try … with`, `seqq`;
+`if`/loops inside a seq are not built); arms by read-after-write and the
+`{ … }` block built 2026-09-11 (the `do` keyword is gone).
 Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow}.rs`,
 `graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
@@ -105,21 +106,20 @@ seq  [trigger] { stmt* [expr] }
 seqq [trigger] { stmt* [expr] }          // queued form, §8
 
 stmt := let pat = expr ;
-      | do { stmt* [expr] } ;            // several statements as ONE arm
+      | { stmt* [expr] } ;               // a block: statements issued together
       | expr ;                           // an effect, a watch, a derivation
       | until expr ;                     // wait for a bool level to be true
       | try { stmt* [expr] } with(e[: T]) { stmt* [expr] } ;   // §7
 ```
 
-`seq { .. }` without a trigger runs once at init. A bare `{ ... }`
-statement is refused (`do` groups statements); `let rec` is not a
+`seq { .. }` without a trigger runs once at init. `let rec` is not a
 step. `catch` is refused anywhere in a seq body — as a statement,
-inside `do`, or nested in a step's expression; a lambda literal's body
-and its defaults are exempt, because a function is its own dynamic
+inside a block, or nested in a step's expression; a lambda literal's
+body and its defaults are exempt, because a function is its own dynamic
 scope and its own firing world ("as soon as you introduce a lambda
-you're basically back in graphix"). `seq`, `seqq`, `until`, `do`,
-`try` and `with` are reserved words; the old integer-sequence builtin
-`seq(i, j)` is `range(i, j)`.
+you're basically back in graphix"). `seq`, `seqq`, `until`, `try` and
+`with` are reserved words; the old integer-sequence builtin `seq(i, j)`
+is `range(i, j)`.
 
 `if`, loops, `break`/`continue` and a `select` whose arms are step
 lists are not built; a `select` inside a seq is an ordinary expression
@@ -138,6 +138,32 @@ stand when the step is reached, and its effects are issued exactly
 once per reaching. A passed step's arm is asleep and nothing in it
 re-fires. This is `f(trigger ~ x)` applied mechanically, the rule the
 hand-written ceremonies get wrong.
+
+**A statement starts in the first cycle its predecessor's effect can
+be seen.** A let's effect is its binding and a call's is its value;
+dataflow carries both, so the next statement is issued in the cycle
+the one before it produced in. A connect's effect is its write, which
+lands the next cycle, so a statement that reads a variable an earlier
+statement wrote, or writes it again, starts the next cycle and sees the
+write. The statements between two such points share one arm of the
+machine (§6.4): `a <- x; b <- y; let s = a + b` writes `a` and `b` in
+one cycle and binds `s` the next; `n <- n + 1; n <- n + 1` is two
+cycles and `n + 2`. The analysis is by name and cannot see into a call
+(a closure may read anything), a read through a reference, or a nested
+seq; such a statement is taken to read every pending write, so
+`a <- f(x); b <- g(y)` issues `g` after `f` has produced. A block is
+the override.
+
+**A block `{ … }` issues its statements together.** Every statement
+of a block is issued at the block's entry: `{ a <- f(x); b <- g(y) }`
+has both calls in flight at once. A let is local to the block and a
+later statement reads it by dataflow, so a call over a block let waits
+for it. Each connect and call is clocked to the entry. The block
+completes when every statement has produced, with the value of the
+last. Inside, it is ordinary Graphix: a statement that reads a variable
+a sibling wrote reads the old value, and an error in one statement does
+not retract what its siblings issued that cycle. `until` and `try` are
+refused inside a block.
 
 **Completion is a FIRED production after the step's entry.** A value
 standing at entry is the previous run's answer — a `~`'s held
@@ -274,7 +300,7 @@ and only the call's own fired production is this invocation's answer.
 The select watches the snapshot, not live inputs: once issued, a
 pending callee keeps running if an input later bottoms, and later
 input events cannot reissue it. Calls nested in expressions and in
-`do` lower the same way; lambda bodies and defaults, `until`
+blocks lower the same way; lambda bodies and defaults, `until`
 conditions and reference contents keep their own reactive clocks.
 
 A call-free step and an `until` condition are `any(pc ~! e, e)`: fired
@@ -285,16 +311,24 @@ inside it must raise once). A call-free `?` is therefore sampled on
 the entry event too, so a carried error raises at every entry rather
 than only when a catch-up fire happens to deliver it.
 
-### 6.4 Arms, `do`, `until`
+### 6.4 Arms, blocks, `until`
 
-Each step ends an arm: its completion writes the carried cells and the
-transition. `do { … }` is several statements as one arm — lets inside,
-each statement's connect pc-sampled, each with its own completion
-boundary before its nested continuation; the statement list is capped
-at the parser's nesting limit because it lowers into nested selects.
-`until` is refused inside `do`, and refused where its value would be
-used: the last statement of a seq, or of a try or with body whose value
-is used, must be an expression.
+`split_arms` cuts a statement list into arms: `until` and `try` stand
+alone; other statements share an arm until one reads or rewrites a
+variable an earlier statement of the arm wrote, or is opaque (a call, a
+deref, a nested seq) while such a write is pending; a write through a
+reference ends its arm, its target being unknown. The last statement
+of an arm writes the carried cells and the transition, `pc`-sampled so
+they land with the arm's writes. Inside an arm each statement's
+completion arm holds the statements after it (`lower_group`), so a
+statement is issued in the cycle its predecessor produced in; the arm
+lowers to nested selects and a run is cut at the parser's nesting
+limit. A block (`lower_block`) hoists each statement into a `let` under
+the arm, connects `pc ~ value`, and joins the statements with a select
+over the tuple of their values, present once every statement has
+produced. `until` is refused where its value would be used: the last
+statement of a seq, or of a try or with body whose value is used, must
+be an expression.
 
 ### 6.5 What sleep does for free
 
@@ -315,7 +349,7 @@ produce the value the next step waits for, and it cannot say "the
 rest of the block does not run". Inside a sequence it can therefore
 only rethrow or stall. Both spellings were built and withdrawn: a
 seq-toplevel `catch` as cleanup delivered its rethrown error twice,
-and an ordinary `catch` inside `do` wedged the machine on a swallow
+and an ordinary `catch` inside a grouped step wedged the machine on a swallow
 (the failed statement never produces, so the completion guard keyed
 on the user's handler never released). Eric: "we're trying to adapt
 an event monitor (`catch`) to something that should be control flow."
@@ -354,7 +388,7 @@ so the union is the try body's type. `e` is typed as a `catch` bind is
 — the union of the try body's throws, as `Error<ErrChain<..>>` — and
 `with(e: T)` follows `catch(e: T)`'s rule: `T` must cover that union.
 A `let` inside either body is scoped to that body; `e` to the with
-body. Seq level only: `try` inside `do` is refused, like `until`.
+body. Seq level only: `try` inside a block is refused, like `until`.
 
 **Why a handler underneath, not a syntactic match on `?`.** Errors
 reach a region through the DYNAMIC scope, not the text. A callee's `?`
@@ -416,7 +450,7 @@ and `until` condition in a compiler-only `SeqGuard` (`node/error.rs`),
 and each issued call inside its snapshot select in another. The guard
 records its handler's generation on activation, holds bottom until the
 first FIRED production after activation, then passes every production
-(a `do`'s continuation must keep routing on stale cycles). A
+(an arm's nested continuation must keep routing on stale cycles). A
 generation change produces bottom and latches failure until sleep; the
 failed child keeps updating only while nested catches still have
 pending errors to drain, its output suppressed. So a failed step cannot
@@ -490,7 +524,8 @@ the machine's abort.
 
 ## 9. Costs
 
-One cycle per async completion and per connect; a cycle is well under
+One cycle per async completion and per read of an earlier statement's
+write; a cycle is well under
 a millisecond in release (a text key is 0.17ms end to end at 5.4k
 lines), so a six-step ceremony adds about a millisecond to work that
 takes seconds. A taken with branch costs the failed step's drain (one

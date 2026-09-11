@@ -1,10 +1,11 @@
 //! AST-to-AST lowering of `seq` (`design/seq_blocks.md`).
 //!
-//! Lets, connects, expression steps, `until`, `do`, and `try … with`.
-//! `catch` and a bare `{ ... }` statement are refused in a seq body. The
-//! machine installs one handler that resets and rethrows; each try-body
-//! arm carries a generated handler that jumps to the with body. Each step
-//! is its own arm; a call consumes one argument snapshot per entry.
+//! Lets, connects, expression steps, `{ … }` blocks, `until`, and
+//! `try … with`. `catch` is refused in a seq body. The machine installs
+//! one handler that resets and rethrows; each try-body arm carries a
+//! generated handler that jumps to the with body. Statements share an
+//! arm until one reads what an earlier one wrote (`split_arms`); a call
+//! consumes one argument snapshot per entry.
 
 use super::{
     ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
@@ -69,15 +70,8 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
     let mut steps: Vec<&Expr> = Vec::new();
     for e in body.iter() {
         refuse_catch(e)?;
-        match &e.kind {
-            ExprKind::Do { .. } => {
-                return Err(anyhow!(
-                    "a block is not a seq statement; use do {{ ... }} to group statements"
-                )
-                .context(ErrorContext(e.clone())));
-            }
-            ExprKind::NoOp => (),
-            _ => steps.push(e),
+        if !matches!(e.kind, ExprKind::NoOp) {
+            steps.push(e);
         }
     }
     if steps.is_empty() {
@@ -194,9 +188,9 @@ fn refuse_catch(e: &Expr) -> Result<()> {
     }
 }
 
-/// The first node satisfying `pred` that is not inside a lambda literal's
+/// `Expr::fold` over every node that is not inside a lambda literal's
 /// body or defaults.
-fn find_outside_lambdas(e: &Expr, pred: impl Fn(&Expr) -> bool) -> Option<Expr> {
+fn fold_outside_lambdas<T>(e: &Expr, init: T, f: &mut impl FnMut(T, &Expr) -> T) -> T {
     let in_lambda: LPooled<AHashSet<ExprId>> =
         e.fold(LPooled::take(), &mut |mut set, x| {
             if let ExprKind::Lambda(l) = &x.kind {
@@ -216,9 +210,143 @@ fn find_outside_lambdas(e: &Expr, pred: impl Fn(&Expr) -> bool) -> Option<Expr> 
             }
             set
         });
-    e.fold(None, &mut |found: Option<Expr>, x| {
-        found.or_else(|| (pred(x) && !in_lambda.contains(&x.id)).then(|| x.clone()))
+    e.fold(init, &mut |acc, x| if in_lambda.contains(&x.id) { acc } else { f(acc, x) })
+}
+
+/// The first node satisfying `pred` that is not inside a lambda literal's
+/// body or defaults.
+fn find_outside_lambdas(e: &Expr, pred: impl Fn(&Expr) -> bool) -> Option<Expr> {
+    fold_outside_lambdas(e, None, &mut |found: Option<Expr>, x| {
+        found.or_else(|| pred(x).then(|| x.clone()))
     })
+}
+
+/// What a statement touches, by a variable's last path segment: the
+/// names it reads (taking `&a` counts), the names it writes, the names
+/// it takes a reference to, the names it binds with `let`, whether it
+/// holds something the analysis cannot see through (a call to a closure
+/// over some variable, a read through a reference, a nested seq), and
+/// whether it writes through a reference, whose target is unknown.
+struct Access {
+    reads: LPooled<AHashSet<ArcStr>>,
+    writes: LPooled<AHashSet<ArcStr>>,
+    refs: LPooled<AHashSet<ArcStr>>,
+    binds: LPooled<AHashSet<ArcStr>>,
+    opaque: bool,
+    deref_write: bool,
+}
+
+/// The variable a place expression is rooted at, if it names one.
+fn place_root(mut e: &Expr) -> Option<&ModPath> {
+    loop {
+        match &e.kind {
+            ExprKind::Ref { name } => return Some(name),
+            ExprKind::StructRef { source, .. }
+            | ExprKind::TupleRef { source, .. }
+            | ExprKind::ArrayRef { source, .. }
+            | ExprKind::ArraySlice { source, .. }
+            | ExprKind::MapRef { source, .. } => e = source,
+            _ => return None,
+        }
+    }
+}
+
+fn access(e: &Expr) -> Access {
+    let base = |p: &ModPath| Path::basename(&p.0).map(ArcStr::from);
+    let mut init = Access {
+        reads: LPooled::take(),
+        writes: LPooled::take(),
+        refs: LPooled::take(),
+        binds: LPooled::take(),
+        opaque: false,
+        deref_write: false,
+    };
+    if let ExprKind::Bind(b) = &e.kind {
+        b.pattern.with_names(&mut |n| {
+            init.binds.insert(n.clone());
+        });
+    }
+    fold_outside_lambdas(e, init, &mut |mut a, x| {
+        match &x.kind {
+            ExprKind::Ref { name } => {
+                a.reads.extend(base(name));
+            }
+            ExprKind::ByRef(place) => {
+                a.refs.extend(place_root(place).and_then(base));
+            }
+            ExprKind::Connect { name, deref: false, .. } => {
+                a.writes.extend(base(name));
+            }
+            ExprKind::Connect { deref: true, .. } => a.deref_write = true,
+            ExprKind::Apply(_) | ExprKind::Deref(_) | ExprKind::Seq { .. } => {
+                a.opaque = true
+            }
+            _ => (),
+        }
+        a
+    })
+}
+
+fn is_try(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::TryWith(_) => true,
+        ExprKind::Bind(b) => matches!(b.value.kind, ExprKind::TryWith(_)),
+        ExprKind::Connect { value, .. } => matches!(value.kind, ExprKind::TryWith(_)),
+        _ => false,
+    }
+}
+
+/// The end index of each arm of a statement list. `until` and `try`
+/// are arms of their own. Other statements share an arm until one
+/// reads a variable an earlier statement of the arm wrote, writes it
+/// again, or is opaque while such a write is pending: the next arm is
+/// the next cycle, when the write has landed. A write through a
+/// reference ends its arm. Within an arm a `let` is read through a
+/// local binding, so a statement that writes or takes a reference to
+/// a name the arm bound starts the next arm, where the name is its
+/// carried cell. An arm lowers to nested selects, so a run is cut at
+/// the parser's nesting limit.
+fn split_arms(stmts: &[&Expr]) -> LPooled<Vec<usize>> {
+    let mut ends: LPooled<Vec<usize>> = LPooled::take();
+    let mut pending: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    let mut bound: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    let limit = super::parser::max_nesting();
+    let mut start = 0;
+    for (i, s) in stmts.iter().enumerate() {
+        if matches!(s.kind, ExprKind::Until(_)) || is_try(s) {
+            if i > start {
+                ends.push(i);
+            }
+            ends.push(i + 1);
+            start = i + 1;
+            pending.clear();
+            bound.clear();
+            continue;
+        }
+        let a = access(s);
+        let conflict = !pending.is_empty()
+            && (a.opaque
+                || a.reads.iter().chain(a.writes.iter()).any(|n| pending.contains(n)));
+        let rebinds = a.writes.iter().chain(a.refs.iter()).any(|n| bound.contains(n));
+        if i > start && (conflict || rebinds || i - start >= limit) {
+            ends.push(i);
+            start = i;
+            pending.clear();
+            bound.clear();
+        }
+        pending.extend(a.writes.iter().cloned());
+        bound.extend(a.binds.iter().cloned());
+        if a.deref_write {
+            ends.push(i + 1);
+            start = i + 1;
+            pending.clear();
+            bound.clear();
+        }
+    }
+    if start < stmts.len() {
+        ends.push(stmts.len());
+    }
+    ends
 }
 
 /// What the tail of a statement list does with its value, in order:
@@ -252,9 +380,9 @@ impl Machine<'_> {
         l
     }
 
-    /// Lower `stmts` as consecutive arms: the first at `entry`, the
-    /// last transitioning to `next` after the sink's writes. A `let`'s
-    /// names become visible to the statements after it.
+    /// Lower `stmts` as consecutive arms (`split_arms`): the first at
+    /// `entry`, the last transitioning to `next` after the sink's
+    /// writes. A `let`'s names become visible to the arms after it.
     fn lower_stmts(
         &mut self,
         stmts: &[&Expr],
@@ -263,7 +391,8 @@ impl Machine<'_> {
         sink: &Sink,
         visible: &AHashMap<ArcStr, ArcStr>,
     ) -> Result<()> {
-        let n = stmts.len();
+        let ends = split_arms(stmts);
+        let n = ends.len();
         let mut entries = Vec::with_capacity(n);
         entries.push(entry);
         for _ in 1..n {
@@ -271,27 +400,38 @@ impl Machine<'_> {
             entries.push(l);
         }
         let mut vis = visible.clone();
-        for (i, stmt) in stmts.iter().enumerate() {
+        let mut start = 0;
+        for (i, &end) in ends.iter().enumerate() {
+            let group = &stmts[start..end];
             let next_i = if i + 1 < n { entries[i + 1].clone() } else { next.clone() };
             let none = Sink::new();
             let sink_i = if i + 1 == n { sink } else { &none };
-            self.lower_stmt(stmt, entries[i].clone(), next_i, sink_i, &vis)?;
-            expose_step_binds(stmt, self.cells, &mut vis);
+            self.lower_arm(group, entries[i].clone(), next_i, sink_i, &vis)?;
+            for stmt in group {
+                expose_step_binds(stmt, self.cells, &mut vis);
+            }
+            start = end;
         }
         Ok(())
     }
 
-    fn lower_stmt(
+    fn lower_arm(
         &mut self,
-        stmt: &Expr,
+        group: &[&Expr],
         entry: ArcStr,
         next: ArcStr,
         sink: &Sink,
         visible: &AHashMap<ArcStr, ArcStr>,
     ) -> Result<()> {
-        ensure_sufficient(|| match &stmt.kind {
-            ExprKind::TryWith(t) => self.lower_try(stmt, t, entry, next, sink, visible),
-            ExprKind::Bind(b) if matches!(b.value.kind, ExprKind::TryWith(_)) => {
+        let solo = match group {
+            [stmt] => Some(*stmt),
+            _ => None,
+        };
+        ensure_sufficient(|| match solo.map(|s| &s.kind) {
+            Some(ExprKind::TryWith(t)) => {
+                self.lower_try(solo.unwrap(), t, entry, next, sink, visible)
+            }
+            Some(ExprKind::Bind(b)) if matches!(b.value.kind, ExprKind::TryWith(_)) => {
                 let ExprKind::TryWith(t) = &b.value.kind else { unreachable!() };
                 let mut sink = sink.clone();
                 sink.insert(
@@ -299,12 +439,12 @@ impl Machine<'_> {
                     Write::Let {
                         pattern: b.pattern.clone(),
                         typ: b.typ.clone(),
-                        id: stmt.id,
+                        id: solo.unwrap().id,
                     },
                 );
                 self.lower_try(&b.value, t, entry, next, &sink, visible)
             }
-            ExprKind::Connect { name, value, deref }
+            Some(ExprKind::Connect { name, value, deref })
                 if matches!(value.kind, ExprKind::TryWith(_)) =>
             {
                 let ExprKind::TryWith(t) = &value.kind else { unreachable!() };
@@ -312,9 +452,15 @@ impl Machine<'_> {
                 sink.insert(0, Write::Connect { name: name.clone(), deref: *deref });
                 self.lower_try(value, t, entry, next, &sink, visible)
             }
+            Some(ExprKind::Until(e)) => {
+                let arm =
+                    until_arm(solo.unwrap(), e, self.pc, next.as_str(), sink, visible)?;
+                self.arms.push((entry, arm));
+                Ok(())
+            }
             _ => {
-                let arm = step_arm(
-                    stmt,
+                let arm = lower_group(
+                    group,
                     self.pc,
                     next.as_str(),
                     sink,
@@ -593,87 +739,36 @@ fn apply_core(
     .to_expr(pos)
 }
 
-fn step_arm(
+fn until_arm(
     step: &Expr,
+    cond: &Expr,
     pc: &str,
     next: &str,
     sink: &Sink,
-    result: &str,
-    vname: &str,
     visible: &AHashMap<ArcStr, ArcStr>,
-    cells: &CarriedBinds,
 ) -> Result<Expr> {
     let pos = step.pos;
-    let trans = connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)));
-    let writes = || sink_writes(sink, pos, pc, result, vname, cells, visible);
-    match &step.kind {
-        ExprKind::Until(e) => {
-            if !sink.is_empty() {
-                return Err(anyhow!(
-                    "until has no value: the last statement of a seq, or of a try \
-                     or with body whose value is used, must be an expression"
-                )
-                .context(ErrorContext(step.clone())));
-            }
-            let e = guard(entry_fire(rewrite(e, visible), pc));
-            Ok(select(
-                pos,
-                e,
-                vec![
-                    (pat_lit(Value::Bool(true)), trans),
-                    (pat_lit(Value::Bool(false)), never(pos)),
-                ],
-            ))
-        }
-        ExprKind::SeqDo { body } => {
-            lower_do_stmts(body, pc, next, sink, result, vname, visible, cells)
-        }
-        ExprKind::Bind(b) => {
-            let value = issue_expr(&b.value, visible, pc);
-            let mut body =
-                vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
-            b.pattern.with_names(&mut |n| {
-                let (cell, _, _) = &cells[&(step.id, n.clone())];
-                body.push(connect(
-                    pos,
-                    cell.as_str(),
-                    sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
-                ));
-            });
-            body.extend(writes());
-            body.push(trans);
-            Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
-        }
-        ExprKind::Connect { name, value, deref } => {
-            let value = issue_expr(value, visible, pc);
-            let target = rewrite_path(name, visible);
-            let mut body = vec![connect_path(
-                pos,
-                target,
-                *deref,
-                sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-            )];
-            body.extend(writes());
-            body.push(trans);
-            Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
-        }
-        _ => {
-            let e = issue_expr(step, visible, pc);
-            let mut body = writes();
-            body.push(trans);
-            Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
-        }
+    if !sink.is_empty() {
+        return Err(anyhow!(
+            "until has no value: the last statement of a seq, or of a try \
+             or with body whose value is used, must be an expression"
+        )
+        .context(ErrorContext(step.clone())));
     }
+    let trans = connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)));
+    let e = guard(entry_fire(rewrite(cond, visible), pc));
+    Ok(select(
+        pos,
+        e,
+        vec![
+            (pat_lit(Value::Bool(true)), trans),
+            (pat_lit(Value::Bool(false)), never(pos)),
+        ],
+    ))
 }
 
 fn collect_step_binds(e: &Expr, cells: &mut CarriedBinds) -> Result<()> {
     ensure_sufficient(|| match &e.kind {
-        ExprKind::SeqDo { body } => {
-            for s in body.iter() {
-                collect_step_binds(s, cells)?;
-            }
-            Ok(())
-        }
         ExprKind::TryWith(t) => {
             let cell = ArcStr::from(format_compact!("seqe{}", e.id.inner()).as_str());
             cells.insert((e.id, t.bind.clone()), (cell, e.pos, None));
@@ -713,11 +808,6 @@ fn expose_step_binds(
     visible: &mut AHashMap<ArcStr, ArcStr>,
 ) {
     ensure_sufficient(|| match &e.kind {
-        ExprKind::SeqDo { body } => {
-            for s in body.iter() {
-                expose_step_binds(s, cells, visible);
-            }
-        }
         ExprKind::Bind(b) => {
             b.pattern.with_names(&mut |n| {
                 let (cell, _, _) = &cells[&(e.id, n.clone())];
@@ -728,8 +818,8 @@ fn expose_step_binds(
     })
 }
 
-fn lower_do_stmts(
-    stmts: &[Expr],
+fn lower_group(
+    stmts: &[&Expr],
     pc: &str,
     next: &str,
     sink: &Sink,
@@ -739,12 +829,15 @@ fn lower_do_stmts(
     cells: &CarriedBinds,
 ) -> Result<Expr> {
     ensure_sufficient(|| {
-        lower_do_stmts_inner(stmts, pc, next, sink, result, vname, visible, cells)
+        lower_group_inner(stmts, pc, next, sink, result, vname, visible, cells)
     })
 }
 
-fn lower_do_stmts_inner(
-    stmts: &[Expr],
+/// One arm. Each statement's completion arm holds the statements after
+/// it, so a statement is issued in the cycle the one before it produced
+/// in; the last one writes the sink and the transition.
+fn lower_group_inner(
+    stmts: &[&Expr],
     pc: &str,
     next: &str,
     sink: &Sink,
@@ -753,20 +846,15 @@ fn lower_do_stmts_inner(
     visible: &AHashMap<ArcStr, ArcStr>,
     cells: &CarriedBinds,
 ) -> Result<Expr> {
-    let stmts = match stmts {
-        [body @ .., Expr { kind: ExprKind::NoOp, .. }] => body,
-        _ => stmts,
-    };
     let trans = |pos: SourcePosition| {
         connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)))
     };
     let Some((head, rest)) = stmts.split_first() else {
-        panic!("empty do body");
+        panic!("empty arm");
     };
-    if stmts.len() > super::parser::max_nesting() {
-        return Err(
-            anyhow!("expression nesting too deep").context(ErrorContext(head.clone()))
-        );
+    let head = *head;
+    if matches!(head.kind, ExprKind::Until(_)) || is_try(head) {
+        unreachable!("until and try are arms of their own");
     }
     let pos = head.pos;
     let rest_empty = rest.is_empty();
@@ -774,7 +862,7 @@ fn lower_do_stmts_inner(
         if rest_empty {
             Ok(trans(pos))
         } else {
-            lower_do_stmts(rest, pc, next, sink, result, vname, visible, cells)
+            lower_group(rest, pc, next, sink, result, vname, visible, cells)
         }
     };
     let writes = |visible: &AHashMap<ArcStr, ArcStr>| -> Vec<Expr> {
@@ -784,26 +872,9 @@ fn lower_do_stmts_inner(
             Vec::new()
         }
     };
-    let is_try = |e: &Expr| matches!(e.kind, ExprKind::TryWith(_));
     match &head.kind {
-        ExprKind::Until(_) => {
-            Err(anyhow!("until is not a do statement")
-                .context(ErrorContext(head.clone())))
-        }
-        ExprKind::TryWith(_) => Err(anyhow!(
-            "try is a seq statement, not a do statement; write it at the seq level"
-        )
-        .context(ErrorContext(head.clone()))),
-        ExprKind::Bind(b) if is_try(&b.value) => Err(anyhow!(
-            "try is a seq statement, not a do statement; write it at the seq level"
-        )
-        .context(ErrorContext(head.clone()))),
-        ExprKind::Connect { value, .. } if is_try(value) => Err(anyhow!(
-            "try is a seq statement, not a do statement; write it at the seq level"
-        )
-        .context(ErrorContext(head.clone()))),
         ExprKind::Bind(b) => {
-            let value = issue_expr(&b.value, visible, pc);
+            let value = stmt_value(&b.value, visible, pc)?;
             let mut vis = visible.clone();
             b.pattern.with_names(&mut |n| {
                 vis.remove(n);
@@ -823,7 +894,7 @@ fn lower_do_stmts_inner(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         ExprKind::Connect { name, value, deref } => {
-            let value = issue_expr(value, visible, pc);
+            let value = stmt_value(value, visible, pc)?;
             let target = rewrite_path(name, visible);
             let mut body = vec![connect_path(
                 pos,
@@ -836,12 +907,88 @@ fn lower_do_stmts_inner(
             Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
         }
         _ => {
-            let e = issue_expr(head, visible, pc);
+            let e = stmt_value(head, visible, pc)?;
             let mut body = writes(visible);
             body.push(tail(visible)?);
             Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
         }
     }
+}
+
+/// A statement's scrutinee. A block in statement position, or as a
+/// let's or a connect's right-hand side, is lowered as a block; anything
+/// else is issued.
+fn stmt_value(e: &Expr, visible: &AHashMap<ArcStr, ArcStr>, pc: &str) -> Result<Expr> {
+    match &e.kind {
+        ExprKind::Do { exprs } => lower_block(e, exprs, pc, visible),
+        _ => Ok(issue_expr(e, visible, pc)),
+    }
+}
+
+/// A `{ … }` statement: every statement issued at entry, lets local to
+/// the block, connects clocked to the entry, and the value the last
+/// statement's once every statement has produced.
+fn lower_block(
+    spec: &Expr,
+    exprs: &[Expr],
+    pc: &str,
+    visible: &AHashMap<ArcStr, ArcStr>,
+) -> Result<Expr> {
+    let pos = spec.pos;
+    let stmts = match exprs {
+        [body @ .., Expr { kind: ExprKind::NoOp, .. }] => body,
+        _ => exprs,
+    };
+    let mut vis = visible.clone();
+    let mut body = Vec::with_capacity(stmts.len() * 2 + 1);
+    let mut vals: Vec<Expr> = Vec::with_capacity(stmts.len());
+    for (i, s) in stmts.iter().enumerate() {
+        if is_try(s) {
+            return Err(anyhow!("try is a seq statement; write it at the seq level")
+                .context(ErrorContext(s.clone())));
+        }
+        let v = format_compact!("seqb{}_{i}", spec.id.inner());
+        match &s.kind {
+            ExprKind::NoOp => continue,
+            ExprKind::Bind(b) => {
+                body.push(let_bind(s.pos, &v, None, stmt_value(&b.value, &vis, pc)?));
+                body.push(let_pat(
+                    s.pos,
+                    b.pattern.clone(),
+                    b.typ.clone(),
+                    r#ref(s.pos, &v),
+                ));
+                b.pattern.with_names(&mut |n| {
+                    vis.remove(n);
+                });
+            }
+            ExprKind::Connect { name, value, deref } => {
+                body.push(let_bind(s.pos, &v, None, stmt_value(value, &vis, pc)?));
+                body.push(connect_path(
+                    s.pos,
+                    rewrite_path(name, &vis),
+                    *deref,
+                    sample(s.pos, r#ref(s.pos, pc), r#ref(s.pos, &v)),
+                ));
+            }
+            _ => body.push(let_bind(s.pos, &v, None, stmt_value(s, &vis, pc)?)),
+        }
+        vals.push(r#ref(s.pos, &v));
+    }
+    let value = match vals.len() {
+        0 => never(pos),
+        1 => vals.pop().unwrap(),
+        n => {
+            let last = format_compact!("seqb{}", spec.id.inner());
+            select(
+                pos,
+                ExprKind::Tuple { args: Arc::from(vals) }.to_expr(pos),
+                vec![(pat_last(n, &last), r#ref(pos, &last))],
+            )
+        }
+    };
+    body.push(value);
+    Ok(block(pos, body))
 }
 
 fn pc_type(labels: &[ArcStr]) -> Type {
@@ -1022,7 +1169,6 @@ fn shadow_step(e: &Expr, map: &mut AHashMap<ArcStr, ArcStr>) {
         ExprKind::Bind(b) => b.pattern.with_names(&mut |n| {
             map.remove(n);
         }),
-        ExprKind::SeqDo { body } => body.iter().for_each(|e| shadow_step(e, map)),
         _ => (),
     }
 }
@@ -1051,15 +1197,6 @@ fn rewrite_with_inner(
         },
         ExprKind::Until(x) => {
             ExprKind::Until(Arc::new(rewrite_with(x, map, mode.deferred())))
-        }
-        ExprKind::SeqDo { body } => {
-            let mut inner = map.clone();
-            let mut out = Vec::with_capacity(body.len());
-            for x in body.iter() {
-                out.push(rewrite(x, &inner));
-                shadow_step(x, &mut inner);
-            }
-            ExprKind::SeqDo { body: Arc::from(out) }
         }
         ExprKind::TryWith(t) => {
             let stmts = |stmts: &[Expr], mut inner: AHashMap<ArcStr, ArcStr>| {
@@ -1303,16 +1440,37 @@ fn pat_variant(tag: &str) -> Pattern {
     }
 }
 
+/// `(_, …, name)`: the last of `n` tuple elements.
+fn pat_last(n: usize, name: &str) -> Pattern {
+    let binds: Vec<StructurePattern> = (1..n)
+        .map(|_| StructurePattern::Ignore)
+        .chain([StructurePattern::Bind(ArcStr::from(name))])
+        .collect();
+    Pattern {
+        type_predicate: None,
+        structure_predicate: StructurePattern::Tuple {
+            all: None,
+            binds: Arc::from(binds),
+        },
+        guard: None,
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::expr::parser::{max_nesting, parse_one};
+
+    fn ones(n: usize) -> Vec<Expr> {
+        (0..n).map(|_| ExprKind::Constant(Value::I64(1)).to_expr_nopos()).collect()
+    }
 
     fn lower_ones(n: usize) -> Result<Expr> {
-        let stmts: Vec<Expr> =
-            (0..n).map(|_| ExprKind::Constant(Value::I64(1)).to_expr_nopos()).collect();
+        let stmts = ones(n);
+        let stmts: Vec<&Expr> = stmts.iter().collect();
         let mut sink = Sink::new();
         sink.push(Write::Result);
-        lower_do_stmts(
+        lower_group(
             &stmts,
             "pc",
             "Idle",
@@ -1324,21 +1482,57 @@ mod test {
         )
     }
 
-    #[test]
-    fn do_body_over_limit_is_a_compile_error() {
-        let err = lower_ones(super::super::parser::max_nesting() + 1).unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("nesting too deep"), "{msg}");
+    fn arms_of(body: &str) -> Vec<usize> {
+        let e = parse_one(&format!("seq {{ {body} }}")).expect("parses");
+        let ExprKind::Seq { body, .. } = &e.kind else { panic!("not a seq") };
+        let stmts: Vec<&Expr> =
+            body.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).collect();
+        split_arms(&stmts).to_vec()
     }
 
     #[test]
-    fn do_body_at_the_limit_does_not_overflow() {
-        let n = super::super::parser::max_nesting();
+    fn arms_split_at_a_read_after_write() {
+        for (body, ends) in [
+            ("a <- x; b <- y; let s = a + b", vec![2, 3]),
+            ("a <- x; b <- a", vec![1, 2]),
+            ("n <- n + 1; n <- n + 1", vec![1, 2]),
+            ("a <- 1; a <- 2; let s = a", vec![1, 2, 3]),
+            ("a <- x; f(y)", vec![1, 2]),
+            ("f(x); g(y)", vec![2]),
+            ("a <- f(x); b <- g(y)", vec![1, 2]),
+            ("a <- x; let r = &a; b <- *r", vec![1, 3]),
+            ("*r <- 1; b <- 2", vec![1, 2]),
+            ("a <- x; until a > 1; b <- 2", vec![1, 2, 3]),
+            ("let a = f(); let b = g(a); c <- b; d <- c", vec![3, 4]),
+            ("a <- x; let f = |v| v + a; b <- y", vec![3]),
+            ("m::a <- x; let s = a", vec![1, 2]),
+            ("let x = try { 1 } with(e) { 2 }; a <- x; b <- y", vec![1, 3]),
+            ("{ a <- x; b <- y }; let s = a", vec![1, 2]),
+            ("let flag = false; flag <- true; until flag", vec![1, 2, 3]),
+            ("let x = 1; let a = &x; y <- 2", vec![1, 3]),
+            ("let x = 1; f(&x)", vec![1, 2]),
+            ("let x = 1; let y = x + 1; z <- y", vec![3]),
+        ] {
+            assert_eq!(arms_of(body), ends, "{body}");
+        }
+    }
+
+    #[test]
+    fn a_run_over_the_limit_is_cut() {
+        let n = max_nesting();
+        let stmts = ones(n + 1);
+        let stmts: Vec<&Expr> = stmts.iter().collect();
+        assert_eq!(split_arms(&stmts).to_vec(), [n, n + 1]);
+    }
+
+    #[test]
+    fn a_run_at_the_limit_does_not_overflow() {
+        let n = max_nesting();
         std::thread::Builder::new()
             .stack_size(512 * 1024)
-            .spawn(move || lower_ones(n).expect("desugars"))
+            .spawn(move || lower_ones(n).expect("lowers"))
             .expect("spawn")
             .join()
-            .expect("do-body lowering overflowed the stack");
+            .expect("arm lowering overflowed the stack");
     }
 }

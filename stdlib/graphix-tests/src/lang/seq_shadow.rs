@@ -24,9 +24,9 @@ async fn check(body: &str, expected: &[i64], fusion_disabled: bool) -> Result<()
 async fn references(fusion_disabled: bool) -> Result<()> {
     for body in [
         "let x = request; let a = &x; let x = 99; *a",
-        "let x = request; let a = &x; do { let x = 99; *a }",
-        "do { let x = request; let a = &x; let x = 99 }; *a",
-        "do { let x = request; let a = &x }; do { let x = 99; x }; *a",
+        "let x = request; let a = &x; { let x = 99; *a }",
+        "{ let x = request; let a = &x; let x = 99; *a }",
+        "let x = request; let a = &x; { let x = 99; x }; *a",
     ] {
         check(body, &[1, 2, 3], fusion_disabled).await?;
     }
@@ -36,7 +36,7 @@ async fn references(fusion_disabled: bool) -> Result<()> {
 async fn type_changes(fusion_disabled: bool) -> Result<()> {
     for body in [
         r#"let x = request; let a = &x; let x = "later"; *a"#,
-        r#"do { let x = request; let a = &x; let x = "later"; x }; *a"#,
+        r#"{ let x = request; let a = &x; let x = "later"; *a }"#,
     ] {
         check(body, &[1, 2, 3], fusion_disabled).await?;
     }
@@ -46,7 +46,7 @@ async fn type_changes(fusion_disabled: bool) -> Result<()> {
 async fn closures(fusion_disabled: bool) -> Result<()> {
     for body in [
         "let x = request; let f = |v| v + x; let x = 99; f(0)",
-        "do { let x = request; let f = |v| v + x; let x = 99; x }; f(0)",
+        "{ let x = request; let f = |v| v + x; let x = 99; f(0) }",
     ] {
         check(body, &[1, 2, 3], fusion_disabled).await?;
     }
@@ -56,10 +56,10 @@ async fn closures(fusion_disabled: bool) -> Result<()> {
 async fn initializers_and_patterns(fusion_disabled: bool) -> Result<()> {
     for body in [
         "let x = request; let a = &x; let x = x + 10; x - *a",
-        "do { let x = request; let a = &x; let x = x + 10; x }; x - *a",
+        "{ let x = request; let a = &x; let x = x + 10; x - *a }",
         "let (x, y) = (request, 10); let a = &x; let (x, y) = (y, x); x + y - *a",
-        "do { let {x, y} = {x: request, y: 10}; let a = &x; \
-         let {x, y} = {x: y, y: x}; null }; x + y - *a",
+        "{ let {x, y} = {x: request, y: 10}; let a = &x; \
+         let {x, y} = {x: y, y: x}; x + y - *a }",
     ] {
         check(body, &[10, 10, 10], fusion_disabled).await?;
     }
@@ -67,12 +67,9 @@ async fn initializers_and_patterns(fusion_disabled: bool) -> Result<()> {
 }
 
 async fn writes(fusion_disabled: bool) -> Result<()> {
-    for body in [
-        "let x = request; let a = &x; let x = 99; \
-         *a <- *a + 10; x <- x + 1; *a",
-        "do { let x = request; let a = &x; let x = 99; null }; \
-         *a <- *a + 10; x <- x + 1; *a",
-    ] {
+    for body in ["let x = request; let a = &x; let x = 99; \
+         *a <- *a + 10; x <- x + 1; *a"]
+    {
         check(body, &[11, 12, 13], fusion_disabled).await?;
     }
     Ok(())
@@ -81,7 +78,7 @@ async fn writes(fusion_disabled: bool) -> Result<()> {
 async fn trigger_shadowing(fusion_disabled: bool) -> Result<()> {
     for body in [
         "let initial = request; let request = request + 10; request - initial",
-        "do { let initial = request; let request = request + 10; null }; request - initial",
+        "{ let initial = request; let request = request + 10; request - initial }",
     ] {
         check(body, &[10, 10, 10], fusion_disabled).await?;
     }

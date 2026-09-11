@@ -824,17 +824,12 @@ macro_rules! until_stmt {
     };
 }
 
-// A seq statement: `until`, `do { until | expr }`, `try { .. }
-// with(e[: T]) { .. }`, or an expression.
+// A seq statement: `until`, `try { .. } with(e[: T]) { .. }`, or an
+// expression.
 macro_rules! seq_item {
     ($inner:expr) => {
         prop_oneof![
             until_stmt!($inner.clone()),
-            collection::vec(
-                prop_oneof![until_stmt!($inner.clone()), $inner.clone()],
-                1..4
-            )
-            .prop_map(|body| ExprKind::SeqDo { body: Arc::from(body) }.to_expr_nopos()),
             (
                 collection::vec(
                     prop_oneof![until_stmt!($inner.clone()), $inner.clone()],
@@ -2144,9 +2139,6 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
         }
         (ExprKind::Until(a), ExprKind::Until(b)) => check(a, b),
-        (ExprKind::SeqDo { body: a }, ExprKind::SeqDo { body: b }) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| check(x, y))
-        }
         (ExprKind::TryWith(a), ExprKind::TryWith(b)) => {
             a.bind == b.bind
                 && check_type_opt(&a.constraint, &b.constraint)

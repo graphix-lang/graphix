@@ -4,7 +4,6 @@
   (do_block)
   (select)
   (seq_block)
-  (seq_do)
   (struct)
   (map)
   (array)

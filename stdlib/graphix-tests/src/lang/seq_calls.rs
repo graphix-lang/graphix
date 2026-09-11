@@ -7,8 +7,8 @@ async fn carried_arguments(fusion_disabled: bool) -> Result<()> {
         for body in [
             "let x = request; let f = |v| v ~ x; f(request)",
             "let x = request; let f = |v| v ~ x; let y = f(request); y",
-            "let x = request; let f = |v| v ~ x; do { let y = f(request); y }",
-            "do { let x = request; let f = |v| v ~ x; f(request) }",
+            "let x = request; let f = |v| v ~ x; { let y = f(request); y }",
+            "{ let x = request; let f = |v| v ~ x; f(request) }",
             "let x = request; let f = |v| v ~ x; f(f(request))",
             "let x = request; let f = |v| v ~ x; f(request) + 0",
             "let x = request; let f = |v| v ~ x; select request { r => f(r) }",

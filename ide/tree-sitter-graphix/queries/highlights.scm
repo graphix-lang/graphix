@@ -17,7 +17,6 @@
   "with"
   "seqq"
   "until"
-  "do"
   "if"
   "catch"
 ] @keyword.control

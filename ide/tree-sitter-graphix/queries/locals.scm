@@ -4,7 +4,6 @@
 (do_block) @local.scope
 (select) @local.scope
 (seq_block) @local.scope
-(seq_do) @local.scope
 (match_arm) @local.scope
 (catch_stmt) @local.scope
 

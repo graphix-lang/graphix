@@ -2235,11 +2235,11 @@ fn seq_parses() {
         "seq { let x = 1; x }",
         "seq go { until ready; 1 }",
         "seq { catch(e) e; 1 }",
-        "seq t { do { let x = 1; x } }",
-        "seq { do { 1 } }",
+        "seq t { { let x = 1; x } }",
+        "seq { { 1; 2 } }",
         "seqq { 1 }",
         "seqq request { let x = 1; x }",
-        "seqq (request ~ value) { until ready; do { 1; 2 } }",
+        "seqq (request ~ value) { until ready; { 1; 2 } }",
     ] {
         let e = parse_one(s).unwrap();
         assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);
@@ -2257,8 +2257,6 @@ fn seq_parses() {
     assert!(parse_one("seqq").is_err());
     assert!(parse_one("seq").is_err());
     assert!(parse_one("until x").is_err());
-    assert!(parse_one("do { 1 }").is_err());
-    assert!(parse_one("let do = 1").is_err());
 }
 
 #[test]
@@ -2270,7 +2268,7 @@ fn try_with_parses() {
         "seq { let x = try { f()? } with(_: Error<`E>) { 0 }; x }",
         "seq { x <- try { 1 } with(e) { e? } }",
         "seq go { try { try { 1 } with(e) { e? } } with(e) { 2 } }",
-        "seq { try { do { 1; 2 } } with(e) { until ready; 3 } }",
+        "seq { try { { 1; 2 } } with(e) { until ready; 3 } }",
     ] {
         let e = parse_one(s).unwrap();
         let printed = e.to_string();
@@ -2285,15 +2283,4 @@ fn try_with_parses() {
     assert!(parse_one("seq { try { 1 } with(e) { } }").is_err());
     assert!(parse_one("seq { try { 1 } }").is_err());
     assert!(parse_one("let try = 1").is_err());
-}
-
-#[test]
-fn seq_do_statement_list_is_capped() {
-    let n = max_nesting();
-    let body = std::iter::repeat("1").take(n).collect::<Vec<_>>().join("; ");
-    parse_one(&format!("seq {{ do {{ {body} }} }}")).unwrap();
-    let body = std::iter::repeat("1").take(n + 1).collect::<Vec<_>>().join("; ");
-    let err = parse_one(&format!("seq {{ do {{ {body} }} }}")).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("nesting too deep"), "{msg}");
 }

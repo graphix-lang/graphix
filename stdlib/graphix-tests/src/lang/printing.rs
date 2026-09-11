@@ -44,7 +44,7 @@ async fn acknowledgements_jit() -> Result<()> {
 async fn seq_printing(fusion_disabled: bool) -> Result<()> {
     for body in [
         r#"print("a"); println("b"); log("c"); go"#,
-        r#"do { print("a"); println("b"); log("c"); go }"#,
+        r#"{ print("a"); println("b"); log("c"); go }"#,
     ] {
         let code = format!(
             r#"{{
@@ -84,7 +84,7 @@ async fn seq_printing_waits_for_message(fusion_disabled: bool) -> Result<()> {
         msg <- select step { 5 => "ready", _ => never() };
         let say = |s: string| -> null println(s);
         seq {
-            do {
+            {
                 say(msg);
                 step
             }

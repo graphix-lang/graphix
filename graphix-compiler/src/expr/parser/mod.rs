@@ -37,8 +37,8 @@ use std::sync::LazyLock;
 use triomphe::Arc;
 
 mod grow;
+use grow::grow;
 pub use grow::{DEFAULT_MAX_NESTING, max_nesting, set_max_nesting};
-use grow::{grow, note_refused};
 
 mod interpolateexp;
 use interpolateexp::interpolated;
@@ -99,7 +99,7 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
             "never", "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any",
             "use", "rec", "catch", "try", "self", "super", "package", "pub", "trait",
-            "impl", "seq", "seqq", "until", "do",
+            "impl", "seq", "seqq", "until",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -116,7 +116,7 @@ pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
 pub static CONSTRUCT_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter([
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
-        "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "do",
+        "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until",
     ])
 });
 
@@ -768,54 +768,13 @@ where
     )
 }
 
-fn seq_do<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    attempt(
-        spaces().with(
-            (
-                position(),
-                string("do").skip(not_prefix()).with(spaces()).with(between(
-                    sptoken('{'),
-                    sptoken('}'),
-                    sep_by1_tok_exp(
-                        choice((until_expr(), expr())),
-                        semisep(),
-                        token('}'),
-                        |pos| ExprKind::NoOp.to_expr(pos),
-                    ),
-                )),
-            )
-                .then(|(pos, mut body): (_, LPooled<Vec<Expr>>)| {
-                    let n =
-                        body.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).count();
-                    if n == 0 {
-                        unexpected_any("a do block must contain at least one statement")
-                            .left()
-                    } else if n > max_nesting() {
-                        // The iterative statement list folds into nested
-                        // selects GrowStack never counted.
-                        note_refused();
-                        unexpected_any("expression nesting too deep").left()
-                    } else {
-                        let body = Arc::from_iter(body.drain(..));
-                        value(ExprKind::SeqDo { body }.to_expr(pos)).right()
-                    }
-                }),
-        ),
-    )
-}
-
 fn seq_body_item<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((until_expr(), seq_do(), expr()))
+    choice((until_expr(), expr()))
 }
 
 /// A brace-delimited seq statement list (the body of `seq`, `try`

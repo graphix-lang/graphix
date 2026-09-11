@@ -10,17 +10,20 @@ const CLOCK: &str = r#"
 
 async fn continuations(fusion_disabled: bool) -> Result<()> {
     for form in ["seq", "seqq"] {
-        for body in [
-            "do { { error(`Oops)?; 1 } }; n <- n + 1",
-            "let x = { error(`Oops)?; 1 }; n <- x",
-            "n <- { error(`Oops)?; 1 }",
-            "until { error(`Oops)?; true }; n <- n + 1",
-            "do { { error(`Oops)?; 1 }; n <- n + 1 }",
-            "do { let x = { error(`Oops)?; 1 }; n <- x }",
-            "do { let x = 1; n <- { error(`Oops)?; x } }",
-            "bad(1); n <- n + 1",
-            "do { bad(1); n <- n + 1 }",
-            "delayed(1); n <- n + 1",
+        for (body, written) in [
+            ("{ error(`Oops)?; 1 }; n <- n + 1", 0),
+            ("let x = { error(`Oops)?; 1 }; n <- x", 0),
+            ("n <- { error(`Oops)?; 1 }", 0),
+            ("until { error(`Oops)?; true }; n <- n + 1", 0),
+            ("{ let x = { error(`Oops)?; 1 }; n <- x }", 0),
+            ("{ let x = 1; n <- { error(`Oops)?; x } }", 0),
+            ("bad(1); n <- n + 1", 0),
+            ("delayed(1); n <- n + 1", 0),
+            // a block issues its statements together: the sibling's write
+            // is already issued when the error aborts the run
+            ("{ { error(`Oops)?; 1 }; n <- n + 1 }", 1),
+            ("{ bad(1); n <- n + 1 }", 1),
+            ("{ n <- n + 1; bad(1) }", 1),
         ] {
             let code = format!(
                 r#"{{
@@ -42,7 +45,7 @@ async fn continuations(fusion_disabled: bool) -> Result<()> {
             let (values, _) = run_delta(&code, fusion_disabled).await?;
             assert_eq!(
                 values,
-                [Value::Array(ValArray::from([Value::I64(0), Value::I64(1)]))],
+                [Value::Array(ValArray::from([Value::I64(written), Value::I64(1)]))],
                 "{form} {{ {body} }}"
             );
         }
@@ -53,10 +56,10 @@ async fn continuations(fusion_disabled: bool) -> Result<()> {
 async fn final_output(fusion_disabled: bool) -> Result<()> {
     for form in ["seq", "seqq"] {
         for body in [
-            "do { { error(`Oops)?; 42 } }",
+            "{ error(`Oops)?; 42 }",
             "let x = { error(`Oops)?; 42 }",
             "n <- { error(`Oops)?; 42 }",
-            "do { let x = 42; { error(`Oops)?; x } }",
+            "{ let x = 42; { error(`Oops)?; x } }",
             "bad(42)",
         ] {
             let code = format!(
@@ -77,10 +80,10 @@ async fn final_output(fusion_disabled: bool) -> Result<()> {
 
 async fn queue_credit(fusion_disabled: bool) -> Result<()> {
     for body in [
-        "do { { select request { 1 | 3 => error(`Oops)?, _ => never() }; request } }",
+        "select request { 1 | 3 => error(`Oops)?, _ => request }",
         "bad(request)",
         "let r = bad(request); sys::time::after_idle(duration:5.ms, r)",
-        "do { let r = bad(request); r }",
+        "{ let r = bad(request); r }",
     ] {
         let code = format!(
             r#"{{
@@ -139,7 +142,7 @@ async fn scoped_errors(fusion_disabled: bool) -> Result<()> {
         r#"seqq { try { error(`Oops)?; 42 } with(e) { println("caught"); 42 } }"#,
         r#"{
             catch(e) println(e ~ "caught");
-            seq { do { { error(`Oops)?; 0 } } };
+            seq { { error(`Oops)?; 0 } };
             seq { 42 }
         }"#,
         r#"{
@@ -180,7 +183,7 @@ async fn nested_sequences(fusion_disabled: bool) -> Result<()> {
         let code = format!(
             r#"{{
                 catch(e) println(e ~ "caught");
-                seq {{ {inner} {{ do {{ {{ error(`Oops)?; 1 }} }} }}; 42 }}
+                seq {{ {inner} {{ {{ error(`Oops)?; 1 }} }}; 42 }}
             }}"#
         );
         let (values, out) = run_delta(&code, fusion_disabled).await?;
@@ -410,10 +413,8 @@ async fn seq_statement_refusals() -> Result<()> {
         ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
         ("seqq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
         ("seq { 1; catch(e) e }", "catch is not allowed inside a seq"),
-        ("seq { { let x = 1; x } }", "a block is not a seq statement"),
-        ("seqq { { let x = 1; x }; 2 }", "a block is not a seq statement"),
-        ("seq { do { catch(e) e } }", "catch is not allowed inside a seq"),
-        ("seq { do { 1; catch(e) e } }", "catch is not allowed inside a seq"),
+        ("seq { { catch(e) e; 1 } }", "catch is not allowed inside a seq"),
+        ("seq { { 1; catch(e) e } }", "catch is not allowed inside a seq"),
         ("seq { let x = { catch(e) null; 1 }; x }", "catch is not allowed inside a seq"),
     ] {
         let r = eval(src, crate::TEST_REGISTER).await;

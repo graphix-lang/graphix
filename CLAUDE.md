@@ -384,14 +384,19 @@ blocker profile, not a gap count.
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
   block; it is not control flow.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger] { stmt* }`
-  desugars to a pc machine (one select arm per step, busy-drop, carried
-  lets as cells, calls issued once per entry over an argument snapshot).
-  `until`, `do { .. }`, `try { .. } with(e[: T]) { .. }` (the error
-  branch; `catch` is refused in a seq body outside lambda literals).
-  A step completes on a FIRED production after its entry, never on a
-  standing value; a call-free step reads its level as it stands at
-  entry. `seqq` queues triggers with captured values. `--expand` prints
-  the machine. `range(i, j)` is the integer builtin (`` `RangeError ``).
+  desugars to a pc machine (busy-drop, carried lets as cells, calls
+  issued once per entry over an argument snapshot). A statement starts
+  in the first cycle its predecessor's effect can be seen: statements
+  share a select arm until one reads or rewrites a variable an earlier
+  one wrote (a call, a deref or a nested seq counts as reading
+  everything pending), and the next arm is the next cycle. A `{ .. }`
+  statement issues its statements together with local lets. `until`,
+  `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
+  in a seq body outside lambda literals). A step completes on a FIRED
+  production after its entry, never on a standing value; a call-free
+  step reads its level as it stands at entry. `seqq` queues triggers
+  with captured values. `--expand` prints the machine. `range(i, j)` is
+  the integer builtin (`` `RangeError ``).
 - **Comments** are legal only above an expression, a select arm, an impl
   method or a struct-literal field; parse errors report the furthest
   point reached with the source line and a caret.

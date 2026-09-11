@@ -491,11 +491,6 @@ pub enum ExprKind {
     /// `until expr` — wait until a bool level is true. Legal only as a
     /// seq step.
     Until(Arc<Expr>),
-    /// `do { stmts }` — several seq statements as one arm. Legal only
-    /// as a seq step.
-    SeqDo {
-        body: Arc<[Expr]>,
-    },
     /// `try { stmts } with(e) { stmts }` — legal only as a seq step.
     TryWith(Arc<TryWithExpr>),
     Qop(Arc<Expr>),
@@ -915,8 +910,7 @@ impl Expr {
             | Array { args: xs }
             | List { args: xs }
             | Tuple { args: xs }
-            | Variant { args: xs, .. }
-            | SeqDo { body: xs } => xs.iter().for_each(|e| f(e)),
+            | Variant { args: xs, .. } => xs.iter().for_each(|e| f(e)),
             Bind(b) => f(&b.value),
             ArrayRef { source, i } => {
                 f(source);
@@ -1068,7 +1062,6 @@ impl Expr {
             List { args } => List { args: xs(f, args) },
             Tuple { args } => Tuple { args: xs(f, args) },
             Variant { tag, args } => Variant { tag: tag.clone(), args: xs(f, args) },
-            SeqDo { body } => SeqDo { body: xs(f, body) },
             Bind(b) => Bind(Arc::new(BindExpr {
                 rec: b.rec,
                 pattern: b.pattern.clone(),

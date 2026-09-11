@@ -475,7 +475,7 @@ mod test {
         rt("p?");
         rt("v$");
         rt("seq (go ~ x) { until ready; x }");
-        rt("seqq request { do { let x = request; x }; 42 }");
+        rt("seqq request { { let x = request; x }; 42 }");
     }
 
     #[test]

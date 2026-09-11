@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d821ce94.js";
+            window.path_to_searchindex_js = "searchindex-70ffc56f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2054,29 +2054,51 @@ inside a step, or call a function. The statement kinds are:</p>
 produces a value. The last expression of the block is its output.</p>
 <p><strong><code>let x = e;</code></strong> is a step like any other, and additionally carries the
 value it produced into every later step. A later <code>let x = ...</code> creates a
-new binding, even inside <code>do</code>. Its initializer sees the preceding <code>x</code>;
+new binding. Its initializer sees the preceding <code>x</code>;
 earlier references and closures continue to refer to that preceding
 binding. The new binding can have a different type.</p>
 <p><strong><code>x &lt;- e;</code></strong> connects, as it does anywhere. The destination is the
 original variable outside the block, and the step completes when <code>e</code>
-produces.</p>
+produces. A later statement that reads <code>x</code> sees the write.</p>
 <p><strong><code>until cond;</code></strong> waits until the boolean <code>cond</code> is true, reading it live
 rather than as a queued copy. It has no value, so it cannot be the last
 statement of a body whose value is used.</p>
-<p><strong><code>do { s1; s2; ... }</code></strong> groups several statements into one step. Where
-an ordinary block would run its statements concurrently, <code>do</code> still
-runs them in order, but the whole group counts as a single statement of
-the enclosing sequence. Its value is the value of its last statement, so
-a <code>do</code> can end a seq or initialize a <code>let</code>. A trailing semicolon in
-<code>do { ... }</code> does not add a step or discard the last statement’s value;
-ordinary <code>{ ... }</code> blocks retain their usual trailing-semicolon behavior.</p>
+<p><strong><code>{ s1; s2; ... }</code></strong> runs several statements together as one step.
+Every statement in the block is issued when the step starts, so two
+asynchronous calls in one block are in flight at once, where at the seq
+level the second would wait for the first (see below). A <code>let</code> inside a
+block is local to it; a later statement in the block that uses it waits
+for it, as ordinary dataflow does. Connects and calls in a block are
+still clocked to the step: they issue once, when the block is entered,
+not again when their inputs move. The block completes when every
+statement in it has produced, with the value of its last statement, so
+a block can end a seq or initialize a <code>let</code>. Inside a block you are
+back in ordinary Graphix: a statement that reads a variable a sibling
+wrote sees the old value, and an error in one statement does not
+retract a write a sibling already issued. <code>until</code> and <code>try</code> are refused
+inside a block.</p>
 <p><strong><code>try { steps } with(e) { steps }</code></strong> is the sequence’s error handling.
 An error raised in the try body transfers control to the with body; see
 <a href="#errors">Errors</a>.</p>
+<h2 id="when-the-next-statement-starts"><a class="header" href="#when-the-next-statement-starts">When the next statement starts</a></h2>
+<p>A statement starts in the first cycle where the effect of the one
+before it can be seen. For a <code>let</code> or a call the effect is its value,
+and dataflow carries it at once, so <code>let a = f(); let b = g(a)</code> issues
+<code>g</code> in the cycle <code>f</code> produced. For a connect the effect is its write,
+which lands the next cycle, so a statement that reads a variable an
+earlier statement wrote starts the next cycle and reads the new value:
+<code>n &lt;- n + 1; publish(n)</code> publishes the new <code>n</code>. Connects that nothing
+in between reads land together: <code>a &lt;- x; b &lt;- y; let s = a + b</code> writes
+<code>a</code> and <code>b</code> in one cycle and binds <code>s</code> the next.</p>
+<p>The compiler decides this by name. It cannot see what a function reads,
+so a call that follows a connect waits for the write to land, and
+<code>a &lt;- f(x); b &lt;- g(y)</code> issues <code>g</code> only after <code>f</code> has produced. When you
+know the two are independent, put them in a block: <code>{ a &lt;- f(x); b &lt;- g(y) }</code> issues both at once.</p>
 <p><code>graphix --expand file.gx</code> checks the file and prints each sequence’s
-lowered program: the step variable, one select arm per step, and the
-cells that carry <code>let</code> values between steps. It is the tool for seeing
-exactly which event a step is waiting on.</p>
+lowered program: the step variable, one select arm per run of
+statements, and the cells that carry <code>let</code> values between steps. It is
+the tool for seeing exactly which event a step is waiting on and which
+statements share a cycle.</p>
 <h2 id="call-inputs"><a class="header" href="#call-inputs">Call inputs</a></h2>
 <p>In both forms, each call waits until all its explicit arguments are
 present, then samples them together with <code>~!</code> and issues once. This gives
@@ -2176,13 +2198,14 @@ is therefore <code>with(e) { cleanup; e? }</code>, and the error reaches the
 handler around the seq exactly once. A let bound in the try body is not
 visible after the <code>try</code>; <code>e</code> is visible only in the with body;
 <code>with(e: T)</code> ascribes <code>T</code> to <code>e</code> and requires it to cover everything the
-body can throw. <code>try</code> is a seq statement: it is refused inside <code>do</code>
+body can throw. <code>try</code> is a seq statement: it is refused inside a block
 and outside a seq.</p>
 <p>An error reaching the sequence’s handler takes precedence over a value
 produced by the same step. The failing step cannot publish a result or
-start subsequent statements, including subsequent statements within <code>do</code>.
-This is not rollback: effects already performed inside an ordinary
-expression remain performed.</p>
+start the statements after it. This is not rollback: effects already
+performed inside an ordinary expression remain performed, and the
+statements of a block are issued together, so a sibling’s write is not
+retracted.</p>
 <p>The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
 Sleeping the enclosing expression discards pending queued work, following

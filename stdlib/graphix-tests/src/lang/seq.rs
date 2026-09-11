@@ -286,22 +286,23 @@ run!(seq_qop_aborts, SEQ_QOP_ABORTS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-const SEQ_DO_FANOUT_RERUNS: &str = r#"
+const SEQ_BLOCK_RERUNS: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 10 => s + 1, _ => never() };
   let trig = select step { 1 | 5 => step, _ => never() };
   let n = 0;
   seq trig {
-    do {
-      n <- n + 1
+    {
+      n <- n + 1;
+      n
     }
   };
   select step { 10 => n, _ => never() }
 }
 "#;
 
-run!(seq_do_fanout_reruns, SEQ_DO_FANOUT_RERUNS, |v: Result<&Value>| match v {
+run!(seq_block_reruns, SEQ_BLOCK_RERUNS, |v: Result<&Value>| match v {
     Ok(Value::I64(2)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -314,7 +315,7 @@ async fn seq_nested_connect_completion() -> Result<()> {
         let go = select step { 1 | 10 => step, _ => never() };
         let refresh = never<i64>();
         seq go {
-            do {
+            {
                 let r = go;
                 select r { r => { refresh <- r; null } }
             };
@@ -328,7 +329,7 @@ async fn seq_nested_connect_completion() -> Result<()> {
     Ok(())
 }
 
-const SEQ_DO_LET_INSIDE: &str = r#"
+const SEQ_BLOCK_LET_INSIDE: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };
@@ -337,7 +338,7 @@ const SEQ_DO_LET_INSIDE: &str = r#"
   delayed <- select step { 4 => 42, _ => never() };
   let y = 0;
   seq go {
-    do {
+    {
       let x = delayed;
       y <- x
     }
@@ -346,12 +347,12 @@ const SEQ_DO_LET_INSIDE: &str = r#"
 }
 "#;
 
-run!(seq_do_let_inside, SEQ_DO_LET_INSIDE, |v: Result<&Value>| match v {
+run!(seq_block_let_inside, SEQ_BLOCK_LET_INSIDE, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-const SEQ_DO_TWO_WRITES: &str = r#"
+const SEQ_BLOCK_TWO_WRITES: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 6 => s + 1, _ => never() };
@@ -359,7 +360,7 @@ const SEQ_DO_TWO_WRITES: &str = r#"
   let a = 0;
   let b = 0;
   seq go {
-    do {
+    {
       let x = 3;
       a <- x;
       b <- x + 1
@@ -369,17 +370,17 @@ const SEQ_DO_TWO_WRITES: &str = r#"
 }
 "#;
 
-run!(seq_do_two_writes, SEQ_DO_TWO_WRITES, |v: Result<&Value>| match v {
+run!(seq_block_two_writes, SEQ_BLOCK_TWO_WRITES, |v: Result<&Value>| match v {
     Ok(Value::I64(34)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-const SEQ_DO_VALUE: &str = r#"
+const SEQ_BLOCK_VALUE: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 6 => s + 1, _ => never() };
   let y = seq {
-    do {
+    {
       let x = 3;
       x + 1
     }
@@ -388,12 +389,12 @@ const SEQ_DO_VALUE: &str = r#"
 }
 "#;
 
-run!(seq_do_value, SEQ_DO_VALUE, |v: Result<&Value>| match v {
+run!(seq_block_value, SEQ_BLOCK_VALUE, |v: Result<&Value>| match v {
     Ok(Value::I64(4)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-const SEQ_DO_VALUE_AFTER_WAIT: &str = r#"
+const SEQ_BLOCK_VALUE_AFTER_WAIT: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 8 => s + 1, _ => never() };
@@ -401,7 +402,7 @@ const SEQ_DO_VALUE_AFTER_WAIT: &str = r#"
   let delayed = never<i64>();
   delayed <- select step { 4 => 42, _ => never() };
   let y = seq go {
-    do {
+    {
       let r = delayed;
       r + 1
     }
@@ -410,17 +411,17 @@ const SEQ_DO_VALUE_AFTER_WAIT: &str = r#"
 }
 "#;
 
-run!(seq_do_value_after_wait, SEQ_DO_VALUE_AFTER_WAIT, |v: Result<&Value>| match v {
+run!(seq_block_value_after_wait, SEQ_BLOCK_VALUE_AFTER_WAIT, |v: Result<&Value>| match v {
     Ok(Value::I64(43)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-const SEQ_DO_VALUE_NOT_LAST: &str = r#"
+const SEQ_BLOCK_VALUE_NOT_LAST: &str = r#"
 {
   let step = 0;
   step <- select step { s if s < 6 => s + 1, _ => never() };
   let y = seq {
-    do {
+    {
       let x = 3;
       x + 1
     };
@@ -430,12 +431,139 @@ const SEQ_DO_VALUE_NOT_LAST: &str = r#"
 }
 "#;
 
-run!(seq_do_value_not_last, SEQ_DO_VALUE_NOT_LAST, |v: Result<&Value>| match v {
+run!(seq_block_value_not_last, SEQ_BLOCK_VALUE_NOT_LAST, |v: Result<&Value>| match v {
     Ok(Value::I64(99)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-async fn do_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
+// Two writes with no read between them share an arm and land in one
+// cycle; the statement that reads them is the next arm, the next cycle.
+const SEQ_ARM_WRITES_LAND_TOGETHER: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let go = select step { 1 => true, _ => never() };
+  let a = 0;
+  let b = 0;
+  let s = 0;
+  seq go {
+    a <- 10;
+    b <- 20;
+    s <- a + b
+  };
+  let first = once(select a { 0 => never(), _ => (a, b) });
+  select step { 8 => (first, s), _ => never() }
+}
+"#;
+
+run!(seq_arm_writes_land_together, SEQ_ARM_WRITES_LAND_TOGETHER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a.len() == 2
+        && matches!(&a[0], Value::Array(p) if p.len() == 2
+            && p[0] == Value::I64(10) && p[1] == Value::I64(20))
+        && a[1] == Value::I64(30))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A statement that reads what an earlier one wrote runs a cycle later
+// and sees the write.
+const SEQ_ARM_READ_AFTER_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let go = select step { 1 => true, _ => never() };
+  let n = 0;
+  let m = 0;
+  seq go {
+    n <- n + 1;
+    n <- n + 1;
+    m <- n
+  };
+  select step { 8 => n * 10 + m, _ => never() }
+}
+"#;
+
+run!(seq_arm_read_after_write, SEQ_ARM_READ_AFTER_WRITE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(22)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A second write to one variable is the next arm, else the reader
+// would see the first write while the second is still queued.
+const SEQ_ARM_WRITE_AFTER_WRITE: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 8 => s + 1, _ => never() };
+  let go = select step { 1 => true, _ => never() };
+  let a = 0;
+  let r = 0;
+  seq go {
+    a <- 1;
+    a <- 2;
+    r <- a
+  };
+  select step { 8 => a * 10 + r, _ => never() }
+}
+"#;
+
+run!(seq_arm_write_after_write, SEQ_ARM_WRITE_AFTER_WRITE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(22)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A block's lets are its own; the statement after it reads the outer x.
+const SEQ_BLOCK_LET_LOCAL: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 6 => s + 1, _ => never() };
+  let x = 100;
+  let y = seq {
+    { let x = 5; x };
+    x
+  };
+  select step { 6 => y, _ => never() }
+}
+"#;
+
+run!(seq_block_let_local, SEQ_BLOCK_LET_LOCAL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(100)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A block issues its statements at entry, so two calls in one block are
+// in flight together; at the seq level a call is opaque, so the second
+// waits for the write before it.
+async fn block_issues_together(fusion_disabled: bool) -> Result<()> {
+    for (body, expected) in
+        [("{ a <- f(1); b <- f(2) }", "done"), ("a <- f(1); b <- f(2)", "late")]
+    {
+        let code = format!(
+            r#"{{
+                let f = |v| sys::time::after_idle(duration:30.ms, v);
+                let a = never<i64>();
+                let b = never<i64>();
+                seq {{ {body} }};
+                let late = sys::time::timer(duration:50.ms, false);
+                let first = once(any(late ~ "late", (a + b) ~ "done"));
+                sys::time::after_idle(duration:100.ms, first)
+            }}"#
+        );
+        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(values.len(), 1, "{body}: {values:?}");
+        assert!(
+            matches!(&values[0], Value::String(s) if &**s == expected),
+            "{body}: {values:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn block_issues_together_interp() -> Result<()> {
+    block_issues_together(true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn block_issues_together_jit() -> Result<()> {
+    block_issues_together(false).await
+}
+
+async fn block_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
     use arcstr::format;
 
     for form in ["seq", "seqq"] {
@@ -443,8 +571,7 @@ async fn do_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
             if form == "seq" { "1 => 1, 15 => 2, 30 => 3" } else { "1 | 2 | 3 => step" };
         for semi in ["", ";"] {
             for (body, tail) in [
-                ("n <- n + 1", ""),
-                ("let x = request", ""),
+                ("null; n <- n + 1", ""),
                 ("let x = request; x", ""),
                 ("let x = request; n <- x", "; n"),
             ] {
@@ -454,15 +581,15 @@ async fn do_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
                         step <- select step {{ n if n < 40 => n + 1, _ => never() }};
                         let request = select step {{ {requests}, _ => never() }};
                         let n = 0;
-                        {form} request {{ do {{ {body}{semi} }}{tail} }}
+                        {form} request {{ {{ {body}{semi} }}{tail} }}
                     }}"#
                 );
                 let (values, _) = run_delta(&code, fusion_disabled).await?;
                 assert_eq!(as_i64s(&values), [1, 2, 3], "{code}");
             }
         }
-        for body in ["request; never();", "{ let x = request; x; };"] {
-            let code = format!("{form} {{ do {{ let request = 1; {body} }}; 42 }}");
+        for body in ["request; never();", "{ let x = request; never(); };"] {
+            let code = format!("{form} {{ {{ let request = 1; {body} }}; 42 }}");
             let (values, _) = run_delta(&code, fusion_disabled).await?;
             assert!(values.is_empty(), "{code}: {values:?}");
         }
@@ -471,13 +598,13 @@ async fn do_trailing_semicolon(fusion_disabled: bool) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn do_trailing_semicolon_interp() -> Result<()> {
-    do_trailing_semicolon(true).await
+async fn block_trailing_semicolon_interp() -> Result<()> {
+    block_trailing_semicolon(true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn do_trailing_semicolon_jit() -> Result<()> {
-    do_trailing_semicolon(false).await
+async fn block_trailing_semicolon_jit() -> Result<()> {
+    block_trailing_semicolon(false).await
 }
 
 // A step completes on a fired production after its entry, never on a
@@ -521,8 +648,8 @@ async fn reentry_fired_only(fusion_disabled: bool) -> Result<()> {
         // a carried cell bound two steps earlier is standing at the reading step
         ("old_cell", "let a = request; let b = request + 10; a", vec![1, 2, 3]),
         (
-            "old_cell_in_do",
-            "let a = request; let b = request + 10; do { let c = b; a }",
+            "old_cell_in_block",
+            "let a = request; let b = request + 10; { let c = b; a }",
             vec![1, 2, 3],
         ),
         // `until` on a level: false then flipped for run 1, present-true after

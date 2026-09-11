@@ -970,7 +970,6 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "until ")?;
                 e.fmt_pretty(buf)
             }
-            ExprKind::SeqDo { body } => pretty_print_exprs(buf, body, "do {", "}", ";"),
             ExprKind::TryWith(t) => {
                 pretty_print_exprs(buf, &t.body, "try {", "}", ";")?;
                 match &t.constraint {
@@ -1368,7 +1367,6 @@ impl ExprKind {
                 print_exprs(f, body, "{", "}", "; ")
             }
             ExprKind::Until(e) => write!(f, "until {e}"),
-            ExprKind::SeqDo { body } => print_exprs(f, body, "do {", "}", "; "),
             ExprKind::TryWith(t) => {
                 print_exprs(f, &t.body, "try {", "}", "; ")?;
                 match &t.constraint {

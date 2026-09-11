@@ -71,46 +71,60 @@ produces a value. The last expression of the block is its output.
 
 **`let x = e;`** is a step like any other, and additionally carries the
 value it produced into every later step. A later `let x = ...` creates a
-new binding, even inside `do`. Its initializer sees the preceding `x`;
+new binding. Its initializer sees the preceding `x`;
 earlier references and closures continue to refer to that preceding
 binding. The new binding can have a different type.
 
 **`x <- e;`** connects, as it does anywhere. The destination is the
 original variable outside the block, and the step completes when `e`
-produces.
+produces. A later statement that reads `x` sees the write.
 
 **`until cond;`** waits until the boolean `cond` is true, reading it live
 rather than as a queued copy. It has no value, so it cannot be the last
 statement of a body whose value is used.
 
-**`do { s1; s2; ... }`** groups several statements into one step. At
-the seq level every `;` is a cycle boundary: a statement completes, and
-the machine moves to the next statement on the following cycle, so
-`a <- x; b <- y;` writes `a` one cycle and `b` the next. Inside a `do`
-there is no boundary. Its statements run concurrently the way ordinary
-Graphix does, so both writes in `do { a <- x; b <- y }` land in the
-same cycle. A `let` inside binds before the statements that read it,
-and a statement waiting on an asynchronous result holds the statements
-after it until it produces; they are then issued in the cycle it
-produced in, not the next. The `do`'s value is the value of its last
-statement, so a `do` can end a seq or initialize a `let`. A trailing
-semicolon in `do { ... }` does not add a step or discard the last
-statement's value. `until` and `try` are refused inside `do`.
-
-A `do` differs from an ordinary `{ ... }` block in being a seq
-construct: its connects are clocked to the step and its lets are seq
-lets. An ordinary block can still be the value of a step,
-`let x = { a; b };`, and the step completes when the block produces. A
-bare `{ ... }` as a statement is refused.
+**`{ s1; s2; ... }`** runs several statements together as one step.
+Every statement in the block is issued when the step starts, so two
+asynchronous calls in one block are in flight at once, where at the seq
+level the second would wait for the first (see below). A `let` inside a
+block is local to it; a later statement in the block that uses it waits
+for it, as ordinary dataflow does. Connects and calls in a block are
+still clocked to the step: they issue once, when the block is entered,
+not again when their inputs move. The block completes when every
+statement in it has produced, with the value of its last statement, so
+a block can end a seq or initialize a `let`. Inside a block you are
+back in ordinary Graphix: a statement that reads a variable a sibling
+wrote sees the old value, and an error in one statement does not
+retract a write a sibling already issued. `until` and `try` are refused
+inside a block.
 
 **`try { steps } with(e) { steps }`** is the sequence's error handling.
 An error raised in the try body transfers control to the with body; see
 [Errors](#errors).
 
+## When the next statement starts
+
+A statement starts in the first cycle where the effect of the one
+before it can be seen. For a `let` or a call the effect is its value,
+and dataflow carries it at once, so `let a = f(); let b = g(a)` issues
+`g` in the cycle `f` produced. For a connect the effect is its write,
+which lands the next cycle, so a statement that reads a variable an
+earlier statement wrote starts the next cycle and reads the new value:
+`n <- n + 1; publish(n)` publishes the new `n`. Connects that nothing
+in between reads land together: `a <- x; b <- y; let s = a + b` writes
+`a` and `b` in one cycle and binds `s` the next.
+
+The compiler decides this by name. It cannot see what a function reads,
+so a call that follows a connect waits for the write to land, and
+`a <- f(x); b <- g(y)` issues `g` only after `f` has produced. When you
+know the two are independent, put them in a block: `{ a <- f(x); b <-
+g(y) }` issues both at once.
+
 `graphix --expand file.gx` checks the file and prints each sequence's
-lowered program: the step variable, one select arm per step, and the
-cells that carry `let` values between steps. It is the tool for seeing
-exactly which event a step is waiting on.
+lowered program: the step variable, one select arm per run of
+statements, and the cells that carry `let` values between steps. It is
+the tool for seeing exactly which event a step is waiting on and which
+statements share a cycle.
 
 ## Call inputs
 
@@ -234,14 +248,15 @@ is therefore `with(e) { cleanup; e? }`, and the error reaches the
 handler around the seq exactly once. A let bound in the try body is not
 visible after the `try`; `e` is visible only in the with body;
 `with(e: T)` ascribes `T` to `e` and requires it to cover everything the
-body can throw. `try` is a seq statement: it is refused inside `do`
+body can throw. `try` is a seq statement: it is refused inside a block
 and outside a seq.
 
 An error reaching the sequence's handler takes precedence over a value
 produced by the same step. The failing step cannot publish a result or
-start subsequent statements, including subsequent statements within `do`.
-This is not rollback: effects already performed inside an ordinary
-expression remain performed.
+start the statements after it. This is not rollback: effects already
+performed inside an ordinary expression remain performed, and the
+statements of a block are issued together, so a sibling's write is not
+retracted.
 
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.

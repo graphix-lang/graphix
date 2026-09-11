@@ -128,19 +128,19 @@ async fn abort_releases(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-async fn do_captures(fusion_disabled: bool) -> Result<()> {
+async fn block_lets_are_local(fusion_disabled: bool) -> Result<()> {
     let code = format!(
         r#"{{
         {BURST}
         let x = 100;
         seqq request {{
-            do {{ let x = request; x }};
+            {{ let x = request; x }};
             x
         }}
     }}"#
     );
     let (values, _) = run_delta(&code, fusion_disabled).await?;
-    assert_eq!(as_i64s(&values), [1, 2, 3]);
+    assert_eq!(as_i64s(&values), [100, 100, 100]);
     Ok(())
 }
 
@@ -254,7 +254,7 @@ modes!(live_until, live_until_interp, live_until_jit);
 modes!(live_writes, live_writes_interp, live_writes_jit);
 modes!(capture_scopes, capture_scopes_interp, capture_scopes_jit);
 modes!(abort_releases, abort_releases_interp, abort_releases_jit);
-modes!(do_captures, do_captures_interp, do_captures_jit);
+modes!(block_lets_are_local, block_lets_are_local_interp, block_lets_are_local_jit);
 modes!(sleep_restarts, sleep_restarts_interp, sleep_restarts_jit);
 modes!(reference_inputs, reference_inputs_interp, reference_inputs_jit);
 modes!(unhandled_warnings, unhandled_warnings_interp, unhandled_warnings_jit);

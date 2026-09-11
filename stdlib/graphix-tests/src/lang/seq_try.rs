@@ -239,17 +239,17 @@ async fn seqq_credit(fusion_disabled: bool) -> Result<()> {
 async fn refusals() -> Result<()> {
     for (src, needle) in [
         (
-            "seq { do { try { 1 } with(e) { 2 } } }",
-            "try is a seq statement, not a do statement",
+            "seq { { try { 1 } with(e) { 2 }; 0 } }",
+            "try is a seq statement; write it at the seq level",
         ),
         (
-            "seq { do { let x = try { 1 } with(e) { 2 }; x } }",
-            "try is a seq statement, not a do statement",
+            "seq { { let x = try { 1 } with(e) { 2 }; x } }",
+            "try is a seq statement; write it at the seq level",
         ),
-        ("seq { do { catch(e) e; 1 } }", "catch is not allowed inside a seq"),
+        ("seq { { catch(e) e; 1 } }", "catch is not allowed inside a seq"),
         ("seq { catch(e) e; 1 }", "catch is not allowed inside a seq"),
         (
-            "{ let bad = |v| -> [i64, Error<`Oops>] error(`Oops); seq { do { catch(e) println(e); bad(1)? } } }",
+            "{ let bad = |v| -> [i64, Error<`Oops>] error(`Oops); seq { { catch(e) println(e); bad(1)? } } }",
             "catch is not allowed inside a seq",
         ),
         ("try { 1 } with(e) { 2 }", "`try … with` is only legal as a seq statement"),
@@ -264,7 +264,6 @@ async fn refusals() -> Result<()> {
             "{ let bad = |v| -> [i64, Error<`Oops>] error(`Oops); seq { try { bad(1)? } with(e: Error<`Wrong>) { 0 } } }",
             "Error<`Wrong> does not contain",
         ),
-        ("seq { { let x = 1; x } }", "a block is not a seq statement"),
     ] {
         let r = eval(src, crate::TEST_REGISTER).await;
         let msg = match &r {
