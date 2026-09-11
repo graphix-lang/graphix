@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d821ce94.js";
+            window.path_to_searchindex_js = "searchindex-a1800825.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2063,13 +2063,25 @@ produces.</p>
 <p><strong><code>until cond;</code></strong> waits until the boolean <code>cond</code> is true, reading it live
 rather than as a queued copy. It has no value, so it cannot be the last
 statement of a body whose value is used.</p>
-<p><strong><code>do { s1; s2; ... }</code></strong> groups several statements into one step. Where
-an ordinary block would run its statements concurrently, <code>do</code> still
-runs them in order, but the whole group counts as a single statement of
-the enclosing sequence. Its value is the value of its last statement, so
-a <code>do</code> can end a seq or initialize a <code>let</code>. A trailing semicolon in
-<code>do { ... }</code> does not add a step or discard the last statement’s value;
-ordinary <code>{ ... }</code> blocks retain their usual trailing-semicolon behavior.</p>
+<p><strong><code>do { s1; s2; ... }</code></strong> groups several statements into one step. At
+the seq level every <code>;</code> is a cycle boundary: a statement completes, and
+the machine moves to the next statement on the following cycle, so
+<code>a &lt;- x; b &lt;- y;</code> writes <code>a</code> one cycle and <code>b</code> the next. Inside a <code>do</code>
+there is no such boundary. Everything that can produce in the step’s
+entry cycle produces then, so the two writes in
+<code>do { a &lt;- x; b &lt;- y }</code> land together. Dependencies still hold: a <code>let</code>
+inside binds before the statements that read it, and a statement that
+has to wait for an asynchronous result delays the ones after it. The
+<code>do</code>’s value is the value of its last statement, so a <code>do</code> can end a
+seq or initialize a <code>let</code>. A trailing semicolon in <code>do { ... }</code> does not
+add a step or discard the last statement’s value. <code>until</code> and <code>try</code> are
+refused inside <code>do</code>.</p>
+<p>A <code>do</code> is a seq construct: its connects are clocked to the step and its
+lets are seq lets. To run ordinary reactive Graphix inside a step, use
+an ordinary <code>{ ... }</code> block as the value of the step,
+<code>let x = { a; b };</code>. Its contents are live expressions, and the step
+completes when the block produces. A bare <code>{ ... }</code> as a statement is
+refused; ordinary blocks retain their usual trailing-semicolon behavior.</p>
 <p><strong><code>try { steps } with(e) { steps }</code></strong> is the sequence’s error handling.
 An error raised in the try body transfers control to the with body; see
 <a href="#errors">Errors</a>.</p>

@@ -376,7 +376,10 @@ description. The quiescence check no longer refuses kernels.
 Pins: `program_image_restores_kernels` (a fusion-on program image
 restores the same values and runs the JIT, by the invocation counter);
 the corpus differential with fusion on (490 programs, the same five
-timing-only differences as fusion off); `milestone_image_fused`.
+timing-only differences as fusion off); `milestone_image_fused`; and
+the fuzzer's session axis (`design/graphix_fuzz.md`): every `check`
+compares no cache, cold and warm per engine at trace strength, and
+`regress` runs the whole findings corpus through it.
 
 Measured on the admin TUI with fusion on, LTO, bench mode (P cores at
 4.5 GHz), pinned: cold 674 ms including the image write (compile alone

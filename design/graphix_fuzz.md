@@ -152,6 +152,23 @@ are tag-strict; `normalize_diag` strips process-global abstract ids
 from compile errors. Zero relaxations are encoded in
 `Trace::agrees_with`: the triage policy is fix, don't whitelist.
 
+**Sessions (the image axis).** Besides the engine pair, `check` runs
+each engine three ways on the program route (`GXConfig::program`, the
+shell's script path, tracing armed at construction and anchored at the
+program root): `nocache` (compiled, no image machinery), `cold`
+(compiled and written to a program image) and `warm` (restored from
+the image the cold run wrote). The pairs `nocache`/`cold` and
+`cold`/`warm` compare at the program's tier; a cold run that compiled
+but wrote no image makes the warm outcome the write's failure, so a
+codec gap is a finding (`Pair::Cold`/`Pair::Warm`). A disagreement
+reruns the three and records only if the same-kind rerun agrees with
+itself. Every session restores one registration image built once per
+process. The injected inputs live in their own `inputs` module so a
+program compiled as one block still publishes them by name
+(`input_scope`). Callable programs keep the route matrix only.
+`GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every Nth
+batched subject; the individual path always runs them.
+
 **`selfcheck` is the oracle-soundness gate**: interp-vs-interp and
 jit-vs-jit trace equality over generated + corpus programs, 100%
 required before any interp-vs-jit finding is trusted. **`detcheck`** is

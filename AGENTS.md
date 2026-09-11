@@ -526,7 +526,8 @@ blocker profile, not a gap count.
   None}` asserts WHETHER it fuses, bidirectionally.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
-  per-cycle trace oracle; `check`/`run`/`generate`/`fuzz`/`minimize`/
+  per-cycle trace oracle, each engine also no-cache vs cold-image vs
+  warm-image (`GRAPHIX_FUZZ_SESSIONS`); `check`/`run`/`generate`/`fuzz`/`minimize`/
   `regress`/`selfcheck`/`gen-check`/`detcheck`/`typemorph`. The
   committed `findings/` corpus is the regression gate. `rand::`/`sys::`/
   `http::`/`hold(` programs are excluded from divergence recording.

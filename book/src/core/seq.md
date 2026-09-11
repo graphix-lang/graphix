@@ -87,22 +87,21 @@ statement of a body whose value is used.
 the seq level every `;` is a cycle boundary: a statement completes, and
 the machine moves to the next statement on the following cycle, so
 `a <- x; b <- y;` writes `a` one cycle and `b` the next. Inside a `do`
-there is no such boundary. Everything that can produce in the step's
-entry cycle produces then, so the two writes in
-`do { a <- x; b <- y }` land together. Dependencies still hold: a `let`
-inside binds before the statements that read it, and a statement that
-has to wait for an asynchronous result delays the ones after it. The
-`do`'s value is the value of its last statement, so a `do` can end a
-seq or initialize a `let`. A trailing semicolon in `do { ... }` does not
-add a step or discard the last statement's value. `until` and `try` are
-refused inside `do`.
+there is no boundary. Its statements run concurrently the way ordinary
+Graphix does, so both writes in `do { a <- x; b <- y }` land in the
+same cycle. A `let` inside binds before the statements that read it,
+and a statement waiting on an asynchronous result holds the statements
+after it until it produces; they are then issued in the cycle it
+produced in, not the next. The `do`'s value is the value of its last
+statement, so a `do` can end a seq or initialize a `let`. A trailing
+semicolon in `do { ... }` does not add a step or discard the last
+statement's value. `until` and `try` are refused inside `do`.
 
-A `do` is a seq construct: its connects are clocked to the step and its
-lets are seq lets. To run ordinary reactive Graphix inside a step, use
-an ordinary `{ ... }` block as the value of the step,
-`let x = { a; b };`. Its contents are live expressions, and the step
-completes when the block produces. A bare `{ ... }` as a statement is
-refused; ordinary blocks retain their usual trailing-semicolon behavior.
+A `do` differs from an ordinary `{ ... }` block in being a seq
+construct: its connects are clocked to the step and its lets are seq
+lets. An ordinary block can still be the value of a step,
+`let x = { a; b };`, and the step completes when the block produces. A
+bare `{ ... }` as a statement is refused.
 
 **`try { steps } with(e) { steps }`** is the sequence's error handling.
 An error raised in the try body transfers control to the with body; see
