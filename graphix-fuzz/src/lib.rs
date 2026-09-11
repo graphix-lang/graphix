@@ -756,11 +756,13 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     }
     let code = stripped.as_str();
     // Value-nondeterministic sources: random values, wall-clock time
-    // (`throttle` reads it outside sys::), generated temp paths, netidx
+    // (`throttle` reads it outside sys::), a create-new open racing the
+    // sibling engine in the shared sandbox, generated temp paths, netidx
     // registration timing, OS-assigned ports and pids, signal delivery.
     let excluded = [
         "rand::",
         "throttle",
+        "`CreateNew",
         "sys::time",
         "sys::net",
         "sys::process::kill",
