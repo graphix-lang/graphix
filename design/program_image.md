@@ -261,6 +261,36 @@ image 9.1 MB either way. The image holds every instance the cold run
 created and the restore decodes all of them; the census says the
 first frame reaches about a third, which is what slice (b) is for.
 
+## Built: the program image, slice (b): offsets and lazy instances
+
+Every shared object is referenced by the file offset of its
+definition instead of a sequence number, and a reference to an object
+the session has not built decodes it from that offset on demand
+(`image::object_decode`, `decode_at`, and the same in every hand
+codec and the map-node table). The writer knows offsets because its
+buffer, `ImageBuf`, reports every byte written to the session; the
+reader knows them because every decode buffer is a slice of the
+mapped image. With that, any part of the image decodes in any order.
+
+A program image writes instance bodies to a heap after the eager part
+and records an instance table at the end (the header carries both
+offsets). The eager call site keeps `Callee::Imaged`: the instance id,
+the resolved type, and the body's reference summary, which `refs`
+answers with until the body exists; `sleep` and `delete` leave an
+imaged instance imaged. The first dispatch decodes the body
+synchronously inside `update` through the decoder the context retains,
+and binds it; nested sites inside the body are imaged in turn, so
+laziness cascades. A decode failure falls back to fresh static
+resolution. The shell maps the entry into memory, so only the pages a
+restore touches are read.
+
+Measured, the admin TUI (`milestone_image`), optimized without LTO,
+unpinned: cold 500 ms (registration 105, program compile 197, first
+cycle 11); warm restore 19 ms, first cycle 42 ms, of which about 32
+is materializing the instances the first frame reaches; image
+10.6 MB, 6.9 MB of it heap. The corpus differential ran clean under
+laziness (172 programs).
+
 ## Step 3: cache the compiled program
 
 Built in slices, each landing green: (a) every node kind that a

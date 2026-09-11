@@ -632,7 +632,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 
     fn image_encode(
         &self,
-        _buf: &mut bytes::BytesMut,
+        _buf: &mut image::ImageBuf,
     ) -> std::result::Result<(), netidx_core::pack::PackError> {
         Err(netidx_core::pack::PackError::Application(image::NOT_IMAGED))
     }
@@ -825,7 +825,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// kind without a codec reports.
     fn image_encode(
         &self,
-        _buf: &mut bytes::BytesMut,
+        _buf: &mut image::ImageBuf,
     ) -> std::result::Result<(), netidx_core::pack::PackError> {
         warn!("no image codec for the node at {}", self.spec());
         Err(netidx_core::pack::PackError::Application(image::NOT_IMAGED))

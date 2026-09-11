@@ -2,6 +2,7 @@ use super::{
     MAX_ARRAY_INIT_LEN, NOP, WakeBit, callsite::CallSite, genn,
     pattern::StructPatternNode,
 };
+use crate::image::ImageBuf;
 use crate::image::{
     nodes::{NodeTag, decode_node, put_tag, tag_len},
     scope_decode, scope_encode, scope_len,
@@ -19,7 +20,6 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
-use bytes::BytesMut;
 use cranelift_codegen::ir::{InstBuilder, Value as ClifValue};
 use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError};
@@ -828,7 +828,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             + self.top_id.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Collection, buf);
         self.intrinsic.encode(buf)?;
         self.base.source.image_encode(buf)?;
@@ -1370,7 +1370,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             + self.top_id.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Collection, buf);
         self.intrinsic.encode(buf)?;
         self.base.source.image_encode(buf)?;

@@ -18,7 +18,8 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
+use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_core::pack::{decode_varint, encode_varint, varint_len};
@@ -292,7 +293,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             + self.node.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Bind, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -573,7 +574,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
             + self.top_id.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Ref, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -737,7 +738,7 @@ impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
         }
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         match self {
             PlaceStep::Index(n) => {
                 buf.put_u8(0);
@@ -781,7 +782,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         })
     }
 
-    fn image_encode(place: &Option<Self>, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(place: &Option<Self>, buf: &mut ImageBuf) -> Result<(), PackError> {
         let Some(p) = place else { return Ok(buf.put_u8(0)) };
         buf.put_u8(1);
         p.root.image_encode(buf)?;
@@ -1040,7 +1041,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             + Place::image_len(&self.place)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ByRef, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -1258,7 +1259,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             + self.path.as_ref().map_or(0, place::path_len)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Deref, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;

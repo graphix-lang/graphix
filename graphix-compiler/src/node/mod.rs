@@ -21,7 +21,8 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
+use crate::image::ImageBuf;
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -201,7 +202,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         tag_len() + self.typ.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Nop, buf);
         self.typ.encode(buf)
     }
@@ -275,7 +276,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         tag_len() + self.spec.encoded_len() + self.n.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ExplicitParens, buf);
         self.spec.encode(buf)?;
         self.n.image_encode(buf)
@@ -359,7 +360,7 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
         self.node.image_len()
     }
 
-    pub(crate) fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.node.image_encode(buf)
     }
 
@@ -684,7 +685,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
             + self.name.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TypeDef, buf);
         self.spec.encode(buf)?;
         self.scope.encode(buf)?;
@@ -775,7 +776,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
             + self.typ.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Constant, buf);
         self.spec.encode(buf)?;
         self.value.encode(buf)?;
@@ -990,7 +991,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             + crate::image::scope_len(&self.scope)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Block, buf);
         self.module.encode(buf)?;
         self.spec.encode(buf)?;
@@ -1202,7 +1203,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
             + nodes_len(&self.args)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StringInterpolate, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -1380,7 +1381,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
             + self.id.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Connect, buf);
         self.spec.encode(buf)?;
         self.node.image_encode(buf)?;
@@ -1462,7 +1463,7 @@ impl WriteTarget {
         }
     }
 
-    fn image_encode(target: &Option<Self>, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(target: &Option<Self>, buf: &mut ImageBuf) -> Result<(), PackError> {
         match target {
             None => Ok(buf.put_u8(0)),
             Some(WriteTarget::Bind(id)) => {
@@ -1588,7 +1589,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             + self.top_id.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ConnectDeref, buf);
         self.spec.encode(buf)?;
         self.rhs.image_encode(buf)?;
@@ -1733,7 +1734,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
             + self.n.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TypeCast, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -1845,7 +1846,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Never, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -1947,7 +1948,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Any, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -2111,7 +2112,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
             + self.arg.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Sample, buf);
         self.spec.encode(buf)?;
         self.strict.encode(buf)?;

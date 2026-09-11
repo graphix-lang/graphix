@@ -7,18 +7,20 @@
 //! be sorted, then encodes.
 
 use super::{
-    DecodeImage, EncodeImage, IdCounts, ImageDecoder, ImageEncoder, defs, nodes,
-    scope_decode, scope_encode, scope_len,
+    DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder, defs,
+    nodes, scope_decode, scope_encode, scope_len,
 };
 use crate::{
-    BindId, BuiltinBindInfo, ExecCtx, LambdaId, Node, Rt, Scope, UserEvent,
+    BindId, BuiltinBindInfo, ExecCtx, LambdaId, LambdaInstanceId, Node, Rt, Scope,
+    UserEvent,
     expr::{ExprId, ModPath},
+    image,
     node::lambda::LambdaDef,
     profile::{self, Phase},
     typ::Type,
 };
 use arcstr::ArcStr;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes};
 use compact_str::CompactString;
 use log::{info, warn};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
@@ -26,7 +28,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 2;
+pub const REGISTRATION_FORMAT: u8 = 4;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -218,6 +220,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         let tables = Tables::collect(self)?;
         let mut enc = ImageEncoder::new();
+        enc.defer_instances = program.is_some();
         let body_bound = {
             let _s = EncodeImage::new(&mut enc);
             let env_len = self.env.encoded_len();
@@ -237,27 +240,62 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 + 1
                 + program.map_or(0, |p| p.encoded_len())
         };
+        let body_bound = body_bound + enc.deferred_len;
         enc.sort_ids();
         let counts = enc.counts();
-        let mut buf =
-            BytesMut::with_capacity(MAGIC.len() + 1 + counts.encoded_len() + body_bound);
+        let mut buf = ImageBuf::with_capacity(
+            MAGIC.len() + 1 + counts.encoded_len() + 16 + body_bound,
+        );
         buf.put_slice(MAGIC);
         buf.put_u8(REGISTRATION_FORMAT);
         counts.encode(&mut buf)?;
+        let trailer_at = buf.len();
+        buf.put_u64(0);
+        buf.put_u64(0);
+        enc.written = buf.len() as u64;
         {
             let _s = EncodeImage::new(&mut enc);
             self.env.encode(&mut buf)?;
+            let env_bytes = buf.len();
             tables.encode(&mut buf)?;
+            let defs_bytes = buf.len() - env_bytes;
             encode_varint(nodes.len() as u64, &mut buf);
             for (id, n) in nodes {
                 id.encode(&mut buf)?;
                 n.image_encode(&mut buf)?;
             }
+            let nodes_bytes = buf.len() - env_bytes - defs_bytes;
             scope_encode(scope, &mut buf)?;
             program.is_some().encode(&mut buf)?;
             if let Some(p) = program {
                 p.encode(&mut buf)?;
             }
+            let heap_at = buf.len();
+            loop {
+                let Some((id, body)) = image::encoding(|e| e.deferred.pop()).flatten()
+                else {
+                    break;
+                };
+                let at = buf.len() as u64;
+                body(&mut buf)?;
+                image::encoding(|e| e.instances.insert(id, at));
+            }
+            let table_at = buf.len();
+            let instances =
+                image::encoding(|e| std::mem::take(&mut e.instances)).unwrap_or_default();
+            encode_varint(instances.len() as u64, &mut buf);
+            for (id, at) in instances {
+                id.encode(&mut buf)?;
+                encode_varint(at, &mut buf);
+            }
+            buf.patch_u64(trailer_at, heap_at as u64);
+            buf.patch_u64(trailer_at + 8, table_at as u64);
+            info!(
+                "registration image: env {env_bytes} defs {defs_bytes} nodes {nodes_bytes} \
+                 heap {} total {} bytes",
+                table_at - heap_at,
+                buf.len()
+            );
         }
         Ok(buf.freeze())
     }
@@ -267,8 +305,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     /// with the session for anything decoded later.
     pub fn read_registration(
         &mut self,
-        mut bytes: &[u8],
+        image: Bytes,
     ) -> Result<Registration<R, E>, PackError> {
+        let mut bytes: &[u8] = &image;
         if bytes.len() < MAGIC.len() + 1 || &bytes[..MAGIC.len()] != MAGIC {
             return Err(PackError::InvalidFormat);
         }
@@ -277,9 +316,29 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             return Err(PackError::InvalidFormat);
         }
         let counts = IdCounts::decode(&mut bytes)?;
+        if bytes.remaining() < 16 {
+            return Err(PackError::BufferShort);
+        }
+        let heap_at = bytes.get_u64() as usize;
+        let table_at = bytes.get_u64() as usize;
+        if heap_at > table_at || table_at > image.len() {
+            return Err(PackError::InvalidFormat);
+        }
         let mut dec = ImageDecoder::new(counts);
+        dec.set_image(image.clone());
         let restored = {
             let _s = DecodeImage::new(&mut dec);
+            let mut table = &image[table_at..];
+            let n = decode_varint(&mut table)? as usize;
+            let mut instances = ahash::AHashMap::with_capacity(n);
+            for _ in 0..n {
+                let id = LambdaInstanceId::decode(&mut table)?;
+                instances.insert(id, decode_varint(&mut table)?);
+            }
+            if table.has_remaining() {
+                return Err(PackError::InvalidFormat);
+            }
+            image::decoding(|d| d.set_instances(instances));
             let p = profile::phase(Phase::ImageEnv);
             self.env = Pack::decode(&mut bytes)?;
             drop(p);
@@ -301,7 +360,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             };
             Registration { nodes, scope, program }
         };
-        if bytes.has_remaining() {
+        if image.len() - bytes.remaining() != heap_at {
             return Err(PackError::InvalidFormat);
         }
         self.image_decoder = Some(dec);

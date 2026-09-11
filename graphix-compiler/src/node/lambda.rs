@@ -1,4 +1,5 @@
 use super::{Nop, WakeBit, compiler::compile};
+use crate::image::ImageBuf;
 use crate::image::{
     env::{lexical_decode, lexical_encode, lexical_len},
     nodes::{NodeTag, decode_node, put_tag, tag_len},
@@ -20,7 +21,6 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
-use bytes::BytesMut;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
@@ -407,7 +407,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             + lexical_len(&self.env)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.id.encode(buf)?;
         self.instance_id.encode(buf)?;
         crate::image::slice_encode(&self.args, buf)?;
@@ -1264,7 +1264,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         tag_len() + self.spec.encoded_len() + id + self.typ.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Lambda, buf);
         self.spec.encode(buf)?;
         self.lambda_id::<R, E>().ok_or(PackError::InvalidFormat)?.encode(buf)?;

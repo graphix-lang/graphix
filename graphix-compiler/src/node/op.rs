@@ -10,7 +10,7 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -114,7 +114,7 @@ macro_rules! compare_op {
                     + self.rhs.image_len()
             }
 
-            fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 put_tag(NodeTag::$name, buf);
                 self.spec.encode(buf)?;
                 self.typ.encode(buf)?;
@@ -306,7 +306,7 @@ macro_rules! bool_op {
                     + self.rhs.image_len()
             }
 
-            fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 put_tag(NodeTag::$name, buf);
                 self.spec.encode(buf)?;
                 self.typ.encode(buf)?;
@@ -453,7 +453,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Not, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -572,7 +572,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Neg, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -920,7 +920,7 @@ macro_rules! arith_op {
                     + self.rhs.image_len()
             }
 
-            fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 put_tag(NodeTag::$name, buf);
                 self.spec.encode(buf)?;
                 self.typ.encode(buf)?;

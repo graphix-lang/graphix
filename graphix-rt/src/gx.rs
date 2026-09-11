@@ -230,6 +230,7 @@ impl<X: GXExt> GX<X> {
     }
 
     pub(super) async fn new(mut cfg: GXConfig<X>) -> Result<Self> {
+        let st_new = Instant::now();
         let resolvers_default = |r: &mut Vec<ResolverRef>| match dirs::data_dir() {
             None => (),
             Some(dd) => r.push(FilesResolver::new(dd.join("graphix"), None)),
@@ -263,9 +264,10 @@ impl<X: GXExt> GX<X> {
             scope: Scope::root(),
             program: None,
         };
+        info!("runtime construction before the root: {:?}", st_new.elapsed());
         let st = Instant::now();
         match cfg.registration {
-            Some(RegistrationImage::Load(bytes)) => t.restore_registration(&bytes)?,
+            Some(RegistrationImage::Load(bytes)) => t.restore_registration(bytes)?,
             other => {
                 if let Some(root) = cfg.root {
                     // The root declares packages; fusing their constants
@@ -278,6 +280,7 @@ impl<X: GXExt> GX<X> {
             }
         }
         info!("root init time: {:?}", st.elapsed());
+        let st_after = Instant::now();
         if t.program.is_none()
             && let Some(source) = cfg.program
         {
@@ -293,6 +296,7 @@ impl<X: GXExt> GX<X> {
                 Err(e) => t.program = Some(Err(format!("{e:?}"))),
             }
         }
+        info!("runtime construction after the root: {:?}", st_after.elapsed());
         Ok(t)
     }
 
@@ -308,7 +312,7 @@ impl<X: GXExt> GX<X> {
             .map_err(|e| anyhow!("writing the registration image: {e:?}"))
     }
 
-    fn restore_registration(&mut self, bytes: &[u8]) -> Result<()> {
+    fn restore_registration(&mut self, bytes: Bytes) -> Result<()> {
         let reg = self
             .ctx
             .read_registration(bytes)
@@ -954,6 +958,7 @@ impl<X: GXExt> GX<X> {
         let mut input = vec![];
         // Consecutive apparently-idle passes; reset by any ready work.
         let mut idle_passes: u32 = 0;
+        let mut first_cycle = true;
         'main: loop {
             // Pending commands' response channels drop on return, so blocked
             // callers get an error instead of hanging.
@@ -1071,8 +1076,13 @@ impl<X: GXExt> GX<X> {
             }
             let mut batch = self.batch_pool.take();
             self.process_input_batch(&mut tasks, &mut input, &mut batch).await;
+            let st = Instant::now();
             self.do_cycle(&mut tasks, &mut custom_tasks, &mut to_rt, &mut input, batch)
                 .await;
+            if first_cycle {
+                first_cycle = false;
+                info!("first cycle time: {:?}", st.elapsed());
+            }
         }
     }
 }

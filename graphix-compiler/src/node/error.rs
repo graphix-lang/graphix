@@ -19,7 +19,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
@@ -210,7 +210,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             + self.typ.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Catch, buf);
         self.spec.encode(buf)?;
         self.handler.image_encode(buf)?;
@@ -526,7 +526,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             + image::flags_len(self.flags)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Qop, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -799,7 +799,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
             + image::handler_len(&self.handler)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqGuard, buf);
         self.spec.encode(buf)?;
         self.n.image_encode(buf)?;
@@ -927,7 +927,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::OrNever, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;

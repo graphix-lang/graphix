@@ -3,6 +3,7 @@ use super::{
     compiler::compile,
     pattern::{SliceKind, StructPatternNode},
 };
+use crate::image::ImageBuf;
 use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
     BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
@@ -16,7 +17,6 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
-use bytes::BytesMut;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Typ;
@@ -649,7 +649,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             + 1
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Select, buf);
         self.arg.image_encode(buf)?;
         encode_varint(self.arms.len() as u64, buf);

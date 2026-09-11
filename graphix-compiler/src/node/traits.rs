@@ -23,7 +23,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -214,7 +214,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
             + self.defaults.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Trait, buf);
         self.spec.encode(buf)?;
         self.def.encode(buf)?;
@@ -620,7 +620,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
             + nodes_len(&self.prototypes)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Impl, buf);
         self.spec.encode(buf)?;
         self.def.encode(buf)?;

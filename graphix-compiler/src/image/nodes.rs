@@ -6,8 +6,8 @@
 //! compile performed. A kind without a codec fails the write with
 //! [`NOT_IMAGED`]; nothing is skipped.
 
-use crate::{ExecCtx, Node, Rt, UserEvent, node};
-use bytes::{Buf, BufMut, BytesMut};
+use crate::{ExecCtx, Node, Rt, UserEvent, image::ImageBuf, node};
+use bytes::{Buf, BufMut};
 use netidx_core::pack::{PackError, decode_varint, encode_varint, varint_len};
 
 /// `PackError::Application` payload: a node kind with no image codec.
@@ -42,7 +42,7 @@ pub(crate) fn tag_len() -> usize {
     1
 }
 
-pub(crate) fn put_tag(tag: NodeTag, buf: &mut BytesMut) {
+pub(crate) fn put_tag(tag: NodeTag, buf: &mut ImageBuf) {
     buf.put_u8(tag as u8)
 }
 
@@ -52,7 +52,7 @@ pub(crate) fn nodes_len<R: Rt, E: UserEvent>(nodes: &[Node<R, E>]) -> usize {
 
 pub(crate) fn encode_nodes<R: Rt, E: UserEvent>(
     nodes: &[Node<R, E>],
-    buf: &mut BytesMut,
+    buf: &mut ImageBuf,
 ) -> Result<(), PackError> {
     encode_varint(nodes.len() as u64, buf);
     for n in nodes {
@@ -67,7 +67,7 @@ pub(crate) fn opt_node_len<R: Rt, E: UserEvent>(node: Option<&Node<R, E>>) -> us
 
 pub(crate) fn opt_node_encode<R: Rt, E: UserEvent>(
     node: Option<&Node<R, E>>,
-    buf: &mut BytesMut,
+    buf: &mut ImageBuf,
 ) -> Result<(), PackError> {
     match node {
         Some(n) => {

@@ -5,13 +5,13 @@
 use crate::{TEST_REGISTER, init};
 use anyhow::Result;
 use arcstr::literal;
-use bytes::BytesMut;
+use bytes::Bytes;
 use graphix_compiler::{
     CFlag, PrintFlag,
     env::Env,
     expr::Source,
     format_with_flags,
-    image::{DecodeImage, EncodeImage, ImageDecoder, ImageEncoder},
+    image::{DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder},
     typ::Type,
 };
 use graphix_package_core::testing::{TestCtx, init_with_registration, init_with_session};
@@ -38,7 +38,7 @@ async fn environment_round_trips() -> Result<()> {
         .await?
         .env;
     let mut enc = ImageEncoder::new();
-    let mut buf = BytesMut::new();
+    let mut buf = ImageBuf::with_capacity(0);
     let bound = {
         let _s = EncodeImage::new(&mut enc);
         env.encoded_len()
@@ -51,10 +51,12 @@ async fn environment_round_trips() -> Result<()> {
     }
     let counts = enc.counts();
     assert!(counts.bind > 100 && counts.tvar > 100, "{counts:?}");
+    let image: Bytes = buf.freeze();
     let mut dec = ImageDecoder::new(counts);
+    dec.set_image(image.clone());
     let restored = {
         let _s = DecodeImage::new(&mut dec);
-        let mut b = &buf[..];
+        let mut b = &image[..];
         let env = Env::decode(&mut b)?;
         assert!(b.is_empty());
         env

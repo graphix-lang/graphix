@@ -13,7 +13,7 @@ use crate::{
 };
 use anyhow::Result;
 use arcstr::ArcStr;
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError};
@@ -93,7 +93,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
             + nodes_len(&self.vals)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Map, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -279,7 +279,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
             + self.vtyp.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::MapRef, buf);
         self.source.image_encode(buf)?;
         self.key.image_encode(buf)?;

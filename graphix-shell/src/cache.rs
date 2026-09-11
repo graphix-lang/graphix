@@ -128,16 +128,27 @@ impl RegistrationCache {
         Some(self.dir().join(format!("{}.img", self.key(entry)?)))
     }
 
+    /// The entry mapped into memory: only the pages a restore touches
+    /// are read, and an instance decoded later reads its own. An entry
+    /// is never rewritten in place (written to a temporary file and
+    /// renamed), so the mapping stays valid.
     pub(crate) fn load(&self, entry: Entry) -> Option<Bytes> {
         let path = self.path(entry)?;
-        match fs::read(&path) {
-            Ok(bytes) => {
-                info!("{entry:?} image {}", path.display());
-                Some(Bytes::from(bytes))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        let file = match fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
             Err(e) => {
-                warn!("reading the {entry:?} image {}: {e}", path.display());
+                warn!("opening the {entry:?} image {}: {e}", path.display());
+                return None;
+            }
+        };
+        match unsafe { memmap2::Mmap::map(&file) } {
+            Ok(map) => {
+                info!("{entry:?} image {}", path.display());
+                Some(Bytes::from_owner(map))
+            }
+            Err(e) => {
+                warn!("mapping the {entry:?} image {}: {e}", path.display());
                 None
             }
         }

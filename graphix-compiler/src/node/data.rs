@@ -16,7 +16,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_core::pack::{decode_varint, encode_varint, varint_len};
@@ -93,7 +93,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
             + nodes_len(&self.n)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Struct, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -204,7 +204,7 @@ impl<R: Rt, E: UserEvent> Replace<R, E> {
         self.index.encoded_len() + self.name.encoded_len() + self.n.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.index.encode(buf)?;
         self.name.encode(buf)?;
         self.n.image_encode(buf)
@@ -294,7 +294,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             + self.replace.iter().map(|r| r.image_len()).sum::<usize>()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructWith, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -532,7 +532,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
             + self.field_name.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructRef, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -701,7 +701,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Tuple, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -858,7 +858,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
             + nodes_len(&self.n)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Variant, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -1030,7 +1030,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
             + self.arg.image_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Construct, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -1167,7 +1167,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
             + self.scope.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TupleRef, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;

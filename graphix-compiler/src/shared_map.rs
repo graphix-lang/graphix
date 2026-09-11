@@ -22,7 +22,10 @@
 //! reserves the bound and patches the prefix after encoding; the
 //! packer's own length-wrapped derives must not hold one.
 
-use crate::env::{Map, Set};
+use crate::{
+    env::{Map, Set},
+    image,
+};
 use ahash::AHashMap;
 use bytes::{Buf, BufMut};
 use immutable_chunkmap::map::{NodeHandle, NodeRef};
@@ -49,7 +52,7 @@ pub struct SharedMap<K: Ord + Clone, V: Clone>(pub Map<K, V>);
 pub struct SharedSet<K: Ord + Clone>(pub Set<K>);
 
 struct Seen<K: Ord + Clone, V: Clone> {
-    id: u64,
+    offset: u64,
     /// Pins the identity while the table holds it.
     _handle: NodeHandle<K, V, SIZE>,
 }
@@ -90,14 +93,14 @@ impl EncodeTable {
 }
 
 impl DecodeTable {
-    fn nodes<K, V>(&mut self) -> &mut Vec<NodeHandle<K, V, SIZE>>
+    fn nodes<K, V>(&mut self) -> &mut AHashMap<u64, NodeHandle<K, V, SIZE>>
     where
         K: Ord + Clone + Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
     {
         self.by_type
             .entry(TypeId::of::<(K, V)>())
-            .or_insert_with(|| Box::new(Vec::<NodeHandle<K, V, SIZE>>::new()))
+            .or_insert_with(|| Box::new(AHashMap::<u64, NodeHandle<K, V, SIZE>>::new()))
             .downcast_mut()
             .expect("decode table entry keyed by its own type")
     }
@@ -192,14 +195,12 @@ fn with_decode<R>(f: impl FnOnce(&mut DecodeTable) -> R) -> R {
 
 impl<K: Ord + Clone, V: Clone> EncodeNodes<K, V> {
     fn written(&self, node: &NodeRef<'_, K, V, SIZE>) -> Option<u64> {
-        self.by_identity.get(&node.identity()).map(|seen| seen.id)
+        self.by_identity.get(&node.identity()).map(|seen| seen.offset)
     }
 
-    /// Ids are assigned as definitions complete, after their subtrees,
-    /// which is the order a decoder completes them in.
-    fn complete(&mut self, node: &NodeRef<'_, K, V, SIZE>) {
-        let id = self.by_identity.len() as u64;
-        self.by_identity.insert(node.identity(), Seen { id, _handle: node.keep() });
+    /// A node is known by the image offset of its definition.
+    fn define(&mut self, node: &NodeRef<'_, K, V, SIZE>, offset: u64) {
+        self.by_identity.insert(node.identity(), Seen { offset, _handle: node.keep() });
     }
 }
 
@@ -247,6 +248,8 @@ where
             Ok(())
         }
         None => {
+            let at = image::encoding(|e| e.written).unwrap_or(0);
+            table.nodes::<K, V>().define(&node, at);
             buf.put_u8(NODE);
             encode_varint(node.len() as u64, buf);
             for (k, v) in node.pairs() {
@@ -254,30 +257,33 @@ where
             }
             tree_encode(table, node.left(), buf, pair_encode)?;
             tree_encode(table, node.right(), buf, pair_encode)?;
-            table.nodes::<K, V>().complete(&node);
             Ok(())
         }
     }
 }
 
-fn tree_decode<K, V, B: Buf>(
-    table: &mut DecodeTable,
-    buf: &mut B,
-    pair_decode: &mut impl FnMut(&mut B) -> Result<(K, V), PackError>,
+/// A reference names a node by its definition's offset; one not built
+/// yet is decoded from there.
+fn tree_decode<K, V>(
+    buf: &mut &[u8],
+    pair_decode: &mut impl FnMut(&mut &[u8]) -> Result<(K, V), PackError>,
 ) -> Result<Option<NodeHandle<K, V, SIZE>>, PackError>
 where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
+    let at = image::position(buf)?;
     if !buf.has_remaining() {
         return Err(PackError::BufferShort);
     }
     match buf.get_u8() {
         EMPTY => Ok(None),
         REF => {
-            let id = decode_varint(buf)? as usize;
-            let nodes = table.nodes::<K, V>();
-            nodes.get(id).cloned().map(Some).ok_or(PackError::InvalidFormat)
+            let offset = decode_varint(buf)?;
+            match with_decode(|t| t.nodes::<K, V>().get(&offset).cloned()) {
+                Some(node) => Ok(Some(node)),
+                None => image::decode_at(offset, |b| tree_decode(b, pair_decode)),
+            }
         }
         NODE => {
             let n = decode_varint(buf)? as usize;
@@ -288,12 +294,12 @@ where
             for _ in 0..n {
                 pairs.push(pair_decode(buf)?);
             }
-            let left = tree_decode(table, buf, pair_decode)?;
-            let right = tree_decode(table, buf, pair_decode)?;
+            let left = tree_decode(buf, pair_decode)?;
+            let right = tree_decode(buf, pair_decode)?;
             // The stream is the encoder's walk of a map the chunkmap
             // built, read back in the same order.
             let node = unsafe { NodeHandle::create(left, pairs, right) };
-            table.nodes::<K, V>().push(node.clone());
+            with_decode(|t| t.nodes::<K, V>().insert(at, node.clone()));
             Ok(Some(node))
         }
         _ => Err(PackError::UnknownTag),
@@ -326,15 +332,15 @@ where
     with_encode(|t| tree_encode(t, map.root(), buf, pair_encode))
 }
 
-pub(crate) fn map_decode<K, V, B: Buf>(
-    buf: &mut B,
-    pair_decode: &mut impl FnMut(&mut B) -> Result<(K, V), PackError>,
+pub(crate) fn map_decode<K, V>(
+    buf: &mut impl Buf,
+    pair_decode: &mut impl FnMut(&mut &[u8]) -> Result<(K, V), PackError>,
 ) -> Result<Map<K, V>, PackError>
 where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    Ok(Map::from_root(with_decode(|t| tree_decode(t, buf, pair_decode))?))
+    Ok(Map::from_root(image::with_slice(buf, |sub| tree_decode(sub, pair_decode))?))
 }
 
 impl<K, V> Pack for SharedMap<K, V>
@@ -373,16 +379,18 @@ where
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let tree =
-            with_decode(|t| tree_decode(t, buf, &mut |buf| Ok((K::decode(buf)?, ()))));
-        Ok(SharedSet(Set::from_root(tree?)))
+        let tree = image::with_slice(buf, |sub| {
+            tree_decode(sub, &mut |b| Ok((K::decode(b)?, ())))
+        })?;
+        Ok(SharedSet(Set::from_root(tree)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use crate::image::{DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder};
+    use bytes::Bytes;
     use compact_str::CompactString;
 
     type M = Map<i64, i64>;
@@ -394,9 +402,9 @@ mod tests {
         vec![m0, m1, m2]
     }
 
-    fn encode_all(maps: &[M], table: &mut EncodeTable) -> BytesMut {
-        let _session = EncodeSession::new(table);
-        let mut buf = BytesMut::new();
+    fn encode_all(maps: &[M], enc: &mut ImageEncoder) -> Bytes {
+        let _session = EncodeImage::new(enc);
+        let mut buf = ImageBuf::with_capacity(0);
         for m in maps {
             let shared = SharedMap(m.clone());
             let len = shared.encoded_len();
@@ -404,11 +412,18 @@ mod tests {
             shared.encode(&mut buf).unwrap();
             assert!(buf.len() - before <= len, "encoded_len is an upper bound");
         }
-        buf
+        buf.freeze()
     }
 
-    fn decode_all(mut buf: &[u8], n: usize, table: &mut DecodeTable) -> Vec<M> {
-        let _session = DecodeSession::new(table);
+    fn decoder(image: &Bytes) -> ImageDecoder {
+        let mut dec = ImageDecoder::new(Default::default());
+        dec.set_image(image.clone());
+        dec
+    }
+
+    fn decode_all(image: &Bytes, n: usize, dec: &mut ImageDecoder) -> Vec<M> {
+        let _session = DecodeImage::new(dec);
+        let mut buf = &image[..];
         let out: Vec<M> =
             (0..n).map(|_| SharedMap::<i64, i64>::decode(&mut buf).unwrap().0).collect();
         assert!(buf.is_empty());
@@ -416,8 +431,6 @@ mod tests {
     }
 
     fn node_tags(bytes: &[u8]) -> usize {
-        // every NODE tag is preceded by two subtree tags in the stream;
-        // count definitions by walking the same grammar
         let mut buf = bytes;
         let mut defs = 0;
         while buf.has_remaining() {
@@ -443,16 +456,14 @@ mod tests {
     #[test]
     fn round_trip_shares_nodes() {
         let maps = forest();
-        let mut enc = EncodeTable::default();
+        let mut enc = ImageEncoder::new();
         let bytes = encode_all(&maps, &mut enc);
-        let mut dec = DecodeTable::default();
+        let mut dec = decoder(&bytes);
         let decoded = decode_all(&bytes, maps.len(), &mut dec);
         for (m, d) in maps.iter().zip(&decoded) {
             assert_eq!(m, d);
         }
-        // the decoded forest shares as the original did: re-encoding
-        // it yields the same bytes, and definitions are counted once
-        let mut again = EncodeTable::default();
+        let mut again = ImageEncoder::new();
         let bytes2 = encode_all(&decoded, &mut again);
         assert_eq!(bytes, bytes2);
         fn walk(
@@ -489,80 +500,61 @@ mod tests {
     #[test]
     fn length_bounds_the_encoding() {
         let maps = forest();
-        let mut table = EncodeTable::default();
-        let _session = EncodeSession::new(&mut table);
+        let mut enc = ImageEncoder::new();
+        let _session = EncodeImage::new(&mut enc);
         let shared: Vec<_> = maps.iter().map(|m| SharedMap(m.clone())).collect();
-        // measured before anything is written, every node is a definition
         let lens: Vec<usize> = shared.iter().map(|s| s.encoded_len()).collect();
         assert_eq!(lens, shared.iter().map(|s| s.encoded_len()).collect::<Vec<_>>());
         assert_eq!(lens[0], lens[1]);
-        let mut buf = BytesMut::new();
+        let mut buf = ImageBuf::with_capacity(0);
         let mut written = Vec::new();
         for s in &shared {
             let before = buf.len();
             s.encode(&mut buf).unwrap();
             written.push(buf.len() - before);
         }
-        assert_eq!(written[0], lens[0]);
+        assert!(written[0] <= lens[0]);
         assert!(written[1] < lens[1] / 4, "the second map is mostly references");
-        // once written, the length is exact: a map encoded again is
-        // one reference to its root
         let len = shared[0].encoded_len();
         let before = buf.len();
         shared[0].encode(&mut buf).unwrap();
-        assert_eq!(buf.len() - before, len);
-        assert_eq!(len, 1 + varint_len(0));
+        assert!(buf.len() - before <= len);
     }
 
+    /// A map decoded on its own resolves the nodes it shares from
+    /// their offsets, in any order and under any later session.
     #[test]
-    fn later_decode_resolves_into_the_table() {
+    fn later_decode_resolves_by_offset() {
         let maps = forest();
-        let mut enc = EncodeTable::default();
+        let mut enc = ImageEncoder::new();
         let bytes = encode_all(&maps, &mut enc);
-        let mut table = DecodeTable::default();
-        // decode the first map now, the rest under a later session
-        let mut buf = &bytes[..];
-        let first = {
-            let _s = DecodeSession::new(&mut table);
-            SharedMap::<i64, i64>::decode(&mut buf).unwrap().0
+        let first_len = {
+            let mut e = ImageEncoder::new();
+            let _s = EncodeImage::new(&mut e);
+            let mut b = ImageBuf::with_capacity(0);
+            SharedMap(maps[0].clone()).encode(&mut b).unwrap();
+            b.len()
         };
-        assert_eq!(first, maps[0]);
+        let mut dec = decoder(&bytes);
+        let mut buf = &bytes[first_len..];
         let rest = {
-            let _s = DecodeSession::new(&mut table);
+            let _s = DecodeImage::new(&mut dec);
             let a = SharedMap::<i64, i64>::decode(&mut buf).unwrap().0;
             let b = SharedMap::<i64, i64>::decode(&mut buf).unwrap().0;
             [a, b]
         };
         assert_eq!(rest[0], maps[1]);
         assert_eq!(rest[1], maps[2]);
-        // a map decoded without the maps it refers into dangles
-        let first_len = {
-            let mut t = EncodeTable::default();
-            let _s = EncodeSession::new(&mut t);
-            SharedMap(maps[0].clone()).encoded_len()
+        let first = {
+            let _s = DecodeImage::new(&mut dec);
+            SharedMap::<i64, i64>::decode(&mut &bytes[..]).unwrap().0
         };
-        let mut fresh = DecodeTable::default();
-        let mut buf = &bytes[first_len..];
-        let _s = DecodeSession::new(&mut fresh);
-        assert!(SharedMap::<i64, i64>::decode(&mut buf).is_err());
-    }
-
-    #[test]
-    fn no_session_is_self_contained() {
-        let maps = forest();
-        let mut buf = BytesMut::new();
-        for m in &maps {
-            SharedMap(m.clone()).encode(&mut buf).unwrap();
-        }
-        let mut b = &buf[..];
-        for m in &maps {
-            assert_eq!(SharedMap::<i64, i64>::decode(&mut b).unwrap().0, *m);
-        }
-        let empty = SharedMap(M::new());
-        let mut buf = BytesMut::new();
-        empty.encode(&mut buf).unwrap();
-        assert_eq!(buf.len(), empty.encoded_len());
-        assert_eq!(SharedMap::<i64, i64>::decode(&mut &buf[..]).unwrap(), empty);
+        assert_eq!(first, maps[0]);
+        // the trees decoded out of order still share their nodes
+        assert_eq!(
+            first.root().unwrap().identity() == rest[0].root().unwrap().identity(),
+            maps[0].root().unwrap().identity() == maps[1].root().unwrap().identity()
+        );
     }
 
     #[test]
@@ -580,10 +572,10 @@ mod tests {
         .collect();
         let set: Set<i64> = (0..500).collect();
         let (set2, _) = set.insert(-1);
-        let mut enc = EncodeTable::default();
-        let mut buf = BytesMut::new();
+        let mut enc = ImageEncoder::new();
+        let mut buf = ImageBuf::with_capacity(0);
         {
-            let _s = EncodeSession::new(&mut enc);
+            let _s = EncodeImage::new(&mut enc);
             let o = SharedMap(outer.clone());
             let s1 = SharedSet(set.clone());
             let s2 = SharedSet(set2.clone());
@@ -593,9 +585,10 @@ mod tests {
             s2.encode(&mut buf).unwrap();
             assert!(buf.len() <= len);
         }
-        let mut dec = DecodeTable::default();
-        let _s = DecodeSession::new(&mut dec);
-        let mut b = &buf[..];
+        let bytes = buf.freeze();
+        let mut dec = decoder(&bytes);
+        let _s = DecodeImage::new(&mut dec);
+        let mut b = &bytes[..];
         let o =
             SharedMap::<i64, SharedMap<CompactString, i64>>::decode(&mut b).unwrap().0;
         let s1 = SharedSet::<i64>::decode(&mut b).unwrap().0;

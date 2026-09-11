@@ -144,6 +144,7 @@ impl Pack for Expr {
                     let ori = image::origin_decode(buf)?;
                     Self::syntax_decode(buf, id, ori)
                 },
+                |b| Self::decode(b),
             )
         } else {
             Self::syntax_decode(buf, ExprId::new(), get_origin())
@@ -323,6 +324,7 @@ impl Pack for FnType {
                     let own = <Option<LambdaId> as Pack>::decode(buf)?;
                     Self::shape_decode(buf, own)
                 },
+                |b| Self::decode(b),
             )
         } else {
             Self::shape_decode(buf, None)

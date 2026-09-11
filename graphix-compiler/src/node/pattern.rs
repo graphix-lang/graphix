@@ -9,7 +9,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -1401,7 +1401,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             + self.guard.as_ref().map_or(0, |g| g.image_len())
     }
 
-    pub(crate) fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.explicit_type_predicate.encode(buf)?;
         self.type_predicate.encode(buf)?;
         self.shallow_predicate.encode(buf)?;

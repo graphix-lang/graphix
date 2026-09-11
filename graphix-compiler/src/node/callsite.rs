@@ -1,4 +1,5 @@
 use super::{NOP, Nop, WakeBit, bind::Ref, compiler::compile};
+use crate::image::ImageBuf;
 use crate::image::{
     self,
     nodes::{
@@ -25,7 +26,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
 use indexmap::IndexMap;
 use log::warn;
@@ -187,6 +188,15 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// per-cycle identity check is skipped (`fnode.update()` still runs
     /// for effects). `first_update` primes the body's refs once.
     Static { apply: Box<dyn Apply<R, E>>, resolved_ftype: FnType, first_update: bool },
+    /// A statically bound instance the image holds in its heap, decoded
+    /// by the first dispatch; `refs` is the body's summary until then.
+    Imaged {
+        instance: LambdaInstanceId,
+        resolved_ftype: FnType,
+        first_update: bool,
+        refed: Vec<BindId>,
+        bound: Vec<BindId>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -203,7 +213,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 
     fn apply(&self) -> Option<&dyn Apply<R, E>> {
         match self {
-            Callee::DynamicUnbound => None,
+            Callee::DynamicUnbound | Callee::Imaged { .. } => None,
             Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
                 Some(&**apply)
             }
@@ -212,17 +222,21 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 
     fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R, E> + 'static)> {
         match self {
-            Callee::DynamicUnbound => None,
+            Callee::DynamicUnbound | Callee::Imaged { .. } => None,
             Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
                 Some(&mut **apply)
             }
         }
     }
 
-    /// Reset to `DynamicUnbound`, returning the bound apply for deletion.
+    /// Reset to `DynamicUnbound`, returning the bound apply for deletion;
+    /// an imaged instance has nothing to delete and stays imaged.
     fn take_apply(&mut self) -> Option<Box<dyn Apply<R, E>>> {
+        if matches!(self, Callee::Imaged { .. }) {
+            return None;
+        }
         match mem::replace(self, Callee::DynamicUnbound) {
-            Callee::DynamicUnbound => None,
+            Callee::DynamicUnbound | Callee::Imaged { .. } => None,
             Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
                 Some(apply)
             }
@@ -276,7 +290,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             return Some(&target.ftype);
         }
         match &self.callee {
-            Callee::Static { resolved_ftype, .. } => Some(resolved_ftype),
+            Callee::Static { resolved_ftype, .. }
+            | Callee::Imaged { resolved_ftype, .. } => Some(resolved_ftype),
             Callee::DynamicUnbound | Callee::DynamicBound { .. } => None,
         }
     }
@@ -1422,6 +1437,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         event: &mut Event<E>,
     ) -> &TagValue {
         let woke = self.slept.take() && ctx.frame_depth == 0;
+        if matches!(self.callee, Callee::Imaged { .. })
+            && let Err(e) = self.materialize(ctx)
+        {
+            warn!("decoding the instance of {}: {e:#}; resolving it afresh", self.spec);
+            self.callee = Callee::DynamicUnbound;
+        }
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         let mut arg_fired = false;
         let capture_prods = self.is_self_tail_call.load(Ordering::Relaxed)
@@ -1640,7 +1661,7 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
             + self.is_default.encoded_len()
     }
 
-    fn image_encode(&self, key: &ArgKey, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, key: &ArgKey, buf: &mut ImageBuf) -> Result<(), PackError> {
         key.encode(buf)?;
         self.id.encode(buf)?;
         opt_node_encode(self.node.as_ref(), buf)?;
@@ -1670,7 +1691,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ApplyView::Lambda(_) => Ok(CALLEE_INSTANCE),
                 ApplyView::BuiltIn => Ok(CALLEE_REBUILT),
             },
+            Callee::Imaged { .. } => Err(PackError::Application(image::NOT_IMAGED)),
         }
+    }
+
+    /// The body's reference summary an imaged site answers `refs` with
+    /// before its instance is decoded.
+    fn refs_summary(apply: &dyn Apply<R, E>) -> (Vec<BindId>, Vec<BindId>) {
+        let mut refs = Refs::default();
+        apply.refs(&mut refs);
+        let mut refed: Vec<BindId> = refs.refed.iter().copied().collect();
+        let mut bound: Vec<BindId> = refs.bound.iter().copied().collect();
+        refed.sort();
+        bound.sort();
+        (refed, bound)
     }
 
     /// The definition a statically resolvable site names, read the way
@@ -1686,6 +1720,35 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             NodeView::Lambda(l) => Some(l.def_value().clone()),
             _ => None,
         }
+    }
+
+    /// Decode the instance the image holds for this site and bind it.
+    fn materialize(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        let Callee::Imaged { instance, .. } = &self.callee else { return Ok(()) };
+        let instance = *instance;
+        let mut dec = ctx
+            .image_decoder
+            .take()
+            .ok_or_else(|| anyhow!("no image to decode instance {instance:?} from"))?;
+        let decoded = match dec.instance_offset(instance) {
+            None => Err(anyhow!("instance {instance:?} is not in the image")),
+            Some(at) => {
+                let image = dec.image().clone();
+                let _s = image::DecodeImage::new(&mut dec);
+                let mut sub = &image[at as usize..];
+                super::lambda::GXLambda::image_decode(ctx, &mut sub)
+                    .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
+            }
+        };
+        ctx.image_decoder = Some(dec);
+        let apply: Box<dyn Apply<R, E>> = Box::new(decoded?);
+        let Callee::Imaged { resolved_ftype, first_update, .. } =
+            mem::replace(&mut self.callee, Callee::DynamicUnbound)
+        else {
+            unreachable!()
+        };
+        self.callee = Callee::Static { apply, resolved_ftype, first_update };
+        Ok(())
     }
 
     /// Rebuild a builtin callee from its definition's factory over the
@@ -1726,7 +1789,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         })
     }
 
-    fn static_target_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn static_target_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         match &self.static_target {
             None => Ok(buf.put_u8(0)),
             Some(t) => {
@@ -1778,12 +1841,30 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             CALLEE_UNBOUND => (Vec::new(), Callee::DynamicUnbound, None),
             CALLEE_INSTANCE => {
                 let arg_refs = decode_nodes(ctx, buf)?;
-                let apply: Box<dyn Apply<R, E>> =
-                    Box::new(super::lambda::GXLambda::image_decode(ctx, buf)?);
-                let resolved_ftype = FnType::decode(buf)?;
-                let first_update = bool::decode(buf)?;
+                let callee = match bool::decode(buf)? {
+                    false => {
+                        let apply: Box<dyn Apply<R, E>> =
+                            Box::new(super::lambda::GXLambda::image_decode(ctx, buf)?);
+                        let resolved_ftype = FnType::decode(buf)?;
+                        let first_update = bool::decode(buf)?;
+                        Callee::Static { apply, resolved_ftype, first_update }
+                    }
+                    true => {
+                        let instance = LambdaInstanceId::decode(buf)?;
+                        let resolved_ftype = FnType::decode(buf)?;
+                        let first_update = bool::decode(buf)?;
+                        let refed = Vec::<BindId>::decode(buf)?;
+                        let bound = Vec::<BindId>::decode(buf)?;
+                        Callee::Imaged {
+                            instance,
+                            resolved_ftype,
+                            first_update,
+                            refed,
+                            bound,
+                        }
+                    }
+                };
                 let static_target = Self::static_target_decode(buf)?;
-                let callee = Callee::Static { apply, resolved_ftype, first_update };
                 (arg_refs, callee, static_target)
             }
             CALLEE_REBUILT => {
@@ -1838,8 +1919,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         let args: usize = self.args.iter().map(|(k, a)| a.image_len(k)).sum();
         let callee = match (&self.callee, mode) {
             (Callee::Static { apply, resolved_ftype, first_update }, CALLEE_INSTANCE) => {
+                let deferred = image::encoding(|e| e.defer_instances).unwrap_or(false);
+                let body = apply.image_len();
+                let body = if deferred {
+                    image::encoding(|e| e.deferred_len += body);
+                    let (refed, bound) = Self::refs_summary(&**apply);
+                    9 + refed.encoded_len() + bound.encoded_len()
+                } else {
+                    body
+                };
                 nodes_len(&self.arg_refs)
-                    + apply.image_len()
+                    + 1
+                    + body
                     + resolved_ftype.encoded_len()
                     + first_update.encoded_len()
                     + self.static_target_len()
@@ -1870,7 +1961,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             + self.callee_lambda_id.lock().encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let mode = self.callee_mode()?;
         put_tag(NodeTag::CallSite, buf);
         self.spec.encode(buf)?;
@@ -1885,9 +1976,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         match (&self.callee, mode) {
             (Callee::Static { apply, resolved_ftype, first_update }, CALLEE_INSTANCE) => {
                 encode_nodes(&self.arg_refs, buf)?;
-                apply.image_encode(buf)?;
-                resolved_ftype.encode(buf)?;
-                first_update.encode(buf)?;
+                let deferred = image::encoding(|e| e.defer_instances).unwrap_or(false);
+                deferred.encode(buf)?;
+                if deferred {
+                    let ApplyView::Lambda(g) = apply.view() else {
+                        return Err(PackError::Application(image::NOT_IMAGED));
+                    };
+                    let instance = g.instance_id();
+                    instance.encode(buf)?;
+                    resolved_ftype.encode(buf)?;
+                    first_update.encode(buf)?;
+                    let (refed, bound) = Self::refs_summary(&**apply);
+                    refed.encode(buf)?;
+                    bound.encode(buf)?;
+                    // The session borrows every node it encodes for its
+                    // whole length; the heap is written before it ends.
+                    let body: &'static dyn Apply<R, E> =
+                        unsafe { mem::transmute::<&dyn Apply<R, E>, _>(&**apply) };
+                    image::encoding(|e| {
+                        e.deferred
+                            .push((instance, Box::new(move |buf| body.image_encode(buf))))
+                    });
+                } else {
+                    apply.image_encode(buf)?;
+                    resolved_ftype.encode(buf)?;
+                    first_update.encode(buf)?;
+                }
                 self.static_target_encode(buf)?;
             }
             (Callee::Static { resolved_ftype, first_update, .. }, CALLEE_REBUILT) => {
@@ -2258,6 +2372,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         if let Some(fun) = self.callee.apply() {
             fun.refs(refs)
+        }
+        if let Callee::Imaged { refed, bound, .. } = &self.callee {
+            refs.refed.extend(refed.iter().copied());
+            refs.bound.extend(bound.iter().copied());
         }
         self.fnode.refs(refs);
         for arg in self.args.values() {

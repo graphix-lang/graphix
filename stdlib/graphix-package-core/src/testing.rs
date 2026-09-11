@@ -213,11 +213,15 @@ where
     let _ = env_logger::try_init();
     // Nothing seeds NetConfig, so tests that touch sys::net share one
     // process-internal netidx materialized on demand.
+    let st = std::time::Instant::now();
     let mut ctx = graphix_compiler::ExecCtx::new(GXRt::<NoExt>::new())?;
+    log::info!("context creation time: {:?}", st.elapsed());
     let mut modules = ahash::AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
     for p in register {
+        let st = std::time::Instant::now();
         p.register(&mut ctx, &mut modules, &mut root_mods)?;
+        log::info!("package registration time: {:?}", st.elapsed());
     }
     setup(&mut ctx);
     let root = graphix_package::root_module_source(&root_mods);
@@ -237,7 +241,10 @@ where
     if let Some(tx) = program_image {
         cfg = cfg.program_image(tx);
     }
-    Ok(TestCtx { rt: cfg.build()?.start().await? })
+    let st = std::time::Instant::now();
+    let rt = cfg.build()?.start().await?;
+    log::info!("runtime start time: {:?}", st.elapsed());
+    Ok(TestCtx { rt })
 }
 
 /// Evaluate a graphix expression and return its Value.

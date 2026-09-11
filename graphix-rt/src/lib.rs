@@ -1012,7 +1012,9 @@ impl<X: GXExt> GXConfig<X> {
                 }
             };
         });
+        let st = std::time::Instant::now();
         init_rx.await??;
+        log::info!("runtime start wait: {:?}", st.elapsed());
         Ok(GXHandle(Arc::new(GXHandleInner { tx, task, control })))
     }
 }

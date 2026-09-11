@@ -126,26 +126,32 @@ session state before any cycle (`graphix-compiler/src/image/`) under
 registration entry (the package root compiled; key = image format +
 root; the build id covers the packages compiled in) and, for a script,
 the program entry (the program compiled too; key adds the program
-source). A warm start restores the program entry, else the
-registration entry and compiles the program, else compiles both; a
-missing entry is written from the runtime that compiled it.
-`--no-cache` disables the cache, `--warm` writes and exits. A script
-compiles at runtime construction (`GXConfig::program`,
-`GXHandle::program`), never through `load`. The package root compiles
-with fusion off; a fusion-on program holds kernels and fails the
-program write, so it runs cold. Every imaged node kind owns an
-`Update::image_encode` / `image_decode` pair in its own file; a kind
-without one fails the write (`image::NOT_IMAGED`, logged) and the
-shell runs cold, never a partial image. A call site images its
-statically bound source instance; a builtin or collection-intrinsic
-callee is rebuilt at decode by static resolution. Expressions,
-function types, origins, paths, handlers and resolution cells are
-address-keyed objects: everything a session encodes must be borrowed
-from the context and root nodes for the whole session. Compiler ids
-are `image_id!` (the compiler's `atomic_id!` plus relocation); netidx's
-ids and wire format are untouched. A definition built by Rust at
-runtime is `DefOrigin::Runtime` and is never imaged. Pins:
-`stdlib/graphix-tests/src/lang/image.rs`.
+source). A warm start maps the program entry, else the registration
+entry and compiles the program, else compiles both; a missing entry is
+written from the runtime that compiled it. `--no-cache` disables the
+cache, `--warm` writes and exits. A script compiles at runtime
+construction (`GXConfig::program`, `GXHandle::program`), never through
+`load`. The package root compiles with fusion off; a fusion-on program
+holds kernels and fails the program write, so it runs cold. Every
+imaged node kind owns an `Update::image_encode` / `image_decode` pair
+in its own file; a kind without one fails the write (`image::NOT_IMAGED`,
+logged) and the shell runs cold, never a partial image. Every shared
+object (expressions, function types, origins, paths, handlers,
+resolution cells, type variables, map nodes) is written once and
+referenced by its file offset; a reference to an object not built yet
+decodes it from there, so any part of the image decodes in any order.
+The writer's `ImageBuf` reports every byte to the session, and
+everything a session encodes must be borrowed from the context and
+root nodes for the whole session. A program image writes instance
+bodies to a heap after the eager part with an instance table; a call
+site keeps `Callee::Imaged` (id, resolved type, reference summary) and
+decodes the body on its first dispatch, synchronously, through
+`ExecCtx::image_decoder`; a builtin callee is rebuilt at decode by
+static resolution's factory call with its typecheck passes replayed.
+Compiler ids are `image_id!` (the compiler's `atomic_id!` plus
+relocation); netidx's ids and wire format are untouched. A definition
+built by Rust at runtime is `DefOrigin::Runtime` and is never imaged.
+Pins: `stdlib/graphix-tests/src/lang/image.rs`.
 
 **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`);
 `VfsResolver`/`FilesResolver` are in-core, `NetidxResolver` is in

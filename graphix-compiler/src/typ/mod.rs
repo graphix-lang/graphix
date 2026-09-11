@@ -432,7 +432,7 @@ impl PackTrait for TypeRef {
             1 => Some(crate::image::origin_decode(buf)?),
             _ => return Err(PackError::UnknownTag),
         };
-        let resolved = crate::image::refcell_decode(buf, resolved_decode)?;
+        let resolved = crate::image::refcell_decode(buf, |b| resolved_decode(b))?;
         Ok(TypeRef { scope, name, params, pos, ori, resolved })
     }
 }

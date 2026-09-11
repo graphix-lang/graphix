@@ -22,7 +22,7 @@ use crate::{
 use ahash::AHashSet;
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -721,7 +721,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             + self.top_id.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Module, buf);
         self.spec.encode(buf)?;
         crate::image::flags_encode(self.flags, buf)?;

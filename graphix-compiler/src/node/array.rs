@@ -16,7 +16,7 @@ use crate::{
 };
 use anyhow::Result;
 use arcstr::ArcStr;
-use bytes::BytesMut;
+use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
@@ -180,7 +180,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
             + self.etyp.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ArrayRef, buf);
         self.source.image_encode(buf)?;
         self.i.image_encode(buf)?;
@@ -353,7 +353,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
             + self.typ.encoded_len()
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ArraySlice, buf);
         self.source.image_encode(buf)?;
         opt_node_encode(self.start.as_ref(), buf)?;
@@ -591,7 +591,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ListLit, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
@@ -700,7 +700,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
         tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
     }
 
-    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Array, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
