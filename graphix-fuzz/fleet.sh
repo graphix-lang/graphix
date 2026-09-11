@@ -55,10 +55,10 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # Disabled but may return
 # "aieka:rsync:288:4:linux"
 # "ryouko:rsync:256:1:linux"
+# "mazikeen:rsync:112:4:linux"
 HOSTS=(
     "katana:rsync:64:4:darwin"
     "washu-chan:rsync:128:1:linux"
-    "mazikeen:rsync:112:4:linux"
 )
 
 MIX=${FLEET_MIX:-50:25:25}
