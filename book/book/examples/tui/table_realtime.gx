@@ -1,0 +1,26 @@
+use tui::line;
+use tui::table::{self, *};
+use tui::text::{self, *};
+
+let clock = sys::time::timer(duration:1.s, true);
+
+let cpu_val = 5;
+cpu_val <- {
+    let v = clock ~ cpu_val;
+    v + rand::rand(#clock, #start: -5, #end: 5)
+};
+
+let row1 = row([
+    cell(line("1")),
+    cell(line("init")),
+    cell(line("[cpu_val]%"))
+]);
+let row2 = row([
+    cell(line("2")),
+    cell(line("kthreadd")),
+    cell(line("0%"))
+]);
+let rows = [&row1, &row2];
+
+let header = row([cell(line("PID")), cell(line("Name")), cell(line("CPU"))]);
+table(#header: &header, &rows)

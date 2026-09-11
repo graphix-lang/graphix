@@ -1,0 +1,33 @@
+use tui::browser::{self, *};
+use tui::input_handler::{self, *};
+
+let path = "/";
+let selected_path: string = never();
+let selected_row: string = never();
+let cursor: MoveCursor = never();
+
+let handle_event = |e: Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select k.code {
+            e@ `Up => { cursor <- e ~ `Up(1); `Stop },
+            e@ `Down => { cursor <- e ~ `Down(1); `Stop },
+            e@ `Left => { cursor <- e ~ `Left(1); `Stop },
+            e@ `Right => { cursor <- e ~ `Right(1); `Stop },
+            e@ `Enter => { path <- e ~ selected_row; `Stop },
+            _ => `Continue
+        },
+        _ => `Continue
+    },
+    _ => `Continue
+};
+
+input_handler(
+    #handle: &handle_event,
+    &browser(
+        #size: {width: 80, height: 24},
+        #cursor,
+        #selected_path: &selected_path,
+        #selected_row: &selected_row,
+        path
+    )
+)

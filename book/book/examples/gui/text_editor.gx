@@ -1,0 +1,26 @@
+use gui::{Length, window};
+use gui::text::{self, *};
+use gui::text_editor::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+let content = "";
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, &"Text Editor Demo"),
+        text_editor(
+            #placeholder: &"Start typing here...",
+            #on_edit: |v| content <- v,
+            #height: &300.0,
+            &content
+        ),
+        text(&"Length: [str::len(content)] characters")
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"Text Editor", &col)]

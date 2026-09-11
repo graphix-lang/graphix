@@ -1,0 +1,24 @@
+use gui::{color, style, Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+[&window(
+  #icon: &icon::icon,
+  #title: &"Text Widget",
+  &column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+      text(&"Default text"),
+      text(#size: &32.0, &"Large text"),
+      text(#color: &color(#r: 1.0, #g: 0.2, #b: 0.2)$, &"Red text"),
+      text(
+        #font: &{ family: `Monospace, weight: `Bold, style: `Normal },
+        &"Bold monospace"),
+      text(#halign: &`Center, #width: &`Fill, &"Centered"),
+      text(#halign: &`Right, #width: &`Fill, &"Right-aligned")
+    ]
+  )
+)]

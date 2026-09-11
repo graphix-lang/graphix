@@ -1,0 +1,40 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::rule::{self, horizontal_rule, vertical_rule};
+mod icon;
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Rules",
+    &row(
+        #spacing: &20.0,
+        #padding: &`All(30.0),
+        #width: &`Fill,
+        #height: &`Fill,
+        &[
+            column(
+                #spacing: &10.0,
+                #width: &`Fill,
+                &[
+                    text(#size: &24.0, &"Horizontal Rules"),
+                    text(&"Section One"),
+                    horizontal_rule(),
+                    text(&"Section Two"),
+                    horizontal_rule(#height: &4.0),
+                    text(&"Section Three")
+                ]
+            ),
+            vertical_rule(),
+            column(
+                #spacing: &10.0,
+                #width: &`Fill,
+                &[
+                    text(#size: &24.0, &"Right Panel"),
+                    text(&"Separated by a vertical rule")
+                ]
+            )
+        ]
+    )
+)]

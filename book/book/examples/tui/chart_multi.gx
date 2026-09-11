@@ -1,0 +1,29 @@
+use tui::{line, style};
+use tui::chart::{self, *};
+use tui::text::{self, *};
+
+let temp_data = [(0.0, 20.0), (1.0, 22.0), (2.0, 21.5)];
+let humidity_data = [(0.0, 50.0), (1.0, 55.0), (2.0, 52.0)];
+
+let temp_ds = dataset(
+    #style: &style(#fg: `Red),
+    #name: &line("Temperature"),
+    &temp_data
+);
+
+let humidity_ds = dataset(
+    #style: &style(#fg: `Blue),
+    #name: &line("Humidity"),
+    &humidity_data
+);
+
+let x_axis =
+    axis(#labels: [line("0"), line("1"), line("2")], {min: 0.0, max: 2.0});
+let y_axis =
+    axis(#labels: [line("0"), line("50"), line("100")], {min: 0.0, max: 100.0});
+
+chart(
+    #x_axis: &x_axis,
+    #y_axis: &y_axis,
+    &[temp_ds, humidity_ds]
+)

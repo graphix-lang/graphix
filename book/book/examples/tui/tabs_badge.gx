@@ -1,0 +1,20 @@
+use tui::{line, span, style};
+use tui::tabs::{self, *};
+use tui::text::{self, *};
+
+let unread_count = 5;
+
+let messages_tab = line([
+    span("Messages"),
+    span(#style: style(#fg: `Red, #add_modifier: [`Bold]), " ([unread_count])")
+]);
+
+let home_content = text(&"Home");
+let messages_content = text(&"Messages");
+let settings_content = text(&"Settings");
+
+tabs(&[
+    (line("Home"), home_content),
+    (messages_tab, messages_content),
+    (line("Settings"), settings_content)
+])

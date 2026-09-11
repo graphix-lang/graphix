@@ -1,0 +1,23 @@
+use tui::{line, span, style};
+use tui::text::{self, *};
+
+let make_status = |level, msg| select level {
+    `Error => line([
+        span(#style: style(#fg: `Red, #add_modifier: [`Bold]), "ERROR: "),
+        span(msg)
+    ]),
+    `Warning => line([
+        span(#style: style(#fg: `Yellow, #add_modifier: [`Bold]), "WARNING: "),
+        span(msg)
+    ]),
+    `Info => line([
+        span(#style: style(#fg: `Cyan), "INFO: "),
+        span(msg)
+    ])
+};
+
+text(&[
+    make_status(`Info, "Application started"),
+    make_status(`Warning, "Cache miss"),
+    make_status(`Error, "Connection failed")
+])

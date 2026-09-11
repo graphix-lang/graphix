@@ -1,0 +1,35 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::vertical_slider::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+mod icon;
+
+let value = 50.0;
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Vertical Slider",
+    &row(
+        #spacing: &30.0,
+        #padding: &`All(30.0),
+        #height: &`Fill,
+        #valign: &`Center,
+        &[
+            column(
+                #spacing: &10.0,
+                &[
+                    text(#size: &24.0, &"Vertical Slider"),
+                    text(&"Value: [value]")
+                ]
+            ),
+            vertical_slider(
+                #min: &0.0,
+                #max: &100.0,
+                #on_change: |v| value <- v,
+                #height: &`Fixed(200.0),
+                &value
+            )
+        ]
+    )
+)]

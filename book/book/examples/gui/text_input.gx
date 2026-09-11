@@ -1,0 +1,21 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+let name = "";
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Text Input Demo"),
+        text_input(#placeholder: &"Enter your name...", #on_input: |v| name <- v, &name),
+        text(&name)
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"Text Input", &col)]

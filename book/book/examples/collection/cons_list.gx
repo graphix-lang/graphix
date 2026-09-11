@@ -1,0 +1,45 @@
+// A program-defined linear structure with a full Collection
+// implementation: write the three required methods as natural
+// recursions over the constructors and every derived method (map,
+// filter, find, len, ...) comes for free. The tail-recursive fold
+// runs as a native loop; the value-building recursions are an
+// activation per element.
+type L<'a> = [`C('a, L<'a>), `N];
+
+let rec fold_l = |l: L<'a>, acc: 'b, f: fn(acc: 'b, x: 'a) -> 'b| -> 'b
+    select l {
+        `N => acc,
+        `C(x, rest) => fold_l(rest, f(acc, x), f)
+    };
+
+let rec filter_map_l = |l: L<'a>, f: fn(x: 'a) -> Option<'b>| -> L<'b>
+    select l {
+        `N => `N,
+        `C(x, rest) => select f(x) {
+            null as _ => filter_map_l(rest, f),
+            y => `C(y, filter_map_l(rest, f))
+        }
+    };
+
+let rec append_l = |a: L<'a>, b: L<'a>| -> L<'a>
+    select a { `N => b, `C(x, rest) => `C(x, append_l(rest, b)) };
+
+let rec flat_map_l = |l: L<'a>, f: fn(x: 'a) -> L<'b>| -> L<'b>
+    select l {
+        `N => `N,
+        `C(x, rest) => append_l(f(x), flat_map_l(rest, f))
+    };
+
+impl Collection for L<'_> {
+    let fold = |l, init, f| fold_l(l, init, f);
+    let filter_map = |l, f| filter_map_l(l, f);
+    let flat_map = |l, f| flat_map_l(l, f)
+};
+
+use Collection::*;
+let l: L<i64> = `C(1, `C(2, `C(3, `N)));
+let doubled = map(l, |x| x * 2);
+let s = fold(doubled, 0, |a, x| a + x);
+let n = len(filter(l, |x| x > 1));
+println("sum=[s] kept=[n]");
+sys::exit(s ~ 0)

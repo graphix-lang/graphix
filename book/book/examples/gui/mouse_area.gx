@@ -1,0 +1,46 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::mouse_area::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+let status = "Move the mouse over the box";
+let position = "---";
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Mouse Area",
+    &column(
+        #spacing: &15.0,
+        #padding: &`All(30.0),
+        #width: &`Fill,
+        &[
+            text(#size: &24.0, &"Mouse Area Demo"),
+            text(&status),
+            text(&"Position: [position]"),
+            mouse_area(
+                #on_press: |btn| status <- btn ~ select btn {
+                    `Left => "Left pressed",
+                    `Right => "Right pressed",
+                    `Middle => "Middle pressed"
+                },
+                #on_release: |btn| status <- btn ~ select btn {
+                    `Left => "Left released",
+                    `Right => "Right released",
+                    `Middle => "Middle released"
+                },
+                #on_enter: |e| status <- e ~ "Mouse entered",
+                #on_exit: |e| status <- e ~ "Mouse exited",
+                #on_move: |pos| position <- pos ~ "[pos.x], [pos.y]",
+                &container(
+                    #width: &`Fixed(300.0),
+                    #height: &`Fixed(200.0),
+                    #halign: &`Center,
+                    #valign: &`Center,
+                    &text(&"Interact here")
+                )
+            )
+        ]
+    )
+)]

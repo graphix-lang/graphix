@@ -1,0 +1,32 @@
+use gui::{Widget, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::button::{self, *};
+mod icon;
+
+let b0 = button(
+    #on_press: |c| println(c ~ "normal button clicked"),
+    #padding: &`All(10.0),
+    &text(&"Click me!")
+);
+
+let b1 = button(
+    #on_press: |c| println(c ~ "wide button clicked"),
+    #padding: &`All(8.0),
+    #width: &`Fixed(200.0),
+    &text(#halign:&`Center, &"Wide button")
+);
+
+let col = column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Button Demo"),
+        b0,
+        b1
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"Button Widget", &col)]

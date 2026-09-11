@@ -1,0 +1,13 @@
+use tui::line;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
+
+let count = count(sys::time::timer(duration:1.s, true));
+
+let content = paragraph(&"Content here");
+
+block(
+    #border: &`All,
+    #title: &line("Counter: [count]"),
+    &content
+)

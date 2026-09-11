@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ba386dbe.js";
+            window.path_to_searchindex_js = "../searchindex-d821ce94.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -192,9 +192,11 @@ you.</p>
 </code></pre>
 <p>In ordinary Graphix <code>do_step_1</code>, <code>do_step_2</code> and <code>do_step_3</code> would all
 run concurrently, each firing whenever its own inputs fire. Inside a
-<code>seq</code> each statement runs until it produces a value, and only then does
-the next one start. The run is started by the trigger; without one, the
-block runs once at initialization.</p>
+<code>seq</code> only one statement is running at a time. Each statement runs until
+it produces a value; then it stops and the next one starts. A statement
+that has completed does not fire again later in the run, however its
+inputs move. The run is started by the trigger; without one, the block
+runs once at initialization.</p>
 <p>A <code>seq</code> is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
 to a variable, or feed it to another expression.</p>

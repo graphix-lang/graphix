@@ -1,0 +1,20 @@
+use tui::{span, style};
+use tui::gauge::{self, *};
+use tui::text::{self, *};
+
+// memory amounts, in GB
+let used_memory = 6.5;
+let total_memory = 16.0;
+let usage_ratio = used_memory / total_memory;
+
+let color = select usage_ratio {
+    x if x > 0.9 => `Red,
+    x if x > 0.7 => `Yellow,
+    _ => `Green
+};
+
+gauge(
+    #gauge_style: &style(#fg: color),
+    #label: &span("[used_memory] GB / [total_memory] GB"),
+    &usage_ratio
+)

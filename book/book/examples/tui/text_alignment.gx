@@ -1,0 +1,8 @@
+use tui::line;
+use tui::text::{self, *};
+
+text(&[
+    line(#alignment: `Left, "Left aligned"),
+    line(#alignment: `Center, "Centered"),
+    line(#alignment: `Right, "Right aligned")
+])

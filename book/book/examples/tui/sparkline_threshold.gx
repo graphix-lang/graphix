@@ -1,0 +1,28 @@
+use tui::{line, style};
+use tui::sparkline::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+
+let data = {
+    let clock = sys::time::timer(duration:0.3s, true);
+    let v = rand::rand(#clock, #start:0., #end:100.);
+    let d = [];
+    let color = select v {
+        v if v <= 25. => `Green,
+        v if v <= 50. => `Yellow,
+        _ => `Red
+    };
+    let v = sparkline_bar(#style: style(#fg: color), v);
+    d <- array::window(#n:80, clock ~ d, v);
+    d
+};
+
+block(
+    #border: &`All,
+    #title: &line("Network Traffic Rate"),
+    &sparkline(
+        #style: &style(#fg: `Green),
+        #max: &100,
+        &data
+    )
+)

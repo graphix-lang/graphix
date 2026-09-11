@@ -1,0 +1,24 @@
+use tui::{line, span, style};
+use tui::gauge::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+
+let power = min(1., cast<f64>(count(sys::time::timer(0.5, true)))$ * 0.01);
+
+let color = select power {
+    x if x < 0.10 => `Red,
+    x if x < 0.25 => `Yellow,
+    x => `Green
+};
+
+let percentage = cast<i64>(power * 100.0)?;
+
+block(
+    #border: &`All,
+    #title: &line("Power Level"),
+    &gauge(
+        #gauge_style: &style(#fg: color),
+        #label: &span("[percentage]%"),
+        &power
+    )
+)

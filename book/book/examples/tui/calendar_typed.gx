@@ -1,0 +1,20 @@
+use tui::style;
+use tui::calendar::{self, *};
+
+type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
+type CalendarEntry = {date: Date, event_type: EventType};
+
+let entries = [
+    {date: date(2024, 5, 5), event_type: `Meeting},
+    {date: date(2024, 5, 10), event_type: `Deadline},
+    {date: date(2024, 5, 15), event_type: `Holiday},
+    {date: date(2024, 5, 25), event_type: `Birthday}
+];
+
+let event1 = calendar_event(style(#fg: `Blue), date(2024, 5, 5));
+let event2 = calendar_event(style(#fg: `Red), date(2024, 5, 10));
+let event3 = calendar_event(style(#fg: `Green), date(2024, 5, 15));
+let event4 = calendar_event(style(#fg: `Magenta), date(2024, 5, 25));
+let events = [event1, event2, event3, event4];
+
+calendar(#events: &events, &date(2024, 5, 1))

@@ -1,0 +1,14 @@
+use tui::line;
+use tui::list::{self, *};
+use tui::text::{self, *};
+
+let selected_item = 0;
+let items = [line("Item 1"), line("Item 2"), line("Item 3")];
+let arrow_pressed = never();
+
+// When user presses down arrow assume the event is handled as
+// shown above and arrow_pressed is set using connect
+selected_item <- arrow_pressed ~ ((selected_item + 1) % array::len(items));
+
+// UI automatically reflects the change
+list(#selected: &selected_item, &items)

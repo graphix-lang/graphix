@@ -1,0 +1,42 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::keyboard_area::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+let last_key = "None";
+let mod_name = "None";
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Keyboard Area",
+    &keyboard_area(
+        #on_key_press: |e| {
+            last_key <- e ~ e.key;
+            mod_name <- e ~ select e.modifiers {
+                { ctrl: true, shift: _, alt: _, logo: _ } => "Ctrl",
+                { ctrl: _, shift: true, alt: _, logo: _ } => "Shift",
+                { ctrl: _, shift: _, alt: true, logo: _ } => "Alt",
+                { ctrl: _, shift: _, alt: _, logo: true } => "Logo",
+                _ => "None"
+            }
+        },
+        &container(
+            #width: &`Fill,
+            #height: &`Fill,
+            #halign: &`Center,
+            #valign: &`Center,
+            &column(
+                #spacing: &15.0,
+                #halign: &`Center,
+                &[
+                    text(#size: &24.0, &"Keyboard Area Demo"),
+                    text(&"Press any key..."),
+                    text(#size: &32.0, &last_key),
+                    text(&"Modifier: [mod_name]")
+                ]
+            )
+        )
+    )
+)]

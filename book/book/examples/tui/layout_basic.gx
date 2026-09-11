@@ -1,0 +1,18 @@
+use tui::line;
+use tui::layout::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+
+let content1 = text(&"Sidebar content");
+let content2 = text(&"Main content");
+
+let sidebar = block(#border: &`All, #title: &line("Sidebar"), &content1);
+let main = block(#border: &`All, #title: &line("Main"), &content2);
+
+layout(
+    #direction: &`Horizontal,
+    &[
+        child(#constraint: `Percentage(30), sidebar),
+        child(#constraint: `Percentage(70), main)
+    ]
+)

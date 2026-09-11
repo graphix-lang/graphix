@@ -1,0 +1,31 @@
+use tui::line;
+use tui::scrollbar::{self, *};
+use tui::list::{self, *};
+use tui::text::{self, *};
+
+let items = [
+    line("Item 1"),
+    line("Item 2"),
+    line("Item 3"),
+    line("Item 4"),
+    line("Item 5")
+];
+let selected = 0;
+let scroll_pos = 0;
+let visible = 10;
+
+// Auto-scroll to keep selection visible
+scroll_pos <- select selected {
+    s if s < scroll_pos => s,
+    s if s >= (scroll_pos + visible) => s - visible + 1,
+    _ => never()
+};
+
+scrollbar(
+    #position: &scroll_pos,
+    &list(
+        #scroll: &scroll_pos,
+        #selected: &selected,
+        &items
+    )
+)

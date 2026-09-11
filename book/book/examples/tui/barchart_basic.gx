@@ -1,0 +1,10 @@
+use tui::{line, style};
+use tui::barchart::{bar, bar_chart, bar_group};
+
+let bar1 = bar(
+    #style: &style(#fg: `Cyan),
+    #label: &line("Sales"),
+    &42
+);
+
+bar_chart(&[bar_group(#label: line("Q1"), [bar1])])

@@ -1,0 +1,26 @@
+use tui::line;
+use tui::table::{self, *};
+
+let header = row([
+    cell(line("Name")),
+    cell(line("Age")),
+    cell(line("City"))
+]);
+
+let row1 = row([
+    cell(line("Alice")),
+    cell(line("28")),
+    cell(line("New York"))
+]);
+
+let row2 = row([
+    cell(line("Bob")),
+    cell(line("32")),
+    cell(line("San Francisco"))
+]);
+
+table(
+    #header: &header,
+    #selected: &0,
+    &[&row1, &row2]
+)

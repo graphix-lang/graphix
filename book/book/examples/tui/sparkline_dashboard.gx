@@ -1,0 +1,27 @@
+use tui::{line, style};
+use tui::sparkline::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::layout::{self, *};
+
+let cpu_data = [50., 60., 55., 70., 65.];
+let mem_data = [30., 35., 40., 38., 42.];
+let net_data = [10., 20., 15., 25., 30.];
+
+layout(
+    #direction: &`Vertical,
+    &[
+        child(#constraint: `Percentage(33), block(
+            #title: &line("CPU"),
+            &sparkline(#style: &style(#fg: `Red), #max: &100, &cpu_data)
+        )),
+        child(#constraint: `Percentage(33), block(
+            #title: &line("Memory"),
+            &sparkline(#style: &style(#fg: `Yellow), #max: &100, &mem_data)
+        )),
+        child(#constraint: `Percentage(33), block(
+            #title: &line("Network"),
+            &sparkline(#style: &style(#fg: `Cyan), &net_data)
+        ))
+    ]
+)

@@ -1,0 +1,15 @@
+use tui::{line, style};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::layout::{self, *};
+
+let counter = count(sys::time::timer(duration:1.s, true));
+
+let content = text(&"Counter: [counter]");
+
+block(
+  #border: &`All,
+  #title: &line("My First TUI"),
+  #style: &style(#fg: `Green),
+  &content
+)

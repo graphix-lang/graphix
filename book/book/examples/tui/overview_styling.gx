@@ -1,0 +1,9 @@
+use tui::style;
+
+let is_selected = true;
+
+style(
+  #fg: select is_selected { true => `Yellow, false => `White },
+  #bg: `DarkGray,
+  #add_modifier: [`Bold]
+)

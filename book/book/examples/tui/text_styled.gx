@@ -1,0 +1,25 @@
+use tui::{line, span};
+use tui::text::{self, *};
+
+let colors = [
+   `Red,
+   `Green,
+   `Yellow,
+   `Blue,
+   `Magenta,
+   `Cyan,
+   `Gray,
+   `DarkGray,
+   `LightRed,
+   `LightGreen,
+   `LightYellow,
+   `LightBlue,
+   `LightMagenta,
+   `LightCyan
+];
+let clock = sys::time::timer(1, true);
+let style = tui::style(#fg: rand::pick(clock ~ colors));
+let hello = span(#style, "Hello");
+let style = tui::style(#fg: rand::pick(clock ~ colors));
+let world = span(#style, " World!");
+text(&[line([hello, world])])

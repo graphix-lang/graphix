@@ -1,0 +1,48 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
+use gui::row::{self, *};
+use gui::slider::{self, *};
+mod icon;
+
+let rate = 0.;
+let clock = sys::time::timer(1. - rate, true);
+let x = cast<f64>(count(clock))$;
+
+let series = |start: f64, end: f64| -> Array<(f64, f64)> {
+    let d = [];
+    let y = rand::rand(#start, #end, #clock);
+    d <- array::window(#n:20, clock ~ d, (x, y));
+    d
+};
+
+let adjust_speed = row(
+    #spacing:&15.0,
+    &[
+        text(#size: &14.0, &"Adjust Speed"),
+        slider(#min:&0., #max:&0.9, #step:&0.1, #on_change:|v| rate <- v, &rate)
+     ]
+);
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Chart Demo"),
+        adjust_speed,
+        chart::chart(
+            #title: &"Sample Data",
+            #x_label: &"x",
+            #y_label: &"y",
+            &[
+                chart::line(#label: "Series A", &series(0., 50.)),
+                chart::scatter(#label: "Series B", &series(0., 5.))
+            ]
+        )
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"Chart", #size: &{ width: 900.0, height: 700.0 }, &col)]

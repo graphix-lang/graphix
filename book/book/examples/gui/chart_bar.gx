@@ -1,0 +1,40 @@
+use gui::{color, window};
+use gui::text::{self, *};
+use gui::chart::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+let data = [
+    ("Jan", 42.),
+    ("Feb", 67.),
+    ("Mar", 35.),
+    ("Apr", 89.),
+    ("May", 54.),
+    ("Jun", 73.),
+    ("Jul", 28.),
+    ("Aug", 61.)
+];
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(20.0),
+    #width: &`Fill,
+    #height: &`Fill,
+    &[
+        text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Bar Chart"),
+        chart::chart(
+            #title: &"Monthly Sales",
+            #x_label: &"Month",
+            #y_label: &"Units Sold",
+            &[
+                chart::bar(
+                    #label: "Product A",
+                    #color: color(#r: 0.2, #g: 0.5, #b: 0.8)$,
+                    &data
+                )
+            ]
+        )
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"Bar Chart", #size: &{width: 800.0, height: 600.0}, &col)]

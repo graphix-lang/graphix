@@ -1,0 +1,52 @@
+use tui::{line, style};
+use tui::tabs::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+
+let selected_tab = 0;
+
+let handle_event = |e: Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select k.code {
+            k@`Left if selected_tab > 0 => {
+                selected_tab <- (k ~ selected_tab) - 1;
+                `Stop
+            },
+            k@`Right if selected_tab < 2 => {
+                selected_tab <- (k ~ selected_tab) + 1;
+                `Stop
+            },
+            k@`Tab => {
+                selected_tab <- ((k ~ selected_tab) + 1) % 3;
+                `Stop
+            },
+            _ => `Continue
+        },
+        _ => `Continue
+    },
+    _ => `Continue
+};
+
+let overview = text(&"Overview");
+let items = text(&"Items");
+let settings = text(&"Settings");
+
+input_handler(
+    #handle: &handle_event,
+    &block(
+        #border: &`All,
+        #title: &line("Application (←/→ to navigate)"),
+        &tabs(
+            #highlight_style: &style(#fg: `Yellow, #add_modifier: [`Bold]),
+            #style: &style(#fg: `Gray),
+            #selected: &selected_tab,
+            &[
+                (line("Overview"), overview),
+                (line("Items"), items),
+                (line("Settings"), settings)
+             ]
+        )
+    )
+)
+

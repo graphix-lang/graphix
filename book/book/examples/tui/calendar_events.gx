@@ -1,0 +1,25 @@
+use tui::{line, style};
+use tui::calendar::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+
+let today = date(2024, 5, 15);
+
+let events = [
+    calendar_event(style(#fg: `Red), date(2024, 5, 5)),
+    calendar_event(style(#fg: `Green), date(2024, 5, 15)),
+    calendar_event(style(#fg: `Yellow), date(2024, 5, 20)),
+    calendar_event(style(#fg: `Cyan), date(2024, 5, 28))
+];
+
+block(
+    #border: &`All,
+    #title: &line("May 2024"),
+    &calendar(
+        #show_month: &style(#fg: `Yellow, #add_modifier: [`Bold]),
+        #show_weekday: &style(#fg: `Cyan),
+        #show_surrounding: &style(#fg: `DarkGray),
+        #events: &events,
+        &today
+    )
+)

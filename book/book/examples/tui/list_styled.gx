@@ -1,0 +1,17 @@
+use tui::{line, style};
+use tui::list::{self, *};
+use tui::text::{self, *};
+
+let make_item = |text, priority| select priority {
+    `High => line(#style: style(#fg: `Red, #add_modifier: [`Bold]), text),
+    `Medium => line(#style: style(#fg: `Yellow), text),
+    `Low => line(#style: style(#fg: `White), text)
+};
+
+let items = [
+    make_item("Critical bug", `High),
+    make_item("Feature request", `Medium),
+    make_item("Documentation", `Low)
+];
+
+list(#selected: &0, &items)

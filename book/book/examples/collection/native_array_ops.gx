@@ -1,0 +1,37 @@
+// The collection operations written as plain Graphix loops over an
+// array — the spellings a Collection implementation for your own
+// array-backed type would use. Each is an index tail recursion: one
+// activation reused per iteration, and the whole loop compiles to a
+// native kernel.
+use Collection::*;
+
+// fold: the primitive. ~6x the intrinsic per element (the loop's own
+// bounds check, `$` and select — array::len is a fast call).
+let rec fold_go = |a: Array<'a>, f: fn(acc: 'b, x: 'a) -> 'b, i: i64, acc: 'b| -> 'b
+    select i < array::len(a) {
+        true => fold_go(a, f, i + 1, f(acc, a[i]$)),
+        false => acc
+    };
+
+// find: stops at the match — the early exit a fold cannot express
+// (the intrinsic scans all slots by rule, so on an average hit this
+// BEATS it).
+let rec find_go = |a: Array<'a>, f: fn(x: 'a) -> bool, i: i64| -> ['a, null]
+    select i < array::len(a) {
+        false => null,
+        true => select f(a[i]$) {
+            true => a[i]$,
+            false => find_go(a, f, i + 1)
+        }
+    };
+
+// map: by construction over the length — at parity with the intrinsic.
+let map_go = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b>
+    array::init(array::len(a), |i| f(a[i]$));
+
+let xs = [1, 2, 3, 4, 5];
+let s = fold_go(xs, |acc, x| acc + x, 0, 0);
+let m = select find_go(xs, |x| x > 3, 0) { null as _ => -1, x => x };
+let d = map_go(xs, |x| x * 10);
+println("sum=[s] found=[m] mapped=[d]");
+sys::exit(s ~ 0)

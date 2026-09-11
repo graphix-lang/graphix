@@ -1,0 +1,71 @@
+use tui::{line, style};
+use tui::table::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+
+type User = {name: string, age: i64, city: string};
+
+let users: Array<User> = [
+    {name: "Alice", age: 28, city: "New York"},
+    {name: "Bob", age: 32, city: "San Francisco"},
+    {name: "Charlie", age: 25, city: "Chicago"}
+];
+
+let header = row(
+    #style: style(#fg: `Yellow, #add_modifier: [`Bold]),
+    [cell(line("Name")), cell(line("Age")), cell(line("City"))]
+);
+
+let row1 = row([
+    cell(line("Alice")),
+    cell(line("28")),
+    cell(line("New York"))
+]);
+let row2 = row([
+    cell(line("Bob")),
+    cell(line("32")),
+    cell(line("San Francisco"))
+]);
+let row3 = row([
+    cell(line("Charlie")),
+    cell(line("25")),
+    cell(line("Chicago"))
+]);
+let rows = [&row1, &row2, &row3];
+
+let selected = 0;
+
+let handle_event = |e: Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select k.code {
+            k@`Up if selected > 0 => {
+                selected <- (k ~ selected) - 1;
+                `Stop
+            },
+            k@`Down if selected < 2 => {
+                selected <- (k ~ selected) + 1;
+                `Stop
+            },
+            _ => `Continue
+        },
+        _ => `Continue
+    },
+    _ => `Continue
+};
+
+input_handler(
+    #handle: &handle_event,
+    &block(
+        #border: &`All,
+        #title: &line("User Directory"),
+        &table(
+            #header: &header,
+            #row_highlight_style: &style(#bg: `Yellow, #fg: `Black),
+            #selected: &selected,
+            #column_spacing: &2,
+            #widths: &[`Percentage(30), `Percentage(20), `Percentage(50)],
+            &rows
+        )
+    )
+)

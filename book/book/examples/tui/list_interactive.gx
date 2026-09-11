@@ -1,0 +1,57 @@
+use tui::{line, style};
+use tui::list::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+
+let items = [
+    line("Apple"), line("Banana"), line("Cherry"),
+    line("Date"), line("Elderberry"), line("Fig"), line("Grape")
+];
+
+let last = array::len(items) - 1;
+let selected = 0;
+let scroll_pos = 0;
+let visible = 5;
+
+// Auto-scroll to keep selection visible
+scroll_pos <- select selected {
+    s if s < scroll_pos => s,
+    s if s > (scroll_pos + visible - 1) => s - visible + 1,
+    _ => never()
+};
+
+let handle_event = |e: Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select k.code {
+            k@`Up if selected > 0 => {
+                selected <- (k ~ selected) - 1;
+                `Stop
+            },
+            k@`Down if selected < last => {
+                selected <- (k ~ selected) + 1;
+                `Stop
+            },
+            k@`Home => { selected <- k ~ 0; `Stop },
+            k@`End => { selected <- k ~ last; `Stop },
+            _ => `Continue
+        },
+        _ => `Continue
+    },
+    _ => `Continue
+};
+
+input_handler(
+    #handle: &handle_event,
+    &block(
+        #border: &`All,
+        #title: &line("Fruit Selection"),
+        &list(
+            #highlight_style: &style(#fg: `Black, #bg: `Yellow),
+            #highlight_symbol: &"▶ ",
+            #selected: &selected,
+            #scroll: &scroll_pos,
+            &items
+        )
+    )
+)

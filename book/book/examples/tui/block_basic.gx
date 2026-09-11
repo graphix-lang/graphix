@@ -1,0 +1,11 @@
+use tui::line;
+use tui::block::{self, *};
+use tui::paragraph::{self, *};
+
+let content = paragraph(&"Hello, World!");
+
+block(
+    #border: &`All,
+    #title: &line("My Block"),
+    &content
+)

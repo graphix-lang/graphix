@@ -1,0 +1,10 @@
+use tui::style;
+use tui::line_gauge::{self, *};
+
+// 75%
+let progress = 0.75;
+
+line_gauge(
+    #filled_style: &style(#fg: `Green),
+    &progress
+)

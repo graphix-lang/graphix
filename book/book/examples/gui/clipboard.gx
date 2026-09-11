@@ -1,0 +1,33 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::button::{self, *};
+use gui::column::{self, *};
+use gui::clipboard;
+mod icon;
+
+let content = "Hello, clipboard!";
+let pasted = "";
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Clipboard Demo"),
+        text_input(#placeholder: &"Text to copy...", #on_input: |v| content <- v, &content),
+        button(
+            #on_press: |c| clipboard::write_text(c ~ content)$,
+            #padding: &`All(10.0),
+            &text(&"Copy to clipboard")
+        ),
+        button(
+            #on_press: |c| pasted <- c ~ clipboard::read_text(c)$,
+            #padding: &`All(10.0),
+            &text(&"Paste from clipboard")
+        ),
+        text(&"Pasted: [pasted]")
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"Clipboard", &col)]

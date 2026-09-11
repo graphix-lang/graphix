@@ -1,0 +1,26 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::text_input::{self, *};
+use gui::qr_code::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+let url = "https://graphix-lang.github.io/graphix";
+
+let col = column(
+    #spacing: &20.0,
+    #padding: &`All(30.0),
+    #halign: &`Center,
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"QR Code Demo"),
+        text_input(
+            #placeholder: &"Enter text...",
+            #on_input: |v| url <- v,
+            &url
+        ),
+        qr_code(#cell_size: &4.0, &url)
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"QR Code", &col)]

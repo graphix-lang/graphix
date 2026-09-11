@@ -1,0 +1,38 @@
+use tui::line;
+use tui::paragraph::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+
+let long_text = "I have got a lovely bunch of coconuts. Very long text continues here. More text. Even more text. This is a very long paragraph that will need scrolling to see all of it.";
+let scroll_y = 0;
+
+let handle_event = |e: Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select k.code {
+            k@`Up if scroll_y > 0 => {
+                scroll_y <- (k ~ scroll_y) - 1;
+                `Stop
+            },
+            k@`Down if scroll_y < 100 => {
+                scroll_y <- (k ~ scroll_y) + 1;
+                `Stop
+            },
+            _ => `Continue
+        },
+        _ => `Continue
+    },
+    _ => `Continue
+};
+
+input_handler(
+    #handle: &handle_event,
+    &block(
+        #border: &`All,
+        #title: &line("Scrollable Text"),
+        &paragraph(
+            #scroll: &{x: 0, y: scroll_y},
+            &long_text
+        )
+    )
+)

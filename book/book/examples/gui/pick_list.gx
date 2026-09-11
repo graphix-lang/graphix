@@ -1,0 +1,25 @@
+use gui::window;
+use gui::text::{self, *};
+use gui::pick_list::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+let language: [string, null] = null;
+
+let col = column(
+    #spacing: &15.0,
+    #padding: &`All(30.0),
+    #width: &`Fill,
+    &[
+        text(#size: &24.0, &"Pick List Demo"),
+        text(&"Selected: [language]"),
+        pick_list(
+            #selected: &language,
+            #on_select: |v| language <- v,
+            #placeholder: &"Choose a language...",
+            &["English", "Spanish", "French", "Japanese"]
+        )
+    ]
+);
+
+[&window(#icon: &icon::icon, #title: &"Pick List", &col)]

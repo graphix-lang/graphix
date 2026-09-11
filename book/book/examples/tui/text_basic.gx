@@ -1,0 +1,3 @@
+use tui::text::{self, *};
+
+text(&"Hello, World!")

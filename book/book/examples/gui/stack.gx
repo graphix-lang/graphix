@@ -1,0 +1,40 @@
+use gui::{color, Widget, window};
+use gui::text::{self, *};
+use gui::stack::{self, *};
+use gui::container::{self, *};
+use gui::column::{self, *};
+mod icon;
+
+[&window(
+    #icon: &icon::icon,
+    #title: &"Stack Widget",
+    &column(
+        #spacing: &15.0,
+        #padding: &`All(30.0),
+        #width: &`Fill,
+        #height: &`Fill,
+        &[
+            text(#size: &24.0, &"Stack Demo"),
+            stack(
+                #width: &`Fill,
+                #height: &`Fill,
+                &[
+                    container(
+                        #width: &`Fill,
+                        #height: &`Fill,
+                        #halign: &`Center,
+                        #valign: &`Center,
+                        &text(#size: &64.0, #color: &color(#r: 0.3, #g: 0.3, #b: 0.3)$, &"Background")
+                    ),
+                    container(
+                        #width: &`Fill,
+                        #height: &`Fill,
+                        #halign: &`Center,
+                        #valign: &`Center,
+                        &text(#size: &32.0, &"Foreground")
+                    )
+                ]
+            )
+        ]
+    )
+)]

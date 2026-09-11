@@ -1,0 +1,51 @@
+use tui::line;
+use tui::scrollbar::{self, *};
+use tui::paragraph::{self, *};
+use tui::block::{self, *};
+use tui::text::{self, *};
+use tui::input_handler::{self, *};
+
+let long_text = "Very long text content...";
+let position = 0;
+let max_position = 100;
+
+let handle_event = |e: Event| -> [`Stop, `Continue] select e {
+    `Key(k) => select k.kind {
+        `Press => select k.code {
+            k@`Up if position > 0 => {
+                position <- (k ~ position) - 1;
+                `Stop
+            },
+            k@`Down if position < max_position => {
+                position <- (k ~ position) + 1;
+                `Stop
+            },
+            k@`PageUp if position > 10 => {
+                position <- (k ~ position) - 10;
+                `Stop
+            },
+            k@`PageDown if position < (max_position - 10) => {
+                position <- (k ~ position) + 10;
+                `Stop
+            },
+            k@`Home => { position <- k ~ 0; `Stop },
+            k@`End => { position <- k ~ max_position; `Stop },
+            _ => `Continue
+        },
+        _ => `Continue
+    },
+    _ => `Continue
+};
+
+input_handler(
+    #handle: &handle_event,
+    &block(
+        #border: &`All,
+        #title: &line("Scrollable Content"),
+        &scrollbar(
+            #position: &position,
+            #content_length: &max_position,
+            &paragraph(#scroll: &{x: 0, y: position}, &long_text)
+        )
+    )
+)

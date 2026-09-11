@@ -1,0 +1,11 @@
+use tui::canvas::{self, *};
+
+let x = cast<f64>(count(sys::time::timer(0.1, true)))$ * 0.1 % 10.;
+
+let moving_circle = `Circle({color: `Red, x, y: 5.0, radius: 1.0});
+
+canvas(
+    #x_bounds: &{min: 0.0, max: 10.0},
+    #y_bounds: &{min: 0.0, max: 10.0},
+    &[&moving_circle]
+)

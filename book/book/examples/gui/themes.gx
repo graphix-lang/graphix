@@ -1,0 +1,29 @@
+use gui::{Theme, window};
+use gui::text::{self, *};
+use gui::column::{self, *};
+use gui::container::{self, *};
+mod icon;
+
+[&window(
+  #icon: &icon::icon,
+  #title: &"Theme Demo",
+  #theme: &`TokyoNight,
+  &container(
+    #width: &`Fill,
+    #height: &`Fill,
+    #halign: &`Center,
+    #valign: &`Center,
+    #padding: &`All(40.0),
+    &column(
+      #spacing: &20.0,
+      #halign: &`Center,
+      #width: &`Fill,
+      &[
+        text(#size: &28.0, #halign: &`Center, #width: &`Fill, &"Theme Demo"),
+        text(
+          #size: &16.0, #halign: &`Center, #width: &`Fill,
+          &"Using TokyoNight theme")
+      ]
+    )
+  )
+)]

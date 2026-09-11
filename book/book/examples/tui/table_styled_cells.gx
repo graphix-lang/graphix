@@ -1,0 +1,41 @@
+use tui::{line, style};
+use tui::table::{self, *};
+use tui::text::{self, *};
+
+let make_cpu_cell = |cpu| {
+    let s = select cpu {
+        c if c > 80 => style(#fg: `Red),
+        c if c > 50 => style(#fg: `Yellow),
+        _ => style(#fg: `Green)
+    };
+    cell(#style: s, line("[cpu]%"))
+};
+
+let row1 = row([
+    cell(line("process-1")),
+    // Red
+    make_cpu_cell(85)
+]);
+
+let row2 = row([
+    cell(line("process-2")),
+    // Yellow
+    make_cpu_cell(60)
+]);
+
+let row3 = row([
+    cell(line("process-3")),
+    // Green
+    make_cpu_cell(30)
+]);
+
+let header = row([
+    cell(#style: style(#add_modifier: [`Bold]), line("Process")),
+    cell(#style: style(#add_modifier: [`Bold]), line("CPU"))
+]);
+
+table(
+    #header: &header,
+    #widths: &[`Percentage(60), `Percentage(40)],
+    &[&row1, &row2, &row3]
+)
