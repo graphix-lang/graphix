@@ -978,17 +978,18 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    if !graphix_fuzz::callable::has_header(code) {
-                        for mode in [Mode::Interp, Mode::Jit] {
-                            let s =
-                                graphix_fuzz::run_sessions(code, mode, timeout()).await;
-                            for (name, o) in [
-                                ("nocache", &s.nocache),
-                                ("cold", &s.cold),
-                                ("warm", &s.warm),
-                            ] {
-                                println!("{mode:?}/{name}: {}", render(o));
-                            }
+                    for (mode, &route) in [Mode::Interp, Mode::Jit]
+                        .into_iter()
+                        .flat_map(|m| routes.iter().map(move |r| (m, r)))
+                    {
+                        let s = graphix_fuzz::run_sessions(code, mode, route, timeout())
+                            .await;
+                        for (name, o) in [
+                            ("nocache", &s.nocache),
+                            ("cold", &s.cold),
+                            ("warm", &s.warm),
+                        ] {
+                            println!("{mode:?}/{route:?}/{name}: {}", render(o));
                         }
                     }
                 }

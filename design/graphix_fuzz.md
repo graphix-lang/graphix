@@ -165,9 +165,12 @@ reruns the three and records only if the same-kind rerun agrees with
 itself. Every session restores one registration image built once per
 process. The injected inputs live in their own `inputs` module so a
 program compiled as one block still publishes them by name
-(`input_scope`). Callable programs keep the route matrix only.
-`GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every Nth
-batched subject; the individual path always runs them.
+(`input_scope`), with a callable's driver declarations beside them and
+its handler resolved from the block the program compiled in
+(`program_scope`); a callable program runs the sessions on both routes,
+the dispatch route compared at final-values strength like its engine
+pair. `GRAPHIX_FUZZ_SESSIONS=0` disables the runs, `N` samples every
+Nth batched subject; the individual path always runs them.
 
 **`selfcheck` is the oracle-soundness gate**: interp-vs-interp and
 jit-vs-jit trace equality over generated + corpus programs, 100%

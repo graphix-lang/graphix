@@ -236,21 +236,24 @@ impl Subject {
         let (body, files) =
             files::split(&body).map_err(|e| format!("file section: {e}"))?;
         // a submodule sees nothing of its parent implicitly; `use
-        // super::*` brings in the aux `mod`s, and the injected inputs
-        // live in their own module so a program compiled as one block
-        // (the program route) still publishes them by name
-        let inputs =
-            if sched.inputs().is_empty() { "" } else { "use super::inputs::*; " };
+        // super::*` brings in the aux `mod`s, and the injected inputs and
+        // callable declarations live in their own module so a program
+        // compiled as one block (the program route) still publishes them
+        // by name
+        let decls = format!(
+            "{}{}",
+            sched.decls(),
+            spec.as_ref().map(|c| c.decls()).unwrap_or_default()
+        );
+        let inputs = if decls.is_empty() { "" } else { "use super::inputs::*; " };
         let wrapped = ArcStr::from(format!("use super::*; {inputs}let result = {body}"));
         let mut table = AHashMap::from_iter([(
             Path::from(format!("/{modname}.gx")),
             VfsEntry::from(wrapped),
         )]);
-        if !sched.inputs().is_empty() {
-            table.insert(
-                Path::from("/inputs.gx"),
-                VfsEntry::from(ArcStr::from(sched.decls())),
-            );
+        if !decls.is_empty() {
+            let text = ArcStr::from(format!("use super::*;\n{decls}"));
+            table.insert(Path::from("/inputs.gx"), VfsEntry::from(text));
         }
         for (name, text) in &files {
             table.insert(
@@ -268,16 +271,18 @@ impl Subject {
         })
     }
 
-    /// The text handed to the compiler. The injected inputs are the
-    /// `inputs` module ([`input_scope`] finds it wherever the text is
-    /// compiled); callable declarations sit at the top level, where
-    /// `compile_ref_by_name` reaches them from root, after the aux
-    /// `mod`s they reference into.
+    /// The text handed to the compiler. The injected inputs and the
+    /// callable declarations are the `inputs` module ([`input_scope`]
+    /// finds it wherever the text is compiled), declared after the aux
+    /// `mod`s the callable driver references into.
     pub fn compile_text(&self) -> String {
         let Subject { sched, spec, mods, modname, .. } = self;
-        let cdecls = spec.as_ref().map(|c| c.decls()).unwrap_or_default();
-        let inputs = if sched.inputs().is_empty() { "" } else { "mod inputs;\n" };
-        format!("{inputs}{mods}{cdecls}{{ mod {modname}; {modname}::result }}")
+        let inputs = if sched.inputs().is_empty() && spec.is_none() {
+            ""
+        } else {
+            "mod inputs;\n"
+        };
+        format!("{mods}{inputs}{{ mod {modname}; {modname}::result }}")
     }
 }
 
@@ -587,7 +592,7 @@ async fn drive(
             Route::InLanguage => {
                 let mut arefs: AHashMap<String, graphix_rt::Ref<NoExt>> = AHashMap::new();
                 for (name, _, _) in c.args() {
-                    let scope = graphix_compiler::Scope::root();
+                    let scope = input_scope(&compiled.env, &name);
                     let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
                     let r = step_or_timeout!(
                         ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
@@ -612,7 +617,7 @@ async fn drive(
                 }
             }
             Route::Dispatch => {
-                let scope = graphix_compiler::Scope::root();
+                let scope = program_scope(&compiled.env);
                 let path = graphix_compiler::expr::ModPath::from(c.handler.split("::"));
                 let r = step_or_timeout!(
                     ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
@@ -822,10 +827,10 @@ impl Sessions {
         }
     }
 
-    /// Whether the three agree pairwise at `tier`.
-    pub fn agree(&self, tier: OracleTier) -> bool {
-        self.nocache.agrees_with_at(&self.cold, tier)
-            && self.cold.agrees_with_at(&self.warm, tier)
+    /// Whether the three agree pairwise at `strength`.
+    pub fn agree(&self, strength: OracleTier) -> bool {
+        self.nocache.agrees_with_at(&self.cold, strength)
+            && self.cold.agrees_with_at(&self.warm, strength)
     }
 }
 
@@ -888,6 +893,7 @@ enum SessionImage {
 async fn run_session(
     code: &str,
     mode: Mode,
+    route: Route,
     image: SessionImage,
     timeout: Duration,
 ) -> (Outcome, Result<Bytes, String>) {
@@ -938,8 +944,7 @@ async fn run_session(
         }
     };
     let tier = subj.tier;
-    let mut outcome =
-        drive(&ctx, &mut rx, &subj, Route::InLanguage, timeout, Entry::Program).await;
+    let mut outcome = drive(&ctx, &mut rx, &subj, route, timeout, Entry::Program).await;
     if tier == OracleTier::Exact
         && let Outcome::Trace(t) = &mut outcome
     {
@@ -981,21 +986,46 @@ static REGISTRATION_IMAGE: std::sync::OnceLock<Option<Bytes>> =
 /// compile has nothing to restore, so its warm outcome is its cold one;
 /// a cold run that compiled but wrote no image makes the warm outcome
 /// the write's failure, which the cold/warm pair reports.
-pub async fn run_sessions(code: &str, mode: Mode, timeout: Duration) -> Sessions {
+pub async fn run_sessions(
+    code: &str,
+    mode: Mode,
+    route: Route,
+    timeout: Duration,
+) -> Sessions {
     if REGISTRATION_IMAGE.get().is_none() {
         let image = registration_image().await;
         let _ = REGISTRATION_IMAGE.set(image);
     }
-    let (nocache, _) = run_session(code, mode, SessionImage::None, timeout).await;
-    let (cold, image) = run_session(code, mode, SessionImage::Write, timeout).await;
+    let (nocache, _) = run_session(code, mode, route, SessionImage::None, timeout).await;
+    let (cold, image) =
+        run_session(code, mode, route, SessionImage::Write, timeout).await;
     let warm = match (&cold, image) {
         (Outcome::CompileErr(_), _) => cold.clone(),
         (_, Ok(image)) => {
-            run_session(code, mode, SessionImage::Read(image), timeout).await.0
+            run_session(code, mode, route, SessionImage::Read(image), timeout).await.0
         }
         (_, Err(e)) => Outcome::RuntimeErr(e),
     };
     Sessions { nocache, cold, warm }
+}
+
+/// The strength two sessions of one engine compare at: the program's
+/// tier in language; settled values on the dispatch route, whose cycle
+/// offsets are not contractual.
+fn session_strength(tier: OracleTier, route: Route) -> OracleTier {
+    match route {
+        Route::InLanguage => tier,
+        Route::Dispatch => OracleTier::FinalValues,
+    }
+}
+
+/// The routes a subject's sessions run on.
+fn session_routes(code: &str) -> &'static [Route] {
+    if callable::has_header(code) {
+        &[Route::InLanguage, Route::Dispatch]
+    } else {
+        &[Route::InLanguage]
+    }
 }
 
 /// The session pair that diverges under `mode`, if one does and the
@@ -1004,23 +1034,25 @@ pub async fn run_sessions(code: &str, mode: Mode, timeout: Duration) -> Sessions
 async fn session_divergence(
     code: &str,
     mode: Mode,
+    route: Route,
     first: &Sessions,
     tier: OracleTier,
     timeout: Duration,
 ) -> Option<Divergence> {
+    let strength = session_strength(tier, route);
     let pairs = [
-        (Pair::Cold(mode), Session::NoCache, Session::Cold),
-        (Pair::Warm(mode), Session::Cold, Session::Warm),
+        (Pair::Cold(mode, route), Session::NoCache, Session::Cold),
+        (Pair::Warm(mode, route), Session::Cold, Session::Warm),
     ];
     for (pair, a, b) in pairs {
-        if first.get(a).agrees_with_at(first.get(b), tier) {
+        if first.get(a).agrees_with_at(first.get(b), strength) {
             continue;
         }
-        let again = run_sessions(code, mode, timeout).await;
-        if !again.get(a).agrees_with_at(first.get(a), tier) {
+        let again = run_sessions(code, mode, route, timeout).await;
+        if !again.get(a).agrees_with_at(first.get(a), strength) {
             return None;
         }
-        if !again.get(a).agrees_with_at(again.get(b), tier) {
+        if !again.get(a).agrees_with_at(again.get(b), strength) {
             return Some(Divergence {
                 code: code.to_string(),
                 interp: again.get(a).clone(),
@@ -1033,22 +1065,26 @@ async fn session_divergence(
     None
 }
 
-/// Run both modes' sessions and report the first diverging pair.
+/// Run both modes' sessions on every route and report the first
+/// diverging pair.
 async fn check_sessions(
     code: &str,
     tier: OracleTier,
     timeout: Duration,
 ) -> Option<Divergence> {
-    if !sessions_enabled() || tier == OracleTier::Excluded || callable::has_header(code) {
+    if !sessions_enabled() || tier == OracleTier::Excluded {
         return None;
     }
-    let (si, sj) = tokio::join!(
-        run_sessions(code, Mode::Interp, timeout),
-        run_sessions(code, Mode::Jit, timeout),
-    );
-    for (mode, s) in [(Mode::Interp, &si), (Mode::Jit, &sj)] {
-        if let Some(d) = session_divergence(code, mode, s, tier, timeout).await {
-            return Some(d);
+    for &route in session_routes(code) {
+        let (si, sj) = tokio::join!(
+            run_sessions(code, Mode::Interp, route, timeout),
+            run_sessions(code, Mode::Jit, route, timeout),
+        );
+        for (mode, s) in [(Mode::Interp, &si), (Mode::Jit, &sj)] {
+            if let Some(d) = session_divergence(code, mode, route, s, tier, timeout).await
+            {
+                return Some(d);
+            }
         }
     }
     None
@@ -1063,6 +1099,22 @@ fn input_scope(env: &Env, name: &str) -> Scope {
     for (path, names) in &env.binds {
         if Path::basename(&path.0) == Some("inputs") && names.get(name).is_some() {
             scope.lexical = path.clone();
+            break;
+        }
+    }
+    scope
+}
+
+/// The scope the subject's top level compiled in: the `inputs` module's
+/// parent, where the aux modules (a callable's handler among them) are.
+fn program_scope(env: &Env) -> Scope {
+    let mut scope = Scope::root();
+    for (path, _) in &env.binds {
+        if Path::basename(&path.0) == Some("inputs") {
+            let dir = Path::dirname(&path.0).unwrap_or("/");
+            scope.lexical = graphix_compiler::expr::ModPath::from(
+                dir.split('/').filter(|s| !s.is_empty()),
+            );
             break;
         }
     }
@@ -1109,10 +1161,29 @@ pub enum Pair {
     Twin,
     /// No cache vs cold (`interp` holds the no-cache outcome, `jit` the
     /// cold one): writing the program image changed the program.
-    Cold(Mode),
+    Cold(Mode, Route),
     /// Cold vs warm (`interp` holds the cold outcome, `jit` the warm
     /// one): restoring the program image changed the program.
-    Warm(Mode),
+    Warm(Mode, Route),
+}
+
+/// The label of one session run, for a finding's outcome fields.
+fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
+    use {Mode::*, Route::*, Session::*};
+    match (mode, route, session) {
+        (Interp, InLanguage, NoCache) => "interp/nocache",
+        (Interp, InLanguage, Cold) => "interp/cold",
+        (Interp, InLanguage, Warm) => "interp/warm",
+        (Jit, InLanguage, NoCache) => "jit/nocache",
+        (Jit, InLanguage, Cold) => "jit/cold",
+        (Jit, InLanguage, Warm) => "jit/warm",
+        (Interp, Dispatch, NoCache) => "interp/dispatch/nocache",
+        (Interp, Dispatch, Cold) => "interp/dispatch/cold",
+        (Interp, Dispatch, Warm) => "interp/dispatch/warm",
+        (Jit, Dispatch, NoCache) => "jit/dispatch/nocache",
+        (Jit, Dispatch, Cold) => "jit/dispatch/cold",
+        (Jit, Dispatch, Warm) => "jit/dispatch/warm",
+    }
 }
 
 impl Divergence {
@@ -1146,16 +1217,16 @@ impl Divergence {
                     "fusion/JIT bug (final values, interp != jit)"
                 }
                 (Pair::Engine, _) => "fusion/JIT bug (interp != jit)",
-                (Pair::Cold(Mode::Interp), _) => {
+                (Pair::Cold(Mode::Interp, _), _) => {
                     "image bug: writing the program image changed the program (interp)"
                 }
-                (Pair::Cold(Mode::Jit), _) => {
+                (Pair::Cold(Mode::Jit, _), _) => {
                     "image bug: writing the program image changed the program (jit)"
                 }
-                (Pair::Warm(Mode::Interp), _) => {
+                (Pair::Warm(Mode::Interp, _), _) => {
                     "image bug: the restored program differs from the cold one (interp)"
                 }
-                (Pair::Warm(Mode::Jit), _) => {
+                (Pair::Warm(Mode::Jit, _), _) => {
                     "image bug: the restored program differs from the cold one (jit)"
                 }
             },
@@ -1169,10 +1240,13 @@ impl Divergence {
             Pair::EngineDispatch => ("interp/dispatch", "jit/dispatch"),
             Pair::Route => ("in-language", "dispatch"),
             Pair::Twin => ("trace", "trace"),
-            Pair::Cold(Mode::Interp) => ("interp/nocache", "interp/cold"),
-            Pair::Cold(Mode::Jit) => ("jit/nocache", "jit/cold"),
-            Pair::Warm(Mode::Interp) => ("interp/cold", "interp/warm"),
-            Pair::Warm(Mode::Jit) => ("jit/cold", "jit/warm"),
+            Pair::Cold(m, r) => (
+                session_label(m, r, Session::NoCache),
+                session_label(m, r, Session::Cold),
+            ),
+            Pair::Warm(m, r) => {
+                (session_label(m, r, Session::Cold), session_label(m, r, Session::Warm))
+            }
         }
     }
 }
@@ -1472,6 +1546,9 @@ async fn check_callable(
         };
         return (Some(d), false);
     }
+    if let Some(d) = check_sessions(code, tier, timeout).await {
+        return (Some(d), false);
+    }
     (None, false)
 }
 
@@ -1635,14 +1712,20 @@ pub async fn run_batch(
             && (!comparable || interp.agrees_with_at(&jit, tier));
         // The session runs take fresh runtimes; a disagreement goes back
         // through the individual path, which confirms it with a rerun.
-        let sessions_agree =
-            !agreed || !comparable || subj.spec.is_some() || !sessions_sampled(i) || {
+        let mut sessions_agree = true;
+        if agreed && comparable && sessions_sampled(i) {
+            for &route in session_routes(code) {
                 let (si, sj) = tokio::join!(
-                    run_sessions(code, Mode::Interp, timeout),
-                    run_sessions(code, Mode::Jit, timeout),
+                    run_sessions(code, Mode::Interp, route, timeout),
+                    run_sessions(code, Mode::Jit, route, timeout),
                 );
-                si.agree(tier) && sj.agree(tier)
-            };
+                let strength = session_strength(tier, route);
+                if !(si.agree(strength) && sj.agree(strength)) {
+                    sessions_agree = false;
+                    break;
+                }
+            }
+        }
         let agreed = agreed && sessions_agree;
         let verdict = if agreed {
             // `ran` is the parent's ring-admission bar and mirrors the
