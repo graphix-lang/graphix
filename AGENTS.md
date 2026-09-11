@@ -330,10 +330,17 @@ holds kernels and fails the program write, so it runs cold. Every
 imaged node kind owns an `Update::image_encode` / `image_decode` pair
 in its own file; a kind without one fails the write (`image::NOT_IMAGED`,
 logged) and the shell runs cold, never a partial image. Every shared
-object (expressions, function types, origins, paths, handlers,
+object (expressions, types, function types, origins, paths, handlers,
 resolution cells, type variables, map nodes) is written once and
 referenced by its file offset; a reference to an object not built yet
 decodes it from there, so any part of the image decodes in any order.
+Types and function types are keyed by their canonical bytes with every
+shared leaf by identity (`Type::content_key`), so equal types decode to
+one value; an object whose definition is in progress writes a nested
+occurrence of itself as a definition (`image::ContentState`). An
+expression is keyed by the first expression seen with its id and
+contents (`image::expr_key`), so a node's spec shares its def body's
+definition.
 The writer's `ImageBuf` reports every byte to the session, and
 everything a session encodes must be borrowed from the context and
 root nodes for the whole session. A program image writes instance

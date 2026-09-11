@@ -10,9 +10,8 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack as PackTrait, PackError};
+use netidx_core::pack::{Pack as PackTrait, PackError, encode_varint};
 use netidx_core::utils::Either;
-use netidx_derive::Pack;
 use netidx_value::Typ;
 use nohash::IntMap;
 use parking_lot::Mutex;
@@ -600,8 +599,7 @@ impl Ord for TypeRef {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialOrd, Ord, Hash, Pack)]
-#[pack(unwrapped)]
+#[derive(Debug, Clone, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     Bottom,
     Any,
@@ -635,6 +633,316 @@ pub enum Type {
     /// The hole in a type constructor, written `'_` (`impl Collection
     /// for Array<'_>`). Legal nowhere else.
     Hole,
+}
+
+mod tag {
+    pub const BOTTOM: u8 = 0;
+    pub const ANY: u8 = 1;
+    pub const PRIMITIVE: u8 = 2;
+    pub const REF: u8 = 3;
+    pub const FN: u8 = 4;
+    pub const SET: u8 = 5;
+    pub const TVAR: u8 = 6;
+    pub const ERROR: u8 = 7;
+    pub const ARRAY: u8 = 8;
+    pub const LIST: u8 = 9;
+    pub const BYREF: u8 = 10;
+    pub const TUPLE: u8 = 11;
+    pub const STRUCT: u8 = 12;
+    pub const VARIANT: u8 = 13;
+    pub const MAP: u8 = 14;
+    pub const ABSTRACT: u8 = 15;
+    pub const APP: u8 = 16;
+    pub const HOLE: u8 = 17;
+}
+
+fn key_text(s: &str, out: &mut Vec<u8>) {
+    encode_varint(s.len() as u64, out);
+    out.put_slice(s.as_bytes());
+}
+
+fn key_list(ts: &Arc<[Type]>, out: &mut Vec<u8>) {
+    crate::image::shared_key(<[Type]>::as_ptr(ts) as usize, out, |out| {
+        encode_varint(ts.len() as u64, out);
+        for t in ts.iter() {
+            t.content_key(out);
+        }
+    })
+}
+
+fn key_one(t: &Arc<Type>, out: &mut Vec<u8>) {
+    crate::image::shared_key(Arc::as_ptr(t) as usize, out, |out| t.content_key(out))
+}
+
+impl TypeRef {
+    fn content_key(&self, out: &mut Vec<u8>) {
+        let TypeRef { scope, name, params, pos, ori, resolved } = self;
+        key_text(scope, out);
+        key_text(name, out);
+        key_list(params, out);
+        match pos {
+            None => out.put_u8(0),
+            Some(p) => {
+                out.put_u8(1);
+                out.put_i32_le(p.line);
+                out.put_i32_le(p.column);
+            }
+        }
+        out.put_u64_le(ori.as_ref().map_or(0, |o| Arc::as_ptr(o) as usize as u64));
+        out.put_u64_le(Arc::as_ptr(resolved) as *const () as usize as u64);
+    }
+}
+
+impl Type {
+    /// The canonical bytes the image keys this type by: the structure,
+    /// with every shared leaf (a variable, a resolution cell, an
+    /// origin, a lambda ids cell) by identity.
+    pub(crate) fn content_key(&self, out: &mut Vec<u8>) {
+        match self {
+            Type::Bottom => out.put_u8(tag::BOTTOM),
+            Type::Any => out.put_u8(tag::ANY),
+            Type::Hole => out.put_u8(tag::HOLE),
+            Type::Primitive(p) => {
+                out.put_u8(tag::PRIMITIVE);
+                out.put_u64_le(p.bits() as u64);
+            }
+            Type::Ref(r) => {
+                out.put_u8(tag::REF);
+                r.content_key(out);
+            }
+            Type::Fn(f) => {
+                out.put_u8(tag::FN);
+                crate::image::shared_key(Arc::as_ptr(f) as usize, out, |out| {
+                    f.content_key(out)
+                });
+            }
+            Type::TVar(tv) => {
+                out.put_u8(tag::TVAR);
+                out.put_u64_le(tv.wrapper_addr() as u64);
+            }
+            Type::Set(ts) => {
+                out.put_u8(tag::SET);
+                key_list(ts, out);
+            }
+            Type::Tuple(ts) => {
+                out.put_u8(tag::TUPLE);
+                key_list(ts, out);
+            }
+            Type::Error(t) => {
+                out.put_u8(tag::ERROR);
+                key_one(t, out);
+            }
+            Type::Array(t) => {
+                out.put_u8(tag::ARRAY);
+                key_one(t, out);
+            }
+            Type::List(t) => {
+                out.put_u8(tag::LIST);
+                key_one(t, out);
+            }
+            Type::ByRef(t) => {
+                out.put_u8(tag::BYREF);
+                key_one(t, out);
+            }
+            Type::Struct(fs) => {
+                out.put_u8(tag::STRUCT);
+                crate::image::shared_key(
+                    <[(ArcStr, Type)]>::as_ptr(fs) as usize,
+                    out,
+                    |out| {
+                        encode_varint(fs.len() as u64, out);
+                        for (n, t) in fs.iter() {
+                            key_text(n, out);
+                            t.content_key(out);
+                        }
+                    },
+                );
+            }
+            Type::Variant(name, ts) => {
+                out.put_u8(tag::VARIANT);
+                key_text(name, out);
+                key_list(ts, out);
+            }
+            Type::Map { key, value } => {
+                out.put_u8(tag::MAP);
+                key_one(key, out);
+                key_one(value, out);
+            }
+            Type::Abstract { id, params } => {
+                out.put_u8(tag::ABSTRACT);
+                out.put_u64_le(id.0);
+                key_list(params, out);
+            }
+            Type::App(c, a) => {
+                out.put_u8(tag::APP);
+                key_one(c, out);
+                key_one(a, out);
+            }
+        }
+    }
+
+    fn shape_len(&self) -> usize {
+        1 + match self {
+            Type::Bottom | Type::Any | Type::Hole => 0,
+            Type::Primitive(p) => p.encoded_len(),
+            Type::Ref(r) => r.encoded_len(),
+            Type::Fn(f) => f.encoded_len(),
+            Type::TVar(tv) => tv.encoded_len(),
+            Type::Set(ts) | Type::Tuple(ts) => ts.encoded_len(),
+            Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => {
+                t.encoded_len()
+            }
+            Type::Struct(fs) => fs.encoded_len(),
+            Type::Variant(name, ts) => name.encoded_len() + ts.encoded_len(),
+            Type::Map { key, value } => key.encoded_len() + value.encoded_len(),
+            Type::Abstract { id, params } => id.encoded_len() + params.encoded_len(),
+            Type::App(c, a) => c.encoded_len() + a.encoded_len(),
+        }
+    }
+
+    fn shape_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        match self {
+            Type::Bottom => Ok(buf.put_u8(tag::BOTTOM)),
+            Type::Any => Ok(buf.put_u8(tag::ANY)),
+            Type::Hole => Ok(buf.put_u8(tag::HOLE)),
+            Type::Primitive(p) => {
+                buf.put_u8(tag::PRIMITIVE);
+                p.encode(buf)
+            }
+            Type::Ref(r) => {
+                buf.put_u8(tag::REF);
+                r.encode(buf)
+            }
+            Type::Fn(f) => {
+                buf.put_u8(tag::FN);
+                f.encode(buf)
+            }
+            Type::TVar(tv) => {
+                buf.put_u8(tag::TVAR);
+                tv.encode(buf)
+            }
+            Type::Set(ts) => {
+                buf.put_u8(tag::SET);
+                ts.encode(buf)
+            }
+            Type::Tuple(ts) => {
+                buf.put_u8(tag::TUPLE);
+                ts.encode(buf)
+            }
+            Type::Error(t) => {
+                buf.put_u8(tag::ERROR);
+                t.encode(buf)
+            }
+            Type::Array(t) => {
+                buf.put_u8(tag::ARRAY);
+                t.encode(buf)
+            }
+            Type::List(t) => {
+                buf.put_u8(tag::LIST);
+                t.encode(buf)
+            }
+            Type::ByRef(t) => {
+                buf.put_u8(tag::BYREF);
+                t.encode(buf)
+            }
+            Type::Struct(fs) => {
+                buf.put_u8(tag::STRUCT);
+                fs.encode(buf)
+            }
+            Type::Variant(name, ts) => {
+                buf.put_u8(tag::VARIANT);
+                name.encode(buf)?;
+                ts.encode(buf)
+            }
+            Type::Map { key, value } => {
+                buf.put_u8(tag::MAP);
+                key.encode(buf)?;
+                value.encode(buf)
+            }
+            Type::Abstract { id, params } => {
+                buf.put_u8(tag::ABSTRACT);
+                id.encode(buf)?;
+                params.encode(buf)
+            }
+            Type::App(c, a) => {
+                buf.put_u8(tag::APP);
+                c.encode(buf)?;
+                a.encode(buf)
+            }
+        }
+    }
+
+    fn shape_decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        Ok(match buf.get_u8() {
+            tag::BOTTOM => Type::Bottom,
+            tag::ANY => Type::Any,
+            tag::HOLE => Type::Hole,
+            tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
+            tag::REF => Type::Ref(PackTrait::decode(buf)?),
+            tag::FN => Type::Fn(PackTrait::decode(buf)?),
+            tag::TVAR => Type::TVar(PackTrait::decode(buf)?),
+            tag::SET => Type::Set(PackTrait::decode(buf)?),
+            tag::TUPLE => Type::Tuple(PackTrait::decode(buf)?),
+            tag::ERROR => Type::Error(PackTrait::decode(buf)?),
+            tag::ARRAY => Type::Array(PackTrait::decode(buf)?),
+            tag::LIST => Type::List(PackTrait::decode(buf)?),
+            tag::BYREF => Type::ByRef(PackTrait::decode(buf)?),
+            tag::STRUCT => Type::Struct(PackTrait::decode(buf)?),
+            tag::VARIANT => {
+                let name = PackTrait::decode(buf)?;
+                Type::Variant(name, PackTrait::decode(buf)?)
+            }
+            tag::MAP => {
+                let key = PackTrait::decode(buf)?;
+                Type::Map { key, value: PackTrait::decode(buf)? }
+            }
+            tag::ABSTRACT => {
+                let id = PackTrait::decode(buf)?;
+                Type::Abstract { id, params: PackTrait::decode(buf)? }
+            }
+            tag::APP => {
+                let c = PackTrait::decode(buf)?;
+                Type::App(c, PackTrait::decode(buf)?)
+            }
+            _ => return Err(PackError::UnknownTag),
+        })
+    }
+}
+
+/// Under an image session a type is an object keyed by its content,
+/// written once and referenced afterwards.
+impl PackTrait for Type {
+    fn encoded_len(&self) -> usize {
+        if crate::image::is_encoding() {
+            crate::image::type_len(self, || self.shape_len())
+        } else {
+            self.shape_len()
+        }
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if crate::image::is_encoding() {
+            crate::image::type_encode(self, buf, |b| self.shape_encode(b))
+        } else {
+            self.shape_encode(buf)
+        }
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if crate::image::is_decoding() {
+            crate::image::object_decode(
+                buf,
+                |d| &mut d.types,
+                |b| Self::shape_decode(b),
+                |b| Self::decode(b),
+            )
+        } else {
+            Self::shape_decode(buf)
+        }
+    }
 }
 
 /// Structural equality with content-Arc pointer shortcuts (the

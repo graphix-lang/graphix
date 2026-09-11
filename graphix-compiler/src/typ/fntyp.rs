@@ -11,7 +11,9 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
+use bytes::BufMut;
 use enumflags2::BitFlags;
+use netidx_core::pack::encode_varint;
 use netidx_derive::Pack;
 use nohash::{IntMap, IntSet};
 use parking_lot::RwLock;
@@ -216,6 +218,10 @@ impl Default for LambdaIds {
 }
 
 impl LambdaIds {
+    pub(crate) fn addr(&self) -> usize {
+        SArc::as_ptr(&self.0) as *const () as usize
+    }
+
     pub fn set_id(&self, id: LambdaId) {
         self.0.write().own = Some(id)
     }
@@ -339,6 +345,56 @@ impl FnType {
     /// Every reachable single-conjunct cell as (tvar, conjunct) pairs,
     /// declared or not (an inferred impl's constraints sit on auto
     /// `'_N` cells).
+    /// The canonical bytes the image keys this type by: the shape with
+    /// every variable by identity, and the lambda ids cell by identity.
+    pub(crate) fn content_key(&self, out: &mut Vec<u8>) {
+        let Self {
+            args,
+            vargs,
+            rtype,
+            throws,
+            explicit_throws,
+            quantifiers: _,
+            lambda_ids,
+        } = self;
+        let text = |s: &str, out: &mut Vec<u8>| {
+            encode_varint(s.len() as u64, out);
+            out.put_slice(s.as_bytes());
+        };
+        encode_varint(args.len() as u64, out);
+        for a in args.iter() {
+            match &a.kind {
+                FnArgKind::Positional { name } => {
+                    out.put_u8(0);
+                    match name {
+                        None => out.put_u8(0),
+                        Some(n) => {
+                            out.put_u8(1);
+                            text(n, out);
+                        }
+                    }
+                }
+                FnArgKind::Labeled { name, has_default } => {
+                    out.put_u8(1);
+                    text(name, out);
+                    out.put_u8(*has_default as u8);
+                }
+            }
+            a.typ.content_key(out);
+        }
+        match vargs {
+            None => out.put_u8(0),
+            Some(t) => {
+                out.put_u8(1);
+                t.content_key(out);
+            }
+        }
+        rtype.content_key(out);
+        throws.content_key(out);
+        out.put_u8(*explicit_throws as u8);
+        out.put_u64_le(lambda_ids.addr() as u64);
+    }
+
     pub(crate) fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
         let known = self.sig_tvars();
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();

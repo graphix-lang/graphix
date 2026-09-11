@@ -104,7 +104,7 @@ impl Pack for Expr {
     fn encoded_len(&self) -> usize {
         if image::is_encoding() {
             image::object_len(
-                image::key(self),
+                image::expr_key(self),
                 |e| &e.exprs,
                 || {
                     self.id.encoded_len()
@@ -120,7 +120,7 @@ impl Pack for Expr {
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         if image::is_encoding() {
             image::object_encode(
-                image::key(self),
+                image::expr_key(self),
                 |e| &mut e.exprs,
                 buf,
                 |buf| {
@@ -289,11 +289,9 @@ impl FnType {
 impl Pack for FnType {
     fn encoded_len(&self) -> usize {
         if image::is_encoding() {
-            image::object_len(
-                image::key(self),
-                |e| &e.fntypes,
-                || self.lambda_ids.own().encoded_len() + self.shape_len(),
-            )
+            image::fntype_len(self, || {
+                self.lambda_ids.own().encoded_len() + self.shape_len()
+            })
         } else {
             self.shape_len()
         }
@@ -301,15 +299,10 @@ impl Pack for FnType {
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         if image::is_encoding() {
-            image::object_encode(
-                image::key(self),
-                |e| &mut e.fntypes,
-                buf,
-                |buf| {
-                    self.lambda_ids.own().encode(buf)?;
-                    self.shape_encode(buf)
-                },
-            )
+            image::fntype_encode(self, buf, |buf| {
+                self.lambda_ids.own().encode(buf)?;
+                self.shape_encode(buf)
+            })
         } else {
             self.shape_encode(buf)
         }

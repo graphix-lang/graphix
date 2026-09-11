@@ -784,6 +784,18 @@ impl PartialEq for Expr {
     }
 }
 
+impl Expr {
+    /// Whether `other` is a clone of this expression: the same id,
+    /// origin and position over equal syntax (shared children compare
+    /// by pointer).
+    pub(crate) fn same_tree(&self, other: &Expr) -> bool {
+        self.id == other.id
+            && self.pos == other.pos
+            && Arc::ptr_eq(&self.ori, &other.ori)
+            && self.kind == other.kind
+    }
+}
+
 impl Eq for Expr {}
 
 impl Serialize for Expr {

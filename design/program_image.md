@@ -291,6 +291,45 @@ is materializing the instances the first frame reaches; image
 10.6 MB, 6.9 MB of it heap. The corpus differential ran clean under
 laziness (172 programs).
 
+## Built: the program image, slice (c): shared types and expression clones
+
+A profile of the warm first cycle (frame-pointer perf build, pinned)
+put the whole cost in decoding per-node metadata: types 29% (41,800
+type references, 14,000 variable lookups and 133,000 path lookups per
+first cycle, every type a fresh structural decode), expressions 32%
+(38,000 expression definitions: every node's spec is a value clone of
+the tree it compiled from, so each clone was its own object), then
+variable reference bookkeeping, lexical environments and the builtin
+typecheck replay.
+
+Two changes. A type (and a function type) is now an object keyed by
+its canonical bytes, `Type::content_key`: the structure, with every
+shared leaf (a type variable, a resolution cell, an origin, a lambda
+ids cell) written by identity, so two types are one object exactly
+when they are interchangeable; equal types decode to one shared
+value, and a top-level hit skips the whole subtree (the key walk
+memoizes per shared subtree, `image::shared_key`, so the writer's
+walk is linear). A type can reach itself through a resolution cell it
+contains; while its definition is in progress the nested occurrence
+is written as a definition too (`image::ContentState`), since a
+reference can only name a finished one. And an expression is keyed by
+the address of the first expression seen with its id and contents
+(`image::expr_key`, `Expr::same_tree`), so every clone of a def body
+shares one definition. The trailer also carries the eager object
+counts so a restore sizes its tables once.
+
+Measured on the admin TUI, pinned, optimized without LTO: restore 19
+to 14 ms, first cycle 42 to 28 ms, warm start 70 to 51 ms; image 10.6
+to 5.8 MB; the cold write costs about 25 ms more for the key walks.
+The first cycle now decodes 7,200 expression definitions (from
+38,000), 40,000 path lookups (from 133,000), 1,100 type-reference
+cells (from 41,800). What remains is spread: object table lookups and
+clones, the runtime's per-reference bookkeeping (6%), path lookups,
+the lexical environments and the builtin replay, none above 10%.
+The corpus differential ran clean (490 programs; the only differences
+are compile-time warnings, which print cold only, and programs that
+run until the timeout).
+
 ## Step 3: cache the compiled program
 
 Built in slices, each landing green: (a) every node kind that a

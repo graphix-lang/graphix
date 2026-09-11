@@ -28,7 +28,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 4;
+pub const REGISTRATION_FORMAT: u8 = 5;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -271,6 +271,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 p.encode(&mut buf)?;
             }
             let heap_at = buf.len();
+            let eager = image::encoding(|e| e.object_counts()).unwrap_or_default();
             loop {
                 let Some((id, body)) = image::encoding(|e| e.deferred.pop()).flatten()
                 else {
@@ -288,6 +289,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 id.encode(&mut buf)?;
                 encode_varint(at, &mut buf);
             }
+            eager.encode(&mut buf)?;
             buf.patch_u64(trailer_at, heap_at as u64);
             buf.patch_u64(trailer_at + 8, table_at as u64);
             info!(
@@ -335,10 +337,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 let id = LambdaInstanceId::decode(&mut table)?;
                 instances.insert(id, decode_varint(&mut table)?);
             }
+            let eager = image::ObjectCounts::decode(&mut table)?;
             if table.has_remaining() {
                 return Err(PackError::InvalidFormat);
             }
-            image::decoding(|d| d.set_instances(instances));
+            image::decoding(|d| {
+                d.set_instances(instances);
+                d.reserve(eager);
+            });
             let p = profile::phase(Phase::ImageEnv);
             self.env = Pack::decode(&mut bytes)?;
             drop(p);
