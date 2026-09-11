@@ -210,9 +210,9 @@ EOF
 # ended half old tree, half new. Two facts close both doors:
 #   - at entry, the build inputs must be CLEAN in git (a fingerprinted
 #     file that git doesn't have is a tree no redeploy can reproduce);
-#     netidx ships too, so its build inputs are checked the same way
-#     even though the fingerprint can't see them (a dirty netidx would
-#     ship silently — worse than a stall);
+#     netidx and immutable-chunkmap ship too, so their build inputs are
+#     checked the same way even though the fingerprint can't see them
+#     (a dirty sibling would ship silently — worse than a stall);
 #   - per box, the local fingerprint is re-read BEFORE the rsync and a
 #     drift from `want` dies loudly at once, naming the real cause,
 #     instead of stalling box after box against a reference that no
@@ -230,11 +230,14 @@ require_clean_inputs() {
     [[ -z $dirty ]] || die "refusing to sync: uncommitted build inputs in graphix \
 (commit/stash, or FLEET_ALLOW_DIRTY=1 for a deliberate dirty soak):
 $dirty"
-    dirty=$(git -C "$repo/../netidx" status --porcelain -- \
-        ':(glob)**/*.rs' ':(glob)**/*.toml' 2>/dev/null || true)
-    [[ -z $dirty ]] || die "refusing to sync: uncommitted build inputs in ../netidx \
+    local sib
+    for sib in netidx immutable-chunkmap; do
+        dirty=$(git -C "$repo/../$sib" status --porcelain -- \
+            ':(glob)**/*.rs' ':(glob)**/*.toml' 2>/dev/null || true)
+        [[ -z $dirty ]] || die "refusing to sync: uncommitted build inputs in ../$sib \
 (commit/stash, or FLEET_ALLOW_DIRTY=1 for a deliberate dirty soak):
 $dirty"
+    done
 }
 
 sync_tree() {
@@ -249,11 +252,14 @@ sync_tree() {
         [[ $now == "$want" ]] || die "local tree CHANGED during the sync \
 ($want -> $now) — the fleet would end half old, half new; commit and redeploy"
         if [[ $method == rsync ]]; then
-            # Both repos: graphix builds against the sibling netidx.
+            # graphix builds against the sibling netidx, which is
+            # patched onto the sibling immutable-chunkmap.
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/" "$name:proj/graphix/"
             rsync -a --delete --exclude target --exclude .git \
                 "$repo/../netidx/" "$name:proj/netidx/"
+            rsync -a --delete --exclude target --exclude .git \
+                "$repo/../immutable-chunkmap/" "$name:proj/immutable-chunkmap/"
         fi
         waited=0
         while :; do
