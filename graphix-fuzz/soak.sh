@@ -119,15 +119,15 @@ launch() {
 wait_for_gate() {
     local dir=$1 log="$dir/soak.log"
     # The launched soak re-runs the full regression gate before it
-    # hunts, and at GRAPHIX_FUZZ_TIMEOUT_SCALE>1 every runaway pin runs
-    # (scale x its base timeout, or scale x the ~3s budget abort) — so
-    # the gate's wall time scales with it. A fixed 120s tripped at
-    # scale 4 (aug27a aieka: the gate passed but wait_for_gate gave up
-    # at ~114s and the ERR trap killed a healthy soak). Scale the wait
-    # with it, with generous headroom.
+    # hunts: a parallel pass, then every non-ran agreement (refusal,
+    # limit and error pins) again sequentially at 4x budget, so the
+    # gate's wall time is a few minutes at scale 1 and grows with the
+    # corpus and with GRAPHIX_FUZZ_TIMEOUT_SCALE. The wait is the
+    # scaled gate with generous headroom: giving up early kills a
+    # healthy soak (aug27a aieka at 114s, sep11a ryouko at 120s).
     local scale=${GRAPHIX_FUZZ_TIMEOUT_SCALE:-1}
     [[ $scale =~ ^[0-9]+$ ]] && ((scale >= 1)) || scale=1
-    local max=$(( 600 * scale ))
+    local max=$(( 3000 * scale ))
     local _i
     for ((_i = 0; _i < max; _i++)); do
         soak_live "$dir" || {
