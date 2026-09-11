@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-682fa164.js";
+            window.path_to_searchindex_js = "searchindex-ba386dbe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -1997,9 +1997,40 @@ side fires when the constant does (init, or the arm’s wake).</p>
 with no bank when <code>v</code> is bottom. <code>~</code> still banks.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="seq-and-seqq"><a class="header" href="#seq-and-seqq">Seq and Seqq</a></h1>
-<p><code>seq trigger { ... }</code> runs steps in order. A trigger arriving during a run
-is dropped. <code>seqq trigger { ... }</code> queues requests instead, with one run
-active at a time. Without a trigger, either form runs once at initialization.</p>
+<h2 id="why-sequences"><a class="header" href="#why-sequences">Why sequences</a></h2>
+<p>Sometimes you just want to run some steps one after another. Graphix
+could always express that, but only verbosely: a state variable, a
+<code>select</code> over it, <code>~</code> guards on every input so a step waits for the one
+before it, and a <code>&lt;-</code> to advance the state. The dataflow was correct and
+unreadable.</p>
+<p>Within a <code>seq</code> you write statements the way you would in an ordinary
+language, and the compiler transforms them into that state machine for
+you.</p>
+<pre><code class="language-graphix">seq trigger {
+    do_step_1(x);
+    do_step_2(y);
+    do_step_3(z)
+}
+</code></pre>
+<p>In ordinary Graphix <code>do_step_1</code>, <code>do_step_2</code> and <code>do_step_3</code> would all
+run concurrently, each firing whenever its own inputs fire. Inside a
+<code>seq</code> each statement runs until it produces a value, and only then does
+the next one start. The run is started by the trigger; without one, the
+block runs once at initialization.</p>
+<p>A <code>seq</code> is still a Graphix expression. Its value is the value of its last
+step, produced once per completed run, so you can bind it, connect it
+to a variable, or feed it to another expression.</p>
+<h2 id="seq-and-seqq-1"><a class="header" href="#seq-and-seqq-1"><code>seq</code> and <code>seqq</code></a></h2>
+<p>The two forms differ in what happens when the trigger fires while a run
+is in progress:</p>
+<ul>
+<li><code>seq trigger { ... }</code> drops the trigger. Use it for things that should
+not pile up, such as a refresh button.</li>
+<li><code>seqq trigger { ... }</code> queues the trigger, with one run active at a
+time. Use it when every request must be served, such as a stream of
+jobs. The queue is unbounded; see <a href="#captured-inputs">Captured inputs</a>
+for what a queued request carries.</li>
+</ul>
 <pre><code class="language-graphix">let request = count(sys::time::timer(duration:20.ms, 3)?);
 let label = "job";
 seqq request {
@@ -2013,14 +2044,37 @@ its output; each new output releases the next queued request, even when the
 output equals the previous one. Effectful calls must produce a completion
 value: <code>println</code>, for example, returns <code>null</code> after printing. <code>never()</code>
 stalls the current run and therefore stops the queue from advancing.</p>
-<p>A trailing semicolon in <code>do { ... }</code> does not add a step or discard the
-last statement’s value. That statement supplies the <code>do</code>’s completion and,
-when it is the sequence’s last step, its output. Ordinary <code>{ ... }</code> blocks
-retain their usual trailing-semicolon behavior.</p>
-<p>A later <code>let x = ...</code> creates a new binding, even inside <code>do</code>. Its
-initializer sees the preceding <code>x</code>; earlier references and closures
-continue to refer to that preceding binding. The new binding can have a
-different type.</p>
+<h2 id="statements"><a class="header" href="#statements">Statements</a></h2>
+<p>A seq body is straight-line: a list of statements, each of which is one
+step. There is no <code>if</code> or looping inside a seq; branch with <code>select</code>
+inside a step, or call a function. The statement kinds are:</p>
+<p><strong>An expression.</strong> <code>f(x);</code> is a step that completes when the expression
+produces a value. The last expression of the block is its output.</p>
+<p><strong><code>let x = e;</code></strong> is a step like any other, and additionally carries the
+value it produced into every later step. A later <code>let x = ...</code> creates a
+new binding, even inside <code>do</code>. Its initializer sees the preceding <code>x</code>;
+earlier references and closures continue to refer to that preceding
+binding. The new binding can have a different type.</p>
+<p><strong><code>x &lt;- e;</code></strong> connects, as it does anywhere. The destination is the
+original variable outside the block, and the step completes when <code>e</code>
+produces.</p>
+<p><strong><code>until cond;</code></strong> waits until the boolean <code>cond</code> is true, reading it live
+rather than as a queued copy. It has no value, so it cannot be the last
+statement of a body whose value is used.</p>
+<p><strong><code>do { s1; s2; ... }</code></strong> groups several statements into one step. Where
+an ordinary block would run its statements concurrently, <code>do</code> still
+runs them in order, but the whole group counts as a single statement of
+the enclosing sequence. Its value is the value of its last statement, so
+a <code>do</code> can end a seq or initialize a <code>let</code>. A trailing semicolon in
+<code>do { ... }</code> does not add a step or discard the last statement’s value;
+ordinary <code>{ ... }</code> blocks retain their usual trailing-semicolon behavior.</p>
+<p><strong><code>try { steps } with(e) { steps }</code></strong> is the sequence’s error handling.
+An error raised in the try body transfers control to the with body; see
+<a href="#errors">Errors</a>.</p>
+<p><code>graphix --expand file.gx</code> checks the file and prints each sequence’s
+lowered program: the step variable, one select arm per step, and the
+cells that carry <code>let</code> values between steps. It is the tool for seeing
+exactly which event a step is waiting on.</p>
 <h2 id="call-inputs"><a class="header" href="#call-inputs">Call inputs</a></h2>
 <p>In both forms, each call waits until all its explicit arguments are
 present, then samples them together with <code>~!</code> and issues once. This gives
@@ -2069,12 +2123,6 @@ read inside that function.</p>
 source reference variable subsequently points somewhere else.</p>
 <h2 id="live-state-and-waits"><a class="header" href="#live-state-and-waits">Live state and waits</a></h2>
 <p><code>until ready</code> observes the live condition, rather than a queued copy of it.
-It has no value, so it cannot be the last statement where the value is used
-(the end of a <code>seq</code>, or of a <code>try</code> or <code>with</code> body bound by a <code>let</code>).</p>
-<p><code>graphix --expand file.gx</code> checks the file and prints each sequence’s
-lowered program: the step variable, one select arm per step, and the
-cells that carry <code>let</code> values between steps. It is the tool for seeing
-exactly which event a step is waiting on.
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 <code>count &lt;- count + 1</code> operations can accumulate rather than overwrite one
