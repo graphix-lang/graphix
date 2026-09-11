@@ -236,12 +236,18 @@ impl Subject {
         let (body, files) =
             files::split(&body).map_err(|e| format!("file section: {e}"))?;
         // a submodule sees nothing of its parent implicitly; `use
-        // super::*` brings in the injected inputs and the aux `mod`s
-        let wrapped = ArcStr::from(format!("use super::*; let result = {body}"));
+        // super::*` brings in the aux `mod`s, and the injected inputs
+        // live in their own module so a program compiled as one block
+        // (the program route) still publishes them by name
+        let inputs = if sched.inputs().is_empty() { "" } else { "use super::inputs::*; " };
+        let wrapped = ArcStr::from(format!("use super::*; {inputs}let result = {body}"));
         let mut table = AHashMap::from_iter([(
             Path::from(format!("/{modname}.gx")),
             VfsEntry::from(wrapped),
         )]);
+        if !sched.inputs().is_empty() {
+            table.insert(Path::from("/inputs.gx"), VfsEntry::from(ArcStr::from(sched.decls())));
+        }
         for (name, text) in &files {
             table.insert(
                 Path::from(format!("/{name}")),
@@ -258,14 +264,16 @@ impl Subject {
         })
     }
 
-    /// The text handed to the compiler. Injected-input and callable
-    /// declarations sit at the top level, where `compile_ref_by_name`
-    /// reaches them from root; the aux `mod`s precede the callable
-    /// declarations, which reference into the handler's module.
+    /// The text handed to the compiler. The injected inputs are the
+    /// `inputs` module ([`input_scope`] finds it wherever the text is
+    /// compiled); callable declarations sit at the top level, where
+    /// `compile_ref_by_name` reaches them from root, after the aux
+    /// `mod`s they reference into.
     pub fn compile_text(&self) -> String {
         let Subject { sched, spec, mods, modname, .. } = self;
         let cdecls = spec.as_ref().map(|c| c.decls()).unwrap_or_default();
-        format!("{}{mods}{cdecls}{{ mod {modname}; {modname}::result }}", sched.decls())
+        let inputs = if sched.inputs().is_empty() { "" } else { "mod inputs;\n" };
+        format!("{inputs}{mods}{cdecls}{{ mod {modname}; {modname}::result }}")
     }
 }
 
@@ -535,10 +543,6 @@ async fn drive(
     };
     // dropping it deletes the program's node
     let compiled = &compiled;
-    let scope_of = |name: &str| match entry {
-        Entry::Compile => graphix_compiler::Scope::root(),
-        Entry::Program => input_scope(&compiled.env, name),
-    };
     let eid = compiled.exprs.last().expect("compile returned no exprs").id;
     let mut segs = Vec::with_capacity(1 + sched.epochs.len());
     segs.push(wait_settled!());
@@ -547,7 +551,7 @@ async fn drive(
     // different cycles depending on scheduler timing.
     let mut refs: AHashMap<&str, graphix_rt::Ref<NoExt>> = AHashMap::new();
     for (name, _, _) in sched.inputs() {
-        let scope = scope_of(&name);
+        let scope = input_scope(&compiled.env, &name);
         let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
         let r = step_or_timeout!(
             ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
@@ -579,7 +583,7 @@ async fn drive(
             Route::InLanguage => {
                 let mut arefs: AHashMap<String, graphix_rt::Ref<NoExt>> = AHashMap::new();
                 for (name, _, _) in c.args() {
-                    let scope = scope_of(&name);
+                    let scope = graphix_compiler::Scope::root();
                     let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
                     let r = step_or_timeout!(
                         ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
@@ -1035,16 +1039,14 @@ async fn check_sessions(code: &str, tier: OracleTier, timeout: Duration) -> Opti
     None
 }
 
-/// The scope an injected input is bound in: the root when the subject
-/// was compiled statement by statement, else the program's own `do`
-/// block, whose name a restored image keeps from the cold run.
+/// The scope of the subject's `inputs` module: under the root when the
+/// text compiled statement by statement, under the program's own `do`
+/// block on the program route (a restored image keeps the block's name
+/// from the cold run).
 fn input_scope(env: &Env, name: &str) -> Scope {
     let mut scope = Scope::root();
     for (path, names) in &env.binds {
-        if Path::levels(&path.0) == 1
-            && Path::basename(&path.0).is_some_and(|b| b.starts_with("do"))
-            && names.get(name).is_some()
-        {
+        if Path::basename(&path.0) == Some("inputs") && names.get(name).is_some() {
             scope.lexical = path.clone();
             break;
         }

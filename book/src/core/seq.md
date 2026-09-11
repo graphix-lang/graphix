@@ -88,8 +88,14 @@ an ordinary block would run its statements concurrently, `do` still
 runs them in order, but the whole group counts as a single statement of
 the enclosing sequence. Its value is the value of its last statement, so
 a `do` can end a seq or initialize a `let`. A trailing semicolon in
-`do { ... }` does not add a step or discard the last statement's value;
-ordinary `{ ... }` blocks retain their usual trailing-semicolon behavior.
+`do { ... }` does not add a step or discard the last statement's value.
+
+`do` is not a way back into concurrent Graphix. For that, use an
+ordinary `{ ... }` block as the value of a step, `let x = { a; b };`:
+its contents are ordinary reactive expressions running concurrently,
+and the step completes when the block produces. A bare `{ ... }` as a
+statement is refused; ordinary blocks retain their usual
+trailing-semicolon behavior.
 
 **`try { steps } with(e) { steps }`** is the sequence's error handling.
 An error raised in the try body transfers control to the with body; see
