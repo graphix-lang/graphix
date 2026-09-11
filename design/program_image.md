@@ -246,8 +246,20 @@ the cold run only.
 
 Pins: `program_image_restores` restores a program of every new kind
 and compares the value sequence of the first cycles, cold against
-warm; a cold-versus-warm differential over a third of the fuzz
-corpus and the bench programs ran clean before landing.
+warm; a cold-versus-warm differential over the whole fuzz corpus and
+the bench programs (490 programs, fusion off) ran clean before
+landing, after finding a decode-time re-resolution failure, a
+builtin's lost argument type and a dropped select fact.
+
+Measured, fusion off. A one-page script in the optimized build,
+pinned: the whole session restores in the 14 ms the registration
+alone took, against 30 ms of cold registration plus 2 to 4 ms of
+compile. The admin TUI (`milestone_image` in
+graphix-package-netidx-admin, unpinned): optimized without LTO, cold
+462 ms, warm 114 to 122 ms; debug, cold 4.9 s, warm 0.73 to 0.76 s;
+image 9.1 MB either way. The image holds every instance the cold run
+created and the restore decodes all of them; the census says the
+first frame reaches about a third, which is what slice (b) is for.
 
 ## Step 3: cache the compiled program
 
