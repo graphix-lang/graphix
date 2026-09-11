@@ -196,7 +196,12 @@ fn reloc_tag(r: Reloc) -> Result<u8, PackError> {
         Reloc::X86CallPLTRel4 => 4,
         Reloc::X86GOTPCRel4 => 5,
         Reloc::Arm64Call => 6,
-        _ => return Err(PackError::InvalidFormat),
+        Reloc::Aarch64AdrPrelPgHi21 => 7,
+        Reloc::Aarch64AddAbsLo12Nc => 8,
+        r => {
+            log::warn!("the kernel record cannot carry relocation {r:?}");
+            return Err(PackError::InvalidFormat);
+        }
     })
 }
 
@@ -209,6 +214,8 @@ fn reloc_of(tag: u8) -> Result<Reloc, PackError> {
         4 => Reloc::X86CallPLTRel4,
         5 => Reloc::X86GOTPCRel4,
         6 => Reloc::Arm64Call,
+        7 => Reloc::Aarch64AdrPrelPgHi21,
+        8 => Reloc::Aarch64AddAbsLo12Nc,
         _ => return Err(PackError::UnknownTag),
     })
 }
