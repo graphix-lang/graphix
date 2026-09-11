@@ -978,13 +978,28 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                    if !graphix_fuzz::callable::has_header(code) {
+                        for mode in [Mode::Interp, Mode::Jit] {
+                            let s = graphix_fuzz::run_sessions(code, mode, timeout()).await;
+                            for (name, o) in [
+                                ("nocache", &s.nocache),
+                                ("cold", &s.cold),
+                                ("warm", &s.warm),
+                            ] {
+                                println!("{mode:?}/{name}: {}", render(o));
+                            }
+                        }
+                    }
                 }
                 "check" => match check(code, timeout()).await {
-                    None => println!("AGREE — interp and jit produce the same result"),
+                    None => println!(
+                        "AGREE — interp and jit, no cache, cold and warm produce the same result"
+                    ),
                     Some(d) => {
+                        let (la, lb) = d.labels();
                         println!("DIVERGENCE — {}", d.bisect());
-                        println!("  interp: {}", render(&d.interp));
-                        println!("  jit:    {}", render(&d.jit));
+                        println!("  {la}: {}", render(&d.interp));
+                        println!("  {lb}: {}", render(&d.jit));
                         drop(cwd_guard);
                         std::process::exit(1);
                     }

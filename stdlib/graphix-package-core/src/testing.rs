@@ -132,7 +132,8 @@ where
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         graphix_compiler::set_stack_budget(1 << 30);
     }
-    init_inner(sub, register, resolvers, flags, false, None, None, None, setup).await
+    init_inner(sub, register, resolvers, flags, false, None, None, None, None, setup)
+        .await
 }
 
 /// A runtime that restores its registration from an image, or sends
@@ -165,7 +166,47 @@ pub async fn init_with_session(
         Some(registration),
         program,
         program_image,
+        None,
         |_| {},
+    )
+    .await
+}
+
+/// [`init_with_session`] with module resolvers, a trace armed before
+/// the program's init cycle (`GXConfig::trace`) and a context setup.
+pub async fn init_session_with_setup<F>(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[PackageRef],
+    resolvers: Vec<ResolverRef>,
+    flags: BitFlags<CFlag>,
+    registration: RegistrationImage,
+    program: Option<Source>,
+    program_image: Option<oneshot::Sender<Result<Bytes>>>,
+    trace: Option<(usize, u64)>,
+    setup: F,
+) -> Result<TestCtx>
+where
+    F: FnOnce(
+        &mut graphix_compiler::ExecCtx<
+            GXRt<NoExt>,
+            <NoExt as graphix_rt::GXExt>::UserEvent,
+        >,
+    ),
+{
+    if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
+        graphix_compiler::set_stack_budget(1 << 30);
+    }
+    init_inner(
+        sub,
+        register,
+        resolvers,
+        flags,
+        false,
+        Some(registration),
+        program,
+        program_image,
+        trace,
+        setup,
     )
     .await
 }
@@ -188,7 +229,7 @@ where
         >,
     ),
 {
-    init_inner(sub, register, resolvers, flags, true, None, None, None, setup).await
+    init_inner(sub, register, resolvers, flags, true, None, None, None, None, setup).await
 }
 
 async fn init_inner<F>(
@@ -200,6 +241,7 @@ async fn init_inner<F>(
     registration: Option<RegistrationImage>,
     program: Option<Source>,
     program_image: Option<oneshot::Sender<Result<Bytes>>>,
+    trace: Option<(usize, u64)>,
     setup: F,
 ) -> Result<TestCtx>
 where
@@ -240,6 +282,9 @@ where
     }
     if let Some(tx) = program_image {
         cfg = cfg.program_image(tx);
+    }
+    if let Some((max_events, max_cycles)) = trace {
+        cfg = cfg.trace((max_events, max_cycles));
     }
     let st = std::time::Instant::now();
     let rt = cfg.build()?.start().await?;

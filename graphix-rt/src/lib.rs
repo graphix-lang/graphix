@@ -955,6 +955,10 @@ pub struct GXConfig<X: GXExt> {
     /// any cycle, when the registration was not restored with one.
     #[builder(setter(strip_option), default)]
     program_image: Option<oneshot::Sender<Result<Bytes>>>,
+    /// Arm a trace (`max_events`, `max_cycles`, as [`GXHandle::trace_start`])
+    /// before the program's init cycle, anchored at the program root.
+    #[builder(setter(strip_option), default)]
+    trace: Option<(usize, u64)>,
     /// The execution context with any builtins already registered
     ctx: ExecCtx<GXRt<X>, X::UserEvent>,
     /// The text of the root module

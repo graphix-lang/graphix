@@ -265,6 +265,9 @@ impl<X: GXExt> GX<X> {
             program: None,
         };
         info!("runtime construction before the root: {:?}", st_new.elapsed());
+        t.trace = cfg.trace.map(|(max_events, max_cycles)| {
+            TraceState::new(max_events, max_cycles)
+        });
         let st = Instant::now();
         match cfg.registration {
             Some(RegistrationImage::Load(bytes)) => t.restore_registration(bytes)?,
@@ -295,6 +298,9 @@ impl<X: GXExt> GX<X> {
                 }
                 Err(e) => t.program = Some(Err(format!("{e:?}"))),
             }
+        }
+        if let (Some(Ok(root)), Some(tr)) = (&t.program, t.trace.as_mut()) {
+            tr.record_compiled(t.ctx.rt.cycle, root.id);
         }
         info!("runtime construction after the root: {:?}", st_after.elapsed());
         Ok(t)

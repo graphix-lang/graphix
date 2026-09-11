@@ -21,17 +21,21 @@ pub mod typemorph;
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
+use bytes::Bytes;
 use graphix_compiler::{
-    CFlag, FusionStats,
+    CFlag, FusionStats, Scope,
+    env::Env,
     expr::{Expr, VfsEntry, VfsResolver},
 };
 use graphix_package::Package;
-use graphix_package_core::testing::{TestCtx, init_with_flags_and_setup};
-use graphix_rt::{GXEvent, NoExt};
+use graphix_package_core::testing::{
+    TestCtx, init_session_with_setup, init_with_flags_and_setup,
+};
+use graphix_rt::{GXEvent, NoExt, RegistrationImage};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
 use std::{future, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Every stdlib package, so generated programs can use the whole
 /// language surface. Mirrors `graphix-tests`'s `TEST_REGISTER` (which is
@@ -397,7 +401,7 @@ pub async fn run_program_with_stats_routed(
     };
     let tier = subj.tier;
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let mut outcome = drive(&ctx, &mut rx, &subj, route, timeout).await;
+    let mut outcome = drive(&ctx, &mut rx, &subj, route, timeout, Entry::Compile).await;
     // Exact tier only; sorted because within-cycle emission order is an
     // evaluation-order artifact
     if tier == OracleTier::Exact
@@ -437,6 +441,7 @@ async fn drive(
     subj: &Subject,
     route: Route,
     timeout: Duration,
+    entry: Entry,
 ) -> Outcome {
     let Subject { sched, spec, tier, .. } = subj;
     let (spec, tier) = (spec.as_ref(), *tier);
@@ -503,16 +508,37 @@ async fn drive(
         }};
     }
     // Tracing is armed before the compile (ToGX messages are FIFO), so
-    // a value emitted during the compile cycle is in the trace.
-    if let Err(e) = ctx.rt.trace_start(sched.max_events, sched.max_cycles) {
-        return Outcome::RuntimeErr(format!("trace_start: {e}"));
-    }
-    let text = subj.compile_text();
-    let compiled = step_or_timeout!(
-        ctx.rt.compile(ArcStr::from(text)),
-        Ok(c) => c,
-        Err(e) => return Outcome::CompileErr(format!("{e:?}"))
-    );
+    // a value emitted during the compile cycle is in the trace; a
+    // program-route runtime armed it at construction.
+    let compiled = match entry {
+        Entry::Compile => {
+            if let Err(e) = ctx.rt.trace_start(sched.max_events, sched.max_cycles) {
+                return Outcome::RuntimeErr(format!("trace_start: {e}"));
+            }
+            let text = subj.compile_text();
+            step_or_timeout!(
+                ctx.rt.compile(ArcStr::from(text)),
+                Ok(c) => c,
+                Err(e) => return Outcome::CompileErr(format!("{e:?}"))
+            )
+        }
+        Entry::Program => step_or_timeout!(
+            async {
+                ctx.rt
+                    .program()
+                    .await
+                    .and_then(|p| p.ok_or_else(|| anyhow::anyhow!("no program")))
+            },
+            Ok(c) => c,
+            Err(e) => return Outcome::CompileErr(format!("{e:?}"))
+        ),
+    };
+    // dropping it deletes the program's node
+    let compiled = &compiled;
+    let scope_of = |name: &str| match entry {
+        Entry::Compile => graphix_compiler::Scope::root(),
+        Entry::Program => input_scope(&compiled.env, name),
+    };
     let eid = compiled.exprs.last().expect("compile returned no exprs").id;
     let mut segs = Vec::with_capacity(1 + sched.epochs.len());
     segs.push(wait_settled!());
@@ -521,7 +547,7 @@ async fn drive(
     // different cycles depending on scheduler timing.
     let mut refs: AHashMap<&str, graphix_rt::Ref<NoExt>> = AHashMap::new();
     for (name, _, _) in sched.inputs() {
-        let scope = graphix_compiler::Scope::root();
+        let scope = scope_of(&name);
         let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
         let r = step_or_timeout!(
             ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
@@ -553,7 +579,7 @@ async fn drive(
             Route::InLanguage => {
                 let mut arefs: AHashMap<String, graphix_rt::Ref<NoExt>> = AHashMap::new();
                 for (name, _, _) in c.args() {
-                    let scope = graphix_compiler::Scope::root();
+                    let scope = scope_of(&name);
                     let path = graphix_compiler::expr::ModPath::from([name.as_str()]);
                     let r = step_or_timeout!(
                         ctx.rt.compile_ref_by_name(&compiled.env, &scope, &path),
@@ -750,6 +776,290 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     OracleTier::Exact
 }
 
+/// How a subject's session reaches the runtime, on the program route
+/// (`GXConfig::program`, the shell's script path): compiled with no
+/// image machinery, compiled cold and written to a program image, or
+/// restored warm from the image the cold run wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Session {
+    NoCache,
+    Cold,
+    Warm,
+}
+
+impl Session {
+    pub fn name(self) -> &'static str {
+        match self {
+            Session::NoCache => "nocache",
+            Session::Cold => "cold",
+            Session::Warm => "warm",
+        }
+    }
+}
+
+/// One mode's three session runs of a subject.
+#[derive(Debug)]
+pub struct Sessions {
+    pub nocache: Outcome,
+    pub cold: Outcome,
+    pub warm: Outcome,
+}
+
+impl Sessions {
+    fn get(&self, s: Session) -> &Outcome {
+        match s {
+            Session::NoCache => &self.nocache,
+            Session::Cold => &self.cold,
+            Session::Warm => &self.warm,
+        }
+    }
+
+    /// Whether the three agree pairwise at `tier`.
+    pub fn agree(&self, tier: OracleTier) -> bool {
+        self.nocache.agrees_with_at(&self.cold, tier)
+            && self.cold.agrees_with_at(&self.warm, tier)
+    }
+}
+
+/// `GRAPHIX_FUZZ_SESSIONS`: `0` disables the session runs; `N` runs
+/// them on every Nth batched subject (default 1, every subject). The
+/// individual path runs them whenever they are enabled.
+fn sessions_every() -> usize {
+    std::env::var("GRAPHIX_FUZZ_SESSIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
+fn sessions_enabled() -> bool {
+    sessions_every() > 0
+}
+
+fn sessions_sampled(i: usize) -> bool {
+    let n = sessions_every();
+    n > 0 && i % n == 0
+}
+
+/// The registration image every session run restores, built once per
+/// process by a throwaway runtime; `None` when the image cannot be
+/// built, in which case every session compiles its registration.
+async fn registration_image() -> Option<Bytes> {
+    static IMAGE: tokio::sync::OnceCell<Option<Bytes>> = tokio::sync::OnceCell::const_new();
+    IMAGE
+        .get_or_init(|| async {
+            let (tx, _rx) = mpsc::channel(8);
+            let (reg_tx, reg_rx) = oneshot::channel();
+            let ctx = init_session_with_setup(
+                tx,
+                REGISTER,
+                vec![],
+                BitFlags::empty(),
+                RegistrationImage::Save(reg_tx),
+                None,
+                None,
+                None,
+                |_| {},
+            )
+            .await
+            .ok()?;
+            let image = reg_rx.await.ok().and_then(|r| r.ok());
+            let _ = tokio::time::timeout(Duration::from_secs(2), ctx.shutdown()).await;
+            image
+        })
+        .await
+        .clone()
+}
+
+/// What a session run does about the program image.
+enum SessionImage {
+    None,
+    Write,
+    Read(Bytes),
+}
+
+/// Run `code` under `mode` on the program route with the given image
+/// handling; the second value is the program image a `Write` produced.
+async fn run_session(
+    code: &str,
+    mode: Mode,
+    image: SessionImage,
+    timeout: Duration,
+) -> (Outcome, Result<Bytes, String>) {
+    let no_image = Err("no program image was written".to_string());
+    let subj = match Subject::parse(code, "test") {
+        Ok(s) => s,
+        Err(e) => return (Outcome::CompileErr(e), no_image),
+    };
+    let (tx, mut rx) = mpsc::channel(64);
+    let resolver = VfsResolver::new(subj.table.clone());
+    let sink = graphix_package_core::PrintSink::default();
+    let seeded = sink.clone();
+    let registration = || match registration_image_now() {
+        Some(bytes) => RegistrationImage::Load(bytes),
+        None => RegistrationImage::Save(oneshot::channel().0),
+    };
+    let program =
+        Some(graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text())));
+    let (registration, program, program_image, image_rx) = match image {
+        SessionImage::Read(bytes) => (RegistrationImage::Load(bytes), None, None, None),
+        SessionImage::Write => {
+            let (itx, irx) = oneshot::channel();
+            (registration(), program, Some(itx), Some(irx))
+        }
+        SessionImage::None => (registration(), program, None, None),
+    };
+    let ctx = match init_session_with_setup(
+        tx,
+        REGISTER,
+        vec![resolver],
+        mode.flags(),
+        registration,
+        program,
+        program_image,
+        Some((subj.sched.max_events, subj.sched.max_cycles)),
+        move |ctx| {
+            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded;
+        },
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return (Outcome::RuntimeErr(format!("runtime init failed: {e:?}")), no_image);
+        }
+    };
+    let tier = subj.tier;
+    let mut outcome =
+        drive(&ctx, &mut rx, &subj, Route::InLanguage, timeout, Entry::Program).await;
+    if tier == OracleTier::Exact
+        && let Outcome::Trace(t) = &mut outcome
+    {
+        let mut lines: Vec<String> = sink.take().lines().map(|l| l.to_string()).collect();
+        lines.sort_unstable();
+        t.stdout = lines;
+    }
+    if matches!(outcome, Outcome::RuntimeErr(_)) && ctx.rt.budget_aborted() {
+        outcome = Outcome::Timeout;
+    }
+    if matches!(outcome, Outcome::Timeout) {
+        ctx.rt.abort();
+    }
+    let grace = Duration::from_secs(2);
+    let image = match image_rx {
+        None => no_image,
+        Some(irx) => match tokio::time::timeout(grace, irx).await {
+            Ok(Ok(Ok(bytes))) => Ok(bytes),
+            Ok(Ok(Err(e))) => Err(format!("the program image write failed: {e:#}")),
+            Ok(Err(_)) | Err(_) => no_image,
+        },
+    };
+    let _ = tokio::time::timeout(grace, ctx.shutdown()).await;
+    (outcome, image)
+}
+
+/// The registration image if it has been built; `run_sessions` builds
+/// it first.
+fn registration_image_now() -> Option<Bytes> {
+    static NONE: Option<Bytes> = None;
+    REGISTRATION_IMAGE.get().unwrap_or(&NONE).clone()
+}
+
+static REGISTRATION_IMAGE: std::sync::OnceLock<Option<Bytes>> = std::sync::OnceLock::new();
+
+/// Run `code` under `mode` three ways: no cache, cold (writing the
+/// program image) and warm (restored from it). A program that does not
+/// compile has nothing to restore, so its warm outcome is its cold one;
+/// a cold run that compiled but wrote no image makes the warm outcome
+/// the write's failure, which the cold/warm pair reports.
+pub async fn run_sessions(code: &str, mode: Mode, timeout: Duration) -> Sessions {
+    if REGISTRATION_IMAGE.get().is_none() {
+        let image = registration_image().await;
+        let _ = REGISTRATION_IMAGE.set(image);
+    }
+    let (nocache, _) = run_session(code, mode, SessionImage::None, timeout).await;
+    let (cold, image) = run_session(code, mode, SessionImage::Write, timeout).await;
+    let warm = match (&cold, image) {
+        (Outcome::CompileErr(_), _) => cold.clone(),
+        (_, Ok(image)) => run_session(code, mode, SessionImage::Read(image), timeout).await.0,
+        (_, Err(e)) => Outcome::RuntimeErr(e),
+    };
+    Sessions { nocache, cold, warm }
+}
+
+/// The session pair that diverges under `mode`, if one does and the
+/// program is deterministic: a disagreement reruns the three, and a run
+/// that disagrees with its own kind is nondeterminism, not a finding.
+async fn session_divergence(
+    code: &str,
+    mode: Mode,
+    first: &Sessions,
+    tier: OracleTier,
+    timeout: Duration,
+) -> Option<Divergence> {
+    let pairs = [
+        (Pair::Cold(mode), Session::NoCache, Session::Cold),
+        (Pair::Warm(mode), Session::Cold, Session::Warm),
+    ];
+    for (pair, a, b) in pairs {
+        if first.get(a).agrees_with_at(first.get(b), tier) {
+            continue;
+        }
+        let again = run_sessions(code, mode, timeout).await;
+        if !again.get(a).agrees_with_at(first.get(a), tier) {
+            return None;
+        }
+        if !again.get(a).agrees_with_at(again.get(b), tier) {
+            return Some(Divergence {
+                code: code.to_string(),
+                interp: again.get(a).clone(),
+                jit: again.get(b).clone(),
+                tier,
+                pair,
+            });
+        }
+    }
+    None
+}
+
+/// Run both modes' sessions and report the first diverging pair.
+async fn check_sessions(code: &str, tier: OracleTier, timeout: Duration) -> Option<Divergence> {
+    if !sessions_enabled() || tier == OracleTier::Excluded || callable::has_header(code) {
+        return None;
+    }
+    let (si, sj) = tokio::join!(
+        run_sessions(code, Mode::Interp, timeout),
+        run_sessions(code, Mode::Jit, timeout),
+    );
+    for (mode, s) in [(Mode::Interp, &si), (Mode::Jit, &sj)] {
+        if let Some(d) = session_divergence(code, mode, s, tier, timeout).await {
+            return Some(d);
+        }
+    }
+    None
+}
+
+/// The scope an injected input is bound in: the root when the subject
+/// was compiled statement by statement, else the program's own `do`
+/// block, whose name a restored image keeps from the cold run.
+fn input_scope(env: &Env, name: &str) -> Scope {
+    let mut scope = Scope::root();
+    for (path, names) in &env.binds {
+        if Path::levels(&path.0) == 1
+            && Path::basename(&path.0).is_some_and(|b| b.starts_with("do"))
+            && names.get(name).is_some()
+        {
+            scope.lexical = path.clone();
+            break;
+        }
+    }
+    scope
+}
+
+/// How a drive reaches its subject: compiled into a running runtime,
+/// or compiled or restored at the runtime's construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    Compile,
+    Program,
+}
+
 /// A detected disagreement between the reference (interp = node-walk)
 /// and the system under test (jit = fusion + cranelift).
 #[derive(Debug, Clone)]
@@ -780,6 +1090,12 @@ pub enum Pair {
     /// within a single run (both fields hold the offending outcome), so
     /// it catches bugs that break every engine and route identically.
     Twin,
+    /// No cache vs cold (`interp` holds the no-cache outcome, `jit` the
+    /// cold one): writing the program image changed the program.
+    Cold(Mode),
+    /// Cold vs warm (`interp` holds the cold outcome, `jit` the warm
+    /// one): restoring the program image changed the program.
+    Warm(Mode),
 }
 
 impl Divergence {
@@ -813,6 +1129,18 @@ impl Divergence {
                     "fusion/JIT bug (final values, interp != jit)"
                 }
                 (Pair::Engine, _) => "fusion/JIT bug (interp != jit)",
+                (Pair::Cold(Mode::Interp), _) => {
+                    "image bug: writing the program image changed the program (interp)"
+                }
+                (Pair::Cold(Mode::Jit), _) => {
+                    "image bug: writing the program image changed the program (jit)"
+                }
+                (Pair::Warm(Mode::Interp), _) => {
+                    "image bug: the restored program differs from the cold one (interp)"
+                }
+                (Pair::Warm(Mode::Jit), _) => {
+                    "image bug: the restored program differs from the cold one (jit)"
+                }
             },
         }
     }
@@ -824,6 +1152,10 @@ impl Divergence {
             Pair::EngineDispatch => ("interp/dispatch", "jit/dispatch"),
             Pair::Route => ("in-language", "dispatch"),
             Pair::Twin => ("trace", "trace"),
+            Pair::Cold(Mode::Interp) => ("interp/nocache", "interp/cold"),
+            Pair::Cold(Mode::Jit) => ("jit/nocache", "jit/cold"),
+            Pair::Warm(Mode::Interp) => ("interp/cold", "interp/warm"),
+            Pair::Warm(Mode::Jit) => ("jit/cold", "jit/warm"),
         }
     }
 }
@@ -879,6 +1211,9 @@ pub async fn check_classified(
     if interp.agrees_with_at(&jit, tier) {
         let ran =
             matches!(&interp, Outcome::Trace(_)) && matches!(&jit, Outcome::Trace(_));
+        if let Some(d) = check_sessions(code, tier, timeout).await {
+            return (Some(d), false);
+        }
         return (None, ran);
     }
     // Reference-side Timeout with a value-bearing jit trace is as likely
@@ -1281,6 +1616,20 @@ pub async fn run_batch(
             && !twin
             && routes_agree
             && (!comparable || interp.agrees_with_at(&jit, tier));
+        // The session runs take fresh runtimes; a disagreement goes back
+        // through the individual path, which confirms it with a rerun.
+        let sessions_agree = !agreed
+            || !comparable
+            || subj.spec.is_some()
+            || !sessions_sampled(i)
+            || {
+                let (si, sj) = tokio::join!(
+                    run_sessions(code, Mode::Interp, timeout),
+                    run_sessions(code, Mode::Jit, timeout),
+                );
+                si.agree(tier) && sj.agree(tier)
+            };
+        let agreed = agreed && sessions_agree;
         let verdict = if agreed {
             // `ran` is the parent's ring-admission bar and mirrors the
             // individual path: a callable or Excluded subject is never admitted
@@ -1327,7 +1676,7 @@ impl EngineLane {
         route: Route,
         timeout: Duration,
     ) -> Outcome {
-        drive(&self.ctx, &mut self.rx, subj, route, timeout).await
+        drive(&self.ctx, &mut self.rx, subj, route, timeout, Entry::Compile).await
     }
 }
 

@@ -22,9 +22,11 @@ seq trigger {
 
 In ordinary Graphix `do_step_1`, `do_step_2` and `do_step_3` would all
 run concurrently, each firing whenever its own inputs fire. Inside a
-`seq` each statement runs until it produces a value, and only then does
-the next one start. The run is started by the trigger; without one, the
-block runs once at initialization.
+`seq` only one statement is running at a time. Each statement runs until
+it produces a value; then it stops and the next one starts. A statement
+that has completed does not fire again later in the run, however its
+inputs move. The run is started by the trigger; without one, the block
+runs once at initialization.
 
 A `seq` is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
