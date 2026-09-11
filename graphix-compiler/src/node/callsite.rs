@@ -29,7 +29,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
 use indexmap::IndexMap;
-use log::warn;
+use log::{error, warn};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Value;
 use parking_lot::Mutex;
@@ -1576,7 +1576,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             None => panic!("value {v:?} is not a function"),
                             Some(lb) => {
                                 let scope = self.scope.clone();
-                                self.bind(
+                                match self.bind(
                                     ctx,
                                     scope,
                                     self.flags,
@@ -1584,9 +1584,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                                     lb,
                                     event,
                                     &mut set,
-                                )
-                                .expect("failed to bind to lambda");
-                                true
+                                ) {
+                                    Ok(()) => true,
+                                    Err(e) => {
+                                        error!(
+                                            "{}: binding the callee failed: {e:#}",
+                                            self.spec
+                                        );
+                                        false
+                                    }
+                                }
                             }
                         }
                     }
