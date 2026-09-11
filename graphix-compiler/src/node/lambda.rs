@@ -1,5 +1,8 @@
 use super::{Nop, WakeBit, compiler::compile};
-use crate::image::nodes::{NodeTag, put_tag, tag_len};
+use crate::image::{
+    env::{lexical_decode, lexical_encode, lexical_len},
+    nodes::{NodeTag, decode_node, put_tag, tag_len},
+};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, InitFn,
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
@@ -392,6 +395,31 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
+    fn image_len(&self) -> usize {
+        self.id.encoded_len()
+            + self.instance_id.encoded_len()
+            + crate::image::slice_len(&self.args)
+            + self.typ.encoded_len()
+            + self.body.image_len()
+            + 3
+            + self.self_bind.lock().encoded_len()
+            + 1
+            + lexical_len(&self.env)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        self.id.encode(buf)?;
+        self.instance_id.encode(buf)?;
+        crate::image::slice_encode(&self.args, buf)?;
+        self.typ.encode(buf)?;
+        self.body.image_encode(buf)?;
+        self.tail_loop.load(Ordering::Relaxed).encode(buf)?;
+        self.self_recursive.load(Ordering::Relaxed).encode(buf)?;
+        self.self_bind.lock().encode(buf)?;
+        self.resumes_mid_recursion.encode(buf)?;
+        lexical_encode(&self.env, buf)
+    }
+
     fn view(&self) -> ApplyView<'_, R, E> {
         ApplyView::Lambda(self)
     }
@@ -716,6 +744,37 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             resumes_mid_recursion: false,
             first_dispatch: true,
             env: ctx.env.clone(),
+        })
+    }
+
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let id = LambdaId::decode(buf)?;
+        let instance_id = LambdaInstanceId::decode(buf)?;
+        let args = Vec::<StructPatternNode>::decode(buf)?.into_boxed_slice();
+        let typ: Arc<FnType> = Pack::decode(buf)?;
+        let body = decode_node(ctx, buf)?;
+        let tail_loop = bool::decode(buf)?;
+        let self_recursive = bool::decode(buf)?;
+        let self_bind = Option::<BindId>::decode(buf)?;
+        let resumes_mid_recursion = bool::decode(buf)?;
+        let env = lexical_decode(buf)?;
+        Ok(Self {
+            slept: WakeBit::default(),
+            id,
+            instance_id,
+            args,
+            body,
+            typ,
+            tail_loop: AtomicBool::new(tail_loop),
+            self_recursive: AtomicBool::new(self_recursive),
+            self_bind: Mutex::new(self_bind),
+            resident: TagValue::phantom(),
+            resumes_mid_recursion,
+            first_dispatch: true,
+            env,
         })
     }
 }

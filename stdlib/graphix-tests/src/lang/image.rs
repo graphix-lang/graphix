@@ -7,13 +7,14 @@ use anyhow::Result;
 use arcstr::literal;
 use bytes::BytesMut;
 use graphix_compiler::{
-    PrintFlag,
+    CFlag, PrintFlag,
     env::Env,
+    expr::Source,
     format_with_flags,
     image::{DecodeImage, EncodeImage, ImageDecoder, ImageEncoder},
     typ::Type,
 };
-use graphix_package_core::testing::{TestCtx, init_with_registration};
+use graphix_package_core::testing::{TestCtx, init_with_registration, init_with_session};
 use graphix_rt::{GXEvent, RegistrationImage};
 use netidx::publisher::Value;
 use netidx_core::pack::Pack;
@@ -181,7 +182,8 @@ async fn registration_timing() -> Result<()> {
     let (image_tx, image_rx) = oneshot::channel();
     let t0 = std::time::Instant::now();
     let cold =
-        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx)).await?;
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+            .await?;
     let cold_time = t0.elapsed();
     let image = image_rx.await??;
     cold.shutdown().await;
@@ -189,9 +191,12 @@ async fn registration_timing() -> Result<()> {
     for _ in 0..5 {
         let (tx, _rx) = mpsc::channel(10);
         let t0 = std::time::Instant::now();
-        let warm =
-            init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image.clone()))
-                .await?;
+        let warm = init_with_registration(
+            tx,
+            TEST_REGISTER,
+            RegistrationImage::Load(image.clone()),
+        )
+        .await?;
         warm_times.push(t0.elapsed());
         warm.shutdown().await;
     }
@@ -199,5 +204,101 @@ async fn registration_timing() -> Result<()> {
         "registration: cold {cold_time:?}, warm {warm_times:?}, image {} bytes",
         image.len()
     );
+    Ok(())
+}
+
+/// Every root value the runtime produces until it goes quiet, in
+/// order; ids are relocated by the image, so the values are compared.
+async fn first_values(rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>) -> Vec<Value> {
+    let mut out = Vec::new();
+    loop {
+        let idle = tokio::time::sleep(std::time::Duration::from_millis(500));
+        tokio::pin!(idle);
+        tokio::select! {
+            _ = &mut idle => return out,
+            batch = rx.recv() => match batch {
+                None => return out,
+                Some(mut batch) => {
+                    for e in batch.drain(..) {
+                        if let GXEvent::Updated(_, v) = e {
+                            out.push(v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A program of the node kinds package modules never produce at top
+/// level: select with guards, catch with a connect, sampling, seq,
+/// place references, slices, maps, defaults, casts, any.
+const PROGRAM: &str = r#"
+type P = {x: i64, y: i64};
+let base = 10;
+let pt: P = {x: 3, y: 4};
+let arr = [1, 2, 3, 4];
+let m = {"a" => 1, "b" => 2};
+let f = |#scale = 2, v: i64| -> i64 v * scale + base;
+let g = |v: i64| -> i64 select v { n if n < 0 => 0 - n, n => n };
+let sum = array::fold(array::map(arr, |x| x * 2), 0, |a, b| a + b);
+let text = "pt [pt.x] [pt.y] sum [sum]";
+let with = {pt with x: 9};
+let slice = arr[1..3];
+let r = &base;
+let d = *r;
+let q = select m{"b"} { i64 as n => n, _ => 0 - 1 };
+let checked = select 7 +? 1 { i64 as n => n, _ => 0 };
+let tup = (1, "two");
+let caught_v = 0;
+let caught = { catch(e) caught_v <- e ~ 0 - 1; g(error(`Bad)?) };
+let s = base ~ text;
+let a = any(base, sum);
+let sq = seq base { let v = base + 1; v };
+(f(#scale: 3, 4), g(0 - 5), sum, text, with.x, slice, d, q, checked, tup.1, caught_v, s, a, sq, cast<string>(base)$)
+"#;
+
+/// A runtime restored from an image holding a program runs it to the
+/// same values, in the same order, as the runtime that compiled it.
+#[tokio::test]
+async fn program_image_restores() -> Result<()> {
+    let (tx, mut cold_rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let (prog_tx, prog_rx) = oneshot::channel();
+    let cold = init_with_session(
+        tx,
+        TEST_REGISTER,
+        CFlag::FusionDisabled.into(),
+        RegistrationImage::Save(reg_tx),
+        Some(Source::Internal(PROGRAM.into())),
+        Some(prog_tx),
+    )
+    .await?;
+    let image = prog_rx.await??;
+    let cold_program = cold.rt.program().await?.expect("the program compiled");
+    let cold_values = first_values(&mut cold_rx).await;
+    let last = cold_values.last().expect("the program produced its tuple");
+    assert_eq!(
+        format!("{last}"),
+        "[i64:22, i64:5, i64:20, \"pt 3 4 sum 20\", i64:9, [i64:2, i64:3], i64:10, i64:2, \
+         i64:8, \"two\", i64:-1, \"pt 3 4 sum 20\", i64:10, i64:11, \"i64:10\"]"
+    );
+    let (tx, mut warm_rx) = mpsc::channel(10);
+    let warm = init_with_session(
+        tx,
+        TEST_REGISTER,
+        CFlag::FusionDisabled.into(),
+        RegistrationImage::Load(image),
+        None,
+        None,
+    )
+    .await?;
+    let warm_program = warm.rt.program().await?.expect("the program restored");
+    assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
+    assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));
+    let warm_values = first_values(&mut warm_rx).await;
+    assert_eq!(cold_values, warm_values);
+    cold.shutdown().await;
+    warm.shutdown().await;
     Ok(())
 }

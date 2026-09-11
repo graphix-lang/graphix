@@ -1,5 +1,8 @@
-use crate::image::nodes::{
-    NodeTag, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+use crate::image::{
+    self,
+    nodes::{
+        NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+    },
 };
 use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
@@ -18,7 +21,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
-use bytes::BytesMut;
+use bytes::{Buf, BufMut, BytesMut};
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -243,6 +246,15 @@ pub struct ExplicitParens<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Node::new(Self { spec, n }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -259,6 +271,16 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::ExplicitParens, buf);
+        self.spec.encode(buf)?;
+        self.n.image_encode(buf)
+    }
+
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // parens are a fusion boundary: the interior gets its own region pass
         crate::fusion::fuse(&mut self.n, ctx)?;
@@ -333,6 +355,21 @@ pub struct Held<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Held<R, E> {
+    pub(crate) fn image_len(&self) -> usize {
+        self.node.image_len()
+    }
+
+    pub(crate) fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        self.node.image_encode(buf)
+    }
+
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        Ok(Self::new(decode_node(ctx, buf)?))
+    }
+
     pub fn new(node: Node<R, E>) -> Self {
         Self { value: None, tag: Tag::FIRED, node, invariant: std::sync::OnceLock::new() }
     }
@@ -1113,6 +1150,24 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let typs = Vec::<Type>::decode(buf)?.into_boxed_slice();
+        let args = decode_nodes(ctx, buf)?.into_boxed_slice();
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            typs,
+            args,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -1139,6 +1194,22 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + image::slice_len(&self.typs)
+            + nodes_len(&self.args)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::StringInterpolate, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        image::slice_encode(&self.typs, buf)?;
+        encode_nodes(&self.args, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use std::fmt::Write;
         // rendered under the value-hook loan so a core `Display` impl on
@@ -1251,6 +1322,16 @@ pub struct Connect<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Connect<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let node = decode_node(ctx, buf)?;
+        let id = BindId::decode(buf)?;
+        Ok(Node::new(Self { spec, node, id }))
+    }
+
     /// Build a `Connect` node from an already-compiled RHS expression
     /// and the BindId of the variable to be updated on each cycle.
     pub fn new(id: BindId, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
@@ -1292,6 +1373,20 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.node.image_len()
+            + self.id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Connect, buf);
+        self.spec.encode(buf)?;
+        self.node.image_encode(buf)?;
+        self.id.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // only a fired RHS writes
         let tv = self.node.update(ctx, event);
@@ -1356,6 +1451,48 @@ pub(super) enum WriteTarget {
     Place(BindId, place::Path),
 }
 
+impl WriteTarget {
+    fn image_len(target: &Option<Self>) -> usize {
+        1 + match target {
+            None => 0,
+            Some(WriteTarget::Bind(id)) => id.encoded_len(),
+            Some(WriteTarget::Place(id, path)) => {
+                id.encoded_len() + place::path_len(path)
+            }
+        }
+    }
+
+    fn image_encode(target: &Option<Self>, buf: &mut BytesMut) -> Result<(), PackError> {
+        match target {
+            None => Ok(buf.put_u8(0)),
+            Some(WriteTarget::Bind(id)) => {
+                buf.put_u8(1);
+                id.encode(buf)
+            }
+            Some(WriteTarget::Place(id, path)) => {
+                buf.put_u8(2);
+                id.encode(buf)?;
+                place::path_encode(path, buf)
+            }
+        }
+    }
+
+    fn image_decode(buf: &mut &[u8]) -> Result<Option<Self>, PackError> {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match buf.get_u8() {
+            0 => Ok(None),
+            1 => Ok(Some(WriteTarget::Bind(BindId::decode(buf)?))),
+            2 => Ok(Some(WriteTarget::Place(
+                BindId::decode(buf)?,
+                place::path_decode(buf)?,
+            ))),
+            _ => Err(PackError::UnknownTag),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ConnectDeref<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
@@ -1366,6 +1503,19 @@ pub struct ConnectDeref<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let rhs = decode_node(ctx, buf)?;
+        let src_id = BindId::decode(buf)?;
+        let target = WriteTarget::image_decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(src_id, top_id);
+        Ok(Node::new(Self { spec, rhs, src_id, target, top_id }))
+    }
+
     /// Build a `ConnectDeref` from an already-compiled RHS node and
     /// the source reference's BindId. The caller is responsible for
     /// registering the reference with the runtime (via
@@ -1429,6 +1579,24 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.rhs.image_len()
+            + self.src_id.encoded_len()
+            + WriteTarget::image_len(&self.target)
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::ConnectDeref, buf);
+        self.spec.encode(buf)?;
+        self.rhs.image_encode(buf)?;
+        self.src_id.encode(buf)?;
+        WriteTarget::image_encode(&self.target, buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // a fired RHS writes; a retarget writes the RHS's current value;
         // a bottom RHS never writes
@@ -1526,6 +1694,17 @@ pub struct TypeCast<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> TypeCast<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let target = Type::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Node::new(Self { spec, typ, target, n, resident: TagValue::phantom() }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -1546,6 +1725,22 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.target.encoded_len()
+            + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::TypeCast, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.target.encode(buf)?;
+        self.n.image_encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
@@ -1716,6 +1911,16 @@ pub struct Any<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Any<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_nodes(ctx, buf)?.into_boxed_slice();
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -1738,6 +1943,17 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Any, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        encode_nodes(&self.n, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // the first triggering value-bearing production wins; a
         // triggering bottom never beats one (`any(risky?, default)`)
@@ -1829,6 +2045,31 @@ pub struct Sample<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Sample<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let strict = bool::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let trigger = decode_node(ctx, buf)?;
+        let arg = Held::image_decode(ctx, buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Node::new(Self {
+            spec,
+            strict,
+            triggered: 0,
+            typ,
+            id,
+            top_id,
+            trigger,
+            arg,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -1859,6 +2100,28 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.strict.encoded_len()
+            + self.typ.encoded_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+            + self.trigger.image_len()
+            + self.arg.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Sample, buf);
+        self.spec.encode(buf)?;
+        self.strict.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.trigger.image_encode(buf)?;
+        self.arg.image_encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // only a fired trigger samples or banks debt
         let t = self.trigger.update(ctx, event);

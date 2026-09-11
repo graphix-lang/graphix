@@ -3,6 +3,7 @@ use super::{
     compiler::compile,
     pattern::{SliceKind, StructPatternNode},
 };
+use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
     BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent,
@@ -15,7 +16,9 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Typ;
 use netidx_value::Value;
 use poolshark::local::LPooled;
@@ -152,6 +155,37 @@ fn evaluate_arm<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let arg = Held::image_decode(ctx, buf)?;
+        let n = decode_varint(buf)? as usize;
+        let mut arms = Vec::with_capacity(n);
+        for _ in 0..n {
+            let pat = PatternNode::image_decode(ctx, buf)?;
+            let body = decode_node(ctx, buf)?;
+            arms.push((pat, body));
+        }
+        let typ = Type::decode(buf)?;
+        let spec = Expr::decode(buf)?;
+        let tail_dispatch_select = bool::decode(buf)?;
+        Ok(Node::new(Self {
+            selected: SelCell::new(),
+            arg,
+            arms,
+            typ,
+            spec,
+            tail_dispatch_select: std::sync::atomic::AtomicBool::new(
+                tail_dispatch_select,
+            ),
+            consulted_guard_mask: 0,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+            arm_facts: None,
+        }))
+    }
+
     /// Build a `Select` node from an already-compiled scrutinee
     /// expression and a vector of (pattern, arm body) pairs.
     #[allow(dead_code)]
@@ -605,6 +639,29 @@ impl LiteralPool {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.arg.image_len()
+            + varint_len(self.arms.len() as u64)
+            + self.arms.iter().map(|(p, n)| p.image_len() + n.image_len()).sum::<usize>()
+            + self.typ.encoded_len()
+            + self.spec.encoded_len()
+            + 1
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Select, buf);
+        self.arg.image_encode(buf)?;
+        encode_varint(self.arms.len() as u64, buf);
+        for (p, n) in &self.arms {
+            p.image_encode(buf)?;
+            n.image_encode(buf)?;
+        }
+        self.typ.encode(buf)?;
+        self.spec.encode(buf)?;
+        self.tail_dispatch_select.load(Ordering::Relaxed).encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.arm_facts.is_none() {
             let scrut = self.arg.node.typ().clone();

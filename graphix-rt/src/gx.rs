@@ -10,6 +10,7 @@ use graphix_compiler::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
         Resolvers, Source, parse_modpath, read_to_arcstr,
     },
+    image::ProgramRoot,
     node::place::{self, VarUpdate},
     node::{genn, lambda::LambdaDef},
     typ::Type,
@@ -207,6 +208,9 @@ pub(super) struct GX<X: GXExt> {
     /// watched expr emits, or `None` when the runtime next goes idle. See
     /// `GXHandle::wait_result_or_idle`.
     result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
+    /// The program compiled or restored at construction; a compile
+    /// failure is kept for the embedder to report, the runtime starts.
+    program: Option<Result<ProgramRoot, String>>,
     /// Active trace recording, if any. See [`GXHandle::trace_start`].
     trace: Option<TraceState>,
     /// The session scope for statement-at-a-time compiles: a top-level
@@ -257,6 +261,7 @@ impl<X: GXExt> GX<X> {
             result_watch: None,
             trace: None,
             scope: Scope::root(),
+            program: None,
         };
         let st = Instant::now();
         match cfg.registration {
@@ -273,6 +278,21 @@ impl<X: GXExt> GX<X> {
             }
         }
         info!("root init time: {:?}", st.elapsed());
+        if t.program.is_none()
+            && let Some(source) = cfg.program
+        {
+            let st = Instant::now();
+            match t.load_program(&source).await {
+                Ok(root) => {
+                    t.program = Some(Ok(root));
+                    info!("program init time: {:?}", st.elapsed());
+                    if let Some(tx) = cfg.program_image {
+                        let _ = tx.send(t.registration_image());
+                    }
+                }
+                Err(e) => t.program = Some(Err(format!("{e:?}"))),
+            }
+        }
         Ok(t)
     }
 
@@ -280,7 +300,11 @@ impl<X: GXExt> GX<X> {
         let nodes: Vec<(ExprId, &Node<GXRt<X>, X::UserEvent>)> =
             self.nodes.iter().map(|(id, n)| (*id, n)).collect();
         self.ctx
-            .write_registration(&nodes, &self.scope)
+            .write_registration(
+                &nodes,
+                &self.scope,
+                self.program.as_ref().and_then(|p| p.as_ref().ok()),
+            )
             .map_err(|e| anyhow!("writing the registration image: {e:?}"))
     }
 
@@ -294,6 +318,7 @@ impl<X: GXExt> GX<X> {
             self.nodes.insert(id, n);
         }
         self.scope = reg.scope;
+        self.program = reg.program.map(Ok);
         Ok(())
     }
 
@@ -527,6 +552,9 @@ impl<X: GXExt> GX<X> {
                         .get(&id)
                         .map(graphix_compiler::node_shape::describe_node);
                     let _ = res.send(desc);
+                }
+                ToGX::Program { res } => {
+                    let _ = res.send((self.program.clone(), self.ctx.env.clone()));
                 }
                 ToGX::EnvStats { res } => {
                     let by_id_len = self.ctx.env.by_id.len();
@@ -809,6 +837,12 @@ impl<X: GXExt> GX<X> {
     }
 
     async fn load(&mut self, rt: GXHandle<X>, source: &Source) -> Result<CompRes<X>> {
+        let ProgramRoot { id, output, typ } = self.load_program(source).await?;
+        let res = smallvec![CompExp { id, output, typ, rt: rt.clone() }];
+        Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
+    }
+
+    async fn load_program(&mut self, source: &Source) -> Result<ProgramRoot> {
         let scope = Scope::root();
         let st = Instant::now();
         let (ori, exprs) = self.load_exprs(source).await?;
@@ -821,16 +855,15 @@ impl<X: GXExt> GX<X> {
         let output = exprs.last().map(|e| is_output_kind(&e.kind)).unwrap_or(false);
         let wrapped =
             wrap_file_in_do(Arc::from_iter(exprs.into_iter()), Arc::new(ori.clone()));
-        let top_id = wrapped.id;
+        let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
         let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
             .with_context(|| ori.clone())?;
         let typ = n.typ().clone();
-        self.nodes.insert(top_id, n);
-        self.ctx.rt.updated.insert(top_id, true);
-        let res = smallvec![CompExp { id: top_id, output, typ, rt: rt.clone() }];
-        Ok(CompRes { exprs: res, env: self.ctx.env.clone() })
+        self.nodes.insert(id, n);
+        self.ctx.rt.updated.insert(id, true);
+        Ok(ProgramRoot { id, output, typ })
     }
 
     fn compile_callable(&mut self, v: Value, rt: GXHandle<X>) -> Result<Callable<X>> {

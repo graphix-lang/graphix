@@ -32,7 +32,10 @@ node_tags! {
     Bind, Lambda, Block, Module, Constant, TypeDef, Impl, Trait, Nop, Never,
     Struct, Ref, Add, Sub, Mul, Div, Mod, CheckedAdd, CheckedSub, CheckedMul,
     CheckedDiv, CheckedMod, Eq, Ne, Lt, Gt, Lte, Gte, And, Or, Not, Neg, Array,
-    ListLit, Tuple, Variant,
+    ListLit, Tuple, Variant, ExplicitParens, StringInterpolate, Connect,
+    ConnectDeref, TypeCast, Any, Sample, ArrayRef, ArraySlice, StructWith,
+    StructRef, Construct, TupleRef, ByRef, Deref, Map, MapRef, Catch, Qop,
+    SeqGuard, OrNever, CallSite, Select, Collection,
 }
 
 pub(crate) fn tag_len() -> usize {
@@ -58,6 +61,40 @@ pub(crate) fn encode_nodes<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+pub(crate) fn opt_node_len<R: Rt, E: UserEvent>(node: Option<&Node<R, E>>) -> usize {
+    1 + node.map_or(0, |n| n.image_len())
+}
+
+pub(crate) fn opt_node_encode<R: Rt, E: UserEvent>(
+    node: Option<&Node<R, E>>,
+    buf: &mut BytesMut,
+) -> Result<(), PackError> {
+    match node {
+        Some(n) => {
+            buf.put_u8(1);
+            n.image_encode(buf)
+        }
+        None => {
+            buf.put_u8(0);
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn opt_node_decode<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    buf: &mut &[u8],
+) -> Result<Option<Node<R, E>>, PackError> {
+    if !buf.has_remaining() {
+        return Err(PackError::BufferShort);
+    }
+    match buf.get_u8() {
+        0 => Ok(None),
+        1 => Ok(Some(decode_node(ctx, buf)?)),
+        _ => Err(PackError::UnknownTag),
+    }
+}
+
 pub(crate) fn decode_nodes<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     buf: &mut &[u8],
@@ -75,17 +112,24 @@ pub(crate) fn decode_node<R: Rt, E: UserEvent>(
     buf: &mut &[u8],
 ) -> Result<Node<R, E>, PackError> {
     use node::{
-        array::{Array, ListLit},
-        bind::{Bind, Ref},
-        data::{Struct, Tuple, Variant},
+        array::{Array, ArrayRef, ArraySlice, ListLit},
+        bind::{Bind, ByRef, Deref, Ref},
+        callsite::CallSite,
+        data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
+        error::{Catch, OrNever, Qop, SeqGuard},
         lambda::Lambda,
+        map::{Map, MapRef},
         module::Module,
         op::{
             Add, And, CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub, Div,
             Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub,
         },
+        select::Select,
         traits::{Impl, Trait},
-        {Block, Constant, Never, Nop, TypeDef},
+        {
+            Any, Block, Connect, ConnectDeref, Constant, ExplicitParens, Never, Nop,
+            Sample, StringInterpolate, TypeCast, TypeDef,
+        },
     };
     if !buf.has_remaining() {
         return Err(PackError::BufferShort);
@@ -128,5 +172,31 @@ pub(crate) fn decode_node<R: Rt, E: UserEvent>(
         NodeTag::ListLit => ListLit::image_decode(ctx, buf),
         NodeTag::Tuple => Tuple::image_decode(ctx, buf),
         NodeTag::Variant => Variant::image_decode(ctx, buf),
+        NodeTag::ExplicitParens => ExplicitParens::image_decode(ctx, buf),
+        NodeTag::StringInterpolate => StringInterpolate::image_decode(ctx, buf),
+        NodeTag::Connect => Connect::image_decode(ctx, buf),
+        NodeTag::ConnectDeref => ConnectDeref::image_decode(ctx, buf),
+        NodeTag::TypeCast => TypeCast::image_decode(ctx, buf),
+        NodeTag::Any => Any::image_decode(ctx, buf),
+        NodeTag::Sample => Sample::image_decode(ctx, buf),
+        NodeTag::ArrayRef => ArrayRef::image_decode(ctx, buf),
+        NodeTag::ArraySlice => ArraySlice::image_decode(ctx, buf),
+        NodeTag::StructWith => StructWith::image_decode(ctx, buf),
+        NodeTag::StructRef => StructRef::image_decode(ctx, buf),
+        NodeTag::Construct => Construct::image_decode(ctx, buf),
+        NodeTag::TupleRef => TupleRef::image_decode(ctx, buf),
+        NodeTag::ByRef => ByRef::image_decode(ctx, buf),
+        NodeTag::Deref => Deref::image_decode(ctx, buf),
+        NodeTag::Map => Map::image_decode(ctx, buf),
+        NodeTag::MapRef => MapRef::image_decode(ctx, buf),
+        NodeTag::Catch => Catch::image_decode(ctx, buf),
+        NodeTag::Qop => Qop::image_decode(ctx, buf),
+        NodeTag::SeqGuard => SeqGuard::image_decode(ctx, buf),
+        NodeTag::OrNever => OrNever::image_decode(ctx, buf),
+        NodeTag::CallSite => CallSite::image_decode(ctx, buf),
+        NodeTag::Select => Select::image_decode(ctx, buf),
+        NodeTag::Collection => {
+            node::collection::CollectionIntrinsic::image_decode(ctx, buf)
+        }
     }
 }

@@ -11,13 +11,13 @@
 //! [`ImageDecoder`] and opens a [`DecodeImage`] over it per read.
 
 mod defs;
-mod env;
+pub(crate) mod env;
 pub mod nodes;
 mod registration;
 
 pub(crate) use env::{lexical_decode, lexical_encode, lexical_len};
 pub use nodes::NOT_IMAGED;
-pub use registration::{NOT_QUIESCENT, REGISTRATION_FORMAT, Registration};
+pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
 
 use crate::{
     BindId, CFlag, DynScope, ErrorHandler, LambdaId, Scope, SourcePosition,
@@ -527,6 +527,23 @@ fn dynscope_len(scope: &DynScope) -> usize {
     }
 }
 
+/// A handler outside its scope (a catch's own, a `?`'s resolved one)
+/// is the same object the scope codec shares.
+pub(crate) fn handler_len(h: &ErrorHandler) -> usize {
+    dynscope_len(&DynScope::from_handler(h.clone()))
+}
+
+pub(crate) fn handler_encode(
+    h: &ErrorHandler,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    dynscope_encode(&DynScope::from_handler(h.clone()), buf)
+}
+
+pub(crate) fn handler_decode(buf: &mut impl Buf) -> Result<ErrorHandler, PackError> {
+    dynscope_decode(buf)?.handler().ok_or(PackError::InvalidFormat)
+}
+
 fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackError> {
     let Some(h) = scope.handler() else {
         buf.put_u8(2);
@@ -766,6 +783,22 @@ fn measured_before(
     registered: impl FnOnce(&ImageEncoder) -> Option<u64>,
 ) -> bool {
     encoding(|e| registered(e).is_some() || !e.measured.insert(key)).unwrap_or(false)
+}
+
+/// A boxed slice on the wire as the `Vec` it decodes to.
+pub(crate) fn slice_len<T: Pack>(xs: &[T]) -> usize {
+    varint_len(xs.len() as u64) + xs.iter().map(|x| x.encoded_len()).sum::<usize>()
+}
+
+pub(crate) fn slice_encode<T: Pack>(
+    xs: &[T],
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    encode_varint(xs.len() as u64, buf);
+    for x in xs {
+        x.encode(buf)?;
+    }
+    Ok(())
 }
 
 /// The address of an object a session writes once and references

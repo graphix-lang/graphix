@@ -3,7 +3,7 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use ahash::AHashMap;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
@@ -30,6 +30,7 @@ use tokio::{
 };
 
 mod cache;
+use cache::Entry;
 mod completion;
 mod input;
 pub mod lsp_backend;
@@ -244,30 +245,57 @@ impl<X: GXExt> Shell<X> {
                 .context("register package modules")?;
         }
         let root = root_module_source(&root_mods);
-        let cache = if self.no_cache {
-            None
-        } else {
-            match cache::RegistrationCache::new(&root) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    log::warn!("registration image cache unavailable: {e}");
-                    None
-                }
-            }
-        };
-        let (registration, pending) = match cache.as_ref().and_then(|c| c.load()) {
-            Some(bytes) => (Some(RegistrationImage::Load(bytes)), None),
-            None if cache.is_some() => {
-                let (tx, rx) = oneshot::channel();
-                (Some(RegistrationImage::Save(tx)), Some(rx))
-            }
-            None => (None, None),
-        };
         if let Some(main) = self.packages.iter().find_map(|p| p.main_program()) {
             if matches!(self.mode, Mode::Repl) {
                 self.mode = Mode::Script(Source::Internal(ArcStr::from(main)));
             }
         }
+        let program = match &self.mode {
+            Mode::Script(source) => Some(source.clone()),
+            Mode::Check(_) | Mode::Repl => None,
+        };
+        let program_text: Option<Vec<u8>> = program.as_ref().and_then(|s| match s {
+            Source::File(p) => std::fs::read(p).ok(),
+            Source::Internal(text) => Some(text.as_bytes().to_vec()),
+            _ => None,
+        });
+        let cache = if self.no_cache {
+            None
+        } else {
+            match cache::RegistrationCache::new(&root, program_text.as_deref()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    log::warn!("image cache unavailable: {e}");
+                    None
+                }
+            }
+        };
+        let mut pending_registration = None;
+        let mut pending_program = None;
+        let mut program_image = None;
+        let registration = match cache.as_ref() {
+            None => None,
+            Some(c) => {
+                let loaded = c
+                    .load(Entry::Program)
+                    .map(|b| (b, true))
+                    .or_else(|| c.load(Entry::Registration).map(|b| (b, false)));
+                let program_loaded = matches!(loaded, Some((_, true)));
+                if c.has_program() && !program_loaded {
+                    let (tx, rx) = oneshot::channel();
+                    program_image = Some(tx);
+                    pending_program = Some(rx);
+                }
+                match loaded {
+                    Some((bytes, _)) => Some(RegistrationImage::Load(bytes)),
+                    None => {
+                        let (tx, rx) = oneshot::channel();
+                        pending_registration = Some(rx);
+                        Some(RegistrationImage::Save(tx))
+                    }
+                }
+            }
+        };
         let mut flags = match self.mode {
             Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
             Mode::Repl => CFlag::ReplaceImports.into(),
@@ -282,6 +310,12 @@ impl<X: GXExt> Shell<X> {
         if let Some(r) = registration {
             gx = gx.registration(r);
         }
+        if let Some(p) = program {
+            gx = gx.program(p);
+        }
+        if let Some(tx) = program_image {
+            gx = gx.program_image(tx);
+        }
         if !self.resolver_factories.is_empty() {
             gx = gx.resolver_factories(std::mem::take(&mut self.resolver_factories));
         }
@@ -294,15 +328,21 @@ impl<X: GXExt> Shell<X> {
             .start()
             .await
             .context("loading initial modules")?;
-        if let (Some(rx), Some(cache)) = (pending, cache.as_ref()) {
-            match rx.await {
-                Ok(Ok(image)) => {
-                    if let Err(e) = cache.store(&image) {
-                        log::warn!("registration image not written: {e:#}");
+        if let Some(cache) = cache.as_ref() {
+            for (entry, rx) in [
+                (Entry::Registration, pending_registration),
+                (Entry::Program, pending_program),
+            ] {
+                let Some(rx) = rx else { continue };
+                match rx.await {
+                    Ok(Ok(image)) => {
+                        if let Err(e) = cache.store(entry, &image) {
+                            log::warn!("{entry:?} image not written: {e:#}");
+                        }
                     }
+                    Ok(Err(e)) => log::warn!("{entry:?} image not taken: {e:#}"),
+                    Err(_) => log::warn!("{entry:?} image not taken: runtime exited"),
                 }
-                Ok(Err(e)) => log::warn!("registration image not taken: {e:#}"),
-                Err(_) => log::warn!("registration image not taken: runtime exited"),
             }
         }
         Ok(handle)
@@ -322,12 +362,16 @@ impl<X: GXExt> Shell<X> {
                 self.check_with(gx).await?;
                 exit(0)
             }
-            Mode::Script(source) => {
-                let baseline =
-                    if self.fusion_stats { Some(gx.fusion_stats().await?) } else { None };
-                let r = gx.load(source.clone()).await?;
-                if let Some(baseline) = baseline {
-                    print_fusion_stats(&baseline, &gx.fusion_stats().await?);
+            Mode::Script(_) => {
+                let r = gx
+                    .program()
+                    .await?
+                    .ok_or_else(|| anyhow!("the runtime has no program"))?;
+                if self.fusion_stats {
+                    print_fusion_stats(
+                        &FusionStats::default(),
+                        &gx.fusion_stats().await?,
+                    );
                 }
                 exprs.extend(r.exprs);
                 env = gx.get_env().await?;

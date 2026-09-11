@@ -2,6 +2,10 @@ use super::{
     MAX_ARRAY_INIT_LEN, NOP, WakeBit, callsite::CallSite, genn,
     pattern::StructPatternNode,
 };
+use crate::image::{
+    nodes::{NodeTag, decode_node, put_tag, tag_len},
+    scope_decode, scope_encode, scope_len,
+};
 use crate::{
     ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
@@ -15,8 +19,10 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
+use bytes::BytesMut;
 use cranelift_codegen::ir::{InstBuilder, Value as ClifValue};
 use immutable_chunkmap::map::Map as CMap;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::ValArray;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
@@ -107,7 +113,7 @@ pub mod list {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub(crate) enum CollectionIntrinsic {
     ArrayInit,
     ArrayMap,
@@ -169,65 +175,114 @@ impl CollectionIntrinsic {
     ) -> Result<Node<R, E>> {
         match self {
             Self::ArrayInit => {
-                MapQ::<R, E, ArrayInit>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ArrayInit>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ArrayMap => {
-                MapQ::<R, E, ArrayMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ArrayMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ArrayFilter => {
-                MapQ::<R, E, ArrayFilter>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ArrayFilter>::new(self, ctx, spec, scope, top_id, typ, args)
             }
-            Self::ArrayFilterMap => {
-                MapQ::<R, E, ArrayFilterMap>::new(ctx, spec, scope, top_id, typ, args)
-            }
+            Self::ArrayFilterMap => MapQ::<R, E, ArrayFilterMap>::new(
+                self, ctx, spec, scope, top_id, typ, args,
+            ),
             Self::ArrayFlatMap => {
-                MapQ::<R, E, ArrayFlatMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ArrayFlatMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ArrayFind => {
-                MapQ::<R, E, ArrayFind>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ArrayFind>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ArrayFindMap => {
-                MapQ::<R, E, ArrayFindMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ArrayFindMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ArrayFold => {
-                FoldQ::<R, E, ArrayFold>::new(ctx, spec, scope, top_id, typ, args)
+                FoldQ::<R, E, ArrayFold>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ListInit => {
-                MapQ::<R, E, ListInit>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ListInit>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ListMap => {
-                MapQ::<R, E, ListMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ListMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ListFilter => {
-                MapQ::<R, E, ListFilter>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ListFilter>::new(self, ctx, spec, scope, top_id, typ, args)
             }
-            Self::ListFilterMap => {
-                MapQ::<R, E, ListFilterMap>::new(ctx, spec, scope, top_id, typ, args)
-            }
+            Self::ListFilterMap => MapQ::<R, E, ListFilterMap>::new(
+                self, ctx, spec, scope, top_id, typ, args,
+            ),
             Self::ListFlatMap => {
-                MapQ::<R, E, ListFlatMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ListFlatMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ListFind => {
-                MapQ::<R, E, ListFind>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ListFind>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ListFindMap => {
-                MapQ::<R, E, ListFindMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, ListFindMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::ListFold => {
-                FoldQ::<R, E, ListFold>::new(ctx, spec, scope, top_id, typ, args)
+                FoldQ::<R, E, ListFold>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::MapMap => {
-                MapQ::<R, E, MapMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, MapMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::MapFilter => {
-                MapQ::<R, E, MapFilter>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, MapFilter>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::MapFilterMap => {
-                MapQ::<R, E, MapFilterMap>::new(ctx, spec, scope, top_id, typ, args)
+                MapQ::<R, E, MapFilterMap>::new(self, ctx, spec, scope, top_id, typ, args)
             }
             Self::MapFold => {
-                FoldQ::<R, E, MapFold>::new(ctx, spec, scope, top_id, typ, args)
+                FoldQ::<R, E, MapFold>::new(self, ctx, spec, scope, top_id, typ, args)
             }
+        }
+    }
+
+    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let intrinsic = Self::decode(buf)?;
+        match intrinsic {
+            Self::ArrayInit => MapQ::<R, E, ArrayInit>::image_decode(intrinsic, ctx, buf),
+            Self::ArrayMap => MapQ::<R, E, ArrayMap>::image_decode(intrinsic, ctx, buf),
+            Self::ArrayFilter => {
+                MapQ::<R, E, ArrayFilter>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ArrayFilterMap => {
+                MapQ::<R, E, ArrayFilterMap>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ArrayFlatMap => {
+                MapQ::<R, E, ArrayFlatMap>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ArrayFind => MapQ::<R, E, ArrayFind>::image_decode(intrinsic, ctx, buf),
+            Self::ArrayFindMap => {
+                MapQ::<R, E, ArrayFindMap>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ArrayFold => {
+                FoldQ::<R, E, ArrayFold>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ListInit => MapQ::<R, E, ListInit>::image_decode(intrinsic, ctx, buf),
+            Self::ListMap => MapQ::<R, E, ListMap>::image_decode(intrinsic, ctx, buf),
+            Self::ListFilter => {
+                MapQ::<R, E, ListFilter>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ListFilterMap => {
+                MapQ::<R, E, ListFilterMap>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ListFlatMap => {
+                MapQ::<R, E, ListFlatMap>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ListFind => MapQ::<R, E, ListFind>::image_decode(intrinsic, ctx, buf),
+            Self::ListFindMap => {
+                MapQ::<R, E, ListFindMap>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::ListFold => FoldQ::<R, E, ListFold>::image_decode(intrinsic, ctx, buf),
+            Self::MapMap => MapQ::<R, E, MapMap>::image_decode(intrinsic, ctx, buf),
+            Self::MapFilter => MapQ::<R, E, MapFilter>::image_decode(intrinsic, ctx, buf),
+            Self::MapFilterMap => {
+                MapQ::<R, E, MapFilterMap>::image_decode(intrinsic, ctx, buf)
+            }
+            Self::MapFold => FoldQ::<R, E, MapFold>::image_decode(intrinsic, ctx, buf),
         }
     }
 }
@@ -626,6 +681,7 @@ impl<R: Rt, E: UserEvent> MapQBase<R, E> {
 #[derive(Debug)]
 struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
     slept: WakeBit,
+    intrinsic: CollectionIntrinsic,
     base: MapQBase<R, E>,
     scope: Scope,
     callback: BindId,
@@ -639,6 +695,7 @@ struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
     fn new(
+        intrinsic: CollectionIntrinsic,
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         scope: &Scope,
@@ -673,6 +730,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
         );
         Ok(Node::new(Self {
             slept: WakeBit::default(),
+            intrinsic,
             base: MapQBase {
                 source,
                 prototype: prototype.call,
@@ -683,6 +741,44 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
                 typ: typ.rtype.clone(),
             },
             scope: scope.clone(),
+            callback,
+            callback_type,
+            top_id,
+            slots: LPooled::take(),
+            current: T::Collection::default(),
+            operation: T::default(),
+            resident: TagValue::phantom(),
+        }))
+    }
+
+    fn image_decode(
+        intrinsic: CollectionIntrinsic,
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let source = decode_node(ctx, buf)?;
+        let prototype = decode_node(ctx, buf)?;
+        let element_type = Type::decode(buf)?;
+        let prototype_id = BindId::decode(buf)?;
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let scope = scope_decode(buf)?;
+        let callback = BindId::decode(buf)?;
+        let callback_type: Arc<FnType> = Pack::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            intrinsic,
+            base: MapQBase {
+                source,
+                prototype,
+                element_type,
+                emit_call: emit_map_call::<R, E, T>,
+                prototype_id,
+                spec,
+                typ,
+            },
+            scope,
             callback,
             callback_type,
             top_id,
@@ -717,6 +813,36 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 }
 
 impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.intrinsic.encoded_len()
+            + self.base.source.image_len()
+            + self.base.prototype.image_len()
+            + self.base.element_type.encoded_len()
+            + self.base.prototype_id.encoded_len()
+            + self.base.spec.encoded_len()
+            + self.base.typ.encoded_len()
+            + scope_len(&self.scope)
+            + self.callback.encoded_len()
+            + self.callback_type.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Collection, buf);
+        self.intrinsic.encode(buf)?;
+        self.base.source.image_encode(buf)?;
+        self.base.prototype.image_encode(buf)?;
+        self.base.element_type.encode(buf)?;
+        self.base.prototype_id.encode(buf)?;
+        self.base.spec.encode(buf)?;
+        self.base.typ.encode(buf)?;
+        scope_encode(&self.scope, buf)?;
+        self.callback.encode(buf)?;
+        self.callback_type.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // The fuse driver never descends a collection callback, so the
         // prototype body's attributes dispatch here.
@@ -1087,6 +1213,7 @@ impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
 
 #[derive(Debug)]
 struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
+    intrinsic: CollectionIntrinsic,
     base: FoldQBase<R, E>,
     scope: Scope,
     callback: BindId,
@@ -1102,6 +1229,7 @@ struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
     fn new(
+        intrinsic: CollectionIntrinsic,
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         scope: &Scope,
@@ -1141,6 +1269,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
             None,
         );
         Ok(Node::new(Self {
+            intrinsic,
             base: FoldQBase {
                 source,
                 init,
@@ -1152,6 +1281,48 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
                 typ: typ.rtype.clone(),
             },
             scope: scope.clone(),
+            callback,
+            callback_type,
+            acc_type,
+            top_id,
+            slots: LPooled::take(),
+            init: None,
+            source_present: false,
+            operation: PhantomData,
+            resident: TagValue::phantom(),
+        }))
+    }
+
+    fn image_decode(
+        intrinsic: CollectionIntrinsic,
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let source = decode_node(ctx, buf)?;
+        let init = decode_node(ctx, buf)?;
+        let prototype = decode_node(ctx, buf)?;
+        let element_type = Type::decode(buf)?;
+        let prototype_ids = [BindId::decode(buf)?, BindId::decode(buf)?];
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let scope = scope_decode(buf)?;
+        let callback = BindId::decode(buf)?;
+        let callback_type: Arc<FnType> = Pack::decode(buf)?;
+        let acc_type = Type::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        Ok(Node::new(Self {
+            intrinsic,
+            base: FoldQBase {
+                source,
+                init,
+                prototype,
+                element_type,
+                emit_call: emit_fold_call::<R, E, T>,
+                prototype_ids,
+                spec,
+                typ,
+            },
+            scope,
             callback,
             callback_type,
             acc_type,
@@ -1181,6 +1352,42 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
 }
 
 impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.intrinsic.encoded_len()
+            + self.base.source.image_len()
+            + self.base.init.image_len()
+            + self.base.prototype.image_len()
+            + self.base.element_type.encoded_len()
+            + self.base.prototype_ids[0].encoded_len()
+            + self.base.prototype_ids[1].encoded_len()
+            + self.base.spec.encoded_len()
+            + self.base.typ.encoded_len()
+            + scope_len(&self.scope)
+            + self.callback.encoded_len()
+            + self.callback_type.encoded_len()
+            + self.acc_type.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Collection, buf);
+        self.intrinsic.encode(buf)?;
+        self.base.source.image_encode(buf)?;
+        self.base.init.image_encode(buf)?;
+        self.base.prototype.image_encode(buf)?;
+        self.base.element_type.encode(buf)?;
+        self.base.prototype_ids[0].encode(buf)?;
+        self.base.prototype_ids[1].encode(buf)?;
+        self.base.spec.encode(buf)?;
+        self.base.typ.encode(buf)?;
+        scope_encode(&self.scope, buf)?;
+        self.callback.encode(buf)?;
+        self.callback_type.encode(buf)?;
+        self.acc_type.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // The fuse driver never descends a collection callback, so the
         // prototype body's attributes dispatch here.

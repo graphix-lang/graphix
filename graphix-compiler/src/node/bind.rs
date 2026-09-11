@@ -18,9 +18,10 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use bytes::BytesMut;
+use bytes::{Buf, BufMut, BytesMut};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::{decode_varint, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -727,6 +728,93 @@ struct Place<R: Rt, E: UserEvent> {
     steps: Vec<PlaceStep<R, E>>,
 }
 
+impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
+    fn image_len(&self) -> usize {
+        1 + match self {
+            PlaceStep::Index(n) | PlaceStep::Key(n) => n.image_len(),
+            PlaceStep::Tuple(i) => i.encoded_len(),
+            PlaceStep::Field(f) => f.encoded_len(),
+        }
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        match self {
+            PlaceStep::Index(n) => {
+                buf.put_u8(0);
+                n.image_encode(buf)
+            }
+            PlaceStep::Tuple(i) => {
+                buf.put_u8(1);
+                i.encode(buf)
+            }
+            PlaceStep::Field(f) => {
+                buf.put_u8(2);
+                f.encode(buf)
+            }
+            PlaceStep::Key(n) => {
+                buf.put_u8(3);
+                n.image_encode(buf)
+            }
+        }
+    }
+
+    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match buf.get_u8() {
+            0 => Ok(PlaceStep::Index(decode_node(ctx, buf)?)),
+            1 => Ok(PlaceStep::Tuple(usize::decode(buf)?)),
+            2 => Ok(PlaceStep::Field(ArcStr::decode(buf)?)),
+            3 => Ok(PlaceStep::Key(decode_node(ctx, buf)?)),
+            _ => Err(PackError::UnknownTag),
+        }
+    }
+}
+
+impl<R: Rt, E: UserEvent> Place<R, E> {
+    fn image_len(place: &Option<Self>) -> usize {
+        1 + place.as_ref().map_or(0, |p| {
+            p.root.image_len()
+                + varint_len(p.steps.len() as u64)
+                + p.steps.iter().map(|s| s.image_len()).sum::<usize>()
+        })
+    }
+
+    fn image_encode(place: &Option<Self>, buf: &mut BytesMut) -> Result<(), PackError> {
+        let Some(p) = place else { return Ok(buf.put_u8(0)) };
+        buf.put_u8(1);
+        p.root.image_encode(buf)?;
+        encode_varint(p.steps.len() as u64, buf);
+        for s in &p.steps {
+            s.image_encode(buf)?;
+        }
+        Ok(())
+    }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Option<Self>, PackError> {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match buf.get_u8() {
+            0 => Ok(None),
+            1 => {
+                let root = decode_node(ctx, buf)?;
+                let n = decode_varint(buf)? as usize;
+                let mut steps = Vec::with_capacity(n);
+                for _ in 0..n {
+                    steps.push(PlaceStep::image_decode(ctx, buf)?);
+                }
+                Ok(Some(Place { root, steps }))
+            }
+            _ => Err(PackError::UnknownTag),
+        }
+    }
+}
+
 enum PlaceSpec {
     Index(Expr),
     Tuple(usize),
@@ -852,6 +940,26 @@ pub struct ByRef<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let child = decode_node(ctx, buf)?;
+        let id = BindId::decode(buf)?;
+        let place = Place::image_decode(ctx, buf)?;
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            child,
+            id,
+            resident: TagValue::phantom(),
+            place,
+            registered: None,
+        }))
+    }
+
     /// Construct a `ByRef` from an already-compiled child. Does no
     /// byref-chain plumbing: a caller wanting ref-to-ref chaining must
     /// insert into `ctx.env.byref_chain` itself.
@@ -923,6 +1031,24 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.child.image_len()
+            + self.id.encoded_len()
+            + Place::image_len(&self.place)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::ByRef, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.child.image_encode(buf)?;
+        self.id.encode(buf)?;
+        Place::image_encode(&self.place, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // A moved key re-fires the reference so readers re-resolve.
         let mut moved = false;
@@ -1056,6 +1182,33 @@ pub struct Deref<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let child = decode_node(ctx, buf)?;
+        let id = Option::<BindId>::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let path = match bool::decode(buf)? {
+            true => Some(place::path_decode(buf)?),
+            false => None,
+        };
+        if let Some(id) = id {
+            ctx.rt.ref_var(id, top_id);
+        }
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            child,
+            id,
+            top_id,
+            resident: TagValue::phantom(),
+            path,
+        }))
+    }
+
     /// Build a `Deref` from an already-compiled child that evaluates to
     /// a `Value::U64` / `Value::V64` holding a BindId.
     #[allow(dead_code)]
@@ -1094,6 +1247,31 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.child.image_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+            + 1
+            + self.path.as_ref().map_or(0, place::path_len)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Deref, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.child.image_encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.path.is_some().encode(buf)?;
+        match &self.path {
+            Some(p) => place::path_encode(p, buf),
+            None => Ok(()),
+        }
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.child.update(ctx, event);
         if !tv.tag().is_bottom() {

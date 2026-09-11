@@ -1,4 +1,7 @@
 use super::WakeBit;
+use crate::image::nodes::{
+    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp, err, errf,
@@ -10,8 +13,10 @@ use crate::{
 };
 use anyhow::Result;
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -30,6 +35,24 @@ pub struct Map<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let keys = decode_nodes(ctx, buf)?.into_boxed_slice();
+        let vals = decode_nodes(ctx, buf)?.into_boxed_slice();
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            keys,
+            vals,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -62,6 +85,22 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + nodes_len(&self.keys)
+            + nodes_len(&self.vals)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Map, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        encode_nodes(&self.keys, buf)?;
+        encode_nodes(&self.vals, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.keys.is_empty() {
             // An empty literal is a constant: FIRED at init, STALE inside
@@ -182,6 +221,26 @@ pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
 }
 
 impl<R: Rt, E: UserEvent> MapRef<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let source = decode_node(ctx, buf)?;
+        let key = decode_node(ctx, buf)?;
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let vtyp = Type::decode(buf)?;
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            source,
+            key,
+            spec,
+            typ,
+            vtyp,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -211,6 +270,24 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.source.image_len()
+            + self.key.image_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.vtyp.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::MapRef, buf);
+        self.source.image_encode(buf)?;
+        self.key.image_encode(buf)?;
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.vtyp.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut trig = false;
         let mut fired = false;

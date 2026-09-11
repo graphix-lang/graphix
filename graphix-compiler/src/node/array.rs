@@ -1,6 +1,7 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
 use crate::image::nodes::{
-    NodeTag, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, opt_node_decode,
+    opt_node_encode, opt_node_len, put_tag, tag_len,
 };
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
@@ -37,6 +38,26 @@ pub struct ArrayRef<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let source = decode_node(ctx, buf)?;
+        let i = decode_node(ctx, buf)?;
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let etyp = Type::decode(buf)?;
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            source,
+            i,
+            spec,
+            typ,
+            etyp,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -150,6 +171,24 @@ pub(crate) fn array_slice_i64(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.source.image_len()
+            + self.i.image_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.etyp.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::ArrayRef, buf);
+        self.source.image_encode(buf)?;
+        self.i.image_encode(buf)?;
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.etyp.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut trig = false;
         let mut fired = false;
@@ -252,6 +291,26 @@ pub struct ArraySlice<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let source = decode_node(ctx, buf)?;
+        let start = opt_node_decode(ctx, buf)?;
+        let end = opt_node_decode(ctx, buf)?;
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            source,
+            start,
+            end,
+            spec,
+            typ,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -285,6 +344,24 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.source.image_len()
+            + opt_node_len(self.start.as_ref())
+            + opt_node_len(self.end.as_ref())
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::ArraySlice, buf);
+        self.source.image_encode(buf)?;
+        opt_node_encode(self.start.as_ref(), buf)?;
+        opt_node_encode(self.end.as_ref(), buf)?;
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut trig = false;
         let mut fired = false;

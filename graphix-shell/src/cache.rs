@@ -1,10 +1,11 @@
-//! The registration image cache. The executable that reads an image is
-//! the executable that wrote it, on its first run: entries live under
-//! the cache directory by the executable's build id, which also covers
-//! the packages compiled into it, keyed by the root that declares them
-//! and the image format, so a rebuilt executable misses and recompiles.
-//! Entries are written to a temporary file and renamed into place, and
-//! other build ids' directories are removed when one is written.
+//! The image cache. The executable that reads an image is the
+//! executable that wrote it, on its first run: entries live under the
+//! cache directory by the executable's build id, which also covers the
+//! packages compiled into it, keyed by the root that declares them and
+//! the image format, so a rebuilt executable misses and recompiles. A
+//! program's entry adds the program's source to the key. Entries are
+//! written to a temporary file and renamed into place, and other build
+//! ids' directories are removed when one is written.
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
@@ -20,7 +21,16 @@ use std::{
 pub(crate) struct RegistrationCache {
     root: PathBuf,
     build: String,
-    key: String,
+    registration: String,
+    program: Option<String>,
+}
+
+/// Which entry: the packages' registration alone, or the session with
+/// the program compiled in.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Entry {
+    Registration,
+    Program,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -85,50 +95,67 @@ fn elf_build_id(exe: &FsPath) -> Option<String> {
 }
 
 impl RegistrationCache {
-    /// The cache entry for this root, or an error when there is no
-    /// cache directory.
-    pub(crate) fn new(root: &str) -> Result<Self> {
+    /// The cache entries for this root and, when its source is known,
+    /// the program; an error when there is no cache directory.
+    pub(crate) fn new(root: &str, program: Option<&[u8]>) -> Result<Self> {
         let root_dir = dirs::cache_dir()
             .ok_or_else(|| anyhow!("no cache directory"))?
             .join("graphix")
             .join("registration");
-        let parts: [&[u8]; 2] = [&[image::REGISTRATION_FORMAT], root.as_bytes()];
-        let key = hex(&make_sha3_token(parts)[..16]);
-        Ok(RegistrationCache { root: root_dir, build: build_id(), key })
+        let format = [image::REGISTRATION_FORMAT];
+        let registration = hex(&make_sha3_token([&format[..], root.as_bytes()])[..16]);
+        let program = program
+            .map(|p| hex(&make_sha3_token([&format[..], root.as_bytes(), p])[..16]));
+        Ok(RegistrationCache { root: root_dir, build: build_id(), registration, program })
+    }
+
+    pub(crate) fn has_program(&self) -> bool {
+        self.program.is_some()
     }
 
     fn dir(&self) -> PathBuf {
         self.root.join(&self.build)
     }
 
-    fn path(&self) -> PathBuf {
-        self.dir().join(format!("{}.img", self.key))
+    fn key(&self, entry: Entry) -> Option<&str> {
+        match entry {
+            Entry::Registration => Some(&self.registration),
+            Entry::Program => self.program.as_deref(),
+        }
     }
 
-    pub(crate) fn load(&self) -> Option<Bytes> {
-        let path = self.path();
+    fn path(&self, entry: Entry) -> Option<PathBuf> {
+        Some(self.dir().join(format!("{}.img", self.key(entry)?)))
+    }
+
+    pub(crate) fn load(&self, entry: Entry) -> Option<Bytes> {
+        let path = self.path(entry)?;
         match fs::read(&path) {
             Ok(bytes) => {
-                info!("registration image {}", path.display());
+                info!("{entry:?} image {}", path.display());
                 Some(Bytes::from(bytes))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
-                warn!("reading the registration image {}: {e}", path.display());
+                warn!("reading the {entry:?} image {}: {e}", path.display());
                 None
             }
         }
     }
 
     /// Write the entry and remove other build ids' directories.
-    pub(crate) fn store(&self, image: &[u8]) -> Result<()> {
+    pub(crate) fn store(&self, entry: Entry, image: &[u8]) -> Result<()> {
+        let path = self.path(entry).ok_or_else(|| anyhow!("no {entry:?} entry"))?;
         let dir = self.dir();
         fs::create_dir_all(&dir)
             .with_context(|| format!("creating {}", dir.display()))?;
-        let tmp = dir.join(format!("{}.img.{}", self.key, std::process::id()));
+        let tmp = dir.join(format!(
+            "{}.img.{}",
+            self.key(entry).unwrap_or_default(),
+            std::process::id()
+        ));
         fs::write(&tmp, image).with_context(|| format!("writing {}", tmp.display()))?;
-        fs::rename(&tmp, self.path())
-            .with_context(|| format!("renaming {}", tmp.display()))?;
+        fs::rename(&tmp, &path).with_context(|| format!("renaming {}", tmp.display()))?;
         if let Ok(entries) = fs::read_dir(&self.root) {
             for entry in entries.flatten() {
                 if entry.file_name() != self.build.as_str() {
@@ -136,7 +163,7 @@ impl RegistrationCache {
                 }
             }
         }
-        info!("registration image written to {}", self.path().display());
+        info!("{entry:?} image written to {}", path.display());
         Ok(())
     }
 }

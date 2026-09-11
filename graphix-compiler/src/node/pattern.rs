@@ -9,9 +9,10 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::BytesMut;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
-use netidx_core::pack::Pack;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use smallvec::{SmallVec, smallvec};
 use std::fmt::Debug;
@@ -1391,6 +1392,48 @@ pub struct PatternNode<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
+    pub(crate) fn image_len(&self) -> usize {
+        self.explicit_type_predicate.encoded_len()
+            + self.type_predicate.encoded_len()
+            + self.shallow_predicate.encoded_len()
+            + self.structure_predicate.encoded_len()
+            + 1
+            + self.guard.as_ref().map_or(0, |g| g.image_len())
+    }
+
+    pub(crate) fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        self.explicit_type_predicate.encode(buf)?;
+        self.type_predicate.encode(buf)?;
+        self.shallow_predicate.encode(buf)?;
+        self.structure_predicate.encode(buf)?;
+        self.guard.is_some().encode(buf)?;
+        match &self.guard {
+            Some(g) => g.image_encode(buf),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let explicit_type_predicate = bool::decode(buf)?;
+        let type_predicate = Type::decode(buf)?;
+        let shallow_predicate = Option::<Type>::decode(buf)?;
+        let structure_predicate = StructPatternNode::decode(buf)?;
+        let guard = match bool::decode(buf)? {
+            true => Some(Held::image_decode(ctx, buf)?),
+            false => None,
+        };
+        Ok(PatternNode {
+            explicit_type_predicate,
+            type_predicate,
+            shallow_predicate,
+            structure_predicate,
+            guard,
+        })
+    }
+
     pub(super) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,

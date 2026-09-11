@@ -1,3 +1,10 @@
+use crate::image::{
+    self,
+    nodes::{
+        NodeTag, decode_node, opt_node_decode, opt_node_encode, opt_node_len, put_tag,
+        tag_len,
+    },
+};
 use crate::{
     BindId, CFlag, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
@@ -12,7 +19,9 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
+use bytes::BytesMut;
 use enumflags2::BitFlags;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, sync::LazyLock};
@@ -89,6 +98,38 @@ pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Catch<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let handler = decode_node(ctx, buf)?;
+        let seq_abort =
+            opt_node_decode(ctx, buf)?.map(|node| SeqAbort { node, pending: false });
+        let capture = Option::<BindId>::decode(buf)?;
+        let own_handler = image::handler_decode(buf)?;
+        let constraint = Option::<Type>::decode(buf)?;
+        let thrown = Option::<Type>::decode(buf)?;
+        let bind_id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        ctx.rt.ref_var(bind_id, top_id);
+        Ok(Node::new(Self {
+            spec,
+            handler,
+            seq_abort,
+            capture,
+            own_handler,
+            received: 0,
+            last_cycle: None,
+            constraint,
+            thrown,
+            bind_id,
+            top_id,
+            typ,
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -155,6 +196,34 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.handler.image_len()
+            + opt_node_len(self.seq_abort.as_ref().map(|a| &a.node))
+            + self.capture.encoded_len()
+            + image::handler_len(&self.own_handler)
+            + self.constraint.encoded_len()
+            + self.thrown.encoded_len()
+            + self.bind_id.encoded_len()
+            + self.top_id.encoded_len()
+            + self.typ.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Catch, buf);
+        self.spec.encode(buf)?;
+        self.handler.image_encode(buf)?;
+        opt_node_encode(self.seq_abort.as_ref().map(|a| &a.node), buf)?;
+        self.capture.encode(buf)?;
+        image::handler_encode(&self.own_handler, buf)?;
+        self.constraint.encode(buf)?;
+        self.thrown.encode(buf)?;
+        self.bind_id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.typ.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let _ = self.handler.update(ctx, event);
         let cycle = ctx.rt.cycle();
@@ -378,6 +447,30 @@ pub struct Qop<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let handler = match bool::decode(buf)? {
+            true => Some(image::handler_decode(buf)?),
+            false => None,
+        };
+        let top_id = ExprId::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        let flags = image::flags_decode(buf)?;
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            handler,
+            top_id,
+            n,
+            resident: TagValue::phantom(),
+            flags,
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -422,6 +515,30 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + 1
+            + self.handler.as_ref().map_or(0, image::handler_len)
+            + self.top_id.encoded_len()
+            + self.n.image_len()
+            + image::flags_len(self.flags)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Qop, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.handler.is_some().encode(buf)?;
+        if let Some(h) = &self.handler {
+            image::handler_encode(h, buf)?;
+        }
+        self.top_id.encode(buf)?;
+        self.n.image_encode(buf)?;
+        image::flags_encode(self.flags, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         if tv.tag().is_bottom() {
@@ -637,6 +754,22 @@ pub struct SeqGuard<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        let handler = image::handler_decode(buf)?;
+        Ok(Node::new(Self {
+            spec,
+            n,
+            handler,
+            state: GuardState::Sleeping,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -659,6 +792,20 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.n.image_len()
+            + image::handler_len(&self.handler)
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::SeqGuard, buf);
+        self.spec.encode(buf)?;
+        self.n.image_encode(buf)?;
+        image::handler_encode(&self.handler, buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let (generation, fired_since_entry) = match self.state {
             GuardState::Sleeping => {
@@ -751,6 +898,16 @@ pub struct OrNever<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> OrNever<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -766,6 +923,17 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::OrNever, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.n.image_encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         if tv.tag().is_bottom() {

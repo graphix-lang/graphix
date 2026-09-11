@@ -104,7 +104,17 @@ entries die with the deleted body); the comparison is what proves it.
 
 Expected: registration from about 90 ms to about 35 ms.
 
-## Step 2: cache kernels at the Cranelift boundary
+## Step 2: dropped
+
+Kernels travel inside the program image as the bytes and relocations
+the cold run produced, keyed within the image by the in-process kernel
+key, so the program image needs no CLIF determinism and no second
+cache. A content-keyed kernel cache would only speed up the cold run
+after an edit and share kernels across programs; if that matters
+later it is additive, and the determinism pin becomes its
+prerequisite then. The original design follows for the record.
+
+### Step 2 as designed: cache kernels at the Cranelift boundary
 
 | fusion phase | ms |
 |---|---:|
@@ -199,7 +209,57 @@ level; the rest, `FusedKernel` included, come with the program image.
 Not yet imaged: core hook sites (empty before any cycle), dynamic
 modules' runtime environment, `DefOrigin::Runtime` definitions.
 
+## Built: the program image, slice (a)
+
+Every node kind a fusion-off program produces has a codec: the
+registration kinds plus parentheses, string interpolation, connect
+and connect-through-reference, casts, `any`, sampling, array and map
+references and slices, struct update and field and tuple references,
+abstract construction, place references and dereferences, catch,
+`?`, seq guards, `or_never`, select with its pattern nodes, the call
+site, and the collection intrinsics (`NodeTag::Collection` plus the
+intrinsic, one decoder per `MapQ`/`FoldQ` instantiation). A call
+site's callee travels three ways: unbound (a dynamic site before its
+first cycle), an imaged instance of a lambda (`GXLambda`: argument
+patterns, body, scheme, analysis facts, lexical snapshot), or a
+builtin rebuilt at decode by the restored definition's factory over
+the imaged argument references, with the types the cold run resolved.
+Nothing is typechecked at decode: re-running static resolution
+against restored inference state fails (the corpus differential found
+it), so the image carries every resolved type it needs. A `?`'s
+handler and a catch's own handler are the scope codec's shared
+objects. Dynamic modules' runtime environment and
+`DefOrigin::Runtime` definitions stay outside the image.
+
+The runtime compiles a script at construction (`GXConfig::program`),
+before any cycle, so the image can carry it; the image records the
+program root's id, output flag and type, and `GXHandle::program`
+hands the embedder what `load` used to. A program that fails to
+compile is reported through the same call, so the shell's error text
+is unchanged. The shell keeps two cache entries per build id, the
+registration and the program (its key adds the program source), and
+loads the most complete one it has; the runtime writes whichever was
+missing. Fusion-on programs hold kernels and fail the write, so they
+run cold until slice (d). A warm run compiles nothing, so
+compile-time diagnostics (an uncaught `?`, unused bindings) print on
+the cold run only.
+
+Pins: `program_image_restores` restores a program of every new kind
+and compares the value sequence of the first cycles, cold against
+warm; a cold-versus-warm differential over a third of the fuzz
+corpus and the bench programs ran clean before landing.
+
 ## Step 3: cache the compiled program
+
+Built in slices, each landing green: (a) every node kind that a
+fusion-off program produces gets a codec, call sites carry their
+statically bound instance, builtin occurrences rebuild through the
+registered factory, and the shell images a program compiled with
+fusion off (a fusion-on program fails the write and runs cold, as
+any un-imaged kind does); (b) instances materialize on first
+dispatch; (c) the program cache key and `--warm`, measured on the
+admin TUI; (d) kernels as stored bytes; (e) the fuzzer's warm route
+and the growth study.
 
 What remains after steps 1 and 2 is instantiation and typechecking
 (~190 ms), CLIF construction (~45 ms) and analysis (~17 ms): the work

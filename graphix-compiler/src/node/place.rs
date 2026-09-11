@@ -5,12 +5,14 @@
 
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{ValArray, Value};
 use smallvec::SmallVec;
 
 /// One accessor of a path: an array or tuple index (negative from the
 /// end, as `a[-1]` reads), a struct field, or a map key.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, netidx_derive::Pack)]
 pub enum Step {
     Index(i64),
     Field(ArcStr),
@@ -18,6 +20,27 @@ pub enum Step {
 }
 
 pub type Path = SmallVec<[Step; 2]>;
+
+pub(crate) fn path_len(path: &Path) -> usize {
+    varint_len(path.len() as u64) + path.iter().map(|s| s.encoded_len()).sum::<usize>()
+}
+
+pub(crate) fn path_encode(path: &Path, buf: &mut impl BufMut) -> Result<(), PackError> {
+    encode_varint(path.len() as u64, buf);
+    for s in path {
+        s.encode(buf)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<Path, PackError> {
+    let n = decode_varint(buf)? as usize;
+    let mut path = Path::new();
+    for _ in 0..n {
+        path.push(Step::decode(buf)?);
+    }
+    Ok(path)
+}
 
 /// A queued write to a bound variable: the whole value, or a patch
 /// through a path applied to the value as it stands when the write is

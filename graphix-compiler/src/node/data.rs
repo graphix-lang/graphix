@@ -1,6 +1,6 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather};
 use crate::image::nodes::{
-    NodeTag, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
 };
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
@@ -19,6 +19,7 @@ use arcstr::ArcStr;
 use bytes::BytesMut;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::{decode_varint, encode_varint, varint_len};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -198,6 +199,25 @@ pub struct Replace<R: Rt, E: UserEvent> {
     pub n: Node<R, E>,
 }
 
+impl<R: Rt, E: UserEvent> Replace<R, E> {
+    fn image_len(&self) -> usize {
+        self.index.encoded_len() + self.name.encoded_len() + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        self.index.encode(buf)?;
+        self.name.encode(buf)?;
+        self.n.image_encode(buf)
+    }
+
+    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+        let index = Option::<usize>::decode(buf)?;
+        let name = Value::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Replace { index, name, n })
+    }
+}
+
 #[derive(Debug)]
 pub struct StructWith<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
@@ -210,6 +230,28 @@ pub struct StructWith<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> StructWith<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let source = decode_node(ctx, buf)?;
+        let n = decode_varint(buf)? as usize;
+        let mut replace = Vec::with_capacity(n);
+        for _ in 0..n {
+            replace.push(Replace::image_decode(ctx, buf)?);
+        }
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            source,
+            replace: replace.into_boxed_slice(),
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -243,6 +285,27 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.source.image_len()
+            + varint_len(self.replace.len() as u64)
+            + self.replace.iter().map(|r| r.image_len()).sum::<usize>()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::StructWith, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.source.image_encode(buf)?;
+        encode_varint(self.replace.len() as u64, buf);
+        for r in self.replace.iter() {
+            r.image_encode(buf)?;
+        }
+        Ok(())
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut trig = false;
         let mut fired = false;
@@ -407,6 +470,25 @@ pub struct StructRef<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> StructRef<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let source = decode_node(ctx, buf)?;
+        let sorted_field_idx = Option::<usize>::decode(buf)?;
+        let field_name = ArcStr::decode(buf)?;
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            source,
+            sorted_field_idx,
+            field_name,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -441,6 +523,24 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.source.image_len()
+            + self.sorted_field_idx.encoded_len()
+            + self.field_name.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::StructRef, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.source.image_encode(buf)?;
+        self.sorted_field_idx.encode(buf)?;
+        self.field_name.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.source.update(ctx, event);
         let tag = tv.tag();
@@ -861,6 +961,27 @@ pub struct Construct<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Construct<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let id = AbstractId::decode(buf)?;
+        let name = ArcStr::decode(buf)?;
+        let rep = Type::decode(buf)?;
+        let arg = decode_node(ctx, buf)?;
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            id,
+            name,
+            rep,
+            arg,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -899,6 +1020,26 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.id.encoded_len()
+            + self.name.encoded_len()
+            + self.rep.encoded_len()
+            + self.arg.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::Construct, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.id.encode(buf)?;
+        self.name.encode(buf)?;
+        self.rep.encode(buf)?;
+        self.arg.image_encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.arg.update(ctx, event);
         let tag = tv.tag();
@@ -962,6 +1103,25 @@ pub struct TupleRef<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> TupleRef<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let source = decode_node(ctx, buf)?;
+        let field = usize::decode(buf)?;
+        let scope = ModPath::decode(buf)?;
+        Ok(Node::new(Self {
+            spec,
+            typ,
+            source,
+            field,
+            scope,
+            resident: TagValue::phantom(),
+        }))
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -998,6 +1158,24 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.source.image_len()
+            + self.field.encoded_len()
+            + self.scope.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        put_tag(NodeTag::TupleRef, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.source.image_encode(buf)?;
+        self.field.encode(buf)?;
+        self.scope.encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.source.update(ctx, event);
         let tag = tv.tag();

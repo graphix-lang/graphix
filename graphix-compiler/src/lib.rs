@@ -624,6 +624,19 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(())
     }
 
+    /// The image codec of an application; a kind without one fails the
+    /// write with [`image::NOT_IMAGED`].
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(
+        &self,
+        _buf: &mut bytes::BytesMut,
+    ) -> std::result::Result<(), netidx_core::pack::PackError> {
+        Err(netidx_core::pack::PackError::Application(image::NOT_IMAGED))
+    }
+
     /// The lambda's type; the BuiltIn wrapper implements it for builtins.
     fn typ(&self) -> Arc<FnType> {
         static EMPTY: LazyLock<Arc<FnType>> = LazyLock::new(|| {

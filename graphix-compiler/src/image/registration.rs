@@ -15,11 +15,12 @@ use crate::{
     expr::{ExprId, ModPath},
     node::lambda::LambdaDef,
     profile::{self, Phase},
+    typ::Type,
 };
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use compact_str::CompactString;
-use log::info;
+use log::{info, warn};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 
 const MAGIC: &[u8; 4] = b"GXIM";
@@ -31,11 +32,41 @@ pub const REGISTRATION_FORMAT: u8 = 2;
 /// image cannot carry (a pending settle, an open gate, a kernel).
 pub const NOT_QUIESCENT: u64 = 2;
 
+/// The program a session compiled after its packages, when it did: the
+/// runtime hands its embedder the root's id, output flag and type.
+#[derive(Debug, Clone)]
+pub struct ProgramRoot {
+    pub id: ExprId,
+    pub output: bool,
+    pub typ: Type,
+}
+
+impl Pack for ProgramRoot {
+    fn encoded_len(&self) -> usize {
+        self.id.encoded_len() + self.output.encoded_len() + self.typ.encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        self.id.encode(buf)?;
+        self.output.encode(buf)?;
+        self.typ.encode(buf)
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        Ok(ProgramRoot {
+            id: Pack::decode(buf)?,
+            output: Pack::decode(buf)?,
+            typ: Pack::decode(buf)?,
+        })
+    }
+}
+
 /// The root nodes and scope a restored registration hands back to the
 /// runtime, which owns them exactly as it owns compiled ones.
 pub struct Registration<R: Rt, E: UserEvent> {
     pub nodes: Vec<(ExprId, Node<R, E>)>,
     pub scope: Scope,
+    pub program: Option<ProgramRoot>,
 }
 
 /// The context's tables that registration fills and later compiles
@@ -171,14 +202,18 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         &self,
         nodes: &[(ExprId, &Node<R, E>)],
         scope: &Scope,
+        program: Option<&ProgramRoot>,
     ) -> Result<Bytes, PackError> {
-        if !self.pending_settles.iter().all(|s| s.is_empty())
-            || self.def_gate_depth != 0
-            || !self.resolving_lambdas.lock().is_empty()
-            || !self.active_lambdas.is_empty()
-            || !self.fusion.kernels.lock().is_empty()
-            || !self.core_hook_sites.is_empty()
-        {
+        let busy = [
+            ("pending settles", !self.pending_settles.iter().all(|s| s.is_empty())),
+            ("an open definition gate", self.def_gate_depth != 0),
+            ("lambdas resolving", !self.resolving_lambdas.lock().is_empty()),
+            ("active lambdas", !self.active_lambdas.is_empty()),
+            ("kernels", !self.fusion.kernels.lock().is_empty()),
+            ("core hook sites", !self.core_hook_sites.is_empty()),
+        ];
+        if let Some((what, _)) = busy.iter().find(|(_, b)| *b) {
+            warn!("the session is not quiescent: {what}");
             return Err(PackError::Application(NOT_QUIESCENT));
         }
         let tables = Tables::collect(self)?;
@@ -195,7 +230,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             info!(
                 "registration image bounds: env {env_len} defs {tables_len} nodes {nodes_len} bytes"
             );
-            env_len + tables_len + nodes_len + scope_len(scope)
+            env_len
+                + tables_len
+                + nodes_len
+                + scope_len(scope)
+                + 1
+                + program.map_or(0, |p| p.encoded_len())
         };
         enc.sort_ids();
         let counts = enc.counts();
@@ -214,6 +254,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 n.image_encode(&mut buf)?;
             }
             scope_encode(scope, &mut buf)?;
+            program.is_some().encode(&mut buf)?;
+            if let Some(p) = program {
+                p.encode(&mut buf)?;
+            }
         }
         Ok(buf.freeze())
     }
@@ -251,7 +295,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 nodes.push((id, node));
             }
             let scope = scope_decode(&mut bytes)?;
-            Registration { nodes, scope }
+            let program = match bool::decode(&mut bytes)? {
+                true => Some(ProgramRoot::decode(&mut bytes)?),
+                false => None,
+            };
+            Registration { nodes, scope, program }
         };
         if bytes.has_remaining() {
             return Err(PackError::InvalidFormat);

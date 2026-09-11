@@ -1,13 +1,15 @@
 use anyhow::{Result, bail};
+use bytes::Bytes;
 use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag,
-    expr::{ResolverRef, VfsResolver},
+    expr::{ResolverRef, Source, VfsResolver},
 };
 use graphix_rt::{GXConfig, GXEvent, GXHandle, GXRt, NoExt, RegistrationImage};
 use netidx::publisher::Value;
 use poolshark::global::GPooled;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 pub struct TestCtx {
     pub rt: GXHandle<NoExt>,
@@ -130,7 +132,7 @@ where
     if std::env::var_os("GRAPHIX_STACK_BUDGET").is_none() {
         graphix_compiler::set_stack_budget(1 << 30);
     }
-    init_inner(sub, register, resolvers, flags, false, None, setup).await
+    init_inner(sub, register, resolvers, flags, false, None, None, None, setup).await
 }
 
 /// A runtime that restores its registration from an image, or sends
@@ -140,13 +142,29 @@ pub async fn init_with_registration(
     register: &[PackageRef],
     registration: RegistrationImage,
 ) -> Result<TestCtx> {
+    init_with_session(sub, register, BitFlags::empty(), registration, None, None).await
+}
+
+/// A runtime built around a registration image, with a program
+/// compiled at construction (or restored with the image) whose own
+/// image `program_image` receives; see `GXConfig::program`.
+pub async fn init_with_session(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[PackageRef],
+    flags: BitFlags<CFlag>,
+    registration: RegistrationImage,
+    program: Option<Source>,
+    program_image: Option<oneshot::Sender<Result<Bytes>>>,
+) -> Result<TestCtx> {
     init_inner(
         sub,
         register,
         vec![],
-        BitFlags::empty(),
+        flags,
         false,
         Some(registration),
+        program,
+        program_image,
         |_| {},
     )
     .await
@@ -170,7 +188,7 @@ where
         >,
     ),
 {
-    init_inner(sub, register, resolvers, flags, true, None, setup).await
+    init_inner(sub, register, resolvers, flags, true, None, None, None, setup).await
 }
 
 async fn init_inner<F>(
@@ -180,6 +198,8 @@ async fn init_inner<F>(
     flags: BitFlags<CFlag>,
     lsp_mode: bool,
     registration: Option<RegistrationImage>,
+    program: Option<Source>,
+    program_image: Option<oneshot::Sender<Result<Bytes>>>,
     setup: F,
 ) -> Result<TestCtx>
 where
@@ -210,6 +230,12 @@ where
         .lsp_mode(lsp_mode);
     if let Some(r) = registration {
         cfg = cfg.registration(r);
+    }
+    if let Some(p) = program {
+        cfg = cfg.program(p);
+    }
+    if let Some(tx) = program_image {
+        cfg = cfg.program_image(tx);
     }
     Ok(TestCtx { rt: cfg.build()?.start().await? })
 }

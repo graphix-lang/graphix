@@ -19,6 +19,7 @@ use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath, ResolverFactory, ResolverRef, Source},
     ide::Ide,
+    image::ProgramRoot,
     typ::{FnType, Type},
 };
 use log::error;
@@ -28,7 +29,7 @@ use netidx_value::{ValArray, Value};
 use nohash::IntSet;
 use poolshark::global::{GPooled, Pool};
 use serde_derive::{Deserialize, Serialize};
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 use std::{fmt, future, sync::Arc};
 use tokio::{
     sync::{
@@ -471,6 +472,9 @@ enum ToGX<X: GXExt> {
         res: oneshot::Sender<Option<String>>,
     },
     /// Snapshot the compiler-env and runtime-ref registry sizes.
+    Program {
+        res: oneshot::Sender<(Option<Result<ProgramRoot, String>>, Env)>,
+    },
     EnvStats {
         res: oneshot::Sender<EnvStats>,
     },
@@ -754,6 +758,26 @@ impl<X: GXExt> GXHandle<X> {
         self.exec(|res| ToGX::EnvStats { res }).await
     }
 
+    /// The program the runtime compiled or restored at construction
+    /// (`GXConfig::program`), as `load` would have returned it; its
+    /// compile error when it failed, `None` when none was configured.
+    pub async fn program(&self) -> Result<Option<CompRes<X>>> {
+        let (root, env) = self.exec(|res| ToGX::Program { res }).await?;
+        match root {
+            None => Ok(None),
+            Some(Err(e)) => Err(anyhow!("{e}")),
+            Some(Ok(r)) => Ok(Some(CompRes {
+                exprs: smallvec![CompExp {
+                    id: r.id,
+                    typ: r.typ,
+                    output: r.output,
+                    rt: self.clone()
+                }],
+                env,
+            })),
+        }
+    }
+
     /// Snapshot the fusion outcome counters accumulated by every
     /// `compile()` this runtime has dispatched. Compile-time only, so
     /// fetch any time after the compile of interest. See
@@ -922,6 +946,15 @@ pub struct GXConfig<X: GXExt> {
     /// See [`RegistrationImage`].
     #[builder(setter(strip_option), default)]
     registration: Option<RegistrationImage>,
+    /// A program compiled right after the root, before any cycle, so
+    /// the image can carry it; a restored image that holds a program
+    /// leaves this one alone. [`GXHandle::program`] hands it back.
+    #[builder(setter(strip_option), default)]
+    program: Option<Source>,
+    /// Receives the image taken after `program` compiled, taken before
+    /// any cycle, when the registration was not restored with one.
+    #[builder(setter(strip_option), default)]
+    program_image: Option<oneshot::Sender<Result<Bytes>>>,
     /// The execution context with any builtins already registered
     ctx: ExecCtx<GXRt<X>, X::UserEvent>,
     /// The text of the root module

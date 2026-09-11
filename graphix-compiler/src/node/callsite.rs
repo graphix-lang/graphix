@@ -1,4 +1,11 @@
 use super::{NOP, Nop, WakeBit, bind::Ref, compiler::compile};
+use crate::image::{
+    self,
+    nodes::{
+        NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, opt_node_decode,
+        opt_node_encode, opt_node_len, put_tag, tag_len,
+    },
+};
 use crate::{
     Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, LambdaId,
     LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, Tag,
@@ -18,8 +25,11 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut, BytesMut};
 use enumflags2::BitFlags;
 use indexmap::IndexMap;
+use log::warn;
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -68,7 +78,7 @@ fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, netidx_derive::Pack)]
 pub(crate) enum ArgKey {
     Positional(usize),
     Named(ArcStr),
@@ -1614,7 +1624,289 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 }
 
+/// How a site's callee travels: unbound (a dynamic site before its
+/// first cycle), an imaged instance of a lambda, or a builtin rebuilt
+/// at decode by the restored definition's factory over the imaged
+/// arguments, with the resolved types the cold run settled on.
+const CALLEE_UNBOUND: u8 = 0;
+const CALLEE_INSTANCE: u8 = 1;
+const CALLEE_REBUILT: u8 = 2;
+
+impl<R: Rt, E: UserEvent> Arg<R, E> {
+    fn image_len(&self, key: &ArgKey) -> usize {
+        key.encoded_len()
+            + self.id.encoded_len()
+            + opt_node_len(self.node.as_ref())
+            + self.is_default.encoded_len()
+    }
+
+    fn image_encode(&self, key: &ArgKey, buf: &mut BytesMut) -> Result<(), PackError> {
+        key.encode(buf)?;
+        self.id.encode(buf)?;
+        opt_node_encode(self.node.as_ref(), buf)?;
+        self.is_default.encode(buf)
+    }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<(ArgKey, Self), PackError> {
+        let key = ArgKey::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let node = opt_node_decode(ctx, buf)?;
+        let is_default = bool::decode(buf)?;
+        Ok((key, Arg { id, node, is_default }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> CallSite<R, E> {
+    fn callee_mode(&self) -> Result<u8, PackError> {
+        match &self.callee {
+            Callee::DynamicUnbound => Ok(CALLEE_UNBOUND),
+            Callee::DynamicBound { .. } => {
+                Err(PackError::Application(image::NOT_QUIESCENT))
+            }
+            Callee::Static { apply, .. } => match apply.view() {
+                ApplyView::Lambda(_) => Ok(CALLEE_INSTANCE),
+                ApplyView::BuiltIn => Ok(CALLEE_REBUILT),
+            },
+        }
+    }
+
+    /// The definition a statically resolvable site names, read the way
+    /// `try_static_resolve` reads it.
+    fn static_callee(&self, ctx: &ExecCtx<R, E>) -> Option<Value> {
+        match self.fnode.view() {
+            NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
+                .bind_to_lambda
+                .get(&r.id)
+                .cloned()
+                .or_else(|| ctx.rt.store_value(&r.id)),
+            NodeView::Ref(_) => None,
+            NodeView::Lambda(l) => Some(l.def_value().clone()),
+            _ => None,
+        }
+    }
+
+    /// Rebuild a builtin callee from its definition's factory over the
+    /// restored arguments and the types the cold run resolved.
+    fn rebuild_builtin(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        resolved_ftype: FnType,
+        first_update: bool,
+    ) -> Result<()> {
+        let fv = self
+            .static_callee(ctx)
+            .ok_or_else(|| anyhow!("no definition for the builtin at {}", self.spec))?;
+        let def = fv
+            .downcast_ref::<LambdaDef<R, E>>()
+            .ok_or_else(|| anyhow!("the callee of {} is not a definition", self.spec))?;
+        let site = self
+            .ftype
+            .as_ref()
+            .map(FnType::resolve_tvars)
+            .ok_or_else(|| anyhow!("an untyped builtin site at {}", self.spec))?;
+        let scope = self.scope.clone();
+        let mode = BindMode::Static { instance: &resolved_ftype, site: &site };
+        let mut apply = self.init_prepared_bind(ctx, &scope, def, mode)?;
+        // A builtin records the types it renders or checks by in its
+        // typecheck passes, which read the argument and resolved types
+        // the cold run settled.
+        apply.typecheck0(ctx, &mut self.arg_refs)?;
+        apply.typecheck1(ctx, &mut [], &resolved_ftype)?;
+        self.callee_is_builtin = true;
+        self.callee = Callee::Static { apply, resolved_ftype, first_update };
+        Ok(())
+    }
+
+    fn static_target_len(&self) -> usize {
+        1 + self.static_target.as_ref().map_or(0, |t| {
+            t.definition.encoded_len() + t.instance.encoded_len() + t.ftype.encoded_len()
+        })
+    }
+
+    fn static_target_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        match &self.static_target {
+            None => Ok(buf.put_u8(0)),
+            Some(t) => {
+                buf.put_u8(1);
+                t.definition.encode(buf)?;
+                t.instance.encode(buf)?;
+                t.ftype.encode(buf)
+            }
+        }
+    }
+
+    fn static_target_decode(
+        buf: &mut &[u8],
+    ) -> Result<Option<StaticCallTarget>, PackError> {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match buf.get_u8() {
+            0 => Ok(None),
+            1 => Ok(Some(StaticCallTarget {
+                definition: LambdaId::decode(buf)?,
+                instance: LambdaInstanceId::decode(buf)?,
+                ftype: FnType::decode(buf)?,
+            })),
+            _ => Err(PackError::UnknownTag),
+        }
+    }
+
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = TArc::new(Expr::decode(buf)?);
+        let ftype = Option::<FnType>::decode(buf)?;
+        let rtype = Type::decode(buf)?;
+        let fnode = decode_node(ctx, buf)?;
+        let n = decode_varint(buf)? as usize;
+        let mut args = ArgMap::with_capacity_and_hasher(n, Default::default());
+        for _ in 0..n {
+            let (key, arg) = Arg::image_decode(ctx, buf)?;
+            args.insert(key, arg);
+        }
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        let mode = buf.get_u8();
+        let mut rebuild = None;
+        let (arg_refs, callee, static_target) = match mode {
+            CALLEE_UNBOUND => (Vec::new(), Callee::DynamicUnbound, None),
+            CALLEE_INSTANCE => {
+                let arg_refs = decode_nodes(ctx, buf)?;
+                let apply: Box<dyn Apply<R, E>> =
+                    Box::new(super::lambda::GXLambda::image_decode(ctx, buf)?);
+                let resolved_ftype = FnType::decode(buf)?;
+                let first_update = bool::decode(buf)?;
+                let static_target = Self::static_target_decode(buf)?;
+                let callee = Callee::Static { apply, resolved_ftype, first_update };
+                (arg_refs, callee, static_target)
+            }
+            CALLEE_REBUILT => {
+                let arg_refs = decode_nodes(ctx, buf)?;
+                rebuild = Some((FnType::decode(buf)?, bool::decode(buf)?));
+                (arg_refs, Callee::DynamicUnbound, None)
+            }
+            _ => return Err(PackError::UnknownTag),
+        };
+        let lowered = opt_node_decode(ctx, buf)?;
+        let recursive_edge = bool::decode(buf)?;
+        let flags = image::flags_decode(buf)?;
+        let scope = image::scope_decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let is_self_tail_call = bool::decode(buf)?;
+        let tail_arg_order = Option::<Vec<BindId>>::decode(buf)?.map(Box::from);
+        let callee_lambda_id = Option::<LambdaId>::decode(buf)?;
+        let mut site = Self {
+            slept: WakeBit::default(),
+            spec,
+            ftype,
+            rtype,
+            fnode,
+            args,
+            arg_refs,
+            callee,
+            callee_is_builtin: false,
+            static_target,
+            lowered,
+            recursive_edge: AtomicBool::new(recursive_edge),
+            flags,
+            top_id,
+            scope,
+            is_self_tail_call: AtomicBool::new(is_self_tail_call),
+            tail_arg_order: Mutex::new(tail_arg_order),
+            callee_lambda_id: Mutex::new(callee_lambda_id),
+            resident: TagValue::phantom(),
+        };
+        if let Some((resolved_ftype, first_update)) = rebuild {
+            site.rebuild_builtin(ctx, resolved_ftype, first_update).map_err(|e| {
+                warn!("rebuilding the callee of {}: {e:#}", site.spec);
+                PackError::InvalidFormat
+            })?;
+        }
+        Ok(Node::new(site))
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
+    fn image_len(&self) -> usize {
+        let mode = self.callee_mode().unwrap_or(CALLEE_UNBOUND);
+        let args: usize = self.args.iter().map(|(k, a)| a.image_len(k)).sum();
+        let callee = match (&self.callee, mode) {
+            (Callee::Static { apply, resolved_ftype, first_update }, CALLEE_INSTANCE) => {
+                nodes_len(&self.arg_refs)
+                    + apply.image_len()
+                    + resolved_ftype.encoded_len()
+                    + first_update.encoded_len()
+                    + self.static_target_len()
+            }
+            (Callee::Static { resolved_ftype, first_update, .. }, CALLEE_REBUILT) => {
+                nodes_len(&self.arg_refs)
+                    + resolved_ftype.encoded_len()
+                    + first_update.encoded_len()
+            }
+            _ => 0,
+        };
+        tag_len()
+            + self.spec.encoded_len()
+            + self.ftype.encoded_len()
+            + self.rtype.encoded_len()
+            + self.fnode.image_len()
+            + varint_len(self.args.len() as u64)
+            + args
+            + 1
+            + callee
+            + opt_node_len(self.lowered.as_ref())
+            + 1
+            + image::flags_len(self.flags)
+            + image::scope_len(&self.scope)
+            + self.top_id.encoded_len()
+            + 1
+            + self.tail_arg_order.lock().as_ref().map(|b| b.to_vec()).encoded_len()
+            + self.callee_lambda_id.lock().encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut BytesMut) -> Result<(), PackError> {
+        let mode = self.callee_mode()?;
+        put_tag(NodeTag::CallSite, buf);
+        self.spec.encode(buf)?;
+        self.ftype.encode(buf)?;
+        self.rtype.encode(buf)?;
+        self.fnode.image_encode(buf)?;
+        encode_varint(self.args.len() as u64, buf);
+        for (k, a) in self.args.iter() {
+            a.image_encode(k, buf)?;
+        }
+        buf.put_u8(mode);
+        match (&self.callee, mode) {
+            (Callee::Static { apply, resolved_ftype, first_update }, CALLEE_INSTANCE) => {
+                encode_nodes(&self.arg_refs, buf)?;
+                apply.image_encode(buf)?;
+                resolved_ftype.encode(buf)?;
+                first_update.encode(buf)?;
+                self.static_target_encode(buf)?;
+            }
+            (Callee::Static { resolved_ftype, first_update, .. }, CALLEE_REBUILT) => {
+                encode_nodes(&self.arg_refs, buf)?;
+                resolved_ftype.encode(buf)?;
+                first_update.encode(buf)?;
+            }
+            _ => (),
+        }
+        opt_node_encode(self.lowered.as_ref(), buf)?;
+        self.recursive_edge.load(Ordering::Relaxed).encode(buf)?;
+        image::flags_encode(self.flags, buf)?;
+        image::scope_encode(&self.scope, buf)?;
+        self.top_id.encode(buf)?;
+        self.is_self_tail_call.load(Ordering::Relaxed).encode(buf)?;
+        self.tail_arg_order.lock().as_ref().map(|b| b.to_vec()).encode(buf)?;
+        self.callee_lambda_id.lock().encode(buf)
+    }
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         match self.lowered.is_some() {
             true => self.lowered.as_mut().unwrap().update(ctx, event),
