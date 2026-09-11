@@ -85,10 +85,18 @@ pub enum Outcome {
     CompileErr(String),
     /// Runtime error / the runtime died before producing a result.
     RuntimeErr(String),
-    /// Neither quiesced nor hit the trace budget within the wall-clock
-    /// backstop, or the stack budget aborted it first: both are
-    /// containment outside the language, one outcome.
-    Timeout,
+    /// Contained outside the language: neither quiesced nor hit the
+    /// trace budget within the wall-clock backstop, or the stack budget
+    /// aborted it first.
+    Timeout(Containment),
+}
+
+/// What stopped a contained run. The two agree with each other: which
+/// fires first is a race between the engines' descent speeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Containment {
+    Deadline,
+    StackBudget,
 }
 
 /// Strip tvar numbers (`'_6070` -> `'_N`) and abstract-type ids
@@ -145,8 +153,8 @@ impl Outcome {
             // counter drift); RuntimeErr messages are mode-dependent
             (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
-            (Timeout, Timeout) => true,
-            (Timeout, Trace(_)) | (Trace(_), Timeout) => {
+            (Timeout(_), Timeout(_)) => true,
+            (Timeout(_), Trace(_)) | (Trace(_), Timeout(_)) => {
                 !self.has_events() && !other.has_events()
             }
             _ => false,
@@ -180,7 +188,7 @@ impl Outcome {
             Outcome::Trace(_) => 0,
             Outcome::CompileErr(_) => 1,
             Outcome::RuntimeErr(_) => 2,
-            Outcome::Timeout => 3,
+            Outcome::Timeout(_) => 3,
         }
     }
 }
@@ -428,14 +436,9 @@ pub async fn run_program_with_stats_routed(
         lines.sort_unstable();
         t.stdout = lines;
     }
-    // A stack-budget abort is containment like the deadline; which fires
-    // first is a race between the engines' descent speeds.
-    if matches!(outcome, Outcome::RuntimeErr(_)) && ctx.rt.budget_aborted() {
-        outcome = Outcome::Timeout;
-    }
     // A wedged runtime never answers another request: abort first, then
     // never await it without a deadline.
-    if matches!(outcome, Outcome::Timeout) {
+    if matches!(outcome, Outcome::Timeout(_)) {
         ctx.rt.abort();
     }
     let grace = Duration::from_secs(2);
@@ -453,6 +456,25 @@ pub async fn run_program_with_stats_routed(
 }
 
 async fn drive(
+    ctx: &TestCtx,
+    rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
+    subj: &Subject,
+    route: Route,
+    timeout: Duration,
+    entry: Entry,
+) -> Outcome {
+    let outcome = drive_inner(ctx, rx, subj, route, timeout, entry).await;
+    // A runtime the stack budget aborted answers nothing more: whichever
+    // request that failed, the outcome is the containment.
+    if matches!(outcome, Outcome::RuntimeErr(_) | Outcome::CompileErr(_))
+        && ctx.rt.budget_aborted()
+    {
+        return Outcome::Timeout(Containment::StackBudget);
+    }
+    outcome
+}
+
+async fn drive_inner(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     subj: &Subject,
@@ -487,7 +509,7 @@ async fn drive(
                     ctx.rt.interrupt();
                     let _ =
                         tokio::time::timeout(Duration::from_millis(750), &mut f).await;
-                    return Outcome::Timeout;
+                    return Outcome::Timeout(Containment::Deadline);
                 }
             }
         }};
@@ -952,10 +974,7 @@ async fn run_session(
         lines.sort_unstable();
         t.stdout = lines;
     }
-    if matches!(outcome, Outcome::RuntimeErr(_)) && ctx.rt.budget_aborted() {
-        outcome = Outcome::Timeout;
-    }
-    if matches!(outcome, Outcome::Timeout) {
+    if matches!(outcome, Outcome::Timeout(_)) {
         ctx.rt.abort();
     }
     let grace = Duration::from_secs(2);
@@ -1193,7 +1212,7 @@ impl Divergence {
             // Survived the 8x interp retry: either the JIT fabricated a
             // value or the node-walk is >8x slower on a heavy terminating
             // program. Verify by hand.
-            (Outcome::Timeout, Outcome::Trace(t))
+            (Outcome::Timeout(_), Outcome::Trace(t))
                 if t.epochs.iter().any(|e| !e.events.is_empty()) =>
             {
                 "asymmetric timeout (interp exceeded 8x budget; JIT produced a value — \
@@ -1311,12 +1330,24 @@ pub async fn check_classified(
     // an honestly slow node-walk as a wrongly terminating JIT; a
     // still-Timeout keeps the finding unless the interp provably made
     // progress. (An empty jit trace against a Timeout already agreed above.)
-    if matches!(&interp, Outcome::Timeout) && jit.has_events() {
+    // The interp's stack budget is containment, not slowness: the
+    // node-walk's frame per recursion level is kilobytes where a native
+    // kernel's is words, so a depth only the kernel reaches is no
+    // finding; the kernel's value stands unrefuted, as after a slow retry.
+    if matches!(&interp, Outcome::Timeout(Containment::StackBudget)) && jit.has_events() {
+        eprintln!(
+            "CONTAINED — interp exceeded the stack budget; jit's value stands \
+             unrefuted, not recorded"
+        );
+        eprintln!("    program: {}", code.replace('\n', "\\n"));
+        return (None, false);
+    }
+    if matches!(&interp, Outcome::Timeout(_)) && jit.has_events() {
         let retry = retry_one_sided_timeout(code, Mode::Interp, timeout).await;
         if retry.outcome.agrees_with_at(&jit, tier) {
             return (None, matches!(&retry.outcome, Outcome::Trace(_)));
         }
-        if matches!(&retry.outcome, Outcome::Timeout) && interp_made_progress(&retry) {
+        if matches!(&retry.outcome, Outcome::Timeout(_)) && interp_made_progress(&retry) {
             eprintln!(
                 "SLOW — interp burned {:.1}s CPU over a {:.0}s budget without \
                  finishing; jit's value stands unrefuted; honest slowness, \
@@ -1331,7 +1362,7 @@ pub async fn check_classified(
     // The symmetric direction is as likely a starved jit child (both
     // modes run concurrently under load) as a native hang. A wedged
     // kernel still times out at the bigger budget and keeps the finding.
-    if matches!(&jit, Outcome::Timeout) && interp.has_events() {
+    if matches!(&jit, Outcome::Timeout(_)) && interp.has_events() {
         let retry = retry_one_sided_timeout(code, Mode::Jit, timeout).await;
         if interp.agrees_with_at(&retry.outcome, tier) {
             return (None, matches!(&retry.outcome, Outcome::Trace(_)));
@@ -1434,14 +1465,14 @@ async fn check_callable(
         if agrees(&a, &b) {
             return None;
         }
-        if matches!(a, Outcome::Timeout) || matches!(b, Outcome::Timeout) {
+        if matches!(a, Outcome::Timeout(_)) || matches!(b, Outcome::Timeout(_)) {
             let big = (timeout * 4).max(Duration::from_secs(60));
             let a2 = run_program_routed(code, m1, r1, big).await;
             let b2 = run_program_routed(code, m2, r2, big).await;
             if agrees(&a2, &b2) {
                 return None;
             }
-            if matches!(a2, Outcome::Timeout) || matches!(b2, Outcome::Timeout) {
+            if matches!(a2, Outcome::Timeout(_)) || matches!(b2, Outcome::Timeout(_)) {
                 eprintln!(
                     "callable check: timeout-involved disagreement at 4x — dropped"
                 );
@@ -1678,7 +1709,7 @@ pub async fn run_batch(
             None
         };
         let suspect =
-            |o: &Outcome| matches!(o, Outcome::Timeout | Outcome::RuntimeErr(_));
+            |o: &Outcome| matches!(o, Outcome::Timeout(_) | Outcome::RuntimeErr(_));
         let routed_ref = routed.as_ref();
         let poisoned = suspect(&interp)
             || suspect(&jit)
@@ -3509,7 +3540,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
             if a2.agrees_with_at(&b2, route_tier) {
                 continue;
             }
-            if matches!(a2, Outcome::Timeout) || matches!(b2, Outcome::Timeout) {
+            if matches!(a2, Outcome::Timeout(_)) || matches!(b2, Outcome::Timeout(_)) {
                 // inconclusive at this budget, not flaky
                 bad.push("inconclusive");
                 continue;
@@ -5384,8 +5415,8 @@ mod tests {
             if !interp.agrees_with(&direct) {
                 // a Timeout on either side is the budget talking under
                 // suite load: re-check at 4x before believing it
-                if matches!(interp, Outcome::Timeout)
-                    || matches!(direct, Outcome::Timeout)
+                if matches!(interp, Outcome::Timeout(_))
+                    || matches!(direct, Outcome::Timeout(_))
                 {
                     let big = t * 4;
                     let (i2, j2) = tokio::join!(
@@ -5393,8 +5424,8 @@ mod tests {
                         run_program(&code, Mode::Jit, big),
                     );
                     if i2.agrees_with(&j2)
-                        || matches!(i2, Outcome::Timeout)
-                        || matches!(j2, Outcome::Timeout)
+                        || matches!(i2, Outcome::Timeout(_))
+                        || matches!(j2, Outcome::Timeout(_))
                     {
                         budget_skipped += 1;
                         continue;

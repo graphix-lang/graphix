@@ -136,13 +136,20 @@ divergences never record. The Excluded list is empirical and
 flake.
 
 **`Timeout` narrowly means a wedged evaluator** — or a runaway the
-stack budget aborted: a `RuntimeErr` from a runtime whose `Control`
-reports `budget_aborted()` maps to `Timeout`, because the deadline and
-the budget are the same containment and which one stops an unbounded
-descent first is a race between the engines' descent speeds, not a
-property of the program. Timeout==Timeout is AGREE; read a bench
+stack budget aborted: any failed request to a runtime whose `Control`
+reports `budget_aborted()` is `Timeout(StackBudget)` (the driver maps
+it, in one place), because the deadline and the budget are the same
+containment and which one stops an unbounded descent first is a race
+between the engines' descent speeds, not a property of the program.
+Timeout==Timeout is AGREE whatever stopped each side; read a bench
 timeout as an unexplained failure, not a pass. An asymmetric hang is a
-top-tier finding: fusion adding or removing nontermination.
+top-tier finding: fusion adding or removing nontermination — with one
+exception the kinds make legible: an interp `StackBudget` beside a JIT
+value is CONTAINED, unrefuted and not recorded, without the slow retry.
+The node-walk's frame per recursion level is kilobytes (`update_call`
+alone is 3.6KB under LTO) where a native kernel's is words, so a depth
+only the kernel reaches says nothing about either engine's answer. A
+pin that must run in both engines picks a depth both finish.
 
 **Minimal canonicalization**, because every canonicalization hides a
 bug: NaN is one sentinel (both engines legitimately produce NaN);

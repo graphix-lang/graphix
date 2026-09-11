@@ -128,7 +128,7 @@ fn render(o: &Outcome) -> String {
         }
         Outcome::CompileErr(e) => format!("CompileErr({})", e.replace('\n', " | ")),
         Outcome::RuntimeErr(e) => format!("RuntimeErr({})", first_line(e)),
-        Outcome::Timeout => "Timeout".to_string(),
+        Outcome::Timeout(c) => format!("Timeout({c:?})"),
     }
 }
 
@@ -565,7 +565,7 @@ async fn main() -> Result<()> {
                             key.truncate(120);
                             *rejects.entry(key).or_default() += 1;
                         }
-                        Outcome::Timeout => {
+                        Outcome::Timeout(_) => {
                             compiled += 1;
                             wedged += 1;
                         }
@@ -640,7 +640,7 @@ async fn main() -> Result<()> {
                     eprintln!("COMPILE REJECT: {e}");
                     std::process::exit(3);
                 }
-                graphix_fuzz::Outcome::Timeout => std::process::exit(4),
+                graphix_fuzz::Outcome::Timeout(_) => std::process::exit(4),
                 graphix_fuzz::Outcome::Trace(_)
                 | graphix_fuzz::Outcome::RuntimeErr(_) => std::process::exit(0),
             }
