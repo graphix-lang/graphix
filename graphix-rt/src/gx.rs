@@ -265,9 +265,9 @@ impl<X: GXExt> GX<X> {
             program: None,
         };
         info!("runtime construction before the root: {:?}", st_new.elapsed());
-        t.trace = cfg.trace.map(|(max_events, max_cycles)| {
-            TraceState::new(max_events, max_cycles)
-        });
+        t.trace = cfg
+            .trace
+            .map(|(max_events, max_cycles)| TraceState::new(max_events, max_cycles));
         let st = Instant::now();
         match cfg.registration {
             Some(RegistrationImage::Load(bytes)) => t.restore_registration(bytes)?,

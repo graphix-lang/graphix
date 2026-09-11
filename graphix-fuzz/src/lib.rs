@@ -20,8 +20,8 @@ pub mod typemorph;
 
 use ahash::AHashMap;
 use arcstr::ArcStr;
-use enumflags2::BitFlags;
 use bytes::Bytes;
+use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, FusionStats, Scope,
     env::Env,
@@ -239,14 +239,18 @@ impl Subject {
         // super::*` brings in the aux `mod`s, and the injected inputs
         // live in their own module so a program compiled as one block
         // (the program route) still publishes them by name
-        let inputs = if sched.inputs().is_empty() { "" } else { "use super::inputs::*; " };
+        let inputs =
+            if sched.inputs().is_empty() { "" } else { "use super::inputs::*; " };
         let wrapped = ArcStr::from(format!("use super::*; {inputs}let result = {body}"));
         let mut table = AHashMap::from_iter([(
             Path::from(format!("/{modname}.gx")),
             VfsEntry::from(wrapped),
         )]);
         if !sched.inputs().is_empty() {
-            table.insert(Path::from("/inputs.gx"), VfsEntry::from(ArcStr::from(sched.decls())));
+            table.insert(
+                Path::from("/inputs.gx"),
+                VfsEntry::from(ArcStr::from(sched.decls())),
+            );
         }
         for (name, text) in &files {
             table.insert(
@@ -845,7 +849,8 @@ fn sessions_sampled(i: usize) -> bool {
 /// process by a throwaway runtime; `None` when the image cannot be
 /// built, in which case every session compiles its registration.
 async fn registration_image() -> Option<Bytes> {
-    static IMAGE: tokio::sync::OnceCell<Option<Bytes>> = tokio::sync::OnceCell::const_new();
+    static IMAGE: tokio::sync::OnceCell<Option<Bytes>> =
+        tokio::sync::OnceCell::const_new();
     IMAGE
         .get_or_init(|| async {
             let (tx, _rx) = mpsc::channel(8);
@@ -926,7 +931,10 @@ async fn run_session(
     {
         Ok(c) => c,
         Err(e) => {
-            return (Outcome::RuntimeErr(format!("runtime init failed: {e:?}")), no_image);
+            return (
+                Outcome::RuntimeErr(format!("runtime init failed: {e:?}")),
+                no_image,
+            );
         }
     };
     let tier = subj.tier;
@@ -965,7 +973,8 @@ fn registration_image_now() -> Option<Bytes> {
     REGISTRATION_IMAGE.get().unwrap_or(&NONE).clone()
 }
 
-static REGISTRATION_IMAGE: std::sync::OnceLock<Option<Bytes>> = std::sync::OnceLock::new();
+static REGISTRATION_IMAGE: std::sync::OnceLock<Option<Bytes>> =
+    std::sync::OnceLock::new();
 
 /// Run `code` under `mode` three ways: no cache, cold (writing the
 /// program image) and warm (restored from it). A program that does not
@@ -981,7 +990,9 @@ pub async fn run_sessions(code: &str, mode: Mode, timeout: Duration) -> Sessions
     let (cold, image) = run_session(code, mode, SessionImage::Write, timeout).await;
     let warm = match (&cold, image) {
         (Outcome::CompileErr(_), _) => cold.clone(),
-        (_, Ok(image)) => run_session(code, mode, SessionImage::Read(image), timeout).await.0,
+        (_, Ok(image)) => {
+            run_session(code, mode, SessionImage::Read(image), timeout).await.0
+        }
         (_, Err(e)) => Outcome::RuntimeErr(e),
     };
     Sessions { nocache, cold, warm }
@@ -1023,7 +1034,11 @@ async fn session_divergence(
 }
 
 /// Run both modes' sessions and report the first diverging pair.
-async fn check_sessions(code: &str, tier: OracleTier, timeout: Duration) -> Option<Divergence> {
+async fn check_sessions(
+    code: &str,
+    tier: OracleTier,
+    timeout: Duration,
+) -> Option<Divergence> {
     if !sessions_enabled() || tier == OracleTier::Excluded || callable::has_header(code) {
         return None;
     }
@@ -1620,11 +1635,8 @@ pub async fn run_batch(
             && (!comparable || interp.agrees_with_at(&jit, tier));
         // The session runs take fresh runtimes; a disagreement goes back
         // through the individual path, which confirms it with a rerun.
-        let sessions_agree = !agreed
-            || !comparable
-            || subj.spec.is_some()
-            || !sessions_sampled(i)
-            || {
+        let sessions_agree =
+            !agreed || !comparable || subj.spec.is_some() || !sessions_sampled(i) || {
                 let (si, sj) = tokio::join!(
                     run_sessions(code, Mode::Interp, timeout),
                     run_sessions(code, Mode::Jit, timeout),

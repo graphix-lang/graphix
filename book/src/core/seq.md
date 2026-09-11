@@ -83,19 +83,26 @@ produces.
 rather than as a queued copy. It has no value, so it cannot be the last
 statement of a body whose value is used.
 
-**`do { s1; s2; ... }`** groups several statements into one step. Where
-an ordinary block would run its statements concurrently, `do` still
-runs them in order, but the whole group counts as a single statement of
-the enclosing sequence. Its value is the value of its last statement, so
-a `do` can end a seq or initialize a `let`. A trailing semicolon in
-`do { ... }` does not add a step or discard the last statement's value.
+**`do { s1; s2; ... }`** groups several statements into one step. At
+the seq level every `;` is a cycle boundary: a statement completes, and
+the machine moves to the next statement on the following cycle, so
+`a <- x; b <- y;` writes `a` one cycle and `b` the next. Inside a `do`
+there is no such boundary. Everything that can produce in the step's
+entry cycle produces then, so the two writes in
+`do { a <- x; b <- y }` land together. Dependencies still hold: a `let`
+inside binds before the statements that read it, and a statement that
+has to wait for an asynchronous result delays the ones after it. The
+`do`'s value is the value of its last statement, so a `do` can end a
+seq or initialize a `let`. A trailing semicolon in `do { ... }` does not
+add a step or discard the last statement's value. `until` and `try` are
+refused inside `do`.
 
-`do` is not a way back into concurrent Graphix. For that, use an
-ordinary `{ ... }` block as the value of a step, `let x = { a; b };`:
-its contents are ordinary reactive expressions running concurrently,
-and the step completes when the block produces. A bare `{ ... }` as a
-statement is refused; ordinary blocks retain their usual
-trailing-semicolon behavior.
+A `do` is a seq construct: its connects are clocked to the step and its
+lets are seq lets. To run ordinary reactive Graphix inside a step, use
+an ordinary `{ ... }` block as the value of the step,
+`let x = { a; b };`. Its contents are live expressions, and the step
+completes when the block produces. A bare `{ ... }` as a statement is
+refused; ordinary blocks retain their usual trailing-semicolon behavior.
 
 **`try { steps } with(e) { steps }`** is the sequence's error handling.
 An error raised in the try body transfers control to the with body; see

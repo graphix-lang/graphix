@@ -980,7 +980,8 @@ async fn main() -> Result<()> {
                     }
                     if !graphix_fuzz::callable::has_header(code) {
                         for mode in [Mode::Interp, Mode::Jit] {
-                            let s = graphix_fuzz::run_sessions(code, mode, timeout()).await;
+                            let s =
+                                graphix_fuzz::run_sessions(code, mode, timeout()).await;
                             for (name, o) in [
                                 ("nocache", &s.nocache),
                                 ("cold", &s.cold),
