@@ -112,6 +112,19 @@ pub struct TCell {
     pub(crate) rigid_gates: u32,
 }
 
+/// An open rigid gate, holding the cell it counted on. A merge may
+/// re-point the var to another cell before the gate closes, and a
+/// rollback may undo the forward link the merge left, so the close
+/// decrements this cell and not whatever the var reads by then.
+pub struct RigidGate(Arc<RwLock<TCell>>);
+
+impl RigidGate {
+    pub fn close(self) {
+        let mut cell = self.0.write();
+        cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
+    }
+}
+
 impl TCell {
     fn bound(typ: Type) -> Self {
         TCell {
@@ -446,17 +459,13 @@ impl TVar {
                 }
                 // Forward-link the abandoned cell: other TVars may share
                 // it and must follow the merge. The occurs check above
-                // guarantees the link closes no cycle. Its rigid gates
-                // move with it, so the gate that opened them closes them
-                // on the cell the var now reads.
-                let gates = {
+                // guarantees the link closes no cycle.
+                {
                     let mut sc = s.typ.write();
                     if sc.typ.is_none() {
                         sc.typ = Some(Type::TVar(other.clone()));
                     }
-                    std::mem::take(&mut sc.rigid_gates)
-                };
-                o.typ.write().rigid_gates += gates;
+                }
                 s.typ = Arc::clone(&o.typ);
             }
         }
@@ -524,15 +533,13 @@ impl TVar {
                     oc.constraints.push(c);
                 }
             }
-            // Forward-link as in [`Self::alias`], gates included.
-            let gates = {
+            // Forward-link as in [`Self::alias`].
+            {
                 let mut sc = s.typ.write();
                 if sc.typ.is_none() {
                     sc.typ = Some(Type::TVar(other.clone()));
                 }
-                std::mem::take(&mut sc.rigid_gates)
-            };
-            o.typ.write().rigid_gates += gates;
+            }
             s.typ = Arc::clone(&o.typ);
         }
     }
@@ -612,38 +619,16 @@ impl TVar {
         self.read().typ.write().typ = None
     }
 
-    /// The cell this var's rigidity lives on: a merge forward-links the
-    /// abandoned cell to the survivor and moves its gates there, and a
-    /// wrapper that still reads the abandoned cell follows the link.
-    fn rigid_cell(&self) -> Arc<RwLock<TCell>> {
-        let mut cell = self.read().typ.clone();
-        for _ in 0..64 {
-            let next = match &cell.read().typ {
-                Some(Type::TVar(t)) => t.read().typ.clone(),
-                _ => break,
-            };
-            if Arc::ptr_eq(&next, &cell) {
-                break;
-            }
-            cell = next;
-        }
-        cell
-    }
-
-    /// Mark this var's shared cell rigid; see [`TCell::rigid_gates`].
-    pub fn set_rigid(&self) {
-        self.rigid_cell().write().rigid_gates += 1
-    }
-
-    /// Clear one gate's rigidity claim.
-    pub fn clear_rigid(&self) {
-        let cell = self.rigid_cell();
-        let mut cell = cell.write();
-        cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
+    /// Open a rigid gate on the cell this var reads now; see
+    /// [`TCell::rigid_gates`].
+    pub fn open_rigid(&self) -> RigidGate {
+        let cell = self.read().typ.clone();
+        cell.write().rigid_gates += 1;
+        RigidGate(cell)
     }
 
     pub(crate) fn is_rigid(&self) -> bool {
-        self.rigid_cell().read().rigid_gates > 0
+        self.read().typ.read().rigid_gates > 0
     }
 
     /// Record an occurs-check refusal; see [`TCell::cycle_refused`].

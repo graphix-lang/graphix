@@ -16,7 +16,7 @@ use crate::{
         callsite::CallSite, collection::CollectionIntrinsic, pattern::StructPatternNode,
     },
     profile::{self, Phase},
-    typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds},
+    typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds, tvar::RigidGate},
     wrap,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -1350,9 +1350,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         let mut named_tvs: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars(&mut named_tvs);
         named_tvs.retain(|name, _| !name.starts_with('_'));
-        for tv in named_tvs.values() {
-            tv.set_rigid();
-        }
+        let mut gates: LPooled<Vec<RigidGate>> =
+            named_tvs.values().map(|tv| tv.open_rigid()).collect();
         // a self-call site knots to the def's own cells (`ExecCtx::rec_defs`)
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
@@ -1414,8 +1413,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         ctx.def_gate_depth -= 1;
         ctx.rec_defs.remove(&def.id);
         ctx.env.by_id.remove_cow(&faux_id);
-        for tv in named_tvs.values() {
-            tv.clear_rigid();
+        for gate in gates.drain(..) {
+            gate.close();
         }
         // closed inferred bindings survive the gate: a solved fact must not
         // degrade to an upper bound a consumer can narrow first

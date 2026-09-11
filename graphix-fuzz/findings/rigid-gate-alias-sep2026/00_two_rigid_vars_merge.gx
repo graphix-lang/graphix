@@ -1,7 +1,7 @@
 // Two declared tvars of one lambda unify in its body check (`x + y`
-// over 'a and 'b). Aliasing 'b onto 'a's cell abandoned 'b's cell
-// with its rigid gate still counted, and the gate's close decremented
-// the merged cell instead; the abandoned cell stays reachable through
-// the def's signature, and a cell with an open gate refuses to image.
+// over 'a and 'b). The check's rigid gate was opened through the var
+// and closed through the var; the merge re-pointed the var to the
+// other cell in between, so the close missed the counted cell and the
+// registration image refused it. The gate holds the cells it counted.
 // Both routes of both engines produce the lambda's printed type.
 {let f = 'a: Number, 'b: Number|x: 'a, y: 'b| -> ['a, 'b] x + y; f}

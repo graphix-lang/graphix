@@ -1393,6 +1393,12 @@ fn cell_encode(
     let (typ, constraints, refused) = {
         let c = cell.read();
         if c.rigid_gates != 0 {
+            log::warn!(
+                "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
+                c.rigid_gates,
+                c.typ,
+                c.constraints
+            );
             return Err(PackError::InvalidFormat);
         }
         (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
