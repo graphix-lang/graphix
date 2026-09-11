@@ -1,8 +1,46 @@
 # Seq and Seqq
 
-`seq trigger { ... }` runs steps in order. A trigger arriving during a run
-is dropped. `seqq trigger { ... }` queues requests instead, with one run
-active at a time. Without a trigger, either form runs once at initialization.
+## Why sequences
+
+Sometimes you just want to run some steps one after another. Graphix
+could always express that, but only verbosely: a state variable, a
+`select` over it, `~` guards on every input so a step waits for the one
+before it, and a `<-` to advance the state. The dataflow was correct and
+unreadable.
+
+Within a `seq` you write statements the way you would in an ordinary
+language, and the compiler transforms them into that state machine for
+you.
+
+```graphix
+seq trigger {
+    do_step_1(x);
+    do_step_2(y);
+    do_step_3(z)
+}
+```
+
+In ordinary Graphix `do_step_1`, `do_step_2` and `do_step_3` would all
+run concurrently, each firing whenever its own inputs fire. Inside a
+`seq` each statement runs until it produces a value, and only then does
+the next one start. The run is started by the trigger; without one, the
+block runs once at initialization.
+
+A `seq` is still a Graphix expression. Its value is the value of its last
+step, produced once per completed run, so you can bind it, connect it
+to a variable, or feed it to another expression.
+
+## `seq` and `seqq`
+
+The two forms differ in what happens when the trigger fires while a run
+is in progress:
+
+- `seq trigger { ... }` drops the trigger. Use it for things that should
+  not pile up, such as a refresh button.
+- `seqq trigger { ... }` queues the trigger, with one run active at a
+  time. Use it when every request must be served, such as a stream of
+  jobs. The queue is unbounded; see [Captured inputs](#captured-inputs)
+  for what a queued request carries.
 
 ```graphix
 let request = count(sys::time::timer(duration:20.ms, 3)?);
@@ -20,15 +58,45 @@ output equals the previous one. Effectful calls must produce a completion
 value: `println`, for example, returns `null` after printing. `never()`
 stalls the current run and therefore stops the queue from advancing.
 
-A trailing semicolon in `do { ... }` does not add a step or discard the
-last statement's value. That statement supplies the `do`'s completion and,
-when it is the sequence's last step, its output. Ordinary `{ ... }` blocks
-retain their usual trailing-semicolon behavior.
+## Statements
 
-A later `let x = ...` creates a new binding, even inside `do`. Its
-initializer sees the preceding `x`; earlier references and closures
-continue to refer to that preceding binding. The new binding can have a
-different type.
+A seq body is straight-line: a list of statements, each of which is one
+step. There is no `if` or looping inside a seq; branch with `select`
+inside a step, or call a function. The statement kinds are:
+
+**An expression.** `f(x);` is a step that completes when the expression
+produces a value. The last expression of the block is its output.
+
+**`let x = e;`** is a step like any other, and additionally carries the
+value it produced into every later step. A later `let x = ...` creates a
+new binding, even inside `do`. Its initializer sees the preceding `x`;
+earlier references and closures continue to refer to that preceding
+binding. The new binding can have a different type.
+
+**`x <- e;`** connects, as it does anywhere. The destination is the
+original variable outside the block, and the step completes when `e`
+produces.
+
+**`until cond;`** waits until the boolean `cond` is true, reading it live
+rather than as a queued copy. It has no value, so it cannot be the last
+statement of a body whose value is used.
+
+**`do { s1; s2; ... }`** groups several statements into one step. Where
+an ordinary block would run its statements concurrently, `do` still
+runs them in order, but the whole group counts as a single statement of
+the enclosing sequence. Its value is the value of its last statement, so
+a `do` can end a seq or initialize a `let`. A trailing semicolon in
+`do { ... }` does not add a step or discard the last statement's value;
+ordinary `{ ... }` blocks retain their usual trailing-semicolon behavior.
+
+**`try { steps } with(e) { steps }`** is the sequence's error handling.
+An error raised in the try body transfers control to the with body; see
+[Errors](#errors).
+
+`graphix --expand file.gx` checks the file and prints each sequence's
+lowered program: the step variable, one select arm per step, and the
+cells that carry `let` values between steps. It is the tool for seeing
+exactly which event a step is waiting on.
 
 ## Call inputs
 
@@ -92,13 +160,6 @@ source reference variable subsequently points somewhere else.
 ## Live state and waits
 
 `until ready` observes the live condition, rather than a queued copy of it.
-It has no value, so it cannot be the last statement where the value is used
-(the end of a `seq`, or of a `try` or `with` body bound by a `let`).
-
-`graphix --expand file.gx` checks the file and prints each sequence's
-lowered program: the step variable, one select arm per step, and the
-cells that carry `let` values between steps. It is the tool for seeing
-exactly which event a step is waiting on.
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 `count <- count + 1` operations can accumulate rather than overwrite one
