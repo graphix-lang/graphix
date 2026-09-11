@@ -5,8 +5,8 @@
 Sometimes you just want to run some steps one after another. Graphix
 could always express that, but only verbosely: a state variable, a
 `select` over it, `~` guards on every input so a step waits for the one
-before it, and a `<-` to advance the state. The dataflow was correct and
-unreadable.
+before it, and a `<-` to advance the state. The dataflow was correct
+but difficult to read.
 
 Within a `seq` you write statements the way you would in an ordinary
 language, and the compiler transforms them into that state machine for
@@ -20,13 +20,12 @@ seq trigger {
 }
 ```
 
-In ordinary Graphix `do_step_1`, `do_step_2` and `do_step_3` would all
-run concurrently, each firing whenever its own inputs fire. Inside a
-`seq` only one statement is running at a time. Each statement runs until
-it produces a value; then it stops and the next one starts. A statement
-that has completed does not fire again later in the run, however its
-inputs move. The run is started by the trigger; without one, the block
-runs once at initialization.
+In ordinary Graphix `do_step_1`, `do_step_2` and `do_step_3` would all run
+concurrently, each firing whenever its own inputs fire. Inside a `seq` only
+one statement is running at a time. Each statement runs until it produces a
+value; then it stops and the next one starts. The run is started by the trigger;
+without one, the block runs once at initialization (or once per outer run for a
+nested block).
 
 A `seq` is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it

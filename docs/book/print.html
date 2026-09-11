@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-fc117997.js";
+            window.path_to_searchindex_js = "searchindex-c0fb3c71.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2001,8 +2001,8 @@ with no bank when <code>v</code> is bottom. <code>~</code> still banks.</p>
 <p>Sometimes you just want to run some steps one after another. Graphix
 could always express that, but only verbosely: a state variable, a
 <code>select</code> over it, <code>~</code> guards on every input so a step waits for the one
-before it, and a <code>&lt;-</code> to advance the state. The dataflow was correct and
-unreadable.</p>
+before it, and a <code>&lt;-</code> to advance the state. The dataflow was correct
+but difficult to read.</p>
 <p>Within a <code>seq</code> you write statements the way you would in an ordinary
 language, and the compiler transforms them into that state machine for
 you.</p>
@@ -2012,13 +2012,12 @@ you.</p>
     do_step_3(z)
 }
 </code></pre>
-<p>In ordinary Graphix <code>do_step_1</code>, <code>do_step_2</code> and <code>do_step_3</code> would all
-run concurrently, each firing whenever its own inputs fire. Inside a
-<code>seq</code> only one statement is running at a time. Each statement runs until
-it produces a value; then it stops and the next one starts. A statement
-that has completed does not fire again later in the run, however its
-inputs move. The run is started by the trigger; without one, the block
-runs once at initialization.</p>
+<p>In ordinary Graphix <code>do_step_1</code>, <code>do_step_2</code> and <code>do_step_3</code> would all run
+concurrently, each firing whenever its own inputs fire. Inside a <code>seq</code> only
+one statement is running at a time. Each statement runs until it produces a
+value; then it stops and the next one starts. The run is started by the trigger;
+without one, the block runs once at initialization (or once per outer run for a
+nested block).</p>
 <p>A <code>seq</code> is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
 to a variable, or feed it to another expression.</p>
