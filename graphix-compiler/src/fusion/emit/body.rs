@@ -3,6 +3,7 @@
 //! forcing/bottom/interrupt machinery, tail-rebind jumps, and
 //! the kernel return protocol.
 
+use super::record::{EmitConst, KernelConst};
 use crate::{
     BindId, Node, NodeView, Rt, Update, UserEvent,
     env::Env,
@@ -14,13 +15,14 @@ use crate::{
     },
     typ::Type,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Context as AnyContext, Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, FuncRef, Inst, InstBuilder, Value as ClifValue, condcodes::IntCC,
     types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
+use cranelift_module::{Linkage, Module};
 use netidx_value::Value;
 
 use super::{
@@ -507,7 +509,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                         anchor: TruncAnchor::State(off),
                         n_dirs: n_dirs as u32,
                         leaf: TruncLeaf::Table { stride: 1 },
-                        leaf_ptr: 0,
+                        leaf_rt: None,
                     });
                     self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                         rel: (off / 8) as u32,
@@ -529,7 +531,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                             anchor: TruncAnchor::Site(off),
                             n_dirs: n_dirs as u32,
                             leaf: TruncLeaf::Table { stride: 1 },
-                            leaf_ptr: 0,
+                            leaf_rt: None,
                         });
                         let base = self.site_ptr();
                         let word_addr = self.b.ins().iadd_imm(base, off as i64);
@@ -651,7 +653,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let table_helper = self.helper("graphix_slot_state_table")?;
         let valid = emit_untainted_i64(self.b, src_disc);
         for r in recs.iter() {
-            let leaf_ptr = self.b.ins().iconst(types::I64, r.leaf_ptr);
+            let leaf_ptr = match &r.leaf_rt {
+                None => self.b.ins().iconst(types::I64, 0),
+                Some(l) => self.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
+            };
             // The anchor's word address; a site anchor's base may be 0
             // (a back-edge activation) — branch around the walk.
             let (word0, guard) = match r.anchor {
@@ -840,19 +845,31 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.env.loop_depth = self.env.loop_depth.saturating_sub(1);
     }
 
-    /// Stable `*const ArcStr` for `s` as an `iconst`. The boxed arena
-    /// entry is merged into the kernel's [`KernelStrings`] so it
-    /// outlives the compiled code that baked the pointer.
-    pub fn interned_str(&mut self, s: &ArcStr) -> ClifValue {
-        let mut lazy = self.ctx.lazy_strings.borrow_mut();
-        let ptr = match lazy.iter().find(|b| b.as_ref() == s) {
-            Some(b) => b.as_ref() as *const ArcStr,
+    /// The address of a constant the code refers to: an imported data
+    /// symbol resolving to the pointer, one per distinct constant, whose
+    /// recipe the body's record keeps for a loader.
+    pub(crate) fn const_ptr(&mut self, recipe: KernelConst) -> Result<ClifValue> {
+        let mut consts = self.ctx.consts.borrow_mut();
+        let gv = match consts.iter().find(|c| c.recipe.same_as(&recipe)) {
+            Some(c) => c.gv,
             None => {
-                lazy.push(Box::new(intern::intern(s)));
-                lazy.last().unwrap().as_ref() as *const ArcStr
+                let name = format!("{}.c{}", self.ctx.symbol, consts.len());
+                let mut module = self.ctx.module.borrow_mut();
+                let data = module
+                    .declare_data(&name, Linkage::Import, false, false)
+                    .with_context(|| format!("declare_data {name}"))?;
+                self.ctx.symbols.lock().insert(name, recipe.pointer(self.ctx.kernel));
+                let gv = module.declare_data_in_func(data, self.b.func);
+                consts.push(EmitConst { recipe, data, gv });
+                gv
             }
         };
-        self.b.ins().iconst(types::I64, ptr as i64)
+        Ok(self.b.ins().symbol_value(types::I64, gv))
+    }
+
+    /// The address of the interned `s`, shared by every use in the body.
+    pub fn interned_str(&mut self, s: &ArcStr) -> Result<ClifValue> {
+        self.const_ptr(KernelConst::Str(Box::new(intern::intern(s))))
     }
 
     /// The builtin Apply-site info for `id`, if the region's discovery
@@ -876,38 +893,23 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.self_call
     }
 
-    /// Stable `*const Value` for a value-shape constant — see
-    /// [`Self::interned_str`].
-    pub fn interned_value(&mut self, v: &Value) -> ClifValue {
-        let mut lazy = self.ctx.lazy_values.borrow_mut();
-        let ptr = match lazy.iter().find(|b| b.as_ref() == v) {
-            Some(b) => b.as_ref() as *const Value,
-            None => {
-                lazy.push(Box::new(v.clone()));
-                lazy.last().unwrap().as_ref() as *const Value
-            }
-        };
-        self.b.ins().iconst(types::I64, ptr as i64)
+    /// The address of a value-shape constant, shared by equal values.
+    pub fn interned_value(&mut self, v: &Value) -> Result<ClifValue> {
+        self.const_ptr(KernelConst::Value(Box::new(v.clone())))
     }
 
-    /// Stable `*const Type` for a Cast site's destination type — see
-    /// [`Self::interned_str`]; the kernel's [`KernelValues`] keeps it
-    /// alive as long as the compiled code that baked the pointer.
-    pub fn interned_type(&mut self, t: &Type) -> ClifValue {
-        let b = Box::new(t.clone());
-        let ptr = b.as_ref() as *const Type;
-        self.ctx.lazy_value_owners.borrow_mut().push(b);
-        self.b.ins().iconst(types::I64, ptr as i64)
+    /// The address of a cast site's destination type.
+    pub fn interned_type(&mut self, t: &Type) -> Result<ClifValue> {
+        self.const_ptr(KernelConst::Type(Box::new(t.clone())))
     }
 
-    /// Stable `*const QopSite` for a handler-ful `?` site — the
-    /// delivery drain's key (`graphix_qop_raise`); kept alive like
-    /// [`Self::interned_type`].
-    pub fn interned_qop_site(&mut self, site: crate::node::error::QopSite) -> ClifValue {
-        let b = Box::new(site);
-        let ptr = b.as_ref() as *const crate::node::error::QopSite;
-        self.ctx.lazy_value_owners.borrow_mut().push(b);
-        self.b.ins().iconst(types::I64, ptr as i64)
+    /// The address of a handler-ful `?` site, the delivery drain's key
+    /// (`graphix_qop_raise`).
+    pub fn interned_qop_site(
+        &mut self,
+        site: crate::node::error::QopSite,
+    ) -> Result<ClifValue> {
+        self.const_ptr(KernelConst::QopSite(Box::new(site)))
     }
 }
 

@@ -63,13 +63,17 @@ pub struct CaptureSlot {
 /// target).
 #[derive(Debug, Clone)]
 pub enum SiteDispatch {
-    Fast(crate::FastFn),
-    Typed(crate::TypedFastFn, Type),
+    /// A builtin's plain fast fn, by the builtin's name.
+    Fast { name: ArcStr, f: crate::FastFn },
+    /// A builtin's typed fast fn, directed by the site's return type.
+    Typed { name: ArcStr, f: crate::TypedFastFn, typ: Type },
+    /// A cast to the type, through [`cast_typed`].
+    Cast(Type),
 }
 
 /// The cast pseudo-site's typed fast fn: the same `cast_value` call
 /// `TypeCast::update` makes on the node-walk.
-fn cast_typed(env: &Env, target: &Type, args: &[Value]) -> Option<Value> {
+pub(crate) fn cast_typed(env: &Env, target: &Type, args: &[Value]) -> Option<Value> {
     Some(target.cast_value(env, args[0].clone()))
 }
 
@@ -173,7 +177,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
             marshal_args: vec![MarshalArg::Call(0)],
             arg_types: vec![arg_frozen],
             return_type: ret_frozen,
-            dispatch: SiteDispatch::Typed(cast_typed, tc.target.clone()),
+            dispatch: SiteDispatch::Cast(tc.target.clone()),
         },
     );
 }
@@ -321,9 +325,10 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     if !is_call_return_supported(&return_type) {
         return None;
     }
+    let name: ArcStr = info.name.as_str().into();
     let dispatch = match fastcall {
-        crate::FastCall::Plain(f) => SiteDispatch::Fast(f),
-        crate::FastCall::Typed(f) => SiteDispatch::Typed(f, ret_typ),
+        crate::FastCall::Plain(f) => SiteDispatch::Fast { name, f },
+        crate::FastCall::Typed(f) => SiteDispatch::Typed { name, f, typ: ret_typ },
     };
     out.apply_sites.insert(
         apply_id,

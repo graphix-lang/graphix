@@ -330,6 +330,62 @@ The corpus differential ran clean (490 programs; the only differences
 are compile-time warnings, which print cold only, and programs that
 run until the timeout).
 
+## Built: the program image, slice (d): kernels
+
+The cold run produces what the warm run loads. Every function the JIT
+defines (a kernel body, its spill thunk, a region's wrapper) is
+compiled to bytes and relocations and installed through
+`define_function_bytes`, cold and warm alike; the bytes stay on an
+`Arc<BodyRecord>` shared by the wrapped kernel that uses them. A trap
+stub for an abandoned symbol is never referenced by live code and has
+no record.
+
+A record's relocations name their targets symbolically: a helper by
+name, another body by record, the body itself, its thunk, a libcall
+by name, or one of the body's constants. Symbol names are labels; the
+loader mints fresh ones, so a restored session and its later compiles
+never collide.
+
+Every process address the emitter used to bake as an immediate is an
+imported data symbol whose address resolves to the pointer itself (a
+`symbol_value`, an absolute relocation), registered in the module's
+symbol table as it is emitted. The record stores the recipe the loader
+recreates the pointee from: an interned string, a value constant, a
+cast type, a `?` site (handler, own top, spec), a builtin's fast fn by
+name, the cast fn, a slot-chain leaf (an image object shared with the
+layout that owns it), and the body's own `site_block_words` cell.
+Abstract ids are UUIDs of the type's path and stay immediates.
+
+Image objects: `KernelSig` and `SiteLeaf` by `Arc`, `BodyRecord` by
+`Arc` with callees written before callers (a self reference and the
+thunk are inside the record). The fused node writes its spec, type,
+feeders, signature, wrapper record and the layout data the runtime
+node allocates from (state words, anchors, own site, self blocks).
+Loading a record declares a fresh symbol, declares its constants as
+imports and enters their pointers in the symbol table, translates the
+relocations to the module's ids and defines the bytes; a region
+finalizes after its wrapper. The pointees, leaves and signatures a
+loaded body needs live on the `Jit` for the module's life. Restored
+kernels enter no cache; a later compile in the session rebuilds what
+it needs.
+
+The program entry key includes the compile flags (fusion on and off
+produce different graphs) and the image header carries the ISA
+description. The quiescence check no longer refuses kernels.
+
+Pins: `program_image_restores_kernels` (a fusion-on program image
+restores the same values and runs the JIT, by the invocation counter);
+the corpus differential with fusion on (490 programs, the same five
+timing-only differences as fusion off); `milestone_image_fused`.
+
+Measured on the admin TUI with fusion on, LTO, bench mode (P cores at
+4.5 GHz), pinned: cold 674 ms including the image write (compile alone
+527: registration 85, program 442 with 1,787 kernels attempted and
+526 fused); warm 54 to 55 ms (restore 15, first cycle 31); image
+6.2 MB, 0.4 MB of it kernels. Fusion off on the same build: warm 47
+to 49 ms (restore 13, first cycle 27); the difference is the 526
+regions' installation and the kernels' own first frame.
+
 ## Step 3: cache the compiled program
 
 Built in slices, each landing green: (a) every node kind that a

@@ -35,7 +35,7 @@ node_tags! {
     ListLit, Tuple, Variant, ExplicitParens, StringInterpolate, Connect,
     ConnectDeref, TypeCast, Any, Sample, ArrayRef, ArraySlice, StructWith,
     StructRef, Construct, TupleRef, ByRef, Deref, Map, MapRef, Catch, Qop,
-    SeqGuard, OrNever, CallSite, Select, Collection,
+    SeqGuard, OrNever, CallSite, Select, Collection, Fused,
 }
 
 pub(crate) fn tag_len() -> usize {
@@ -198,5 +198,6 @@ pub(crate) fn decode_node<R: Rt, E: UserEvent>(
         NodeTag::Collection => {
             node::collection::CollectionIntrinsic::image_decode(ctx, buf)
         }
+        NodeTag::Fused => crate::fusion::FusedKernel::image_decode(ctx, buf),
     }
 }

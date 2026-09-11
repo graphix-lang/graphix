@@ -454,7 +454,7 @@ unsafe fn graphix_fastcall(
     taint_mask: u64,
     stale_mask: u64,
 ) -> DynCallRet {
-    // SAFETY: `fn_ptr` is the `FastFn` the emitter baked as an immediate.
+    // SAFETY: `fn_ptr` is the `FastFn` constant the kernel's record names.
     let f: crate::FastFn =
         unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
     unsafe { fast_dispatch(|args| f(args), args, n, taint_mask, stale_mask) }
@@ -471,8 +471,8 @@ unsafe fn graphix_typedcall(
     taint_mask: u64,
     stale_mask: u64,
 ) -> DynCallRet {
-    // SAFETY: `fn_ptr` and `typ` are baked by the emitter and live as
-    // long as the kernel's code.
+    // SAFETY: `fn_ptr` and `typ` are constants of the kernel's record,
+    // which outlives its code.
     let f: crate::TypedFastFn =
         unsafe { std::mem::transmute::<usize, crate::TypedFastFn>(fn_ptr as usize) };
     let typ = unsafe { &*(typ as *const crate::typ::Type) };

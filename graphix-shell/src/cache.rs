@@ -97,15 +97,17 @@ fn elf_build_id(exe: &FsPath) -> Option<String> {
 impl RegistrationCache {
     /// The cache entries for this root and, when its source is known,
     /// the program; an error when there is no cache directory.
-    pub(crate) fn new(root: &str, program: Option<&[u8]>) -> Result<Self> {
+    pub(crate) fn new(root: &str, program: Option<&[u8]>, flags: u64) -> Result<Self> {
         let root_dir = dirs::cache_dir()
             .ok_or_else(|| anyhow!("no cache directory"))?
             .join("graphix")
             .join("registration");
         let format = [image::REGISTRATION_FORMAT];
+        let flags = flags.to_le_bytes();
         let registration = hex(&make_sha3_token([&format[..], root.as_bytes()])[..16]);
-        let program = program
-            .map(|p| hex(&make_sha3_token([&format[..], root.as_bytes(), p])[..16]));
+        let program = program.map(|p| {
+            hex(&make_sha3_token([&format[..], root.as_bytes(), &flags[..], p])[..16])
+        });
         Ok(RegistrationCache { root: root_dir, build: build_id(), registration, program })
     }
 

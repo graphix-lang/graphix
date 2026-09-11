@@ -12,12 +12,15 @@ use crate::{
     typ::{Type, TypeRef},
 };
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut};
+use netidx_core::pack::{Pack as PackTrait, PackError, varint_len};
+use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
 /// The primitive types a kernel holds in a register: the numerics and bool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Pack)]
 pub enum PrimType {
     I8,
     I16,
@@ -719,7 +722,8 @@ pub fn nullable_type(inner: Type) -> Type {
 /// One parameter of a fused kernel. The `KernelSig::params` order is
 /// the ABI order, the packer's arg order and the tail-rebind order.
 /// `bind_id` is `None` for synthetic inputs (lambda formals).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub struct KernelParam {
     pub name: ArcStr,
     pub kind: ParamKind,
@@ -729,7 +733,8 @@ pub struct KernelParam {
 /// The shape of one kernel parameter with the static metadata the body
 /// emitter and packer need. The wire shape is a two-word Value pair
 /// for every kind.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Pack)]
+#[pack(unwrapped)]
 pub enum ParamKind {
     Scalar(PrimType),
     Array {
@@ -1093,4 +1098,172 @@ mod tests {
             prop_assert_eq!(freeze_for_abi_normalized(&typ), expected);
         }
     }
+}
+
+impl PackTrait for SelfBlock {
+    fn encoded_len(&self) -> usize {
+        let SelfBlock { rel, words, slots } = self;
+        rel.encoded_len() + words.encoded_len() + crate::image::slice_len(slots)
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        let SelfBlock { rel, words, slots } = self;
+        rel.encode(buf)?;
+        words.encode(buf)?;
+        crate::image::slice_encode(slots, buf)
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let rel = u32::decode(buf)?;
+        let words = u32::decode(buf)?;
+        let slots: Vec<u32> = PackTrait::decode(buf)?;
+        Ok(SelfBlock { rel, words, slots: slots.into() })
+    }
+}
+
+impl PackTrait for SiteAnchor {
+    fn encoded_len(&self) -> usize {
+        let SiteAnchor { rel, own_levels, leaf } = self;
+        rel.encoded_len()
+            + own_levels.encoded_len()
+            + 1
+            + leaf.as_ref().map_or(0, site_leaf_len)
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        let SiteAnchor { rel, own_levels, leaf } = self;
+        rel.encode(buf)?;
+        own_levels.encode(buf)?;
+        match leaf {
+            None => Ok(buf.put_u8(0)),
+            Some(l) => {
+                buf.put_u8(1);
+                site_leaf_encode(l, buf)
+            }
+        }
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let rel = u32::decode(buf)?;
+        let own_levels = u32::decode(buf)?;
+        let leaf = match u8::decode(buf)? {
+            0 => None,
+            1 => Some(site_leaf_decode(buf)?),
+            _ => return Err(PackError::UnknownTag),
+        };
+        Ok(SiteAnchor { rel, own_levels, leaf })
+    }
+}
+
+/// A slot-chain leaf is an image object: the anchors that own it and
+/// the code that names it share one.
+pub(crate) fn site_leaf_len(l: &std::sync::Arc<SiteLeaf>) -> usize {
+    crate::image::object_len(
+        std::sync::Arc::as_ptr(l) as usize,
+        |e| &e.site_leaves,
+        || l.stride.encoded_len() + crate::image::slice_len(&l.anchors),
+    )
+}
+
+pub(crate) fn site_leaf_encode(
+    l: &std::sync::Arc<SiteLeaf>,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    crate::image::object_encode(
+        std::sync::Arc::as_ptr(l) as usize,
+        |e| &mut e.site_leaves,
+        buf,
+        |buf| {
+            l.stride.encode(buf)?;
+            crate::image::slice_encode(&l.anchors, buf)
+        },
+    )
+}
+
+pub(crate) fn site_leaf_decode(
+    buf: &mut impl Buf,
+) -> Result<std::sync::Arc<SiteLeaf>, PackError> {
+    crate::image::object_decode(
+        buf,
+        |d| &mut d.site_leaves,
+        |buf| {
+            let stride = u32::decode(buf)?;
+            let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
+            Ok(std::sync::Arc::new(SiteLeaf { stride, anchors: anchors.into() }))
+        },
+        |b| site_leaf_decode(b),
+    )
+}
+
+/// A kernel signature is an image object shared by the node that
+/// dispatches it and the records of its bodies.
+pub(crate) fn kernel_sig_len(k: &std::sync::Arc<KernelSig>) -> usize {
+    use std::sync::atomic::Ordering::Relaxed;
+    crate::image::object_len(
+        std::sync::Arc::as_ptr(k) as usize,
+        |e| &e.kernel_sigs,
+        || {
+            k.fn_name.encoded_len()
+                + k.params.encoded_len()
+                + k.return_type.encoded_len()
+                + 1
+                + k.skipped_args.encoded_len()
+                + k.tail_invariant.encoded_len()
+                + 1
+                + varint_len(k.site_block_words.load(Relaxed))
+        },
+    )
+}
+
+pub(crate) fn kernel_sig_encode(
+    k: &std::sync::Arc<KernelSig>,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    use std::sync::atomic::Ordering::Relaxed;
+    crate::image::object_encode(
+        std::sync::Arc::as_ptr(k) as usize,
+        |e| &mut e.kernel_sigs,
+        buf,
+        |buf| {
+            k.fn_name.encode(buf)?;
+            k.params.encode(buf)?;
+            k.return_type.encode(buf)?;
+            k.has_tail_loop.encode(buf)?;
+            k.skipped_args.encode(buf)?;
+            k.tail_invariant.encode(buf)?;
+            k.defined.load(Relaxed).encode(buf)?;
+            Ok(netidx_core::pack::encode_varint(k.site_block_words.load(Relaxed), buf))
+        },
+    )
+}
+
+pub(crate) fn kernel_sig_decode(
+    buf: &mut impl Buf,
+) -> Result<std::sync::Arc<KernelSig>, PackError> {
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    crate::image::object_decode(
+        buf,
+        |d| &mut d.kernel_sigs,
+        |buf| {
+            let fn_name = ArcStr::decode(buf)?;
+            let params = Vec::<KernelParam>::decode(buf)?;
+            let return_type = Type::decode(buf)?;
+            let has_tail_loop = bool::decode(buf)?;
+            let skipped_args = Vec::<u32>::decode(buf)?;
+            let tail_invariant = Vec::<u32>::decode(buf)?;
+            let defined = bool::decode(buf)?;
+            let site_block_words = netidx_core::pack::decode_varint(buf)?;
+            Ok(std::sync::Arc::new(KernelSig {
+                fn_name,
+                params,
+                return_type,
+                has_tail_loop,
+                skipped_args,
+                tail_invariant,
+                defined: AtomicBool::new(defined),
+                site_block_words: AtomicU64::new(site_block_words),
+            }))
+        },
+        |b| kernel_sig_decode(b),
+    )
 }

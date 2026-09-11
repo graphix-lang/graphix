@@ -1,3 +1,4 @@
+use crate::image::ImageBuf;
 use crate::image::{
     self,
     nodes::{
@@ -19,7 +20,6 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
-use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
@@ -721,13 +721,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let handler = self.handler.as_ref().map(|handler| {
-            cx.interned_qop_site(QopSite {
+        let handler = match self.handler.as_ref() {
+            None => None,
+            Some(handler) => Some(cx.interned_qop_site(QopSite {
                 handler: handler.clone(),
                 own_top: self.top_id,
                 spec: self.spec.clone(),
-            })
-        });
+            })?),
+        };
         emit_qop_node(cx, self.spec.id, &self.n, &self.typ, handler)
     }
 }

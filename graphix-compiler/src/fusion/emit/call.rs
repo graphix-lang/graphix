@@ -2,6 +2,8 @@
 //! marshalling, drops, pending cleanup) and the direct fastcall /
 //! typed-fastcall path.
 
+use super::record::KernelConst;
+use crate::fusion::lowering::cast_typed;
 use crate::{
     Node, Rt, Update, UserEvent,
     fusion::{
@@ -178,15 +180,21 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
     let base = cx.b.ins().stack_addr(types::I64, slot, 0);
     let n = cx.b.ins().iconst(types::I64, args.len() as i64);
     let call = match &info.dispatch {
-        SiteDispatch::Fast(f) => {
+        SiteDispatch::Fast { name, f } => {
             let fast = cx.helper("graphix_fastcall")?;
-            let fp = cx.b.ins().iconst(types::I64, *f as usize as i64);
+            let fp = cx.const_ptr(KernelConst::FastFn { name: name.clone(), f: *f })?;
             cx.b.ins().call(fast, &[fp, base, n, taint_mask, stale_mask])
         }
-        SiteDispatch::Typed(f, typ) => {
+        SiteDispatch::Typed { name, f, typ } => {
             let typed = cx.helper("graphix_typedcall")?;
-            let fp = cx.b.ins().iconst(types::I64, *f as usize as i64);
-            let tp = cx.interned_type(typ);
+            let fp = cx.const_ptr(KernelConst::TypedFn { name: name.clone(), f: *f })?;
+            let tp = cx.interned_type(typ)?;
+            cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
+        }
+        SiteDispatch::Cast(typ) => {
+            let typed = cx.helper("graphix_typedcall")?;
+            let fp = cx.const_ptr(KernelConst::Cast(cast_typed))?;
+            let tp = cx.interned_type(typ)?;
             cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
         }
     };
@@ -409,12 +417,12 @@ fn emit_site_block(
             let word = cx.b.ins().select(live, word, zero);
             // The size is read at run time from `site_block_words`: our own
             // layout is not final while we are still emitting into it.
-            // The cell's address is stable (the kernel cache holds the Arc).
-            let desc = cx.b.ins().iconst(
-                types::I64,
-                (&info.kernel.site_block_words as *const std::sync::atomic::AtomicU64)
-                    as i64,
-            );
+            if !std::ptr::eq(&*info.kernel, cx.ctx.kernel) {
+                return Err(anyhow!(
+                    "emit_clif: a self-call site names another kernel — de-fuse"
+                ));
+            }
+            let desc = cx.const_ptr(KernelConst::SiteBlockWords)?;
             let f = cx.helper("graphix_site_child_block")?;
             let call = cx.b.ins().call(f, &[word, desc]);
             return Ok(cx.b.inst_results(call)[0]);
@@ -492,12 +500,10 @@ fn emit_site_block(
     let leaf_rt = if layout.anchors.is_empty() {
         None
     } else {
-        let l = std::sync::Arc::new(kernel_abi::SiteLeaf {
+        Some(std::sync::Arc::new(kernel_abi::SiteLeaf {
             stride: layout.words,
             anchors: layout.anchors.clone(),
-        });
-        cx.ctx.lazy_site_leaves.borrow_mut().push(l.clone());
-        Some(l)
+        }))
     };
     // This chain's per-iteration ensure never runs on a len-0 epoch, so
     // every enclosing loop's exit re-ensures it at its level
@@ -511,10 +517,7 @@ fn emit_site_block(
                 None => TruncLeaf::Table { stride: layout.words },
                 Some(_) => TruncLeaf::Blocks,
             },
-            leaf_ptr: leaf_rt
-                .as_ref()
-                .map(|l| std::sync::Arc::as_ptr(l) as *const u8 as i64)
-                .unwrap_or(0),
+            leaf_rt: leaf_rt.clone(),
         }
     };
     let anchor = match cx.claim_state_word_loop_invariant() {
@@ -548,10 +551,7 @@ fn emit_site_block(
     let emit_chain = |cx: &mut BodyCx, word_addr: ClifValue| -> Result<ClifValue> {
         let leaf_ptr = match &leaf_rt {
             None => cx.b.ins().iconst(types::I64, 0),
-            Some(l) => {
-                cx.b.ins()
-                    .iconst(types::I64, std::sync::Arc::as_ptr(l) as *const u8 as i64)
-            }
+            Some(l) => cx.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
         };
         let table_helper = cx.helper("graphix_slot_state_table")?;
         let mut word_addr = word_addr;

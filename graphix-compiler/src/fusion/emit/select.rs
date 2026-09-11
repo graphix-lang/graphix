@@ -1798,7 +1798,7 @@ fn emit_structure_cond(
                     }
                 }
             }
-            let tag_ptr = cx.interned_str(tag);
+            let tag_ptr = cx.interned_str(tag)?;
             let helper = cx.helper("graphix_variant_tag_eq")?;
             // The helper checks arity as well as tag: same-tag arms at
             // different arities are distinct cases.

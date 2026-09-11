@@ -67,7 +67,7 @@ pub(crate) fn emit_const_node(
                     return Err(anyhow!("emit_clif: String-typed Constant holds {v:?}"));
                 }
             };
-            let ptr = cx.interned_str(s);
+            let ptr = cx.interned_str(s)?;
             let clone = cx.helper("graphix_arcstr_clone_from_static")?;
             let call = cx.b.ins().call(clone, &[ptr]);
             let payload = cx.b.inst_results(call)[0];
@@ -76,7 +76,7 @@ pub(crate) fn emit_const_node(
             Ok(CompiledExpr::new(disc, payload))
         }
         Some(AbiKind::Value) => {
-            let ptr = cx.interned_value(value);
+            let ptr = cx.interned_value(value)?;
             let clone = cx.helper("graphix_value_clone_from_static")?;
             let call = cx.b.ins().call(clone, &[ptr]);
             let (r0, r1) = {
@@ -710,7 +710,7 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
         let inner_cap = cx.b.ins().iconst(types::I64, 2);
         let call = cx.b.ins().call(buf_new, &[inner_cap]);
         let inner = cx.b.inst_results(call)[0];
-        let name_ptr = cx.interned_str(name);
+        let name_ptr = cx.interned_str(name)?;
         cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
         // Names are interned constants; only the value discs gate freshness.
         field_discs.push(emit_push_field_node(cx, inner, field)?);
@@ -777,7 +777,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         let inner_var = cx.b.declare_var(types::I64);
         cx.b.def_var(inner_var, inner);
         cx.ctx.value_buf_stack.borrow_mut().push(inner_var);
-        let name_ptr = cx.interned_str(name);
+        let name_ptr = cx.interned_str(name)?;
         cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
         match replace.iter().find(|r| r.index == Some(i)) {
             Some(r) => {
@@ -824,7 +824,7 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
     tag: &ArcStr,
     payloads: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
-    let tag_ptr = cx.interned_str(tag);
+    let tag_ptr = cx.interned_str(tag)?;
     if payloads.is_empty() {
         let clone_static = cx.helper("graphix_arcstr_clone_from_static")?;
         let call = cx.b.ins().call(clone_static, &[tag_ptr]);
@@ -995,7 +995,7 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     let cv = emit_owned_value_operand_node(cx, arg)?;
     let wrap = cx.helper("graphix_abstract_wrap")?;
     let id = cx.b.ins().iconst(types::I64, id.inner() as i64);
-    let name_ptr = cx.interned_str(name);
+    let name_ptr = cx.interned_str(name)?;
     let call = cx.b.ins().call(wrap, &[id, name_ptr, cv.disc, cv.payload]);
     let (rdisc, rpay) = {
         let r = cx.b.inst_results(call);

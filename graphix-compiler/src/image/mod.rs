@@ -20,9 +20,13 @@ pub use nodes::NOT_IMAGED;
 pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
 
 use crate::{
-    BindId, CFlag, DynScope, ErrorHandler, LambdaId, LambdaInstanceId, Scope,
+    BindId, CFlag, DynScope, ErrorHandler, FastCall, LambdaId, LambdaInstanceId, Scope,
     SourcePosition,
     expr::{Expr, ExprId, ModPath, Origin, Source},
+    fusion::{
+        emit::BodyRecord,
+        kernel_abi::{KernelSig, SiteLeaf},
+    },
     ids::IdRelocation,
     shared_map,
     typ::{
@@ -164,6 +168,10 @@ pub struct ImageEncoder {
     /// nodes for the whole session; a temporary could hand its address
     /// to a later object.
     pub(crate) exprs: AHashMap<usize, u64>,
+    /// Kernel signatures, slot-chain leaves and body records by `Arc`.
+    pub(crate) kernel_sigs: AHashMap<usize, u64>,
+    pub(crate) site_leaves: AHashMap<usize, u64>,
+    pub(crate) records: AHashMap<usize, u64>,
     /// An expression's address, or the address of the first expression
     /// seen with its id and contents: a node's spec is a clone of the
     /// tree it was compiled from.
@@ -213,6 +221,9 @@ impl ImageEncoder {
             cells: AHashMap::new(),
             pinned_cells: Vec::new(),
             exprs: AHashMap::new(),
+            kernel_sigs: AHashMap::new(),
+            site_leaves: AHashMap::new(),
+            records: AHashMap::new(),
             expr_alias: AHashMap::new(),
             exprs_by_id: AHashMap::new(),
             types: AHashMap::new(),
@@ -352,6 +363,11 @@ pub struct ImageDecoder {
     pub(crate) exprs: AHashMap<u64, Expr>,
     pub(crate) types: AHashMap<u64, Type>,
     pub(crate) fntypes: AHashMap<u64, FnType>,
+    pub(crate) kernel_sigs: AHashMap<u64, std::sync::Arc<KernelSig>>,
+    pub(crate) site_leaves: AHashMap<u64, std::sync::Arc<SiteLeaf>>,
+    pub(crate) records: AHashMap<u64, std::sync::Arc<BodyRecord>>,
+    /// The builtins' fast fns by name, for a kernel constant's recipe.
+    fastcalls: AHashMap<&'static str, FastCall>,
     instances: AHashMap<LambdaInstanceId, u64>,
     bases: IdCounts,
 }
@@ -371,6 +387,10 @@ impl ImageDecoder {
             exprs: AHashMap::new(),
             types: AHashMap::new(),
             fntypes: AHashMap::new(),
+            kernel_sigs: AHashMap::new(),
+            site_leaves: AHashMap::new(),
+            records: AHashMap::new(),
+            fastcalls: AHashMap::new(),
             instances: AHashMap::new(),
             bases: IdCounts {
                 bind: BindId::reserve(counts.bind).inner(),
@@ -393,6 +413,14 @@ impl ImageDecoder {
 
     pub(crate) fn set_instances(&mut self, instances: AHashMap<LambdaInstanceId, u64>) {
         self.instances = instances;
+    }
+
+    pub(crate) fn set_fastcalls(&mut self, fastcalls: AHashMap<&'static str, FastCall>) {
+        self.fastcalls = fastcalls;
+    }
+
+    pub(crate) fn fastcall(&self, name: &str) -> Option<FastCall> {
+        self.fastcalls.get(name).copied()
     }
 
     /// Size the object tables for what the eager part defines.

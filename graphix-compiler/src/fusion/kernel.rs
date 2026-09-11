@@ -96,6 +96,11 @@ impl Kernel {
         &self.kernel
     }
 
+    /// The compiled artifact this node dispatches.
+    pub(crate) fn wrapped(&self) -> &Arc<WrappedKernel> {
+        &self.jit
+    }
+
     pub fn new(
         kernel: Arc<KernelSig>,
         n_args: usize,
@@ -340,8 +345,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 })
             });
             for (site, v) in raises {
-                // SAFETY: `site` is an interned `QopSite` kept alive by the
-                // kernel's `KernelValues`.
+                // SAFETY: `site` is a `QopSite` constant of the kernel's
+                // record, which outlives its code.
                 let site = unsafe { &*site };
                 if let Value::Error(e) = v {
                     crate::node::error::deliver_error(

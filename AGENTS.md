@@ -323,10 +323,17 @@ the program entry (the program compiled too; key adds the program
 source). A warm start maps the program entry, else the registration
 entry and compiles the program, else compiles both; a missing entry is
 written from the runtime that compiled it. `--no-cache` disables the
-cache, `--warm` writes and exits. A script compiles at runtime
+cache, `--warm` writes and exits; the program key carries the compile
+flags and the header the ISA. A script compiles at runtime
 construction (`GXConfig::program`, `GXHandle::program`), never through
-`load`. The package root compiles with fusion off; a fusion-on program
-holds kernels and fails the program write, so it runs cold. Every
+`load`. The package root compiles with fusion off. A fused region
+travels as its wrapper's `BodyRecord` (`fusion/emit/record.rs`):
+machine code, relocations by symbolic target and constants by recipe;
+every JIT function is installed from its record through
+`define_function_bytes`, cold and warm alike, and every process
+address the code refers to is an imported data symbol (`BodyCx::
+const_ptr`), never an immediate. A restored kernel enters no cache.
+Every
 imaged node kind owns an `Update::image_encode` / `image_decode` pair
 in its own file; a kind without one fails the write (`image::NOT_IMAGED`,
 logged) and the shell runs cold, never a partial image. Every shared

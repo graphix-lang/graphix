@@ -260,6 +260,52 @@ let sq = seq base { let v = base + 1; v };
 (f(#scale: 3, 4), g(0 - 5), sum, text, with.x, slice, d, q, checked, tup.1, caught_v, s, a, sq, cast<string>(base)$)
 "#;
 
+/// A program compiled with fusion on writes its kernels into the image;
+/// the restored runtime runs them (the JIT, not the node-walk) to the
+/// same values.
+#[tokio::test]
+async fn program_image_restores_kernels() -> Result<()> {
+    let (tx, mut cold_rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let (prog_tx, prog_rx) = oneshot::channel();
+    let cold = init_with_session(
+        tx,
+        TEST_REGISTER,
+        Default::default(),
+        RegistrationImage::Save(reg_tx),
+        Some(Source::Internal(PROGRAM.into())),
+        Some(prog_tx),
+    )
+    .await?;
+    let image = prog_rx.await??;
+    let stats = cold.rt.fusion_stats().await?;
+    assert!(stats.fused > 0, "the program must fuse something: {stats:?}");
+    let cold_values = first_values(&mut cold_rx).await;
+    cold.shutdown().await;
+    #[cfg(debug_assertions)]
+    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    let (tx, mut warm_rx) = mpsc::channel(10);
+    let warm = init_with_session(
+        tx,
+        TEST_REGISTER,
+        Default::default(),
+        RegistrationImage::Load(image),
+        None,
+        None,
+    )
+    .await?;
+    warm.rt.program().await?.expect("the program restored");
+    let warm_values = first_values(&mut warm_rx).await;
+    assert_eq!(cold_values, warm_values);
+    #[cfg(debug_assertions)]
+    assert!(
+        graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
+        "the restored program must run its kernels"
+    );
+    warm.shutdown().await;
+    Ok(())
+}
+
 /// A runtime restored from an image holding a program runs it to the
 /// same values, in the same order, as the runtime that compiled it.
 #[tokio::test]

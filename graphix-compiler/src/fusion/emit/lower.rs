@@ -16,7 +16,6 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Context as AnyContext, Result};
-use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     AbiParam, Block, FuncRef, InstBuilder, Signature, Value as ClifValue,
     condcodes::IntCC, types,
@@ -24,26 +23,26 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
-use netidx_value::Value;
 use std::collections::BTreeMap;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
     body::{BodySource, emit_interrupt_check},
+    record::{EmitConst, SymbolTable},
 };
 
-pub(super) fn compile_into_function(
+pub(super) fn compile_into_function<'a>(
     b: &mut FunctionBuilder,
-    kernel: &KernelSig,
-    callee_refs: &BTreeMap<usize, FuncRef>,
+    kernel: &'a KernelSig,
+    callee_refs: &'a BTreeMap<usize, FuncRef>,
     self_thunk: Option<FuncRef>,
-    helper_refs: &HelperRefs,
-    lazy_strings: &std::cell::RefCell<Vec<Box<ArcStr>>>,
-    lazy_values: &std::cell::RefCell<Vec<Box<Value>>>,
-    lazy_value_owners: &std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>>,
-    body: &BodySource,
-    callee_layouts: &BTreeMap<usize, SiteLayout>,
-    lazy_site_leaves: &std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
+    helper_refs: &'a HelperRefs,
+    consts: &'a std::cell::RefCell<Vec<EmitConst>>,
+    module: &'a std::cell::RefCell<&'a mut JITModule>,
+    symbols: &'a SymbolTable,
+    symbol: &'a str,
+    body: &'a BodySource<'a>,
+    callee_layouts: &'a BTreeMap<usize, SiteLayout>,
 ) -> Result<(usize, Vec<kernel_abi::SiteAnchor>, Vec<kernel_abi::SelfBlock>, SiteLayout)>
 {
     let spec = &body.spec;
@@ -180,9 +179,11 @@ pub(super) fn compile_into_function(
         collection_site: std::cell::Cell::new(None),
         self_call_roots: std::cell::RefCell::new(Vec::new()),
         pending_exit: std::cell::RefCell::new(None),
-        lazy_strings,
-        lazy_values,
-        lazy_value_owners,
+        consts,
+        module,
+        symbols,
+        symbol,
+        kernel,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
         self_call: spec.self_call,
@@ -204,7 +205,6 @@ pub(super) fn compile_into_function(
         slot_tables: std::cell::RefCell::new(Vec::new()),
         closed_frame: std::cell::RefCell::new(None),
         callee_layouts,
-        lazy_site_leaves,
         loop_depth: std::cell::Cell::new(0),
     };
     // A wedged native loop aborts to bottom on interrupt.
@@ -257,51 +257,6 @@ pub(super) fn compile_into_function(
     ))
 }
 
-/// Per-kernel storage of the `ArcStr`s the JIT'd code references by
-/// baked `*const ArcStr`. Each entry is individually boxed so its
-/// address is stable; the table must outlive the compiled code.
-pub struct KernelStrings {
-    lazy: Vec<Box<ArcStr>>,
-}
-
-impl KernelStrings {
-    /// An empty table.
-    pub fn empty() -> Self {
-        Self { lazy: Vec::new() }
-    }
-
-    /// Attach the emission arena's entries; they live as long as this table.
-    pub fn with_lazy(mut self, lazy: Vec<Box<ArcStr>>) -> Self {
-        self.lazy = lazy;
-        self
-    }
-}
-
-/// Per-kernel stable-address `Value` constants the codegen bakes
-/// `*const Value` pointers to. Mirrors [`KernelStrings`].
-pub struct KernelValues {
-    lazy: Vec<Box<Value>>,
-    /// Other pointees the emitted code baked (cast `Type`s, `QopSite`s).
-    keep: Vec<Box<dyn std::any::Any + Send + Sync>>,
-}
-
-impl KernelValues {
-    pub fn empty() -> Self {
-        Self { lazy: Vec::new(), keep: Vec::new() }
-    }
-
-    /// See [`KernelStrings::with_lazy`].
-    pub fn with_lazy(
-        mut self,
-        lazy: Vec<Box<Value>>,
-        keep: Vec<Box<dyn std::any::Any + Send + Sync>>,
-    ) -> Self {
-        self.lazy = lazy;
-        self.keep = keep;
-        self
-    }
-}
-
 /// A callee kernel's per-call-site state-block layout, recorded when
 /// the callee body is defined and read by every caller to size the
 /// block it supplies. A caller with no layout is on a recursive
@@ -333,8 +288,8 @@ pub(crate) struct TruncRec {
     /// Directory levels above the claim's own loop.
     pub(super) n_dirs: u32,
     pub(super) leaf: TruncLeaf,
-    /// The baked `SiteLeaf` address passed at every level (0 = none).
-    pub(super) leaf_ptr: i64,
+    /// The leaf passed at every level, when the entries are blocks.
+    pub(super) leaf_rt: Option<std::sync::Arc<kernel_abi::SiteLeaf>>,
 }
 
 #[derive(Clone, Copy)]
@@ -459,10 +414,6 @@ pub(crate) struct LowerCtx<'a> {
     /// Layouts of already-defined callees; a missing entry is a
     /// recursive back-edge (the call passes 0).
     pub(super) callee_layouts: &'a BTreeMap<usize, SiteLayout>,
-    /// `SiteLeaf`s whose addresses this body baked; they must outlive
-    /// the compiled code.
-    pub(super) lazy_site_leaves:
-        &'a std::cell::RefCell<Vec<std::sync::Arc<kernel_abi::SiteLeaf>>>,
     /// Open scaffold-loop frames, innermost last.
     pub(super) slot_tables: std::cell::RefCell<Vec<SlotTableFrame>>,
     /// The frame `close_slot_tables` just popped, for the loop exit's
@@ -494,13 +445,17 @@ pub(crate) struct LowerCtx<'a> {
     /// Site-word byte offsets rooting self-call activation trees; the
     /// block size they describe is final only after emission.
     pub(super) self_call_roots: std::cell::RefCell<Vec<i32>>,
-    /// Lazily interned entries, harvested into the per-kernel tables.
-    /// Each is boxed so its address survives Vec growth.
-    pub(super) lazy_strings: &'a std::cell::RefCell<Vec<Box<ArcStr>>>,
-    pub(super) lazy_values: &'a std::cell::RefCell<Vec<Box<Value>>>,
-    /// Cast target `Type`s and `QopSite`s kept alive like `lazy_values`.
-    pub(super) lazy_value_owners:
-        &'a std::cell::RefCell<Vec<Box<dyn std::any::Any + Send + Sync>>>,
+    /// The constants this body refers to by address, in symbol order;
+    /// harvested into the body's record.
+    pub(super) consts: &'a std::cell::RefCell<Vec<EmitConst>>,
+    /// The module, for declaring a constant's data symbol.
+    pub(super) module: &'a std::cell::RefCell<&'a mut JITModule>,
+    /// Where a constant symbol's address is entered for the loader.
+    pub(super) symbols: &'a SymbolTable,
+    /// This body's symbol; constant symbols are named under it.
+    pub(super) symbol: &'a str,
+    /// This body's kernel, whose cells a constant may name.
+    pub(super) kernel: &'a KernelSig,
     /// The single abort block; its body is emitted at the end of
     /// `compile_into_function`. A bottomed call does not come here.
     pub(super) pending_exit: std::cell::RefCell<Option<Block>>,
@@ -627,4 +582,31 @@ pub(super) fn declare_helpers(
         refs.insert(*name, fref);
     }
     HelperRefs { refs, arity: ids.arity.clone() }
+}
+
+impl netidx_core::pack::Pack for SiteLayout {
+    fn encoded_len(&self) -> usize {
+        let SiteLayout { words, anchors, self_blocks } = self;
+        words.encoded_len()
+            + crate::image::slice_len(anchors)
+            + crate::image::slice_len(self_blocks)
+    }
+
+    fn encode(
+        &self,
+        buf: &mut impl bytes::BufMut,
+    ) -> Result<(), netidx_core::pack::PackError> {
+        let SiteLayout { words, anchors, self_blocks } = self;
+        words.encode(buf)?;
+        crate::image::slice_encode(anchors, buf)?;
+        crate::image::slice_encode(self_blocks, buf)
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> Result<Self, netidx_core::pack::PackError> {
+        use netidx_core::pack::Pack;
+        let words = u32::decode(buf)?;
+        let anchors: Vec<kernel_abi::SiteAnchor> = Pack::decode(buf)?;
+        let self_blocks: Vec<kernel_abi::SelfBlock> = Pack::decode(buf)?;
+        Ok(SiteLayout { words, anchors: anchors.into(), self_blocks: self_blocks.into() })
+    }
 }

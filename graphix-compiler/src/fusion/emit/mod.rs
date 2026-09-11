@@ -24,6 +24,7 @@ mod flow;
 mod jit;
 mod lower;
 mod nodes;
+mod record;
 /// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the node
 /// HOF emitters.
 pub mod scaffold;
@@ -46,7 +47,6 @@ pub use self::jit::{
     Jit, JitCtx, WrappedKernel, WrapperFn, compile_kernel_with_callees_direct,
     pack_value_to_u64, unpack_u64_to_value,
 };
-pub use self::lower::{KernelStrings, KernelValues};
 pub(crate) use self::nodes::{
     call_result_needs_value_widening, emit_abstract_ref_node, emit_arith_node,
     emit_array_ref_node, emit_array_slice_node, emit_bool_node, emit_cast_node,
@@ -57,4 +57,6 @@ pub(crate) use self::nodes::{
     emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
     emit_variant_new_node, widen_result_to_value,
 };
+pub use self::record::{BodyRecord, KernelConst, RecordKind, RecordReloc, RelocTarget};
+pub(crate) use self::record::{record_decode, record_encode, record_len};
 pub(crate) use self::select::{emit_select_node, slot_state_sites};

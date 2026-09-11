@@ -259,10 +259,21 @@ impl<X: GXExt> Shell<X> {
             Source::Internal(text) => Some(text.as_bytes().to_vec()),
             _ => None,
         });
+        let mut flags = match self.mode {
+            Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
+            Mode::Repl => CFlag::ReplaceImports.into(),
+        };
+        flags.insert(self.enable_flags);
+        flags.remove(self.disable_flags);
+        // The compile flags shape the program's graph (fusion on or off).
         let cache = if self.no_cache {
             None
         } else {
-            match cache::RegistrationCache::new(&root, program_text.as_deref()) {
+            match cache::RegistrationCache::new(
+                &root,
+                program_text.as_deref(),
+                flags.bits() as u64,
+            ) {
                 Ok(c) => Some(c),
                 Err(e) => {
                     log::warn!("image cache unavailable: {e}");
@@ -296,12 +307,6 @@ impl<X: GXExt> Shell<X> {
                 }
             }
         };
-        let mut flags = match self.mode {
-            Mode::Script(_) | Mode::Check(_) => CFlag::WarnUnhandled | CFlag::WarnUnused,
-            Mode::Repl => CFlag::ReplaceImports.into(),
-        };
-        flags.insert(self.enable_flags);
-        flags.remove(self.disable_flags);
         let mut mods = vec![VfsResolver::new(vfs_modules)];
         for res in self.module_resolvers.drain(..) {
             mods.push(res);

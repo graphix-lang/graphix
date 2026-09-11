@@ -28,7 +28,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 5;
+pub const REGISTRATION_FORMAT: u8 = 6;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -211,7 +211,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             ("an open definition gate", self.def_gate_depth != 0),
             ("lambdas resolving", !self.resolving_lambdas.lock().is_empty()),
             ("active lambdas", !self.active_lambdas.is_empty()),
-            ("kernels", !self.fusion.kernels.lock().is_empty()),
             ("core hook sites", !self.core_hook_sites.is_empty()),
         ];
         if let Some((what, _)) = busy.iter().find(|(_, b)| *b) {
@@ -243,12 +242,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let body_bound = body_bound + enc.deferred_len;
         enc.sort_ids();
         let counts = enc.counts();
+        let isa = self.fusion.jit.lock().isa_description();
         let mut buf = ImageBuf::with_capacity(
-            MAGIC.len() + 1 + counts.encoded_len() + 16 + body_bound,
+            MAGIC.len() + 1 + counts.encoded_len() + isa.encoded_len() + 16 + body_bound,
         );
         buf.put_slice(MAGIC);
         buf.put_u8(REGISTRATION_FORMAT);
         counts.encode(&mut buf)?;
+        isa.encode(&mut buf)?;
         let trailer_at = buf.len();
         buf.put_u64(0);
         buf.put_u64(0);
@@ -318,6 +319,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             return Err(PackError::InvalidFormat);
         }
         let counts = IdCounts::decode(&mut bytes)?;
+        let isa = String::decode(&mut bytes)?;
+        if isa != self.fusion.jit.lock().isa_description() {
+            warn!("the image was written for another isa: {isa}");
+            return Err(PackError::InvalidFormat);
+        }
         if bytes.remaining() < 16 {
             return Err(PackError::BufferShort);
         }
@@ -328,6 +334,13 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         let mut dec = ImageDecoder::new(counts);
         dec.set_image(image.clone());
+        dec.set_fastcalls(
+            self.fusion
+                .builtin_facts
+                .iter()
+                .filter_map(|(name, facts)| facts.fastcall.map(|f| (*name, f)))
+                .collect(),
+        );
         let restored = {
             let _s = DecodeImage::new(&mut dec);
             let mut table = &image[table_at..];
