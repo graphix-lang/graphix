@@ -507,6 +507,25 @@ run!(seq_arm_write_after_write, SEQ_ARM_WRITE_AFTER_WRITE, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(22)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A nested seq without a trigger runs at every entry of its statement;
+// the step waits for that run's result, never the previous run's.
+const SEQ_NESTED_REENTRY: &str = r#"
+{
+  let step = 0;
+  step <- select step { s if s < 30 => s + 1, _ => never() };
+  let go = select step { 1 | 12 => step, _ => never() };
+  let out = seq go {
+    let r = seq { let a = go; a * 10 };
+    r + 1
+  };
+  select step { 30 => out, _ => never() }
+}
+"#;
+
+run!(seq_nested_reentry, SEQ_NESTED_REENTRY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(121)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // A block's lets are its own; the statement after it reads the outer x.
 const SEQ_BLOCK_LET_LOCAL: &str = r#"
 {

@@ -200,6 +200,18 @@ stale between runs, bottom before the first completion. A `seq` inside
 a lambda is a callable ceremony; a call to one from a step is itself an
 async step.
 
+**A nested seq is a step that produces later.** A seq written inside a
+step runs as its own machine. Without a trigger it starts every time
+its statement is entered (its constant trigger fires at the arm's
+wake); with one it waits for that trigger. The enclosing step counts
+it as a call, not a level: its result cell stands from the previous
+run, and the step completes only on the production of this run. It
+costs two cycles over the same statements written inline, one for the
+inner start and one for its result. An error in the inner seq resets
+the inner machine and rethrows: outside a `try` it aborts the outer
+run too; inside one it takes the with branch, and the next run's inner
+seq starts afresh.
+
 **Levels live outside.** A level effect (`tui::suspend`,
 `sys::net::publish`, a subscription the ceremony watches) must not be a
 step: a passed step sleeps and a slept level is torn down. Steps write

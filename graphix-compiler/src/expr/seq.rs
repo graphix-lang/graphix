@@ -1095,8 +1095,14 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
     }
 }
 
+/// Whether a step produces later rather than standing as a level: it
+/// holds a call, or a nested seq, whose result cell stands from its
+/// previous run.
 fn has_call(e: &Expr) -> bool {
-    find_outside_lambdas(e, |x| matches!(x.kind, ExprKind::Apply(_))).is_some()
+    find_outside_lambdas(e, |x| {
+        matches!(x.kind, ExprKind::Apply(_) | ExprKind::Seq { .. })
+    })
+    .is_some()
 }
 
 fn inline_lambda(mut e: &Expr) -> bool {

@@ -32,6 +32,21 @@ A `seq` is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
 to a variable, or feed it to another expression.
 
+A `seq` can also be a step of another `seq`. Written without a trigger
+it runs every time its statement is reached, and the enclosing step
+waits for that run to complete:
+
+```graphix
+seq request {
+    let cfg = seq { let raw = read_config(request); parse(raw) };
+    apply(cfg)
+}
+```
+
+An error inside the inner `seq` aborts the inner run and, unless a
+`try` in the outer body takes it, the outer run as well. A nested
+`seq` costs two cycles more than the same statements written inline.
+
 ## `seq` and `seqq`
 
 The two forms differ in what happens when the trigger fires while a run

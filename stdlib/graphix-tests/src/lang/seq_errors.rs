@@ -178,6 +178,29 @@ async fn recursive_errors(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+// An inner seq's error inside a try takes the with branch; the outer
+// run recovers, and the next run's inner seq starts afresh.
+async fn nested_sequence_in_try(fusion_disabled: bool) -> Result<()> {
+    for inner in ["seq", "seqq"] {
+        let code = format!(
+            r#"{{
+                let step = 0;
+                step <- select step {{ s if s < 20 => s + 1, _ => never() }};
+                let go = select step {{ 1 | 10 => step, _ => never() }};
+                seq go {{
+                    let r = try {{
+                        {inner} {{ select go {{ 1 => error(`Oops)?, _ => go }} }}
+                    }} with(e) {{ -1 }};
+                    r * 100 + go
+                }}
+            }}"#
+        );
+        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), [-99, 1010], "{inner}");
+    }
+    Ok(())
+}
+
 async fn nested_sequences(fusion_disabled: bool) -> Result<()> {
     for inner in ["seq", "seqq"] {
         let code = format!(
@@ -440,6 +463,7 @@ modes!(
     scoped_errors,
     recursive_errors,
     nested_sequences,
+    nested_sequence_in_try,
     multiple_errors,
     nested_multiple_errors,
     recursive_multiple_errors,

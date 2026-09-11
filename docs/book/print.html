@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-70ffc56f.js";
+            window.path_to_searchindex_js = "searchindex-fc117997.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2022,6 +2022,17 @@ runs once at initialization.</p>
 <p>A <code>seq</code> is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
 to a variable, or feed it to another expression.</p>
+<p>A <code>seq</code> can also be a step of another <code>seq</code>. Written without a trigger
+it runs every time its statement is reached, and the enclosing step
+waits for that run to complete:</p>
+<pre><code class="language-graphix">seq request {
+    let cfg = seq { let raw = read_config(request); parse(raw) };
+    apply(cfg)
+}
+</code></pre>
+<p>An error inside the inner <code>seq</code> aborts the inner run and, unless a
+<code>try</code> in the outer body takes it, the outer run as well. A nested
+<code>seq</code> costs two cycles more than the same statements written inline.</p>
 <h2 id="seq-and-seqq-1"><a class="header" href="#seq-and-seqq-1"><code>seq</code> and <code>seqq</code></a></h2>
 <p>The two forms differ in what happens when the trigger fires while a run
 is in progress:</p>
