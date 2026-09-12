@@ -223,10 +223,16 @@ site's callee travels three ways: unbound (a dynamic site before its
 first cycle), an imaged instance of a lambda (`GXLambda`: argument
 patterns, body, scheme, analysis facts, lexical snapshot), or a
 builtin rebuilt at decode by the restored definition's factory over
-the imaged argument references, with the types the cold run resolved.
-Nothing is typechecked at decode: re-running static resolution
+the imaged argument references, given the SITE type the cold init was
+given (`apply.typ()`), with the builtin's own `typecheck0/1` replayed
+over it and the resolved copy derived afterwards, as the cold path
+does. Static resolution is never re-run at decode: re-inferring
 against restored inference state fails (the corpus differential found
-it), so the image carries every resolved type it needs. A `?`'s
+it). The replay must see the tvar cells the cold pass bound: the
+argument types were aliased into the site type's cells, and a
+`resolve_tvars` copy mints fresh cells for every unbound tvar, so an
+image that carried the resolved copy instead failed the replay on a
+union such as `['b, Array<'b>]` (sep12a, 11 findings). A `?`'s
 handler and a catch's own handler are the scope codec's shared
 objects. Dynamic modules' runtime environment and
 `DefOrigin::Runtime` definitions stay outside the image.

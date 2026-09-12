@@ -94,12 +94,47 @@ pub struct ProgramArgs(pub Vec<ArcStr>);
 /// here (exactly the bytes the stream would receive) instead of the
 /// process streams. Log destinations are unaffected.
 #[derive(Debug, Default, Clone)]
-pub struct PrintSink(pub triomphe::Arc<parking_lot::Mutex<String>>);
+pub struct PrintSink(triomphe::Arc<parking_lot::Mutex<SinkBuf>>);
+
+/// The captured text with the end offset of every cycle that wrote.
+#[derive(Debug, Default)]
+struct SinkBuf {
+    text: String,
+    marks: Vec<(u64, usize)>,
+}
 
 impl PrintSink {
+    fn push(&self, cycle: u64, line: &str, suffix: &str) {
+        let mut b = self.0.lock();
+        b.text.push_str(line);
+        b.text.push_str(suffix);
+        let end = b.text.len();
+        match b.marks.last_mut() {
+            Some((c, at)) if *c == cycle => *at = end,
+            _ => b.marks.push((cycle, end)),
+        }
+    }
+
     /// Take the captured text, leaving the sink empty.
     pub fn take(&self) -> String {
-        std::mem::take(&mut *self.0.lock())
+        let mut b = self.0.lock();
+        b.marks.clear();
+        std::mem::take(&mut b.text)
+    }
+
+    /// Take the text written in cycles up to and including `cycle`;
+    /// later writes stay in the sink.
+    pub fn take_through(&self, cycle: u64) -> String {
+        let mut b = self.0.lock();
+        let keep = b.marks.iter().position(|(c, _)| *c > cycle).unwrap_or(b.marks.len());
+        let at = keep.checked_sub(1).map_or(0, |i| b.marks[i].1);
+        let rest = b.text.split_off(at);
+        let taken = std::mem::replace(&mut b.text, rest);
+        b.marks.drain(..keep);
+        for (_, end) in b.marks.iter_mut() {
+            *end -= at;
+        }
+        taken
     }
 }
 
@@ -2101,9 +2136,7 @@ fn emit_line<R: Rt, E: UserEvent>(
     };
     match (dest, sink) {
         (LogDest::Stdout | LogDest::Stderr, Some(sink)) => {
-            let mut out = sink.0.lock();
-            out.push_str(line);
-            out.push_str(suffix);
+            sink.push(ctx.rt.cycle(), line, suffix)
         }
         (LogDest::Stdout, None) => print!("{line}{suffix}"),
         (LogDest::Stderr, None) => eprint!("{line}{suffix}"),

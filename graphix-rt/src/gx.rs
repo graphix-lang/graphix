@@ -58,6 +58,10 @@ struct TraceState {
     worked_cycles: u64,
     capped_cycles: bool,
     capped_events: bool,
+    /// The cycle a cap tripped in: a segment resolved later still ends
+    /// there, so what the trace saw does not depend on when the waiter
+    /// arrived.
+    capped_at: Option<u64>,
     waiter: Option<oneshot::Sender<Option<TraceSegment>>>,
 }
 
@@ -70,6 +74,7 @@ impl TraceState {
             worked_cycles: 0,
             capped_cycles: false,
             capped_events: false,
+            capped_at: None,
             waiter: None,
         }
     }
@@ -84,6 +89,7 @@ impl TraceState {
         }
         if self.events.len() >= self.max_events {
             self.capped_events = true;
+            self.capped_at = Some(cycle);
         } else {
             self.events.push(TraceEvent::Updated { cycle, id, value: v.clone() });
         }
@@ -103,17 +109,20 @@ impl TraceState {
             self.worked_cycles += 1;
             if self.worked_cycles >= self.max_cycles {
                 self.capped_cycles = true;
+                self.capped_at.get_or_insert(cycle);
             }
         }
-        if self.capped() {
-            self.resolve(cycle)
+        if let Some(at) = self.capped_at {
+            self.resolve(at)
         }
     }
 
     fn wait(&mut self, res: oneshot::Sender<Option<TraceSegment>>, cycle: u64) {
         self.waiter = Some(res);
-        if self.capped() {
-            self.resolve(cycle)
+        match self.capped_at {
+            Some(at) => self.resolve(at),
+            None if self.capped() => self.resolve(cycle),
+            None => (),
         }
     }
 

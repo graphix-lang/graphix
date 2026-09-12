@@ -60,9 +60,11 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # worker measures ~375MB average, ~575MB at the top (ryouko, sep11f).
 # 8x cores put aieka and ryouko 30GB into swap; 4x still left ryouko
 # 11GB in. 80 workers on a 62GB box is ~30GB average, ~46GB at the
-# top. katana's darwin children measure ~100MB and stay at 8x.
+# top. katana (16GB) at 64 sat in 4.2GB of its 5GB swap with a load of
+# 100+ on 8 cores (sep12a: four "child HANG" crashes that all pass on
+# an idle box); 32 is its memory-sized count.
 HOSTS=(
-    "katana:rsync:64:4:darwin"
+    "katana:rsync:32:4:darwin"
     "washu-chan:rsync:64:1:linux"
     "aieka:rsync:80:4:linux"
     "ryouko:rsync:80:1:linux"

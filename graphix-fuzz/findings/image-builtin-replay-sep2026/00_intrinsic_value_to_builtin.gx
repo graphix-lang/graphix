@@ -1,0 +1,12 @@
+// IMAGE: a builtin call site is rebuilt at decode by replaying its
+// typecheck passes. The cold `typecheck0` aliased the argument types
+// into the cells of the site type the init was given; the image
+// carried `resolved_ftype` instead, a `resolve_tvars` copy whose
+// unbound tvars are fresh, so the replay unified the aliased args
+// against strangers. A bare tvar re-aliases (array::map agreed); the
+// union `['b, Array<'b>]` in flat_map's callback binds 'b to the whole
+// union and the check fails: the warm session died with
+// "reading the registration image: InvalidFormat". Found by sep12a on
+// every box (11 findings). The image now carries the site type the
+// init used and derives `resolved_ftype` at decode as the cold run did.
+filter(array::flat_map, |x| true)

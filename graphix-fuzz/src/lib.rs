@@ -424,18 +424,9 @@ pub async fn run_program_with_stats_routed(
             );
         }
     };
-    let tier = subj.tier;
     let base = ctx.fusion_stats().await.unwrap_or_default();
-    let mut outcome = drive(&ctx, &mut rx, &subj, route, timeout, Entry::Compile).await;
-    // Exact tier only; sorted because within-cycle emission order is an
-    // evaluation-order artifact
-    if tier == OracleTier::Exact
-        && let Outcome::Trace(t) = &mut outcome
-    {
-        let mut lines: Vec<String> = sink.take().lines().map(|l| l.to_string()).collect();
-        lines.sort_unstable();
-        t.stdout = lines;
-    }
+    let outcome =
+        drive(&ctx, &mut rx, &subj, route, timeout, Entry::Compile, &sink).await;
     // A wedged runtime never answers another request: abort first, then
     // never await it without a deadline.
     if matches!(outcome, Outcome::Timeout(_)) {
@@ -462,8 +453,9 @@ async fn drive(
     route: Route,
     timeout: Duration,
     entry: Entry,
+    sink: &graphix_package_core::PrintSink,
 ) -> Outcome {
-    let outcome = drive_inner(ctx, rx, subj, route, timeout, entry).await;
+    let outcome = drive_inner(ctx, rx, subj, route, timeout, entry, sink).await;
     // A runtime the stack budget aborted answers nothing more: whichever
     // request that failed, the outcome is the containment.
     if matches!(outcome, Outcome::RuntimeErr(_) | Outcome::CompileErr(_))
@@ -481,9 +473,13 @@ async fn drive_inner(
     route: Route,
     timeout: Duration,
     entry: Entry,
+    sink: &graphix_package_core::PrintSink,
 ) -> Outcome {
     let Subject { sched, spec, tier, .. } = subj;
     let (spec, tier) = (spec.as_ref(), *tier);
+    // a shared runtime (a batch lane) may still be printing for the
+    // subject before this one
+    drop(sink.take());
     // one wall-clock deadline for the whole drive (a backstop for a
     // wedged evaluator) and one concurrent drain of the event channel
     let deadline = tokio::time::sleep(timeout);
@@ -694,7 +690,18 @@ async fn drive_inner(
             }
         }
     }
-    Outcome::Trace(trace::Trace::from_segments(&segs, eid))
+    let mut trace = trace::Trace::from_segments(&segs, eid);
+    // Exact tier only. The runtime runs on past a capped trace, so the
+    // capture stops at the last segment's cycle; sorted because
+    // within-cycle emission order is an evaluation-order artifact.
+    if tier == OracleTier::Exact {
+        let end = segs.last().map_or(0, |s| s.end_cycle);
+        let mut lines: Vec<String> =
+            sink.take_through(end).lines().map(|l| l.to_string()).collect();
+        lines.sort_unstable();
+        trace.stdout = lines;
+    }
+    Outcome::Trace(trace)
 }
 
 /// The reserved metamorphic-twin poison tag: a generated twin program
@@ -967,15 +974,8 @@ async fn run_session(
             );
         }
     };
-    let tier = subj.tier;
-    let mut outcome = drive(&ctx, &mut rx, &subj, route, timeout, Entry::Program).await;
-    if tier == OracleTier::Exact
-        && let Outcome::Trace(t) = &mut outcome
-    {
-        let mut lines: Vec<String> = sink.take().lines().map(|l| l.to_string()).collect();
-        lines.sort_unstable();
-        t.stdout = lines;
-    }
+    let outcome =
+        drive(&ctx, &mut rx, &subj, route, timeout, Entry::Program, &sink).await;
     if matches!(outcome, Outcome::Timeout(_)) {
         ctx.rt.abort();
     }
@@ -1652,12 +1652,17 @@ pub async fn run_batch(
     let empty = || VfsResolver::new(AHashMap::new());
     let swap_i = SwapResolver::arc(empty());
     let swap_j = SwapResolver::arc(empty());
+    let sink_i = graphix_package_core::PrintSink::default();
+    let sink_j = graphix_package_core::PrintSink::default();
+    let (seeded_i, seeded_j) = (sink_i.clone(), sink_j.clone());
     let ctx_i = match init_with_flags_and_setup(
         tx_i,
         REGISTER,
         vec![swap_i.clone()],
         Mode::Interp.flags(),
-        |_| {},
+        move |ctx| {
+            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded_i;
+        },
     )
     .await
     {
@@ -1669,15 +1674,17 @@ pub async fn run_batch(
         REGISTER,
         vec![swap_j.clone()],
         Mode::Jit.flags(),
-        |_| {},
+        move |ctx| {
+            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded_j;
+        },
     )
     .await
     {
         Ok(c) => c,
         Err(_) => return,
     };
-    let mut lane_i = EngineLane { ctx: ctx_i, rx: rx_i, swap: swap_i };
-    let mut lane_j = EngineLane { ctx: ctx_j, rx: rx_j, swap: swap_j };
+    let mut lane_i = EngineLane { ctx: ctx_i, rx: rx_i, swap: swap_i, sink: sink_i };
+    let mut lane_j = EngineLane { ctx: ctx_j, rx: rx_j, swap: swap_j, sink: sink_j };
     let mut consecutive_poison = 0u32;
     for (i, code) in progs.iter().enumerate() {
         // A subject-unique module name gives a fresh module and fresh
@@ -1797,6 +1804,7 @@ struct EngineLane {
     ctx: TestCtx,
     rx: mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
     swap: std::sync::Arc<SwapResolver>,
+    sink: graphix_package_core::PrintSink,
 }
 
 impl EngineLane {
@@ -1806,7 +1814,8 @@ impl EngineLane {
         route: Route,
         timeout: Duration,
     ) -> Outcome {
-        drive(&self.ctx, &mut self.rx, subj, route, timeout, Entry::Compile).await
+        drive(&self.ctx, &mut self.rx, subj, route, timeout, Entry::Compile, &self.sink)
+            .await
     }
 }
 

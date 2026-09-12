@@ -1759,11 +1759,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Rebuild a builtin callee from its definition's factory over the
-    /// restored arguments and the types the cold run resolved.
+    /// restored arguments. `site_ftype` is the type the cold init was
+    /// given: the cold `typecheck0` aliased the argument types into its
+    /// cells, so the replay must unify against those same cells.
     fn rebuild_builtin(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
-        resolved_ftype: FnType,
+        site_ftype: FnType,
         first_update: bool,
     ) -> Result<()> {
         let fv = self
@@ -1772,18 +1774,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let def = fv
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("the callee of {} is not a definition", self.spec))?;
-        let site = self
-            .ftype
-            .as_ref()
-            .map(FnType::resolve_tvars)
-            .ok_or_else(|| anyhow!("an untyped builtin site at {}", self.spec))?;
         let scope = self.scope.clone();
-        let mode = BindMode::Static { instance: &resolved_ftype, site: &site };
+        let mode = BindMode::Static { instance: &site_ftype, site: &site_ftype };
         let mut apply = self.init_prepared_bind(ctx, &scope, def, mode)?;
-        // A builtin records the types it renders or checks by in its
-        // typecheck passes, which read the argument and resolved types
-        // the cold run settled.
         apply.typecheck0(ctx, &mut self.arg_refs)?;
+        let resolved_ftype = apply.typ().resolve_tvars();
         apply.typecheck1(ctx, &mut [], &resolved_ftype)?;
         self.callee_is_builtin = true;
         self.callee = Callee::Static { apply, resolved_ftype, first_update };
@@ -1942,9 +1937,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     + first_update.encoded_len()
                     + self.static_target_len()
             }
-            (Callee::Static { resolved_ftype, first_update, .. }, CALLEE_REBUILT) => {
+            (Callee::Static { apply, first_update, .. }, CALLEE_REBUILT) => {
                 nodes_len(&self.arg_refs)
-                    + resolved_ftype.encoded_len()
+                    + apply.typ().encoded_len()
                     + first_update.encoded_len()
             }
             _ => 0,
@@ -2011,9 +2006,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
                 self.static_target_encode(buf)?;
             }
-            (Callee::Static { resolved_ftype, first_update, .. }, CALLEE_REBUILT) => {
+            (Callee::Static { apply, first_update, .. }, CALLEE_REBUILT) => {
                 encode_nodes(&self.arg_refs, buf)?;
-                resolved_ftype.encode(buf)?;
+                apply.typ().encode(buf)?;
                 first_update.encode(buf)?;
             }
             _ => (),

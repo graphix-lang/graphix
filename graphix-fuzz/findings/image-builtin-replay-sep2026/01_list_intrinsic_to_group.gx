@@ -1,0 +1,2 @@
+// The list twin, through a package builtin with two arguments.
+array::group(list::flat_map, |n, _| true)
