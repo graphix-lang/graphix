@@ -54,11 +54,17 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 
 # Disabled but may return
 # "mazikeen:rsync:112:4:linux"
+#
+# Workers = 4x cores on the Linux boxes (2026-09-11): a subject now runs
+# its cold and warm image sessions on top of the plain run, and a worker
+# holds ~300MB where it held ~100MB. At 8x, aieka (288) and ryouko (256)
+# went 30GB into swap and thrashed; 4x keeps them at roughly two thirds
+# of RAM. katana's darwin children measure ~100MB and stay at 8x.
 HOSTS=(
     "katana:rsync:64:4:darwin"
-    "washu-chan:rsync:128:1:linux"
-    "aieka:rsync:288:4:linux"
-    "ryouko:rsync:256:1:linux"
+    "washu-chan:rsync:64:1:linux"
+    "aieka:rsync:144:4:linux"
+    "ryouko:rsync:128:1:linux"
 )
 
 MIX=${FLEET_MIX:-50:25:25}
