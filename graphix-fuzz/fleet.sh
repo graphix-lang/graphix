@@ -170,6 +170,13 @@ pull() {
 
 # ---------------------------------------------------------------- stop
 
+# A campaign has three kinds of process: its launcher (the detached
+# `soak.sh start` still building, which starts the campaign AFTER a
+# stop that found nothing — aieka ran sep11c under sep11d and sep11e
+# that way, 300 orphans deep into swap), the soak, and its children,
+# which Linux spawns as `/proc/self/exe` so no argv pattern names them.
+# The launcher's session dies first; the soak's own stop takes its
+# session; the sweep and the count go by the executable link.
 stop() {
     local camp=$1 h name os rc=0 left
     [[ -n $camp ]] || usage
@@ -179,23 +186,49 @@ stop() {
         if [[ $os == darwin ]]; then
             timeout 300 ssh "$name" bash -s "$camp" <<'EOF' || true
 camp=$1
+pkill -KILL -f "soak-start $camp " 2>/dev/null || true
+pkill -KILL -f "cargo build --release -p graphix-fuzz" 2>/dev/null || true
 ~/bin/soak-stop "$camp" 2>&1 | tail -2 || true
 EOF
         else
             timeout 300 ssh "$name" bash -s "$camp" <<'EOF' || true
 camp=$1
+for pid in $(pgrep -f "soak.sh start $camp "); do
+    sid=$(ps -o sid= -p "$pid" | tr -d ' ')
+    [ -n "$sid" ] && pkill -KILL -s "$sid" 2>/dev/null
+done
 cd ~/proj/graphix && ./graphix-fuzz/soak.sh stop "$camp" 2>&1 | tail -2 || true
 EOF
         fi
         # The stop is a CLAIM; this is the verification. katana's own
         # stop script lied for weeks while leaving ~70 orphans behind.
-        left=$(timeout 120 ssh "$name" bash -s "$camp" <<'EOF' || echo unreachable
+        if [[ $os == darwin ]]; then
+            left=$(timeout 120 ssh "$name" bash -s "$camp" <<'EOF' || echo unreachable
 camp=$1
 pkill -KILL -f "fuzz/$camp/graphix-fuzz" 2>/dev/null || true
 sleep 2
-pgrep -f "fuzz/$camp/graphix-fuzz" | wc -l | tr -d ' '
+n=$(pgrep -f "fuzz/$camp/graphix-fuzz" | wc -l | tr -d ' ')
+echo $((n + $(pgrep -f "soak-start $camp " | wc -l | tr -d ' ')))
 EOF
 )
+        else
+            left=$(timeout 120 ssh "$name" bash -s "$camp" <<'EOF' || echo unreachable
+camp=$1; bin=$HOME/tmp/target/fuzz/$camp/graphix-fuzz
+sweep() {
+    n=0
+    for pid in $(ps -eo pid=); do
+        case "$(readlink /proc/$pid/exe 2>/dev/null)" in
+            "$bin"*) [ "$1" = kill ] && kill -KILL "$pid" 2>/dev/null; n=$((n + 1)) ;;
+        esac
+    done
+    echo "$n"
+}
+sweep kill > /dev/null
+sleep 2
+echo $(( $(sweep count) + $(pgrep -f "soak.sh start $camp " | wc -l | tr -d ' ') ))
+EOF
+)
+        fi
         if [[ $left == 0 ]]; then
             say "$(printf '%-8s stopped, 0 survivors' "$name")"
         else
