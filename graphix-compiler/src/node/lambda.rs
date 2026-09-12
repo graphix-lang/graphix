@@ -1258,6 +1258,46 @@ pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
     Ok(f)
 }
 
+/// The definition's check of its labeled defaults, under the gate:
+/// each default compiles in the def's scope and must fit its parameter.
+/// Against a declared tvar it must fit the tvar's constraints, not the
+/// variable, since a default is allowed to instantiate the variable at
+/// a site that omits the argument (`CallSite::setup_dynamic_bind`).
+fn check_defaults<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    def: &LambdaDef<R, E>,
+    scope: &Scope,
+) -> Result<()> {
+    let flags = match &def.origin {
+        DefOrigin::Source { flags, .. } => {
+            let mut flags = *flags;
+            flags.remove(CFlag::WarnUnhandled);
+            flags
+        }
+        DefOrigin::Runtime => return Ok(()),
+    };
+    for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
+        let Some(Some(expr)) = arg.labeled.as_ref() else { continue };
+        let mut node = ctx.with_restored(def.env.clone(), |ctx| {
+            compile(ctx, flags, expr.clone(), scope, ExprId::new())
+        })?;
+        let res = node.typecheck0(ctx).and_then(|()| {
+            let typ = node.typ().clone();
+            match &at.typ {
+                Type::TVar(tv) if tv.read().typ.read().typ.is_none() => tv
+                    .cell_constraints()
+                    .iter()
+                    .try_for_each(|c| c.check_contains(&ctx.env, &typ)),
+                t => t.check_contains(&ctx.env, &typ),
+            }
+        });
+        let res = res.with_context(|| ErrorContext(node.spec().clone()));
+        node.delete(ctx);
+        res?;
+    }
+    Ok(())
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
     fn image_len(&self) -> usize {
         let id = self.lambda_id::<R, E>().map_or(0, |id| id.encoded_len());
@@ -1315,9 +1355,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         // Every arg, defaulted labeled ones included, checks as a Nop of
-        // its declared type: a default is compiled and checked per
-        // omitting call site (`setup_bind`), where it may narrow that
-        // site's cells.
+        // its declared type; the defaults themselves are checked after
+        // the body (`check_defaults`), and again per omitting call site
+        // (`setup_bind`), where one may narrow that site's cells.
         let mut faux_args: LPooled<Vec<Node<R, E>>> = def
             .typ
             .args
@@ -1410,6 +1450,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             ftyp.constrain_known(ctx.def_gate_depth > 1);
             Ok(())
         });
+        let res = res.and_then(|()| check_defaults(ctx, def, &gate_scope));
         ctx.def_gate_depth -= 1;
         ctx.rec_defs.remove(&def.id);
         ctx.env.by_id.remove_cow(&faux_id);

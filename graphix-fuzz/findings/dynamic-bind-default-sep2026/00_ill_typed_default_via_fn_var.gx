@@ -1,5 +1,6 @@
-// A labeled default is compiled and checked per call site, so a lambda
-// reached only through a fn-typed variable has its default checked at
-// the runtime bind. That bind failing panicked the runtime; it logs
-// and bottoms the site. Both engines: an empty trace.
+// A labeled default was checked only per call site, so a lambda
+// reached only through a fn-typed variable met its default at the
+// runtime bind, and that bind failing panicked the runtime. The bind
+// now logs and bottoms the site, and the definition checks its
+// defaults: both engines refuse at compile.
 {let h = |#bar: i64 = |i| i, baz| bar + baz; let f: fn(x: i64) -> i64 = never(); f <- h; f(i64:1)}

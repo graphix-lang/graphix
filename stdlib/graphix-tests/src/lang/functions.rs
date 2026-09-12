@@ -63,6 +63,51 @@ run!(two_rigid_vars_unified, TWO_RIGID_VARS_UNIFIED, |v: Result<&Value>| match v
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
+const DEFAULT_ILL_TYPED_AT_DEFINITION: &str = r#"
+{
+  let h = |#bar: i64 = |i| i, baz| bar + baz;
+  1
+}
+"#;
+
+// A default is checked at the definition, called or not: a lambda is
+// not an i64.
+run!(default_ill_typed_at_definition, DEFAULT_ILL_TYPED_AT_DEFINITION, |v: Result<&Value>| match v {
+    Err(_) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::None);
+
+const DEFAULT_IN_CONSTRAINT_SET: &str = r#"
+{
+  let f = 'a: [Int, Float] |#start: 'a = 0.0, x: 'a| -> 'a start + x;
+  let g = 'a: [Int, Float] |#start: 'a = 0.0, x: 'a| -> 'a start + x;
+  select (f(1.5), g(#start: 1, 1)) {
+    (f64:1.5, i64:2) => 1,
+    _ => 0
+  }
+}
+"#;
+
+// Against a declared variable a default must fit the variable's
+// constraints, not the variable: the site that omits the argument takes
+// the default's type, a site that passes it takes its own.
+run!(default_in_constraint_set, DEFAULT_IN_CONSTRAINT_SET, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const DEFAULT_OUTSIDE_CONSTRAINT_SET: &str = r#"
+{
+  let f = 'a: Int |#start: 'a = 0.0, x: 'a| -> 'a start + x;
+  f(1)
+}
+"#;
+
+run!(default_outside_constraint_set, DEFAULT_OUTSIDE_CONSTRAINT_SET, |v: Result<&Value>| match v {
+    Err(_) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::None);
+
 const LABELED_ARGS: &str = r#"
 {
   let f = |#foo: Number, #bar: Number = 42| foo + bar;

@@ -25,6 +25,11 @@ let f = |#opt: [i64, null] = null, a| ..
 ```
 
 Specifies that `opt` can be either an `i64` or `null` and by default it is null.
+A default is checked where the function is defined: it must fit the
+argument's type, and when that type is a declared type variable, the
+variable's constraint. So `'a: [Int, Float] |#start: 'a = 0.0, x: 'a|`
+is fine; a call that omits `start` takes `'a` from the default, and a
+call that passes `#start: 1` takes it from the call.
 The compiler implements subtyping for functions with optional arguments. For
 example if you write a function that takes a function with a labeled argument
 `foo`, you can pass any function that has a labeled argument `foo`, even if it
