@@ -1,6 +1,6 @@
 // The declared 'a and 'b meet through the fn-typed param and the
 // nested closure, and a rollback undoes the forward link one merge
 // left, so the gated cell cannot be re-derived from the var at close.
-// The gate holds the cells it counted. Both routes of both engines
-// print the lambda.
+// The gate holds the cells it counted, and refuses the merge itself:
+// `push` needs 'b = 'a. Both engines refuse at compile.
 |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(a, f(v)))

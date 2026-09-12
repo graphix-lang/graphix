@@ -33,6 +33,36 @@ run!(first_class_lambdas, FIRST_CLASS_LAMBDAS, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+const TWO_RIGID_VARS_INDEPENDENT: &str = r#"
+{
+  let pair = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ('a, 'b) (x, y);
+  let (a, _) = pair(1, 1.5);
+  let (_, b) = pair(2, 2);
+  a + b
+}
+"#;
+
+// A body that keeps its two declared variables apart accepts equal and
+// unequal instantiations alike.
+run!(two_rigid_vars_independent, TWO_RIGID_VARS_INDEPENDENT, |v: Result<&Value>| match v {
+    Ok(Value::I64(3)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const TWO_RIGID_VARS_UNIFIED: &str = r#"
+{
+  let add = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ['a, 'b] x + y;
+  add(1, 2)
+}
+"#;
+
+// `+` is ('a, 'a) -> 'a, so this body is well typed only where 'a = 'b:
+// a promise the signature does not make. Refused at the definition.
+run!(two_rigid_vars_unified, TWO_RIGID_VARS_UNIFIED, |v: Result<&Value>| match v {
+    Err(_) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::None);
+
 const LABELED_ARGS: &str = r#"
 {
   let f = |#foo: Number, #bar: Number = 42| foo + bar;

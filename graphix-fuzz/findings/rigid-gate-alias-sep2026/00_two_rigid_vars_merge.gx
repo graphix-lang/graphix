@@ -2,6 +2,7 @@
 // over 'a and 'b). The check's rigid gate was opened through the var
 // and closed through the var; the merge re-pointed the var to the
 // other cell in between, so the close missed the counted cell and the
-// registration image refused it. The gate holds the cells it counted.
-// Both routes of both engines produce the lambda's printed type.
+// registration image refused it. The gate holds the cells it counted,
+// and the gate now refuses the merge itself: `+` needs 'a = 'b, which
+// the signature does not promise. Both engines refuse at compile.
 {let f = 'a: Number, 'b: Number|x: 'a, y: 'b| -> ['a, 'b] x + y; f}

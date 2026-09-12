@@ -78,6 +78,22 @@ Caused by:
 Here the compiler is saying that `'a` is already initialized as `i64` and `i64`
 doesn't unify with `f64`.
 
+Declaring two variables promises the opposite: that the function works
+for any `'a` and any `'b`, chosen independently. The body is checked
+against that promise, so a body that only works when the two are the
+same type is refused at the definition rather than at some later call,
+
+```graphix
+〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -> ['a, 'b] x + y
+error: ... type mismatch 'a does not contain 'b
+```
+
+`+` takes two values of one type, so `x + y` needs `'a` and `'b` to be
+equal, which is exactly what the signature said they need not be. A
+caller may still pass two values of the same type to a two-variable
+function; the promise is about what the body may assume, not about what
+callers may do.
+
 ## Higher Order Functions
 
 Since functions are first class, they can take other functions as arguments, and

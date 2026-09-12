@@ -782,6 +782,10 @@ impl Type {
                     Recurse(Type, Type),
                     Memo(Type, Type, usize, usize),
                     Refuse,
+                    /// Two declared vars of the def under check (rigid
+                    /// cells exist only inside its gate): the body must
+                    /// not require them equal.
+                    Distinct,
                 }
                 let act = {
                     let t0 = t0.read();
@@ -815,6 +819,9 @@ impl Type {
                         _ if cyc0 || cyc1 => ActOrRecurse::Refuse,
                         (Some(t0), Some(t1)) => {
                             ActOrRecurse::Recurse(t0.clone(), t1.clone())
+                        }
+                        (None, None) if t0i.rigid_gates > 0 && t1i.rigid_gates > 0 => {
+                            ActOrRecurse::Distinct
                         }
                         (None, None) => {
                             if t0.frozen && t1.frozen {
@@ -864,6 +871,7 @@ impl Type {
                     }
                 };
                 let (act, bound) = match act {
+                    ActOrRecurse::Distinct => return Ok(false),
                     ActOrRecurse::Refuse => {
                         if crate::dbgenv::graphix_dbg_cycle_bt() {
                             eprintln!(

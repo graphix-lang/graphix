@@ -293,8 +293,10 @@ node graph IS the IR — there is no parallel typed IR
   body the interp's per-slot/per-activation multiplicity for exactly the
   state that decides firing; the QUIET FLAG (a framed pass on a non-init
   cycle) is not an init view; only a site's first-ever dispatch is.
-- **`let rec` is monomorphic-recursive**; union collapse requires strict
-  tvar identity; a free union member stays free (annotate a select whose
+- **`let rec` is monomorphic-recursive**; a def's declared tvars are
+  rigid in its body check: none binds to a concrete type and no two
+  unify (`contains.rs` Distinct), while a call instantiates them
+  freely; union collapse requires strict tvar identity; a free union member stays free (annotate a select whose
   arms are `'b` and `i64`); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able; checked arith
   (`+?` …) yields a catchable `ArithError`, unchecked wraps, integer

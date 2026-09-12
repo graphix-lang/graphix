@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c0fb3c71.js";
+            window.path_to_searchindex_js = "searchindex-a20ee33c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2534,6 +2534,18 @@ Caused by:
 </code></pre>
 <p>Here the compiler is saying that <code>'a</code> is already initialized as <code>i64</code> and <code>i64</code>
 doesn’t unify with <code>f64</code>.</p>
+<p>Declaring two variables promises the opposite: that the function works
+for any <code>'a</code> and any <code>'b</code>, chosen independently. The body is checked
+against that promise, so a body that only works when the two are the
+same type is refused at the definition rather than at some later call,</p>
+<pre><code class="language-graphix">〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -&gt; ['a, 'b] x + y
+error: ... type mismatch 'a does not contain 'b
+</code></pre>
+<p><code>+</code> takes two values of one type, so <code>x + y</code> needs <code>'a</code> and <code>'b</code> to be
+equal, which is exactly what the signature said they need not be. A
+caller may still pass two values of the same type to a two-variable
+function; the promise is about what the body may assume, not about what
+callers may do.</p>
 <h2 id="higher-order-functions"><a class="header" href="#higher-order-functions">Higher Order Functions</a></h2>
 <p>Since functions are first class, they can take other functions as arguments, and
 even return functions. These relationships can be often inferred automatically
