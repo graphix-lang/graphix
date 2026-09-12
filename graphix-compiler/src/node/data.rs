@@ -103,19 +103,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
-            // An empty literal is a constant and follows the Constant frame rule.
-            if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.dispatch_init {
-                    TagValue::fired(Value::Array(ValArray::from([])))
-                } else {
-                    TagValue::stale(Value::Array(ValArray::from([])))
-                });
-            } else if event.init {
-                return self
-                    .resident
-                    .set(TagValue::fired(Value::Array(ValArray::from([]))));
-            }
-            return self.resident.ride();
+            return super::produce_constant(ctx, event, &mut self.resident, || {
+                Value::Array(ValArray::from([]))
+            });
         }
         let mut vals: LPooled<Vec<Value>> = LPooled::take();
         let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
@@ -709,19 +699,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     }
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
-            // An empty literal is a constant and follows the Constant frame rule.
-            if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.dispatch_init {
-                    TagValue::fired(Value::Array(ValArray::from([])))
-                } else {
-                    TagValue::stale(Value::Array(ValArray::from([])))
-                });
-            } else if event.init {
-                return self
-                    .resident
-                    .set(TagValue::fired(Value::Array(ValArray::from([]))));
-            }
-            return self.resident.ride();
+            return super::produce_constant(ctx, event, &mut self.resident, || {
+                Value::Array(ValArray::from([]))
+            });
         }
         let mut vals: LPooled<Vec<Value>> = LPooled::take();
         let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
@@ -866,12 +846,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         encode_nodes(&self.n, buf)
     }
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if self.n.len() == 0 {
-            if event.init {
-                self.resident.set(TagValue::fired(Value::String(self.tag.clone())))
-            } else {
-                self.resident.ride()
-            }
+        if self.n.is_empty() {
+            super::produce_constant(ctx, event, &mut self.resident, || {
+                Value::String(self.tag.clone())
+            })
         } else {
             let mut vals: LPooled<Vec<Value>> = LPooled::take();
             let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);

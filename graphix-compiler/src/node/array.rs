@@ -600,17 +600,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use crate::node::collection::list;
         if self.n.is_empty() {
-            // an empty producer is a constant (see Array)
-            if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.dispatch_init {
-                    TagValue::fired(list::nil())
-                } else {
-                    TagValue::stale(list::nil())
-                });
-            } else if event.init {
-                return self.resident.set(TagValue::fired(list::nil()));
-            }
-            return self.resident.ride();
+            return super::produce_constant(ctx, event, &mut self.resident, list::nil);
         }
         let mut vals: LPooled<Vec<Value>> = LPooled::take();
         let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
@@ -708,20 +698,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
     }
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
-            // an empty producer is a constant: fired at init, stale
-            // inside frames (see Constant)
-            if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.dispatch_init {
-                    TagValue::fired(Value::Array(ValArray::from([])))
-                } else {
-                    TagValue::stale(Value::Array(ValArray::from([])))
-                });
-            } else if event.init {
-                return self
-                    .resident
-                    .set(TagValue::fired(Value::Array(ValArray::from([]))));
-            }
-            return self.resident.ride();
+            return super::produce_constant(ctx, event, &mut self.resident, || {
+                Value::Array(ValArray::from([]))
+            });
         }
         let mut vals: LPooled<Vec<Value>> = LPooled::take();
         let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);

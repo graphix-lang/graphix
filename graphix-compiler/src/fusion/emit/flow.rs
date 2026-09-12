@@ -483,6 +483,20 @@ fn type_may_error(t: &Type) -> bool {
     }
 }
 
+/// True iff every value of a frozen type is an error.
+fn type_always_error(t: &Type) -> bool {
+    match t {
+        Type::Error(_) => true,
+        Type::Primitive(p) => {
+            p.contains(netidx_value::Typ::Error) && p.iter().count() == 1
+        }
+        Type::Set(members) => {
+            !members.is_empty() && members.iter().all(type_always_error)
+        }
+        _ => false,
+    }
+}
+
 /// The `?`/`$` bad path: with a catch site, raise a deliverable
 /// (real, fresh) error onto the invocation's queue, then drop the
 /// error if the inner owns it (a borrowed inner is dropped by its
@@ -514,6 +528,27 @@ fn emit_qop_error_disposal(
     Ok(())
 }
 
+/// `?` over an inner that is always an error: raise it to the handler
+/// when it is fresh; the result is a fresh bottom, stale iff the inner
+/// was.
+fn emit_qop_always_error<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    inner: &Node<R, E>,
+    site: cranelift_codegen::ir::Value,
+) -> Result<CompiledExpr> {
+    let cv = inner.emit_clif(cx)?;
+    let clean = clean_disc(cx.b, cv.disc);
+    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, 0x2000_0000_i64);
+    let fresh = is_fresh(cx.b, cv.disc);
+    let deliverable = cx.b.ins().band(is_err, fresh);
+    let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
+    emit_qop_error_disposal(cx, Some(site), deliverable, clean, cv.payload, inner_owned)?;
+    let bottom = super::nodes::emit_bottom_of_kind(cx, AbiKind::Value)?;
+    let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
+    let disc = cx.b.ins().bor(bottom.disc, stale_bit);
+    Ok(CompiledExpr::new(disc, bottom.payload))
+}
+
 /// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`; a non-error
 /// inner passes through. `result_typ` is the qop node's static type,
 /// which selects the arm: the typechecker strips every error member
@@ -534,15 +569,26 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         ));
     };
     if kernel_abi::nullable_inner(&inner_typ).is_none() {
-        // `nullable_inner` only detects a `[T, Error<E>]` union; a bare
-        // `Error<T>` inner is always an error and must node-walk.
-        if type_may_error(&inner_typ) {
+        // `nullable_inner` only detects a `[T, Error<E>]` union.
+        if !type_may_error(&inner_typ) {
+            // No error possible — passthrough; the handler (if any) never fires.
+            return inner.emit_clif(cx);
+        }
+        if !type_always_error(&inner_typ) {
             return Err(anyhow!(
-                "emit_clif: `?`/`$` inner type {inner_typ:?} can be an error                  but is not a [T, Error<E>] union — node-walk handles it"
+                "emit_clif: `?`/`$` inner type {inner_typ:?} can be an error \
+                 but is not a [T, Error<E>] union — node-walk handles it"
             ));
         }
-        // No error possible — passthrough; the handler (if any) never fires.
-        return inner.emit_clif(cx);
+        // A bare `Error<T>` inner is always an error: its diagnostics
+        // are node-walk-only, its delivery is not.
+        let Some(site) = handler else {
+            return Err(anyhow!(
+                "emit_clif: `?`/`$` inner type {inner_typ:?} is always an error \
+                 and has no handler — node-walk handles it"
+            ));
+        };
+        return emit_qop_always_error(cx, inner, site);
     }
     let Some(success_typ) = kernel_abi::freeze_for_abi_normalized(result_typ) else {
         return Err(anyhow!(

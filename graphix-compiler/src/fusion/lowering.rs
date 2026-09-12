@@ -117,6 +117,7 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     out: &mut BuiltinCallDiscovery,
 ) -> Result<(), FusionBlocker> {
     let mut failure = None;
+    let mut selects: LPooled<Vec<&Node<R, E>>> = LPooled::take();
     fusion::for_each_emitted_node(node, &mut |n| {
         if failure.is_some() {
             return;
@@ -130,16 +131,85 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
                 try_register_cast(tc, out);
                 return;
             }
+            NodeView::Select(_) => {
+                selects.push(n);
+                return;
+            }
             _ => fusion::effect_blocker(n)
                 .or_else(|| std::ptr::eq(n, node).then(|| root_blocker(n)).flatten()),
         };
         let Some(reason) = reason else { return };
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
-    match failure {
+    match failure.or_else(|| entry_raise_blocker(&selects)) {
         Some(failure) => Err(failure),
         None => Ok(()),
     }
+}
+
+/// A handler-ful `?` whose error derives from a constant raises when
+/// its arm is entered: the constant fires at the arm's wake. A kernel
+/// derives its selection fresh every run and has no arm-entry view, so
+/// the raise node-walks.
+fn entry_raise_blocker<R: Rt, E: UserEvent>(
+    selects: &[&Node<R, E>],
+) -> Option<FusionBlocker> {
+    let mut found = None;
+    for s in selects {
+        let NodeView::Select(s) = s.view() else { continue };
+        for (_, body) in s.arms.iter() {
+            fusion::for_each_reachable_node(body, &mut |n| {
+                if found.is_some() {
+                    return;
+                }
+                let NodeView::Qop(q) = n.view() else { return };
+                if q.handler.is_some() && has_constant(&q.n) {
+                    found = Some(FusionBlocker {
+                        spec: n.spec().clone(),
+                        reason: "a `?` under a handler raises a constant error when \
+                                 its arm is entered — arm entry is the node-walk's"
+                            .into(),
+                    });
+                }
+            });
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    found
+}
+
+/// A constant under an inner select's arm fires that select through
+/// its scrutinee fold on both engines; one reachable outside any arm
+/// fires at entry.
+fn has_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut under_arm: LPooled<nohash::IntSet<ExprId>> = LPooled::take();
+    let mut found = false;
+    fusion::for_each_reachable_node(node, &mut |n| match n.view() {
+        NodeView::Constant(_) => found |= !under_arm.contains(&n.spec().id),
+        NodeView::Variant(v) if v.n.is_empty() => {
+            found |= !under_arm.contains(&n.spec().id)
+        }
+        NodeView::Array(a) if a.n.is_empty() => {
+            found |= !under_arm.contains(&n.spec().id)
+        }
+        NodeView::ListLit(l) if l.n.is_empty() => {
+            found |= !under_arm.contains(&n.spec().id)
+        }
+        NodeView::Map(m) if m.keys.is_empty() => {
+            found |= !under_arm.contains(&n.spec().id)
+        }
+        NodeView::Select(s) => {
+            for (_, body) in s.arms.iter() {
+                fusion::for_each_node(body, &mut |b| {
+                    under_arm.insert(b.spec().id);
+                });
+            }
+        }
+        _ => {}
+    });
+    found
 }
 
 /// A root that can never emit a value. Nested, the same node may sit

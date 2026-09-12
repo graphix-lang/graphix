@@ -1,0 +1,15 @@
+// NODE-WALK over-fire, same family as 01: a framed tail pass forces
+// `event.init`, and an argument-less variant literal (`` `D `` inside
+// `` `Panel(`D) ``) read the raw flag where every other literal and
+// `Constant` consult the frame rule (fired only on a genuine init
+// dispatch). Each delivery of `m` — read only by a structure-failed
+// arm's guard, so consumed by nothing — re-derived the loop, the leaf
+// fired, the block-local `let s` published FIRED, the nested select
+// emitted, and the base select's count rose 5 where the JIT (right by
+// the consulted-guard rule) says 1. Found by sep03a on four boxes
+// (2026-09-03); the annotation is what keeps the nested select from
+// resolving statically. `node::produce_constant` is now the one rule.
+{let x = array::iter([true, true, true, i64:4]); let m = x;
+ let rec f = |n| select n {i64:0 => select {type Screen = [`Connect, `Panel([`D, `Q, `R])]; let s: Screen = `Panel(`D);
+   select s {`Connect => true, `Panel(`Q) => true, `Panel(`D) => true, `Panel(`R) => i64:3}} {i64:0 if m == i64:0 => true, _ => true},
+   _ => f(i64:0)}; let c = count(f(i64:3)); select x {i64:4 => c, _ => true}}

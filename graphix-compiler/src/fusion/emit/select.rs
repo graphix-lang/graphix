@@ -1506,10 +1506,14 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
     // A `never()` arm is a standing bottom: it fires only with the
-    // scrutinee, through the STALE fold below.
+    // scrutinee, through the STALE fold below. A bottom-typed arm that
+    // can raise still runs for its delivery.
     let bottom_arm =
         matches!(body_frozen, Type::Bottom) || matches!(body.view(), NodeView::Never(_));
     let (disc, payload) = if bottom_arm {
+        if fusion::subtree_raises(body) {
+            body.emit_clif(cx)?;
+        }
         let kind = match merge_shape {
             SelectMerge::Scalar(rp) => AbiKind::Scalar(rp),
             SelectMerge::Value => AbiKind::Value,

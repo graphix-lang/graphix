@@ -810,7 +810,7 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // the fire-count/arrival-order-sensitive builtins leak it too.
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
-            "queue(", "take(", "skip(", "window(", "iterq", "hold(",
+            "any(", "queue(", "take(", "skip(", "window(", "iterq", "hold(",
         ];
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| code.contains(m)) {
             return OracleTier::Excluded;

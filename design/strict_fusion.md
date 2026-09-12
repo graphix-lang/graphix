@@ -117,6 +117,22 @@ error (not tainted, not stale), exactly `Qop::update`'s fired-only
 rule. The value side is untouched: the failing `?` is the tainted
 placeholder that continues.
 
+The delivery's TRIGGER must be computable by a memoryless kernel. A
+handler-ful `?` whose error derives from a constant (`error(`E)?`,
+`cast<i64>("x")?`), under a select arm, raises on the node-walk when
+the arm is ENTERED — the constant fires at the arm's wake — and once
+only (a same-arm re-match does not re-raise). A kernel constant is
+stale off-init and a kernel keeps no arm-entry memory, so
+`lowering::entry_raise_blocker` refuses such a region (transitively
+through lambda callee bodies; a constant under an INNER select's arm
+is reconciled by that select's scrutinee fold and does not count). An
+input-derived raise fuses. A bottom-typed arm that can raise runs its
+body for the delivery instead of the bare `never()` placeholder, and a
+`?` over an always-error inner has its own emission
+(`emit_qop_always_error`: raise when fresh, yield a bottom). The
+alternative that would let these fuse — a per-select last-arm word,
+the same class as a first-call word — is selection memory, not taken.
+
 ## What a kernel keeps
 
 Only what decides FIRING: per-param STALE and TAINT discs, prev-length

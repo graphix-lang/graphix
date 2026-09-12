@@ -103,18 +103,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.keys.is_empty() {
-            // An empty literal is a constant: FIRED at init, STALE inside
-            // frames, which force init (see Constant).
-            if ctx.frame_depth > 0 {
-                return self.resident.set(if ctx.dispatch_init {
-                    TagValue::fired(Value::Map(CMap::new()))
-                } else {
-                    TagValue::stale(Value::Map(CMap::new()))
-                });
-            } else if event.init {
-                return self.resident.set(TagValue::fired(Value::Map(CMap::new())));
-            }
-            return self.resident.ride();
+            return super::produce_constant(ctx, event, &mut self.resident, || {
+                Value::Map(CMap::new())
+            });
         }
         let mut kvals: LPooled<Vec<Value>> = LPooled::take();
         let mut vvals: LPooled<Vec<Value>> = LPooled::take();

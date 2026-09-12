@@ -1,0 +1,9 @@
+// The same loss with a typed arm (`cast<i64>("x")?` is i64, not
+// bottom): the never-arm shortcut was not the whole story — the raise
+// is gated on the inner's freshness, and a constant-fed inner is never
+// fresh inside a fused arm off-init. Raised once at entry, not on the
+// same-arm re-match at step 3.
+{let step = i64:0; step <- select step {s if s < i64:6 => s + i64:1, _ => never()};
+ let n = i64:0;
+ let x = {catch(e) n <- e ~ n + i64:1; select step {s if s == i64:2 || s == i64:3 => cast<i64>("x")?, _ => i64:0}};
+ (n, array::fold([i64:1], x, |acc, v| acc))}

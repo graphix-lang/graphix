@@ -438,7 +438,11 @@ node graph IS the IR — there is no parallel typed IR
   computation only. A builtin fuses iff its `Effect::Stateless` carries a
   `FastCall`; `?` fuses with or without a covering catch (a handler-ful
   raise is queued and delivered after the run through the same path
-  `Qop` uses); everything else — stateful/effectful builtins, `connect`,
+  `Qop` uses), except a handler-ful `?` under a select arm whose error
+  derives from a constant: that raise fires when the arm is ENTERED and
+  a kernel has no arm-entry view, so it node-walks
+  (`lowering::entry_raise_blocker`); a bottom-typed arm that can raise
+  runs for its delivery; everything else — stateful/effectful builtins, `connect`,
   `~`, `Any`, `Catch` — node-walks, transitively. A kernel's only
   cross-invocation memory is the firing boundary (prev-length words,
   first-call words, per-site/per-activation blocks); no replay caches,
@@ -458,7 +462,10 @@ node graph IS the IR — there is no parallel typed IR
   decide a tag; `uniq`/`filter`/`~` are the cadence tools. A select emits
   per fired input — scrutinee delivery, a CONSULTED guard, or the taken
   arm's own production; same-arm re-matches emit the arm's current
-  value. Constants fire at init (and at an arm's wake). Kernel outputs
+  value. Constants fire at init (and at an arm's wake); every
+  argument-less literal (`` `Tag ``, `[]`, `{}`) is a constant and
+  follows the one frame rule (`node::produce_constant`: inside a framed
+  tail pass it fires only on a genuine init dispatch). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
   resize, a fired slot, a fired empty source, or a fired fold carry.
 - **Bottom scrutinee ⇒ bottom select.** No stored-selection ride of any

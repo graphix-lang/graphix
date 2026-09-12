@@ -1,0 +1,7 @@
+// A bottom-typed arm whose raise derives from the scrutinee: the arm
+// still fuses (no constant fires at entry) and its body now runs for
+// the delivery instead of being emitted as a bare `never()` placeholder.
+{let step = i64:0; step <- select step {s if s < i64:6 => s + i64:1, _ => never()};
+ let n = i64:0;
+ let x = {catch(e) n <- e ~ n + i64:1; select step {i64:2 => error(`E(step))?, _ => i64:0}};
+ (n, array::fold([i64:1], x, |acc, v| acc))}

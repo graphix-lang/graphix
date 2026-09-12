@@ -477,3 +477,20 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
     );
     Ok(())
 }
+
+// A bottom-typed arm whose handler-ful `?` derives from an input
+// fuses and delivers: it runs its body instead of a bare placeholder
+// (the constant-error twin node-walks: `findings/arm-entry-raise-sep2026`).
+const ARM_INPUT_RAISE_FUSES: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4]);
+  let n = 0;
+  let v = { catch(e) n <- e ~ n + 1; select x { 2 => error(`E(x))?, _ => x } };
+  select count(x) { 4 => n, _ => never() }
+}
+"#;
+
+run!(arm_input_raise_fuses, ARM_INPUT_RAISE_FUSES, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); graphix_package_core::testing::FuseExpect::Jit);

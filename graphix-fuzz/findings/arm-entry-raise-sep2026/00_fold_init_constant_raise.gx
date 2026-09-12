@@ -1,0 +1,11 @@
+// JIT: a `?` under a handler whose error is a constant (`error(`E)`)
+// raises on the node-walk when its select arm is ENTERED: the constant
+// fires at the arm's wake. A kernel constant is stale off-init and a
+// kernel keeps no arm-entry view, so the fused select never delivered
+// it; the emitter also skipped a bottom-typed arm's body outright as a
+// `never()` arm. Found by sep12c (katana, ryouko) as the fold's initial
+// accumulator. Such a raise now node-walks (`entry_raise_blocker`).
+{let step = i64:0; step <- select step {s if true => s + i64:1, _ => never()};
+ let err: [`Bad, `None] = `None;
+ let x = {catch(e) err <- e ~ `Bad; select step {i64:2 => error(`E)?, _ => i64:0}};
+ (err, array::fold([i64:1], x, |acc, v| acc))}

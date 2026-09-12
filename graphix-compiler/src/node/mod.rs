@@ -768,6 +768,29 @@ impl Constant {
     }
 }
 
+/// A constant's production: fired at a genuine init, stale inside a
+/// framed pass that is not one (a frame forces `event.init`), standing
+/// otherwise. Every argument-less literal is a constant.
+pub(crate) fn produce_constant<'a, R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    event: &Event<E>,
+    resident: &'a mut TagValue,
+    value: impl FnOnce() -> Value,
+) -> &'a TagValue {
+    if ctx.frame_depth > 0 {
+        let v = value();
+        resident.set(if ctx.dispatch_init {
+            TagValue::fired(v)
+        } else {
+            TagValue::stale(v)
+        })
+    } else if event.init {
+        resident.set(TagValue::fired(value()))
+    } else {
+        resident.ride()
+    }
+}
+
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     fn image_len(&self) -> usize {
         tag_len()
@@ -784,21 +807,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // frames force `event.init`, so the frame gate must come first;
-        // a genuine init is always frame depth 0
-        if ctx.frame_depth > 0 {
-            // in a frame a constant fires only on a genuine init dispatch,
-            // never on an arm's wake
-            if ctx.dispatch_init {
-                self.resident.set(TagValue::fired(self.value.clone()))
-            } else {
-                self.resident.set(TagValue::stale(self.value.clone()))
-            }
-        } else if event.init {
-            self.resident.set(TagValue::fired(self.value.clone()))
-        } else {
-            self.resident.ride()
-        }
+        produce_constant(ctx, event, &mut self.resident, || self.value.clone())
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}

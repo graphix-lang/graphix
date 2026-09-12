@@ -528,6 +528,44 @@ pub(crate) fn for_each_emitted_node<'a, R: Rt, E: UserEvent>(
     }
 }
 
+/// Every node a kernel built from `node` would run: the emitted nodes
+/// and, through each statically-resolved lambda call, the callee's
+/// body, each body once.
+pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+    f: &mut dyn FnMut(&'a Node<R, E>),
+) {
+    let mut seen: LPooled<nohash::IntSet<usize>> = LPooled::take();
+    let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+    stack.push(node);
+    while let Some(body) = stack.pop() {
+        if !seen.insert(body as *const Node<R, E> as usize) {
+            continue;
+        }
+        let mut callees: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
+        for_each_emitted_node(body, &mut |n| {
+            f(n);
+            let NodeView::CallSite(cs) = n.view() else { return };
+            if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
+                callees.push(g.body());
+            }
+        });
+        stack.extend(callees.drain(..));
+    }
+}
+
+/// True when a kernel running `node` could deliver an error to a
+/// handler: a handler-ful `?` is reachable from it.
+pub(crate) fn subtree_raises<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut raises = false;
+    for_each_reachable_node(node, &mut |n| {
+        if let NodeView::Qop(q) = n.view() {
+            raises |= q.handler.is_some();
+        }
+    });
+    raises
+}
+
 /// One statically-resolved lambda call site in a region being compiled,
 /// recorded by [`discover_lambda_calls`] and consumed by
 /// `CallSite::emit_clif` to emit a CLIF `call` against the callee.
