@@ -477,9 +477,6 @@ async fn drive_inner(
 ) -> Outcome {
     let Subject { sched, spec, tier, .. } = subj;
     let (spec, tier) = (spec.as_ref(), *tier);
-    // a shared runtime (a batch lane) may still be printing for the
-    // subject before this one
-    drop(sink.take());
     // one wall-clock deadline for the whole drive (a backstop for a
     // wedged evaluator) and one concurrent drain of the event channel
     let deadline = tokio::time::sleep(timeout);
@@ -547,6 +544,9 @@ async fn drive_inner(
     // program-route runtime armed it at construction.
     let compiled = match entry {
         Entry::Compile => {
+            // a batch lane's sink holds the previous subject's tail; a
+            // program-route runtime has been printing since construction
+            drop(sink.take());
             if let Err(e) = ctx.rt.trace_start(sched.max_events, sched.max_cycles) {
                 return Outcome::RuntimeErr(format!("trace_start: {e}"));
             }
