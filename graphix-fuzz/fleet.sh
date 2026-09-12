@@ -426,11 +426,14 @@ echo "=== PROC ==="
 pgrep -f "fuzz/$camp/graphix-fuzz" | wc -l | tr -d ' '
 # Sample ONE source's counter twice: the log interleaves sources, so
 # "the last line" can name a different source each time and appear to
-# go backwards.
+# go backwards. The first counter line lands a while after the gate
+# (a batch must complete), so the first sample waits for it.
 sample() { grep -aoE "^  fuzz…[0-9]+ run" "$dir/soak.log" 2>/dev/null | tail -1 || true; }
+waited=0
+while [ -z "$(sample)" ] && [ "$waited" -lt 300 ]; do sleep 10; waited=$((waited + 10)); done
 echo "=== COUNT1 ==="
 sample
-sleep 20
+sleep 30
 echo "=== COUNT2 ==="
 sample
 EOF
