@@ -8,6 +8,7 @@ use graphix_compiler::{
     effects::Effect,
     err, errf,
     expr::ExprId,
+    image::{self, ImageBuf},
     node::genn,
     typ::{FnType, Type},
 };
@@ -17,7 +18,10 @@ use netidx::{
     publisher::{Typ, Val},
     subscriber::{Dval, UpdatesFlags, Value},
 };
-use netidx_core::utils::Either;
+use netidx_core::{
+    pack::{Pack, PackError},
+    utils::Either,
+};
 use netidx_protocols::rpc::server::{self, ArgSpec};
 use netidx_value::ValArray;
 use smallvec::{SmallVec, smallvec};
@@ -68,9 +72,37 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let queued = Pack::decode(buf)?;
+        Ok(Box::new(Write { id, dv: Either::Right(queued), out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
+    fn image_len(&self) -> usize {
+        self.id.encoded_len()
+            + match &self.dv {
+                Either::Left(_) => 0,
+                Either::Right(queued) => queued.encoded_len(),
+            }
+    }
+
+    /// `Left` is a live subscription.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        let queued = match &self.dv {
+            Either::Left(_) => return Err(PackError::Application(image::NOT_QUIESCENT)),
+            Either::Right(queued) => queued,
+        };
+        self.id.encode(buf)?;
+        queued.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -214,9 +246,47 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let slept = bool::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let cast_typ = Pack::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Subscribe {
+            slept,
+            cur: None,
+            id,
+            top_id,
+            cast_typ,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
+    fn image_len(&self) -> usize {
+        self.slept.encoded_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+            + self.cast_typ.encoded_len()
+    }
+
+    /// `cur` is a live subscription.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.cur.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.slept.encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.cast_typ.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -349,9 +419,31 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let top_id = ExprId::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let cast_typ = Pack::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(RpcCall { top_id, id, cast_typ, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
+    fn image_len(&self) -> usize {
+        self.top_id.encoded_len() + self.id.encoded_len() + self.cast_typ.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.top_id.encode(buf)?;
+        self.id.encode(buf)?;
+        self.cast_typ.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -482,9 +574,38 @@ macro_rules! list {
                     out: TagValue::phantom(),
                 }))
             }
+
+            fn image_decode(
+                ctx: &mut ExecCtx<R, E>,
+                _from: &[Node<R, E>],
+                buf: &mut &[u8],
+            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+                let id = BindId::decode(buf)?;
+                let top_id = ExprId::decode(buf)?;
+                ctx.rt.ref_var(id, top_id);
+                Ok(Box::new($name {
+                    current: None,
+                    top_id,
+                    id,
+                    out: TagValue::phantom(),
+                }))
+            }
         }
 
         impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
+            fn image_len(&self) -> usize {
+                self.id.encoded_len() + self.top_id.encoded_len()
+            }
+
+            /// `current` is a list the resolver is serving.
+            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+                if self.current.is_some() {
+                    return Err(PackError::Application(image::NOT_QUIESCENT));
+                }
+                self.id.encode(buf)?;
+                self.top_id.encode(buf)
+            }
+
             fn update(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
@@ -632,9 +753,59 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
             _ => bail!("expected three arguments"),
         }
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let slept = bool::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let x = BindId::decode(buf)?;
+        let pid = BindId::decode(buf)?;
+        let wid = BindId::decode(buf)?;
+        let on_write = image::decode_node(ctx, buf)?;
+        let cast_typ = Pack::decode(buf)?;
+        ctx.rt.ref_var(wid, top_id);
+        Ok(Box::new(Publish {
+            slept,
+            current: None,
+            top_id,
+            x,
+            pid,
+            wid,
+            on_write,
+            cast_typ,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
+    fn image_len(&self) -> usize {
+        self.slept.encoded_len()
+            + self.top_id.encoded_len()
+            + self.x.encoded_len()
+            + self.pid.encoded_len()
+            + self.wid.encoded_len()
+            + self.on_write.image_len()
+            + self.cast_typ.encoded_len()
+    }
+
+    /// `current` is a live publication.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.current.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.slept.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.x.encode(buf)?;
+        self.pid.encode(buf)?;
+        self.wid.encode(buf)?;
+        self.on_write.image_encode(buf)?;
+        self.cast_typ.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -931,9 +1102,66 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
             _ => bail!("expected four arguments"),
         }
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let slept = bool::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let f = image::decode_node(ctx, buf)?;
+        let pid = BindId::decode(buf)?;
+        let x = BindId::decode(buf)?;
+        let ready = bool::decode(buf)?;
+        let cast_typ = Pack::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(PublishRpc {
+            slept,
+            id,
+            top_id,
+            f,
+            pid,
+            x,
+            queue: VecDeque::new(),
+            argbuf: smallvec![],
+            ready,
+            current: None,
+            cast_typ,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
+    fn image_len(&self) -> usize {
+        self.slept.encoded_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+            + self.f.image_len()
+            + self.pid.encoded_len()
+            + self.x.encoded_len()
+            + self.ready.encoded_len()
+            + self.cast_typ.encoded_len()
+    }
+
+    /// `current` is a live procedure; `queue` holds calls awaiting a
+    /// reply.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.current.is_some() || !self.queue.is_empty() || !self.argbuf.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.slept.encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.f.image_encode(buf)?;
+        self.pid.encode(buf)?;
+        self.x.encode(buf)?;
+        self.ready.encode(buf)?;
+        self.cast_typ.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

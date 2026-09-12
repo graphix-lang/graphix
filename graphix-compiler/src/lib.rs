@@ -624,18 +624,14 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         Ok(())
     }
 
-    /// The image codec of an application; a kind without one fails the
-    /// write with [`image::NOT_IMAGED`].
-    fn image_len(&self) -> usize {
-        0
-    }
+    /// The image codec of an application, written before any cycle
+    /// runs; a builtin's decoder is [`BuiltIn::image_decode`].
+    fn image_len(&self) -> usize;
 
     fn image_encode(
         &self,
-        _buf: &mut image::ImageBuf,
-    ) -> std::result::Result<(), netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(image::NOT_IMAGED))
-    }
+        buf: &mut image::ImageBuf,
+    ) -> std::result::Result<(), netidx_core::pack::PackError>;
 
     /// The lambda's type; the BuiltIn wrapper implements it for builtins.
     fn typ(&self) -> Arc<FnType> {
@@ -853,6 +849,15 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     }
 }
 
+/// Decode a builtin's application from its image over the restored
+/// argument references.
+pub type BuiltInDecodeFn<R, E> =
+    fn(
+        &mut ExecCtx<R, E>,
+        &[Node<R, E>],
+        &mut &[u8],
+    ) -> std::result::Result<Box<dyn Apply<R, E>>, netidx_core::pack::PackError>;
+
 pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
     &'a mut ExecCtx<R, E>,
     &'a FnType,
@@ -897,6 +902,14 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>>;
+
+    /// Restore an application `image_encode` wrote, over the restored
+    /// argument references (`from`, as `init` saw them).
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> std::result::Result<Box<dyn Apply<R, E>>, netidx_core::pack::PackError>;
 }
 
 /// A compile-time check for a `#[..]` attribute, dispatched by the
@@ -1319,6 +1332,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     builtins: AHashMap<&'static str, BuiltInInitFn<R, E>>,
+    builtin_decoders: AHashMap<&'static str, BuiltInDecodeFn<R, E>>,
     attributes: AHashMap<&'static str, AttributeCheckFn<R, E>>,
     // Sandboxing.
     builtins_allowed: bool,
@@ -1462,6 +1476,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             lambdawrap: Abstract::register(id)?,
             env: Env::default(),
             builtins: AHashMap::default(),
+            builtin_decoders: AHashMap::default(),
             attributes: AHashMap::default(),
             builtins_allowed: true,
             libstate: LibState::default(),
@@ -1527,8 +1542,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
+        self.builtin_decoders.insert(T::NAME, T::image_decode);
         self.fusion.builtin_facts.insert(T::NAME, effects::BuiltinFacts::from(T::EFFECT));
         Ok(())
+    }
+
+    /// The image decoder of a registered builtin.
+    pub fn builtin_decoder(&self, name: &str) -> Option<BuiltInDecodeFn<R, E>> {
+        self.builtin_decoders.get(name).copied()
     }
 
     pub fn register_attribute<T: Attribute<R, E>>(&mut self) -> Result<()> {

@@ -5,10 +5,11 @@
 use anyhow::Result;
 use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::Effect, expr::ExprId, typ::FnType,
+    effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{CachedVals, seam_tick};
 use netidx::subscriber::Value;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::ValArray;
 use rand::{RngExt, rng, seq::SliceRandom};
 use smallvec::{SmallVec, smallvec};
@@ -33,9 +34,26 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Rand { args: CachedVals::new(from), out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let args = CachedVals::image_decode(buf)?;
+        Ok(Box::new(Rand { args, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
+    fn image_len(&self) -> usize {
+        self.args.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.args.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -99,9 +117,25 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Pick { out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        _buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(Pick { out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -146,9 +180,26 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Shuffle { buf: smallvec![], out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let elems = Pack::decode(buf)?;
+        Ok(Box::new(Shuffle { buf: elems, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
+    fn image_len(&self) -> usize {
+        self.buf.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.buf.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

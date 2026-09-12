@@ -1,9 +1,10 @@
 use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::Effect, expr::ExprId, typ::FnType,
+    effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::FireOnce;
 use netidx::subscriber::Value;
+use netidx_core::pack::{Pack, PackError};
 
 macro_rules! dirs_builtin {
     ($name:ident, $builtin:literal, $fn:path) => {
@@ -28,9 +29,26 @@ macro_rules! dirs_builtin {
             ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
                 Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
             }
+
+            fn image_decode(
+                _ctx: &mut ExecCtx<R, E>,
+                _from: &[Node<R, E>],
+                buf: &mut &[u8],
+            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+                let once = FireOnce::decode(buf)?;
+                Ok(Box::new(Self { once, out: TagValue::phantom() }))
+            }
         }
 
         impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
+            fn image_len(&self) -> usize {
+                self.once.encoded_len()
+            }
+
+            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+                self.once.encode(buf)
+            }
+
             fn update(
                 &mut self,
                 _ctx: &mut ExecCtx<R, E>,

@@ -104,8 +104,9 @@ impl Pack for Expr {
     fn encoded_len(&self) -> usize {
         if image::is_encoding() {
             image::object_len(
-                image::expr_key(self),
-                |e| &e.exprs,
+                &image::expr_key(self),
+                |k| *k,
+                |e| &mut e.exprs,
                 || {
                     self.id.encoded_len()
                         + image::origin_len(&self.ori)
@@ -120,7 +121,8 @@ impl Pack for Expr {
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         if image::is_encoding() {
             image::object_encode(
-                image::expr_key(self),
+                &image::expr_key(self),
+                |k| *k,
                 |e| &mut e.exprs,
                 buf,
                 |buf| {

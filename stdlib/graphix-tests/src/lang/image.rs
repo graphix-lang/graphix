@@ -39,21 +39,25 @@ async fn environment_round_trips() -> Result<()> {
         .env;
     let mut enc = ImageEncoder::new();
     let mut buf = ImageBuf::with_capacity(0);
-    let bound = {
-        let _s = EncodeImage::new(&mut enc);
+    let measure = |enc: &mut ImageEncoder| {
+        let _s = EncodeImage::new(enc);
         env.encoded_len()
     };
+    measure(&mut enc);
     enc.sort_ids();
+    let bound = measure(&mut enc);
+    enc.begin_encode();
     {
         let _s = EncodeImage::new(&mut enc);
         env.encode(&mut buf)?;
-        assert!(buf.len() <= bound);
+        assert_eq!(buf.len(), bound);
     }
     let counts = enc.counts();
     assert!(counts.bind > 100 && counts.tvar > 100, "{counts:?}");
     let image: Bytes = buf.freeze();
     let mut dec = ImageDecoder::new(counts);
     dec.set_image(image.clone());
+    dec.set_offsets(enc.take_offsets());
     let restored = {
         let _s = DecodeImage::new(&mut dec);
         let mut b = &image[..];
@@ -344,6 +348,71 @@ async fn program_image_restores() -> Result<()> {
     let warm_program = warm.rt.program().await?.expect("the program restored");
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
     assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));
+    let warm_values = first_values(&mut warm_rx).await;
+    assert_eq!(cold_values, warm_values);
+    cold.shutdown().await;
+    warm.shutdown().await;
+    Ok(())
+}
+
+/// Builtins travel as their own bytes: the restart, cadence, option,
+/// typed, unit and generated-node shapes, plus a collection intrinsic
+/// passed as a value to a builtin.
+const BUILTINS: &str = r#"
+let n = 5;
+let clock = 1;
+let o = once(n);
+let c = count(n);
+let h = hold(#clock: clock, n);
+let u = uniq(n);
+let tk = take(#n: 3, n);
+let sk = skip(#n: 0, n);
+let q = queue(#clock: clock, n);
+let th = throttle(n);
+let fe = filter(n, |x| x > 1);
+let fm = filter(array::flat_map, |x| true);
+let om = opt::map(n, |x| x + 1);
+let oe = opt::or_else(null, || 7);
+let os = opt::is_some_and(n, |x| x > 1);
+let p: Result<i64, `ParseError(string)> = str::parse("42");
+let sq = math::sqrt(16.0);
+let e = is_err(n);
+(o, c, h, u, tk, sk, q, th, fe, om, oe, os, p, sq, e, dbg(n))
+"#;
+
+#[tokio::test]
+async fn program_image_restores_builtins() -> Result<()> {
+    let (tx, mut cold_rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let (prog_tx, prog_rx) = oneshot::channel();
+    let cold = init_with_session(
+        tx,
+        TEST_REGISTER,
+        CFlag::FusionDisabled.into(),
+        RegistrationImage::Save(reg_tx),
+        Some(Source::Internal(BUILTINS.into())),
+        Some(prog_tx),
+    )
+    .await?;
+    let image = prog_rx.await??;
+    let cold_values = first_values(&mut cold_rx).await;
+    let last = cold_values.last().expect("the program produced its tuple");
+    assert_eq!(
+        format!("{last}"),
+        "[i64:5, i64:1, i64:5, i64:5, i64:5, i64:5, i64:5, i64:5, i64:5, i64:6, i64:7, \
+         true, i64:42, f64:4., false, i64:5]"
+    );
+    let (tx, mut warm_rx) = mpsc::channel(10);
+    let warm = init_with_session(
+        tx,
+        TEST_REGISTER,
+        CFlag::FusionDisabled.into(),
+        RegistrationImage::Load(image),
+        None,
+        None,
+    )
+    .await?;
+    warm.rt.program().await?.expect("the program restored");
     let warm_values = first_values(&mut warm_rx).await;
     assert_eq!(cold_values, warm_values);
     cold.shutdown().await;

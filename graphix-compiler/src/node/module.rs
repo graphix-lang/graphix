@@ -1,4 +1,5 @@
 use crate::env::Map;
+use crate::image::ImageBuf;
 use crate::image::nodes::{
     NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
 };
@@ -22,7 +23,6 @@ use crate::{
 use ahash::AHashSet;
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
-use crate::image::ImageBuf;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};

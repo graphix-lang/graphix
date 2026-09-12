@@ -1,4 +1,5 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather};
+use crate::image::ImageBuf;
 use crate::image::nodes::{
     NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
 };
@@ -16,7 +17,6 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_core::pack::{decode_varint, encode_varint, varint_len};

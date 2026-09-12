@@ -145,8 +145,12 @@ in its own file; a kind without one fails the write (`image::NOT_IMAGED`,
 logged) and the shell runs cold, never a partial image. Every shared
 object (expressions, types, function types, origins, paths, handlers,
 resolution cells, type variables, map nodes) is written once and
-referenced by its file offset; a reference to an object not built yet
-decodes it from there, so any part of the image decodes in any order.
+referenced by the ordinal the length pass assigned it; the trailer maps
+ordinals to definition offsets, and a reference to an object not built
+yet decodes it from its offset, so any part of the image decodes in any
+order. Every `encoded_len` under a session is EXACT (an occurrence's
+cost is a function of its `image::Slot` alone), so a derived `Pack`
+may frame an image object.
 Types and function types are keyed by their canonical bytes with every
 shared leaf by identity (`Type::content_key`), so equal types decode to
 one value; an object whose definition is in progress writes a nested
@@ -160,8 +164,14 @@ root nodes for the whole session. A program image writes instance
 bodies to a heap after the eager part with an instance table; a call
 site keeps `Callee::Imaged` (id, resolved type, reference summary) and
 decodes the body on its first dispatch, synchronously, through
-`ExecCtx::image_decoder`; a builtin callee is rebuilt at decode by
-static resolution's factory call with its typecheck passes replayed.
+`ExecCtx::image_decoder`; a builtin callee travels as its own bytes:
+every `Apply` owns `image_len`/`image_encode` and every `BuiltIn` an
+`image_decode` (no defaults — a builtin without a codec does not
+compile), wrapper payloads implement `graphix_package_core::ImageState`
+(`unit_image_state!` / `pack_image_state!` for the common shapes), a
+resident `TagValue` decodes as phantom, a bind id created with
+`ctx.rt.ref_var` is re-registered at decode, and state that exists only
+once a cycle ran refuses the write with `NOT_QUIESCENT`.
 Compiler ids are `image_id!` (the compiler's `atomic_id!` plus
 relocation); netidx's ids and wire format are untouched. A definition
 built by Rust at runtime is `DefOrigin::Runtime` and is never imaged.

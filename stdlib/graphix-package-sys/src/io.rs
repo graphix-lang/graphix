@@ -4,9 +4,14 @@ use bytes::Bytes;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::Effect, errf, expr::ExprId, typ::FnType,
+    effects::Effect,
+    errf,
+    expr::ExprId,
+    image::{self, ImageBuf},
+    typ::FnType,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, seam_value};
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, ValArray, Value};
 use poolshark::{
     global::{GPooled, Pool},
@@ -142,9 +147,33 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED
         ctx.rt.ref_var(id, top_id);
         Ok(Box::new(Self { id, top_id, started: false, out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Self { id, top_id, started: false, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> {
+    fn image_len(&self) -> usize {
+        self.id.encoded_len() + self.top_id.encoded_len()
+    }
+
+    /// A started instance has a reader task holding the stream.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.started {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -394,3 +423,15 @@ impl EvalCachedAsync for IoStderrEv {
 }
 
 pub(crate) type IoStderr = CachedArgsAsync<IoStderrEv>;
+
+graphix_package_core::unit_image_state!(
+    IoReadEv,
+    IoReadExactEv,
+    IoWriteEv,
+    IoWriteExactEv,
+    IoFlushEv,
+    IoCloseEv,
+    IoStdinEv,
+    IoStdoutEv,
+    IoStderrEv
+);

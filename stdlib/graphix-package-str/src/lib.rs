@@ -483,6 +483,8 @@ macro_rules! escape_fn {
         }
 
         type $name = CachedArgs<$ev>;
+
+        graphix_package_core::unit_image_state!($ev);
     };
 }
 
@@ -508,6 +510,8 @@ macro_rules! split_fn {
         }
 
         type $name = CachedArgs<$ev>;
+
+        graphix_package_core::unit_image_state!($ev);
     };
 }
 
@@ -823,10 +827,12 @@ fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
     })
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, netidx_derive::Pack)]
 struct ParseEv {
     rtype: Option<Type>,
 }
+
+graphix_package_core::pack_image_state!(ParseEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Typed(fc_parse)));
@@ -870,6 +876,32 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
 }
 
 type Parse = CachedArgs<ParseEv>;
+
+graphix_package_core::unit_image_state!(
+    StartsWithEv,
+    EndsWithEv,
+    ContainsEv,
+    StripPrefixEv,
+    StripSuffixEv,
+    TrimEv,
+    TrimStartEv,
+    TrimEndEv,
+    ReplaceEv,
+    DirnameEv,
+    BasenameEv,
+    RowColEv,
+    StringJoinEv,
+    StringConcatEv,
+    StringSplitEscapedEv,
+    StringSplitNEscapedEv,
+    StringSplitOnceEv,
+    StringRSplitOnceEv,
+    StringToLowerEv,
+    StringToUpperEv,
+    SprintfEv,
+    LenEv,
+    SubEv,
+);
 
 graphix_derive::defpackage! {
     builtins => [

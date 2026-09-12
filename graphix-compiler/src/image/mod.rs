@@ -16,7 +16,7 @@ pub mod nodes;
 mod registration;
 
 pub(crate) use env::{lexical_decode, lexical_encode, lexical_len};
-pub use nodes::NOT_IMAGED;
+pub use nodes::{NOT_IMAGED, decode_node, decode_nodes, encode_nodes, nodes_len};
 pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
 
 use crate::{
@@ -146,32 +146,44 @@ pub struct ImageEncoder {
     /// the next byte.
     pub(crate) written: u64,
     ids: IdMaps,
-    handlers: AHashMap<usize, u64>,
+    /// The next ordinal an object meets at its first sight.
+    next_ordinal: u32,
+    /// The length pass in progress; `sort_ids` ends one and a slot met
+    /// again in the next is measured again, with the ids final.
+    pass: u32,
+    /// Whether the encode pass has begun (`begin_encode`): a length
+    /// pass sees every later occurrence as a reference, the encode
+    /// pass sees an unwritten object's first occurrence within one
+    /// length query as its definition.
+    encode_pass: bool,
+    /// The objects a length query in the encode pass has met, cleared
+    /// when the outermost query returns.
+    query_seen: AHashSet<u32>,
+    query_depth: u32,
+    /// Every definition's offset by ordinal, filled as the encode pass
+    /// writes; the trailer carries it and a reference names an ordinal.
+    offsets: Vec<u64>,
+    handlers: AHashMap<usize, Slot>,
     pinned_handlers: Vec<ErrorHandler>,
-    paths: AHashMap<ArcStr, u64>,
-    refcells: AHashMap<usize, u64>,
+    paths: AHashMap<ArcStr, Slot>,
+    refcells: AHashMap<usize, Slot>,
     pinned_refcells: Vec<RefCell>,
-    /// What the length pass has measured as a definition: the first
-    /// sight measures the contents, later sights a reference, as the
-    /// encode will write them. Objects can reach themselves, so the
-    /// length walk needs this to terminate.
-    measured: AHashSet<usize>,
-    origins: AHashMap<usize, u64>,
+    origins: AHashMap<usize, Slot>,
     pinned_origins: Vec<Arc<Origin>>,
-    tvars: AHashMap<usize, u64>,
+    tvars: AHashMap<usize, Slot>,
     pinned_tvars: Vec<TVar>,
-    cells: AHashMap<usize, u64>,
+    cells: AHashMap<usize, Slot>,
     pinned_cells: Vec<Arc<RwLock<TCell>>>,
     /// Expressions and function types by address. The session cannot
     /// pin them (their codecs see a borrow, not the `Arc`), so everything
     /// a session encodes must be borrowed from the context and the root
     /// nodes for the whole session; a temporary could hand its address
     /// to a later object.
-    pub(crate) exprs: AHashMap<usize, u64>,
+    pub(crate) exprs: AHashMap<usize, Slot>,
     /// Kernel signatures, slot-chain leaves and body records by `Arc`.
-    pub(crate) kernel_sigs: AHashMap<usize, u64>,
-    pub(crate) site_leaves: AHashMap<usize, u64>,
-    pub(crate) records: AHashMap<usize, u64>,
+    pub(crate) kernel_sigs: AHashMap<usize, Slot>,
+    pub(crate) site_leaves: AHashMap<usize, Slot>,
+    pub(crate) records: AHashMap<usize, Slot>,
     /// An expression's address, or the address of the first expression
     /// seen with its id and contents: a node's spec is a clone of the
     /// tree it was compiled from.
@@ -208,12 +220,17 @@ impl ImageEncoder {
             maps: shared_map::EncodeTable::default(),
             written: 0,
             ids: IdMaps::default(),
+            next_ordinal: 0,
+            pass: 1,
+            encode_pass: false,
+            query_seen: AHashSet::new(),
+            query_depth: 0,
+            offsets: Vec::new(),
             handlers: AHashMap::new(),
             pinned_handlers: Vec::new(),
             paths: AHashMap::new(),
             refcells: AHashMap::new(),
             pinned_refcells: Vec::new(),
-            measured: AHashSet::new(),
             origins: AHashMap::new(),
             pinned_origins: Vec::new(),
             tvars: AHashMap::new(),
@@ -242,7 +259,10 @@ impl ImageEncoder {
     /// measures the whole image, calls this, then encodes; an id first
     /// met during the encode takes the next number, which is only
     /// order-preserving if nothing orders it against the earlier ones.
+    /// End a length pass: the ids seen so far take their final dense
+    /// numbers, so the next length pass measures them exactly.
     pub fn sort_ids(&mut self) {
+        self.pass += 1;
         fn sort(m: &mut HashMap<u64, u64>) {
             let mut seen: Vec<u64> = m.keys().copied().collect();
             seen.sort_unstable();
@@ -254,6 +274,11 @@ impl ImageEncoder {
         sort(&mut self.ids.lambda);
         sort(&mut self.ids.expr);
         sort(&mut self.ids.tvar);
+    }
+
+    /// Begin the encode pass.
+    pub fn begin_encode(&mut self) {
+        self.encode_pass = true;
     }
 
     /// The ids written so far. The image writer stores these ahead of
@@ -268,6 +293,11 @@ impl ImageEncoder {
     }
 
     /// The objects defined so far.
+    /// The definition offsets by ordinal, for the trailer.
+    pub fn take_offsets(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.offsets)
+    }
+
     pub fn object_counts(&self) -> ObjectCounts {
         ObjectCounts {
             exprs: self.exprs.len() as u64,
@@ -354,6 +384,8 @@ impl Pack for ObjectCounts {
 pub struct ImageDecoder {
     pub(crate) maps: shared_map::DecodeTable,
     image: Bytes,
+    /// Every definition's offset by ordinal, from the trailer.
+    offsets: Vec<u64>,
     handlers: AHashMap<u64, ErrorHandler>,
     paths: AHashMap<u64, ModPath>,
     refcells: AHashMap<u64, RefCell>,
@@ -378,6 +410,7 @@ impl ImageDecoder {
         ImageDecoder {
             maps: shared_map::DecodeTable::default(),
             image: Bytes::new(),
+            offsets: Vec::new(),
             handlers: AHashMap::new(),
             paths: AHashMap::new(),
             refcells: AHashMap::new(),
@@ -413,6 +446,10 @@ impl ImageDecoder {
 
     pub(crate) fn set_instances(&mut self, instances: AHashMap<LambdaInstanceId, u64>) {
         self.instances = instances;
+    }
+
+    pub fn set_offsets(&mut self, offsets: Vec<u64>) {
+        self.offsets = offsets;
     }
 
     pub(crate) fn set_fastcalls(&mut self, fastcalls: AHashMap<&'static str, FastCall>) {
@@ -611,27 +648,25 @@ fn path_key(path: &ModPath) -> &str {
 /// afterwards, so a scope repeated by every binding under it costs a
 /// varint and decodes to one shared string.
 pub(crate) fn path_len(path: &ModPath) -> usize {
-    match encoding(|e| e.paths.get(path_key(path)).copied()).flatten() {
-        Some(id) => 1 + varint_len(id),
-        None => 1 + path.0.encoded_len(),
-    }
+    object_len(
+        path_key(path),
+        |k| ArcStr::from(k),
+        |e| &mut e.paths,
+        || path.0.encoded_len(),
+    )
 }
 
 pub(crate) fn path_encode(
     path: &ModPath,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
-    if let Some(offset) = encoding(|e| e.paths.get(path_key(path)).copied()).flatten() {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    buf.put_u8(DEF);
-    encoding(|e| {
-        e.paths.insert(ArcStr::from(path_key(path)), at);
-    });
-    path.0.encode(buf)
+    object_encode(
+        path_key(path),
+        |k| ArcStr::from(k),
+        |e| &mut e.paths,
+        buf,
+        |buf| path.0.encode(buf),
+    )
 }
 
 pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
@@ -642,7 +677,7 @@ pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
         }
         match sub.get_u8() {
             REF => {
-                let offset = decode_varint(sub)?;
+                let offset = ref_offset(sub)?;
                 match decoding(|d| d.paths.get(&offset).cloned()).flatten() {
                     Some(p) => Ok(p),
                     None => decode_at(offset, |b| path_decode(b)),
@@ -666,13 +701,17 @@ pub(crate) fn refcell_len(
     resolved_len: impl FnOnce(&ResolvedRef) -> usize,
 ) -> usize {
     let key = Arc::as_ptr(cell) as usize;
-    if measured_before(key, |e| e.refcells.get(&key).copied()) {
-        return 1 + varint_len(key as u64);
-    }
-    // The resolved type can reach this cell again; the lock is not
-    // reentrant, so clone out before walking.
-    let resolved = cell.lock().clone();
-    1 + 1 + resolved.map_or(0, |r| resolved_len(&r))
+    object_len(
+        &key,
+        |k| *k,
+        |e| &mut e.refcells,
+        || {
+            // The resolved type can reach this cell again; the lock is not
+            // reentrant, so clone out before walking.
+            let resolved = cell.lock().clone();
+            1 + resolved.map_or(0, |r| resolved_len(&r))
+        },
+    )
 }
 
 pub(crate) fn refcell_encode<B: BufMut>(
@@ -681,26 +720,24 @@ pub(crate) fn refcell_encode<B: BufMut>(
     resolved_encode: impl FnOnce(&ResolvedRef, &mut B) -> Result<(), PackError>,
 ) -> Result<(), PackError> {
     let key = Arc::as_ptr(cell) as usize;
-    if let Some(offset) = encoding(|e| e.refcells.get(&key).copied()).flatten() {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    buf.put_u8(DEF);
-    encoding(|e| {
-        e.refcells.insert(key, at);
-        e.pinned_refcells.push(cell.clone());
-    });
-    let resolved = cell.lock().clone();
-    match resolved {
-        None => buf.put_u8(0),
-        Some(r) => {
-            buf.put_u8(1);
-            resolved_encode(&r, buf)?;
-        }
-    }
-    Ok(())
+    object_encode(
+        &key,
+        |k| *k,
+        |e| &mut e.refcells,
+        buf,
+        |buf| {
+            encoding(|e| e.pinned_refcells.push(cell.clone()));
+            let resolved = cell.lock().clone();
+            match resolved {
+                None => buf.put_u8(0),
+                Some(r) => {
+                    buf.put_u8(1);
+                    resolved_encode(&r, buf)?;
+                }
+            }
+            Ok(())
+        },
+    )
 }
 
 pub(crate) fn refcell_decode(
@@ -714,7 +751,7 @@ pub(crate) fn refcell_decode(
         }
         match sub.get_u8() {
             REF => {
-                let offset = decode_varint(sub)?;
+                let offset = ref_offset(sub)?;
                 match decoding(|d| d.refcells.get(&offset).cloned()).flatten() {
                     Some(c) => Ok(c),
                     None => decode_at(offset, |b| refcell_decode(b, resolved_decode)),
@@ -767,15 +804,15 @@ fn dynscope_len(scope: &DynScope) -> usize {
         None => 1,
         Some(h) => {
             let key = h.identity();
-            match encoding(|e| e.handlers.get(&key).copied()).flatten() {
-                Some(id) => 1 + varint_len(id),
-                None => {
+            object_len(
+                &key,
+                |k| *k,
+                |e| &mut e.handlers,
+                || {
                     let (bind, expr) = h.id();
-                    1 + bind.encoded_len()
-                        + expr.encoded_len()
-                        + dynscope_len(&h.parent())
-                }
-            }
+                    bind.encoded_len() + expr.encoded_len() + dynscope_len(&h.parent())
+                },
+            )
         }
     }
 }
@@ -803,24 +840,22 @@ fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackEr
         return Ok(());
     };
     let key = h.identity();
-    if let Some(offset) = encoding(|e| e.handlers.get(&key).copied()).flatten() {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    if h.generation() != 0 || h.has_nested_errors() {
-        return Err(PackError::Application(registration::NOT_QUIESCENT));
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    buf.put_u8(DEF);
-    encoding(|e| {
-        e.handlers.insert(key, at);
-        e.pinned_handlers.push(h.clone());
-    });
-    let (bind, expr) = h.id();
-    bind.encode(buf)?;
-    expr.encode(buf)?;
-    dynscope_encode(&h.parent(), buf)
+    object_encode(
+        &key,
+        |k| *k,
+        |e| &mut e.handlers,
+        buf,
+        |buf| {
+            if h.generation() != 0 || h.has_nested_errors() {
+                return Err(PackError::Application(registration::NOT_QUIESCENT));
+            }
+            encoding(|e| e.pinned_handlers.push(h.clone()));
+            let (bind, expr) = h.id();
+            bind.encode(buf)?;
+            expr.encode(buf)?;
+            dynscope_encode(&h.parent(), buf)
+        },
+    )
 }
 
 fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
@@ -832,7 +867,7 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
         match sub.get_u8() {
             2 => Ok(DynScope::root()),
             REF => {
-                let offset = decode_varint(sub)?;
+                let offset = ref_offset(sub)?;
                 match decoding(|d| d.handlers.get(&offset).cloned()).flatten() {
                     Some(h) => Ok(DynScope::from_handler(h)),
                     None => decode_at(offset, |b| dynscope_decode(b)),
@@ -852,19 +887,16 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
     })
 }
 
-pub(crate) fn scope_len(scope: &Scope) -> usize {
+pub fn scope_len(scope: &Scope) -> usize {
     scope.lexical.encoded_len() + dynscope_len(&scope.dynamic)
 }
 
-pub(crate) fn scope_encode(
-    scope: &Scope,
-    buf: &mut impl BufMut,
-) -> Result<(), PackError> {
+pub fn scope_encode(scope: &Scope, buf: &mut impl BufMut) -> Result<(), PackError> {
     scope.lexical.encode(buf)?;
     dynscope_encode(&scope.dynamic, buf)
 }
 
-pub(crate) fn scope_decode(buf: &mut impl Buf) -> Result<Scope, PackError> {
+pub fn scope_decode(buf: &mut impl Buf) -> Result<Scope, PackError> {
     let lexical = Pack::decode(buf)?;
     let dynamic = dynscope_decode(buf)?;
     Ok(Scope { lexical, dynamic })
@@ -937,14 +969,18 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
 /// carry the impl itself: the orphan rule.)
 pub(crate) fn origin_len(ori: &Arc<Origin>) -> usize {
     let key = Arc::as_ptr(ori) as usize;
-    if measured_before(key, |e| e.origins.get(&key).copied()) {
-        return 1 + varint_len(key as u64);
-    }
-    let parent = match &ori.parent {
-        Some(p) => origin_len(p),
-        None => 0,
-    };
-    1 + 1 + parent + source_len(&ori.source) + ori.text.encoded_len()
+    object_len(
+        &key,
+        |k| *k,
+        |e| &mut e.origins,
+        || {
+            let parent = match &ori.parent {
+                Some(p) => origin_len(p),
+                None => 0,
+            };
+            1 + parent + source_len(&ori.source) + ori.text.encoded_len()
+        },
+    )
 }
 
 pub(crate) fn origin_encode(
@@ -952,26 +988,24 @@ pub(crate) fn origin_encode(
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
     let key = Arc::as_ptr(ori) as usize;
-    if let Some(offset) = encoding(|e| e.origins.get(&key).copied()).flatten() {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    buf.put_u8(DEF);
-    encoding(|e| {
-        e.origins.insert(key, at);
-        e.pinned_origins.push(ori.clone());
-    });
-    match &ori.parent {
-        Some(p) => {
-            buf.put_u8(1);
-            origin_encode(p, buf)?;
-        }
-        None => buf.put_u8(0),
-    }
-    source_encode(&ori.source, buf)?;
-    ori.text.encode(buf)
+    object_encode(
+        &key,
+        |k| *k,
+        |e| &mut e.origins,
+        buf,
+        |buf| {
+            encoding(|e| e.pinned_origins.push(ori.clone()));
+            match &ori.parent {
+                Some(p) => {
+                    buf.put_u8(1);
+                    origin_encode(p, buf)?;
+                }
+                None => buf.put_u8(0),
+            }
+            source_encode(&ori.source, buf)?;
+            ori.text.encode(buf)
+        },
+    )
 }
 
 pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError> {
@@ -982,7 +1016,7 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
         }
         match sub.get_u8() {
             REF => {
-                let offset = decode_varint(sub)?;
+                let offset = ref_offset(sub)?;
                 match decoding(|d| d.origins.get(&offset).cloned()).flatten() {
                     Some(o) => Ok(o),
                     None => decode_at(offset, |b| origin_decode(b)),
@@ -1014,33 +1048,34 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
 /// cell that reaches its own wrapper through a constraint decodes.
 pub(crate) fn tvar_len(tv: &TVar) -> usize {
     let key = tv.wrapper_addr();
-    if measured_before(key, |e| e.tvars.get(&key).copied()) {
-        return 1 + varint_len(key as u64);
-    }
-    let (id, frozen, cell) = tv.parts();
-    let mut n = 1 + tv.name.encoded_len() + id.encoded_len() + frozen.encoded_len();
-    let ckey = Arc::as_ptr(&cell) as usize;
-    n += if measured_before(ckey, |e| e.cells.get(&ckey).copied()) {
-        1 + varint_len(ckey as u64)
-    } else {
-        let (typ, constraints, refused) = {
-            let c = cell.read();
-            (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
-        };
-        1 + typ.encoded_len() + constraints.encoded_len() + refused.encoded_len()
-    };
-    n
+    object_len(
+        &key,
+        |k| *k,
+        |e| &mut e.tvars,
+        || {
+            let (id, frozen, cell) = tv.parts();
+            tv.name.encoded_len()
+                + id.encoded_len()
+                + frozen.encoded_len()
+                + cell_len(&cell)
+        },
+    )
 }
 
-/// Whether the length walk has already measured (or an encode has
-/// written) the object at `key`; the first call marks it measured. A
-/// reference's varint is bounded by the address's, which a length pass
-/// may over-count.
-fn measured_before(
-    key: usize,
-    registered: impl FnOnce(&ImageEncoder) -> Option<u64>,
-) -> bool {
-    encoding(|e| registered(e).is_some() || !e.measured.insert(key)).unwrap_or(false)
+fn cell_len(cell: &Arc<RwLock<TCell>>) -> usize {
+    let key = Arc::as_ptr(cell) as usize;
+    object_len(
+        &key,
+        |k| *k,
+        |e| &mut e.cells,
+        || {
+            let (typ, constraints, refused) = {
+                let c = cell.read();
+                (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
+            };
+            typ.encoded_len() + constraints.encoded_len() + refused.encoded_len()
+        },
+    )
 }
 
 /// A boxed slice on the wire as the `Vec` it decodes to.
@@ -1105,96 +1140,251 @@ pub(crate) fn decode_at<T>(
     full(&mut sub)
 }
 
-/// A content-keyed object's progress through the two passes. An object
-/// can reach itself through a resolution cell it contains; while its
-/// definition is in progress the nested occurrence is written as a
-/// definition too, since a reference can only name a finished one.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ContentState {
-    Measuring,
-    Measured,
-    Writing,
-    Written(u64),
+/// An object's place in the session. The length pass assigns the
+/// ordinal at first sight and records the definition's length; the
+/// encode pass writes the definition at an offset. An object met again
+/// while its own definition is in progress is a reference if its kind
+/// registers before its contents decode (`nested_ref`: cells, and the
+/// address-keyed kinds), else a definition again, since a content
+/// reference can only name a finished object.
+#[derive(Clone, Copy)]
+pub(crate) struct Slot {
+    ord: u32,
+    seen_pass: u32,
+    def_len: Option<usize>,
+    at: Option<u64>,
+    in_progress: bool,
+    nested_ref: bool,
 }
 
-pub(crate) type ContentTable = AHashMap<Box<[u8]>, ContentState>;
+pub(crate) type ContentTable = AHashMap<Box<[u8]>, Slot>;
 
-/// The length bound of a reference: an image offset fits a `u32`, which
-/// the encode enforces.
-fn ref_len() -> usize {
-    1 + varint_len(u32::MAX as u64)
+fn new_slot(e: &mut ImageEncoder, nested_ref: bool) -> Slot {
+    let ord = e.next_ordinal;
+    e.next_ordinal += 1;
+    e.offsets.push(0);
+    Slot {
+        ord,
+        seen_pass: e.pass,
+        def_len: None,
+        at: None,
+        in_progress: true,
+        nested_ref,
+    }
 }
 
-/// The image length of an object keyed by its canonical bytes: its
-/// `contents` at the first sight, a reference afterwards.
-pub(crate) fn content_len(
-    key: &[u8],
-    table: impl Fn(&mut ImageEncoder) -> &mut ContentTable,
+enum Occurrence {
+    Measure,
+    Reference(u32),
+    Contents,
+    Definition(usize),
+}
+
+/// What this occurrence of the object costs, exact in both passes: a
+/// reference once written or once measured in the length pass; the
+/// contents while the definition is in progress; in the encode pass
+/// the measured definition at the first sight within a length query.
+fn slot_len<K, Q>(
+    key: &Q,
+    owned: impl FnOnce(&Q) -> K,
+    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
+    nested_ref: bool,
     contents: impl FnOnce() -> usize,
-) -> usize {
-    let state = encoding(|e| {
-        let table = table(e);
-        match table.get(key) {
-            Some(s) => Some(*s),
+) -> usize
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
+    Q: std::hash::Hash + Eq + ?Sized,
+{
+    let occurrence = encoding(|e| {
+        e.query_depth += 1;
+        let (pass, encode_pass) = (e.pass, e.encode_pass);
+        match table(e).get(key).copied() {
             None => {
-                table.insert(key.into(), ContentState::Measuring);
-                None
+                let slot = new_slot(e, nested_ref);
+                table(e).insert(owned(key), slot);
+                Occurrence::Measure
             }
+            Some(s) if s.at.is_some() => Occurrence::Reference(s.ord),
+            Some(s) if s.in_progress => {
+                if nested_ref {
+                    Occurrence::Reference(s.ord)
+                } else {
+                    Occurrence::Contents
+                }
+            }
+            Some(s) if encode_pass && e.query_seen.insert(s.ord) => {
+                Occurrence::Definition(s.def_len.unwrap_or(0))
+            }
+            Some(s) if !encode_pass && s.seen_pass != pass => {
+                if let Some(s) = table(e).get_mut(key) {
+                    s.seen_pass = pass;
+                    s.in_progress = true;
+                }
+                Occurrence::Measure
+            }
+            Some(s) => Occurrence::Reference(s.ord),
         }
     });
-    match state {
-        Some(Some(ContentState::Measured)) | Some(Some(ContentState::Written(_))) => {
-            ref_len()
-        }
-        Some(None) => {
+    let len = match occurrence {
+        None => 1 + contents(),
+        Some(Occurrence::Reference(ord)) => 1 + varint_len(ord as u64),
+        Some(Occurrence::Contents) => 1 + contents(),
+        Some(Occurrence::Definition(len)) => len,
+        Some(Occurrence::Measure) => {
             let len = 1 + contents();
             encoding(|e| {
                 if let Some(s) = table(e).get_mut(key) {
-                    *s = ContentState::Measured;
+                    s.in_progress = false;
+                    s.def_len = Some(len);
                 }
             });
             len
         }
-        Some(Some(ContentState::Measuring))
-        | Some(Some(ContentState::Writing))
-        | None => 1 + contents(),
-    }
+    };
+    encoding(|e| {
+        e.query_depth -= 1;
+        if e.query_depth == 0 {
+            e.query_seen.clear();
+        }
+    });
+    len
 }
 
-/// Write an object keyed by its canonical bytes once and a reference to
-/// its offset afterwards.
-pub(crate) fn content_encode<B: BufMut>(
+fn slot_encode<K, Q, B: BufMut>(
+    key: &Q,
+    owned: impl FnOnce(&Q) -> K,
+    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
+    nested_ref: bool,
+    buf: &mut B,
+    contents: impl FnOnce(&mut B) -> Result<(), PackError>,
+) -> Result<(), PackError>
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
+    Q: std::hash::Hash + Eq + ?Sized,
+{
+    let slot = encoding(|e| match table(e).get(key) {
+        Some(s) => *s,
+        None => {
+            let mut slot = new_slot(e, nested_ref);
+            slot.in_progress = false;
+            table(e).insert(owned(key), slot);
+            slot
+        }
+    });
+    let Some(slot) = slot else { return contents(buf) };
+    if slot.at.is_some() || (slot.in_progress && slot.nested_ref) {
+        buf.put_u8(REF);
+        encode_varint(slot.ord as u64, buf);
+        return Ok(());
+    }
+    let at = encoding(|e| e.written).unwrap_or(0);
+    buf.put_u8(DEF);
+    if slot.in_progress {
+        return contents(buf);
+    }
+    let set = |f: &dyn Fn(&mut Slot)| {
+        encoding(|e| {
+            if let Some(s) = table(e).get_mut(key) {
+                f(s)
+            }
+        });
+    };
+    set(&|s| s.in_progress = true);
+    contents(buf)?;
+    set(&|s| {
+        s.in_progress = false;
+        s.at = Some(at);
+    });
+    encoding(|e| e.offsets[slot.ord as usize] = at);
+    Ok(())
+}
+
+/// The image length of the address-keyed object at `key`: its
+/// `contents` at the first sight, a reference afterwards. `owned`
+/// builds the stored key at the first sight only.
+pub(crate) fn object_len<K, Q>(
+    key: &Q,
+    owned: impl FnOnce(&Q) -> K,
+    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
+    contents: impl FnOnce() -> usize,
+) -> usize
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
+    Q: std::hash::Hash + Eq + ?Sized,
+{
+    slot_len(key, owned, table, true, contents)
+}
+
+/// Write the address-keyed object at `key` once, its offset recorded
+/// by ordinal, and a reference to its ordinal afterwards.
+pub(crate) fn object_encode<K, Q, B: BufMut>(
+    key: &Q,
+    owned: impl FnOnce(&Q) -> K,
+    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
+    buf: &mut B,
+    contents: impl FnOnce(&mut B) -> Result<(), PackError>,
+) -> Result<(), PackError>
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
+    Q: std::hash::Hash + Eq + ?Sized,
+{
+    slot_encode(key, owned, table, true, buf, contents)
+}
+
+/// The image length of an object keyed by its canonical bytes.
+fn content_len(
+    key: &[u8],
+    table: impl Fn(&mut ImageEncoder) -> &mut ContentTable,
+    contents: impl FnOnce() -> usize,
+) -> usize {
+    slot_len(key, |k| Box::from(k), table, false, contents)
+}
+
+fn content_encode<B: BufMut>(
     key: &[u8],
     table: impl Fn(&mut ImageEncoder) -> &mut ContentTable,
     buf: &mut B,
     contents: impl FnOnce(&mut B) -> Result<(), PackError>,
 ) -> Result<(), PackError> {
-    let state = encoding(|e| table(e).get(key).copied()).flatten();
-    if let Some(ContentState::Written(offset)) = state {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    if at > u32::MAX as u64 {
-        return Err(PackError::InvalidFormat);
-    }
-    buf.put_u8(DEF);
-    if state == Some(ContentState::Writing) {
-        return contents(buf);
-    }
-    let set = |state: ContentState| {
-        encoding(|e| match table(e).get_mut(key) {
-            Some(s) => *s = state,
-            None => {
-                table(e).insert(key.into(), state);
+    slot_encode(key, |k| Box::from(k), table, false, buf, contents)
+}
+
+/// The definition offset a reference names.
+fn ref_offset(sub: &mut &[u8]) -> Result<u64, PackError> {
+    let ord = decode_varint(sub)? as usize;
+    decoding(|d| d.offsets.get(ord).copied()).flatten().ok_or(PackError::InvalidFormat)
+}
+
+/// Read an object written by [`object_encode`]: a reference clones the
+/// table's entry or decodes the definition at its offset with `full`;
+/// a definition decodes `contents` and enters it at its offset.
+pub(crate) fn object_decode<T: Clone>(
+    buf: &mut impl Buf,
+    table: impl Fn(&mut ImageDecoder) -> &mut AHashMap<u64, T>,
+    contents: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+    full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+) -> Result<T, PackError> {
+    with_slice(buf, |sub| {
+        let at = position(sub)?;
+        if !sub.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match sub.get_u8() {
+            REF => {
+                let offset = ref_offset(sub)?;
+                match decoding(|d| table(d).get(&offset).cloned()).flatten() {
+                    Some(v) => Ok(v),
+                    None => decode_at(offset, full),
+                }
             }
-        });
-    };
-    set(ContentState::Writing);
-    contents(buf)?;
-    set(ContentState::Written(at));
-    Ok(())
+            DEF => {
+                let v = contents(sub)?;
+                decoding(|d| table(d).insert(at, v.clone()));
+                Ok(v)
+            }
+            _ => Err(PackError::UnknownTag),
+        }
+    })
 }
 
 /// Append the canonical bytes of a shared type node, walking it once
@@ -1287,125 +1477,54 @@ pub(crate) fn expr_key(e: &Expr) -> usize {
     .unwrap_or(addr)
 }
 
-/// The image length of an object in the table `table` selects: its
-/// `contents` at the first sight, a reference afterwards.
-pub(crate) fn object_len(
-    key: usize,
-    table: impl FnOnce(&ImageEncoder) -> &AHashMap<usize, u64>,
-    contents: impl FnOnce() -> usize,
-) -> usize {
-    if measured_before(key, |e| table(e).get(&key).copied()) {
-        1 + varint_len(key as u64)
-    } else {
-        1 + contents()
-    }
-}
-
-/// Write an object once, at an offset its table records before its
-/// contents, and a reference to that offset afterwards.
-pub(crate) fn object_encode<B: BufMut>(
-    key: usize,
-    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<usize, u64>,
-    buf: &mut B,
-    contents: impl FnOnce(&mut B) -> Result<(), PackError>,
-) -> Result<(), PackError> {
-    if let Some(offset) = encoding(|e| table(e).get(&key).copied()).flatten() {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    buf.put_u8(DEF);
-    encoding(|e| {
-        table(e).insert(key, at);
-    });
-    contents(buf)
-}
-
-/// Read an object written by [`object_encode`]: a reference clones the
-/// table's entry or decodes the definition at its offset with `full`;
-/// a definition decodes `contents` and enters it at its offset.
-pub(crate) fn object_decode<T: Clone>(
-    buf: &mut impl Buf,
-    table: impl Fn(&mut ImageDecoder) -> &mut AHashMap<u64, T>,
-    contents: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
-    full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
-) -> Result<T, PackError> {
-    with_slice(buf, |sub| {
-        let at = position(sub)?;
-        if !sub.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match sub.get_u8() {
-            REF => {
-                let offset = decode_varint(sub)?;
-                match decoding(|d| table(d).get(&offset).cloned()).flatten() {
-                    Some(v) => Ok(v),
-                    None => decode_at(offset, full),
-                }
-            }
-            DEF => {
-                let v = contents(sub)?;
-                decoding(|d| table(d).insert(at, v.clone()));
-                Ok(v)
-            }
-            _ => Err(PackError::UnknownTag),
-        }
-    })
-}
-
 pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackError> {
     let key = tv.wrapper_addr();
-    if let Some(offset) = encoding(|e| e.tvars.get(&key).copied()).flatten() {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    buf.put_u8(DEF);
-    encoding(|e| {
-        e.tvars.insert(key, at);
-        e.pinned_tvars.push(tv.clone());
-    });
-    let (id, frozen, cell) = tv.parts();
-    tv.name.encode(buf)?;
-    id.encode(buf)?;
-    frozen.encode(buf)?;
-    cell_encode(&cell, buf)
+    object_encode(
+        &key,
+        |k| *k,
+        |e| &mut e.tvars,
+        buf,
+        |buf| {
+            encoding(|e| e.pinned_tvars.push(tv.clone()));
+            let (id, frozen, cell) = tv.parts();
+            tv.name.encode(buf)?;
+            id.encode(buf)?;
+            frozen.encode(buf)?;
+            cell_encode(&cell, buf)
+        },
+    )
 }
 
 fn cell_encode(
     cell: &Arc<RwLock<TCell>>,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
-    let ckey = Arc::as_ptr(cell) as usize;
-    if let Some(offset) = encoding(|e| e.cells.get(&ckey).copied()).flatten() {
-        buf.put_u8(REF);
-        encode_varint(offset, buf);
-        return Ok(());
-    }
-    let at = encoding(|e| e.written).unwrap_or(0);
-    buf.put_u8(DEF);
-    encoding(|e| {
-        e.cells.insert(ckey, at);
-        e.pinned_cells.push(cell.clone());
-    });
-    let (typ, constraints, refused) = {
-        let c = cell.read();
-        if c.rigid_gates != 0 {
-            log::warn!(
-                "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
-                c.rigid_gates,
-                c.typ,
-                c.constraints
-            );
-            return Err(PackError::InvalidFormat);
-        }
-        (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
-    };
-    typ.encode(buf)?;
-    constraints.encode(buf)?;
-    refused.encode(buf)
+    let key = Arc::as_ptr(cell) as usize;
+    object_encode(
+        &key,
+        |k| *k,
+        |e| &mut e.cells,
+        buf,
+        |buf| {
+            encoding(|e| e.pinned_cells.push(cell.clone()));
+            let (typ, constraints, refused) = {
+                let c = cell.read();
+                if c.rigid_gates != 0 {
+                    log::warn!(
+                        "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
+                        c.rigid_gates,
+                        c.typ,
+                        c.constraints
+                    );
+                    return Err(PackError::InvalidFormat);
+                }
+                (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
+            };
+            typ.encode(buf)?;
+            constraints.encode(buf)?;
+            refused.encode(buf)
+        },
+    )
 }
 
 pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
@@ -1416,7 +1535,7 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
         }
         match sub.get_u8() {
             REF => {
-                let offset = decode_varint(sub)?;
+                let offset = ref_offset(sub)?;
                 match decoding(|d| d.tvars.get(&offset).cloned()).flatten() {
                     Some(tv) => Ok(tv),
                     None => decode_at(offset, |b| tvar_decode(b)),
@@ -1444,7 +1563,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
         }
         match sub.get_u8() {
             REF => {
-                let offset = decode_varint(sub)?;
+                let offset = ref_offset(sub)?;
                 match decoding(|d| d.cells.get(&offset).cloned()).flatten() {
                     Some(c) => Ok(c),
                     None => decode_at(offset, |b| cell_decode(b)),
@@ -1482,24 +1601,28 @@ mod tests {
     use netidx_value::Value;
 
     fn pack_all<T: Pack>(items: &[T], enc: &mut ImageEncoder) -> Bytes {
-        let bounds: Vec<usize> = {
+        let measure = |enc: &mut ImageEncoder| -> Vec<usize> {
             let _s = EncodeImage::new(enc);
             items.iter().map(|i| i.encoded_len()).collect()
         };
+        measure(enc);
         enc.sort_ids();
+        let bounds = measure(enc);
+        enc.begin_encode();
         let _s = EncodeImage::new(enc);
         let mut buf = ImageBuf::with_capacity(0);
         for (i, bound) in items.iter().zip(bounds) {
             let before = buf.len();
             i.encode(&mut buf).unwrap();
-            assert!(buf.len() - before <= bound);
+            assert_eq!(buf.len() - before, bound);
         }
         buf.freeze()
     }
 
-    fn decoder(counts: IdCounts, image: &Bytes) -> ImageDecoder {
-        let mut dec = ImageDecoder::new(counts);
+    fn decoder(enc: &mut ImageEncoder, image: &Bytes) -> ImageDecoder {
+        let mut dec = ImageDecoder::new(enc.counts());
         dec.set_image(image.clone());
+        dec.set_offsets(enc.take_offsets());
         dec
     }
 
@@ -1512,7 +1635,7 @@ mod tests {
         assert_eq!(enc.counts(), IdCounts { expr: 2, ..IdCounts::default() });
         // dense: 0, 1, 0
         assert_eq!(&bytes[..], &[0, 1, 0]);
-        let mut dec = decoder(enc.counts(), &bytes);
+        let mut dec = decoder(&mut enc, &bytes);
         let base = dec.bases.expr;
         let after = ExprId::new();
         let _s = DecodeImage::new(&mut dec);
@@ -1548,7 +1671,7 @@ mod tests {
         let bytes = pack_all(&[typ.clone()], &mut enc);
         // an alias takes the other's id, so a and b share one
         assert_eq!(enc.counts().tvar, 2);
-        let mut dec = decoder(enc.counts(), &bytes);
+        let mut dec = decoder(&mut enc, &bytes);
         let _s = DecodeImage::new(&mut dec);
         let decoded = Type::decode(&mut &bytes[..]).unwrap();
         let Type::Tuple(elems) = &decoded else { panic!("{decoded:?}") };
@@ -1604,7 +1727,7 @@ mod tests {
         let bytes = pack_all(&[t1, t2, other], &mut enc);
         // the two tuples, the other tuple, the primitive and two variables
         assert_eq!(enc.types.len(), 5);
-        let mut dec = decoder(enc.counts(), &bytes);
+        let mut dec = decoder(&mut enc, &bytes);
         let _s = DecodeImage::new(&mut dec);
         let mut b = &bytes[..];
         let d1 = Type::decode(&mut b).unwrap();
@@ -1653,7 +1776,7 @@ mod tests {
         let bytes = pack_all(&[parent.clone(), clone, child_clone], &mut enc);
         // the parent and its child are the only definitions
         assert_eq!(enc.exprs.len(), 2);
-        let mut dec = decoder(enc.counts(), &bytes);
+        let mut dec = decoder(&mut enc, &bytes);
         let _s = DecodeImage::new(&mut dec);
         let mut b = &bytes[..];
         let d1 = Expr::decode(&mut b).unwrap();
@@ -1685,7 +1808,7 @@ mod tests {
         let mut enc = ImageEncoder::new();
         let bytes = pack_all(&[e1.clone(), e2.clone()], &mut enc);
         assert_eq!(enc.counts().expr, 2);
-        let mut dec = decoder(enc.counts(), &bytes);
+        let mut dec = decoder(&mut enc, &bytes);
         let base = dec.bases.expr;
         let _s = DecodeImage::new(&mut dec);
         let mut b = &bytes[..];

@@ -130,10 +130,12 @@ enum ReadInput {
     Bytes(Bytes),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, netidx_derive::Pack)]
 struct JsonReadEv {
     cast_typ: Option<Type>,
 }
+
+graphix_package_core::pack_image_state!(JsonReadEv);
 
 impl EvalCachedAsync for JsonReadEv {
     type Args = ReadInput;
@@ -283,6 +285,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
 }
 
 type JsonWriteBytes = CachedArgs<JsonWriteBytesEv>;
+
+graphix_package_core::unit_image_state!(JsonWriteStrEv, JsonWriteBytesEv);
 
 graphix_derive::defpackage! {
     builtins => [

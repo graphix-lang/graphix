@@ -26,11 +26,14 @@ use graphix_compiler::{
     env::Env,
     errf,
     expr::{ExprId, ModPath},
+    image::{self, ImageBuf},
     typ::FnType,
     typ::{Type, TypeRef},
 };
 use graphix_package::CustomDisplay;
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, seam_tick};
+use graphix_package_core::{
+    CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState, seam_tick,
+};
 use graphix_rt::{CompExp, GXExt, GXHandle, TRef};
 use input_handler::{InputHandlerW, event_to_value};
 use layout::LayoutW;
@@ -38,6 +41,7 @@ use line_gauge::LineGaugeW;
 use list::ListW;
 use log::error;
 use netidx::publisher::{FromValue, Value};
+use netidx_core::pack::PackError;
 use paragraph::ParagraphW;
 use parking_lot::Mutex;
 use ratatui::{
@@ -546,6 +550,31 @@ impl EvalCachedAsync for SuspendEv {
     }
 }
 
+impl ImageState for SuspendEv {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    /// A held resume signal is a suspended display, which only a cycle
+    /// can produce.
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.held.lock().is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        Ok(())
+    }
+
+    fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        _buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        Ok(Self {
+            control: Some(ctx.libstate.get_or_default::<TuiControl>().clone()),
+            held: Arc::new(Mutex::new(None)),
+        })
+    }
+}
+
 type SuspendB = CachedArgsAsync<SuspendEv>;
 
 #[derive(Debug)]
@@ -565,9 +594,25 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        _buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(Self))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

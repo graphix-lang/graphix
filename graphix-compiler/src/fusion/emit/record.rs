@@ -388,8 +388,9 @@ fn kind_tag(k: RecordKind) -> u8 {
 /// written once, and its callees before it.
 pub(crate) fn record_len(r: &Arc<BodyRecord>) -> usize {
     image::object_len(
-        Arc::as_ptr(r) as usize,
-        |e| &e.records,
+        &(Arc::as_ptr(r) as usize),
+        |k| *k,
+        |e| &mut e.records,
         || {
             let BodyRecord {
                 kind: _,
@@ -422,7 +423,8 @@ pub(crate) fn record_encode(
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
     image::object_encode(
-        Arc::as_ptr(r) as usize,
+        &(Arc::as_ptr(r) as usize),
+        |k| *k,
         |e| &mut e.records,
         buf,
         |buf| {

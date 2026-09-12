@@ -12,6 +12,7 @@ use graphix_compiler::{
     effects::Effect,
     errf,
     expr::ExprId,
+    image::{self, ImageBuf},
     node::genn,
     typ::{FnType, Type},
 };
@@ -19,6 +20,7 @@ use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_arg,
 };
 use graphix_rt::GXRt;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{FromValue, PBytes, ValArray, Value};
 use std::{
     any::Any,
@@ -407,6 +409,14 @@ impl EvalCachedAsync for HttpRequestBinEv {
 
 pub(crate) type HttpRequestBin = CachedArgsAsync<HttpRequestBinEv>;
 
+graphix_package_core::unit_image_state!(
+    HttpClientEv,
+    HttpDefaultClientEv,
+    HttpServerAddrEv,
+    HttpRequestEv,
+    HttpRequestBinEv
+);
+
 struct HttpReqEvent {
     request: Value,
     reply: Option<tokio::sync::oneshot::Sender<Value>>,
@@ -713,9 +723,57 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
             _ => bail!("expected five arguments"),
         }
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let handler = image::decode_node(ctx, buf)?;
+        let pid = BindId::decode(buf)?;
+        let x = BindId::decode(buf)?;
+        let ready = bool::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(HttpServe {
+            id,
+            top_id,
+            handler,
+            pid,
+            x,
+            queue: VecDeque::new(),
+            ready,
+            abort: None,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
+    fn image_len(&self) -> usize {
+        self.id.encoded_len()
+            + self.top_id.encoded_len()
+            + self.handler.image_len()
+            + self.pid.encoded_len()
+            + self.x.encoded_len()
+            + self.ready.encoded_len()
+    }
+
+    /// `abort` is a running server; `queue` holds requests awaiting a
+    /// reply.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.abort.is_some() || !self.queue.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.handler.image_encode(buf)?;
+        self.pid.encode(buf)?;
+        self.x.encode(buf)?;
+        self.ready.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

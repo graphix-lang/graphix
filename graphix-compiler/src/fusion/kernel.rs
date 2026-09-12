@@ -10,11 +10,16 @@ use crate::node::WakeBit;
 use crate::{
     Apply, Event, ExecCtx, Node, Refs, Rt, Tag, UserEvent,
     fusion::{
-        emit::{STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
+        emit::{
+            STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
+            record_decode, record_encode, record_len,
+        },
         emit_helpers::{KERNEL_ABORT, TagValue},
         kernel_abi::{self, KernelSig},
     },
+    image::ImageBuf,
 };
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{ValArray, Value};
 use std::sync::Arc;
 
@@ -96,11 +101,6 @@ impl Kernel {
         &self.kernel
     }
 
-    /// The compiled artifact this node dispatches.
-    pub(crate) fn wrapped(&self) -> &Arc<WrappedKernel> {
-        &self.jit
-    }
-
     pub fn new(
         kernel: Arc<KernelSig>,
         n_args: usize,
@@ -124,7 +124,61 @@ impl Kernel {
     }
 }
 
+impl Kernel {
+    /// Rebuild from an image: the wrapper record installs into the
+    /// context's module and the node allocates fresh state.
+    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        n_args: usize,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let state_words = decode_varint(buf)? as usize;
+        let slot_table_words = Pack::decode(buf)?;
+        let own_site = Pack::decode(buf)?;
+        let state_self_blocks = Pack::decode(buf)?;
+        let wrapper = record_decode(buf)?;
+        let wrapped = ctx
+            .fusion
+            .jit
+            .lock()
+            .load_wrapped(
+                &wrapper,
+                state_words,
+                slot_table_words,
+                own_site,
+                state_self_blocks,
+            )
+            .map_err(|e| {
+                log::warn!(
+                    "loading the kernel `{}` from the image: {e:#}",
+                    wrapper.label
+                );
+                PackError::InvalidFormat
+            })?;
+        let kernel = wrapper.kernel.clone();
+        Self::new(kernel, n_args, Arc::new(wrapped)).map_err(|_| PackError::InvalidFormat)
+    }
+}
+
 impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
+    fn image_len(&self) -> usize {
+        let w = &self.jit;
+        varint_len(w.state_words as u64)
+            + w.slot_table_words.encoded_len()
+            + w.own_site.encoded_len()
+            + w.state_self_blocks.encoded_len()
+            + record_len(&w.wrapper)
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        let w = &self.jit;
+        encode_varint(w.state_words as u64, buf);
+        w.slot_table_words.encode(buf)?;
+        w.own_site.encode(buf)?;
+        w.state_self_blocks.encode(buf)?;
+        record_encode(&w.wrapper, buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

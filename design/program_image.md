@@ -222,17 +222,22 @@ intrinsic, one decoder per `MapQ`/`FoldQ` instantiation). A call
 site's callee travels three ways: unbound (a dynamic site before its
 first cycle), an imaged instance of a lambda (`GXLambda`: argument
 patterns, body, scheme, analysis facts, lexical snapshot), or a
-builtin rebuilt at decode by the restored definition's factory over
-the imaged argument references, given the SITE type the cold init was
-given (`apply.typ()`), with the builtin's own `typecheck0/1` replayed
-over it and the resolved copy derived afterwards, as the cold path
-does. Static resolution is never re-run at decode: re-inferring
-against restored inference state fails (the corpus differential found
-it). The replay must see the tvar cells the cold pass bound: the
-argument types were aliased into the site type's cells, and a
-`resolve_tvars` copy mints fresh cells for every unbound tvar, so an
-image that carried the resolved copy instead failed the replay on a
-union such as `['b, Array<'b>]` (sep12a, 11 findings). A `?`'s
+builtin's own image (`CALLEE_BUILTIN`): the wrapper's site type, the
+builtin's name and the bytes its `Apply::image_encode` wrote, decoded
+by the decoder `register_builtin` recorded for that name
+(`BuiltIn::image_decode`, over the restored argument references).
+Nothing is typechecked or re-inferred at decode; a builtin's state
+after `init` and its typecheck passes is what the image carries, and
+the codec methods have no defaults, so a builtin without one does not
+compile. The generic wrappers own their codecs and their payloads
+implement `ImageState`; a `TagValue` resident decodes as phantom; a
+bind id the builtin registered with `ctx.rt.ref_var` is re-registered
+at decode; a generated node goes through the node codec; state that
+exists only once a cycle ran (a prepared async argument, a live
+handle, a runtime-built definition) refuses the write with
+`NOT_QUIESCENT`. The earlier scheme rebuilt builtins by replaying
+their typecheck passes and failed when the replay's tvar cells were
+not the cold pass's (sep12a, 11 findings). A `?`'s
 handler and a catch's own handler are the scope codec's shared
 objects. Dynamic modules' runtime environment and
 `DefOrigin::Runtime` definitions stay outside the image.
@@ -269,14 +274,27 @@ first frame reaches about a third, which is what slice (b) is for.
 
 ## Built: the program image, slice (b): offsets and lazy instances
 
-Every shared object is referenced by the file offset of its
-definition instead of a sequence number, and a reference to an object
-the session has not built decodes it from that offset on demand
-(`image::object_decode`, `decode_at`, and the same in every hand
-codec and the map-node table). The writer knows offsets because its
-buffer, `ImageBuf`, reports every byte written to the session; the
-reader knows them because every decode buffer is a slice of the
-mapped image. With that, any part of the image decodes in any order.
+Every shared object is referenced by an ordinal, and a reference to an
+object the session has not built decodes it from its definition's
+offset on demand (`image::object_decode`, `decode_at`, and the same in
+every hand codec and the map-node table). The length pass assigns the
+ordinal at an object's first sight and records its definition's
+length in the session's `image::Slot`; the encode pass writes the
+definition at an offset its buffer, `ImageBuf`, reports, records it
+by ordinal, and the trailer carries the ordinal-to-offset table the
+reader loads before anything decodes (every decode buffer is a slice
+of the mapped image). What an occurrence costs is a function of the
+slot alone — a reference once written, the definition's measured
+length otherwise, and for an object met again inside its own
+definition a reference if its kind registers before its contents
+decode (cells and the address-keyed kinds) or a definition again (the
+content-keyed types) — so `encoded_len` is exact in both passes and
+in a length query in the middle of the encode, which is what lets a
+derived `Pack` frame an image object by its measured length. (The
+first version referenced objects by offset and bounded a reference's
+varint by the address in the length pass; the over-count broke every
+length-framed container holding a `Type`.) With that, any part of the
+image decodes in any order.
 
 A program image writes instance bodies to a heap after the eager part
 and records an instance table at the end (the header carries both

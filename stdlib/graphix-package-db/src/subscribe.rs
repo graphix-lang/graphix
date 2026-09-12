@@ -2,10 +2,15 @@ use anyhow::Result;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, TagValue, UserEvent, effects::Effect, expr::ExprId, typ::FnType,
+    Scope, TagValue, UserEvent,
+    effects::Effect,
+    expr::ExprId,
+    image::{self, ImageBuf},
+    typ::FnType,
 };
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{ValArray, Value};
 use poolshark::{
     global::{GPooled, Pool},
@@ -134,9 +139,30 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let tree_val = Pack::decode(buf)?;
+        Ok(Box::new(DbSubscribe { tree_val, abort: None, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
+    fn image_len(&self) -> usize {
+        self.tree_val.encoded_len()
+    }
+
+    /// A running watch task exists only once a cycle has run.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.abort.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.tree_val.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -270,9 +296,35 @@ macro_rules! db_event_accessor {
                     out: TagValue::phantom(),
                 }))
             }
+
+            fn image_decode(
+                ctx: &mut ExecCtx<R, E>,
+                _from: &[Node<R, E>],
+                buf: &mut &[u8],
+            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+                let top_id = ExprId::decode(buf)?;
+                let cached = CachedVals::image_decode(buf)?;
+                let bind_id = <Option<BindId>>::decode(buf)?;
+                if let Some(bid) = bind_id {
+                    ctx.rt.ref_var(bid, top_id);
+                }
+                Ok(Box::new($name { top_id, cached, bind_id, out: TagValue::phantom() }))
+            }
         }
 
         impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
+            fn image_len(&self) -> usize {
+                self.top_id.encoded_len()
+                    + self.cached.image_len()
+                    + self.bind_id.encoded_len()
+            }
+
+            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+                self.top_id.encode(buf)?;
+                self.cached.image_encode(buf)?;
+                self.bind_id.encode(buf)
+            }
+
             fn update(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,

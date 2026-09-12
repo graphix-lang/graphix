@@ -168,3 +168,5 @@ impl EvalCachedAsync for RemoveDirOp {
 }
 
 pub(crate) type RemoveDir = CachedArgsAsync<RemoveDirOp>;
+
+graphix_package_core::unit_image_state!(ReadDirEv, CreateDirOp, RemoveDirOp);

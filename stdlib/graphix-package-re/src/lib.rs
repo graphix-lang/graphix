@@ -99,6 +99,8 @@ macro_rules! re_fn {
         }
 
         type $name = CachedArgs<$ev>;
+
+        graphix_package_core::unit_image_state!($ev);
     };
 }
 

@@ -151,3 +151,5 @@ impl EvalCachedAsync for TlsAcceptEv {
 }
 
 pub(crate) type TlsAccept = CachedArgsAsync<TlsAcceptEv>;
+
+graphix_package_core::unit_image_state!(TlsConnectEv, TlsAcceptEv);

@@ -1,14 +1,16 @@
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
+use enumflags2::BitFlags;
 use graphix_compiler::{
     ExecCtx, Node, Rt, Scope, UserEvent, errf,
     expr::ExprId,
+    image::ImageBuf,
     typ::{FnType, Type, TypeRef},
 };
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
 use netidx::{path::Path, publisher::Typ};
-use netidx_core::pack::Pack;
+use netidx_core::pack::{Pack, PackError};
 use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
 use poolshark::{global::GPooled, local::LPooled};
@@ -391,11 +393,66 @@ pub(crate) struct DbTreeArgs {
     val_typ_str: ArcStr,
 }
 
+pub(crate) fn tree_types_len(
+    key_typ: Option<Typ>,
+    key_typ_str: &ArcStr,
+    val_typ_str: &ArcStr,
+) -> usize {
+    key_typ.map(|t| t as u64).encoded_len()
+        + key_typ_str.encoded_len()
+        + val_typ_str.encoded_len()
+}
+
+pub(crate) fn tree_types_encode(
+    key_typ: Option<Typ>,
+    key_typ_str: &ArcStr,
+    val_typ_str: &ArcStr,
+    buf: &mut ImageBuf,
+) -> Result<(), PackError> {
+    key_typ.map(|t| t as u64).encode(buf)?;
+    key_typ_str.encode(buf)?;
+    val_typ_str.encode(buf)
+}
+
+pub(crate) fn tree_types_decode(
+    buf: &mut &[u8],
+) -> Result<(Option<Typ>, ArcStr, ArcStr), PackError> {
+    let key_typ = <Option<u64>>::decode(buf)?
+        .map(|bits| {
+            BitFlags::<Typ>::from_bits(bits)
+                .ok()
+                .and_then(|f| f.exactly_one())
+                .ok_or(PackError::UnknownTag)
+        })
+        .transpose()?;
+    let key_typ_str = ArcStr::decode(buf)?;
+    let val_typ_str = ArcStr::decode(buf)?;
+    Ok((key_typ, key_typ_str, val_typ_str))
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct DbTreeEv {
     key_typ: Option<Typ>,
     key_typ_str: ArcStr,
     val_typ_str: ArcStr,
+}
+
+impl ImageState for DbTreeEv {
+    fn image_len(&self) -> usize {
+        tree_types_len(self.key_typ, &self.key_typ_str, &self.val_typ_str)
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        tree_types_encode(self.key_typ, &self.key_typ_str, &self.val_typ_str, buf)
+    }
+
+    fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let (key_typ, key_typ_str, val_typ_str) = tree_types_decode(buf)?;
+        Ok(Self { key_typ, key_typ_str, val_typ_str })
+    }
 }
 
 impl EvalCachedAsync for DbTreeEv {
@@ -1191,3 +1248,32 @@ impl EvalCachedAsync for DbImportEv {
 }
 
 pub(crate) type DbImport = CachedArgsAsync<DbImportEv>;
+
+graphix_package_core::unit_image_state!(
+    DbGetTypeEv,
+    DbOpenEv,
+    DbFlushEv,
+    DbGenerateIdEv,
+    DbTreeNamesEv,
+    DbDropTreeEv,
+    DbGetEv,
+    DbInsertEv,
+    DbRemoveEv,
+    DbContainsKeyEv,
+    DbGetManyEv,
+    DbFirstEv,
+    DbLastEv,
+    DbPopMinEv,
+    DbPopMaxEv,
+    DbGetLtEv,
+    DbGetGtEv,
+    DbCompareAndSwapEv,
+    DbBatchEv,
+    DbLenEv,
+    DbIsEmptyEv,
+    DbSizeOnDiskEv,
+    DbWasRecoveredEv,
+    DbChecksumEv,
+    DbExportEv,
+    DbImportEv,
+);

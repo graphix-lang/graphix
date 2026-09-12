@@ -5,11 +5,12 @@
 use arcstr::ArcStr;
 use graphix_compiler::{
     Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    effects::Effect, errf, expr::ExprId, typ::FnType,
+    effects::Effect, errf, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{FireOnce, ProgramArgs};
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::ValArray;
 
 fn get_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
@@ -219,9 +220,25 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(Self { once: FireOnce::decode(buf)?, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
+    fn image_len(&self) -> usize {
+        self.once.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.once.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

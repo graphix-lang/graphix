@@ -2,17 +2,19 @@ use crate::{
     encoding::{decode_value, encode_key, encode_value, parse_batch_ops},
     tree::{
         DEFAULT_TREE_META, META_TREE, check_or_store_meta, extract_key_typ_from_rtype,
-        extract_type_strings_from_rtype, get_db, read_meta, types_are_concrete,
+        extract_type_strings_from_rtype, get_db, read_meta, tree_types_decode,
+        tree_types_encode, tree_types_len, types_are_concrete,
     },
 };
 use ahash::AHashMap;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    ExecCtx, Node, Rt, Scope, UserEvent, errf, expr::ExprId, typ::FnType,
+    ExecCtx, Node, Rt, Scope, UserEvent, errf, expr::ExprId, image::ImageBuf, typ::FnType,
 };
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
 use netidx::publisher::Typ;
+use netidx_core::pack::PackError;
 use netidx_value::Value;
 use poolshark::global::{GPooled, Pool};
 use std::{
@@ -455,6 +457,24 @@ pub(crate) struct DbTxnTreeEv {
     val_typ_str: ArcStr,
 }
 
+impl ImageState for DbTxnTreeEv {
+    fn image_len(&self) -> usize {
+        tree_types_len(self.key_typ, &self.key_typ_str, &self.val_typ_str)
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        tree_types_encode(self.key_typ, &self.key_typ_str, &self.val_typ_str, buf)
+    }
+
+    fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let (key_typ, key_typ_str, val_typ_str) = tree_types_decode(buf)?;
+        Ok(Self { key_typ, key_typ_str, val_typ_str })
+    }
+}
+
 impl EvalCachedAsync for DbTxnTreeEv {
     type Args = DbTxnTreeArgs;
 
@@ -682,3 +702,13 @@ impl EvalCachedAsync for DbTxnBatchEv {
 }
 
 pub(crate) type DbTxnBatch = CachedArgsAsync<DbTxnBatchEv>;
+
+graphix_package_core::unit_image_state!(
+    DbTxnBeginEv,
+    DbTxnGetEv,
+    DbTxnInsertEv,
+    DbTxnRemoveEv,
+    DbTxnCommitEv,
+    DbTxnRollbackEv,
+    DbTxnBatchEv,
+);

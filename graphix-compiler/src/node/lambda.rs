@@ -780,12 +780,40 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 }
 
 #[derive(Debug)]
-struct BuiltInLambda<R: Rt, E: UserEvent> {
+pub(crate) struct BuiltInLambda<R: Rt, E: UserEvent> {
     typ: Arc<FnType>,
+    name: ArcStr,
     apply: Box<dyn Apply<R, E> + Send + Sync + 'static>,
 }
 
+impl<R: Rt, E: UserEvent> BuiltInLambda<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let typ = Arc::new(FnType::decode(buf)?);
+        let name = ArcStr::decode(buf)?;
+        let decode = ctx.builtin_decoder(&name).ok_or_else(|| {
+            log::warn!("the image names an unregistered builtin {name}");
+            PackError::InvalidFormat
+        })?;
+        let apply = decode(ctx, from, buf)?;
+        Ok(Self { typ, name, apply })
+    }
+}
+
 impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
+    fn image_len(&self) -> usize {
+        self.typ.encoded_len() + self.name.encoded_len() + self.apply.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.typ.encode(buf)?;
+        self.name.encode(buf)?;
+        self.apply.image_encode(buf)
+    }
+
     /// Fusion sees the wrapped builtin's own view.
     fn view(&self) -> ApplyView<'_, R, E> {
         self.apply.view()
@@ -991,7 +1019,11 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                             init(ctx, &def_typ, resolved, &def_scope, args, tid).map(
                                 |apply| {
                                     let f: Box<dyn Apply<R, E>> =
-                                        Box::new(BuiltInLambda { typ, apply });
+                                        Box::new(BuiltInLambda {
+                                            typ,
+                                            name: builtin.clone(),
+                                            apply,
+                                        });
                                     f
                                 },
                             )

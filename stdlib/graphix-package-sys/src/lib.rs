@@ -10,6 +10,7 @@ use graphix_compiler::{
     effects::Effect,
     errf,
     expr::ExprId,
+    image::ImageBuf,
     typ::{FnType, abstract_uuid},
 };
 use graphix_package_core::{
@@ -486,6 +487,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
 
 pub(crate) type JoinPath = CachedArgs<JoinPathEv>;
 
+graphix_package_core::unit_image_state!(GxTempDirEv, TempDirPathEv, JoinPathEv);
+
 #[derive(Debug)]
 pub(crate) struct Args {
     once: FireOnce,
@@ -507,9 +510,26 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self { once: FireOnce::default(), out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let once = FireOnce::decode(buf)?;
+        Ok(Box::new(Self { once, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
+    fn image_len(&self) -> usize {
+        self.once.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.once.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -552,9 +572,25 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     ) -> anyhow::Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        _buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(Self))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

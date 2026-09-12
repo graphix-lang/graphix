@@ -38,11 +38,36 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
             out: ::graphix_compiler::TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
+        _from: &[::graphix_compiler::Node<R, E>],
+        buf: &mut &[u8],
+    ) -> ::std::result::Result<
+        ::std::boxed::Box<dyn ::graphix_compiler::Apply<R, E>>,
+        ::netidx_core::pack::PackError,
+    > {
+        ::std::result::Result::Ok(::std::boxed::Box::new(FusedPixelAuto {
+            args: ::graphix_package_core::CachedVals::image_decode(buf)?,
+            out: ::graphix_compiler::TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     ::graphix_compiler::Apply<R, E> for FusedPixelAuto
 {
+    fn image_len(&self) -> usize {
+        self.args.image_len()
+    }
+
+    fn image_encode(
+        &self,
+        buf: &mut ::graphix_compiler::image::ImageBuf,
+    ) -> ::std::result::Result<(), ::netidx_core::pack::PackError> {
+        self.args.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ::graphix_compiler::ExecCtx<R, E>,

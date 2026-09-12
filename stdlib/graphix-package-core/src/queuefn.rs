@@ -6,10 +6,12 @@ use graphix_compiler::{
     Refs, Rt, Scope, SourcePosition, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::{Arg, ExprId, StructurePattern},
+    image::{self, ImageBuf},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
 };
 use netidx::subscriber::Value;
+use netidx_core::pack::{Pack, PackError};
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug, marker::PhantomData, sync::Arc as SArc};
@@ -69,6 +71,16 @@ struct WrapperApply<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        // the wrapper lambda is a runtime definition, built once a cycle ran
+        let _ = buf;
+        Err(PackError::Application(image::NOT_QUIESCENT))
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -172,6 +184,37 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let pop_count = i64::decode(buf)?;
+        let count_ref = Pack::decode(buf)?;
+        let last_written_depth = i64::decode(buf)?;
+        let fid = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let ftyp = Option::<FnType>::decode(buf)?.map(Arc::new);
+        let scope = image::scope_decode(buf)?;
+        ctx.rt.ref_var(fid, top_id);
+        let state = Arc::new(Mutex::new(QueueState {
+            queue: VecDeque::new(),
+            pop_count,
+            count_ref,
+            last_written_depth,
+        }));
+        Ok(Box::new(Self {
+            state,
+            fid,
+            ftyp,
+            lambda: None,
+            top_id,
+            scope,
+            out: TagValue::phantom(),
+            _phantom: PhantomData,
+        }))
+    }
+
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "core_queuefn";
 
@@ -289,6 +332,32 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
+    fn image_len(&self) -> usize {
+        let s = self.state.lock();
+        s.pop_count.encoded_len()
+            + s.count_ref.encoded_len()
+            + s.last_written_depth.encoded_len()
+            + self.fid.encoded_len()
+            + self.top_id.encoded_len()
+            + self.ftyp.as_deref().cloned().encoded_len()
+            + image::scope_len(&self.scope)
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        let s = self.state.lock();
+        // the wrapper lambda and queued invocations exist only once a cycle ran
+        if self.lambda.is_some() || !s.queue.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        s.pop_count.encode(buf)?;
+        s.count_ref.encode(buf)?;
+        s.last_written_depth.encode(buf)?;
+        self.fid.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.ftyp.as_deref().cloned().encode(buf)?;
+        image::scope_encode(&self.scope, buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

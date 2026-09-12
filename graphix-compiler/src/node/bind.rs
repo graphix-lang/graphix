@@ -1,6 +1,7 @@
 use super::{
     WakeBit, collection::CollectionIntrinsic, pattern::StructPatternNode, place,
 };
+use crate::image::ImageBuf;
 use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
@@ -19,7 +20,6 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_core::pack::{decode_varint, encode_varint, varint_len};

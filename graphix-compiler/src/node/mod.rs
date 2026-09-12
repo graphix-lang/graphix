@@ -1,3 +1,4 @@
+use crate::image::ImageBuf;
 use crate::image::{
     self,
     nodes::{
@@ -22,7 +23,6 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
-use crate::image::ImageBuf;
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};

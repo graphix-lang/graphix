@@ -363,3 +363,10 @@ impl EvalCachedAsync for ProcessPidEv {
 }
 
 pub(crate) type ProcessPid = CachedArgsAsync<ProcessPidEv>;
+
+graphix_package_core::unit_image_state!(
+    ProcessSpawnEv,
+    ProcessWaitEv,
+    ProcessKillEv,
+    ProcessPidEv
+);

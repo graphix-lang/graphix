@@ -28,7 +28,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 6;
+pub const REGISTRATION_FORMAT: u8 = 7;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -220,8 +220,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let tables = Tables::collect(self)?;
         let mut enc = ImageEncoder::new();
         enc.defer_instances = program.is_some();
-        let body_bound = {
-            let _s = EncodeImage::new(&mut enc);
+        // The first pass assigns the ids; sorted, the second measures
+        // them at their final numbers.
+        let measure = |enc: &mut ImageEncoder| {
+            enc.deferred_len = 0;
+            let _s = EncodeImage::new(enc);
             let env_len = self.env.encoded_len();
             let tables_len = tables.len();
             let nodes_len = varint_len(nodes.len() as u64)
@@ -239,8 +242,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 + 1
                 + program.map_or(0, |p| p.encoded_len())
         };
-        let body_bound = body_bound + enc.deferred_len;
+        measure(&mut enc);
         enc.sort_ids();
+        let body_bound = measure(&mut enc) + enc.deferred_len;
+        enc.begin_encode();
         let counts = enc.counts();
         let isa = self.fusion.jit.lock().isa_description();
         let mut buf = ImageBuf::with_capacity(
@@ -291,6 +296,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 encode_varint(at, &mut buf);
             }
             eager.encode(&mut buf)?;
+            let offsets = image::encoding(|e| e.take_offsets()).unwrap_or_default();
+            encode_varint(offsets.len() as u64, &mut buf);
+            for at in offsets {
+                encode_varint(at, &mut buf);
+            }
             buf.patch_u64(trailer_at, heap_at as u64);
             buf.patch_u64(trailer_at + 8, table_at as u64);
             info!(
@@ -351,11 +361,17 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 instances.insert(id, decode_varint(&mut table)?);
             }
             let eager = image::ObjectCounts::decode(&mut table)?;
+            let n = decode_varint(&mut table)? as usize;
+            let mut offsets = Vec::with_capacity(n);
+            for _ in 0..n {
+                offsets.push(decode_varint(&mut table)?);
+            }
             if table.has_remaining() {
                 return Err(PackError::InvalidFormat);
             }
             image::decoding(|d| {
                 d.set_instances(instances);
+                d.set_offsets(offsets);
                 d.reserve(eager);
             });
             let p = profile::phase(Phase::ImageEnv);

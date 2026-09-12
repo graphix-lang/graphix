@@ -12,6 +12,7 @@ macro_rules! unary_f64 {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
+        $crate::unit_image_state!($ev);
         impl $ev {
             fn fast(args: &[Value]) -> Option<Value> {
                 let x = fast_get::<f64>(args, 0)?;
@@ -38,6 +39,7 @@ macro_rules! binary_f64 {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
+        $crate::unit_image_state!($ev);
         impl $ev {
             fn fast(args: &[Value]) -> Option<Value> {
                 let x = fast_get::<f64>(args, 0)?;
@@ -65,6 +67,7 @@ macro_rules! unary_f64_pred {
     ($ev:ident, $ty:ident, $name:literal, $op:ident) => {
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
+        $crate::unit_image_state!($ev);
         impl $ev {
             fn fast(args: &[Value]) -> Option<Value> {
                 let x = fast_get::<f64>(args, 0)?;
@@ -146,6 +149,7 @@ fn fc_clamp(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct MathClampEv;
+crate::unit_image_state!(MathClampEv);
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_clamp)));
     const NAME: &str = "core_math_clamp";

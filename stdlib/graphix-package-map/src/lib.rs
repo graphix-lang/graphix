@@ -5,10 +5,11 @@
 use anyhow::Result;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent, effects::Effect, expr::ExprId, typ::FnType,
+    UserEvent, effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::subscriber::Value;
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug};
@@ -123,9 +124,29 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
         ctx.rt.ref_var(id, top_id);
         Ok(Box::new(Self { id, top_id, out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Self { id, top_id, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
+    fn image_len(&self) -> usize {
+        self.id.encoded_len() + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -193,9 +214,62 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let triggered = usize::decode(buf)?;
+        let n = decode_varint(buf)? as usize;
+        let mut queue = VecDeque::with_capacity(n);
+        for _ in 0..n {
+            let i = usize::decode(buf)?;
+            let len = decode_varint(buf)? as usize;
+            let mut pairs: LPooled<Vec<(Value, Value)>> = LPooled::take();
+            for _ in 0..len {
+                pairs.push(<(Value, Value)>::decode(buf)?);
+            }
+            queue.push_back((i, pairs));
+        }
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(IterQ { triggered, queue, id, top_id, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
+    fn image_len(&self) -> usize {
+        self.triggered.encoded_len()
+            + varint_len(self.queue.len() as u64)
+            + self
+                .queue
+                .iter()
+                .map(|(i, pairs)| {
+                    i.encoded_len()
+                        + varint_len(pairs.len() as u64)
+                        + pairs.iter().map(|p| p.encoded_len()).sum::<usize>()
+                })
+                .sum::<usize>()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.triggered.encode(buf)?;
+        encode_varint(self.queue.len() as u64, buf);
+        for (i, pairs) in self.queue.iter() {
+            i.encode(buf)?;
+            encode_varint(pairs.len() as u64, buf);
+            for p in pairs.iter() {
+                p.encode(buf)?;
+            }
+        }
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -249,6 +323,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
+
+graphix_package_core::unit_image_state!(GetEv, GetOrEv, InsertEv, RemoveEv);
 
 graphix_derive::defpackage! {
     builtins => [

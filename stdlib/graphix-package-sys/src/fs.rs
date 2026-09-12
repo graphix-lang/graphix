@@ -275,3 +275,15 @@ impl EvalCachedAsync for RemoveFileOp {
 }
 
 pub(crate) type RemoveFile = CachedArgsAsync<RemoveFileOp>;
+
+graphix_package_core::unit_image_state!(
+    FileOpenEv,
+    FileSeekEv,
+    FileFstatEv,
+    FileTruncateEv,
+    ReadAllOp,
+    ReadAllBinOp,
+    WriteAllOp,
+    WriteAllBinOp,
+    RemoveFileOp
+);

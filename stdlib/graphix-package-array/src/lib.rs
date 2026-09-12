@@ -9,6 +9,7 @@ use graphix_compiler::{
     TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
+    image::{self, ImageBuf},
     node::genn,
     typ::{FnType, Type},
 };
@@ -17,6 +18,7 @@ use graphix_package_core::{
 };
 use graphix_rt::GXRt;
 use netidx::{publisher::Typ, subscriber::Value};
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
@@ -99,8 +101,10 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
 
 type PushFront = CachedArgs<PushFrontEv>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, netidx_derive::Pack)]
 struct WindowEv(SmallVec<[Value; 32]>);
+
+graphix_package_core::pack_image_state!(WindowEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const EFFECT: Effect = Effect::Sync;
@@ -363,9 +367,53 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
             _ => bail!("expected two arguments"),
         }
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let queue = Pack::decode(buf)?;
+        let buf_ = Pack::decode(buf)?;
+        let pred = image::decode_node(ctx, buf)?;
+        let ready = bool::decode(buf)?;
+        let pid = BindId::decode(buf)?;
+        let nid = BindId::decode(buf)?;
+        let xid = BindId::decode(buf)?;
+        Ok(Box::new(Self {
+            queue,
+            buf: buf_,
+            pred,
+            ready,
+            pid,
+            nid,
+            xid,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
+    fn image_len(&self) -> usize {
+        self.queue.encoded_len()
+            + self.buf.encoded_len()
+            + self.pred.image_len()
+            + self.ready.encoded_len()
+            + self.pid.encoded_len()
+            + self.nid.encoded_len()
+            + self.xid.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.queue.encode(buf)?;
+        self.buf.encode(buf)?;
+        self.pred.image_encode(buf)?;
+        self.ready.encode(buf)?;
+        self.pid.encode(buf)?;
+        self.nid.encode(buf)?;
+        self.xid.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -475,9 +523,29 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
         ctx.rt.ref_var(id, top_id);
         Ok(Box::new(Iter(id, top_id, TagValue::phantom())))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Iter(id, top_id, TagValue::phantom())))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
+    fn image_len(&self) -> usize {
+        self.0.encoded_len() + self.1.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.0.encode(buf)?;
+        self.1.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -547,9 +615,36 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let triggered = usize::decode(buf)?;
+        let queue = Pack::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(IterQ { triggered, queue, id, top_id, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
+    fn image_len(&self) -> usize {
+        self.triggered.encoded_len()
+            + self.queue.encoded_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.triggered.encode(buf)?;
+        self.queue.encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -636,6 +731,19 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IotaEv {
 }
 
 type Iota = CachedArgs<IotaEv>;
+
+graphix_package_core::unit_image_state!(
+    ConcatEv,
+    PushBackEv,
+    PushFrontEv,
+    FlattenEv,
+    SortEv,
+    DedupEv,
+    EnumerateEv,
+    ZipEv,
+    UnzipEv,
+    IotaEv,
+);
 
 graphix_derive::defpackage! {
     builtins => [

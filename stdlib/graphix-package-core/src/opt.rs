@@ -4,9 +4,11 @@ use graphix_compiler::{
     TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
+    image::{self, ImageBuf},
     node::genn,
     typ::{FnType, Type},
 };
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{ValArray, Value};
 
 use crate::{CachedArgs, CachedVals, EvalCached, seam_tick, seam_value};
@@ -20,6 +22,7 @@ fn fc_is_some(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct IsSomeEv;
+crate::unit_image_state!(IsSomeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsSomeEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_some)));
@@ -41,6 +44,7 @@ fn fc_is_none(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct IsNoneEv;
+crate::unit_image_state!(IsNoneEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsNoneEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_none)));
@@ -55,6 +59,7 @@ pub(crate) type IsNone = CachedArgs<IsNoneEv>;
 
 #[derive(Debug, Default)]
 pub(crate) struct ContainsEv;
+crate::unit_image_state!(ContainsEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
     const EFFECT: Effect = Effect::Stateless(None);
@@ -80,6 +85,7 @@ fn fc_or_never(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct OrNeverEv;
+crate::unit_image_state!(OrNeverEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrNeverEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_or_never)));
@@ -94,6 +100,7 @@ pub(crate) type OrNever = CachedArgs<OrNeverEv>;
 
 #[derive(Debug, Default)]
 pub(crate) struct OrDefaultEv;
+crate::unit_image_state!(OrDefaultEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrDefaultEv {
     const EFFECT: Effect = Effect::Stateless(None);
@@ -112,6 +119,7 @@ pub(crate) type OrDefault = CachedArgs<OrDefaultEv>;
 
 #[derive(Debug, Default)]
 pub(crate) struct OrEv;
+crate::unit_image_state!(OrEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const EFFECT: Effect = Effect::Stateless(None);
@@ -130,6 +138,7 @@ pub(crate) type Or = CachedArgs<OrEv>;
 
 #[derive(Debug, Default)]
 pub(crate) struct AndEv;
+crate::unit_image_state!(AndEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const EFFECT: Effect = Effect::Stateless(None);
@@ -161,6 +170,7 @@ fn fc_xor(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct XorEv;
+crate::unit_image_state!(XorEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_xor)));
@@ -175,6 +185,7 @@ pub(crate) type Xor = CachedArgs<XorEv>;
 
 #[derive(Debug, Default)]
 pub(crate) struct ZipEv;
+crate::unit_image_state!(ZipEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: Effect = Effect::Stateless(None);
@@ -207,6 +218,7 @@ fn fc_unzip(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct UnzipEv;
+crate::unit_image_state!(UnzipEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
@@ -221,6 +233,7 @@ pub(crate) type Unzip = CachedArgs<UnzipEv>;
 
 #[derive(Debug, Default)]
 pub(crate) struct OkOrEv;
+crate::unit_image_state!(OkOrEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
     const EFFECT: Effect = Effect::Stateless(None);
@@ -248,6 +261,23 @@ struct HofState<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> HofState<R, E> {
+    fn image_len(&self) -> usize {
+        self.inner.image_len() + self.fid.encoded_len() + self.x.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.inner.image_encode(buf)?;
+        self.fid.encode(buf)?;
+        self.x.encode(buf)
+    }
+
+    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+        let inner = image::decode_node(ctx, buf)?;
+        let fid = BindId::decode(buf)?;
+        let x = BindId::decode(buf)?;
+        Ok(Self { inner, fid, x })
+    }
+
     /// Build the bindings and callsite for `f(x)` where the option's
     /// inner type is `typ.args[1].typ`'s argument type.
     fn unary(
@@ -355,6 +385,15 @@ pub(crate) struct OptMap<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let s = HofState::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { s, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_map";
 
@@ -378,6 +417,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
+    fn image_len(&self) -> usize {
+        self.s.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.s.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -422,6 +469,15 @@ pub(crate) struct OptFlatMap<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let s = HofState::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { s, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_flat_map";
 
@@ -445,6 +501,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
+    fn image_len(&self) -> usize {
+        self.s.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.s.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -490,6 +554,16 @@ pub(crate) struct OptFilter<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let s = HofState::image_decode(ctx, buf)?;
+        let pending = Pack::decode(buf)?;
+        Ok(Box::new(Self { s, pending, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_filter";
 
@@ -514,6 +588,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
+    fn image_len(&self) -> usize {
+        self.s.image_len() + self.pending.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.s.image_encode(buf)?;
+        self.pending.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -586,6 +669,15 @@ pub(crate) struct OptIsSomeAnd<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let s = HofState::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { s, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_is_some_and";
 
@@ -609,6 +701,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
+    fn image_len(&self) -> usize {
+        self.s.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.s.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -653,6 +753,15 @@ pub(crate) struct OptIsNoneOr<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let s = HofState::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { s, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_is_none_or";
 
@@ -676,6 +785,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
+    fn image_len(&self) -> usize {
+        self.s.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.s.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -727,6 +844,28 @@ struct OrElseShared<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
+    fn image_len(&self) -> usize {
+        self.inner.image_len()
+            + self.fid.encoded_len()
+            + self.last_a.encoded_len()
+            + self.last_f.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.inner.image_encode(buf)?;
+        self.fid.encode(buf)?;
+        self.last_a.encode(buf)?;
+        self.last_f.encode(buf)
+    }
+
+    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+        let inner = image::decode_node(ctx, buf)?;
+        let fid = BindId::decode(buf)?;
+        let last_a = Pack::decode(buf)?;
+        let last_f = Pack::decode(buf)?;
+        Ok(Self { inner, fid, last_a, last_f })
+    }
+
     fn init(
         ctx: &mut ExecCtx<R, E>,
         typ: &FnType,
@@ -808,6 +947,15 @@ pub(crate) struct OptOrElse<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let s = OrElseShared::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { s, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_or_else";
 
@@ -831,6 +979,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
+    fn image_len(&self) -> usize {
+        self.s.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.s.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -887,6 +1043,15 @@ pub(crate) struct OptOkOrElse<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let s = OrElseShared::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { s, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_opt_ok_or_else";
 
@@ -910,6 +1075,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
+    fn image_len(&self) -> usize {
+        self.s.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.s.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

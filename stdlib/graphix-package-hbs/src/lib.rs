@@ -155,6 +155,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
 
 type HbsRender = CachedArgs<HbsRenderEv>;
 
+graphix_package_core::unit_image_state!(HbsRenderEv);
+
 graphix_derive::defpackage! {
     builtins => [
         HbsRender,

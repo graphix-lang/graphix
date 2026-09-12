@@ -9,9 +9,15 @@ use extended_notify::{
 use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, TagValue, UserEvent, effects::Effect, errf, expr::ExprId, typ::FnType,
+    Scope, TagValue, UserEvent,
+    effects::Effect,
+    errf,
+    expr::ExprId,
+    image::{self, ImageBuf},
+    typ::FnType,
 };
 use graphix_package_core::{CachedVals, seam_tick, seam_value};
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{FromValue, ValArray, Value};
 use nohash::IntSet;
 use parking_lot::Mutex;
@@ -259,9 +265,32 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let poll_interval = Pack::decode(buf)?;
+        let batch_size = Pack::decode(buf)?;
+        Ok(Box::new(CreateWatcher {
+            poll_interval,
+            batch_size,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
+    fn image_len(&self) -> usize {
+        self.poll_interval.encoded_len() + self.batch_size.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.poll_interval.encode(buf)?;
+        self.batch_size.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -358,9 +387,37 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let interest = Pack::decode(buf)?;
+        let path = Pack::decode(buf)?;
+        Ok(Box::new(WatchApply {
+            interest,
+            path,
+            watcher_val: None,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
+    fn image_len(&self) -> usize {
+        self.interest.encoded_len() + self.path.encoded_len()
+    }
+
+    /// `watcher_val` holds a live OS watcher.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.watcher_val.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.interest.encode(buf)?;
+        self.path.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -516,9 +573,37 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let top_id = ExprId::decode(buf)?;
+        let cached = CachedVals::image_decode(buf)?;
+        Ok(Box::new(WatchPath {
+            top_id,
+            cached,
+            bind_ids: IntSet::default(),
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
+    fn image_len(&self) -> usize {
+        self.top_id.encoded_len() + self.cached.image_len()
+    }
+
+    /// `bind_ids` are registered watches on live OS watchers.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.bind_ids.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.top_id.encode(buf)?;
+        self.cached.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -590,9 +675,37 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let top_id = ExprId::decode(buf)?;
+        let cached = CachedVals::image_decode(buf)?;
+        Ok(Box::new(WatchEvents {
+            top_id,
+            cached,
+            bind_ids: IntSet::default(),
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
+    fn image_len(&self) -> usize {
+        self.top_id.encoded_len() + self.cached.image_len()
+    }
+
+    /// `bind_ids` are registered watches on live OS watchers.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.bind_ids.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.top_id.encode(buf)?;
+        self.cached.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,

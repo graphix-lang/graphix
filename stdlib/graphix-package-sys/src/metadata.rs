@@ -151,3 +151,5 @@ impl EvalCachedAsync for MetadataEv {
 }
 
 pub(crate) type Metadata = CachedArgsAsync<MetadataEv>;
+
+graphix_package_core::unit_image_state!(IsFileEv, IsDirEv, MetadataEv);

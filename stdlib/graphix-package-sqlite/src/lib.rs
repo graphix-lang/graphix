@@ -177,10 +177,12 @@ impl EvalCachedAsync for SqliteExecBatchEv {
 
 type SqliteExecBatch = CachedArgsAsync<SqliteExecBatchEv>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, netidx_derive::Pack)]
 struct SqliteQueryEv {
     cast_typ: Option<Type>,
 }
+
+graphix_package_core::pack_image_state!(SqliteQueryEv);
 
 impl EvalCachedAsync for SqliteQueryEv {
     type Args = (Arc<Mutex<Option<rusqlite::Connection>>>, ArcStr, ValArray);
@@ -324,6 +326,8 @@ macro_rules! simple_sql_builtin {
         }
 
         type $type_name = CachedArgsAsync<$ev_name>;
+
+        graphix_package_core::unit_image_state!($ev_name);
     };
 }
 
@@ -365,6 +369,13 @@ impl EvalCachedAsync for SqliteCloseEv {
 }
 
 type SqliteClose = CachedArgsAsync<SqliteCloseEv>;
+
+graphix_package_core::unit_image_state!(
+    SqliteOpenEv,
+    SqliteExecEv,
+    SqliteExecBatchEv,
+    SqliteCloseEv,
+);
 
 graphix_derive::defpackage! {
     builtins => [

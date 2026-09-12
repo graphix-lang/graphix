@@ -1,8 +1,9 @@
 use arcstr::ArcStr;
 use bytes::Bytes;
-use graphix_compiler::errf;
-use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use graphix_compiler::{ExecCtx, Rt, UserEvent, errf, image::ImageBuf};
+use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
 use netidx::publisher::Value;
+use netidx_core::pack::PackError;
 use std::{fmt::Debug, marker::PhantomData, path::PathBuf};
 
 /// Trait for individual clipboard operations, parameterizing the generic
@@ -36,6 +37,23 @@ impl<Op: ClipboardOp> EvalCachedAsync for ClipboardBuiltin<Op> {
                 Err(e) => errf!("ClipboardError", "spawn_blocking: {e}"),
             }
         }
+    }
+}
+
+impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
+    }
+
+    fn image_decode<R: Rt, E: UserEvent>(
+        _ctx: &mut ExecCtx<R, E>,
+        _buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        Ok(Self(PhantomData))
     }
 }
 

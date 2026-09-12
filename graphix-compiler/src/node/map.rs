@@ -1,4 +1,5 @@
 use super::WakeBit;
+use crate::image::ImageBuf;
 use crate::image::nodes::{
     NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
 };
@@ -13,7 +14,6 @@ use crate::{
 };
 use anyhow::Result;
 use arcstr::ArcStr;
-use crate::image::ImageBuf;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError};

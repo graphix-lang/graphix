@@ -18,7 +18,7 @@ use crate::{
         emit::{BodyCx, CompiledExpr, emit_builtin_call_node, emit_lambda_call_node},
         lowering::MarshalArg,
     },
-    node::lambda::LambdaDef,
+    node::lambda::{BuiltInLambda, LambdaDef},
     profile::{self, Phase},
     typ::{FnArgKind, FnType, TVar, Type},
     wrap,
@@ -1653,12 +1653,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 }
 
 /// How a site's callee travels: unbound (a dynamic site before its
-/// first cycle), an imaged instance of a lambda, or a builtin rebuilt
-/// at decode by the restored definition's factory over the imaged
-/// arguments, with the resolved types the cold run settled on.
+/// first cycle), an imaged instance of a lambda, or a builtin's own
+/// image, decoded by its registered decoder over the imaged arguments.
 const CALLEE_UNBOUND: u8 = 0;
 const CALLEE_INSTANCE: u8 = 1;
-const CALLEE_REBUILT: u8 = 2;
+const CALLEE_BUILTIN: u8 = 2;
 
 impl<R: Rt, E: UserEvent> Arg<R, E> {
     fn image_len(&self, key: &ArgKey) -> usize {
@@ -1696,7 +1695,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             Callee::Static { apply, .. } => match apply.view() {
                 ApplyView::Lambda(_) => Ok(CALLEE_INSTANCE),
-                ApplyView::BuiltIn => Ok(CALLEE_REBUILT),
+                ApplyView::BuiltIn => Ok(CALLEE_BUILTIN),
             },
             Callee::Imaged { .. } => Err(PackError::Application(image::NOT_IMAGED)),
         }
@@ -1712,21 +1711,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         refed.sort();
         bound.sort();
         (refed, bound)
-    }
-
-    /// The definition a statically resolvable site names, read the way
-    /// `try_static_resolve` reads it.
-    fn static_callee(&self, ctx: &ExecCtx<R, E>) -> Option<Value> {
-        match self.fnode.view() {
-            NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
-                .bind_to_lambda
-                .get(&r.id)
-                .cloned()
-                .or_else(|| ctx.rt.store_value(&r.id)),
-            NodeView::Ref(_) => None,
-            NodeView::Lambda(l) => Some(l.def_value().clone()),
-            _ => None,
-        }
     }
 
     /// Decode the instance the image holds for this site and bind it.
@@ -1754,33 +1738,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         else {
             unreachable!()
         };
-        self.callee = Callee::Static { apply, resolved_ftype, first_update };
-        Ok(())
-    }
-
-    /// Rebuild a builtin callee from its definition's factory over the
-    /// restored arguments. `site_ftype` is the type the cold init was
-    /// given: the cold `typecheck0` aliased the argument types into its
-    /// cells, so the replay must unify against those same cells.
-    fn rebuild_builtin(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        site_ftype: FnType,
-        first_update: bool,
-    ) -> Result<()> {
-        let fv = self
-            .static_callee(ctx)
-            .ok_or_else(|| anyhow!("no definition for the builtin at {}", self.spec))?;
-        let def = fv
-            .downcast_ref::<LambdaDef<R, E>>()
-            .ok_or_else(|| anyhow!("the callee of {} is not a definition", self.spec))?;
-        let scope = self.scope.clone();
-        let mode = BindMode::Static { instance: &site_ftype, site: &site_ftype };
-        let mut apply = self.init_prepared_bind(ctx, &scope, def, mode)?;
-        apply.typecheck0(ctx, &mut self.arg_refs)?;
-        let resolved_ftype = apply.typ().resolve_tvars();
-        apply.typecheck1(ctx, &mut [], &resolved_ftype)?;
-        self.callee_is_builtin = true;
         self.callee = Callee::Static { apply, resolved_ftype, first_update };
         Ok(())
     }
@@ -1838,7 +1795,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             return Err(PackError::BufferShort);
         }
         let mode = buf.get_u8();
-        let mut rebuild = None;
         let (arg_refs, callee, static_target) = match mode {
             CALLEE_UNBOUND => (Vec::new(), Callee::DynamicUnbound, None),
             CALLEE_INSTANCE => {
@@ -1869,10 +1825,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 let static_target = Self::static_target_decode(buf)?;
                 (arg_refs, callee, static_target)
             }
-            CALLEE_REBUILT => {
+            CALLEE_BUILTIN => {
                 let arg_refs = decode_nodes(ctx, buf)?;
-                rebuild = Some((FnType::decode(buf)?, bool::decode(buf)?));
-                (arg_refs, Callee::DynamicUnbound, None)
+                let apply: Box<dyn Apply<R, E>> =
+                    Box::new(BuiltInLambda::image_decode(ctx, &arg_refs, buf)?);
+                let resolved_ftype = FnType::decode(buf)?;
+                let first_update = bool::decode(buf)?;
+                let static_target = Self::static_target_decode(buf)?;
+                (
+                    arg_refs,
+                    Callee::Static { apply, resolved_ftype, first_update },
+                    static_target,
+                )
             }
             _ => return Err(PackError::UnknownTag),
         };
@@ -1884,7 +1848,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let is_self_tail_call = bool::decode(buf)?;
         let tail_arg_order = Option::<Vec<BindId>>::decode(buf)?.map(Box::from);
         let callee_lambda_id = Option::<LambdaId>::decode(buf)?;
-        let mut site = Self {
+        let site = Self {
             slept: WakeBit::default(),
             spec,
             ftype,
@@ -1893,7 +1857,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             args,
             arg_refs,
             callee,
-            callee_is_builtin: false,
+            callee_is_builtin: mode == CALLEE_BUILTIN,
             static_target,
             lowered,
             recursive_edge: AtomicBool::new(recursive_edge),
@@ -1905,12 +1869,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             callee_lambda_id: Mutex::new(callee_lambda_id),
             resident: TagValue::phantom(),
         };
-        if let Some((resolved_ftype, first_update)) = rebuild {
-            site.rebuild_builtin(ctx, resolved_ftype, first_update).map_err(|e| {
-                warn!("rebuilding the callee of {}: {e:#}", site.spec);
-                PackError::InvalidFormat
-            })?;
-        }
         Ok(Node::new(site))
     }
 }
@@ -1937,10 +1895,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     + first_update.encoded_len()
                     + self.static_target_len()
             }
-            (Callee::Static { apply, first_update, .. }, CALLEE_REBUILT) => {
+            (Callee::Static { apply, resolved_ftype, first_update }, CALLEE_BUILTIN) => {
                 nodes_len(&self.arg_refs)
-                    + apply.typ().encoded_len()
+                    + apply.image_len()
+                    + resolved_ftype.encoded_len()
                     + first_update.encoded_len()
+                    + self.static_target_len()
             }
             _ => 0,
         };
@@ -2006,10 +1966,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
                 self.static_target_encode(buf)?;
             }
-            (Callee::Static { apply, first_update, .. }, CALLEE_REBUILT) => {
+            (Callee::Static { apply, resolved_ftype, first_update }, CALLEE_BUILTIN) => {
                 encode_nodes(&self.arg_refs, buf)?;
-                apply.typ().encode(buf)?;
+                apply.image_encode(buf)?;
+                resolved_ftype.encode(buf)?;
                 first_update.encode(buf)?;
+                self.static_target_encode(buf)?;
             }
             _ => (),
         }

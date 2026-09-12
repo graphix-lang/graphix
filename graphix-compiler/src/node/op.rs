@@ -1,4 +1,5 @@
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
+use crate::image::ImageBuf;
 use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
     Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
@@ -10,7 +11,6 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use crate::image::ImageBuf;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};

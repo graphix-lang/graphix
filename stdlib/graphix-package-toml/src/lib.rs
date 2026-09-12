@@ -117,10 +117,12 @@ enum ReadInput {
     Bytes(Bytes),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, netidx_derive::Pack)]
 struct TomlReadEv {
     cast_typ: Option<Type>,
 }
+
+graphix_package_core::pack_image_state!(TomlReadEv);
 
 impl EvalCachedAsync for TomlReadEv {
     type Args = ReadInput;
@@ -266,6 +268,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
 }
 
 type TomlWriteBytes = CachedArgs<TomlWriteBytesEv>;
+
+graphix_package_core::unit_image_state!(TomlWriteStrEv, TomlWriteBytesEv);
 
 graphix_derive::defpackage! {
     builtins => [

@@ -46,11 +46,11 @@ pub(crate) fn put_tag(tag: NodeTag, buf: &mut ImageBuf) {
     buf.put_u8(tag as u8)
 }
 
-pub(crate) fn nodes_len<R: Rt, E: UserEvent>(nodes: &[Node<R, E>]) -> usize {
+pub fn nodes_len<R: Rt, E: UserEvent>(nodes: &[Node<R, E>]) -> usize {
     varint_len(nodes.len() as u64) + nodes.iter().map(|n| n.image_len()).sum::<usize>()
 }
 
-pub(crate) fn encode_nodes<R: Rt, E: UserEvent>(
+pub fn encode_nodes<R: Rt, E: UserEvent>(
     nodes: &[Node<R, E>],
     buf: &mut ImageBuf,
 ) -> Result<(), PackError> {
@@ -95,7 +95,7 @@ pub(crate) fn opt_node_decode<R: Rt, E: UserEvent>(
     }
 }
 
-pub(crate) fn decode_nodes<R: Rt, E: UserEvent>(
+pub fn decode_nodes<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     buf: &mut &[u8],
 ) -> Result<Vec<Node<R, E>>, PackError> {
@@ -107,7 +107,7 @@ pub(crate) fn decode_nodes<R: Rt, E: UserEvent>(
     Ok(out)
 }
 
-pub(crate) fn decode_node<R: Rt, E: UserEvent>(
+pub fn decode_node<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     buf: &mut &[u8],
 ) -> Result<Node<R, E>, PackError> {

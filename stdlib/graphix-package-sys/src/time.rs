@@ -1,14 +1,21 @@
 use anyhow::{Result, bail};
 use arcstr::literal;
+use bytes::{Buf, BufMut};
 use chrono::Utc;
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent, effects::Effect, err, expr::ExprId, typ::FnType,
+    UserEvent,
+    effects::Effect,
+    err,
+    expr::ExprId,
+    image::{self, ImageBuf},
+    typ::FnType,
 };
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, seam_value,
 };
 use netidx::{publisher::FromValue, subscriber::Value};
+use netidx_core::pack::{Pack, PackError};
 use std::{ops::SubAssign, time::Duration};
 
 #[derive(Debug)]
@@ -44,9 +51,40 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let timeout_v = Pack::decode(buf)?;
+        let last_v = Pack::decode(buf)?;
+        let eid = ExprId::decode(buf)?;
+        Ok(Box::new(AfterIdle {
+            timeout_v,
+            last_v,
+            id: None,
+            eid,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
+    fn image_len(&self) -> usize {
+        self.timeout_v.encoded_len() + self.last_v.encoded_len() + self.eid.encoded_len()
+    }
+
+    /// `id` is an armed runtime timer.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.id.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.timeout_v.encode(buf)?;
+        self.last_v.encode(buf)?;
+        self.eid.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -145,6 +183,35 @@ impl SubAssign<u64> for Repeat {
     }
 }
 
+impl Pack for Repeat {
+    fn encoded_len(&self) -> usize {
+        match self {
+            Repeat::Yes | Repeat::No => 1,
+            Repeat::N(n) => 1 + n.encoded_len(),
+        }
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        match self {
+            Repeat::Yes => 0u8.encode(buf),
+            Repeat::No => 1u8.encode(buf),
+            Repeat::N(n) => {
+                2u8.encode(buf)?;
+                n.encode(buf)
+            }
+        }
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        match u8::decode(buf)? {
+            0 => Ok(Repeat::Yes),
+            1 => Ok(Repeat::No),
+            2 => Ok(Repeat::N(u64::decode(buf)?)),
+            _ => Err(PackError::UnknownTag),
+        }
+    }
+}
+
 impl Repeat {
     fn will_repeat(&self) -> bool {
         match self {
@@ -188,9 +255,46 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let repeat_v = Pack::decode(buf)?;
+        let timeout = Pack::decode(buf)?;
+        let repeat = Repeat::decode(buf)?;
+        let eid = ExprId::decode(buf)?;
+        Ok(Box::new(Self {
+            repeat_v,
+            timeout,
+            repeat,
+            id: None,
+            eid,
+            out: TagValue::phantom(),
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
+    fn image_len(&self) -> usize {
+        self.repeat_v.encoded_len()
+            + self.timeout.encoded_len()
+            + self.repeat.encoded_len()
+            + self.eid.encoded_len()
+    }
+
+    /// `id` is an armed runtime timer.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.id.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.repeat_v.encode(buf)?;
+        self.timeout.encode(buf)?;
+        self.repeat.encode(buf)?;
+        self.eid.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -313,9 +417,25 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     ) -> Result<Box<dyn Apply<R, E>>> {
         Ok(Box::new(Self { out: TagValue::phantom() }))
     }
+
+    fn image_decode(
+        _ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        _buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        Ok(Box::new(Self { out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -346,6 +466,8 @@ macro_rules! time_fn {
 
         #[derive(Debug, Default)]
         pub(crate) struct $ev;
+
+        graphix_package_core::unit_image_state!($ev);
 
         impl<R: Rt, E: UserEvent> EvalCached<R, E> for $ev {
             const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain($fc)));

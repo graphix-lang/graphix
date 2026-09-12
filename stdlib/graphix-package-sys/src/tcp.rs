@@ -259,3 +259,13 @@ impl EvalCachedAsync for TcpListenerAddrEv {
 }
 
 pub(crate) type TcpListenerAddr = CachedArgsAsync<TcpListenerAddrEv>;
+
+graphix_package_core::unit_image_state!(
+    TcpConnectEv,
+    TcpListenEv,
+    TcpAcceptEv,
+    TcpShutdownEv,
+    TcpPeerAddrEv,
+    TcpLocalAddrEv,
+    TcpListenerAddrEv
+);

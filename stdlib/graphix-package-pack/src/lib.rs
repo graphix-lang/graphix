@@ -18,10 +18,12 @@ use graphix_package_core::{
 use netidx_core::pack::Pack;
 use netidx_value::{PBytes, Value};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, netidx_derive::Pack)]
 struct PackReadEv {
     cast_typ: Option<Type>,
 }
+
+graphix_package_core::pack_image_state!(PackReadEv);
 
 impl EvalCachedAsync for PackReadEv {
     type Args = Bytes;
@@ -110,6 +112,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
 }
 
 type PackWriteBytes = CachedArgs<PackWriteBytesEv>;
+
+graphix_package_core::unit_image_state!(PackWriteBytesEv);
 
 graphix_derive::defpackage! {
     builtins => [

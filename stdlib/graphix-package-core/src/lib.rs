@@ -4,6 +4,7 @@
 )]
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
+use bytes::{Buf, BufMut};
 use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, FastFn, Node, Refs, Rt, Scope, Tag,
     TagValue, TagView, TypedFastFn, UserEvent,
@@ -11,12 +12,16 @@ use graphix_compiler::{
     env::Env,
     err, errf,
     expr::{Expr, ExprId},
+    image::{self, ImageBuf},
     node::{coretraits, genn},
     typ::{FnType, TVal, Type, TypeRef},
 };
 use graphix_rt::GXRt;
 use netidx::{path::Path, publisher::Typ, subscriber::Value};
-use netidx_core::utils::Either;
+use netidx_core::{
+    pack::{Pack, PackError, decode_varint, encode_varint, varint_len},
+    utils::Either,
+};
 use netidx_value::{FromValue, ValArray};
 use poolshark::local::LPooled;
 use std::{
@@ -320,7 +325,104 @@ pub fn seam_arg<R: Rt, E: UserEvent>(
 #[derive(Debug)]
 pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 
+/// A builtin payload's image: its state after `init` and the typecheck
+/// passes, restored in the context it was built in. `unit_image_state!`
+/// implements it for a payload with no state, `pack_image_state!` for
+/// one whose state is its `Pack` encoding.
+pub trait ImageState: Sized {
+    fn image_len(&self) -> usize;
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError>;
+    fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError>;
+}
+
+/// [`ImageState`] for a unit struct; the destructuring fails to
+/// compile for a payload that has fields.
+#[macro_export]
+macro_rules! unit_image_state {
+    ($($t:ident),* $(,)?) => {$(
+        impl $crate::ImageState for $t {
+            fn image_len(&self) -> usize {
+                let $t = self;
+                0
+            }
+
+            fn image_encode(
+                &self,
+                _buf: &mut ::graphix_compiler::image::ImageBuf,
+            ) -> ::std::result::Result<(), ::netidx_core::pack::PackError> {
+                let $t = self;
+                Ok(())
+            }
+
+            fn image_decode<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>(
+                _ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
+                _buf: &mut &[u8],
+            ) -> ::std::result::Result<Self, ::netidx_core::pack::PackError> {
+                Ok($t)
+            }
+        }
+    )*};
+}
+
+/// [`ImageState`] for a payload whose state is its `Pack` encoding
+/// (`#[derive(netidx_derive::Pack)]` on a struct with fields).
+#[macro_export]
+macro_rules! pack_image_state {
+    ($($t:ident),* $(,)?) => {$(
+        impl $crate::ImageState for $t {
+            fn image_len(&self) -> usize {
+                ::netidx_core::pack::Pack::encoded_len(self)
+            }
+
+            fn image_encode(
+                &self,
+                buf: &mut ::graphix_compiler::image::ImageBuf,
+            ) -> ::std::result::Result<(), ::netidx_core::pack::PackError> {
+                ::netidx_core::pack::Pack::encode(self, buf)
+            }
+
+            fn image_decode<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>(
+                _ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
+                buf: &mut &[u8],
+            ) -> ::std::result::Result<Self, ::netidx_core::pack::PackError> {
+                ::netidx_core::pack::Pack::decode(buf)
+            }
+        }
+    )*};
+}
+
 impl CachedVals {
+    pub fn image_len(&self) -> usize {
+        varint_len(self.0.len() as u64)
+            + self.0.iter().map(|v| v.encoded_len()).sum::<usize>()
+            + self.1.len()
+    }
+
+    pub fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        encode_varint(self.0.len() as u64, buf);
+        for v in self.0.iter() {
+            v.encode(buf)?;
+        }
+        for t in self.1.iter() {
+            t.bits().encode(buf)?;
+        }
+        Ok(())
+    }
+
+    pub fn image_decode(buf: &mut &[u8]) -> Result<Self, PackError> {
+        let n = decode_varint(buf)? as usize;
+        let vals = (0..n)
+            .map(|_| <Option<Value> as Pack>::decode(buf))
+            .collect::<Result<_, _>>()?;
+        let tags = (0..n)
+            .map(|_| u8::decode(buf).map(Tag::from_raw))
+            .collect::<Result<_, _>>()?;
+        Ok(CachedVals(vals, tags))
+    }
+
     pub fn new<R: Rt, E: UserEvent>(from: &[Node<R, E>]) -> CachedVals {
         CachedVals(
             from.into_iter().map(|_| None).collect(),
@@ -406,6 +508,20 @@ impl CachedVals {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FireOnce(bool);
 
+impl Pack for FireOnce {
+    fn encoded_len(&self) -> usize {
+        1
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        self.0.encode(buf)
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        Ok(Self(bool::decode(buf)?))
+    }
+}
+
 impl FireOnce {
     pub fn take(&mut self) -> bool {
         !std::mem::replace(&mut self.0, true)
@@ -474,7 +590,7 @@ pub fn sort_values(
 }
 
 pub trait EvalCached<R: Rt, E: UserEvent>:
-    Debug + Default + Send + Sync + 'static
+    Debug + Default + Send + Sync + ImageState + 'static
 {
     const NAME: &str;
     /// The builtin's classification — see `graphix_compiler::Effect`.
@@ -542,9 +658,30 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
         };
         Ok(Box::new(t))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let woke_pending = bool::decode(buf)?;
+        let cached = CachedVals::image_decode(buf)?;
+        let t = T::image_decode(ctx, buf)?;
+        Ok(Box::new(Self { woke_pending, cached, last_result: TagValue::phantom(), t }))
+    }
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
+    fn image_len(&self) -> usize {
+        self.woke_pending.encoded_len() + self.cached.image_len() + self.t.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.woke_pending.encode(buf)?;
+        self.cached.image_encode(buf)?;
+        self.t.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -585,7 +722,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
     }
 }
 
-pub trait EvalCachedAsync: Debug + Default + Send + Sync + 'static {
+pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static {
     const NAME: &str;
 
     type Args: Debug + Any + Send + Sync;
@@ -714,9 +851,52 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         };
         Ok(Box::new(t))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let cached = CachedVals::image_decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let running = bool::decode(buf)?;
+        let t = T::image_decode(ctx, buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Self {
+            cached,
+            id,
+            top_id,
+            queued: VecDeque::new(),
+            running,
+            out: TagValue::phantom(),
+            t,
+        }))
+    }
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T> {
+    fn image_len(&self) -> usize {
+        self.cached.image_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+            + self.running.encoded_len()
+            + self.t.image_len()
+    }
+
+    /// The queue holds arguments already prepared for `eval`, which
+    /// exist only once a cycle has run.
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.queued.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.cached.image_encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.running.encode(buf)?;
+        self.t.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -795,6 +975,7 @@ fn fc_is_err(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 struct IsErrEv;
+unit_image_state!(IsErrEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsErrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_err)));
@@ -813,6 +994,15 @@ struct FilterErr {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = (ctx, buf);
+        Ok(Box::new(FilterErr::default()))
+    }
+
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_filter_err";
 
@@ -829,6 +1019,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        let _ = buf;
+        Ok(())
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -857,6 +1056,7 @@ fn fc_error(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 struct ToErrorEv;
+unit_image_state!(ToErrorEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToErrorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_error)));
@@ -876,6 +1076,15 @@ struct Once {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        Ok(Box::new(Once { val: bool::decode(buf)?, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_once";
 
@@ -892,6 +1101,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
+    fn image_len(&self) -> usize {
+        self.val.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.val.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -931,6 +1148,16 @@ struct Take {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        let n = Option::<u64>::decode(buf)?.map(|n| n as usize);
+        Ok(Box::new(Take { n, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_take";
 
@@ -947,6 +1174,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
+    fn image_len(&self) -> usize {
+        self.n.map(|n| n as u64).encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.n.map(|n| n as u64).encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -991,6 +1226,16 @@ struct Skip {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        let n = Option::<u64>::decode(buf)?.map(|n| n as usize);
+        Ok(Box::new(Skip { n, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_skip";
 
@@ -1007,6 +1252,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
+    fn image_len(&self) -> usize {
+        self.n.map(|n| n as u64).encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.n.map(|n| n as u64).encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1059,6 +1312,7 @@ fn fc_all(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 struct AllEv;
+unit_image_state!(AllEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_all)));
@@ -1081,6 +1335,7 @@ fn add_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
 
 #[derive(Debug, Default)]
 struct SumEv;
+unit_image_state!(SumEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const EFFECT: Effect = Effect::Sync;
@@ -1098,6 +1353,7 @@ type Sum = CachedArgs<SumEv>;
 
 #[derive(Debug, Default)]
 struct ProductEv;
+unit_image_state!(ProductEv);
 
 fn prod_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
     match (lhs, rhs) {
@@ -1123,6 +1379,7 @@ type Product = CachedArgs<ProductEv>;
 
 #[derive(Debug, Default)]
 struct DivideEv;
+unit_image_state!(DivideEv);
 
 fn div_vals(lhs: Option<Value>, rhs: Option<Value>) -> Option<Value> {
     match (lhs, rhs) {
@@ -1148,6 +1405,7 @@ type Divide = CachedArgs<DivideEv>;
 
 #[derive(Debug, Default)]
 struct MinEv;
+unit_image_state!(MinEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     const EFFECT: Effect = Effect::Sync;
@@ -1176,6 +1434,7 @@ type Min = CachedArgs<MinEv>;
 
 #[derive(Debug, Default)]
 struct MaxEv;
+unit_image_state!(MaxEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const EFFECT: Effect = Effect::Sync;
@@ -1203,6 +1462,7 @@ type Max = CachedArgs<MaxEv>;
 
 #[derive(Debug, Default)]
 struct AndEv;
+unit_image_state!(AndEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const EFFECT: Effect = Effect::Sync;
@@ -1227,6 +1487,7 @@ type And = CachedArgs<AndEv>;
 
 #[derive(Debug, Default)]
 struct OrEv;
+unit_image_state!(OrEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const EFFECT: Effect = Effect::Sync;
@@ -1311,6 +1572,7 @@ fn fc_shr(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 struct BitAndEv;
+unit_image_state!(BitAndEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_and)));
@@ -1325,6 +1587,7 @@ type BitAnd = CachedArgs<BitAndEv>;
 
 #[derive(Debug, Default)]
 struct BitOrEv;
+unit_image_state!(BitOrEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_or)));
@@ -1339,6 +1602,7 @@ type BitOr = CachedArgs<BitOrEv>;
 
 #[derive(Debug, Default)]
 struct BitXorEv;
+unit_image_state!(BitXorEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_xor)));
@@ -1371,6 +1635,7 @@ fn fc_bit_not(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 struct BitNotEv;
+unit_image_state!(BitNotEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_not)));
@@ -1385,6 +1650,7 @@ type BitNot = CachedArgs<BitNotEv>;
 
 #[derive(Debug, Default)]
 struct ShlEv;
+unit_image_state!(ShlEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shl)));
@@ -1399,6 +1665,7 @@ type Shl = CachedArgs<ShlEv>;
 
 #[derive(Debug, Default)]
 struct ShrEv;
+unit_image_state!(ShrEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shr)));
@@ -1464,9 +1731,35 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
             _ => bail!("expected two arguments"),
         }
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let pred = image::decode_node(ctx, buf)?;
+        let pending = Pack::decode(buf)?;
+        let fid = BindId::decode(buf)?;
+        let x = BindId::decode(buf)?;
+        Ok(Box::new(Self { pred, pending, fid, x, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
+    fn image_len(&self) -> usize {
+        self.pred.image_len()
+            + self.pending.encoded_len()
+            + self.fid.encoded_len()
+            + self.x.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.pred.image_encode(buf)?;
+        self.pending.encode(buf)?;
+        self.fid.encode(buf)?;
+        self.x.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1539,6 +1832,19 @@ struct Queue {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let triggered = decode_varint(buf)? as usize;
+        let queue = Vec::<Value>::decode(buf)?.into();
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Self { triggered, queue, id, top_id, out: TagValue::phantom() }))
+    }
+
     const NAME: &str = "core_queue";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1567,6 +1873,24 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
+    fn image_len(&self) -> usize {
+        varint_len(self.triggered as u64)
+            + varint_len(self.queue.len() as u64)
+            + self.queue.iter().map(|v| v.encoded_len()).sum::<usize>()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        encode_varint(self.triggered as u64, buf);
+        encode_varint(self.queue.len() as u64, buf);
+        for v in &self.queue {
+            v.encode(buf)?;
+        }
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1613,6 +1937,17 @@ struct Hold {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        let triggered = decode_varint(buf)? as usize;
+        let current = Pack::decode(buf)?;
+        Ok(Box::new(Self { triggered, current, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_hold";
 
@@ -1636,6 +1971,15 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
+    fn image_len(&self) -> usize {
+        varint_len(self.triggered as u64) + self.current.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        encode_varint(self.triggered as u64, buf);
+        self.current.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1677,6 +2021,18 @@ struct Seq {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let args = CachedVals::image_decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(Self { id, top_id, args, out: TagValue::phantom() }))
+    }
+
     const NAME: &str = "core_seq";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1701,6 +2057,16 @@ fn range_len_exceeds_cap(i: i64, j: i64) -> bool {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
+    fn image_len(&self) -> usize {
+        self.id.encoded_len() + self.top_id.encoded_len() + self.args.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.args.image_encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1766,6 +2132,25 @@ struct Throttle {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        let wait = Duration::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let last_v = Pack::decode(buf)?;
+        Ok(Box::new(Self {
+            wait,
+            last: None,
+            tid: None,
+            top_id,
+            last_v,
+            out: TagValue::phantom(),
+        }))
+    }
+
     const NAME: &str = "core_throttle";
 
     fn init<'a, 'b, 'c, 'd>(
@@ -1788,6 +2173,20 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
+    fn image_len(&self) -> usize {
+        self.wait.encoded_len() + self.top_id.encoded_len() + self.last_v.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        // a running timer and its wall-clock mark exist only once a cycle ran
+        if self.last.is_some() || self.tid.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
+        self.wait.encode(buf)?;
+        self.top_id.encode(buf)?;
+        self.last_v.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1885,6 +2284,15 @@ struct Count {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        Ok(Box::new(Count { count: i64::decode(buf)?, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_count";
 
@@ -1901,6 +2309,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
+    fn image_len(&self) -> usize {
+        self.count.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.count.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -1927,6 +2343,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
 
 #[derive(Debug, Default)]
 struct MeanEv;
+unit_image_state!(MeanEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
     const EFFECT: Effect = Effect::Sync;
@@ -1964,6 +2381,15 @@ type Mean = CachedArgs<MeanEv>;
 struct Uniq(Option<Value>, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        Ok(Box::new(Uniq(Pack::decode(buf)?, TagValue::phantom())))
+    }
+
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_uniq";
 
@@ -1980,6 +2406,14 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
+    fn image_len(&self) -> usize {
+        self.0.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.0.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -2040,6 +2474,41 @@ enum LogDest {
     Log(Level),
 }
 
+impl Pack for LogDest {
+    fn encoded_len(&self) -> usize {
+        1
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        buf.put_u8(match self {
+            Self::Stdout => 0,
+            Self::Stderr => 1,
+            Self::Log(Level::Trace) => 2,
+            Self::Log(Level::Debug) => 3,
+            Self::Log(Level::Info) => 4,
+            Self::Log(Level::Warn) => 5,
+            Self::Log(Level::Error) => 6,
+        });
+        Ok(())
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        Ok(match buf.get_u8() {
+            0 => Self::Stdout,
+            1 => Self::Stderr,
+            2 => Self::Log(Level::Trace),
+            3 => Self::Log(Level::Debug),
+            4 => Self::Log(Level::Info),
+            5 => Self::Log(Level::Warn),
+            6 => Self::Log(Level::Error),
+            _ => return Err(PackError::UnknownTag),
+        })
+    }
+}
+
 impl FromValue for LogDest {
     fn from_value(v: Value) -> Result<Self> {
         match &*v.clone().cast_to::<ArcStr>()? {
@@ -2060,6 +2529,19 @@ struct Dbg {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        let spec = Expr::decode(buf)?;
+        let dest = LogDest::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let buf_ = String::decode(buf)?;
+        Ok(Box::new(Dbg { spec, dest, typ, buf: buf_, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_dbg";
 
@@ -2082,6 +2564,20 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
+    fn image_len(&self) -> usize {
+        self.spec.encoded_len()
+            + self.dest.encoded_len()
+            + self.typ.encoded_len()
+            + self.buf.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.spec.encode(buf)?;
+        self.dest.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.buf.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -2159,6 +2655,18 @@ struct Log {
 }
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let _ = ctx;
+        let scope = image::scope_decode(buf)?;
+        let dest = LogDest::decode(buf)?;
+        let buf_ = String::decode(buf)?;
+        Ok(Box::new(Self { scope, dest, buf: buf_, out: TagValue::phantom() }))
+    }
+
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_log";
 
@@ -2180,6 +2688,16 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
+    fn image_len(&self) -> usize {
+        image::scope_len(&self.scope) + self.dest.encoded_len() + self.buf.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        image::scope_encode(&self.scope, buf)?;
+        self.dest.encode(buf)?;
+        self.buf.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -2225,6 +2743,16 @@ macro_rules! printfn {
             const EFFECT: Effect = Effect::Sync;
             const NAME: &str = $name;
 
+            fn image_decode(
+                _ctx: &mut ExecCtx<R, E>,
+                _from: &[Node<R, E>],
+                buf: &mut &[u8],
+            ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+                let dest = LogDest::decode(buf)?;
+                let buf = String::decode(buf)?;
+                Ok(Box::new(Self { dest, buf, out: TagValue::phantom() }))
+            }
+
             fn init<'a, 'b, 'c, 'd>(
                 _ctx: &'a mut ExecCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
@@ -2242,6 +2770,15 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> Apply<R, E> for $type {
+            fn image_len(&self) -> usize {
+                self.dest.encoded_len() + self.buf.encoded_len()
+            }
+
+            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+                self.dest.encode(buf)?;
+                self.buf.encode(buf)
+            }
+
             fn update(
                 &mut self,
                 ctx: &mut ExecCtx<R, E>,
@@ -2287,6 +2824,7 @@ printfn!(Println, "core_println", "\n");
 /// because core's `Collection` implementation for `Array` needs it.
 #[derive(Debug, Default)]
 struct ArrayLenEv;
+unit_image_state!(ArrayLenEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ArrayLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(array_len)));
@@ -2310,6 +2848,7 @@ type ArrayLen = CachedArgs<ArrayLenEv>;
 /// for `Map`; the map package binds the name.
 #[derive(Debug, Default)]
 struct MapLenEv;
+unit_image_state!(MapLenEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(map_len)));
@@ -2342,6 +2881,7 @@ fn fc_map_union(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 struct MapUnionEv;
+unit_image_state!(MapUnionEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapUnionEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_map_union)));

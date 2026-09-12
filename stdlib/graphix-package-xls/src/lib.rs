@@ -102,6 +102,8 @@ impl EvalCachedAsync for XlsReadEv {
 
 type XlsRead = CachedArgsAsync<XlsReadEv>;
 
+graphix_package_core::unit_image_state!(XlsSheetsEv, XlsReadEv);
+
 graphix_derive::defpackage! {
     builtins => [
         XlsSheets,

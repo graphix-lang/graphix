@@ -8,6 +8,7 @@ use graphix_compiler::{
     UserEvent,
     effects::Effect,
     expr::ExprId,
+    image::ImageBuf,
     node::collection::list::{
         Iter as ListIter, cons as make_cons, from_iter as from_iter_back, is_list,
         is_nil, len as count_list, nil as make_nil, split as get_cons, to_array,
@@ -18,6 +19,7 @@ use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_eval, seam_tick, sort_values,
 };
 use netidx::subscriber::Value;
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug};
@@ -535,9 +537,29 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
         ctx.rt.ref_var(id, top_id);
         Ok(Box::new(ListIterBI(id, top_id, TagValue::phantom())))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(ListIterBI(id, top_id, TagValue::phantom())))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
+    fn image_len(&self) -> usize {
+        self.0.encoded_len() + self.1.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.0.encode(buf)?;
+        self.1.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -602,9 +624,36 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
             out: TagValue::phantom(),
         }))
     }
+
+    fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        _from: &[Node<R, E>],
+        buf: &mut &[u8],
+    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
+        let triggered = usize::decode(buf)?;
+        let queue = Pack::decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        ctx.rt.ref_var(id, top_id);
+        Ok(Box::new(ListIterQ { triggered, queue, id, top_id, out: TagValue::phantom() }))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
+    fn image_len(&self) -> usize {
+        self.triggered.encoded_len()
+            + self.queue.encoded_len()
+            + self.id.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.triggered.encode(buf)?;
+        self.queue.encode(buf)?;
+        self.id.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
     fn update(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
@@ -657,6 +706,30 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
 
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
+
+graphix_package_core::unit_image_state!(
+    NilEv,
+    ConsEv,
+    SingletonEv,
+    HeadEv,
+    TailEv,
+    UnconsEv,
+    IsEmptyEv,
+    NthEv,
+    LenEv,
+    ReverseEv,
+    TakeEv,
+    DropEv,
+    ToArrayEv,
+    ToArrayRevEv,
+    FromArrayEv,
+    ConcatEv,
+    FlattenEv,
+    SortEv,
+    EnumerateEv,
+    ZipEv,
+    UnzipEv,
+);
 
 graphix_derive::defpackage! {
     builtins => [

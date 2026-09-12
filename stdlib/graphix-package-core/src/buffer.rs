@@ -16,6 +16,7 @@ fn fc_bytes_to_string(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesToStringEv;
+crate::unit_image_state!(BytesToStringEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_string)));
@@ -35,6 +36,7 @@ fn fc_bytes_to_string_lossy(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesToStringLossyEv;
+crate::unit_image_state!(BytesToStringLossyEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
     const EFFECT: Effect =
@@ -55,6 +57,7 @@ fn fc_bytes_from_string(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesFromStringEv;
+crate::unit_image_state!(BytesFromStringEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromStringEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_string)));
@@ -88,6 +91,7 @@ fn fc_bytes_concat(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesConcatEv;
+crate::unit_image_state!(BytesConcatEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesConcatEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_concat)));
@@ -107,6 +111,7 @@ fn fc_bytes_to_array(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesToArrayEv;
+crate::unit_image_state!(BytesToArrayEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToArrayEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_array)));
@@ -136,6 +141,7 @@ fn fc_bytes_from_array(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesFromArrayEv;
+crate::unit_image_state!(BytesFromArrayEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromArrayEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_array)));
@@ -155,6 +161,7 @@ fn fc_bytes_len(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BytesLenEv;
+crate::unit_image_state!(BytesLenEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_len)));
@@ -241,6 +248,7 @@ fn fc_encode(args: &[Value]) -> Option<Value> {
 
 #[derive(Debug, Default)]
 pub(crate) struct EncodeEv;
+crate::unit_image_state!(EncodeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_encode)));
@@ -308,6 +316,7 @@ macro_rules! decode_fixed {
 
 #[derive(Debug, Default)]
 pub(crate) struct DecodeEv;
+crate::unit_image_state!(DecodeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
     const EFFECT: Effect = Effect::Stateless(None);

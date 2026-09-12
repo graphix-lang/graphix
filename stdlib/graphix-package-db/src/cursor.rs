@@ -240,3 +240,10 @@ impl EvalCachedAsync for DbCursorRangeEv {
 }
 
 pub(crate) type DbCursorRange = CachedArgsAsync<DbCursorRangeEv>;
+
+graphix_package_core::unit_image_state!(
+    DbCursorNewEv,
+    DbCursorReadEv,
+    DbCursorReadManyEv,
+    DbCursorRangeEv,
+);
