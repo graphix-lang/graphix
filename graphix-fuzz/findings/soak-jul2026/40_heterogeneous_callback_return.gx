@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: fusion/JIT type confusion (soak-jul12n divergence_000001).
 // array::map's callback body was [i64, f64], while the downstream sync
 // fold settled its result to i64. The instance-body recheck found the

@@ -1,3 +1,4 @@
+// expect: reject
 // `src <- [i64:0, src]` under an INFERRED `Array<'a: Array<'b>>` typed,
 // where the annotated twin (`src: Array<Array<i64>>`) is refused. The
 // connect's check is `Array<'a> ⊇ Array<'e>` with `'e := [i64, Array<'a>]`

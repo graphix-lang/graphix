@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: jit parsed I64(42) vs interp runtime TypeError (jul16g fuzz
 // divergence 000000, pre-existing). The 000003 fix rejected ⊥ MEMBERS
 // of a set cast target one level deep; a NESTED map::map callback's

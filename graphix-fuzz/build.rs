@@ -49,20 +49,18 @@ fn walk_dir(dir: &Path, out: &mut Vec<String>) {
 }
 
 /// Strip the leading `//`-comment header (and blank lines) from a saved
-/// finding so only the graphix program remains — EXCEPT a
-/// `// schedule-v1:` line, which is oracle DATA (the injection
-/// schedule), not commentary: it is re-attached above the program so
-/// the embedded regression entry replays the finding's inputs.
-/// Stripping it ran every reactive pin with zero injections — a
-/// quiesced-at-init program in both modes, a vacuously-green gate
-/// (soak jul04 item 10).
+/// finding so only the graphix program remains — EXCEPT the lines that
+/// are oracle DATA, not commentary: a `// schedule-v1:` line (the
+/// injection schedule; stripping it ran every reactive pin with zero
+/// injections, a vacuously-green gate) and `// expect: reject` (the
+/// pin is a refusal). They are re-attached above the program.
 fn strip_header(s: &str) -> String {
-    let mut schedule: Option<&str> = None;
+    let mut kept: Vec<&str> = Vec::new();
     let mut lines = s.lines().peekable();
     while let Some(l) = lines.peek() {
         let t = l.trim_start();
-        if t.starts_with("// schedule-v1:") {
-            schedule = Some(t);
+        if t.starts_with("// schedule-v1:") || t == "// expect: reject" {
+            kept.push(t);
             lines.next();
         } else if t.starts_with("//") || t.is_empty() {
             lines.next();
@@ -71,9 +69,10 @@ fn strip_header(s: &str) -> String {
         }
     }
     let prog = lines.collect::<Vec<_>>().join("\n");
-    match schedule {
-        Some(h) if !prog.trim().is_empty() => format!("{h}\n{prog}"),
-        _ => prog,
+    if kept.is_empty() || prog.trim().is_empty() {
+        prog
+    } else {
+        format!("{}\n{prog}", kept.join("\n"))
     }
 }
 

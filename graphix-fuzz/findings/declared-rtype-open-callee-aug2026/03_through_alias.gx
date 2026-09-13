@@ -1,3 +1,4 @@
+// expect: reject
 // The third way to reach the def without a static call site: bind it to
 // an annotated alias and call the alias. The annotation is checked
 // against the lambda's SIGNATURE, whose return cell is still open at

@@ -1,3 +1,4 @@
+// expect: reject
 // aug22c class B (campaign-minimized): the same elimination one step on —
 // the tail READS the connect target, and with the binding statement
 // eliminated the JIT published nothing at all, not even the seed. Here

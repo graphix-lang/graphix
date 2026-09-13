@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: typing acceptance bug (both modes now compile-reject).
 // Pre-fix: interp emitted f64:6 (runtime promotion through the map
 // instance) while the JIT was silent (i64 acc slot met runtime f64) —

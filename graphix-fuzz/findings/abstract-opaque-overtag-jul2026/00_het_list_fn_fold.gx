@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: typecheck unsoundness (soak-jul13b cluster A, 8 findings —
 // one root). The genuine mismatch (the find predicate narrowed the
 // element to i64; the heterogeneous list argument then failed

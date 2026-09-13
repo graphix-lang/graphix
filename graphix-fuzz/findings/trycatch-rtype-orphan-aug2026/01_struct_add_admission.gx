@@ -1,3 +1,4 @@
+// expect: reject
 // TryCatch rtype orphan (aug05g hz0 divergence_000000, hand-reduced):
 // TryCatch::new snapshotted the last try-body node's type at
 // CONSTRUCTION, but a select body REPLACES its typ field during

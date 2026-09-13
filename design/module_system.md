@@ -203,9 +203,11 @@ segment, so a sandboxed dynamic-module env may keep `/sys/net` without
 
 Keyword roots resolve structurally. `self::x` looks up at
 `mod_root(S)`. `package::x` looks up at the package root — `/pkg` when
-`S`'s first component is a registered package, else `/` (in a loaded
-script this is the root program scope, not the file's block: file-top
-items are reachable only by counted `super`s — a documented wart).
+`S`'s first component is a registered package, a loaded script's own
+top level (its `#do` block under the root) when the first component is
+one, else `/` (the program is the package). So `package::m` reaches a
+script's file-top `mod m` from any depth, in load mode as in check
+mode.
 `super` is SCOPE-relative, not module-relative: one `super` from module
 `M` anchors at `dirname(M)` and resolves along that anchor's chain (an
 entry carries `chain: true`; a `super::*` glob expands to one source

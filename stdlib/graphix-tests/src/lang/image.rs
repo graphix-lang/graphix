@@ -9,12 +9,14 @@ use bytes::Bytes;
 use graphix_compiler::{
     CFlag, PrintFlag,
     env::Env,
-    expr::Source,
+    expr::{Source, VfsEntry, VfsResolver},
     format_with_flags,
     image::{DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder},
     typ::Type,
 };
-use graphix_package_core::testing::{TestCtx, init_with_registration, init_with_session};
+use graphix_package_core::testing::{
+    TestCtx, init_session_with_setup, init_with_registration, init_with_session,
+};
 use graphix_rt::{GXEvent, RegistrationImage};
 use netidx::publisher::Value;
 use netidx_core::pack::Pack;
@@ -417,5 +419,41 @@ async fn program_image_restores_builtins() -> Result<()> {
     assert_eq!(cold_values, warm_values);
     cold.shutdown().await;
     warm.shutdown().await;
+    Ok(())
+}
+
+/// A loaded script's `package::` is its own top level: a file-top
+/// `mod` is reachable from a sibling module as `package::m`, on the
+/// script path as in check mode.
+#[tokio::test]
+async fn program_package_root_is_the_script() -> Result<()> {
+    let table = ahash::AHashMap::from_iter([
+        (
+            netidx_core::path::Path::from("/m0.gx"),
+            VfsEntry::from(literal!("let k0 = i64:41")),
+        ),
+        (
+            netidx_core::path::Path::from("/m1.gx"),
+            VfsEntry::from(literal!("let f = |x: i64| -> i64 package::m0::k0 + x")),
+        ),
+    ]);
+    let (tx, mut rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let ctx = init_session_with_setup(
+        tx,
+        TEST_REGISTER,
+        vec![VfsResolver::new(table)],
+        CFlag::FusionDisabled.into(),
+        RegistrationImage::Save(reg_tx),
+        Some(Source::Internal(literal!("mod m0; mod m1; m1::f(i64:1)"))),
+        None,
+        None,
+        |_| {},
+    )
+    .await?;
+    ctx.rt.program().await?.expect("the program compiled");
+    let values = first_values(&mut rx).await;
+    assert_eq!(values.last(), Some(&Value::I64(42)), "{values:?}");
+    ctx.shutdown().await;
     Ok(())
 }

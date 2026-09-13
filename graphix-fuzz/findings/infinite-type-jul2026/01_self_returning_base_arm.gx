@@ -1,3 +1,4 @@
+// expect: reject
 // katana jul18c un-minimized mutant: the same infinite type reached
 // through a plausible-looking rec — the base arm returns f itself, so
 // the return type is [Fn(... -> 'r), 'r]: still μ-recursive, still no

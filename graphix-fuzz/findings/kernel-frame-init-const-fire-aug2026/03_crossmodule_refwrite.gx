@@ -9,5 +9,6 @@
 // file-v1: m1.gx
 let f2 = |v12: bool| -> i64 cast<i64>(z32:-1000)$
 // file-v1: m2.gx
+use super::{m1};
 let k2: bool = true;
 let f0 = |v14: u8| -> i64 m1::f2(k2)

@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: REAL CRASH (SIGABRT) — pre-fix the JIT's kernel marshal
 // tried to PARSE "hello" into the i64 formal slot ("Unexpected h")
 // while the interp survived type-tolerantly (arith error → bottom).

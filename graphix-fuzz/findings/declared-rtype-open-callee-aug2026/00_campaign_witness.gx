@@ -1,3 +1,4 @@
+// expect: reject
 // aug16a hz1 fuzz divergence_000000 (2026-08-17). TYPECHECKER-side.
 //
 // This program is ill-typed and used to COMPILE. `t.f` is declared

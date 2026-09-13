@@ -1,3 +1,4 @@
+// expect: reject
 // aug17d ryouko divergence_000000 (2026-08-18): `type A = B; type B =
 // A` was ACCEPTED, and a binding annotated with the cycle typechecked
 // against everything — contains' coinductive ref-pair memo seeds

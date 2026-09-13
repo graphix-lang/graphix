@@ -20,6 +20,7 @@ let f0 = |v8: &i64, v9: [`A, `B, `C(i64, string)]| -> f64 select ((f64:3.14 + f6
 let f1 = |v10: f64| ((f64:0.0 * v10) * (f64:1.0 / v10));
 let f2 = |v11: [`A(i64, string), `B(string)], v12: [`C(f64), `Nil]| false;
 // file-v1: m1.gx
+use super::{m0};
 let f0 = |v14: f64, v15: &f64| -> f64 (m0::f1(f64:0.0) + (*v15));
 let f1 = |v16: i64, v17: [`A, `C, `Nil]| -> f64 f64:1.0;
 let f2 = |v18: &i64, v19: [`A(Map<string, f64>), `B, `Some]| -> u8 ((u8:0 * u8:100) % u8:0);

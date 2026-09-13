@@ -1,3 +1,4 @@
+// expect: reject
 // FIXED by the rtype write-back (setup_static_bind unifies the
 // instance's settled rtype into the site's LIVE rtype cell; abstract
 // returns retry through privatize_type and skip when still opaque).

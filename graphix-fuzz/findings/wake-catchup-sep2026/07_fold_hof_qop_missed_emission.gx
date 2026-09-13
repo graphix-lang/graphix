@@ -1,3 +1,4 @@
+// expect: reject
 // Adopted from the LATE aug31e pull (hz0, fetched at the aug31f
 // deploy): on the aug31e-era binary the INTERP emitted nothing for
 // this fold-HOF + qop + const-scrutinee-select shape while the jit

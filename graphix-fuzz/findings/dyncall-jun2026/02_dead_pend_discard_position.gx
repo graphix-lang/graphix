@@ -1,3 +1,4 @@
+// expect: reject
 // The dead-pend divergence in DISCARD position — found by the first
 // isolation-enabled mutation soak (3000@777) and minimized by the
 // isolated minimizer (`minimize-one`). interp = 0 (the node-walk never

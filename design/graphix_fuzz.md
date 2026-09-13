@@ -159,12 +159,20 @@ are tag-strict; `normalize_diag` strips process-global abstract ids
 from compile errors. Zero relaxations are encoded in
 `Trace::agrees_with`: the triage policy is fix, don't whitelist.
 
-**Sessions (the image axis).** Besides the engine pair, `check` runs
-each engine three ways on the program route (`GXConfig::program`, the
-shell's script path, tracing armed at construction and anchored at the
-program root): `nocache` (compiled, no image machinery), `cold`
-(compiled and written to a program image) and `warm` (restored from
-the image the cold run wrote). The pairs `nocache`/`cold` and
+**One route.** Every run reaches the runtime the way the shell's
+script path does (`GXConfig::program`: the subject's module table
+behind a resolver, the registration image restored, the program
+compiled or restored at construction, tracing armed there and anchored
+at the program root) — `run_subject`. The REPL's `rt.compile` route is
+not fuzzed: it put the subject at the root scope where the script path
+puts it under a `do` block, and a bug in that difference agreed with
+itself. A batch child runs each subject on fresh runtimes; what it
+amortizes is the registration image, built once per process.
+
+**Sessions (the image axis).** Besides the engine pair (the `nocache`
+runs), `check` runs each engine three ways: `nocache` (compiled, no
+image machinery), `cold` (compiled and written to a program image) and
+`warm` (restored from the image the cold run wrote). The pairs `nocache`/`cold` and
 `cold`/`warm` compare at the program's tier; a cold run that compiled
 but wrote no image makes the warm outcome the write's failure, so a
 codec gap is a finding (`Pair::Cold`/`Pair::Warm`). A disagreement

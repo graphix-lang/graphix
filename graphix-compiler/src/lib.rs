@@ -1806,6 +1806,12 @@ pub fn is_block_component(part: &str) -> bool {
     part.starts_with('#')
 }
 
+/// True iff `part` is a `do` block's scope component: a loaded
+/// script's top level is one.
+pub fn is_do_block(part: &str) -> bool {
+    part.strip_prefix("#do").is_some_and(|id| id.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// The module root of a lexical scope path: the path minus trailing
 /// generated block components.
 pub fn mod_root(mut scope: &str) -> &str {

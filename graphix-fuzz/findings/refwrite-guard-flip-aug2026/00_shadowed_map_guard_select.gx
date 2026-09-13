@@ -27,6 +27,7 @@ type T = Array<i64>;
 let mk = |x: i64| -> T [x, x];
 let un = |t: T| -> i64 t[0]$;
 // file-v1: m3.gx
+use super::{m0};
 let f0 = |v47: u8| -> f64 (m0::f2(i64:100) + (f64:0.1));
 let f1 = |v48: &i64| -> i8 i8:-1;
 let f2 = |v49: u8, v50: string| -> z32 (-(cast<z32>(z64:42)$));
@@ -34,6 +35,7 @@ type T = i64;
 let mk = |x: i64| -> T x;
 let un = |t: T| -> i64 t;
 // file-v1: m4.gx
+use super::{m3};
 let f0 = |v49: string, v50: bool| -> z32 (m3::f2(u8:0, "[i64:7]-[false]") + (select ((z32:1 / z32:1) %? z32:-1000) { error as _ => (z32:7 * z32:-1), z32 as n => n }));
 let f1 = |v51: bool, v52: i16| -> u32 u32:100000;
 type T = Array<i64>;

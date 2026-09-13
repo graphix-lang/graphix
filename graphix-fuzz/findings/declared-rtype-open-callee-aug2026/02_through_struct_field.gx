@@ -1,3 +1,4 @@
+// expect: reject
 // Called, but through a struct FIELD — so the call site cannot resolve
 // statically to the def, per-callsite elaboration never runs, and the
 // body's real return is never proven. The witness's shape, minus the

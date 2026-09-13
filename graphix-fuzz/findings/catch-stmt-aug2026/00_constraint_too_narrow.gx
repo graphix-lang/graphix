@@ -1,3 +1,4 @@
+// expect: reject
 // catch(e: T) ascribes T to e and still checks that T contains every
 // error the covered region can throw. An index error is coverable
 // here, the annotation only admits ArithError -> compile-reject.

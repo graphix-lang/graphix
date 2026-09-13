@@ -355,7 +355,10 @@ blocker profile, not a gap count.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
   per-cycle trace oracle, each engine also no-cache vs cold-image vs
-  warm-image (`GRAPHIX_FUZZ_SESSIONS`); `check`/`run`/`generate`/`fuzz`/`minimize`/
+  warm-image (`GRAPHIX_FUZZ_SESSIONS`); every run on the shell's script
+  path (`GXConfig::program`), never the REPL's `rt.compile`; a corpus
+  pin both engines reject is a regression unless it says
+  `// expect: reject`; `check`/`run`/`generate`/`fuzz`/`minimize`/
   `regress`/`selfcheck`/`gen-check`/`detcheck`/`typemorph`. The
   committed `findings/` corpus is the regression gate. `rand::`/`sys::`/
   `http::`/`hold(` programs are excluded from divergence recording.
@@ -398,8 +401,9 @@ blocker profile, not a gap count.
   `Write`/`Close`/`Seek`/`Socket` over five stream types.
 - **Module system** (`design/module_system.md`): Rust-2018-style
   `use`; every name arrives by declaration, `use`, or prelude;
-  `self`/`super`/`package` roots; declarations are statement-position
-  only.
+  `self`/`super`/`package` roots (`package::` is the registered
+  package, else a loaded script's own top level, else `/`);
+  declarations are statement-position only.
 - **Place references** (`design/place_references.md`): `&a[i]`,
   `&s.f`, `&t.0`, `&m{k}` are root + path; writes patch the root at
   delivery; a dynamic key is a moving reference. References de-fuse.

@@ -1,0 +1,15 @@
+// The fuzzer's every run takes the shell's script path, where the
+// program is a `do` block under the root; `package::` used to resolve
+// to `/`, above that block, so a sibling module's `package::m0::…`
+// failed to compile on that path while the REPL route accepted it —
+// and the failure agreed with itself, so the image axis silently had
+// no multi-file coverage (sep12a). `package::` is now the script's
+// own top level. Pinned on all six paths: a rejection here is a
+// regression (no `// expect: reject`).
+{ let x = m1::f(i64:1); (x, m0::k0) }
+// file-v1: m0.gx
+let k0 = i64:41
+// file-v1: m1.gx
+use super::m0;
+let g = |x: i64| -> i64 package::m0::k0 + x;
+let f = |x: i64| -> i64 g(x) + m0::k0 - super::m0::k0

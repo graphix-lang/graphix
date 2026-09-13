@@ -1,3 +1,4 @@
+// expect: reject
 // divergence: nested-select arm union built from PRE-typecheck types
 // `-> i64` accepted a body whose select had a NESTED-select arm
 // yielding STRUCTS: Select::typecheck0 built rtype (the arm union) in

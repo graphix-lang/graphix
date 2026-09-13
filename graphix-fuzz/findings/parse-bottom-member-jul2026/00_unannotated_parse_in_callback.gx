@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: typecheck validation escape (soak-jul14b fuzz
 // divergence_000003). str::parse's typecheck1 bail ("requires a
 // concrete return type") never fired inside a collection callback:

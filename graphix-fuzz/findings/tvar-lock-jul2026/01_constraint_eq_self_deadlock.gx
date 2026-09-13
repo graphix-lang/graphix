@@ -1,3 +1,4 @@
+// expect: reject
 {let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f(v))); (m([i64:1], |x| x * i64:2), m(["a"], |s| str::parse))}
 // ROOT-CAUSED + FIXED (2026-07-23): NOT a lost wake — a same-thread
 // RwLock SELF-DEADLOCK in the tvar constraint machinery.

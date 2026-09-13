@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: fusion/JIT type confusion (soak-jul12n divergence_000000).
 // array::fold settled a as Array<i64>, but array::init's callback
 // returned [null, i64]. The instance-body recheck found that mismatch

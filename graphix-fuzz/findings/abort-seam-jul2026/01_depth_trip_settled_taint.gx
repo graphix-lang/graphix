@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: asymmetric timeout (interp exceeded 8x budget; JIT produced a value — verify the node-walk terminates and agrees before reading this as a JIT bug)
 // interp: Timeout
 // jit:    Trace(Trace { epochs: [Epoch { events: [(0, I64(7))], capped: false }] })

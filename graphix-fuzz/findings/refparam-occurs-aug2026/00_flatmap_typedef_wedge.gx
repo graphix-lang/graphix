@@ -1,3 +1,4 @@
+// expect: reject
 // aug17d aieka crash_000000 (2026-08-18): child HANG — `graphix
 // --check` itself wedged at 100% CPU with RSS growing ~1GB/s. The
 // typedef expression types as Bottom, so flat_map's element tvar

@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: compile-time non-termination (both engines) — FIXED, kept as regress pin.
 // After the fix this program is a CompileErr in both modes (AGREE): the
 // connect's target is declared over a different error union than the

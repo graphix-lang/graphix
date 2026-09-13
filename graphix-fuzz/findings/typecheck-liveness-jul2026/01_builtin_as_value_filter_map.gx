@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: NONDETERMINISTIC COMPILE LIVENESS (typechecker deadlock /
 // stack overflow, ~2-4 of 6 runs, ASLR-order dependent via the Set
 // sort) — soak jul06h crash_000000. A polymorphic BUILTIN as a

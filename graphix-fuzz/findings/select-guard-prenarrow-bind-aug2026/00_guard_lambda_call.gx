@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin.
 // The TYPECHECKER was the wrong one; after the fix this program is a
 // CompileErr in both modes (AGREE), like arith-tc-unsound-jul2026.

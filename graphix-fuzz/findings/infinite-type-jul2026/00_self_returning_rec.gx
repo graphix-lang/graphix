@@ -1,3 +1,4 @@
+// expect: reject
 // jul18c fleet (ryouko div 000000 + katana div 000000, same minimized
 // shape). `let rec f = |n, acc| f` RETURNS ITSELF, so f's return type
 // is f's own type — an infinite type with no finite annotation-free

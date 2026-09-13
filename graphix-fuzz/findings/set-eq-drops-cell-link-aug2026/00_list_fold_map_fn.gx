@@ -1,3 +1,4 @@
+// expect: reject
 // aug25a class A (the 81-finding flood): ACCEPTED by the typechecker
 // while the array twin and the let-bound twin were refused — then the
 // engines diverged downstream on `acc + <fn value>`. Mechanism:

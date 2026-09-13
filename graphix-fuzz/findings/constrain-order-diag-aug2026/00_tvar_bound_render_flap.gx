@@ -1,3 +1,4 @@
+// expect: reject
 // FIXED — aug18a class 6 (aieka divergence_000001; the ryouko face
 // was the same flap). Both modes REJECT this program; the diagnostic
 // detail flapped: `within Array<'a: i64>` vs `Array<'a: unbound>`,

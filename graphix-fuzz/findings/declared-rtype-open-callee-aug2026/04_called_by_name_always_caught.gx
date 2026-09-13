@@ -1,3 +1,4 @@
+// expect: reject
 // The half that ALWAYS worked, kept so the pair stays visible: called by
 // name, the site resolves statically, per-callsite elaboration re-drives
 // `s`'s body against the now-i64 cell, and the mismatch surfaces there.

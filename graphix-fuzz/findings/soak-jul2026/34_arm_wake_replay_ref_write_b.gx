@@ -22,6 +22,7 @@ type T = Array<i64>;
 let mk = |x: i64| -> T [x, x];
 let un = |t: T| -> i64 t[0]$;
 // file-v1: m1.gx
+use super::{m0};
 let k1: f64 = f64:2.5;
 let h1 = |v9: u8| -> u8 v9;
 let f0 = |v10: Array<i64>| -> bool m0::f0((f64:0.1 / k1), m0::f1((u8:100, false), k1));

@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: typecheck unsoundness (soak-jul13b divergence_000003 — the
 // abstract-opaque-overtag class, see 00_het_list_fn_fold.gx). Nested
 // list flavor: the het element union carries a List<(i64, i64)>

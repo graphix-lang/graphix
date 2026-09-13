@@ -12,10 +12,12 @@ let k1: i64 = (i64:-1 + i64:2);
 let h1 = |v10: f64| -> f64 (f64:0.1 * f64:-1.0);
 let f0 = |v11: &z64, v12: [`B(bool, {b: string, c: u8, y: string}), `Some]| i8:-128;
 // file-v1: m2.gx
+use super::{m0, m1};
 let k2: i64 = (m1::k1 * m1::k1);
 let h2 = |v10: u8| -> u8 (u8:100 % u8:0);
 let f0 = |v11: u16| (m0::un(m0::mk(m1::k1)) + (i64:2));
 // file-v1: m3.gx
+use super::{m0};
 let k3: f64 = f64:1.0;
 let h3 = |v20: i64| -> i64 (m0::un(m0::mk(i64:7)) %? v20)$;
 let f0 = |v21: bool, v22: (i64, i64, [f64, null])| v21;
@@ -24,6 +26,7 @@ type T = i64;
 let mk = |x: i64| -> T x;
 let un = |t: T| -> i64 t;
 // file-v1: m4.gx
+use super::{m0, m2};
 let f0 = |v25: u8| -> m0::T m0::mk(m2::k2);
 let f1 = |v26: {b: (v64, bool, string)}| -> bool false;
 let f2 = |v27: Map<string, Array<i64>>| -> string "graphix";

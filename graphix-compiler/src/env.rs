@@ -5,7 +5,7 @@ use crate::{
         Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
         SigImplLink, TypeRefSite,
     },
-    mod_root,
+    is_do_block, mod_root,
     profile::{self, Phase},
     typ::{AbstractId, FnType, TVar, TraitId, Type},
 };
@@ -514,11 +514,12 @@ impl Env {
     }
 
     /// The current package root of `scope`: `/pkg` when the first
-    /// path component names a registered package, else `/` (user
-    /// programs — the program is the package).
+    /// path component names a registered package; a loaded script's
+    /// own top level (its `#do` block under the root) when the first
+    /// component is one; else `/` (the program is the package).
     pub fn package_root<'a>(&self, scope: &'a str) -> &'a str {
         match Path::parts(scope).next() {
-            Some(first) if self.package_roots.contains(first) => {
+            Some(first) if self.package_roots.contains(first) || is_do_block(first) => {
                 &scope[..1 + first.len()]
             }
             _ => "/",
@@ -1546,6 +1547,18 @@ mod test {
         assert_eq!(levels, vec!["/#do1", "/"]);
         let levels: Vec<&str> = chain_levels("/").collect();
         assert_eq!(levels, vec!["/"]);
+    }
+
+    #[test]
+    fn package_root_is_the_scripts_do_block() {
+        let mut env = Env::default();
+        assert_eq!(env.package_root("/"), "/");
+        assert_eq!(env.package_root("/a/b"), "/");
+        assert_eq!(env.package_root("/#do1"), "/#do1");
+        assert_eq!(env.package_root("/#do1/#block3/test"), "/#do1");
+        assert_eq!(env.package_root("/#fn7/m"), "/");
+        env.package_roots.insert_cow(ArcStr::from("pkg"));
+        assert_eq!(env.package_root("/pkg/#do1/sub"), "/pkg");
     }
 
     #[test]

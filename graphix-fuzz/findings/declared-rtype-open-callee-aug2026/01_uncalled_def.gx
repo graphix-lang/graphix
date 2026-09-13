@@ -1,3 +1,4 @@
+// expect: reject
 // The witness with everything incidental removed. No struct, no union,
 // no fold — one def, never called, whose body reaches its declared
 // return through a call to an open-returning local.

@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: fusion/JIT bug (interp != jit) — FIXED, kept as regress pin.
 // After the fix this program is a CompileErr in both modes (AGREE).
 // The second door into 00's contains hole, and the reason the

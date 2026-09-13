@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: fusion/JIT bug (interp != jit) — FIXED as a TYPECHECKER
 // unsoundness; kept as a CompileErr-agree regress pin.
 // Found by soak jul31a fuzz lane (2026-07-31, first find of the round,

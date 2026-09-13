@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: acceptance probe (both modes must CompileErr)
 // Pre-fix: compiled AND ran in both modes, the excess positional
 // SILENTLY DROPPED at bind time — f(i64:5) evaluated to f's defaults

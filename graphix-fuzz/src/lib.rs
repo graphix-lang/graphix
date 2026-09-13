@@ -31,7 +31,7 @@ use graphix_package::Package;
 use graphix_package_core::testing::{
     TestCtx, init_session_with_setup, init_with_flags_and_setup,
 };
-use graphix_rt::{GXEvent, NoExt, RegistrationImage};
+use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
 use std::{future, time::Duration};
@@ -226,9 +226,7 @@ pub struct Subject {
     pub mods: String,
     /// The module VFS: the wrapped body under `modname`, plus aux files.
     pub table: AHashMap<Path, VfsEntry>,
-    /// The module the body is installed as. Unique per subject inside a
-    /// batch child (one warmed runtime serves many subjects); `test` on
-    /// the individual path.
+    /// The module the body is installed as.
     pub modname: String,
 }
 
@@ -328,11 +326,18 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
     let resolver = VfsResolver::new(subj.table.clone());
     // keeps the compile cycle's print output off the process streams
     let sink = graphix_package_core::PrintSink::default();
-    let ctx = match init_with_flags_and_setup(
+    let registration = registration_image_source().await;
+    let program =
+        graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text()));
+    let ctx = match init_session_with_setup(
         tx,
         REGISTER,
         vec![resolver],
         mode.flags(),
+        registration,
+        Some(program),
+        None,
+        None,
         move |ctx| {
             *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = sink;
         },
@@ -342,27 +347,15 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         Ok(c) => c,
         Err(e) => return CompileOutcome::Failed(format!("runtime init failed: {e:?}")),
     };
-    let text = subj.compile_text();
     let run = async {
-        let base = match ctx.fusion_stats().await {
-            Ok(s) => s,
-            Err(e) => {
-                return CompileOutcome::Failed(format!("fusion stats read: {e:?}"));
-            }
-        };
         // Debug format is the anyhow chain; gen-check buckets on the
         // last line, the innermost cause.
-        let verdict = ctx.rt.compile(ArcStr::from(text)).await;
+        let verdict = program_result(&ctx).await;
         match ctx.fusion_stats().await {
-            Ok(mut s) => {
-                s.attempted -= base.attempted;
-                s.fused -= base.fused;
-                s.failed.drain(..base.failed.len());
-                match verdict {
-                    Ok(_) => CompileOutcome::Compiled(s),
-                    Err(e) => CompileOutcome::Rejected(format!("{e:?}"), s),
-                }
-            }
+            Ok(s) => match verdict {
+                Ok(_) => CompileOutcome::Compiled(s),
+                Err(e) => CompileOutcome::Rejected(format!("{e:?}"), s),
+            },
             Err(e) => CompileOutcome::Failed(format!("fusion stats read: {e:?}")),
         }
     };
@@ -375,6 +368,12 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
     };
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
     res
+}
+
+/// The program a runtime compiled or restored at construction, as a
+/// compile verdict.
+async fn program_result(ctx: &TestCtx) -> anyhow::Result<CompRes<NoExt>> {
+    ctx.rt.program().await.and_then(|p| p.ok_or_else(|| anyhow::anyhow!("no program")))
 }
 
 /// [`run_program`], also returning the compile-time [`FusionStats`]
@@ -394,56 +393,8 @@ pub async fn run_program_with_stats_routed(
     route: Route,
     timeout: Duration,
 ) -> (Outcome, FusionStats) {
-    // a malformed header is a compile-class reject in every mode
-    let subj = match Subject::parse(code, "test") {
-        Ok(s) => s,
-        Err(e) => return (Outcome::CompileErr(e), FusionStats::default()),
-    };
-    let (tx, mut rx) = mpsc::channel(64);
-    let resolver = VfsResolver::new(subj.table.clone());
-    // per-runtime print capture, so two modes running concurrently in
-    // one process keep separate output
-    let sink = graphix_package_core::PrintSink::default();
-    let seeded = sink.clone();
-    let ctx = match init_with_flags_and_setup(
-        tx,
-        REGISTER,
-        vec![resolver],
-        mode.flags(),
-        move |ctx| {
-            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded;
-        },
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                Outcome::RuntimeErr(format!("runtime init failed: {e:?}")),
-                FusionStats::default(),
-            );
-        }
-    };
-    let base = ctx.fusion_stats().await.unwrap_or_default();
-    let outcome =
-        drive(&ctx, &mut rx, &subj, route, timeout, Entry::Compile, &sink).await;
-    // A wedged runtime never answers another request: abort first, then
-    // never await it without a deadline.
-    if matches!(outcome, Outcome::Timeout(_)) {
-        ctx.rt.abort();
-    }
-    let grace = Duration::from_secs(2);
-    let stats = match tokio::time::timeout(grace, ctx.fusion_stats()).await {
-        Ok(Ok(mut s)) => {
-            s.attempted -= base.attempted;
-            s.fused -= base.fused;
-            s.failed.drain(..base.failed.len());
-            s
-        }
-        Ok(Err(_)) | Err(_) => FusionStats::default(),
-    };
-    let _ = tokio::time::timeout(grace, ctx.shutdown()).await;
-    (outcome, stats)
+    let run = run_subject(code, mode, route, SessionImage::None, timeout).await;
+    (run.outcome, run.stats)
 }
 
 async fn drive(
@@ -452,10 +403,9 @@ async fn drive(
     subj: &Subject,
     route: Route,
     timeout: Duration,
-    entry: Entry,
     sink: &graphix_package_core::PrintSink,
 ) -> Outcome {
-    let outcome = drive_inner(ctx, rx, subj, route, timeout, entry, sink).await;
+    let outcome = drive_inner(ctx, rx, subj, route, timeout, sink).await;
     // A runtime the stack budget aborted answers nothing more: whichever
     // request that failed, the outcome is the containment.
     if matches!(outcome, Outcome::RuntimeErr(_) | Outcome::CompileErr(_))
@@ -472,7 +422,6 @@ async fn drive_inner(
     subj: &Subject,
     route: Route,
     timeout: Duration,
-    entry: Entry,
     sink: &graphix_package_core::PrintSink,
 ) -> Outcome {
     let Subject { sched, spec, tier, .. } = subj;
@@ -539,35 +488,14 @@ async fn drive_inner(
             seg
         }};
     }
-    // Tracing is armed before the compile (ToGX messages are FIFO), so
-    // a value emitted during the compile cycle is in the trace; a
-    // program-route runtime armed it at construction.
-    let compiled = match entry {
-        Entry::Compile => {
-            // a batch lane's sink holds the previous subject's tail; a
-            // program-route runtime has been printing since construction
-            drop(sink.take());
-            if let Err(e) = ctx.rt.trace_start(sched.max_events, sched.max_cycles) {
-                return Outcome::RuntimeErr(format!("trace_start: {e}"));
-            }
-            let text = subj.compile_text();
-            step_or_timeout!(
-                ctx.rt.compile(ArcStr::from(text)),
-                Ok(c) => c,
-                Err(e) => return Outcome::CompileErr(format!("{e:?}"))
-            )
-        }
-        Entry::Program => step_or_timeout!(
-            async {
-                ctx.rt
-                    .program()
-                    .await
-                    .and_then(|p| p.ok_or_else(|| anyhow::anyhow!("no program")))
-            },
-            Ok(c) => c,
-            Err(e) => return Outcome::CompileErr(format!("{e:?}"))
-        ),
-    };
+    // Tracing was armed at the runtime's construction, before the
+    // compile (ToGX messages are FIFO), so a value emitted during the
+    // compile cycle is in the trace.
+    let compiled = step_or_timeout!(
+        program_result(ctx),
+        Ok(c) => c,
+        Err(e) => return Outcome::CompileErr(format!("{e:?}"))
+    );
     // dropping it deletes the program's node
     let compiled = &compiled;
     let eid = compiled.exprs.last().expect("compile returned no exprs").id;
@@ -912,44 +840,72 @@ async fn registration_image() -> Option<Bytes> {
         .clone()
 }
 
-/// What a session run does about the program image.
+/// Every runtime restores the registration image built once per
+/// process; without one it compiles its registration.
+async fn registration_image_source() -> RegistrationImage {
+    match registration_image().await {
+        Some(bytes) => RegistrationImage::Load(bytes),
+        None => RegistrationImage::Save(oneshot::channel().0),
+    }
+}
+
+/// What a run does about the program image.
 enum SessionImage {
     None,
     Write,
     Read(Bytes),
 }
 
-/// Run `code` under `mode` on the program route with the given image
-/// handling; the second value is the program image a `Write` produced.
-async fn run_session(
+/// One run of a subject.
+struct SubjectRun {
+    outcome: Outcome,
+    /// The program image a `Write` produced.
+    image: Result<Bytes, String>,
+    /// The program's own fusion stats: the registration compiles with
+    /// fusion off (or is restored), so nothing else contributes.
+    stats: FusionStats,
+}
+
+fn no_image() -> Result<Bytes, String> {
+    Err("no program image was written".to_string())
+}
+
+impl SubjectRun {
+    fn failed(outcome: Outcome) -> Self {
+        SubjectRun { outcome, image: no_image(), stats: FusionStats::default() }
+    }
+}
+
+/// Run `code` under `mode` on the program route (`GXConfig::program`,
+/// the shell's script path): the subject's module table behind a
+/// resolver, the registration image restored, the program compiled or
+/// restored at the runtime's construction, then driven.
+async fn run_subject(
     code: &str,
     mode: Mode,
     route: Route,
     image: SessionImage,
     timeout: Duration,
-) -> (Outcome, Result<Bytes, String>) {
-    let no_image = Err("no program image was written".to_string());
+) -> SubjectRun {
     let subj = match Subject::parse(code, "test") {
         Ok(s) => s,
-        Err(e) => return (Outcome::CompileErr(e), no_image),
+        Err(e) => return SubjectRun::failed(Outcome::CompileErr(e)),
     };
     let (tx, mut rx) = mpsc::channel(64);
     let resolver = VfsResolver::new(subj.table.clone());
+    // per-runtime print capture, so two modes running concurrently in
+    // one process keep separate output
     let sink = graphix_package_core::PrintSink::default();
     let seeded = sink.clone();
-    let registration = || match registration_image_now() {
-        Some(bytes) => RegistrationImage::Load(bytes),
-        None => RegistrationImage::Save(oneshot::channel().0),
-    };
     let program =
         Some(graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text())));
     let (registration, program, program_image, image_rx) = match image {
         SessionImage::Read(bytes) => (RegistrationImage::Load(bytes), None, None, None),
         SessionImage::Write => {
             let (itx, irx) = oneshot::channel();
-            (registration(), program, Some(itx), Some(irx))
+            (registration_image_source().await, program, Some(itx), Some(irx))
         }
-        SessionImage::None => (registration(), program, None, None),
+        SessionImage::None => (registration_image_source().await, program, None, None),
     };
     let ctx = match init_session_with_setup(
         tx,
@@ -968,39 +924,46 @@ async fn run_session(
     {
         Ok(c) => c,
         Err(e) => {
-            return (
-                Outcome::RuntimeErr(format!("runtime init failed: {e:?}")),
-                no_image,
-            );
+            return SubjectRun::failed(Outcome::RuntimeErr(format!(
+                "runtime init failed: {e:?}"
+            )));
         }
     };
-    let outcome =
-        drive(&ctx, &mut rx, &subj, route, timeout, Entry::Program, &sink).await;
+    let outcome = drive(&ctx, &mut rx, &subj, route, timeout, &sink).await;
+    // A wedged runtime never answers another request: abort first, then
+    // never await it without a deadline.
     if matches!(outcome, Outcome::Timeout(_)) {
         ctx.rt.abort();
     }
     let grace = Duration::from_secs(2);
     let image = match image_rx {
-        None => no_image,
+        None => no_image(),
         Some(irx) => match tokio::time::timeout(grace, irx).await {
             Ok(Ok(Ok(bytes))) => Ok(bytes),
             Ok(Ok(Err(e))) => Err(format!("the program image write failed: {e:#}")),
-            Ok(Err(_)) | Err(_) => no_image,
+            Ok(Err(_)) | Err(_) => no_image(),
         },
     };
+    let stats = match tokio::time::timeout(grace, ctx.fusion_stats()).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(_)) | Err(_) => FusionStats::default(),
+    };
     let _ = tokio::time::timeout(grace, ctx.shutdown()).await;
-    (outcome, image)
+    SubjectRun { outcome, image, stats }
 }
 
-/// The registration image if it has been built; `run_sessions` builds
-/// it first.
-fn registration_image_now() -> Option<Bytes> {
-    static NONE: Option<Bytes> = None;
-    REGISTRATION_IMAGE.get().unwrap_or(&NONE).clone()
+/// [`run_subject`] for the image axis: the outcome and the image a
+/// `Write` produced.
+async fn run_session(
+    code: &str,
+    mode: Mode,
+    route: Route,
+    image: SessionImage,
+    timeout: Duration,
+) -> (Outcome, Result<Bytes, String>) {
+    let run = run_subject(code, mode, route, image, timeout).await;
+    (run.outcome, run.image)
 }
-
-static REGISTRATION_IMAGE: std::sync::OnceLock<Option<Bytes>> =
-    std::sync::OnceLock::new();
 
 /// Run `code` under `mode` three ways: no cache, cold (writing the
 /// program image) and warm (restored from it). A program that does not
@@ -1013,10 +976,6 @@ pub async fn run_sessions(
     route: Route,
     timeout: Duration,
 ) -> Sessions {
-    if REGISTRATION_IMAGE.get().is_none() {
-        let image = registration_image().await;
-        let _ = REGISTRATION_IMAGE.set(image);
-    }
     let (nocache, _) = run_session(code, mode, route, SessionImage::None, timeout).await;
     let (cold, image) =
         run_session(code, mode, route, SessionImage::Write, timeout).await;
@@ -1111,10 +1070,9 @@ async fn check_sessions(
     None
 }
 
-/// The scope of the subject's `inputs` module: under the root when the
-/// text compiled statement by statement, under the program's own `do`
-/// block on the program route (a restored image keeps the block's name
-/// from the cold run).
+/// The scope of the subject's `inputs` module: under the program's own
+/// `do` block (a restored image keeps the block's name from the cold
+/// run).
 fn input_scope(env: &Env, name: &str) -> Scope {
     let mut scope = Scope::root();
     for (path, names) in &env.binds {
@@ -1140,14 +1098,6 @@ fn program_scope(env: &Env) -> Scope {
         }
     }
     scope
-}
-
-/// How a drive reaches its subject: compiled into a running runtime,
-/// or compiled or restored at the runtime's construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Entry {
-    Compile,
-    Program,
 }
 
 /// A detected disagreement between the reference (interp = node-walk)
@@ -1186,6 +1136,10 @@ pub enum Pair {
     /// Cold vs warm (`interp` holds the cold outcome, `jit` the warm
     /// one): restoring the program image changed the program.
     Warm(Mode, Route),
+    /// A corpus pin both engines reject (both fields hold the
+    /// rejection) without saying `// expect: reject`: a rejection agrees
+    /// with itself, so a pin that stopped compiling would otherwise pass.
+    Rejected,
 }
 
 /// The label of one session run, for a finding's outcome fields.
@@ -1225,6 +1179,10 @@ impl Divergence {
                     "twin invariant violated (equivalent write routes diverged \
                      in-program — a single-run finding, no cross-run comparison)"
                 }
+                (Pair::Rejected, _) => {
+                    "corpus pin rejected by both engines without `// expect: reject` \
+                     (it no longer compiles or runs, so it pins nothing)"
+                }
                 (Pair::Route, _) => {
                     "route bug (in-language call != embedder-callable dispatch, interp)"
                 }
@@ -1261,6 +1219,7 @@ impl Divergence {
             Pair::EngineDispatch => ("interp/dispatch", "jit/dispatch"),
             Pair::Route => ("in-language", "dispatch"),
             Pair::Twin => ("trace", "trace"),
+            Pair::Rejected => ("interp", "jit"),
             Pair::Cold(m, r) => (
                 session_label(m, r, Session::NoCache),
                 session_label(m, r, Session::Cold),
@@ -1585,44 +1544,6 @@ async fn check_callable(
     (None, false)
 }
 
-/// A module resolver whose target can be swapped between compiles: the
-/// batch child's bridge between one warmed runtime and a fresh
-/// per-subject module source.
-#[derive(Debug)]
-struct SwapResolver(std::sync::Mutex<graphix_compiler::expr::ResolverRef>);
-
-impl SwapResolver {
-    fn arc(initial: graphix_compiler::expr::ResolverRef) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(SwapResolver(std::sync::Mutex::new(initial)))
-    }
-
-    fn set(&self, r: graphix_compiler::expr::ResolverRef) {
-        *self.0.lock().unwrap() = r;
-    }
-}
-
-impl graphix_compiler::expr::ModuleResolver for SwapResolver {
-    fn resolve<'a>(
-        &'a self,
-        scope: &'a graphix_compiler::expr::ModPath,
-        parent: &'a triomphe::Arc<graphix_compiler::expr::Origin>,
-        name: &'a Path,
-        errors: &'a mut Vec<anyhow::Error>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = graphix_compiler::expr::Resolution>
-                + Send
-                + Sync
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            let r = self.0.lock().unwrap().clone();
-            r.resolve(scope, parent, name, errors).await
-        })
-    }
-}
-
 /// Per-subject verdict from a batch child. Only agreement is trusted
 /// from a batch; anything else re-runs through `check_isolated`, so
 /// every finding still derives from a fresh single-subject process.
@@ -1632,88 +1553,40 @@ pub enum BatchVerdict {
         /// Both outcomes were runtime traces — the ring-admission bar.
         ran: bool,
     },
-    /// Not a clean agreement (divergence-shaped, timeout, wedged
-    /// runtime, ineligible subject) — the parent re-runs individually.
+    /// Not a clean agreement (divergence-shaped, timeout, ineligible
+    /// subject) — the parent re-runs individually.
     Other,
 }
 
-/// The `check-batch` child body: run `progs` sequentially against one
-/// warmed runtime pair, so the stdlib compiles once per mode. `report`
-/// is called after each subject. A Timeout/RuntimeErr in either mode
-/// leaves the shared runtime suspect: that subject reports `Other` and
-/// the batch stops.
+/// The `check-batch` child body: run `progs` sequentially, each on
+/// fresh runtimes that restore the registration image built once per
+/// child, so the stdlib compiles at most once per process. `report` is
+/// called after each subject.
 pub async fn run_batch(
     progs: &[String],
     timeout: Duration,
     mut report: impl FnMut(usize, BatchVerdict),
 ) {
-    let (tx_i, rx_i) = mpsc::channel(64);
-    let (tx_j, rx_j) = mpsc::channel(64);
-    let empty = || VfsResolver::new(AHashMap::new());
-    let swap_i = SwapResolver::arc(empty());
-    let swap_j = SwapResolver::arc(empty());
-    let sink_i = graphix_package_core::PrintSink::default();
-    let sink_j = graphix_package_core::PrintSink::default();
-    let (seeded_i, seeded_j) = (sink_i.clone(), sink_j.clone());
-    let ctx_i = match init_with_flags_and_setup(
-        tx_i,
-        REGISTER,
-        vec![swap_i.clone()],
-        Mode::Interp.flags(),
-        move |ctx| {
-            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded_i;
-        },
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let ctx_j = match init_with_flags_and_setup(
-        tx_j,
-        REGISTER,
-        vec![swap_j.clone()],
-        Mode::Jit.flags(),
-        move |ctx| {
-            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded_j;
-        },
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let mut lane_i = EngineLane { ctx: ctx_i, rx: rx_i, swap: swap_i, sink: sink_i };
-    let mut lane_j = EngineLane { ctx: ctx_j, rx: rx_j, swap: swap_j, sink: sink_j };
-    let mut consecutive_poison = 0u32;
     for (i, code) in progs.iter().enumerate() {
-        // A subject-unique module name gives a fresh module and fresh
-        // BindIds; the previous subject's graph was deleted when its
-        // `drive` returned. Aux files ride in the subject's own table
-        // (aliasing is pinned by `batched_files_do_not_alias`).
-        let subj = match Subject::parse(code, &format!("t{i}")) {
-            Ok(s) => s,
+        let tier = match Subject::parse(code, "test") {
+            Ok(s) => s.tier,
             Err(_) => {
                 report(i, BatchVerdict::Other);
                 continue;
             }
         };
-        let tier = subj.tier;
-        lane_i.swap.set(VfsResolver::new(subj.table.clone()));
-        lane_j.swap.set(VfsResolver::new(subj.table.clone()));
+        let callable = callable::has_header(code);
         // the subject's own tier drives both runs
         let (interp, jit) = tokio::join!(
-            lane_i.drive(&subj, Route::InLanguage, timeout),
-            lane_j.drive(&subj, Route::InLanguage, timeout),
+            run_program_routed(code, Mode::Interp, Route::InLanguage, timeout),
+            run_program_routed(code, Mode::Jit, Route::InLanguage, timeout),
         );
-        // A callable subject owes the route matrix. The two routes share
-        // a runtime per engine, so they run in sequence.
-        let routed = if subj.spec.is_some() {
-            let (ib, jb) = tokio::join!(
-                lane_i.drive(&subj, Route::Dispatch, timeout),
-                lane_j.drive(&subj, Route::Dispatch, timeout),
-            );
-            Some((ib, jb))
+        // A callable subject owes the route matrix.
+        let routed = if callable {
+            Some(tokio::join!(
+                run_program_routed(code, Mode::Interp, Route::Dispatch, timeout),
+                run_program_routed(code, Mode::Jit, Route::Dispatch, timeout),
+            ))
         } else {
             None
         };
@@ -1724,9 +1597,8 @@ pub async fn run_batch(
             || suspect(&jit)
             || routed_ref.is_some_and(|(a, b)| suspect(a) || suspect(b));
         // Excluded tier: no value comparison is sound, so neither the twin
-        // scan nor the route pair runs; poison stays batch business
-        // whatever the tier. A twin violation goes back through the
-        // individual path, which confirms it with a rerun.
+        // scan nor the route pair runs. A twin violation goes back through
+        // the individual path, which confirms it with a rerun.
         let comparable = tier != OracleTier::Excluded;
         let twin = comparable
             && (twin_violation(&interp)
@@ -1750,8 +1622,8 @@ pub async fn run_batch(
             && !twin
             && routes_agree
             && (!comparable || interp.agrees_with_at(&jit, tier));
-        // The session runs take fresh runtimes; a disagreement goes back
-        // through the individual path, which confirms it with a rerun.
+        // A session disagreement goes back through the individual path,
+        // which confirms it with a rerun.
         let mut sessions_agree = true;
         if agreed && comparable && sessions_sampled(i) {
             for &route in session_routes(code) {
@@ -1771,7 +1643,7 @@ pub async fn run_batch(
             // `ran` is the parent's ring-admission bar and mirrors the
             // individual path: a callable or Excluded subject is never admitted
             let ran = comparable
-                && subj.spec.is_none()
+                && !callable
                 && matches!(&interp, Outcome::Trace(_))
                 && matches!(&jit, Outcome::Trace(_));
             BatchVerdict::Agree { ran }
@@ -1779,69 +1651,10 @@ pub async fn run_batch(
             BatchVerdict::Other
         };
         report(i, verdict);
-        if poisoned {
-            // three in a row: the runtime answers probes but cannot
-            // finish real subjects
-            consecutive_poison += 1;
-            if consecutive_poison >= 3 {
-                break;
-            }
-            if !probe_runtime_health(i, &mut lane_i, &mut lane_j).await {
-                break;
-            }
-        } else {
-            consecutive_poison = 0;
-        }
-    }
-    let grace = Duration::from_secs(2);
-    let _ = tokio::time::timeout(grace, lane_i.ctx.shutdown()).await;
-    let _ = tokio::time::timeout(grace, lane_j.ctx.shutdown()).await;
-}
-
-/// One engine's share of a batch: its runtime, its event channel and
-/// the resolver swapped to each subject's table in turn.
-struct EngineLane {
-    ctx: TestCtx,
-    rx: mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
-    swap: std::sync::Arc<SwapResolver>,
-    sink: graphix_package_core::PrintSink,
-}
-
-impl EngineLane {
-    async fn drive(
-        &mut self,
-        subj: &Subject,
-        route: Route,
-        timeout: Duration,
-    ) -> Outcome {
-        drive(&self.ctx, &mut self.rx, subj, route, timeout, Entry::Compile, &self.sink)
-            .await
     }
 }
 
-/// A Timeout/RuntimeErr leaves the shared runtimes suspect but usually
-/// recovered: probe both with a trivial subject on a short budget.
-/// True when both answered.
-async fn probe_runtime_health(
-    i: usize,
-    lane_i: &mut EngineLane,
-    lane_j: &mut EngineLane,
-) -> bool {
-    // an interrupt breaks the loop cooperatively, so a deep unwind can
-    // churn for seconds after the drive returns
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let probe = Subject::parse("i64:0", &format!("p{i}")).expect("trivial probe parses");
-    lane_i.swap.set(VfsResolver::new(probe.table.clone()));
-    lane_j.swap.set(VfsResolver::new(probe.table.clone()));
-    let budget = Duration::from_secs(10);
-    let (pi, pj) = tokio::join!(
-        lane_i.drive(&probe, Route::InLanguage, budget),
-        lane_j.drive(&probe, Route::InLanguage, budget),
-    );
-    matches!(pi, Outcome::Trace(_)) && matches!(pj, Outcome::Trace(_))
-}
-
-/// Batch size for the campaign pool's batch children. 1 disables
+/// Batch size for the campaign pool's batch children./// Batch size for the campaign pool's batch children. 1 disables
 /// batching. Larger than the default starves the mutation ring's
 /// agreement feedback and coarsens pool granularity in finite gates.
 fn batch_size() -> usize {
@@ -2876,13 +2689,38 @@ pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
             suspect.len()
         );
         for i in suspect {
-            let (d, _) = check_classified(entries[i].1, timeout * 4).await;
+            let (name, prog) = entries[i];
+            let (d, _) = check_classified(prog, timeout * 4).await;
             if let Some(d) = d {
-                regressions.push((entries[i].0.to_string(), d));
+                regressions.push((name.to_string(), d));
+            } else if let Some(d) = undeclared_rejection(prog, timeout * 4).await {
+                regressions.push((name.to_string(), d));
             }
         }
     }
     regressions
+}
+
+/// The marker a corpus pin carries when both engines are meant to
+/// reject it (a typechecker refusal pinned as a refusal).
+pub const EXPECT_REJECT: &str = "// expect: reject";
+
+/// A pin both engines reject that does not say so, as a divergence.
+async fn undeclared_rejection(prog: &str, timeout: Duration) -> Option<Divergence> {
+    if prog.lines().any(|l| l.trim() == EXPECT_REJECT) {
+        return None;
+    }
+    let outcome = run_program(prog, Mode::Interp, timeout).await;
+    if !matches!(outcome, Outcome::CompileErr(_) | Outcome::RuntimeErr(_)) {
+        return None;
+    }
+    Some(Divergence {
+        code: prog.to_string(),
+        interp: outcome.clone(),
+        jit: outcome,
+        tier: oracle_tier(prog),
+        pair: Pair::Rejected,
+    })
 }
 
 /// Number of programs in the embedded regression corpus.
@@ -5714,8 +5552,8 @@ mod batch_files_test {
     use super::*;
 
     /// Two subjects with the same module name and incompatible contents
-    /// both agree in one batch: files do not alias across the warmed
-    /// runtime. The differential oracle cannot see aliasing (both
+    /// both agree in one batch: files do not alias across a child's
+    /// subjects. The differential oracle cannot see aliasing (both
     /// engines inherit the same wrong module), so the verdict is the
     /// observable.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

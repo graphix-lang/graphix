@@ -1,3 +1,4 @@
+// expect: reject
 // bisect: typecheck unsoundness (soak-jul14b fuzz divergence_000005).
 // `Sample::compile` snapshotted its RHS type before typecheck;
 // Select::typecheck0 REPLACES its typ field (finding-37 orphan class),
