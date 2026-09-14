@@ -554,18 +554,6 @@ pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
     }
 }
 
-/// True when a kernel running `node` could deliver an error to a
-/// handler: a handler-ful `?` is reachable from it.
-pub(crate) fn subtree_raises<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    let mut raises = false;
-    for_each_reachable_node(node, &mut |n| {
-        if let NodeView::Qop(q) = n.view() {
-            raises |= q.handler.is_some();
-        }
-    });
-    raises
-}
-
 /// One statically-resolved lambda call site in a region being compiled,
 /// recorded by [`discover_lambda_calls`] and consumed by
 /// `CallSite::emit_clif` to emit a CLIF `call` against the callee.

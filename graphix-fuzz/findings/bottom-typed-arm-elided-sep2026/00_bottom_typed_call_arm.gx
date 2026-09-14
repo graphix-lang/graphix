@@ -1,0 +1,11 @@
+// sep12f ryouko fuzz divergence_000000 (2026-09-13), the non-recursive
+// core. `g` returns a connect, so the arm `_ => g(w)` is bottom-TYPED
+// without being `never()`. The select emitter took every bottom-typed
+// arm as a standing bottom of the merge shape and never emitted the
+// body, so the call never reached `g` and the write never landed: the
+// JIT read z = 0 forever where the interp read 0 then 5.
+// Fix: only a literal `never()` is a standing bottom; any other
+// bottom-typed body is emitted, its fire governs the placeholder, and
+// an effect inside it de-fuses at its own emission.
+// Expected trace (both engines): 0; 5.
+{let z = i64:0; let g = |y| z <- y; let w = i64:5; select w {i64:0 => i64:1, _ => g(w)}; z}

@@ -1506,14 +1506,13 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
     // A `never()` arm is a standing bottom: it fires only with the
-    // scrutinee, through the STALE fold below. A bottom-typed arm that
-    // can raise still runs for its delivery.
-    let bottom_arm =
-        matches!(body_frozen, Type::Bottom) || matches!(body.view(), NodeView::Never(_));
+    // scrutinee, through the STALE fold below. Any other bottom-typed
+    // body runs: its production's fire is the arm's, and an effect in
+    // it (a raise's delivery, a call into a body that connects)
+    // de-fuses at its own emission.
+    let is_never = matches!(body.view(), NodeView::Never(_));
+    let bottom_arm = is_never || matches!(body_frozen, Type::Bottom);
     let (disc, payload) = if bottom_arm {
-        if fusion::subtree_raises(body) {
-            body.emit_clif(cx)?;
-        }
         let kind = match merge_shape {
             SelectMerge::Scalar(rp) => AbiKind::Scalar(rp),
             SelectMerge::Value => AbiKind::Value,
@@ -1521,7 +1520,13 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             SelectMerge::String => AbiKind::String,
         };
         let cv = super::nodes::emit_bottom_of_kind(cx, kind)?;
-        (cx.b.ins().bor_imm(cv.disc, STALE), cv.payload)
+        let disc = if is_never {
+            cx.b.ins().bor_imm(cv.disc, STALE)
+        } else {
+            let produced = body.emit_clif(cx)?;
+            propagate_flags(cx.b, cv.disc, &[produced.disc])
+        };
+        (disc, cv.payload)
     } else {
         emit_select_arm_value(cx, body, &body_frozen, merge_shape)?
     };

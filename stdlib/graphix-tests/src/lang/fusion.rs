@@ -1430,3 +1430,22 @@ run!(never_arm_fuses, NEVER_ARM_FUSES, |v: Result<&Value>| match v {
     Ok(Value::I64(2130)) => true,
     _ => false,
 }; FuseExpect::Jit);
+
+// An arm whose body is bottom-TYPED but not `never()` still runs: `g`
+// returns the connect's bottom, so the arm's value is a bottom of the
+// merge shape, but the call must reach `g` and land the write. The
+// select node-walks (the callee has no kernel); the guard below fuses.
+const BOTTOM_TYPED_ARM_RUNS: &str = r#"
+{
+  let z = 0;
+  let g = |y| z <- y;
+  let w = 5;
+  select w { i64:0 => 1, _ => g(w) };
+  select z { 0 => never(), n => n }
+}
+"#;
+
+run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, |v: Result<&Value>| match v {
+    Ok(Value::I64(5)) => true,
+    _ => false,
+}, timeout: 5; FuseExpect::Jit);

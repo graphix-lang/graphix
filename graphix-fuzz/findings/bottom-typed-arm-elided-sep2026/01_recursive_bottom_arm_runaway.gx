@@ -1,0 +1,6 @@
+// The soak's minimized program. `f`'s body ends in a connect, so the
+// recursive arm `_ => f(x - 1)` is bottom-typed; the JIT elided it and
+// settled after two cycles, while the interp descends a fresh level
+// every cycle (each activation walks x from 0 to 4 and spawns a child
+// at 1) and never settles. Both engines must hit the cycle cap.
+{let rec f = |x| {select x {i64:0 => i64:9223372036854775807, _ => f(x - i64:1)}; x <- select x {n if n < i64:4 => n + i64:1, _ => never()}}; f(i64:3)}
