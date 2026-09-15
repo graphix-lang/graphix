@@ -149,17 +149,11 @@ let probe = |host: string| -> Box {
 // Runs per second averaged over the campaign so far. The counter line
 // is republished every 1000 runs, so this lags a little; "-" until both
 // numbers exist.
-let rate = |runs: string, age: string| -> string {
-  let n = cast<f64>(runs);
-  let a = cast<f64>(age);
-  select n {
-    f64 as n => select a {
-      f64 as a if a > 0.0 => str::sprintf("%.1f", n / a)$,
-      _ => "-"
-    },
+let rate = |runs: string, age: string| -> string
+  select (cast<f64>(runs), cast<f64>(age)) {
+    (f64, f64) as (n, a) if a > 0.0 => str::sprintf("%.1f", n / a)$,
     _ => "-"
-  }
-};
+  };
 
 let blank = cell(line(""));
 
