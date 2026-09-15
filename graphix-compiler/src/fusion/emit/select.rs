@@ -1505,12 +1505,16 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         kernel_abi::freeze_for_abi_normalized(body.typ()).ok_or_else(|| {
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
         })?;
-    // A `never()` arm is a standing bottom: it fires only with the
-    // scrutinee, through the STALE fold below. Any other bottom-typed
-    // body runs: its production's fire is the arm's, and an effect in
-    // it (a raise's delivery, a call into a body that connects)
-    // de-fuses at its own emission.
-    let is_never = matches!(body.view(), NodeView::Never(_));
+    // A `never(args..)` arm is a standing bottom: it fires only with the
+    // scrutinee, through the STALE fold below, whatever its args do; the
+    // args are still consumed (a raise or an effect in one delivers or
+    // de-fuses at its own emission). Any other bottom-typed body runs:
+    // its production's fire is the arm's.
+    let never_args = match body.view() {
+        NodeView::Never(n) => Some(&n.n),
+        _ => None,
+    };
+    let is_never = never_args.is_some();
     let bottom_arm = is_never || matches!(body_frozen, Type::Bottom);
     let (disc, payload) = if bottom_arm {
         let kind = match merge_shape {
@@ -1520,7 +1524,11 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
             SelectMerge::String => AbiKind::String,
         };
         let cv = super::nodes::emit_bottom_of_kind(cx, kind)?;
-        let disc = if is_never {
+        let disc = if let Some(args) = never_args {
+            for arg in args.iter() {
+                let av = arg.emit_clif(cx)?;
+                super::flow::emit_discard_result(cx, arg, av)?;
+            }
             cx.b.ins().bor_imm(cv.disc, STALE)
         } else {
             let produced = body.emit_clif(cx)?;

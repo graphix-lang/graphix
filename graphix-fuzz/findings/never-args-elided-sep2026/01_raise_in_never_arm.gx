@@ -1,0 +1,5 @@
+// The same elision without a collection: the `?` inside the never's
+// arguments has a handler, so the interp delivers `caught`; the JIT
+// kernel skipped the argument and delivered nothing.
+// Expected stdout (both engines): caught.
+{catch(e) println("caught"); let x: [i64, Error<`E>] = error(`E); let v: [i64, null] = 1; select v {i64 as n => never(x?), null as _ => true}}

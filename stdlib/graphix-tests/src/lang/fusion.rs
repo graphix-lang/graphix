@@ -1449,3 +1449,37 @@ run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, |v: Result<&Value>| match v {
     Ok(Value::I64(5)) => true,
     _ => false,
 }, timeout: 5; FuseExpect::Jit);
+
+// A `never(args..)` arm is a standing bottom whatever its args do, but
+// the args are consumed: the handler-ful `?` inside one delivers its
+// raise from the kernel.
+const NEVER_ARM_ARGS_RAISE: &str = r#"
+{
+  let x = array::iter([1, 2, 3]);
+  let n = 0;
+  let v = { catch(e) n <- e ~ n + 1; select x { 2 => never(error(`E(x))?), _ => x } };
+  select count(x) { 3 => n, _ => never() }
+}
+"#;
+
+run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}, timeout: 5; FuseExpect::Jit);
+
+// The soak's shape: a call into a connecting body inside a never arm of
+// a collection callback. The call must reach `g` and land the write;
+// the map region node-walks (the callee has no kernel), the guard fuses.
+const NEVER_ARM_ARGS_EFFECT: &str = r#"
+{
+  let z = 0;
+  let g = |y| z <- y;
+  array::map([1, null], |v| select v { i64 as n => never(g(n)), null as _ => true });
+  select z { 0 => never(), n => n }
+}
+"#;
+
+run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}, timeout: 5; FuseExpect::Jit);

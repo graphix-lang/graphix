@@ -1,0 +1,8 @@
+// sep14a ryouko fuzz divergence_000000 (2026-09-15), minimized. The
+// select emitter took every `never(..)` arm as a standing bottom and
+// emitted nothing of it, so the `dbg` inside the never's arguments —
+// consumed and printed every cycle by the interp — never ran under
+// fusion. A never with arguments still emits and discards its args; an
+// effect in one de-fuses at its own emission, a raise delivers.
+// Expected stdout (both engines): the dbg line, once.
+array::map([i64:1, null], |v| select v {i64 as n => never(dbg(i64:0)), null as _ => true})

@@ -247,8 +247,9 @@ node graph IS the IR — there is no parallel typed IR
   `Qop` uses), except a handler-ful `?` under a select arm whose error
   derives from a constant: that raise fires when the arm is ENTERED and
   a kernel has no arm-entry view, so it node-walks
-  (`lowering::entry_raise_blocker`); only a literal `never()` arm is a
-  standing bottom, any other bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
+  (`lowering::entry_raise_blocker`); only a `never(..)` arm is a
+  standing bottom (its args are still emitted and consumed), any other
+  bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
   `~`, `Any`, `Catch` — node-walks, transitively. A kernel's only
   cross-invocation memory is the firing boundary (prev-length words,
   first-call words, per-site/per-activation blocks); no replay caches,

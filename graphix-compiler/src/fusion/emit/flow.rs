@@ -436,7 +436,7 @@ fn emit_let_node<R: Rt, E: UserEvent>(
 /// Drop a discarded statement's result if it owns an allocation.
 /// Borrowed reads (a bare `Ref` statement) own nothing; strings are
 /// always owned at production (reads clone).
-fn emit_discard_result<R: Rt, E: UserEvent>(
+pub(super) fn emit_discard_result<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
     cv: CompiledExpr,
