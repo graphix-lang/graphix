@@ -22,7 +22,7 @@ type PathSegment = [
     b: {x: f64, y: f64},
     radius: f64
   }),
-  `Close(null)
+  `Close
 ];
 
 type CanvasShape = [
@@ -189,7 +189,7 @@ An arbitrary path built from `PathSegment` values. Supports fill, stroke, or bot
 - `` `BezierTo({control_a, control_b, to}) `` -- cubic Bezier segment
 - `` `QuadraticTo({control, to}) `` -- quadratic Bezier segment
 - `` `ArcTo({a, b, radius}) `` -- arc through two tangent points
-- `` `Close(null) `` -- close the path back to its start
+- `` `Close `` -- close the path back to its start
 
 ```graphix
 `Path({
@@ -197,7 +197,7 @@ An arbitrary path built from `PathSegment` values. Supports fill, stroke, or bot
     `MoveTo({x: 0.0, y: 0.0}),
     `LineTo({x: 50.0, y: 100.0}),
     `LineTo({x: 100.0, y: 0.0}),
-    `Close(null)
+    `Close
   ],
   fill: color(#r: 0.5, #b: 0.5, #a: 0.8)$,
   stroke: null

@@ -109,7 +109,7 @@ pub(crate) enum PathSegment {
     BezierTo { control_a: PointV, control_b: PointV, to: PointV },
     QuadraticTo { control: PointV, to: PointV },
     ArcTo { a: PointV, b: PointV, radius: f32 },
-    Close(()),
+    Close,
 }
 
 #[derive(Clone, Debug, FromValue)]
@@ -323,7 +323,7 @@ fn draw_shape(frame: &mut iced_widget::canvas::Frame<Renderer>, shape: &CanvasSh
                         PathSegment::ArcTo { a, b: bp, radius } => {
                             b.arc_to(a.0, bp.0, *radius);
                         }
-                        PathSegment::Close(()) => b.close(),
+                        PathSegment::Close => b.close(),
                     }
                 }
             });

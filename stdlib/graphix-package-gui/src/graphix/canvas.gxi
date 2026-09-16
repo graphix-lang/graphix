@@ -5,7 +5,7 @@ type PathSegment = [
   `BezierTo({ control_a: {x: f64, y: f64}, control_b: {x: f64, y: f64}, to: {x: f64, y: f64} }),
   `QuadraticTo({ control: {x: f64, y: f64}, to: {x: f64, y: f64} }),
   `ArcTo({ a: {x: f64, y: f64}, b: {x: f64, y: f64}, radius: f64 }),
-  `Close(null)
+  `Close
 ];
 
 type CanvasShape = [

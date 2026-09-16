@@ -121,7 +121,7 @@ async fn path_and_curves_render() -> Result<()> {
         "`Path({segments: [`MoveTo({x: 0.0, y: 0.0}), `LineTo({x: 10.0, y: 0.0}), ",
         "`BezierTo({control_a: {x: 1.0, y: 2.0}, control_b: {x: 3.0, y: 4.0}, to: {x: 5.0, y: 6.0}}), ",
         "`QuadraticTo({control: {x: 1.0, y: 1.0}, to: {x: 2.0, y: 2.0}}), ",
-        "`ArcTo({a: {x: 0.0, y: 0.0}, b: {x: 1.0, y: 1.0}, radius: 3.0}), `Close(null)], ",
+        "`ArcTo({a: {x: 0.0, y: 0.0}, b: {x: 1.0, y: 1.0}, radius: 3.0}), `Close], ",
         "fill: null, stroke: {color: color(#r: 0.0, #g: 0.0, #b: 0.0, #a: 1.0)$, width: 1.0}}), ",
         "`RoundedRect({top_left: {x: 0.0, y: 0.0}, size: {width: 4.0, height: 2.0}, radius: 1.0, ",
         "fill: color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 1.0)$, stroke: null}), ",
@@ -151,11 +151,11 @@ fn decoded_fields() -> Result<()> {
         }
         s => panic!("expected a Rect, got {s:?}"),
     }
-    let v: Value = r#"["Path", [["fill", null], ["segments", [["MoveTo", [["x", 1.0], ["y", 2.0]]], ["Close", null]]], ["stroke", null]]]"#
+    let v: Value = r#"["Path", [["fill", null], ["segments", [["MoveTo", [["x", 1.0], ["y", 2.0]]], "Close"]], ["stroke", null]]]"#
         .parse()?;
     match CanvasShape::from_value(v)? {
         CanvasShape::Path { segments, fill: None, stroke: None } => match &segments[..] {
-            [PathSegment::MoveTo(p), PathSegment::Close(())] => {
+            [PathSegment::MoveTo(p), PathSegment::Close] => {
                 assert_eq!((p.0.x, p.0.y), (1.0, 2.0))
             }
             s => panic!("unexpected segments {s:?}"),

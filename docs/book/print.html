@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9b82c9ef.js";
+            window.path_to_searchindex_js = "searchindex-5148a797.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -11561,7 +11561,7 @@ mod icon;
     b: {x: f64, y: f64},
     radius: f64
   }),
-  `Close(null)
+  `Close
 ];
 
 type CanvasShape = [
@@ -11688,14 +11688,14 @@ val canvas: fn(
 <li><code>`BezierTo({control_a, control_b, to})</code> – cubic Bezier segment</li>
 <li><code>`QuadraticTo({control, to})</code> – quadratic Bezier segment</li>
 <li><code>`ArcTo({a, b, radius})</code> – arc through two tangent points</li>
-<li><code>`Close(null)</code> – close the path back to its start</li>
+<li><code>`Close</code> – close the path back to its start</li>
 </ul>
 <pre><code class="language-graphix">`Path({
   segments: [
     `MoveTo({x: 0.0, y: 0.0}),
     `LineTo({x: 50.0, y: 100.0}),
     `LineTo({x: 100.0, y: 0.0}),
-    `Close(null)
+    `Close
   ],
   fill: color(#r: 0.5, #b: 0.5, #a: 0.8)$,
   stroke: null
