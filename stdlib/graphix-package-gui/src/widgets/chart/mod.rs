@@ -40,13 +40,7 @@ pub(crate) struct ChartW<X: GXExt> {
     projection: TRef<X, OptProjection3D>,
     width: TRef<X, LengthV>,
     height: TRef<X, LengthV>,
-    background: TRef<X, OptColor>,
-    margin: TRef<X, OptF64>,
-    title_color: TRef<X, OptColor>,
-    title_size: TRef<X, OptF64>,
-    legend_position: TRef<X, OptLegendPosition>,
-    legend_style: TRef<X, OptLegendStyle>,
-    mesh: TRef<X, OptMeshStyle>,
+    style: TRef<X, OptChartStyle>,
     /// Set to true when data changes; draw() clears the cache and resets.
     dirty: Cell<bool>,
 }
@@ -54,17 +48,11 @@ pub(crate) struct ChartW<X: GXExt> {
 impl<X: GXExt> ChartW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         let [
-            (_, background),
             (_, datasets),
             (_, height),
-            (_, legend_position),
-            (_, legend_style),
-            (_, margin),
-            (_, mesh),
             (_, projection),
+            (_, style),
             (_, title),
-            (_, title_color),
-            (_, title_size),
             (_, width),
             (_, x_label),
             (_, x_range),
@@ -72,19 +60,13 @@ impl<X: GXExt> ChartW<X> {
             (_, y_range),
             (_, z_label),
             (_, z_range),
-        ] = source.cast_to::<[(ArcStr, u64); 18]>().context("chart flds")?;
+        ] = source.cast_to::<[(ArcStr, u64); 12]>().context("chart flds")?;
         let (
-            background_ref,
             datasets_ref,
             height_ref,
-            legend_position_ref,
-            legend_style_ref,
-            margin_ref,
-            mesh_ref,
             projection_ref,
+            style_ref,
             title_ref,
-            title_color_ref,
-            title_size_ref,
             width_ref,
             x_label_ref,
             x_range_ref,
@@ -93,17 +75,11 @@ impl<X: GXExt> ChartW<X> {
             z_label_ref,
             z_range_ref,
         ) = try_join! {
-            gx.compile_ref(background),
             gx.compile_ref(datasets),
             gx.compile_ref(height),
-            gx.compile_ref(legend_position),
-            gx.compile_ref(legend_style),
-            gx.compile_ref(margin),
-            gx.compile_ref(mesh),
             gx.compile_ref(projection),
+            gx.compile_ref(style),
             gx.compile_ref(title),
-            gx.compile_ref(title_color),
-            gx.compile_ref(title_size),
             gx.compile_ref(width),
             gx.compile_ref(x_label),
             gx.compile_ref(x_range),
@@ -130,15 +106,7 @@ impl<X: GXExt> ChartW<X> {
             projection: TRef::new(projection_ref).context("chart tref projection")?,
             width: TRef::new(width_ref).context("chart tref width")?,
             height: TRef::new(height_ref).context("chart tref height")?,
-            background: TRef::new(background_ref).context("chart tref background")?,
-            margin: TRef::new(margin_ref).context("chart tref margin")?,
-            title_color: TRef::new(title_color_ref).context("chart tref title_color")?,
-            title_size: TRef::new(title_size_ref).context("chart tref title_size")?,
-            legend_position: TRef::new(legend_position_ref)
-                .context("chart tref legend_position")?,
-            legend_style: TRef::new(legend_style_ref)
-                .context("chart tref legend_style")?,
-            mesh: TRef::new(mesh_ref).context("chart tref mesh")?,
+            style: TRef::new(style_ref).context("chart tref style")?,
             dirty: Cell::new(true),
         }))
     }
@@ -216,13 +184,7 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
         up!(y_range);
         up!(z_range);
         up!(projection);
-        up!(background);
-        up!(margin);
-        up!(title_color);
-        up!(title_size);
-        up!(legend_position);
-        up!(legend_style);
-        up!(mesh);
+        up!(style);
         changed |= self.width.update(id, v).context("chart update width")?.is_some();
         changed |= self.height.update(id, v).context("chart update height")?.is_some();
         Ok(changed)

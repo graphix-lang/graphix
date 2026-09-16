@@ -61,7 +61,9 @@ type MeshStyle = {
   x_light_lines: [i64, null],
   y_label_area_size: [f64, null],
   y_labels: [i64, null],
-  y_light_lines: [i64, null]
+  y_light_lines: [i64, null],
+  z_labels: [i64, null],
+  z_light_lines: [i64, null]
 };
 
 type LegendStyle = {
@@ -75,6 +77,17 @@ type LegendPosition = [
   `UpperLeft, `UpperRight, `LowerLeft, `LowerRight,
   `MiddleLeft, `MiddleRight, `UpperMiddle, `LowerMiddle
 ];
+
+type ChartStyle = {
+  background: [Color, null],
+  margin: [f64, null],
+  title_size: [f64, null],
+  title_color: [Color, null],
+  palette: [Array<Color>, null],
+  legend_position: [LegendPosition, null],
+  legend: [LegendStyle, null],
+  mesh: [MeshStyle, null]
+};
 
 type Dataset = [
   `Line({data: &[Array<(f64, f64)>, Array<(datetime, f64)>], style: SeriesStyle}),
@@ -92,7 +105,6 @@ type Dataset = [
 
 val chart: fn(
   ?#title: &[string, null],
-  ?#title_color: &[Color, null],
   ?#x_label: &[string, null],
   ?#y_label: &[string, null],
   ?#x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
@@ -102,12 +114,7 @@ val chart: fn(
   ?#projection: &[Projection3D, null],
   ?#width: &Length,
   ?#height: &Length,
-  ?#background: &[Color, null],
-  ?#margin: &[f64, null],
-  ?#title_size: &[f64, null],
-  ?#legend_position: &[LegendPosition, null],
-  ?#legend_style: &[LegendStyle, null],
-  ?#mesh: &[MeshStyle, null],
+  ?#style: &[ChartStyle, null],
   a: &Array<Dataset>
 ) -> Widget
 ```
@@ -115,7 +122,6 @@ val chart: fn(
 ## Chart Parameters
 
 - **title** — Chart title displayed above the plot area. Null for no title.
-- **title_color** — Color of the chart title text. Defaults to black when null.
 - **x_label** — Label for the x-axis. Null for no label.
 - **y_label** — Label for the y-axis. Null for no label.
 - **x_range** — Manual x-axis range as `{min: f64, max: f64}` or `{min: datetime, max: datetime}`. When null, the range is computed automatically from the data.
@@ -125,12 +131,7 @@ val chart: fn(
 - **projection** — 3D projection parameters as a `Projection3D` struct. Controls pitch, yaw, and scale of the 3D view. When null, plotters defaults are used.
 - **width** — Horizontal sizing as a `Length`. Defaults to `` `Fill ``.
 - **height** — Vertical sizing as a `Length`. Defaults to `` `Fill ``.
-- **background** — Background color as a `Color` struct. Defaults to white when null.
-- **margin** — Margin in pixels around the plot area. Defaults to 10.
-- **title_size** — Font size for the chart title. Defaults to 16.
-- **legend_position** — Position of the series legend. Defaults to `` `UpperLeft `` when null.
-- **legend_style** — Legend appearance via a `LegendStyle` struct. Controls background, border, text color, and label size. When null, defaults to white background with black border.
-- **mesh** — Grid and axis styling via a `MeshStyle` struct. When null, plotters defaults are used.
+- **style** — Every appearance knob as a `ChartStyle` struct (see [ChartStyle Fields](#chartstyle-fields)). When null, plotters defaults are used.
 
 The positional argument is a reference to an array of `Dataset` values. Multiple datasets can be plotted on the same axes.
 
@@ -226,13 +227,40 @@ chart::surface(#color_by_z: true, #label: "surface", &grid_data)
 
 3D surface plot. Data is `&Array<Array<(f64, f64, f64)>>` — a grid of rows where each point is `(x, y, z)`. Set `#color_by_z: true` for automatic heat-map coloring based on z values.
 
+## Styling
+
+A chart's appearance lives in one `ChartStyle` record passed as `#style`,
+so a program defines its look once and hands the same value to every
+chart. A chart that needs one thing different takes a functional update
+of the shared record:
+
+```graphix
+let deck = chart::chart_style(
+    #background: color(#r: 0.12, #g: 0.12, #b: 0.18)$,
+    #title_color: color(#r: 0.9, #g: 0.9, #b: 0.95)$,
+    #legend: chart::legend_style(#label_color: color(#r: 0.85, #g: 0.85, #b: 0.9)$),
+    #mesh: chart::mesh_style(#label_color: color(#r: 0.75, #g: 0.75, #b: 0.8)$)
+);
+let headline = {deck with title_size: 28.0};
+chart::chart(#title: &"Revenue", #style: &deck, &[...]);
+chart::chart(#title: &"Summary", #style: &headline, &[...])
+```
+
+### `chart::chart_style`
+
+```graphix
+chart::chart_style(#background: color(#r: 0.1, #g: 0.1, #b: 0.1)$, #margin: 20.0, #legend_position: `UpperRight)
+```
+
+Constructs a `ChartStyle` value for the chart's `#style` parameter. Every argument is optional; a null field keeps the plotters default.
+
 ### `chart::mesh_style`
 
 ```graphix
 chart::mesh_style(#label_color: color(#r: 1.0, #g: 1.0, #b: 1.0)$, #x_labels: 5)
 ```
 
-Constructs a `MeshStyle` value for use with the chart's `#mesh` parameter.
+Constructs a `MeshStyle` value for `chart_style`'s `#mesh` parameter.
 
 ### `chart::legend_style`
 
@@ -240,7 +268,7 @@ Constructs a `MeshStyle` value for use with the chart's `#mesh` parameter.
 chart::legend_style(#background: color(#r: 0.1, #g: 0.1, #b: 0.1)$, #label_color: color(#r: 1.0, #g: 1.0, #b: 1.0)$)
 ```
 
-Constructs a `LegendStyle` value for use with the chart's `#legend_style` parameter.
+Constructs a `LegendStyle` value for `chart_style`'s `#legend` parameter.
 
 ## Style Fields
 
@@ -296,13 +324,24 @@ Used with the chart `#projection` parameter for 3D charts:
 - **scale** — Scale factor for the 3D projection.
 - **yaw** — Horizontal rotation angle in radians.
 
+## ChartStyle Fields
+
+- **background** — Background color as a `Color` struct. Defaults to white when null.
+- **margin** — Margin in pixels around the plot area. Defaults to 10.
+- **title_size** — Font size for the chart title. Defaults to 16.
+- **title_color** — Color of the chart title text. Defaults to black when null.
+- **palette** — Colors assigned, in order, to series that set no `#color` of their own, and to pie slices without `#colors`. Cycles when there are more series than colors. When null, a built-in eight-color palette is used.
+- **legend_position** — Position of the series legend. Defaults to `` `UpperLeft `` when null.
+- **legend** — Legend appearance via a `LegendStyle` struct. When null, defaults to white background with black border.
+- **mesh** — Grid and axis styling via a `MeshStyle` struct. When null, plotters defaults are used.
+
 ## MeshStyle Fields
 
-- **show_x_grid** — Show vertical grid lines. Defaults to true when null.
-- **show_y_grid** — Show horizontal grid lines. Defaults to true when null.
+- **show_x_grid** — Show vertical grid lines. Defaults to true when null. 2D charts only.
+- **show_y_grid** — Show horizontal grid lines. Defaults to true when null. 2D charts only.
 - **grid_color** — Color of the light grid lines drawn between labeled positions.
 - **bold_line_color** — Color of the bold grid lines drawn at each labeled position.
-- **axis_color** — Color of axis lines.
+- **axis_color** — Color of axis lines. 2D charts only.
 - **label_color** — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.
 - **label_size** — Font size for axis labels.
 - **x_label_area_size** — Width of the x-axis label area in pixels. Increase to prevent label clipping.
@@ -311,6 +350,8 @@ Used with the chart `#projection` parameter for 3D charts:
 - **y_label_area_size** — Width of the y-axis label area in pixels. Increase to prevent label clipping.
 - **y_labels** — Number of y-axis tick labels; a bold grid line is drawn at each. Defaults to 11.
 - **y_light_lines** — Maximum number of light grid lines between adjacent y labels. Defaults to 10; 0 draws bold lines only.
+- **z_labels** — Number of z-axis tick labels (3D charts only).
+- **z_light_lines** — Maximum number of light grid lines between adjacent z labels (3D charts only).
 
 ## LegendStyle Fields
 

@@ -52,7 +52,9 @@ type MeshStyle = {
   x_light_lines: [i64, null],
   y_label_area_size: [f64, null],
   y_labels: [i64, null],
-  y_light_lines: [i64, null]
+  y_light_lines: [i64, null],
+  z_labels: [i64, null],
+  z_light_lines: [i64, null]
 };
 
 type LegendStyle = {
@@ -66,6 +68,17 @@ type LegendPosition = [
   `UpperLeft, `UpperRight, `LowerLeft, `LowerRight,
   `MiddleLeft, `MiddleRight, `UpperMiddle, `LowerMiddle
 ];
+
+type ChartStyle = {
+  background: [Color, null],
+  margin: [f64, null],
+  title_size: [f64, null],
+  title_color: [Color, null],
+  palette: [Array<Color>, null],
+  legend_position: [LegendPosition, null],
+  legend: [LegendStyle, null],
+  mesh: [MeshStyle, null]
+};
 
 type OhlcPoint<'a: [f64, datetime]> = {x: 'a, open: f64, high: f64, low: f64, close: f64};
 type ErrorBarPoint<'a: [f64, datetime]> = {x: 'a, min: f64, avg: f64, max: f64};
@@ -87,7 +100,6 @@ type Dataset = [
 type Chart = {
   datasets: &Array<Dataset>,
   title: &[string, null],
-  title_color: &[Color, null],
   x_label: &[string, null],
   y_label: &[string, null],
   x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
@@ -97,17 +109,11 @@ type Chart = {
   projection: &[Projection3D, null],
   width: &Length,
   height: &Length,
-  background: &[Color, null],
-  margin: &[f64, null],
-  title_size: &[f64, null],
-  legend_position: &[LegendPosition, null],
-  legend_style: &[LegendStyle, null],
-  mesh: &[MeshStyle, null]
+  style: &[ChartStyle, null]
 };
 
 val chart: fn(
   ?#title: &[string, null],
-  ?#title_color: &[Color, null],
   ?#x_label: &[string, null],
   ?#y_label: &[string, null],
   ?#x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null],
@@ -117,12 +123,7 @@ val chart: fn(
   ?#projection: &[Projection3D, null],
   ?#width: &Length,
   ?#height: &Length,
-  ?#background: &[Color, null],
-  ?#margin: &[f64, null],
-  ?#title_size: &[f64, null],
-  ?#legend_position: &[LegendPosition, null],
-  ?#legend_style: &[LegendStyle, null],
-  ?#mesh: &[MeshStyle, null],
+  ?#style: &[ChartStyle, null],
   datasets: &Array<Dataset>
 ) -> Widget;
 
@@ -196,7 +197,9 @@ val mesh_style: fn(
   ?#x_light_lines: [i64, null],
   ?#y_label_area_size: [f64, null],
   ?#y_labels: [i64, null],
-  ?#y_light_lines: [i64, null]
+  ?#y_light_lines: [i64, null],
+  ?#z_labels: [i64, null],
+  ?#z_light_lines: [i64, null]
 ) -> MeshStyle;
 
 val pie: fn(
@@ -236,4 +239,17 @@ val legend_style: fn(
   ?#border: [Color, null],
   ?#label_color: [Color, null],
   ?#label_size: [f64, null]
-) -> LegendStyle
+) -> LegendStyle;
+
+/// Every appearance knob of a chart in one record, so one style can be
+/// shared by every chart in a program and varied with `{ s with .. }`.
+val chart_style: fn(
+  ?#background: [Color, null],
+  ?#margin: [f64, null],
+  ?#title_size: [f64, null],
+  ?#title_color: [Color, null],
+  ?#palette: [Array<Color>, null],
+  ?#legend_position: [LegendPosition, null],
+  ?#legend: [LegendStyle, null],
+  ?#mesh: [MeshStyle, null]
+) -> ChartStyle;

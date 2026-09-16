@@ -180,7 +180,7 @@ async fn series_style_stroke_width() -> Result<()> {
 async fn background_color() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
-         #background: &color(#r: 0.1, #g: 0.1, #b: 0.1, #a: 1.0)$, \
+         #style: &chart_style(#background: color(#r: 0.1, #g: 0.1, #b: 0.1, #a: 1.0)$), \
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
@@ -192,12 +192,13 @@ async fn background_color() -> Result<()> {
 async fn mesh_style() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
-         #mesh: &{show_x_grid: true, show_y_grid: false, \
+         #style: &chart_style(#mesh: {show_x_grid: true, show_y_grid: false, \
                    grid_color: null, bold_line_color: color(#r: 0.5, #g: 0.5, #b: 0.5)$, \
                    axis_color: null, \
                    label_color: null, label_size: 12.0, \
                    x_label_area_size: null, x_labels: 5, x_light_lines: 0, \
-                   y_label_area_size: null, y_labels: 5, y_light_lines: 2}, \
+                   y_label_area_size: null, y_labels: 5, y_light_lines: 2, \
+                   z_labels: null, z_light_lines: null}), \
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
@@ -210,17 +211,17 @@ async fn dark_background_label_colors() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
          #title: &\"Dark Chart\", \
-         #title_color: &color(#r: 0.9, #g: 0.9, #b: 0.9, #a: 1.0)$, \
          #x_label: &\"X\", #y_label: &\"Y\", \
-         #background: &color(#r: 0.1, #g: 0.1, #b: 0.15, #a: 1.0)$, \
-         #mesh: &{show_x_grid: true, show_y_grid: true, \
-                   grid_color: color(#r: 0.3, #g: 0.3, #b: 0.35, #a: 1.0)$, \
-                   bold_line_color: null, \
-                   axis_color: color(#r: 0.5, #g: 0.5, #b: 0.55, #a: 1.0)$, \
-                   label_color: color(#r: 0.8, #g: 0.8, #b: 0.8, #a: 1.0)$, \
-                   label_size: 14.0, x_label_area_size: null, x_labels: null, \
-                   x_light_lines: null, y_label_area_size: null, y_labels: null, \
-                   y_light_lines: null}, \
+         #style: &{background: color(#r: 0.1, #g: 0.1, #b: 0.15, #a: 1.0)$, \
+                   margin: null, title_size: null, \
+                   title_color: color(#r: 0.9, #g: 0.9, #b: 0.9, #a: 1.0)$, \
+                   palette: [color(#r: 1.0, #g: 0.5, #b: 0.0, #a: 1.0)$], \
+                   legend_position: `LowerRight, legend: null, \
+                   mesh: chart::mesh_style( \
+                     #grid_color: color(#r: 0.3, #g: 0.3, #b: 0.35, #a: 1.0)$, \
+                     #axis_color: color(#r: 0.5, #g: 0.5, #b: 0.55, #a: 1.0)$, \
+                     #label_color: color(#r: 0.8, #g: 0.8, #b: 0.8, #a: 1.0)$, \
+                     #label_size: 14.0)}, \
          &[chart::line(#label: \"Series\", &[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
@@ -232,12 +233,41 @@ async fn dark_background_label_colors() -> Result<()> {
 async fn legend_style() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
-         #legend_style: &{ \
+         #style: &chart_style(#legend: { \
            background: color(#r: 0.2, #g: 0.2, #b: 0.25, #a: 1.0)$, \
            border: color(#r: 0.5, #g: 0.5, #b: 0.5, #a: 1.0)$, \
            label_color: color(#r: 0.9, #g: 0.9, #b: 0.9, #a: 1.0)$, \
-           label_size: null}, \
+           label_size: null}), \
          &[chart::line(#label: \"Test\", &[(0.0, 0.0), (5.0, 5.0)])]",
+    )
+    .await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shared_style_with_update() -> Result<()> {
+    let code = "use gui::*;\nuse gui::chart::{self, *};\n\
+         let deck = chart_style(#title_size: 20.0, #margin: 4.0);\n\
+         let big = {deck with title_size: 40.0};\n\
+         let result = gui::column::column(&[\
+           chart(#title: &\"a\", #style: &deck, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])]),\
+           chart(#title: &\"b\", #style: &big, &[chart::line(&[(0.0, 0.0), (1.0, 1.0)])])])";
+    let h = GuiTestHarness::new(code).await?;
+    let _ = h.view();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mesh_style_3d() -> Result<()> {
+    let h = chart_harness(
+        "#width: &`Fill, #height: &`Fixed(200.0), \
+         #style: &chart_style(#mesh: mesh_style( \
+           #grid_color: color(#r: 0.3, #g: 0.3, #b: 0.35, #a: 1.0)$, \
+           #bold_line_color: color(#r: 0.6, #g: 0.6, #b: 0.6, #a: 1.0)$, \
+           #x_labels: 4, #y_labels: 3, #z_labels: 2, \
+           #x_light_lines: 0, #y_light_lines: 1, #z_light_lines: 2)), \
+         &[chart::scatter3d(&[(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)])]",
     )
     .await?;
     let _ = h.view();

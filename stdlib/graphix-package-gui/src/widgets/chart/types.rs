@@ -6,6 +6,14 @@ use netidx::publisher::{FromValue, Value};
 use plotters::prelude::SeriesLabelPosition;
 use poolshark::local::LPooled;
 
+fn opt<T: FromValue>(v: Value) -> Result<Option<T>> {
+    if v == Value::Null { Ok(None) } else { Ok(Some(T::from_value(v)?)) }
+}
+
+fn opt_color(v: Value) -> Result<Option<ChartColor>> {
+    Ok(opt::<ColorV>(v)?.map(|c| c.0.into()))
+}
+
 /// A simple RGBA color that does not depend on iced_core.
 #[derive(Clone, Copy, Debug)]
 pub struct ChartColor(pub f32, pub f32, pub f32, pub f32);
@@ -467,6 +475,8 @@ pub struct MeshStyleV {
     pub y_label_area_size: Option<f64>,
     pub y_labels: Option<i64>,
     pub y_light_lines: Option<i64>,
+    pub z_labels: Option<i64>,
+    pub z_light_lines: Option<i64>,
 }
 
 impl FromValue for MeshStyleV {
@@ -485,87 +495,26 @@ impl FromValue for MeshStyleV {
             (_, y_label_area_size),
             (_, y_labels),
             (_, y_light_lines),
-        ] = v.cast_to::<[(ArcStr, Value); 13]>()?;
+            (_, z_labels),
+            (_, z_light_lines),
+        ] = v.cast_to::<[(ArcStr, Value); 15]>()?;
         Ok(Self {
-            show_x_grid: if show_x_grid == Value::Null {
-                None
-            } else {
-                Some(show_x_grid.cast_to::<bool>()?)
-            },
-            show_y_grid: if show_y_grid == Value::Null {
-                None
-            } else {
-                Some(show_y_grid.cast_to::<bool>()?)
-            },
-            grid_color: if grid_color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(grid_color)?.0.into())
-            },
-            bold_line_color: if bold_line_color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(bold_line_color)?.0.into())
-            },
-            axis_color: if axis_color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(axis_color)?.0.into())
-            },
-            label_color: if label_color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(label_color)?.0.into())
-            },
-            label_size: if label_size == Value::Null {
-                None
-            } else {
-                Some(label_size.cast_to::<f64>()?)
-            },
-            x_label_area_size: if x_label_area_size == Value::Null {
-                None
-            } else {
-                Some(x_label_area_size.cast_to::<f64>()?)
-            },
-            x_labels: if x_labels == Value::Null {
-                None
-            } else {
-                Some(x_labels.cast_to::<i64>()?)
-            },
-            x_light_lines: if x_light_lines == Value::Null {
-                None
-            } else {
-                Some(x_light_lines.cast_to::<i64>()?)
-            },
-            y_label_area_size: if y_label_area_size == Value::Null {
-                None
-            } else {
-                Some(y_label_area_size.cast_to::<f64>()?)
-            },
-            y_labels: if y_labels == Value::Null {
-                None
-            } else {
-                Some(y_labels.cast_to::<i64>()?)
-            },
-            y_light_lines: if y_light_lines == Value::Null {
-                None
-            } else {
-                Some(y_light_lines.cast_to::<i64>()?)
-            },
+            show_x_grid: opt(show_x_grid)?,
+            show_y_grid: opt(show_y_grid)?,
+            grid_color: opt_color(grid_color)?,
+            bold_line_color: opt_color(bold_line_color)?,
+            axis_color: opt_color(axis_color)?,
+            label_color: opt_color(label_color)?,
+            label_size: opt(label_size)?,
+            x_label_area_size: opt(x_label_area_size)?,
+            x_labels: opt(x_labels)?,
+            x_light_lines: opt(x_light_lines)?,
+            y_label_area_size: opt(y_label_area_size)?,
+            y_labels: opt(y_labels)?,
+            y_light_lines: opt(y_light_lines)?,
+            z_labels: opt(z_labels)?,
+            z_light_lines: opt(z_light_lines)?,
         })
-    }
-}
-
-/// Newtype for Option<MeshStyleV> to satisfy orphan rules.
-pub struct OptMeshStyle(pub Option<MeshStyleV>);
-
-impl FromValue for OptMeshStyle {
-    fn from_value(v: Value) -> Result<Self> {
-        if v == Value::Null {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(MeshStyleV::from_value(v)?)))
-        }
     }
 }
 
@@ -605,19 +554,6 @@ impl FromValue for LegendStyleV {
     }
 }
 
-/// Newtype for Option<LegendStyleV> to satisfy orphan rules.
-pub struct OptLegendStyle(pub Option<LegendStyleV>);
-
-impl FromValue for OptLegendStyle {
-    fn from_value(v: Value) -> Result<Self> {
-        if v == Value::Null {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(LegendStyleV::from_value(v)?)))
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct LegendPositionV(pub SeriesLabelPosition);
 
@@ -637,40 +573,56 @@ impl FromValue for LegendPositionV {
     }
 }
 
-/// Newtype for Option<LegendPositionV> to satisfy orphan rules.
-pub struct OptLegendPosition(pub Option<LegendPositionV>);
+pub struct ChartStyleV {
+    pub background: Option<ChartColor>,
+    pub margin: Option<f64>,
+    pub title_size: Option<f64>,
+    pub title_color: Option<ChartColor>,
+    pub palette: Option<Vec<ChartColor>>,
+    pub legend_position: Option<LegendPositionV>,
+    pub legend: Option<LegendStyleV>,
+    pub mesh: Option<MeshStyleV>,
+}
 
-impl FromValue for OptLegendPosition {
+impl FromValue for ChartStyleV {
     fn from_value(v: Value) -> Result<Self> {
-        if v == Value::Null {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(LegendPositionV::from_value(v)?)))
-        }
+        let [
+            (_, background),
+            (_, legend),
+            (_, legend_position),
+            (_, margin),
+            (_, mesh),
+            (_, palette),
+            (_, title_color),
+            (_, title_size),
+        ] = v.cast_to::<[(ArcStr, Value); 8]>()?;
+        Ok(Self {
+            background: opt_color(background)?,
+            margin: opt(margin)?,
+            title_size: opt(title_size)?,
+            title_color: opt_color(title_color)?,
+            palette: match palette {
+                Value::Null => None,
+                Value::Array(a) => Some(
+                    a.iter()
+                        .map(|v| Ok(ChartColor::from(ColorV::from_value(v.clone())?.0)))
+                        .collect::<Result<_>>()?,
+                ),
+                _ => bail!("chart palette: expected array"),
+            },
+            legend_position: opt(legend_position)?,
+            legend: opt(legend)?,
+            mesh: opt(mesh)?,
+        })
     }
 }
 
-pub struct OptF64(pub Option<f64>);
+/// Newtype for Option<ChartStyleV> to satisfy orphan rules.
+pub struct OptChartStyle(pub Option<ChartStyleV>);
 
-impl FromValue for OptF64 {
+impl FromValue for OptChartStyle {
     fn from_value(v: Value) -> Result<Self> {
-        if v == Value::Null {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(v.cast_to::<f64>()?)))
-        }
-    }
-}
-
-pub struct OptColor(pub Option<ChartColor>);
-
-impl FromValue for OptColor {
-    fn from_value(v: Value) -> Result<Self> {
-        if v == Value::Null {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(ColorV::from_value(v)?.0.into())))
-        }
+        Ok(Self(opt(v)?))
     }
 }
 

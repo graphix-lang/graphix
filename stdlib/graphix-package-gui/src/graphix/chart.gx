@@ -1,6 +1,5 @@
 let chart = |
   #title: &[string, null] = &null,
-  #title_color: &[Color, null] = &null,
   #x_label: &[string, null] = &null,
   #y_label: &[string, null] = &null,
   #x_range: &[{min: f64, max: f64}, {min: datetime, max: datetime}, null] = &null,
@@ -10,17 +9,11 @@ let chart = |
   #projection: &[Projection3D, null] = &null,
   #width: &Length = &`Fill,
   #height: &Length = &`Fill,
-  #background: &[Color, null] = &null,
-  #margin: &[f64, null] = &null,
-  #title_size: &[f64, null] = &null,
-  #legend_position: &[LegendPosition, null] = &null,
-  #legend_style: &[LegendStyle, null] = &null,
-  #mesh: &[MeshStyle, null] = &null,
+  #style: &[ChartStyle, null] = &null,
   datasets: &Array<Dataset>
 | -> Widget `Chart({
-  datasets, title, title_color, x_label, y_label, x_range, y_range,
-  z_label, z_range, projection,
-  width, height, background, margin, title_size, legend_position, legend_style, mesh
+  datasets, title, x_label, y_label, x_range, y_range,
+  z_label, z_range, projection, width, height, style
 });
 
 let line = |
@@ -125,11 +118,13 @@ let mesh_style = |
   #x_light_lines: [i64, null] = null,
   #y_label_area_size: [f64, null] = null,
   #y_labels: [i64, null] = null,
-  #y_light_lines: [i64, null] = null
+  #y_light_lines: [i64, null] = null,
+  #z_labels: [i64, null] = null,
+  #z_light_lines: [i64, null] = null
 | -> MeshStyle {
   show_x_grid, show_y_grid, grid_color, bold_line_color, axis_color,
   label_color, label_size, x_label_area_size, x_labels, x_light_lines,
-  y_label_area_size, y_labels, y_light_lines
+  y_label_area_size, y_labels, y_light_lines, z_labels, z_light_lines
 };
 
 let legend_style = |
@@ -137,4 +132,18 @@ let legend_style = |
   #border: [Color, null] = null,
   #label_color: [Color, null] = null,
   #label_size: [f64, null] = null
-| -> LegendStyle {background, border, label_color, label_size}
+| -> LegendStyle {background, border, label_color, label_size};
+
+let chart_style = |
+  #background: [Color, null] = null,
+  #margin: [f64, null] = null,
+  #title_size: [f64, null] = null,
+  #title_color: [Color, null] = null,
+  #palette: [Array<Color>, null] = null,
+  #legend_position: [LegendPosition, null] = null,
+  #legend: [LegendStyle, null] = null,
+  #mesh: [MeshStyle, null] = null
+| -> ChartStyle {
+  background, margin, title_size, title_color, palette,
+  legend_position, legend, mesh
+};

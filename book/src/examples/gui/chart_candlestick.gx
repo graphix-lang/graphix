@@ -38,22 +38,24 @@ let col = column(
         text(#size: &24.0, #halign: &`Center, #width: &`Fill, &"Candlestick Chart"),
         chart::chart(
             #title: &"ACME Corp",
-            #title_color: &color(#r: 0.9, #g: 0.9, #b: 0.95)$,
             #x_label: &"Date",
             #y_label: &"Price",
-            #background: &dark_bg,
-            #title_size: &20.0,
-            #legend_style: &chart::legend_style(
-                #background: color(#r: 0.15, #g: 0.15, #b: 0.2)$,
-                #border: color(#r: 0.4, #g: 0.4, #b: 0.45)$,
-                #label_color: color(#r: 0.85, #g: 0.85, #b: 0.9)$
-            ),
-            #mesh: &chart::mesh_style(
-                #show_x_grid: false,
-                #grid_color: color(#r: 0.3, #g: 0.3, #b: 0.35)$,
-                #axis_color: color(#r: 0.6, #g: 0.6, #b: 0.65)$,
-                #label_color: color(#r: 0.75, #g: 0.75, #b: 0.8)$,
-                #x_label_area_size: 60.0
+            #style: &chart::chart_style(
+                #background: dark_bg,
+                #title_color: color(#r: 0.9, #g: 0.9, #b: 0.95)$,
+                #title_size: 20.0,
+                #legend: chart::legend_style(
+                    #background: color(#r: 0.15, #g: 0.15, #b: 0.2)$,
+                    #border: color(#r: 0.4, #g: 0.4, #b: 0.45)$,
+                    #label_color: color(#r: 0.85, #g: 0.85, #b: 0.9)$
+                ),
+                #mesh: chart::mesh_style(
+                    #show_x_grid: false,
+                    #grid_color: color(#r: 0.3, #g: 0.3, #b: 0.35)$,
+                    #axis_color: color(#r: 0.6, #g: 0.6, #b: 0.65)$,
+                    #label_color: color(#r: 0.75, #g: 0.75, #b: 0.8)$,
+                    #x_label_area_size: 60.0
+                )
             ),
             &[
                 chart::candlestick(
