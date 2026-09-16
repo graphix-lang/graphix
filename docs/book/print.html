@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ea70211e.js";
+            window.path_to_searchindex_js = "searchindex-3ee2e3ef.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -11811,13 +11811,16 @@ type MeshStyle = {
   show_x_grid: [bool, null],
   show_y_grid: [bool, null],
   grid_color: [Color, null],
+  bold_line_color: [Color, null],
   axis_color: [Color, null],
   label_color: [Color, null],
   label_size: [f64, null],
   x_label_area_size: [f64, null],
   x_labels: [i64, null],
+  x_light_lines: [i64, null],
   y_label_area_size: [f64, null],
-  y_labels: [i64, null]
+  y_labels: [i64, null],
+  y_light_lines: [i64, null]
 };
 
 type LegendStyle = {
@@ -11993,14 +11996,17 @@ val chart: fn(
 <ul>
 <li><strong>show_x_grid</strong> — Show vertical grid lines. Defaults to true when null.</li>
 <li><strong>show_y_grid</strong> — Show horizontal grid lines. Defaults to true when null.</li>
-<li><strong>grid_color</strong> — Color of grid lines.</li>
+<li><strong>grid_color</strong> — Color of the light grid lines drawn between labeled positions.</li>
+<li><strong>bold_line_color</strong> — Color of the bold grid lines drawn at each labeled position.</li>
 <li><strong>axis_color</strong> — Color of axis lines.</li>
 <li><strong>label_color</strong> — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.</li>
 <li><strong>label_size</strong> — Font size for axis labels.</li>
 <li><strong>x_label_area_size</strong> — Width of the x-axis label area in pixels. Increase to prevent label clipping.</li>
-<li><strong>x_labels</strong> — Number of x-axis tick labels.</li>
+<li><strong>x_labels</strong> — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
+<li><strong>x_light_lines</strong> — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.</li>
 <li><strong>y_label_area_size</strong> — Width of the y-axis label area in pixels. Increase to prevent label clipping.</li>
-<li><strong>y_labels</strong> — Number of y-axis tick labels.</li>
+<li><strong>y_labels</strong> — Number of y-axis tick labels; a bold grid line is drawn at each. Defaults to 11.</li>
+<li><strong>y_light_lines</strong> — Maximum number of light grid lines between adjacent y labels. Defaults to 10; 0 draws bold lines only.</li>
 </ul>
 <h2 id="legendstyle-fields"><a class="header" href="#legendstyle-fields">LegendStyle Fields</a></h2>
 <ul>
@@ -12362,6 +12368,8 @@ let col = column(
                 #show_x_grid: true,
                 #show_y_grid: false,
                 #grid_color: color(#r: 0.25, #g: 0.25, #b: 0.3)$,
+                #bold_line_color: color(#r: 0.4, #g: 0.4, #b: 0.45)$,
+                #x_light_lines: 2,
                 #axis_color: color(#r: 0.5, #g: 0.5, #b: 0.55)$,
                 #label_color: color(#r: 0.75, #g: 0.75, #b: 0.8)$,
                 #label_size: 14.0

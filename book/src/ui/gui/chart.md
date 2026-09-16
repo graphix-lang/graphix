@@ -52,13 +52,16 @@ type MeshStyle = {
   show_x_grid: [bool, null],
   show_y_grid: [bool, null],
   grid_color: [Color, null],
+  bold_line_color: [Color, null],
   axis_color: [Color, null],
   label_color: [Color, null],
   label_size: [f64, null],
   x_label_area_size: [f64, null],
   x_labels: [i64, null],
+  x_light_lines: [i64, null],
   y_label_area_size: [f64, null],
-  y_labels: [i64, null]
+  y_labels: [i64, null],
+  y_light_lines: [i64, null]
 };
 
 type LegendStyle = {
@@ -297,14 +300,17 @@ Used with the chart `#projection` parameter for 3D charts:
 
 - **show_x_grid** — Show vertical grid lines. Defaults to true when null.
 - **show_y_grid** — Show horizontal grid lines. Defaults to true when null.
-- **grid_color** — Color of grid lines.
+- **grid_color** — Color of the light grid lines drawn between labeled positions.
+- **bold_line_color** — Color of the bold grid lines drawn at each labeled position.
 - **axis_color** — Color of axis lines.
 - **label_color** — Color of tick labels and axis descriptions. Essential for dark backgrounds where the default black text is invisible.
 - **label_size** — Font size for axis labels.
 - **x_label_area_size** — Width of the x-axis label area in pixels. Increase to prevent label clipping.
-- **x_labels** — Number of x-axis tick labels.
+- **x_labels** — Number of x-axis tick labels; a bold grid line is drawn at each. Defaults to 11.
+- **x_light_lines** — Maximum number of light grid lines between adjacent x labels. Defaults to 10; 0 draws bold lines only.
 - **y_label_area_size** — Width of the y-axis label area in pixels. Increase to prevent label clipping.
-- **y_labels** — Number of y-axis tick labels.
+- **y_labels** — Number of y-axis tick labels; a bold grid line is drawn at each. Defaults to 11.
+- **y_light_lines** — Maximum number of light grid lines between adjacent y labels. Defaults to 10; 0 draws bold lines only.
 
 ## LegendStyle Fields
 

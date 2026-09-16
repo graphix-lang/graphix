@@ -457,19 +457,23 @@ pub struct MeshStyleV {
     pub show_x_grid: Option<bool>,
     pub show_y_grid: Option<bool>,
     pub grid_color: Option<ChartColor>,
+    pub bold_line_color: Option<ChartColor>,
     pub axis_color: Option<ChartColor>,
     pub label_color: Option<ChartColor>,
     pub label_size: Option<f64>,
     pub x_label_area_size: Option<f64>,
     pub x_labels: Option<i64>,
+    pub x_light_lines: Option<i64>,
     pub y_label_area_size: Option<f64>,
     pub y_labels: Option<i64>,
+    pub y_light_lines: Option<i64>,
 }
 
 impl FromValue for MeshStyleV {
     fn from_value(v: Value) -> Result<Self> {
         let [
             (_, axis_color),
+            (_, bold_line_color),
             (_, grid_color),
             (_, label_color),
             (_, label_size),
@@ -477,9 +481,11 @@ impl FromValue for MeshStyleV {
             (_, show_y_grid),
             (_, x_label_area_size),
             (_, x_labels),
+            (_, x_light_lines),
             (_, y_label_area_size),
             (_, y_labels),
-        ] = v.cast_to::<[(ArcStr, Value); 10]>()?;
+            (_, y_light_lines),
+        ] = v.cast_to::<[(ArcStr, Value); 13]>()?;
         Ok(Self {
             show_x_grid: if show_x_grid == Value::Null {
                 None
@@ -495,6 +501,11 @@ impl FromValue for MeshStyleV {
                 None
             } else {
                 Some(ColorV::from_value(grid_color)?.0.into())
+            },
+            bold_line_color: if bold_line_color == Value::Null {
+                None
+            } else {
+                Some(ColorV::from_value(bold_line_color)?.0.into())
             },
             axis_color: if axis_color == Value::Null {
                 None
@@ -521,6 +532,11 @@ impl FromValue for MeshStyleV {
             } else {
                 Some(x_labels.cast_to::<i64>()?)
             },
+            x_light_lines: if x_light_lines == Value::Null {
+                None
+            } else {
+                Some(x_light_lines.cast_to::<i64>()?)
+            },
             y_label_area_size: if y_label_area_size == Value::Null {
                 None
             } else {
@@ -530,6 +546,11 @@ impl FromValue for MeshStyleV {
                 None
             } else {
                 Some(y_labels.cast_to::<i64>()?)
+            },
+            y_light_lines: if y_light_lines == Value::Null {
+                None
+            } else {
+                Some(y_light_lines.cast_to::<i64>()?)
             },
         })
     }

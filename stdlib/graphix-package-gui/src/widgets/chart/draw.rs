@@ -330,6 +330,10 @@ macro_rules! configure_mesh {
                 let pc = ChartColor::to_plotters_rgb(c);
                 mesh_cfg.light_line_style(pc);
             }
+            if let Some(c) = ms.bold_line_color {
+                let pc = ChartColor::to_plotters_rgb(c);
+                mesh_cfg.bold_line_style(pc);
+            }
             if let Some(c) = ms.axis_color {
                 let pc = ChartColor::to_plotters_rgb(c);
                 mesh_cfg.axis_style(pc);
@@ -350,6 +354,12 @@ macro_rules! configure_mesh {
             }
             if let Some(n) = ms.y_labels {
                 mesh_cfg.y_labels(n as usize);
+            }
+            if let Some(n) = ms.x_light_lines {
+                mesh_cfg.x_max_light_lines(n as usize);
+            }
+            if let Some(n) = ms.y_light_lines {
+                mesh_cfg.y_max_light_lines(n as usize);
             }
         }
         if let Err(e) = mesh_cfg.draw() {

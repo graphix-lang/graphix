@@ -193,10 +193,11 @@ async fn mesh_style() -> Result<()> {
     let h = chart_harness(
         "#width: &`Fill, #height: &`Fixed(200.0), \
          #mesh: &{show_x_grid: true, show_y_grid: false, \
-                   grid_color: null, axis_color: null, \
+                   grid_color: null, bold_line_color: color(#r: 0.5, #g: 0.5, #b: 0.5)$, \
+                   axis_color: null, \
                    label_color: null, label_size: 12.0, \
-                   x_label_area_size: null, x_labels: 5, \
-                   y_label_area_size: null, y_labels: 5}, \
+                   x_label_area_size: null, x_labels: 5, x_light_lines: 0, \
+                   y_label_area_size: null, y_labels: 5, y_light_lines: 2}, \
          &[chart::line(&[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;
@@ -214,10 +215,12 @@ async fn dark_background_label_colors() -> Result<()> {
          #background: &color(#r: 0.1, #g: 0.1, #b: 0.15, #a: 1.0)$, \
          #mesh: &{show_x_grid: true, show_y_grid: true, \
                    grid_color: color(#r: 0.3, #g: 0.3, #b: 0.35, #a: 1.0)$, \
+                   bold_line_color: null, \
                    axis_color: color(#r: 0.5, #g: 0.5, #b: 0.55, #a: 1.0)$, \
                    label_color: color(#r: 0.8, #g: 0.8, #b: 0.8, #a: 1.0)$, \
                    label_size: 14.0, x_label_area_size: null, x_labels: null, \
-                   y_label_area_size: null, y_labels: null}, \
+                   x_light_lines: null, y_label_area_size: null, y_labels: null, \
+                   y_light_lines: null}, \
          &[chart::line(#label: \"Series\", &[(0.0, 0.0), (5.0, 5.0)])]",
     )
     .await?;

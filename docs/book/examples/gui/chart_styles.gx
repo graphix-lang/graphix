@@ -43,6 +43,8 @@ let col = column(
                 #show_x_grid: true,
                 #show_y_grid: false,
                 #grid_color: color(#r: 0.25, #g: 0.25, #b: 0.3)$,
+                #bold_line_color: color(#r: 0.4, #g: 0.4, #b: 0.45)$,
+                #x_light_lines: 2,
                 #axis_color: color(#r: 0.5, #g: 0.5, #b: 0.55)$,
                 #label_color: color(#r: 0.75, #g: 0.75, #b: 0.8)$,
                 #label_size: 14.0

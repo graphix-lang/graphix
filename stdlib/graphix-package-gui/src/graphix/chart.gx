@@ -116,17 +116,20 @@ let mesh_style = |
   #show_x_grid: [bool, null] = null,
   #show_y_grid: [bool, null] = null,
   #grid_color: [Color, null] = null,
+  #bold_line_color: [Color, null] = null,
   #axis_color: [Color, null] = null,
   #label_color: [Color, null] = null,
   #label_size: [f64, null] = null,
   #x_label_area_size: [f64, null] = null,
   #x_labels: [i64, null] = null,
+  #x_light_lines: [i64, null] = null,
   #y_label_area_size: [f64, null] = null,
-  #y_labels: [i64, null] = null
+  #y_labels: [i64, null] = null,
+  #y_light_lines: [i64, null] = null
 | -> MeshStyle {
-  show_x_grid, show_y_grid, grid_color, axis_color,
-  label_color, label_size, x_label_area_size, x_labels,
-  y_label_area_size, y_labels
+  show_x_grid, show_y_grid, grid_color, bold_line_color, axis_color,
+  label_color, label_size, x_label_area_size, x_labels, x_light_lines,
+  y_label_area_size, y_labels, y_light_lines
 };
 
 let legend_style = |

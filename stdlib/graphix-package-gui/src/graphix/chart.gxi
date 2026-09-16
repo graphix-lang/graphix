@@ -43,13 +43,16 @@ type MeshStyle = {
   show_x_grid: [bool, null],
   show_y_grid: [bool, null],
   grid_color: [Color, null],
+  bold_line_color: [Color, null],
   axis_color: [Color, null],
   label_color: [Color, null],
   label_size: [f64, null],
   x_label_area_size: [f64, null],
   x_labels: [i64, null],
+  x_light_lines: [i64, null],
   y_label_area_size: [f64, null],
-  y_labels: [i64, null]
+  y_labels: [i64, null],
+  y_light_lines: [i64, null]
 };
 
 type LegendStyle = {
@@ -184,13 +187,16 @@ val mesh_style: fn(
   ?#show_x_grid: [bool, null],
   ?#show_y_grid: [bool, null],
   ?#grid_color: [Color, null],
+  ?#bold_line_color: [Color, null],
   ?#axis_color: [Color, null],
   ?#label_color: [Color, null],
   ?#label_size: [f64, null],
   ?#x_label_area_size: [f64, null],
   ?#x_labels: [i64, null],
+  ?#x_light_lines: [i64, null],
   ?#y_label_area_size: [f64, null],
-  ?#y_labels: [i64, null]
+  ?#y_labels: [i64, null],
+  ?#y_light_lines: [i64, null]
 ) -> MeshStyle;
 
 val pie: fn(
