@@ -555,8 +555,9 @@ blocker profile, not a gap count.
   pin both engines reject is a regression unless it says
   `// expect: reject`; `check`/`run`/`generate`/`fuzz`/`minimize`/
   `regress`/`selfcheck`/`gen-check`/`detcheck`/`typemorph`. The
-  committed `findings/` corpus is the regression gate. `rand::`/`sys::`/
-  `http::`/`hold(` programs are excluded from divergence recording.
+  committed `findings/` corpus is the regression gate. `sys::`/`http::`
+  programs compare settled values per epoch (`FinalValues`); the
+  `Excluded` markers (`oracle_tier`) never record a divergence.
   Soaks run under `nice -n 19` from a campaign-private copy of the
   binary with output outside the repo; `graphix-fuzz/fleet.sh` deploys.
   A stack-budget abort is a `Timeout` outcome (containment).

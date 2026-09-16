@@ -693,15 +693,17 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     // Value-nondeterministic sources: random values, wall-clock time
     // (`throttle` reads it outside sys::), a create-new open racing the
     // sibling engine in the shared sandbox, generated temp paths, netidx
-    // registration timing, OS-assigned ports and pids, signal delivery.
+    // registration timing, OS-assigned ports, and child processes: a
+    // child's lifetime is program data (`sleep 0.2; exit 3`), so the
+    // epoch its exit or output lands in is the wall clock's, not the
+    // settle grace's.
     let excluded = [
         "rand::",
         "throttle",
         "`CreateNew",
         "sys::time",
         "sys::net",
-        "sys::process::kill",
-        "sys::process::pid",
+        "sys::process::spawn",
         "tempdir",
         "listener_addr",
         "local_addr",
@@ -4448,6 +4450,22 @@ mod tests {
         }
         assert_eq!(
             oracle_tier("sys::tcp::connect(\"127.0.0.1:5000\")"),
+            OracleTier::FinalValues
+        );
+    }
+
+    #[test]
+    fn child_processes_are_excluded_tier() {
+        // a child's lifetime is program data: `wait` and its stdout land
+        // in whichever epoch the wall clock reaches
+        assert_eq!(
+            oracle_tier(
+                "{let c = sys::process::spawn(o)?; let w = sys::process::wait(c.proc)?; w.code}"
+            ),
+            OracleTier::Excluded
+        );
+        assert_eq!(
+            oracle_tier("// spawn in a comment\nsys::fs::metadata(p)"),
             OracleTier::FinalValues
         );
     }
