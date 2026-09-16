@@ -20,6 +20,8 @@ use graphix_package_core::{
     CachedArgs, CachedArgsAsync, CachedVals, EvalCached, EvalCachedAsync, seam_arg,
 };
 use graphix_rt::GXRt;
+use http_body_util::Full;
+use hyper::StatusCode;
 use netidx_core::pack::{Pack, PackError};
 use netidx_derive::{FromValue, IntoValue};
 use netidx_value::{FromValue, ValArray, Value};
@@ -175,7 +177,7 @@ fn headers_to_value<'a>(
 struct Response<B> {
     body: B,
     headers: Value,
-    status: Value,
+    status: u16,
     url: ArcStr,
 }
 
@@ -343,7 +345,7 @@ impl EvalCachedAsync for HttpRequestEv {
                 Ok(r) => r,
                 Err(e) => return e,
             };
-            let status = Value::U16(resp.status().as_u16());
+            let status = resp.status().as_u16();
             let url = ArcStr::from(resp.url().as_str());
             let headers = headers_to_value(resp.headers().iter());
             match resp.text().await {
@@ -386,7 +388,7 @@ impl EvalCachedAsync for HttpRequestBinEv {
                 Ok(r) => r,
                 Err(e) => return e,
             };
-            let status = Value::U16(resp.status().as_u16());
+            let status = resp.status().as_u16();
             let url = ArcStr::from(resp.url().as_str());
             let headers = headers_to_value(resp.headers().iter());
             match resp.bytes().await {
@@ -423,17 +425,20 @@ impl fmt::Debug for HttpReqEvent {
 
 impl CustomBuiltinType for HttpReqEvent {}
 
+fn text_response(
+    status: StatusCode,
+    msg: impl fmt::Display,
+) -> hyper::Response<Full<Bytes>> {
+    let mut response = hyper::Response::new(Full::new(Bytes::from(msg.to_string())));
+    *response.status_mut() = status;
+    response
+}
+
 fn build_hyper_response(
     v: &Value,
-) -> std::result::Result<
-    hyper::Response<http_body_util::Full<Bytes>>,
-    std::convert::Infallible,
-> {
+) -> std::result::Result<hyper::Response<Full<Bytes>>, std::convert::Infallible> {
     if let Value::Error(e) = v {
-        return Ok(hyper::Response::builder()
-            .status(500)
-            .body(http_body_util::Full::new(Bytes::from(format!("{e}"))))
-            .unwrap());
+        return Ok(text_response(StatusCode::INTERNAL_SERVER_ERROR, e));
     }
     #[derive(FromValue)]
     struct Fields {
@@ -444,12 +449,8 @@ fn build_hyper_response(
     let Fields { body, headers, status } = match v.clone().cast_to::<Fields>() {
         Ok(f) => f,
         Err(e) => {
-            return Ok(hyper::Response::builder()
-                .status(500)
-                .body(http_body_util::Full::new(Bytes::from(format!(
-                    "invalid response: {e}"
-                ))))
-                .unwrap());
+            let msg = format_args!("invalid response: {e}");
+            return Ok(text_response(StatusCode::INTERNAL_SERVER_ERROR, msg));
         }
     };
     let mut response = hyper::Response::builder().status(status);
@@ -462,7 +463,13 @@ fn build_hyper_response(
             }
         }
     }
-    Ok(response.body(http_body_util::Full::new(Bytes::from_owner(body))).unwrap())
+    Ok(match response.body(Full::new(Bytes::from_owner(body))) {
+        Ok(response) => response,
+        Err(e) => {
+            let msg = format_args!("invalid response: {e}");
+            text_response(StatusCode::INTERNAL_SERVER_ERROR, msg)
+        }
+    })
 }
 
 async fn handle_http_request(
@@ -471,10 +478,7 @@ async fn handle_http_request(
         poolshark::global::GPooled<Vec<(BindId, Box<dyn CustomBuiltinType>)>>,
     >,
     id: BindId,
-) -> std::result::Result<
-    hyper::Response<http_body_util::Full<Bytes>>,
-    std::convert::Infallible,
-> {
+) -> std::result::Result<hyper::Response<Full<Bytes>>, std::convert::Infallible> {
     use http_body_util::BodyExt;
     let (parts, body) = req.into_parts();
     let body_bytes = match body.collect().await {
@@ -510,17 +514,13 @@ async fn handle_http_request(
             as Box<dyn CustomBuiltinType>,
     ));
     if tx.send(batch).await.is_err() {
-        return Ok(hyper::Response::builder()
-            .status(503)
-            .body(http_body_util::Full::new(Bytes::from("Service Unavailable")))
-            .unwrap());
+        return Ok(text_response(StatusCode::SERVICE_UNAVAILABLE, "Service Unavailable"));
     }
     match reply_rx.await {
         Ok(resp_value) => build_hyper_response(&resp_value),
-        Err(_) => Ok(hyper::Response::builder()
-            .status(500)
-            .body(http_body_util::Full::new(Bytes::from("Internal Server Error")))
-            .unwrap()),
+        Err(_) => {
+            Ok(text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"))
+        }
     }
 }
 

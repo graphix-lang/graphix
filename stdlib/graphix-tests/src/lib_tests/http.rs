@@ -48,3 +48,51 @@ run!(https_round_trip, { let cd = cert_dir(); format!(r#"{{
 }}"#) }, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello GET")
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+run!(http_status_round_trip, r#"{
+    let handler = |req: http::Request| {
+        body: "created [req.method]",
+        headers: [],
+        status: u16:201,
+        url: ""
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let resp = http::request(client, "http://[addr]/")$;
+    resp.status
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::U16(201)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+run!(http_invalid_status_is_500, r#"{
+    let handler = |req: http::Request| {
+        body: "[req.method]",
+        headers: [],
+        status: u16:1000,
+        url: ""
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let resp = http::request(client, "http://[addr]/")$;
+    resp.status
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::U16(500)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+run!(http_invalid_header_is_500, r#"{
+    let handler = |req: http::Request| {
+        body: "[req.method]",
+        headers: [("not a header", "x")],
+        status: u16:200,
+        url: ""
+    };
+    let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+    let addr = http::server_addr(server);
+    let client = http::default_client(server)$;
+    let resp = http::request(client, "http://[addr]/")$;
+    resp.status
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(Value::U16(500)))
+}; graphix_package_core::testing::FuseExpect::Jit);
