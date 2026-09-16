@@ -240,3 +240,39 @@ async fn legend_style() -> Result<()> {
     let _ = h.view();
     Ok(())
 }
+
+/// The geometry cache is `Program::State`, which iced keeps in its
+/// widget tree by position, so a chart compiled into a slot another
+/// chart drew from inherits that chart's cache. Its first draw must
+/// not trust it.
+#[tokio::test(flavor = "current_thread")]
+async fn fresh_chart_redraws_an_inherited_cache() -> Result<()> {
+    use crate::{
+        theme::GraphixTheme,
+        widgets::chart::{ChartState, ChartW},
+    };
+    use graphix_rt::NoExt;
+    use iced_core::{Point, Rectangle, Size, mouse};
+    use iced_widget::canvas::Program;
+    let tall = chart_harness(r#"&[line(&[(1.0, 1000.0), (2.0, 2000.0)])]"#).await?;
+    let short = chart_harness(r#"&[line(&[(1.0, 1.0), (2.0, 2.0)])]"#).await?;
+    let renderer = super::headless_gpu().await.create_renderer();
+    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+    let bounds = Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0));
+    let state = ChartState::default();
+    let y_max = |w: &crate::widgets::GuiW<NoExt>| {
+        let c = w.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart");
+        let _ = Program::draw(
+            c,
+            &state,
+            &renderer,
+            &theme,
+            bounds,
+            mouse::Cursor::Unavailable,
+        );
+        state.plot_info.get().expect("draw records the plot area").y_range.1
+    };
+    assert!(y_max(&tall.widget) > 1000.0);
+    assert!(y_max(&short.widget) < 100.0);
+    Ok(())
+}

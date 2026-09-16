@@ -100,9 +100,7 @@ impl GuiTestHarness {
                             if self.watched.contains_key(&id) {
                                 self.watched.insert(id, v.clone());
                             }
-                            changed |= self.widget.handle_update(
-                                &self.rt_handle, id, &v
-                            )?;
+                            changed |= self.update_widget(id, &v)?;
                         }
                     }
                     timeout.as_mut().reset(
@@ -113,6 +111,20 @@ impl GuiTestHarness {
             }
         }
         Ok(changed)
+    }
+
+    /// A children recompile blocks on the runtime, which only a
+    /// multi-thread flavor permits, and there only inside
+    /// `block_in_place`.
+    fn update_widget(&mut self, id: ExprId, v: &Value) -> Result<bool> {
+        match self.rt_handle.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| {
+                    self.widget.handle_update(&self.rt_handle, id, v)
+                })
+            }
+            _ => self.widget.handle_update(&self.rt_handle, id, v),
+        }
     }
 
     /// Watch a module-qualified variable such as "test::released" and

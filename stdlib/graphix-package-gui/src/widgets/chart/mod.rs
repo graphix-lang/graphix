@@ -137,12 +137,17 @@ impl<X: GXExt> ChartW<X> {
             legend_style: TRef::new(legend_style_ref)
                 .context("chart tref legend_style")?,
             mesh: TRef::new(mesh_ref).context("chart tref mesh")?,
-            dirty: Cell::new(false),
+            dirty: Cell::new(true),
         }))
     }
 }
 
 impl<X: GXExt> GuiWidget<X> for ChartW<X> {
+    #[cfg(test)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn handle_update(
         &mut self,
         rt: &tokio::runtime::Handle,

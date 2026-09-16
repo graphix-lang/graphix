@@ -511,3 +511,75 @@ async fn keyboard_area_on_key_release_produces_call() -> Result<()> {
     assert_eq!(h.get_watched("test::released"), Some(&Value::Bool(true)));
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn button_press_rotates_seq() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let charts = [1, 2, 3];\n\
+         let result = button(\
+             #on_press: |e| seq e {{ charts <- array::rotate(charts) }}, \
+             &text(&\">\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::charts").await?;
+    assert_eq!(initial.clone().cast_to::<[i64; 3]>()?, [1, 2, 3]);
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    let v = h.get_watched("test::charts").unwrap().clone().cast_to::<[i64; 3]>()?;
+    assert_eq!(v, [3, 1, 2]);
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    let v = h.get_watched("test::charts").unwrap().clone().cast_to::<[i64; 3]>()?;
+    assert_eq!(v, [2, 3, 1]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn button_press_rotates_sampled() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         let charts = [1, 2, 3];\n\
+         let result = button(\
+             #on_press: |e| charts <- e ~ array::rotate(charts), \
+             &text(&\">\"))"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let initial = h.watch("test::charts").await?;
+    assert_eq!(initial.clone().cast_to::<[i64; 3]>()?, [1, 2, 3]);
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    let v = h.get_watched("test::charts").unwrap().clone().cast_to::<[i64; 3]>()?;
+    assert_eq!(v, [3, 1, 2]);
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    let v = h.get_watched("test::charts").unwrap().clone().cast_to::<[i64; 3]>()?;
+    assert_eq!(v, [2, 3, 1]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stack_children_follow_rotation() -> Result<()> {
+    let code = format!(
+        "{IMPORTS};\n\
+         use gui::stack::{{self, *}};\n\
+         let slides = [text(&\"A\"), column(&[text(&\"B\")])];\n\
+         let result = column(&[\
+             button(#on_press: |e| seq e {{ slides <- array::rotate(slides) }}, &text(&\">\")), \
+             stack(&slides)])"
+    );
+    let mut h = InteractionHarness::new(&code).await?;
+    let _ = h.watch("test::slides").await?;
+    let order = |h: &InteractionHarness| -> Vec<usize> {
+        h.inner.widget.children()[1]
+            .children()
+            .iter()
+            .map(|c| c.children().len())
+            .collect()
+    };
+    assert_eq!(order(&h), [0, 1]);
+    let msgs = h.click(WIDGET_HIT);
+    h.dispatch_calls(&msgs).await?;
+    assert_eq!(order(&h), [1, 0]);
+    Ok(())
+}
