@@ -732,6 +732,36 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IotaEv {
 
 type Iota = CachedArgs<IotaEv>;
 
+fn fc_rotate(args: &[Value]) -> Option<Value> {
+    match args {
+        [Value::I64(n), Value::Array(a)] => {
+            let r = if a.is_empty() { 0 } else { n.rem_euclid(a.len() as i64) as usize };
+            if r == 0 {
+                return Some(Value::Array(a.clone()));
+            }
+            let p = a.len() - r;
+            let mut tmp: LPooled<Vec<Value>> = LPooled::take();
+            tmp.extend(a[p..].iter().chain(&a[..p]).cloned());
+            Some(Value::Array(ValArray::from_iter_exact(tmp.drain(..))))
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default)]
+struct RotateEv;
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for RotateEv {
+    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_rotate)));
+    const NAME: &str = "array_rotate";
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(fc_rotate, from)
+    }
+}
+
+type Rotate = CachedArgs<RotateEv>;
+
 graphix_package_core::unit_image_state!(
     ConcatEv,
     PushBackEv,
@@ -743,6 +773,7 @@ graphix_package_core::unit_image_state!(
     ZipEv,
     UnzipEv,
     IotaEv,
+    RotateEv,
 );
 
 graphix_derive::defpackage! {
@@ -761,5 +792,6 @@ graphix_derive::defpackage! {
         PushFront,
         Sort,
         Window,
+        Rotate,
     ],
 }

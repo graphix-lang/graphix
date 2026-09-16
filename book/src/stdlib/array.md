@@ -102,4 +102,13 @@ val init: fn(n: i64, f: fn(i: i64) -> 'a throws 'e) -> Array<'a> throws 'e;
 /// containing all the elements from the first pair element and second
 /// array containing all the elements of the second pair element.
 val unzip: fn(a: Array<('a, 'b)>) -> (Array<'a>, Array<'b>);
+
+/// Return a new array with the elements of a rotated by n places. A
+/// positive n rotates forward: the last n elements move to the front
+/// and every other element shifts n places right. A negative n
+/// rotates backward: the first n elements move to the end and every
+/// other element shifts n places left. n is taken modulo the length
+/// of a, so rotating by the length (or rotating an empty array) is
+/// the identity. n defaults to 1.
+val rotate: fn(?#n: i64, a: Array<'a>) -> Array<'a>;
 ```

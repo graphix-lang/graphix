@@ -1158,6 +1158,100 @@ run!(array_unzip, ARRAY_UNZIP, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+const ARRAY_ROTATE_FORWARD: &str = r#"
+{
+   let a = [1, 2, 3];
+   [
+     array::rotate(a),
+     array::rotate(#n: 1, a),
+     array::rotate(#n: 2, a),
+     array::rotate(#n: 3, a),
+     array::rotate(#n: 4, a)
+   ]
+}
+"#;
+
+run!(array_rotate_forward, ARRAY_ROTATE_FORWARD, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<[[i64; 3]; 5]>() {
+            Ok([[3, 1, 2], [3, 1, 2], [2, 3, 1], [1, 2, 3], [3, 1, 2]]) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const ARRAY_ROTATE_BACKWARD: &str = r#"
+{
+   let a = [1, 2, 3];
+   [
+     array::rotate(#n: -1, a),
+     array::rotate(#n: -2, a),
+     array::rotate(#n: -3, a),
+     array::rotate(#n: -4, a)
+   ]
+}
+"#;
+
+run!(array_rotate_backward, ARRAY_ROTATE_BACKWARD, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<[[i64; 3]; 4]>() {
+            Ok([[2, 3, 1], [3, 1, 2], [1, 2, 3], [2, 3, 1]]) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const ARRAY_ROTATE_ZERO_AND_SINGLE: &str = r#"
+(array::rotate(#n: 0, [1, 2, 3]), array::rotate([7]), array::rotate(#n: -5, [7]))
+"#;
+
+run!(array_rotate_zero_and_single, ARRAY_ROTATE_ZERO_AND_SINGLE, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<([i64; 3], [i64; 1], [i64; 1])>() {
+            Ok(([1, 2, 3], [7], [7])) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const ARRAY_ROTATE_EMPTY: &str = r#"
+{
+   let a: Array<i64> = [];
+   [array::rotate(a), array::rotate(#n: 3, a), array::rotate(#n: -3, a)]
+}
+"#;
+
+run!(array_rotate_empty, ARRAY_ROTATE_EMPTY, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(r)) => {
+            r.len() == 3 && r.iter().all(|v| matches!(v, Value::Array(a) if a.is_empty()))
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const ARRAY_ROTATE_EXTREME_N: &str = r#"
+{
+   let a = [1, 2, 3];
+   let min = -9223372036854775807 - 1;
+   let max = 9223372036854775807;
+   [array::rotate(#n: min, a), array::rotate(#n: max, a)]
+}
+"#;
+
+run!(array_rotate_extreme_n, ARRAY_ROTATE_EXTREME_N, |v: Result<&Value>| {
+    match v {
+        Ok(v) => match v.clone().cast_to::<[[i64; 3]; 2]>() {
+            Ok([[3, 1, 2], [3, 1, 2]]) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // `|(k, v)|` callbacks whose leaf is itself composite/string/value.
 
 const HOF_LEAF_COMPOSITE: &str = r#"
