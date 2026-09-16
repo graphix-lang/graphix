@@ -248,7 +248,7 @@ Used by line, scatter, area, dashed_line, error_bar, scatter3d, and line3d:
 - **color** — Series color. When null, a color is assigned from a default palette.
 - **label** — Display name shown in the legend. When null, no legend entry is created.
 - **stroke_width** — Line/stroke width in pixels. Defaults to 2.
-- **point_size** — Point radius for scatter plots. Defaults to 3.
+- **point_size** — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible.
 
 ### BarStyle
 

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f25a432d.js";
+            window.path_to_searchindex_js = "../searchindex-ea70211e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -276,6 +276,15 @@ val init: fn(n: i64, f: fn(i: i64) -&gt; 'a throws 'e) -&gt; Array&lt;'a&gt; thr
 /// containing all the elements from the first pair element and second
 /// array containing all the elements of the second pair element.
 val unzip: fn(a: Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;);
+
+/// Return a new array with the elements of a rotated by n places. A
+/// positive n rotates forward: the last n elements move to the front
+/// and every other element shifts n places right. A negative n
+/// rotates backward: the first n elements move to the end and every
+/// other element shifts n places left. n is taken modulo the length
+/// of a, so rotating by the length (or rotating an empty array) is
+/// the identity. n defaults to 1.
+val rotate: fn(?#n: i64, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
 
                     </main>

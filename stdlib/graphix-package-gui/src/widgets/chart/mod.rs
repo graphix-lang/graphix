@@ -20,6 +20,8 @@ use std::cell::Cell;
 use tokio::try_join;
 
 pub use dataset::*;
+#[cfg(test)]
+pub(crate) use draw::marker_size;
 pub use interact::{ChartState, PlotInfo, SnapPoint};
 pub use ranges::*;
 pub use types::*;

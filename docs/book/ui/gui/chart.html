@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-f25a432d.js";
+            window.path_to_searchindex_js = "../../searchindex-ea70211e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -362,7 +362,7 @@ val chart: fn(
 <li><strong>color</strong> — Series color. When null, a color is assigned from a default palette.</li>
 <li><strong>label</strong> — Display name shown in the legend. When null, no legend entry is created.</li>
 <li><strong>stroke_width</strong> — Line/stroke width in pixels. Defaults to 2.</li>
-<li><strong>point_size</strong> — Point radius for scatter plots. Defaults to 3.</li>
+<li><strong>point_size</strong> — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible.</li>
 </ul>
 <h3 id="barstyle"><a class="header" href="#barstyle">BarStyle</a></h3>
 <p>Used by bar:</p>

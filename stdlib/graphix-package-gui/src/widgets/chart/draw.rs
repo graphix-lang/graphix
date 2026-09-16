@@ -37,6 +37,26 @@ const PALETTE: [RGBColor; 8] = [
 const DEFAULT_GAIN: RGBColor = RGBColor(44, 160, 44);
 const DEFAULT_LOSS: RGBColor = RGBColor(214, 39, 40);
 
+/// A lone point has no segment to show it, so it gets a marker by default.
+pub(crate) fn marker_size(point_size: Option<f64>, len: usize) -> u32 {
+    match point_size {
+        Some(p) => p as u32,
+        None if len == 1 => 3,
+        None => 0,
+    }
+}
+
+macro_rules! draw_markers {
+    ($chart:expr, $pts:expr, $ps:expr, $style:expr, $what:literal) => {
+        if $ps > 0 {
+            let series = $pts.map(|c| Circle::new(c, $ps, $style));
+            if let Err(e) = $chart.draw_series(series) {
+                error!("chart draw {} markers: {e:?}", $what);
+            }
+        }
+    };
+}
+
 /// Draw series data onto a chart context, parameterized by x coordinate type.
 macro_rules! draw_chart_body {
     ($chart:expr, $self:expr, $xy_variant:path, $ohlc_variant:path,
@@ -53,13 +73,13 @@ macro_rules! draw_chart_body {
                         .map(ChartColor::to_plotters_rgb)
                         .unwrap_or(PALETTE[i % PALETTE.len()]);
                     let sw = style.stroke_width.unwrap_or(2.0) as u32;
-                    let ps = style.point_size.unwrap_or(3.0) as u32;
                     let line_style = ShapeStyle::from(color).stroke_width(sw);
                     let fill_style = ShapeStyle::from(color).filled();
                     let label = style.label.as_deref();
 
                     match kind {
                         XYKind::Line => {
+                            let ps = marker_size(style.point_size, pts.len());
                             let series = LineSeries::new(pts.iter().copied(), line_style);
                             match $chart.draw_series(series) {
                                 Ok(ann) => {
@@ -74,8 +94,16 @@ macro_rules! draw_chart_body {
                                 }
                                 Err(e) => error!("chart draw line: {e:?}"),
                             }
+                            draw_markers!(
+                                $chart,
+                                pts.iter().copied(),
+                                ps,
+                                fill_style,
+                                "line"
+                            );
                         }
                         XYKind::Scatter => {
+                            let ps = style.point_size.unwrap_or(3.0) as u32;
                             let series = pts
                                 .iter()
                                 .map(|&(x, y)| Circle::new((x, y), ps, fill_style));
@@ -91,6 +119,7 @@ macro_rules! draw_chart_body {
                             }
                         }
                         XYKind::Area => {
+                            let ps = marker_size(style.point_size, pts.len());
                             let area_fill = color.mix(0.3);
                             let series = AreaSeries::new(
                                 pts.iter().copied(),
@@ -111,6 +140,13 @@ macro_rules! draw_chart_body {
                                 }
                                 Err(e) => error!("chart draw area: {e:?}"),
                             }
+                            draw_markers!(
+                                $chart,
+                                pts.iter().copied(),
+                                ps,
+                                fill_style,
+                                "area"
+                            );
                         }
                     }
                 }
@@ -125,7 +161,9 @@ macro_rules! draw_chart_body {
                         .map(ChartColor::to_plotters_rgb)
                         .unwrap_or(PALETTE[i % PALETTE.len()]);
                     let sw = style.stroke_width.unwrap_or(2.0) as u32;
+                    let ps = marker_size(style.point_size, pts.len());
                     let line_style = ShapeStyle::from(color).stroke_width(sw);
+                    let fill_style = ShapeStyle::from(color).filled();
                     let label = style.label.as_deref();
 
                     let series = DashedLineSeries::new(
@@ -144,6 +182,7 @@ macro_rules! draw_chart_body {
                         }
                         Err(e) => error!("chart draw dashed: {e:?}"),
                     }
+                    draw_markers!($chart, pts.iter().copied(), ps, fill_style, "dashed");
                 }
 
                 // Rendered by their own ChartMode paths.
@@ -903,8 +942,10 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                         .map(ChartColor::to_plotters_rgb)
                                         .unwrap_or(PALETTE[i % PALETTE.len()]);
                                     let sw = style.stroke_width.unwrap_or(2.0) as u32;
+                                    let ps = marker_size(style.point_size, pts.0.len());
                                     let line_style =
                                         ShapeStyle::from(color).stroke_width(sw);
+                                    let fill_style = ShapeStyle::from(color).filled();
                                     let series = LineSeries::new(
                                         pts.0.iter().map(|&(x, y, z)| (x, z, y)),
                                         line_style,
@@ -924,6 +965,13 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                             error!("chart draw line3d: {e:?}")
                                         }
                                     }
+                                    draw_markers!(
+                                        chart,
+                                        pts.0.iter().map(|&(x, y, z)| (x, z, y)),
+                                        ps,
+                                        fill_style,
+                                        "line3d"
+                                    );
                                 }
                             }
                             DatasetEntry::Surface { data, style } => {

@@ -276,3 +276,43 @@ async fn fresh_chart_redraws_an_inherited_cache() -> Result<()> {
     assert!(y_max(&short.widget) < 100.0);
     Ok(())
 }
+
+#[test]
+fn marker_size_rule() {
+    use crate::widgets::chart::marker_size;
+    assert_eq!(marker_size(Some(6.0), 4), 6);
+    assert_eq!(marker_size(Some(0.0), 1), 0);
+    assert_eq!(marker_size(None, 4), 0);
+    assert_eq!(marker_size(None, 1), 3);
+}
+
+/// Every marker path draws through the program without erroring on a
+/// one-point series, whose auto range is degenerate.
+#[tokio::test(flavor = "current_thread")]
+async fn markers_draw_on_every_series_kind() -> Result<()> {
+    use crate::{
+        theme::GraphixTheme,
+        widgets::chart::{ChartState, ChartW},
+    };
+    use graphix_rt::NoExt;
+    use iced_core::{Point, Rectangle, Size, mouse};
+    use iced_widget::canvas::Program;
+    let h = chart_harness(
+        r#"&[
+            line(&[(2.0, 5.0)]),
+            line(#point_size: 6.0, &[(1.0, 1.0), (2.0, 3.0), (3.0, 2.0)]),
+            dashed_line(#point_size: 4.0, &[(1.0, 4.0), (2.0, 4.5), (3.0, 3.5)]),
+            area(&[(3.5, 1.5)])
+        ]"#,
+    )
+    .await?;
+    let renderer = super::headless_gpu().await.create_renderer();
+    let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
+    let bounds = Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0));
+    let state = ChartState::default();
+    let c = h.widget.as_any().downcast_ref::<ChartW<NoExt>>().expect("a chart");
+    let _ =
+        Program::draw(c, &state, &renderer, &theme, bounds, mouse::Cursor::Unavailable);
+    assert!(state.plot_info.get().is_some());
+    Ok(())
+}

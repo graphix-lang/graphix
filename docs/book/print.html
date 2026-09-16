@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f25a432d.js";
+            window.path_to_searchindex_js = "searchindex-ea70211e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -5272,6 +5272,15 @@ val init: fn(n: i64, f: fn(i: i64) -&gt; 'a throws 'e) -&gt; Array&lt;'a&gt; thr
 /// containing all the elements from the first pair element and second
 /// array containing all the elements of the second pair element.
 val unzip: fn(a: Array&lt;('a, 'b)&gt;) -&gt; (Array&lt;'a&gt;, Array&lt;'b&gt;);
+
+/// Return a new array with the elements of a rotated by n places. A
+/// positive n rotates forward: the last n elements move to the front
+/// and every other element shifts n places right. A negative n
+/// rotates backward: the first n elements move to the end and every
+/// other element shifts n places left. n is taken modulo the length
+/// of a, so rotating by the length (or rotating an empty array) is
+/// the identity. n defaults to 1.
+val rotate: fn(?#n: i64, a: Array&lt;'a&gt;) -&gt; Array&lt;'a&gt;;
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="map-1"><a class="header" href="#map-1">Map</a></h1>
@@ -11940,7 +11949,7 @@ val chart: fn(
 <li><strong>color</strong> — Series color. When null, a color is assigned from a default palette.</li>
 <li><strong>label</strong> — Display name shown in the legend. When null, no legend entry is created.</li>
 <li><strong>stroke_width</strong> — Line/stroke width in pixels. Defaults to 2.</li>
-<li><strong>point_size</strong> — Point radius for scatter plots. Defaults to 3.</li>
+<li><strong>point_size</strong> — Marker radius drawn at each point. Scatter defaults to 3; line, area and dashed_line draw no markers unless it is set, except a series with a single point, which draws a marker of radius 3 so it stays visible.</li>
 </ul>
 <h3 id="barstyle"><a class="header" href="#barstyle">BarStyle</a></h3>
 <p>Used by bar:</p>
