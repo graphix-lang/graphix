@@ -10,11 +10,11 @@ use crate::{
     widgets::{GuiW, GuiWidget, IcedElement},
 };
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget::canvas as iced_canvas;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use poolshark::local::LPooled;
 use std::cell::Cell;
 use tokio::try_join;
@@ -47,20 +47,35 @@ pub(crate) struct ChartW<X: GXExt> {
 
 impl<X: GXExt> ChartW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, datasets),
-            (_, height),
-            (_, projection),
-            (_, style),
-            (_, title),
-            (_, width),
-            (_, x_label),
-            (_, x_range),
-            (_, y_label),
-            (_, y_range),
-            (_, z_label),
-            (_, z_range),
-        ] = source.cast_to::<[(ArcStr, u64); 12]>().context("chart flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            datasets: u64,
+            height: u64,
+            projection: u64,
+            style: u64,
+            title: u64,
+            width: u64,
+            x_label: u64,
+            x_range: u64,
+            y_label: u64,
+            y_range: u64,
+            z_label: u64,
+            z_range: u64,
+        }
+        let Fields {
+            datasets,
+            height,
+            projection,
+            style,
+            title,
+            width,
+            x_label,
+            x_range,
+            y_label,
+            y_range,
+            z_label,
+            z_range,
+        } = source.cast_to().context("chart flds")?;
         let (
             datasets_ref,
             height_ref,

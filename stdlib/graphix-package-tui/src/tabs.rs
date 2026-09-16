@@ -2,13 +2,13 @@ use super::{
     LineV, SizeV, SpanV, StyleV, TRef, TuiW, TuiWidget, compile, into_borrowed_line,
 };
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
 use futures::future;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{Frame, layout::Rect, widgets::Tabs};
 use smallvec::SmallVec;
 use tokio::try_join;
@@ -29,16 +29,27 @@ pub(super) struct TabsW<X: GXExt> {
 
 impl<X: GXExt> TabsW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, divider),
-            (_, highlight_style),
-            (_, padding_left),
-            (_, padding_right),
-            (_, selected),
-            (_, size),
-            (_, style),
-            (_, tabs),
-        ] = v.cast_to::<[(ArcStr, u64); 8]>().context("tabs fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            divider: u64,
+            highlight_style: u64,
+            padding_left: u64,
+            padding_right: u64,
+            selected: u64,
+            size: u64,
+            style: u64,
+            tabs: u64,
+        }
+        let Fields {
+            divider,
+            highlight_style,
+            padding_left,
+            padding_right,
+            selected,
+            size,
+            style,
+            tabs,
+        } = v.cast_to().context("tabs fields")?;
         let (
             divider,
             highlight_style,

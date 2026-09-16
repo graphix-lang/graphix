@@ -18,6 +18,7 @@ use graphix_package_core::{
     fast_eval, fast_eval_typed,
 };
 use netidx::{path::Path, subscriber::Value};
+use netidx_derive::FromValue;
 use netidx_value::ValArray;
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -412,21 +413,18 @@ fn build_escape(esc: Value) -> Result<Escape> {
     fn escape_non_printing(c: char) -> bool {
         c.is_control()
     }
-    let [(_, to_escape), (_, escape_char), (_, tr)] =
-        esc.cast_to::<[(ArcStr, Value); 3]>().context("parse escape")?;
-    let escape_char = {
-        let s = escape_char.cast_to::<ArcStr>().context("escape char")?;
-        if s.len() != 1 {
-            bail!("expected a single escape char")
-        }
-        s.chars().next().unwrap()
-    };
-    let to_escape = match to_escape {
-        Value::String(s) => s.chars().collect::<SmallVec<[char; 32]>>(),
-        _ => bail!("escape: expected a string"),
-    };
-    let tr =
-        tr.cast_to::<SmallVec<[(ArcStr, ArcStr); 8]>>().context("escape: parsing tr")?;
+    #[derive(FromValue)]
+    struct Fields {
+        escape: ArcStr,
+        escape_char: ArcStr,
+        tr: SmallVec<[(ArcStr, ArcStr); 8]>,
+    }
+    let Fields { escape, escape_char, tr } = esc.cast_to().context("parse escape")?;
+    if escape_char.len() != 1 {
+        bail!("expected a single escape char")
+    }
+    let escape_char = escape_char.chars().next().unwrap();
+    let to_escape = escape.chars().collect::<SmallVec<[char; 32]>>();
     for (k, _) in &tr {
         if k.len() != 1 {
             bail!("escape: tr key {k} is invalid, expected 1 character");

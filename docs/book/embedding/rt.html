@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-329fd9fd.js";
+            window.path_to_searchindex_js = "../searchindex-9b82c9ef.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -252,6 +252,22 @@ common, because
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.BindId.html"><code>BindId</code></a>
 will appear in any data structure that has a value passed by ref (e.g. <code>&amp;v</code>),
 which should be common for large structures that don’t change often.</p>
+<p>A Rust type that mirrors a Graphix type need not implement <code>FromValue</code> by hand:
+<code>#[derive(FromValue, IntoValue)]</code> from the <code>netidx-derive</code> crate maps a struct’s
+named fields onto the Graphix struct’s fields by name, and an enum’s variants
+onto Graphix variants (<code>`Tag</code>, <code>`Tag(a, b)</code>, <code>`Tag({ .. })</code>). A field
+passed by reference (<code>&amp;T</code>) is a <code>u64</code> bind id. The generated code names
+<code>netidx_value</code> and <code>anyhow</code>, so the crate depends on both.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// the Graphix type {x: f64, y: f64, label: &amp;string}
+#[derive(FromValue)]
+struct Point {
+    x: f64,
+    y: f64,
+    label: u64,
+}
+<span class="boring">}</span></code></pre>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>// assume we got id from a data structure and its type is &amp;i64

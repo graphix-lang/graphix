@@ -1,9 +1,9 @@
 use super::types::*;
-use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
+use anyhow::{Context, Result};
 use graphix_rt::{GXExt, GXHandle, TRef};
 use log::error;
-use netidx::publisher::{FromValue, Value};
+use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use poolshark::local::LPooled;
 
 #[derive(Clone, Copy)]
@@ -43,94 +43,19 @@ impl<X: GXExt> DatasetEntry<X> {
 }
 
 /// Dataset metadata parsed from the datasets array value before ref compilation.
+#[derive(FromValue)]
 enum DatasetMeta {
-    XY { kind: XYKind, data_id: u64, style: SeriesStyleV },
-    DashedLine { data_id: u64, dash: f64, gap: f64, style: SeriesStyleV },
-    Bar { data_id: u64, style: BarStyleV },
-    Candlestick { data_id: u64, style: CandlestickStyleV },
-    ErrorBar { data_id: u64, style: SeriesStyleV },
-    Pie { data_id: u64, style: PieStyleV },
-    Scatter3D { data_id: u64, style: SeriesStyleV },
-    Line3D { data_id: u64, style: SeriesStyleV },
-    Surface { data_id: u64, style: SurfaceStyleV },
-}
-
-impl FromValue for DatasetMeta {
-    fn from_value(v: Value) -> Result<Self> {
-        let (tag, inner) = v.cast_to::<(ArcStr, Value)>()?;
-        match &*tag {
-            "Line" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::XY { kind: XYKind::Line, data_id, style })
-            }
-            "Scatter" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::XY { kind: XYKind::Scatter, data_id, style })
-            }
-            "Bar" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = BarStyleV::from_value(style)?;
-                Ok(Self::Bar { data_id, style })
-            }
-            "Area" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::XY { kind: XYKind::Area, data_id, style })
-            }
-            "DashedLine" => {
-                let [(_, dash), (_, data), (_, gap), (_, style)] =
-                    inner.cast_to::<[(ArcStr, Value); 4]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let dash = dash.cast_to::<f64>()?;
-                let gap = gap.cast_to::<f64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::DashedLine { data_id, dash, gap, style })
-            }
-            "Candlestick" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = CandlestickStyleV::from_value(style)?;
-                Ok(Self::Candlestick { data_id, style })
-            }
-            "ErrorBar" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::ErrorBar { data_id, style })
-            }
-            "Pie" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = PieStyleV::from_value(style)?;
-                Ok(Self::Pie { data_id, style })
-            }
-            "Scatter3D" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::Scatter3D { data_id, style })
-            }
-            "Line3D" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = SeriesStyleV::from_value(style)?;
-                Ok(Self::Line3D { data_id, style })
-            }
-            "Surface" => {
-                let [(_, data), (_, style)] = inner.cast_to::<[(ArcStr, Value); 2]>()?;
-                let data_id = data.cast_to::<u64>()?;
-                let style = SurfaceStyleV::from_value(style)?;
-                Ok(Self::Surface { data_id, style })
-            }
-            s => bail!("invalid dataset variant: {s}"),
-        }
-    }
+    Line { data: u64, style: SeriesStyleV },
+    Scatter { data: u64, style: SeriesStyleV },
+    Bar { data: u64, style: BarStyleV },
+    Area { data: u64, style: SeriesStyleV },
+    DashedLine { data: u64, dash: f64, gap: f64, style: SeriesStyleV },
+    Candlestick { data: u64, style: CandlestickStyleV },
+    ErrorBar { data: u64, style: SeriesStyleV },
+    Pie { data: u64, style: PieStyleV },
+    Scatter3D { data: u64, style: SeriesStyleV },
+    Line3D { data: u64, style: SeriesStyleV },
+    Surface { data: u64, style: SurfaceStyleV },
 }
 
 /// Compile dataset metadata into live entries with data refs.
@@ -138,61 +63,68 @@ pub async fn compile_datasets<X: GXExt>(
     gx: &GXHandle<X>,
     v: Value,
 ) -> Result<LPooled<Vec<DatasetEntry<X>>>> {
-    let metas: Vec<DatasetMeta> = v
-        .cast_to::<Vec<Value>>()?
-        .into_iter()
-        .map(DatasetMeta::from_value)
-        .collect::<Result<_>>()?;
+    let mut metas = v.cast_to::<LPooled<Vec<DatasetMeta>>>()?;
     let mut entries: LPooled<Vec<DatasetEntry<X>>> = LPooled::take();
     entries.reserve(metas.len());
-    for meta in metas {
-        match meta {
-            DatasetMeta::XY { kind, data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart xy data")?;
-                entries.push(DatasetEntry::XY { kind, data, style });
+    for meta in metas.drain(..) {
+        let entry = match meta {
+            DatasetMeta::Line { data, style } => {
+                let data =
+                    TRef::new(gx.compile_ref(data).await?).context("chart xy data")?;
+                DatasetEntry::XY { kind: XYKind::Line, data, style }
             }
-            DatasetMeta::DashedLine { data_id, dash, gap, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart dashed data")?;
-                entries.push(DatasetEntry::DashedLine { data, dash, gap, style });
+            DatasetMeta::Scatter { data, style } => {
+                let data =
+                    TRef::new(gx.compile_ref(data).await?).context("chart xy data")?;
+                DatasetEntry::XY { kind: XYKind::Scatter, data, style }
             }
-            DatasetMeta::Bar { data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart bar data")?;
-                entries.push(DatasetEntry::Bar { data, style });
+            DatasetMeta::Area { data, style } => {
+                let data =
+                    TRef::new(gx.compile_ref(data).await?).context("chart xy data")?;
+                DatasetEntry::XY { kind: XYKind::Area, data, style }
             }
-            DatasetMeta::Candlestick { data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart ohlc data")?;
-                entries.push(DatasetEntry::Candlestick { data, style });
+            DatasetMeta::DashedLine { data, dash, gap, style } => {
+                let data = TRef::new(gx.compile_ref(data).await?)
+                    .context("chart dashed data")?;
+                DatasetEntry::DashedLine { data, dash, gap, style }
             }
-            DatasetMeta::ErrorBar { data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart errorbar data")?;
-                entries.push(DatasetEntry::ErrorBar { data, style });
+            DatasetMeta::Bar { data, style } => {
+                let data =
+                    TRef::new(gx.compile_ref(data).await?).context("chart bar data")?;
+                DatasetEntry::Bar { data, style }
             }
-            DatasetMeta::Pie { data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart pie data")?;
-                entries.push(DatasetEntry::Pie { data, style });
+            DatasetMeta::Candlestick { data, style } => {
+                let data =
+                    TRef::new(gx.compile_ref(data).await?).context("chart ohlc data")?;
+                DatasetEntry::Candlestick { data, style }
             }
-            DatasetMeta::Scatter3D { data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart scatter3d data")?;
-                entries.push(DatasetEntry::Scatter3D { data, style });
+            DatasetMeta::ErrorBar { data, style } => {
+                let data = TRef::new(gx.compile_ref(data).await?)
+                    .context("chart errorbar data")?;
+                DatasetEntry::ErrorBar { data, style }
             }
-            DatasetMeta::Line3D { data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart line3d data")?;
-                entries.push(DatasetEntry::Line3D { data, style });
+            DatasetMeta::Pie { data, style } => {
+                let data =
+                    TRef::new(gx.compile_ref(data).await?).context("chart pie data")?;
+                DatasetEntry::Pie { data, style }
             }
-            DatasetMeta::Surface { data_id, style } => {
-                let data_ref = gx.compile_ref(data_id).await?;
-                let data = TRef::new(data_ref).context("chart surface data")?;
-                entries.push(DatasetEntry::Surface { data, style });
+            DatasetMeta::Scatter3D { data, style } => {
+                let data = TRef::new(gx.compile_ref(data).await?)
+                    .context("chart scatter3d data")?;
+                DatasetEntry::Scatter3D { data, style }
             }
-        }
+            DatasetMeta::Line3D { data, style } => {
+                let data = TRef::new(gx.compile_ref(data).await?)
+                    .context("chart line3d data")?;
+                DatasetEntry::Line3D { data, style }
+            }
+            DatasetMeta::Surface { data, style } => {
+                let data = TRef::new(gx.compile_ref(data).await?)
+                    .context("chart surface data")?;
+                DatasetEntry::Surface { data, style }
+            }
+        };
+        entries.push(entry);
     }
     Ok(entries)
 }

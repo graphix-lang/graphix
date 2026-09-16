@@ -1,11 +1,11 @@
 use super::{StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -70,8 +70,13 @@ struct DateV(Date);
 
 impl FromValue for DateV {
     fn from_value(v: Value) -> Result<Self> {
-        // graphix structs are stored sorted by field name (day, month, year)
-        let [(_, day), (_, month), (_, year)] = v.cast_to::<[(ArcStr, i64); 3]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            day: i64,
+            month: i64,
+            year: i64,
+        }
+        let Fields { day, month, year } = v.cast_to()?;
         let (date, clamped) = coerce_date(year, month, day);
         if let Some((y, m, d)) = clamped {
             log::warn!("calendar date ({y}, {m}, {d}) coerced to {date}");
@@ -80,16 +85,10 @@ impl FromValue for DateV {
     }
 }
 
+#[derive(FromValue)]
 struct EventV {
     date: DateV,
     style: StyleV,
-}
-
-impl FromValue for EventV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, date), (_, style)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
-        Ok(Self { date: date.cast_to::<DateV>()?, style: style.cast_to::<StyleV>()? })
-    }
 }
 
 pub(super) struct CalendarW<X: GXExt> {
@@ -104,14 +103,23 @@ pub(super) struct CalendarW<X: GXExt> {
 
 impl<X: GXExt> CalendarW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, default_style),
-            (_, display_date),
-            (_, events),
-            (_, show_month),
-            (_, show_surrounding),
-            (_, show_weekday),
-        ] = v.cast_to::<[(ArcStr, u64); 6]>().context("calendar fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            default_style: u64,
+            display_date: u64,
+            events: u64,
+            show_month: u64,
+            show_surrounding: u64,
+            show_weekday: u64,
+        }
+        let Fields {
+            default_style,
+            display_date,
+            events,
+            show_month,
+            show_surrounding,
+            show_weekday,
+        } = v.cast_to().context("calendar fields")?;
         let (
             default_style,
             display_date,

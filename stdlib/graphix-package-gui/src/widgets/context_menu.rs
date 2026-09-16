@@ -4,10 +4,10 @@ use super::{
     menu_bar::{MenuItemKind, compile_menu_items, menu_item_desc},
 };
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct ContextMenuW<X: GXExt> {
@@ -20,8 +20,12 @@ pub(crate) struct ContextMenuW<X: GXExt> {
 
 impl<X: GXExt> ContextMenuW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, child), (_, items)] =
-            source.cast_to::<[(ArcStr, u64); 2]>().context("context_menu flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: u64,
+            items: u64,
+        }
+        let Fields { child, items } = source.cast_to().context("context_menu flds")?;
         let (child_ref, items_ref) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(items),

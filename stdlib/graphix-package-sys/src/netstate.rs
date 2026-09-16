@@ -18,6 +18,7 @@ use netidx::{
         Dval, Event as NEvent, SubId, Subscriber, SubscriberBuilder, UpdatesFlags,
     },
 };
+use netidx_derive::IntoValue;
 use netidx_value::Value;
 use nohash::IntMap;
 use parking_lot::Mutex;
@@ -600,17 +601,12 @@ impl NetState {
                         let rows =
                             tbl.rows.drain(..).map(|name| Value::String(name.into()));
                         let rows = Value::Array(ValArray::from_iter_exact(rows));
-                        let tbl = Value::Array(ValArray::from([
-                            Value::Array(ValArray::from([
-                                Value::String(literal!("columns")),
-                                cols,
-                            ])),
-                            Value::Array(ValArray::from([
-                                Value::String(literal!("rows")),
-                                rows,
-                            ])),
-                        ]));
-                        (id, tbl)
+                        #[derive(IntoValue)]
+                        struct Table {
+                            columns: Value,
+                            rows: Value,
+                        }
+                        (id, Table { columns: cols, rows }.into())
                     }
                 }
             } else {

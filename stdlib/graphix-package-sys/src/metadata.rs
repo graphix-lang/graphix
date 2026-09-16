@@ -4,6 +4,7 @@ use arcstr::{ArcStr, literal};
 use chrono::{DateTime, Utc};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use netidx_derive::IntoValue;
 use netidx_value::Value;
 
 #[derive(Debug, Default)]
@@ -112,15 +113,16 @@ pub(crate) fn convert_metadata(m: std::fs::Metadata) -> Value {
             Value::from((literal!("ReadOnly"), m.permissions().readonly()))
         }
     };
-    let r: [(ArcStr, Value); 6] = [
-        (literal!("accessed"), accessed.into()),
-        (literal!("created"), created.into()),
-        (literal!("kind"), kind),
-        (literal!("len"), len.into()),
-        (literal!("modified"), modified.into()),
-        (literal!("permissions"), permissions),
-    ];
-    r.into()
+    #[derive(IntoValue)]
+    struct Fields {
+        accessed: Option<DateTime<Utc>>,
+        created: Option<DateTime<Utc>>,
+        kind: Value,
+        len: u64,
+        modified: Option<DateTime<Utc>>,
+        permissions: Value,
+    }
+    Fields { accessed, created, kind, len, modified, permissions }.into()
 }
 
 #[derive(Debug, Default)]

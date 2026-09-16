@@ -3,16 +3,9 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use chrono::{DateTime, Utc};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use plotters::prelude::SeriesLabelPosition;
 use poolshark::local::LPooled;
-
-fn opt<T: FromValue>(v: Value) -> Result<Option<T>> {
-    if v == Value::Null { Ok(None) } else { Ok(Some(T::from_value(v)?)) }
-}
-
-fn opt_color(v: Value) -> Result<Option<ChartColor>> {
-    Ok(opt::<ColorV>(v)?.map(|c| c.0.into()))
-}
 
 /// A simple RGBA color that does not depend on iced_core.
 #[derive(Clone, Copy, Debug)]
@@ -31,6 +24,12 @@ impl ChartColor {
 impl From<iced_core::Color> for ChartColor {
     fn from(c: iced_core::Color) -> Self {
         Self(c.r, c.g, c.b, c.a)
+    }
+}
+
+impl FromValue for ChartColor {
+    fn from_value(v: Value) -> Result<Self> {
+        Ok(ColorV::from_value(v)?.0.into())
     }
 }
 
@@ -90,7 +89,7 @@ impl FromValue for BarData {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, FromValue)]
 pub struct OHLCPoint {
     pub x: f64,
     pub open: f64,
@@ -99,15 +98,7 @@ pub struct OHLCPoint {
     pub close: f64,
 }
 
-impl FromValue for OHLCPoint {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, close), (_, high), (_, low), (_, open), (_, x)] =
-            v.cast_to::<[(ArcStr, f64); 5]>()?;
-        Ok(Self { x, open, high, low, close })
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, FromValue)]
 pub struct TimeOHLCPoint {
     pub x: DateTime<Utc>,
     pub open: f64,
@@ -116,18 +107,13 @@ pub struct TimeOHLCPoint {
     pub close: f64,
 }
 
-impl FromValue for TimeOHLCPoint {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, close), (_, high), (_, low), (_, open), (_, x)] =
-            v.cast_to::<[(ArcStr, Value); 5]>()?;
-        Ok(Self {
-            x: x.cast_to::<DateTime<Utc>>()?,
-            open: open.cast_to::<f64>()?,
-            high: high.cast_to::<f64>()?,
-            low: low.cast_to::<f64>()?,
-            close: close.cast_to::<f64>()?,
-        })
+fn datetime_x(point: &Value) -> Result<bool> {
+    #[derive(FromValue)]
+    struct Fields {
+        x: Value,
     }
+    let Fields { x } = point.clone().cast_to()?;
+    Ok(matches!(x, Value::DateTime(_)))
 }
 
 /// OHLC data: either numeric or time-series x-axis.
@@ -145,9 +131,7 @@ impl FromValue for OHLCData {
         if a.is_empty() {
             return Ok(Self::Numeric(LPooled::take()));
         }
-        let first_fields = a[0].clone().cast_to::<[(ArcStr, Value); 5]>()?;
-        let x_val = &first_fields[4].1;
-        if matches!(x_val, Value::DateTime(_)) {
+        if datetime_x(&a[0])? {
             Ok(Self::DateTime(
                 a.iter()
                     .map(|v| TimeOHLCPoint::from_value(v.clone()))
@@ -163,7 +147,7 @@ impl FromValue for OHLCData {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, FromValue)]
 pub struct EBPoint {
     pub x: f64,
     pub min: f64,
@@ -171,32 +155,12 @@ pub struct EBPoint {
     pub max: f64,
 }
 
-impl FromValue for EBPoint {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, avg), (_, max), (_, min), (_, x)] = v.cast_to::<[(ArcStr, f64); 4]>()?;
-        Ok(Self { x, min, avg, max })
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, FromValue)]
 pub struct TimeEBPoint {
     pub x: DateTime<Utc>,
     pub min: f64,
     pub avg: f64,
     pub max: f64,
-}
-
-impl FromValue for TimeEBPoint {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, avg), (_, max), (_, min), (_, x)] =
-            v.cast_to::<[(ArcStr, Value); 4]>()?;
-        Ok(Self {
-            x: x.cast_to::<DateTime<Utc>>()?,
-            min: min.cast_to::<f64>()?,
-            avg: avg.cast_to::<f64>()?,
-            max: max.cast_to::<f64>()?,
-        })
-    }
 }
 
 /// Error bar data: either numeric or time-series x-axis.
@@ -214,9 +178,7 @@ impl FromValue for EBData {
         if a.is_empty() {
             return Ok(Self::Numeric(LPooled::take()));
         }
-        let first_fields = a[0].clone().cast_to::<[(ArcStr, Value); 4]>()?;
-        let x_val = &first_fields[3].1;
-        if matches!(x_val, Value::DateTime(_)) {
+        if datetime_x(&a[0])? {
             Ok(Self::DateTime(
                 a.iter()
                     .map(|v| TimeEBPoint::from_value(v.clone()))
@@ -274,6 +236,7 @@ impl FromValue for SurfaceData {
     }
 }
 
+#[derive(FromValue)]
 pub struct SeriesStyleV {
     pub color: Option<ChartColor>,
     pub label: Option<String>,
@@ -281,65 +244,14 @@ pub struct SeriesStyleV {
     pub point_size: Option<f64>,
 }
 
-impl FromValue for SeriesStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, color), (_, label), (_, point_size), (_, stroke_width)] =
-            v.cast_to::<[(ArcStr, Value); 4]>()?;
-        Ok(Self {
-            color: if color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(color)?.0.into())
-            },
-            label: if label == Value::Null {
-                None
-            } else {
-                Some(label.cast_to::<String>()?)
-            },
-            stroke_width: if stroke_width == Value::Null {
-                None
-            } else {
-                Some(stroke_width.cast_to::<f64>()?)
-            },
-            point_size: if point_size == Value::Null {
-                None
-            } else {
-                Some(point_size.cast_to::<f64>()?)
-            },
-        })
-    }
-}
-
+#[derive(FromValue)]
 pub struct BarStyleV {
     pub color: Option<ChartColor>,
     pub label: Option<String>,
     pub margin: Option<f64>,
 }
 
-impl FromValue for BarStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, color), (_, label), (_, margin)] =
-            v.cast_to::<[(ArcStr, Value); 3]>()?;
-        Ok(Self {
-            color: if color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(color)?.0.into())
-            },
-            label: if label == Value::Null {
-                None
-            } else {
-                Some(label.cast_to::<String>()?)
-            },
-            margin: if margin == Value::Null {
-                None
-            } else {
-                Some(margin.cast_to::<f64>()?)
-            },
-        })
-    }
-}
-
+#[derive(FromValue)]
 pub struct CandlestickStyleV {
     pub gain_color: Option<ChartColor>,
     pub loss_color: Option<ChartColor>,
@@ -347,35 +259,7 @@ pub struct CandlestickStyleV {
     pub label: Option<String>,
 }
 
-impl FromValue for CandlestickStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, bar_width), (_, gain_color), (_, label), (_, loss_color)] =
-            v.cast_to::<[(ArcStr, Value); 4]>()?;
-        Ok(Self {
-            gain_color: if gain_color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(gain_color)?.0.into())
-            },
-            loss_color: if loss_color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(loss_color)?.0.into())
-            },
-            bar_width: if bar_width == Value::Null {
-                None
-            } else {
-                Some(bar_width.cast_to::<f64>()?)
-            },
-            label: if label == Value::Null {
-                None
-            } else {
-                Some(label.cast_to::<String>()?)
-            },
-        })
-    }
-}
-
+#[derive(FromValue)]
 pub struct PieStyleV {
     pub colors: Option<Vec<ChartColor>>,
     pub donut: Option<f64>,
@@ -384,83 +268,14 @@ pub struct PieStyleV {
     pub start_angle: Option<f64>,
 }
 
-impl FromValue for PieStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [
-            (_, colors),
-            (_, donut),
-            (_, label_offset),
-            (_, show_percentages),
-            (_, start_angle),
-        ] = v.cast_to::<[(ArcStr, Value); 5]>()?;
-        Ok(Self {
-            colors: if colors == Value::Null {
-                None
-            } else {
-                let arr = match colors {
-                    Value::Array(a) => a,
-                    _ => bail!("pie colors: expected array"),
-                };
-                Some(
-                    arr.iter()
-                        .map(|v| Ok(ChartColor::from(ColorV::from_value(v.clone())?.0)))
-                        .collect::<Result<_>>()?,
-                )
-            },
-            donut: if donut == Value::Null {
-                None
-            } else {
-                Some(donut.cast_to::<f64>()?)
-            },
-            label_offset: if label_offset == Value::Null {
-                None
-            } else {
-                Some(label_offset.cast_to::<f64>()?)
-            },
-            show_percentages: if show_percentages == Value::Null {
-                None
-            } else {
-                Some(show_percentages.cast_to::<bool>()?)
-            },
-            start_angle: if start_angle == Value::Null {
-                None
-            } else {
-                Some(start_angle.cast_to::<f64>()?)
-            },
-        })
-    }
-}
-
+#[derive(FromValue)]
 pub struct SurfaceStyleV {
     pub color: Option<ChartColor>,
     pub color_by_z: Option<bool>,
     pub label: Option<String>,
 }
 
-impl FromValue for SurfaceStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, color), (_, color_by_z), (_, label)] =
-            v.cast_to::<[(ArcStr, Value); 3]>()?;
-        Ok(Self {
-            color: if color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(color)?.0.into())
-            },
-            color_by_z: if color_by_z == Value::Null {
-                None
-            } else {
-                Some(color_by_z.cast_to::<bool>()?)
-            },
-            label: if label == Value::Null {
-                None
-            } else {
-                Some(label.cast_to::<String>()?)
-            },
-        })
-    }
-}
-
+#[derive(FromValue)]
 pub struct MeshStyleV {
     pub show_x_grid: Option<bool>,
     pub show_y_grid: Option<bool>,
@@ -479,79 +294,12 @@ pub struct MeshStyleV {
     pub z_light_lines: Option<i64>,
 }
 
-impl FromValue for MeshStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [
-            (_, axis_color),
-            (_, bold_line_color),
-            (_, grid_color),
-            (_, label_color),
-            (_, label_size),
-            (_, show_x_grid),
-            (_, show_y_grid),
-            (_, x_label_area_size),
-            (_, x_labels),
-            (_, x_light_lines),
-            (_, y_label_area_size),
-            (_, y_labels),
-            (_, y_light_lines),
-            (_, z_labels),
-            (_, z_light_lines),
-        ] = v.cast_to::<[(ArcStr, Value); 15]>()?;
-        Ok(Self {
-            show_x_grid: opt(show_x_grid)?,
-            show_y_grid: opt(show_y_grid)?,
-            grid_color: opt_color(grid_color)?,
-            bold_line_color: opt_color(bold_line_color)?,
-            axis_color: opt_color(axis_color)?,
-            label_color: opt_color(label_color)?,
-            label_size: opt(label_size)?,
-            x_label_area_size: opt(x_label_area_size)?,
-            x_labels: opt(x_labels)?,
-            x_light_lines: opt(x_light_lines)?,
-            y_label_area_size: opt(y_label_area_size)?,
-            y_labels: opt(y_labels)?,
-            y_light_lines: opt(y_light_lines)?,
-            z_labels: opt(z_labels)?,
-            z_light_lines: opt(z_light_lines)?,
-        })
-    }
-}
-
+#[derive(FromValue)]
 pub struct LegendStyleV {
     pub background: Option<ChartColor>,
     pub border: Option<ChartColor>,
     pub label_color: Option<ChartColor>,
     pub label_size: Option<f64>,
-}
-
-impl FromValue for LegendStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, background), (_, border), (_, label_color), (_, label_size)] =
-            v.cast_to::<[(ArcStr, Value); 4]>()?;
-        Ok(Self {
-            background: if background == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(background)?.0.into())
-            },
-            border: if border == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(border)?.0.into())
-            },
-            label_color: if label_color == Value::Null {
-                None
-            } else {
-                Some(ColorV::from_value(label_color)?.0.into())
-            },
-            label_size: if label_size == Value::Null {
-                None
-            } else {
-                Some(label_size.cast_to::<f64>()?)
-            },
-        })
-    }
 }
 
 #[derive(Clone)]
@@ -573,6 +321,7 @@ impl FromValue for LegendPositionV {
     }
 }
 
+#[derive(FromValue)]
 pub struct ChartStyleV {
     pub background: Option<ChartColor>,
     pub margin: Option<f64>,
@@ -584,111 +333,29 @@ pub struct ChartStyleV {
     pub mesh: Option<MeshStyleV>,
 }
 
-impl FromValue for ChartStyleV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [
-            (_, background),
-            (_, legend),
-            (_, legend_position),
-            (_, margin),
-            (_, mesh),
-            (_, palette),
-            (_, title_color),
-            (_, title_size),
-        ] = v.cast_to::<[(ArcStr, Value); 8]>()?;
-        Ok(Self {
-            background: opt_color(background)?,
-            margin: opt(margin)?,
-            title_size: opt(title_size)?,
-            title_color: opt_color(title_color)?,
-            palette: match palette {
-                Value::Null => None,
-                Value::Array(a) => Some(
-                    a.iter()
-                        .map(|v| Ok(ChartColor::from(ColorV::from_value(v.clone())?.0)))
-                        .collect::<Result<_>>()?,
-                ),
-                _ => bail!("chart palette: expected array"),
-            },
-            legend_position: opt(legend_position)?,
-            legend: opt(legend)?,
-            mesh: opt(mesh)?,
-        })
-    }
-}
-
 /// Newtype for Option<ChartStyleV> to satisfy orphan rules.
+#[derive(FromValue)]
 pub struct OptChartStyle(pub Option<ChartStyleV>);
 
-impl FromValue for OptChartStyle {
-    fn from_value(v: Value) -> Result<Self> {
-        Ok(Self(opt(v)?))
-    }
-}
-
+#[derive(FromValue)]
 pub struct Projection3DV {
     pub pitch: Option<f64>,
     pub scale: Option<f64>,
     pub yaw: Option<f64>,
 }
 
-impl FromValue for Projection3DV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, pitch), (_, scale), (_, yaw)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
-        Ok(Self {
-            pitch: if pitch == Value::Null {
-                None
-            } else {
-                Some(pitch.cast_to::<f64>()?)
-            },
-            scale: if scale == Value::Null {
-                None
-            } else {
-                Some(scale.cast_to::<f64>()?)
-            },
-            yaw: if yaw == Value::Null { None } else { Some(yaw.cast_to::<f64>()?) },
-        })
-    }
-}
-
+#[derive(FromValue)]
 pub struct OptProjection3D(pub Option<Projection3DV>);
 
-impl FromValue for OptProjection3D {
-    fn from_value(v: Value) -> Result<Self> {
-        if v == Value::Null {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(Projection3DV::from_value(v)?)))
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, FromValue)]
 pub struct AxisRange {
     pub min: f64,
     pub max: f64,
 }
 
-impl FromValue for AxisRange {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, max), (_, min)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
-        Ok(AxisRange { min, max })
-    }
-}
-
 /// Newtype for Option<AxisRange> to satisfy orphan rules.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, FromValue)]
 pub struct OptAxisRange(pub Option<AxisRange>);
-
-impl FromValue for OptAxisRange {
-    fn from_value(v: Value) -> Result<Self> {
-        if v == Value::Null {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(AxisRange::from_value(v)?)))
-        }
-    }
-}
 
 /// Parsed x-axis range: either numeric or datetime.
 pub enum XAxisRange {
@@ -704,13 +371,15 @@ impl FromValue for OptXAxisRange {
         if v == Value::Null {
             return Ok(Self(None));
         }
-        if let Ok([(_, max), (_, min)]) = v.clone().cast_to::<[(ArcStr, f64); 2]>() {
+        if let Ok(AxisRange { min, max }) = v.clone().cast_to() {
             return Ok(Self(Some(XAxisRange::Numeric { min, max })));
         }
-        let [(_, max), (_, min)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
-        Ok(Self(Some(XAxisRange::DateTime {
-            min: min.cast_to::<DateTime<Utc>>()?,
-            max: max.cast_to::<DateTime<Utc>>()?,
-        })))
+        #[derive(FromValue)]
+        struct Fields {
+            min: DateTime<Utc>,
+            max: DateTime<Utc>,
+        }
+        let Fields { min, max } = v.cast_to()?;
+        Ok(Self(Some(XAxisRange::DateTime { min, max })))
     }
 }

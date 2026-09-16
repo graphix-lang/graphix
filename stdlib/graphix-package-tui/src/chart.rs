@@ -1,5 +1,5 @@
 use super::{
-    AlignmentV, LineV, MarkerV, StyleV, TuiW, TuiWidget, into_borrowed_line,
+    AlignmentV, BoundsV, LineV, MarkerV, StyleV, TuiW, TuiWidget, into_borrowed_line,
     layout::ConstraintV,
 };
 use anyhow::{Context, Result, bail};
@@ -11,9 +11,10 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use log::debug;
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
-    layout::{Constraint, Rect},
+    layout::Rect,
     widgets::{Axis, Chart, Dataset, GraphType, LegendPosition},
 };
 use smallvec::SmallVec;
@@ -59,37 +60,37 @@ struct AxisV(Axis<'static>);
 
 impl FromValue for AxisV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, bounds), (_, labels), (_, labels_alignment), (_, style), (_, title)] =
-            v.cast_to::<[(ArcStr, Value); 5]>()?;
-        let [(_, max), (_, min)] = bounds.cast_to::<[(ArcStr, f64); 2]>()?;
-        let mut axis = Axis::default().bounds([min, max]);
-        if let Some(lbls) = labels.cast_to::<Option<Vec<LineV>>>()? {
+        #[derive(FromValue)]
+        struct Fields {
+            bounds: BoundsV,
+            labels: Option<Vec<LineV>>,
+            labels_alignment: Option<AlignmentV>,
+            style: Option<StyleV>,
+            title: Option<LineV>,
+        }
+        let Fields { bounds, labels, labels_alignment, style, title } = v.cast_to()?;
+        let mut axis = Axis::default().bounds([bounds.min, bounds.max]);
+        if let Some(lbls) = labels {
             let lbls = lbls.into_iter().map(|l| l.0).collect::<Vec<_>>();
             axis = axis.labels(lbls);
         }
-        if let Some(al) = labels_alignment.cast_to::<Option<AlignmentV>>()? {
+        if let Some(al) = labels_alignment {
             axis = axis.labels_alignment(al.0);
         }
-        if let Some(st) = style.cast_to::<Option<StyleV>>()? {
+        if let Some(st) = style {
             axis = axis.style(st.0);
         }
-        if let Some(LineV(t)) = title.cast_to::<Option<LineV>>()? {
+        if let Some(LineV(t)) = title {
             axis = axis.title(t);
         }
         Ok(Self(axis))
     }
 }
 
-#[derive(Clone, Copy)]
-struct HLConstraintsV((Constraint, Constraint));
-
-impl FromValue for HLConstraintsV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, w), (_, h)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
-        let w = w.cast_to::<ConstraintV>()?.0;
-        let h = h.cast_to::<ConstraintV>()?.0;
-        Ok(Self((w, h)))
-    }
+#[derive(Clone, Copy, FromValue)]
+struct HLConstraintsV {
+    height: ConstraintV,
+    width: ConstraintV,
 }
 
 struct DatasetW<X: GXExt> {
@@ -103,8 +104,15 @@ struct DatasetW<X: GXExt> {
 
 impl<X: GXExt> DatasetW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
-        let [(_, data), (_, graph_type), (_, marker), (_, name), (_, style)] =
-            v.cast_to::<[(ArcStr, u64); 5]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            data: u64,
+            graph_type: u64,
+            marker: u64,
+            name: u64,
+            style: u64,
+        }
+        let Fields { data, graph_type, marker, name, style } = v.cast_to()?;
         let (name, data_ref, marker, graph_type, style) = try_join! {
             gx.compile_ref(name),
             gx.compile_ref(data),
@@ -187,14 +195,23 @@ pub(super) struct ChartW<X: GXExt> {
 
 impl<X: GXExt> ChartW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, datasets),
-            (_, hidden_legend_constraints),
-            (_, legend_position),
-            (_, style),
-            (_, x_axis),
-            (_, y_axis),
-        ] = v.cast_to::<[(ArcStr, u64); 6]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            datasets: u64,
+            hidden_legend_constraints: u64,
+            legend_position: u64,
+            style: u64,
+            x_axis: u64,
+            y_axis: u64,
+        }
+        let Fields {
+            datasets,
+            hidden_legend_constraints,
+            legend_position,
+            style,
+            x_axis,
+            y_axis,
+        } = v.cast_to()?;
         let (
             datasets_ref,
             hidden_legend_constraints,
@@ -281,7 +298,7 @@ impl<X: GXExt> TuiWidget for ChartW<X> {
         debug!("drawing datasets: {}", datasets.len());
         let mut chart = Chart::new(datasets.iter().map(|d| d.build()).collect());
         if let Some(Some(h)) = &hidden_legend_constraints.t {
-            chart = chart.hidden_legend_constraints(h.0);
+            chart = chart.hidden_legend_constraints((h.width.0, h.height.0));
         }
         if let Some(Some(p)) = legend_position.t {
             chart = chart.legend_position(Some(p.0));

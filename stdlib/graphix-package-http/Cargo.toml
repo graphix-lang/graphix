@@ -36,6 +36,7 @@ hyper = { workspace = true }
 hyper-util = { workspace = true }
 log = { workspace = true }
 netidx-core = { workspace = true }
+netidx-derive = { workspace = true }
 netidx-value = { workspace = true }
 netidx = { workspace = true }
 poolshark = { workspace = true }

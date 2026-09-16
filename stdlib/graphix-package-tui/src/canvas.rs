@@ -1,16 +1,15 @@
-use super::{ColorV, LineV, MarkerV, TuiW, TuiWidget};
-use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
+use super::{BoundsV, ColorV, LineV, MarkerV, TuiW, TuiWidget};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use crossterm::event::Event;
 use futures::future::try_join_all;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Color,
     widgets::canvas::{
         Canvas, Circle, Context as CanvasContext, Line, Points, Rectangle,
     },
@@ -18,31 +17,21 @@ use ratatui::{
 use smallvec::SmallVec;
 use tokio::try_join;
 
-#[derive(Clone, Copy)]
-struct BoundsV([f64; 2]);
-
-impl FromValue for BoundsV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, max), (_, min)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
-        Ok(Self([min, max]))
-    }
-}
-
 #[derive(Clone)]
 struct CanvasLineV(Line);
 
 impl FromValue for CanvasLineV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, color), (_, x1), (_, x2), (_, y1), (_, y2)] =
-            v.cast_to::<[(ArcStr, Value); 5]>()?;
-        let color = color.cast_to::<ColorV>()?.0;
-        Ok(Self(Line {
-            x1: x1.cast_to()?,
-            y1: y1.cast_to()?,
-            x2: x2.cast_to()?,
-            y2: y2.cast_to()?,
-            color,
-        }))
+        #[derive(FromValue)]
+        struct Fields {
+            color: ColorV,
+            x1: f64,
+            x2: f64,
+            y1: f64,
+            y2: f64,
+        }
+        let Fields { color, x1, x2, y1, y2 } = v.cast_to()?;
+        Ok(Self(Line { x1, y1, x2, y2, color: color.0 }))
     }
 }
 
@@ -51,15 +40,15 @@ struct CanvasCircleV(Circle);
 
 impl FromValue for CanvasCircleV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, color), (_, radius), (_, x), (_, y)] =
-            v.cast_to::<[(ArcStr, Value); 4]>()?;
-        let color = color.cast_to::<ColorV>()?.0;
-        Ok(Self(Circle {
-            x: x.cast_to()?,
-            y: y.cast_to()?,
-            radius: radius.cast_to()?,
-            color,
-        }))
+        #[derive(FromValue)]
+        struct Fields {
+            color: ColorV,
+            radius: f64,
+            x: f64,
+            y: f64,
+        }
+        let Fields { color, radius, x, y } = v.cast_to()?;
+        Ok(Self(Circle { x, y, radius, color: color.0 }))
     }
 }
 
@@ -68,78 +57,39 @@ struct CanvasRectangleV(Rectangle);
 
 impl FromValue for CanvasRectangleV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, color), (_, height), (_, width), (_, x), (_, y)] =
-            v.cast_to::<[(ArcStr, Value); 5]>()?;
-        let color = color.cast_to::<ColorV>()?.0;
-        Ok(Self(Rectangle {
-            x: x.cast_to()?,
-            y: y.cast_to()?,
-            width: width.cast_to()?,
-            height: height.cast_to()?,
-            color,
-        }))
+        #[derive(FromValue)]
+        struct Fields {
+            color: ColorV,
+            height: f64,
+            width: f64,
+            x: f64,
+            y: f64,
+        }
+        let Fields { color, height, width, x, y } = v.cast_to()?;
+        Ok(Self(Rectangle { x, y, width, height, color: color.0 }))
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, FromValue)]
 struct CanvasPointsV {
-    color: Color,
-    coords: Vec<(f64, f64)>,
+    color: ColorV,
+    coords: Option<Vec<(f64, f64)>>,
 }
 
-impl FromValue for CanvasPointsV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, color), (_, coords)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
-        let color = color.cast_to::<ColorV>()?.0;
-        let coords = match coords {
-            Value::Array(a) => {
-                let mut c = Vec::with_capacity(a.len());
-                for v in a {
-                    c.push(v.cast_to::<(f64, f64)>()?);
-                }
-                c
-            }
-            Value::Null => Vec::new(),
-            v => bail!("invalid points coords {v}"),
-        };
-        Ok(Self { color, coords })
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, FromValue)]
 struct CanvasLabelV {
     line: LineV,
     x: f64,
     y: f64,
 }
 
-impl FromValue for CanvasLabelV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, line), (_, x), (_, y)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
-        Ok(Self { line: line.cast_to()?, x: x.cast_to()?, y: y.cast_to()? })
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, FromValue)]
 enum ShapeV {
     Line(CanvasLineV),
     Circle(CanvasCircleV),
     Rectangle(CanvasRectangleV),
     Points(CanvasPointsV),
     Label(CanvasLabelV),
-}
-
-impl FromValue for ShapeV {
-    fn from_value(v: Value) -> Result<Self> {
-        match v.cast_to::<(ArcStr, Value)>()? {
-            (s, v) if &s == "Line" => Ok(ShapeV::Line(v.cast_to()?)),
-            (s, v) if &s == "Circle" => Ok(ShapeV::Circle(v.cast_to()?)),
-            (s, v) if &s == "Rectangle" => Ok(ShapeV::Rectangle(v.cast_to()?)),
-            (s, v) if &s == "Points" => Ok(ShapeV::Points(v.cast_to()?)),
-            (s, v) if &s == "Label" => Ok(ShapeV::Label(v.cast_to()?)),
-            (s, v) => bail!("invalid shape {s}({v})"),
-        }
-    }
 }
 
 impl ShapeV {
@@ -155,7 +105,8 @@ impl ShapeV {
                 ctx.draw(&s.0);
             }
             ShapeV::Points(s) => {
-                let points = Points { coords: &s.coords, color: s.color };
+                let coords = s.coords.as_deref().unwrap_or_default();
+                let points = Points { coords, color: s.color.0 };
                 ctx.draw(&points);
             }
             ShapeV::Label(s) => {
@@ -191,13 +142,16 @@ pub(super) struct CanvasW<X: GXExt> {
 
 impl<X: GXExt> CanvasW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, background_color),
-            (_, marker),
-            (_, shapes),
-            (_, x_bounds),
-            (_, y_bounds),
-        ] = v.cast_to::<[(ArcStr, u64); 5]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            background_color: u64,
+            marker: u64,
+            shapes: u64,
+            x_bounds: u64,
+            y_bounds: u64,
+        }
+        let Fields { background_color, marker, shapes, x_bounds, y_bounds } =
+            v.cast_to()?;
         let (background_color, marker, shapes_ref, x_bounds, y_bounds) = try_join! {
             gx.compile_ref(background_color),
             gx.compile_ref(marker),
@@ -260,8 +214,8 @@ impl<X: GXExt> TuiWidget for CanvasW<X> {
     }
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
-        let x_bounds = self.x_bounds.t.unwrap_or(BoundsV([0.0, 0.0])).0;
-        let y_bounds = self.y_bounds.t.unwrap_or(BoundsV([0.0, 0.0])).0;
+        let x_bounds = self.x_bounds.t.map_or([0.0, 0.0], |b| [b.min, b.max]);
+        let y_bounds = self.y_bounds.t.map_or([0.0, 0.0], |b| [b.min, b.max]);
         let bg = self.background_color.t.as_ref().and_then(|c| c.as_ref()).cloned();
         let marker = self.marker.t.as_ref().and_then(|m| m.as_ref()).cloned();
         let shapes = &self.shapes;

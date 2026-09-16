@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, compile_children};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct StackW<X: GXExt> {
@@ -18,8 +18,14 @@ pub(crate) struct StackW<X: GXExt> {
 
 impl<X: GXExt> StackW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, children), (_, height), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 3]>().context("stack flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            children: u64,
+            height: u64,
+            width: u64,
+        }
+        let Fields { children, height, width } =
+            source.cast_to().context("stack flds")?;
         let (children_ref, height, width) = try_join! {
             gx.compile_ref(children),
             gx.compile_ref(height),

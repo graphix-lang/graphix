@@ -1,11 +1,11 @@
 use super::{SpanV, StyleV, TuiW, TuiWidget};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{Frame, layout::Rect, widgets::Gauge};
 use tokio::try_join;
 
@@ -37,8 +37,15 @@ pub(super) struct GaugeW<X: GXExt> {
 
 impl<X: GXExt> GaugeW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, gauge_style), (_, label), (_, ratio), (_, style), (_, use_unicode)] =
-            v.cast_to::<[(ArcStr, u64); 5]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            gauge_style: u64,
+            label: u64,
+            ratio: u64,
+            style: u64,
+            use_unicode: u64,
+        }
+        let Fields { gauge_style, label, ratio, style, use_unicode } = v.cast_to()?;
         let (gauge_style, label, ratio, style, use_unicode) = try_join! {
             gx.compile_ref(gauge_style),
             gx.compile_ref(label),

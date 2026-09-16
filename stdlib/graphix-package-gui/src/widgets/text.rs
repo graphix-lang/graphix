@@ -1,11 +1,11 @@
 use super::{GuiW, IcedElement};
 use crate::types::{ColorV, FontV, HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct TextW<X: GXExt> {
@@ -21,16 +21,19 @@ pub(crate) struct TextW<X: GXExt> {
 
 impl<X: GXExt> TextW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, color),
-            (_, content),
-            (_, font),
-            (_, halign),
-            (_, height),
-            (_, size),
-            (_, valign),
-            (_, width),
-        ] = source.cast_to::<[(ArcStr, u64); 8]>().context("text flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            color: u64,
+            content: u64,
+            font: u64,
+            halign: u64,
+            height: u64,
+            size: u64,
+            valign: u64,
+            width: u64,
+        }
+        let Fields { color, content, font, halign, height, size, valign, width } =
+            source.cast_to().context("text flds")?;
         let (color, content, font, halign, height, size, valign, width) = try_join! {
             gx.compile_ref(color),
             gx.compile_ref(content),

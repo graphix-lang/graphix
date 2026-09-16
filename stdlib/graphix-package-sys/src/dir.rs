@@ -3,6 +3,7 @@ use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
+use netidx_derive::IntoValue;
 use netidx_value::{ValArray, Value};
 use poolshark::global::{GPooled, Pool};
 use std::{result, sync::LazyLock};
@@ -88,19 +89,20 @@ impl EvalCachedAsync for ReadDirEv {
                 Err(e) => errf!("IOError", "failed to spawn task {e:?}"),
                 Ok(Err(e)) => errf!("IOError", "walkdir failed {e:?}"),
                 Ok(Ok(mut ents)) => {
+                    #[derive(IntoValue)]
+                    struct Fields {
+                        depth: i64,
+                        file_name: ArcStr,
+                        kind: Value,
+                        path: ArcStr,
+                    }
                     let ents = ents.drain(..).map(|ent| {
-                        let file_name: Value = Value::String(ArcStr::from(
-                            &*ent.file_name().to_string_lossy(),
-                        ));
-                        let depth: Value = (ent.depth() as i64).into();
-                        let kind = convert_filetype(ent.file_type());
-                        let path: Value = convert_path(ent.path()).into();
-                        Value::from([
-                            (literal!("depth"), depth),
-                            (literal!("file_name"), file_name),
-                            (literal!("kind"), kind),
-                            (literal!("path"), path),
-                        ])
+                        Value::from(Fields {
+                            depth: ent.depth() as i64,
+                            file_name: ArcStr::from(&*ent.file_name().to_string_lossy()),
+                            kind: convert_filetype(ent.file_type()),
+                            path: convert_path(ent.path()),
+                        })
                     });
                     Value::Array(ValArray::from_iter_exact(ents))
                 }

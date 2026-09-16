@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 /// Generate the struct, compile(), and handle_update helper for a boolean
@@ -26,8 +26,18 @@ macro_rules! toggle_widget {
 
         impl<X: GXExt> $name<X> {
             pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-                let [(_, disabled), (_, $state), (_, label), (_, on_toggle), (_, size), (_, spacing), (_, width)] =
-                    source.cast_to::<[(ArcStr, u64); 7]>().context(concat!($label, " flds"))?;
+                #[derive(FromValue)]
+                struct Fields {
+                    disabled: u64,
+                    $state: u64,
+                    label: u64,
+                    on_toggle: u64,
+                    size: u64,
+                    spacing: u64,
+                    width: u64,
+                }
+                let Fields { disabled, $state, label, on_toggle, size, spacing, width } =
+                    source.cast_to().context(concat!($label, " flds"))?;
                 let (disabled, $state, label, on_toggle, size, spacing, width) = try_join! {
                     gx.compile_ref(disabled),
                     gx.compile_ref($state),

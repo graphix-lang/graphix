@@ -9,7 +9,8 @@ use crossterm::event::Event;
 use futures::future::try_join_all;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
-use netidx::publisher::{FromValue, Value};
+use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -17,50 +18,25 @@ use ratatui::{
 };
 use tokio::try_join;
 
-#[derive(Debug, Clone, Copy)]
-struct SelectedV((usize, usize));
-
-impl FromValue for SelectedV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, x), (_, y)] = v.cast_to::<[(ArcStr, usize); 2]>()?;
-        Ok(Self((y, x)))
-    }
+#[derive(Debug, Clone, Copy, FromValue)]
+struct SelectedV {
+    x: usize,
+    y: usize,
 }
 
+#[derive(FromValue)]
 struct CellV {
     content: LineV,
     style: Option<StyleV>,
 }
 
-impl FromValue for CellV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, content), (_, style)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
-        let content = content.cast_to::<LineV>()?;
-        let style = style.cast_to::<Option<StyleV>>()?;
-        Ok(Self { content, style })
-    }
-}
-
+#[derive(FromValue)]
 struct RowV {
     cells: Vec<CellV>,
     height: Option<u16>,
     style: Option<StyleV>,
     top_margin: Option<u16>,
     bottom_margin: Option<u16>,
-}
-
-impl FromValue for RowV {
-    fn from_value(v: Value) -> Result<Self> {
-        let ((_, bottom_margin), (_, cells), (_, height), (_, style), (_, top_margin)) =
-            v.cast_to::<(
-                (ArcStr, Option<u16>),
-                (ArcStr, Vec<CellV>),
-                (ArcStr, Option<u16>),
-                (ArcStr, Option<StyleV>),
-                (ArcStr, Option<u16>),
-            )>()?;
-        Ok(Self { cells, height, style, top_margin, bottom_margin })
-    }
 }
 
 impl RowV {
@@ -112,23 +88,41 @@ pub(super) struct TableW<X: GXExt> {
 
 impl<X: GXExt> TableW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, cell_highlight_style),
-            (_, column_highlight_style),
-            (_, column_spacing),
-            (_, flex),
-            (_, footer),
-            (_, header),
-            (_, highlight_spacing),
-            (_, highlight_symbol),
-            (_, row_highlight_style),
-            (_, rows),
-            (_, selected),
-            (_, selected_cell),
-            (_, selected_column),
-            (_, style),
-            (_, widths),
-        ] = v.cast_to::<[(ArcStr, u64); 15]>().context("table fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            cell_highlight_style: u64,
+            column_highlight_style: u64,
+            column_spacing: u64,
+            flex: u64,
+            footer: u64,
+            header: u64,
+            highlight_spacing: u64,
+            highlight_symbol: u64,
+            row_highlight_style: u64,
+            rows: u64,
+            selected: u64,
+            selected_cell: u64,
+            selected_column: u64,
+            style: u64,
+            widths: u64,
+        }
+        let Fields {
+            cell_highlight_style,
+            column_highlight_style,
+            column_spacing,
+            flex,
+            footer,
+            header,
+            highlight_spacing,
+            highlight_symbol,
+            row_highlight_style,
+            rows,
+            selected,
+            selected_cell,
+            selected_column,
+            style,
+            widths,
+        } = v.cast_to().context("table fields")?;
         let (
             cell_highlight_style,
             column_highlight_style,
@@ -321,7 +315,7 @@ impl<X: GXExt> TuiWidget for TableW<X> {
             table = table.style(s.0);
         }
         if let Some(Some(s)) = selected_cell.t {
-            *state = state.clone().with_selected_cell(s.0);
+            *state = state.clone().with_selected_cell((s.y, s.x));
         }
         if let Some(Some(s)) = selected_column.t {
             *state = state.clone().with_selected_column(s)

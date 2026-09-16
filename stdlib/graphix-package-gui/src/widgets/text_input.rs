@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::{FontV, LengthV, PaddingV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct TextInputW<X: GXExt> {
@@ -26,18 +26,31 @@ pub(crate) struct TextInputW<X: GXExt> {
 
 impl<X: GXExt> TextInputW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, disabled),
-            (_, font),
-            (_, is_secure),
-            (_, on_input),
-            (_, on_submit),
-            (_, padding),
-            (_, placeholder),
-            (_, size),
-            (_, value),
-            (_, width),
-        ] = source.cast_to::<[(ArcStr, u64); 10]>().context("text_input flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            disabled: u64,
+            font: u64,
+            is_secure: u64,
+            on_input: u64,
+            on_submit: u64,
+            padding: u64,
+            placeholder: u64,
+            size: u64,
+            value: u64,
+            width: u64,
+        }
+        let Fields {
+            disabled,
+            font,
+            is_secure,
+            on_input,
+            on_submit,
+            padding,
+            placeholder,
+            size,
+            value,
+            width,
+        } = source.cast_to().context("text_input flds")?;
         let (
             disabled,
             font,

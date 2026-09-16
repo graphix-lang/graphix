@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, Message, MessageShell};
 use crate::types::{FontV, PaddingV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget::{self as widget, text_editor};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 /// Multi-line text editor widget. Editable when on_edit callback is provided.
@@ -28,17 +28,29 @@ pub(crate) struct TextEditorW<X: GXExt> {
 
 impl<X: GXExt> TextEditorW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, content),
-            (_, disabled),
-            (_, font),
-            (_, height),
-            (_, on_edit),
-            (_, padding),
-            (_, placeholder),
-            (_, size),
-            (_, width),
-        ] = source.cast_to::<[(ArcStr, u64); 9]>().context("text_editor flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            content: u64,
+            disabled: u64,
+            font: u64,
+            height: u64,
+            on_edit: u64,
+            padding: u64,
+            placeholder: u64,
+            size: u64,
+            width: u64,
+        }
+        let Fields {
+            content,
+            disabled,
+            font,
+            height,
+            on_edit,
+            padding,
+            placeholder,
+            size,
+            width,
+        } = source.cast_to().context("text_editor flds")?;
         let (content, disabled, font, height, on_edit, padding, placeholder, size, width) =
             try_join! {
                 gx.compile_ref(content),

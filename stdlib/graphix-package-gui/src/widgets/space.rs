@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct SpaceW<X: GXExt> {
@@ -15,8 +15,12 @@ pub(crate) struct SpaceW<X: GXExt> {
 
 impl<X: GXExt> SpaceW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, height), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 2]>().context("space flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            height: u64,
+            width: u64,
+        }
+        let Fields { height, width } = source.cast_to().context("space flds")?;
         let (height, width) = try_join! {
             gx.compile_ref(height),
             gx.compile_ref(width),

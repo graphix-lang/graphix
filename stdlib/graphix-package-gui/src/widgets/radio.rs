@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct RadioW<X: GXExt> {
@@ -23,16 +23,19 @@ pub(crate) struct RadioW<X: GXExt> {
 
 impl<X: GXExt> RadioW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, disabled),
-            (_, label),
-            (_, on_select),
-            (_, selected),
-            (_, size),
-            (_, spacing),
-            (_, value),
-            (_, width),
-        ] = source.cast_to::<[(ArcStr, u64); 8]>().context("radio flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            disabled: u64,
+            label: u64,
+            on_select: u64,
+            selected: u64,
+            size: u64,
+            spacing: u64,
+            value: u64,
+            width: u64,
+        }
+        let Fields { disabled, label, on_select, selected, size, spacing, value, width } =
+            source.cast_to().context("radio flds")?;
         let (disabled, label, on_select, selected, size, spacing, value, width) = try_join! {
             gx.compile_ref(disabled),
             gx.compile_ref(label),

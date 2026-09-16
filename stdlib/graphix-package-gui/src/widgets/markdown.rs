@@ -1,11 +1,11 @@
 use super::{GuiW, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 // TODO: link hover underlines flicker between adjacent link spans;
@@ -25,8 +25,16 @@ pub(crate) struct MarkdownW<X: GXExt> {
 
 impl<X: GXExt> MarkdownW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, content), (_, on_link), (_, spacing), (_, text_size), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("markdown flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            content: u64,
+            on_link: u64,
+            spacing: u64,
+            text_size: u64,
+            width: u64,
+        }
+        let Fields { content, on_link, spacing, text_size, width } =
+            source.cast_to().context("markdown flds")?;
         let (content_ref, on_link, spacing, text_size, width) = try_join! {
             gx.compile_ref(content),
             gx.compile_ref(on_link),

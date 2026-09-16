@@ -87,6 +87,23 @@ common, because
 will appear in any data structure that has a value passed by ref (e.g. `&v`),
 which should be common for large structures that don't change often.
 
+A Rust type that mirrors a Graphix type need not implement `FromValue` by hand:
+`#[derive(FromValue, IntoValue)]` from the `netidx-derive` crate maps a struct's
+named fields onto the Graphix struct's fields by name, and an enum's variants
+onto Graphix variants (`` `Tag ``, `` `Tag(a, b) ``, `` `Tag({ .. }) ``). A field
+passed by reference (`&T`) is a `u64` bind id. The generated code names
+`netidx_value` and `anyhow`, so the crate depends on both.
+
+```rust
+// the Graphix type {x: f64, y: f64, label: &string}
+#[derive(FromValue)]
+struct Point {
+    x: f64,
+    y: f64,
+    label: u64,
+}
+```
+
 ```rust
 // assume we got id from a data structure and its type is &i64
 let mut r = handle.compile_ref(id);

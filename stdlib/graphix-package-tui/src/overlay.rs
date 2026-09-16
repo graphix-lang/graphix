@@ -1,12 +1,12 @@
 use super::{SizeV, TuiW, TuiWidget, compile, layout::ConstraintV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
 use futures::future;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::{Constraint, Flex, Layout, Rect},
@@ -25,9 +25,15 @@ struct LayerW<X: GXExt> {
 
 impl<X: GXExt> LayerW<X> {
     async fn compile(gx: GXHandle<X>, v: Value) -> Result<Self> {
-        let ((_, child), (_, height), (_, size), (_, width)) = v
-            .cast_to::<((ArcStr, Value), (ArcStr, u64), (ArcStr, u64), (ArcStr, u64))>()
-            .context("layer fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: Value,
+            height: u64,
+            size: u64,
+            width: u64,
+        }
+        let Fields { child, height, size, width } =
+            v.cast_to().context("layer fields")?;
         let child = compile(gx.clone(), child).await.context("compiling layer child")?;
         let (width, height, size_ref) = try_join! {
             gx.compile_ref(width),
@@ -59,8 +65,12 @@ pub(super) struct OverlayW<X: GXExt> {
 
 impl<X: GXExt> OverlayW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let ((_, base), (_, layers)) =
-            v.cast_to::<((ArcStr, Value), (ArcStr, u64))>().context("overlay fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            base: Value,
+            layers: u64,
+        }
+        let Fields { base, layers } = v.cast_to().context("overlay fields")?;
         let base = compile(gx.clone(), base).await.context("compiling overlay base")?;
         let layers_ref = gx.compile_ref(layers).await.context("compiling layers ref")?;
         let mut t = Self { gx, base, layers: vec![], layers_ref };

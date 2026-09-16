@@ -2,11 +2,11 @@ use super::{
     GuiW, GuiWidget, IcedElement, Message, compile, iced_keyboard_area::KeyboardArea,
 };
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref};
 use iced_core::keyboard;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct KeyboardAreaW<X: GXExt> {
@@ -21,8 +21,14 @@ pub(crate) struct KeyboardAreaW<X: GXExt> {
 
 impl<X: GXExt> KeyboardAreaW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, child), (_, on_key_press), (_, on_key_release)] =
-            source.cast_to::<[(ArcStr, u64); 3]>().context("keyboard_area flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: u64,
+            on_key_press: u64,
+            on_key_release: u64,
+        }
+        let Fields { child, on_key_press, on_key_release } =
+            source.cast_to().context("keyboard_area flds")?;
         let (child_ref, on_key_press, on_key_release) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(on_key_press),

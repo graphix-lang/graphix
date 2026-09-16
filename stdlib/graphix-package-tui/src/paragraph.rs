@@ -3,12 +3,12 @@ use super::{
     validate,
 };
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -28,8 +28,16 @@ pub(super) struct ParagraphW<X: GXExt> {
 
 impl<X: GXExt> ParagraphW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, source: Value) -> Result<TuiW> {
-        let [(_, alignment), (_, lines), (_, scroll), (_, style), (_, trim)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("paragraph flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            alignment: u64,
+            lines: u64,
+            scroll: u64,
+            style: u64,
+            trim: u64,
+        }
+        let Fields { alignment, lines, scroll, style, trim } =
+            source.cast_to().context("paragraph flds")?;
         let (alignment, lines, scroll, style, trim) = try_join! {
             gx.compile_ref(alignment),
             gx.compile_ref(lines),
@@ -71,20 +79,17 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
             p = p.wrap(Wrap { trim });
         }
         if let Some(s) = self.scroll.t {
-            // ScrollV stores (y, x) as i64 pair; ratatui wants (u16, u16).
-            // Out-of-range values clamp to the visual cap with one warn
-            // per distinct bad value.
             let y = validate::clamp_u16(
                 "paragraph",
                 "scroll.y",
                 &mut self.last_warned_scroll_y,
-                s.0.0,
+                s.y,
             );
             let x = validate::clamp_u16(
                 "paragraph",
                 "scroll.x",
                 &mut self.last_warned_scroll_x,
-                s.0.1,
+                s.x,
             );
             p = p.scroll((y, x))
         }

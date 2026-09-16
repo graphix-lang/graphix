@@ -1,11 +1,11 @@
 use super::{AlignmentV, LinesV, StyleV, TRef, TuiW, TuiWidget};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use async_trait::async_trait;
 use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{Frame, layout::Rect, style::Style, text::Text};
 use std::mem;
 use tokio::try_join;
@@ -19,8 +19,13 @@ pub(super) struct TextW<X: GXExt> {
 
 impl<X: GXExt> TextW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, source: Value) -> Result<TuiW> {
-        let [(_, alignment), (_, lines), (_, style)] =
-            source.cast_to::<[(ArcStr, u64); 3]>().context("text flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            alignment: u64,
+            lines: u64,
+            style: u64,
+        }
+        let Fields { alignment, lines, style } = source.cast_to().context("text flds")?;
         let (alignment, lines, style) = try_join! {
             gx.compile_ref(alignment),
             gx.compile_ref(lines),

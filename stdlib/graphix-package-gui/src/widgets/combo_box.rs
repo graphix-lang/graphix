@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::{LengthV, StringVec};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget::{self as widget, combo_box};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct ComboBoxW<X: GXExt> {
@@ -22,14 +22,17 @@ pub(crate) struct ComboBoxW<X: GXExt> {
 
 impl<X: GXExt> ComboBoxW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, disabled),
-            (_, on_select),
-            (_, options),
-            (_, placeholder),
-            (_, selected),
-            (_, width),
-        ] = source.cast_to::<[(ArcStr, u64); 6]>().context("combo_box flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            disabled: u64,
+            on_select: u64,
+            options: u64,
+            placeholder: u64,
+            selected: u64,
+            width: u64,
+        }
+        let Fields { disabled, on_select, options, placeholder, selected, width } =
+            source.cast_to().context("combo_box flds")?;
         let (disabled, on_select, options, placeholder, selected, width) = try_join! {
             gx.compile_ref(disabled),
             gx.compile_ref(on_select),

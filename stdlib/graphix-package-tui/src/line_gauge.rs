@@ -6,6 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{Frame, layout::Rect, widgets::LineGauge};
 use tokio::try_join;
 
@@ -22,15 +23,25 @@ pub(super) struct LineGaugeW<X: GXExt> {
 
 impl<X: GXExt> LineGaugeW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, filled_style),
-            (_, filled_symbol),
-            (_, label),
-            (_, ratio),
-            (_, style),
-            (_, unfilled_style),
-            (_, unfilled_symbol),
-        ] = v.cast_to::<[(ArcStr, u64); 7]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            filled_style: u64,
+            filled_symbol: u64,
+            label: u64,
+            ratio: u64,
+            style: u64,
+            unfilled_style: u64,
+            unfilled_symbol: u64,
+        }
+        let Fields {
+            filled_style,
+            filled_symbol,
+            label,
+            ratio,
+            style,
+            unfilled_style,
+            unfilled_symbol,
+        } = v.cast_to()?;
         let (
             filled_style,
             filled_symbol,

@@ -4,6 +4,7 @@ use compact_str::CompactString;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{CallableId, GXExt, GXHandle};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{future::Future, pin::Pin};
@@ -284,9 +285,13 @@ macro_rules! flex_widget {
 
         impl<X: GXExt> $name<X> {
             pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-                let [(_, children), $((_, $f)),+] =
-                    source.cast_to::<[(ArcStr, u64); 6]>()
-                        .context(concat!($label, " flds"))?;
+                #[derive(FromValue)]
+                struct Fields {
+                    children: u64,
+                    $($f: u64),+
+                }
+                let Fields { children, $($f),+ } =
+                    source.cast_to().context(concat!($label, " flds"))?;
                 let (children_ref, $($f),+) = tokio::try_join!(
                     gx.compile_ref(children),
                     $(gx.compile_ref($f)),+

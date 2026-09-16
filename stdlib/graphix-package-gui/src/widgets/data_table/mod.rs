@@ -19,6 +19,7 @@ use netidx::{
     publisher::Value,
     subscriber::{Event, SubId, Subscriber},
 };
+use netidx_derive::FromValue;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
 use std::{
@@ -178,16 +179,27 @@ impl<X: GXExt> DataTableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
         // Fields alphabetical: on_activate, on_header_click, on_select,
         // on_update, selection, show_row_name, sort_by, table
-        let [
-            (_, on_activate_id),
-            (_, on_header_click_id),
-            (_, on_select_id),
-            (_, on_update_id),
-            (_, selection_id),
-            (_, show_row_name_id),
-            (_, sort_by_id),
-            (_, table_id),
-        ] = source.cast_to::<[(ArcStr, u64); 8]>().context("data_table flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            on_activate: u64,
+            on_header_click: u64,
+            on_select: u64,
+            on_update: u64,
+            selection: u64,
+            show_row_name: u64,
+            sort_by: u64,
+            table: u64,
+        }
+        let Fields {
+            on_activate: on_activate_id,
+            on_header_click: on_header_click_id,
+            on_select: on_select_id,
+            on_update: on_update_id,
+            selection: selection_id,
+            show_row_name: show_row_name_id,
+            sort_by: sort_by_id,
+            table: table_id,
+        } = source.cast_to().context("data_table flds")?;
         let (
             on_activate_ref,
             on_header_click_ref,

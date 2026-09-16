@@ -7,6 +7,7 @@ use futures::future::{self, try_join_all};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -26,8 +27,15 @@ struct BarW<X: GXExt> {
 
 impl<X: GXExt> BarW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
-        let [(_, label), (_, style), (_, text_value), (_, value), (_, value_style)] =
-            v.cast_to::<[(ArcStr, u64); 5]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            label: u64,
+            style: u64,
+            text_value: u64,
+            value: u64,
+            value_style: u64,
+        }
+        let Fields { label, style, text_value, value, value_style } = v.cast_to()?;
         let (label, style, text_value, value, value_style) = try_join! {
             gx.compile_ref(label),
             gx.compile_ref(style),
@@ -81,13 +89,13 @@ struct BarGroupW<X: GXExt> {
 
 impl<X: GXExt> BarGroupW<X> {
     async fn compile(gx: &GXHandle<X>, v: Value) -> Result<Self> {
-        let [(_, bars), (_, label)] =
-            v.cast_to::<[(ArcStr, Value); 2]>().context("bargroup fields")?;
-        let label = label.cast_to::<Option<LineV>>()?;
-        let bars = bars
-            .cast_to::<SmallVec<[Value; 8]>>()?
-            .into_iter()
-            .map(|b| BarW::compile(gx, b));
+        #[derive(FromValue)]
+        struct Fields {
+            bars: SmallVec<[Value; 8]>,
+            label: Option<LineV>,
+        }
+        let Fields { bars, label } = v.cast_to().context("bargroup fields")?;
+        let bars = bars.into_iter().map(|b| BarW::compile(gx, b));
         let bars = future::try_join_all(bars).await?;
         Ok(Self { label, bars })
     }
@@ -114,19 +122,31 @@ pub(super) struct BarChartW<X: GXExt> {
 
 impl<X: GXExt> BarChartW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let flds = v.cast_to::<[(ArcStr, u64); 10]>().context("barchart fields")?;
-        let [
-            (_, bar_gap),
-            (_, bar_style),
-            (_, bar_width),
-            (_, data),
-            (_, direction),
-            (_, group_gap),
-            (_, label_style),
-            (_, max),
-            (_, style),
-            (_, value_style),
-        ] = flds;
+        #[derive(FromValue)]
+        struct Fields {
+            bar_gap: u64,
+            bar_style: u64,
+            bar_width: u64,
+            data: u64,
+            direction: u64,
+            group_gap: u64,
+            label_style: u64,
+            max: u64,
+            style: u64,
+            value_style: u64,
+        }
+        let Fields {
+            bar_gap,
+            bar_style,
+            bar_width,
+            data,
+            direction,
+            group_gap,
+            label_style,
+            max,
+            style,
+            value_style,
+        } = v.cast_to().context("barchart fields")?;
         let (
             bar_gap,
             bar_style,

@@ -1,10 +1,10 @@
 use super::{GuiW, GuiWidget, IcedElement, Message, compile};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 fn mouse_button_value(button: &str) -> Value {
@@ -29,14 +29,17 @@ pub(crate) struct MouseAreaW<X: GXExt> {
 
 impl<X: GXExt> MouseAreaW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, child),
-            (_, on_enter),
-            (_, on_exit),
-            (_, on_move),
-            (_, on_press),
-            (_, on_release),
-        ] = source.cast_to::<[(ArcStr, u64); 6]>().context("mouse_area flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: u64,
+            on_enter: u64,
+            on_exit: u64,
+            on_move: u64,
+            on_press: u64,
+            on_release: u64,
+        }
+        let Fields { child, on_enter, on_exit, on_move, on_press, on_release } =
+            source.cast_to().context("mouse_area flds")?;
         let (child_ref, on_enter, on_exit, on_move, on_press, on_release) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(on_enter),

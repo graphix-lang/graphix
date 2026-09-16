@@ -3,7 +3,7 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::{Result, bail};
-use arcstr::{ArcStr, literal};
+use arcstr::ArcStr;
 use bytes::Bytes;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
@@ -21,7 +21,8 @@ use graphix_package_core::{
 };
 use graphix_rt::GXRt;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{FromValue, PBytes, ValArray, Value};
+use netidx_derive::{FromValue, IntoValue};
+use netidx_value::{FromValue, ValArray, Value};
 use std::{
     any::Any,
     cmp::Ordering,
@@ -170,24 +171,12 @@ fn headers_to_value<'a>(
     Value::Array(ValArray::from(v))
 }
 
-fn build_response(body: ArcStr, headers: Value, status: u16, url: ArcStr) -> Value {
-    let r: [(ArcStr, Value); 4] = [
-        (literal!("body"), Value::String(body)),
-        (literal!("headers"), headers),
-        (literal!("status"), Value::U16(status)),
-        (literal!("url"), Value::String(url)),
-    ];
-    r.into()
-}
-
-fn build_bin_response(body: Bytes, headers: Value, status: u16, url: ArcStr) -> Value {
-    let r: [(ArcStr, Value); 4] = [
-        (literal!("body"), Value::Bytes(PBytes::new(body))),
-        (literal!("headers"), headers),
-        (literal!("status"), Value::U16(status)),
-        (literal!("url"), Value::String(url)),
-    ];
-    r.into()
+#[derive(IntoValue)]
+struct Response<B> {
+    body: B,
+    headers: Value,
+    status: Value,
+    url: ArcStr,
 }
 
 fn parse_method(s: &str) -> std::result::Result<reqwest::Method, String> {
@@ -354,12 +343,13 @@ impl EvalCachedAsync for HttpRequestEv {
                 Ok(r) => r,
                 Err(e) => return e,
             };
-            let status = resp.status().as_u16();
+            let status = Value::U16(resp.status().as_u16());
             let url = ArcStr::from(resp.url().as_str());
-            let hdrs = headers_to_value(resp.headers().iter());
+            let headers = headers_to_value(resp.headers().iter());
             match resp.text().await {
                 Ok(body) => {
-                    build_response(ArcStr::from(body.as_str()), hdrs, status, url)
+                    let body = ArcStr::from(body.as_str());
+                    Response { body, headers, status, url }.into()
                 }
                 Err(e) => errf!("HTTPError", "failed to read body: {e}"),
             }
@@ -396,11 +386,11 @@ impl EvalCachedAsync for HttpRequestBinEv {
                 Ok(r) => r,
                 Err(e) => return e,
             };
-            let status = resp.status().as_u16();
+            let status = Value::U16(resp.status().as_u16());
             let url = ArcStr::from(resp.url().as_str());
-            let hdrs = headers_to_value(resp.headers().iter());
+            let headers = headers_to_value(resp.headers().iter());
             match resp.bytes().await {
-                Ok(body) => build_bin_response(body, hdrs, status, url),
+                Ok(body) => Response { body, headers, status, url }.into(),
                 Err(e) => errf!("HTTPError", "failed to read body: {e}"),
             }
         }
@@ -433,33 +423,6 @@ impl fmt::Debug for HttpReqEvent {
 
 impl CustomBuiltinType for HttpReqEvent {}
 
-fn build_request_value(
-    body: Option<ArcStr>,
-    headers: Value,
-    method: ArcStr,
-    path: ArcStr,
-    query: Option<ArcStr>,
-) -> Value {
-    let r: [(ArcStr, Value); 5] = [
-        (literal!("body"), body.map(Value::String).unwrap_or(Value::Null)),
-        (literal!("headers"), headers),
-        (literal!("method"), Value::String(method)),
-        (literal!("path"), Value::String(path)),
-        (literal!("query"), query.map(Value::String).unwrap_or(Value::Null)),
-    ];
-    r.into()
-}
-
-fn struct_field(v: &Value, idx: usize) -> Option<&Value> {
-    match v {
-        Value::Array(arr) => match arr.get(idx)? {
-            Value::Array(pair) if pair.len() == 2 => Some(&pair[1]),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn build_hyper_response(
     v: &Value,
 ) -> std::result::Result<
@@ -472,28 +435,34 @@ fn build_hyper_response(
             .body(http_body_util::Full::new(Bytes::from(format!("{e}"))))
             .unwrap());
     }
-    // Response fields (alphabetical): body(0), headers(1), status(2), url(3)
-    let body = match struct_field(v, 0) {
-        Some(Value::String(s)) => Bytes::from(s.to_string()),
-        _ => Bytes::new(),
-    };
-    let status = match struct_field(v, 2) {
-        Some(Value::U16(s)) => *s,
-        _ => 200,
+    #[derive(FromValue)]
+    struct Fields {
+        body: ArcStr,
+        headers: ValArray,
+        status: u16,
+    }
+    let Fields { body, headers, status } = match v.clone().cast_to::<Fields>() {
+        Ok(f) => f,
+        Err(e) => {
+            return Ok(hyper::Response::builder()
+                .status(500)
+                .body(http_body_util::Full::new(Bytes::from(format!(
+                    "invalid response: {e}"
+                ))))
+                .unwrap());
+        }
     };
     let mut response = hyper::Response::builder().status(status);
-    if let Some(Value::Array(hdrs)) = struct_field(v, 1) {
-        for h in hdrs.iter() {
-            if let Value::Array(pair) = h {
-                if pair.len() == 2 {
-                    if let (Value::String(k), Value::String(v)) = (&pair[0], &pair[1]) {
-                        response = response.header(&**k, &**v);
-                    }
+    for h in headers.iter() {
+        if let Value::Array(pair) = h {
+            if pair.len() == 2 {
+                if let (Value::String(k), Value::String(v)) = (&pair[0], &pair[1]) {
+                    response = response.header(&**k, &**v);
                 }
             }
         }
     }
-    Ok(response.body(http_body_util::Full::new(body)).unwrap())
+    Ok(response.body(http_body_util::Full::new(Bytes::from_owner(body))).unwrap())
 }
 
 async fn handle_http_request(
@@ -515,8 +484,8 @@ async fn handle_http_request(
     let method = ArcStr::from(parts.method.as_str());
     let path = ArcStr::from(parts.uri.path());
     let query = parts.uri.query().map(ArcStr::from);
-    let hdrs = headers_to_value(parts.headers.iter());
-    let body_str = if body_bytes.is_empty() {
+    let headers = headers_to_value(parts.headers.iter());
+    let body = if body_bytes.is_empty() {
         None
     } else {
         match std::str::from_utf8(&body_bytes) {
@@ -524,7 +493,15 @@ async fn handle_http_request(
             Err(_) => None,
         }
     };
-    let request_value = build_request_value(body_str, hdrs, method, path, query);
+    #[derive(IntoValue)]
+    struct Fields {
+        body: Option<ArcStr>,
+        headers: Value,
+        method: ArcStr,
+        path: ArcStr,
+        query: Option<ArcStr>,
+    }
+    let request_value = Fields { body, headers, method, path, query }.into();
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     let mut batch = CBATCH_POOL.take();
     batch.push((

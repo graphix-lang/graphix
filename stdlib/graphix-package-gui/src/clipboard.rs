@@ -4,6 +4,7 @@ use graphix_compiler::{ExecCtx, Rt, UserEvent, errf, image::ImageBuf};
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
 use netidx::publisher::Value;
 use netidx_core::pack::PackError;
+use netidx_derive::{FromValue, IntoValue};
 use std::{fmt::Debug, marker::PhantomData, path::PathBuf};
 
 /// Trait for individual clipboard operations, parameterizing the generic
@@ -284,34 +285,39 @@ impl ClipboardOp for ClearOp {
 
 pub(crate) type Clear = CachedArgsAsync<ClipboardBuiltin<ClearOp>>;
 
+#[derive(FromValue, IntoValue)]
+struct ClipboardImage {
+    width: u32,
+    height: u32,
+    pixels: Bytes,
+}
+
 pub(crate) fn image_to_value(img: arboard::ImageData<'_>) -> Value {
-    use arcstr::literal;
-    [
-        (literal!("height"), Value::U32(img.height as u32)),
-        (literal!("pixels"), Value::from(Bytes::from(img.bytes.into_owned()))),
-        (literal!("width"), Value::U32(img.width as u32)),
-    ]
+    ClipboardImage {
+        width: img.width as u32,
+        height: img.height as u32,
+        pixels: Bytes::from(img.bytes.into_owned()),
+    }
     .into()
 }
 
 pub(crate) fn image_args_from_value(v: &Value) -> Option<ImageArgs> {
-    let [(_, height), (_, pixels), (_, width)] =
-        v.clone().cast_to::<[(ArcStr, Value); 3]>().ok()?;
-    let width = width.cast_to::<u32>().ok()? as usize;
-    let height = height.cast_to::<u32>().ok()? as usize;
-    let pixels = match pixels {
-        Value::Bytes(b) => Bytes::copy_from_slice(&b),
-        _ => return None,
-    };
-    Some(ImageArgs { width, height, pixels })
+    let ClipboardImage { width, height, pixels } = v.clone().cast_to().ok()?;
+    Some(ImageArgs {
+        width: width as usize,
+        height: height as usize,
+        pixels: Bytes::copy_from_slice(&pixels),
+    })
 }
 
 pub(crate) fn html_args_from_value(v: &Value) -> Option<HtmlArgs> {
-    let [(_, alt_text), (_, html)] = v.clone().cast_to::<[(ArcStr, Value); 2]>().ok()?;
-    Some(HtmlArgs {
-        html: html.cast_to::<ArcStr>().ok()?,
-        alt_text: alt_text.cast_to::<ArcStr>().ok()?,
-    })
+    #[derive(FromValue)]
+    struct Fields {
+        html: ArcStr,
+        alt_text: ArcStr,
+    }
+    let Fields { html, alt_text } = v.clone().cast_to().ok()?;
+    Some(HtmlArgs { html, alt_text })
 }
 
 pub(crate) fn files_to_value(files: Vec<PathBuf>) -> Value {

@@ -11,6 +11,7 @@ use graphix_compiler::{
 use graphix_package_core::CachedVals;
 use netidx::publisher::Typ;
 use netidx_core::pack::{Pack, PackError};
+use netidx_derive::IntoValue;
 use netidx_value::{ValArray, Value};
 use poolshark::{
     global::{GPooled, Pool},
@@ -26,7 +27,7 @@ use std::{
 };
 
 use crate::{
-    encoding::{decode_key, decode_value, encode_key, key_struct, kv_struct},
+    encoding::{decode_key, decode_value, encode_key},
     tree::TreeValue,
 };
 
@@ -373,11 +374,24 @@ macro_rules! db_event_accessor {
 }
 
 db_event_accessor!(DbOnInsert, "db_subscription_on_insert", |se| match se {
-    DbEvent::Insert { key, value } => Some(kv_struct(key.clone(), value.clone())),
+    DbEvent::Insert { key, value } => {
+        #[derive(IntoValue)]
+        struct Fields {
+            key: Value,
+            value: Value,
+        }
+        Some(Fields { key: key.clone(), value: value.clone() }.into())
+    }
     DbEvent::Remove { .. } => None,
 });
 
 db_event_accessor!(DbOnRemove, "db_subscription_on_remove", |se| match se {
-    DbEvent::Remove { key } => Some(key_struct(key.clone())),
+    DbEvent::Remove { key } => {
+        #[derive(IntoValue)]
+        struct Fields {
+            key: Value,
+        }
+        Some(Fields { key: key.clone() }.into())
+    }
     DbEvent::Insert { .. } => None,
 });

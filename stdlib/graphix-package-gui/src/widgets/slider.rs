@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, Message};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 /// Helper: map a dimension kind tag to its TRef inner type.
@@ -54,19 +54,29 @@ macro_rules! slider_widget {
                 gx: GXHandle<X>,
                 source: Value,
             ) -> Result<GuiW<X>> {
-                let [
-                    (_, disabled),
-                    (_, $dim1),
-                    (_, max),
-                    (_, min),
-                    (_, on_change),
-                    (_, on_release),
-                    (_, step),
-                    (_, value),
-                    (_, $dim2),
-                ] = source
-                    .cast_to::<[(ArcStr, u64); 9]>()
-                    .context(concat!($label, " flds"))?;
+                #[derive(FromValue)]
+                struct Fields {
+                    disabled: u64,
+                    $dim1: u64,
+                    max: u64,
+                    min: u64,
+                    on_change: u64,
+                    on_release: u64,
+                    step: u64,
+                    value: u64,
+                    $dim2: u64,
+                }
+                let Fields {
+                    disabled,
+                    $dim1,
+                    max,
+                    min,
+                    on_change,
+                    on_release,
+                    step,
+                    value,
+                    $dim2,
+                } = source.cast_to().context(concat!($label, " flds"))?;
                 let (
                     disabled,
                     $dim1,

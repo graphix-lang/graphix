@@ -9,6 +9,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -85,8 +86,14 @@ struct PaddingV(Padding);
 
 impl FromValue for PaddingV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, bottom), (_, left), (_, right), (_, top)] =
-            v.cast_to::<[(ArcStr, u16); 4]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            bottom: u16,
+            left: u16,
+            right: u16,
+            top: u16,
+        }
+        let Fields { bottom, left, right, top } = v.cast_to()?;
         Ok(Self(Padding { bottom, left, right, top }))
     }
 }
@@ -113,22 +120,39 @@ pub(super) struct BlockW<X: GXExt> {
 
 impl<X: GXExt> BlockW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, border),
-            (_, border_style),
-            (_, border_type),
-            (_, child),
-            (_, merge_borders),
-            (_, padding),
-            (_, size),
-            (_, style),
-            (_, title),
-            (_, title_alignment),
-            (_, title_bottom),
-            (_, title_position),
-            (_, title_style),
-            (_, title_top),
-        ] = v.cast_to::<[(ArcStr, u64); 14]>().context("block flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            border: u64,
+            border_style: u64,
+            border_type: u64,
+            child: u64,
+            merge_borders: u64,
+            padding: u64,
+            size: u64,
+            style: u64,
+            title: u64,
+            title_alignment: u64,
+            title_bottom: u64,
+            title_position: u64,
+            title_style: u64,
+            title_top: u64,
+        }
+        let Fields {
+            border,
+            border_style,
+            border_type,
+            child,
+            merge_borders,
+            padding,
+            size,
+            style,
+            title,
+            title_alignment,
+            title_bottom,
+            title_position,
+            title_style,
+            title_top,
+        } = v.cast_to().context("block flds")?;
         let (
             border,
             border_style,

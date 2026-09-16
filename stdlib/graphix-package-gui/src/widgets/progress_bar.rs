@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement};
 use crate::types::LengthV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct ProgressBarW<X: GXExt> {
@@ -18,8 +18,16 @@ pub(crate) struct ProgressBarW<X: GXExt> {
 
 impl<X: GXExt> ProgressBarW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, height), (_, max), (_, min), (_, value), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("progress_bar flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            height: u64,
+            max: u64,
+            min: u64,
+            value: u64,
+            width: u64,
+        }
+        let Fields { height, max, min, value, width } =
+            source.cast_to().context("progress_bar flds")?;
         let (height, max, min, value, width) = try_join! {
             gx.compile_ref(height),
             gx.compile_ref(max),

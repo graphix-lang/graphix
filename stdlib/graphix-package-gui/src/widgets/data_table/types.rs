@@ -201,101 +201,46 @@ pub(super) fn parse_selection(v: &Value) -> LPooled<AHashSet<ArcStr>> {
         .collect()
 }
 
-fn parse_column_type(v: &Value) -> (ColumnType, Option<Value>) {
-    // Bare variants arrive as Value::String("Tag")
-    if let Value::String(tag) = v {
-        return match tag.as_str() {
-            "Progress" => (ColumnType::Progress, None),
-            _ => (ColumnType::Text, None),
-        };
+fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
+    #[derive(FromValue)]
+    struct Choice {
+        id: ArcStr,
+        label: ArcStr,
     }
-    let (tag, payload) = match v.clone().cast_to::<(ArcStr, Value)>() {
-        Ok(t) => t,
-        Err(_) => return (ColumnType::Text, None),
-    };
-    match tag.as_str() {
-        "Text" => (ColumnType::Text, extract_struct1_callback(&payload)),
-        "Toggle" => (ColumnType::Toggle, extract_struct1_callback(&payload)),
-        "Combo" => {
-            // struct { choices, on_edit } — alphabetical: choices, on_edit
-            match payload.cast_to::<[(ArcStr, Value); 2]>() {
-                Ok([(_, choices_val), (_, on_edit)]) => {
-                    let choices = parse_combo_choices(&choices_val);
-                    (ColumnType::Combo { choices }, non_null(on_edit))
-                }
-                Err(_) => (ColumnType::Combo { choices: vec![] }, None),
-            }
+    #[derive(FromValue)]
+    enum Repr {
+        Text { on_edit: Option<Value> },
+        Toggle { on_edit: Option<Value> },
+        Combo { choices: Vec<Choice>, on_edit: Option<Value> },
+        Spin { min: f64, max: f64, increment: f64, on_edit: Option<Value> },
+        Progress,
+        Button { on_click: Option<Value> },
+        Sparkline { history_seconds: f64, min: Option<f64>, max: Option<f64> },
+    }
+    match v.cast_to::<Repr>() {
+        Err(_) => (ColumnType::Text, None),
+        Ok(Repr::Text { on_edit }) => (ColumnType::Text, on_edit),
+        Ok(Repr::Toggle { on_edit }) => (ColumnType::Toggle, on_edit),
+        Ok(Repr::Combo { choices, on_edit }) => {
+            let choices =
+                choices.into_iter().map(|Choice { id, label }| (id, label)).collect();
+            (ColumnType::Combo { choices }, on_edit)
         }
-        "Spin" => {
-            // struct { increment, max, min, on_edit } — 4 fields alphabetical
-            match payload.cast_to::<[(ArcStr, Value); 4]>() {
-                Ok([(_, inc_v), (_, max_v), (_, min_v), (_, on_edit)]) => {
-                    let inc = inc_v.cast_to::<f64>().unwrap_or(1.0);
-                    let max = max_v.cast_to::<f64>().unwrap_or(100.0);
-                    let min = min_v.cast_to::<f64>().unwrap_or(0.0);
-                    (ColumnType::Spin { min, max, increment: inc }, non_null(on_edit))
-                }
-                Err(_) => {
-                    (ColumnType::Spin { min: 0.0, max: 100.0, increment: 1.0 }, None)
-                }
-            }
+        Ok(Repr::Spin { min, max, increment, on_edit }) => {
+            (ColumnType::Spin { min, max, increment }, on_edit)
         }
-        "Progress" => (ColumnType::Progress, None),
-        "Button" => (ColumnType::Button, extract_struct1_callback(&payload)),
-        "Sparkline" => {
-            // struct { history_seconds, max, min } — 3 fields alphabetical.
-            let (hs, max_o, min_o) = match payload.cast_to::<[(ArcStr, Value); 3]>() {
-                Ok([(_, hs_v), (_, max_v), (_, min_v)]) => {
-                    let hs_raw = hs_v.cast_to::<f64>().unwrap_or(60.0);
-                    let hs =
-                        if hs_raw.is_finite() && hs_raw > 0.0 { hs_raw } else { 60.0 };
-                    let max_o = max_v.cast_to::<f64>().ok();
-                    let min_o = min_v.cast_to::<f64>().ok();
-                    (hs, max_o, min_o)
-                }
-                Err(_) => (60.0, None, None),
+        Ok(Repr::Progress) => (ColumnType::Progress, None),
+        Ok(Repr::Button { on_click }) => (ColumnType::Button, on_click),
+        Ok(Repr::Sparkline { history_seconds, min, max }) => {
+            let history_seconds = if history_seconds.is_finite() && history_seconds > 0.0
+            {
+                history_seconds
+            } else {
+                60.0
             };
-            (ColumnType::Sparkline { history_seconds: hs, min: min_o, max: max_o }, None)
-        }
-        _ => (ColumnType::Text, None),
-    }
-}
-
-/// The lone field of a one-field struct such as `Text({on_edit})`;
-/// `None` when it is null.
-fn extract_struct1_callback(payload: &Value) -> Option<Value> {
-    match payload.clone().cast_to::<[(ArcStr, Value); 1]>() {
-        Ok([(_, v)]) => non_null(v),
-        Err(_) => None,
-    }
-}
-
-fn non_null(v: Value) -> Option<Value> {
-    match v {
-        Value::Null => None,
-        v => Some(v),
-    }
-}
-
-fn parse_combo_choices(v: &Value) -> Vec<(ArcStr, ArcStr)> {
-    let items = v.clone().cast_to::<Vec<Value>>().unwrap_or_default();
-    let mut choices = Vec::with_capacity(items.len());
-    for item in items {
-        // struct { id, label } — alphabetical
-        if let Ok([(_, id_val), (_, label_val)]) = item.cast_to::<[(ArcStr, Value); 2]>()
-        {
-            let id = match id_val {
-                Value::String(s) => s,
-                _ => ArcStr::new(),
-            };
-            let label = match label_val {
-                Value::String(s) => s,
-                _ => ArcStr::new(),
-            };
-            choices.push((id, label));
+            (ColumnType::Sparkline { history_seconds, min, max }, None)
         }
     }
-    choices
 }
 
 pub(super) fn value_to_display(v: &Value) -> ArcStr {
@@ -331,29 +276,25 @@ fn parse_column_entry(v: Value) -> Option<ColumnSpec> {
             callback_value: None,
         });
     }
-    // Struct fields alphabetical: display_name, name, on_resize,
-    // source, typ, width.
-    let [(_, dn), (_, name_v), (_, or), (_, src), (_, tv), (_, w)] =
-        v.cast_to::<[(ArcStr, Value); 6]>().ok()?;
-    let name = match name_v {
-        Value::String(s) => sanitize_col_name(s),
-        _ => return None,
-    };
-    let display_name = match dn {
-        Value::String(s) => Some(s),
-        _ => None,
-    };
-    let source_bid = src.cast_to::<u64>().unwrap_or(0);
-    let on_resize_bid = or.cast_to::<u64>().unwrap_or(0);
-    let width_bid = w.cast_to::<u64>().unwrap_or(0);
-    let (typ, callback_value) = parse_column_type(&tv);
+    #[derive(FromValue)]
+    struct Fields {
+        name: ArcStr,
+        typ: Value,
+        display_name: Option<ArcStr>,
+        source: u64,
+        on_resize: u64,
+        width: u64,
+    }
+    let Fields { name, typ, display_name, source, on_resize, width } =
+        v.cast_to().ok()?;
+    let (typ, callback_value) = parse_column_type(typ);
     Some(ColumnSpec {
-        name,
+        name: sanitize_col_name(name),
         typ,
         display_name,
-        source_bid,
-        width_bid,
-        on_resize_bid,
+        source_bid: source,
+        width_bid: width,
+        on_resize_bid: on_resize,
         callback_value,
     })
 }

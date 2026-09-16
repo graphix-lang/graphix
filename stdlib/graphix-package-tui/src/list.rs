@@ -6,6 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -27,16 +28,27 @@ pub(super) struct ListW<X: GXExt> {
 
 impl<X: GXExt> ListW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, highlight_spacing),
-            (_, highlight_style),
-            (_, highlight_symbol),
-            (_, items),
-            (_, repeat_highlight_symbol),
-            (_, scroll),
-            (_, selected),
-            (_, style),
-        ] = v.cast_to::<[(ArcStr, u64); 8]>().context("list fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            highlight_spacing: u64,
+            highlight_style: u64,
+            highlight_symbol: u64,
+            items: u64,
+            repeat_highlight_symbol: u64,
+            scroll: u64,
+            selected: u64,
+            style: u64,
+        }
+        let Fields {
+            highlight_spacing,
+            highlight_style,
+            highlight_symbol,
+            items,
+            repeat_highlight_symbol,
+            scroll,
+            selected,
+            style,
+        } = v.cast_to().context("list fields")?;
         let (
             highlight_spacing,
             highlight_style,

@@ -2445,26 +2445,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, netidx_derive::FromValue)]
 enum Level {
     Trace,
     Debug,
     Info,
     Warn,
     Error,
-}
-
-impl FromValue for Level {
-    fn from_value(v: Value) -> Result<Self> {
-        match &*v.cast_to::<ArcStr>()? {
-            "Trace" => Ok(Self::Trace),
-            "Debug" => Ok(Self::Debug),
-            "Info" => Ok(Self::Info),
-            "Warn" => Ok(Self::Warn),
-            "Error" => Ok(Self::Error),
-            v => bail!("invalid log level {v}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

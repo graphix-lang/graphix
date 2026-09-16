@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, Message, compile};
 use crate::types::{LengthV, PaddingV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct ButtonW<X: GXExt> {
@@ -22,14 +22,17 @@ pub(crate) struct ButtonW<X: GXExt> {
 
 impl<X: GXExt> ButtonW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [
-            (_, child),
-            (_, disabled),
-            (_, height),
-            (_, on_press),
-            (_, padding),
-            (_, width),
-        ] = source.cast_to::<[(ArcStr, u64); 6]>().context("button flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: u64,
+            disabled: u64,
+            height: u64,
+            on_press: u64,
+            padding: u64,
+            width: u64,
+        }
+        let Fields { child, disabled, height, on_press, padding, width } =
+            source.cast_to().context("button flds")?;
         let (child_ref, disabled, height, on_press, padding, width) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(disabled),

@@ -10,6 +10,7 @@ use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use log::debug;
 use netidx::{protocol::valarray::ValArray, publisher::Value};
+use netidx_derive::{FromValue, IntoValue};
 use ratatui::{Frame, layout::Rect};
 use smallvec::{SmallVec, smallvec};
 use std::collections::VecDeque;
@@ -263,23 +264,20 @@ fn key_event_states_to_value(s: &KeyEventState) -> Value {
 }
 
 fn key_event_to_value(e: &KeyEvent) -> Value {
-    let code: Value = ValArray::from_iter_exact(
-        [literal!("code").into(), keycode_to_value(&e.code).into()].into_iter(),
-    )
-    .into();
-    let kind: Value = ValArray::from_iter_exact(
-        [literal!("kind").into(), key_event_kind_to_value(&e.kind)].into_iter(),
-    )
-    .into();
-    let modifiers: Value = ValArray::from_iter_exact(
-        [literal!("modifiers").into(), key_modifiers_to_value(&e.modifiers)].into_iter(),
-    )
-    .into();
-    let state: Value = ValArray::from_iter_exact(
-        [literal!("state").into(), key_event_states_to_value(&e.state)].into_iter(),
-    )
-    .into();
-    ValArray::from_iter_exact([code, kind, modifiers, state].into_iter()).into()
+    #[derive(IntoValue)]
+    struct Fields {
+        code: Value,
+        kind: Value,
+        modifiers: Value,
+        state: Value,
+    }
+    Fields {
+        code: keycode_to_value(&e.code),
+        kind: key_event_kind_to_value(&e.kind),
+        modifiers: key_modifiers_to_value(&e.modifiers),
+        state: key_event_states_to_value(&e.state),
+    }
+    .into()
 }
 
 fn mouse_button_to_value(b: &MouseButton) -> Value {
@@ -313,23 +311,20 @@ fn mouse_event_kind_to_value(k: &MouseEventKind) -> Value {
 }
 
 fn mouse_event_to_value(e: &MouseEvent) -> Value {
-    let column: Value = ValArray::from_iter_exact(
-        [literal!("column").into(), (e.column as i64).into()].into_iter(),
-    )
-    .into();
-    let kind: Value = ValArray::from_iter_exact(
-        [literal!("kind").into(), mouse_event_kind_to_value(&e.kind)].into_iter(),
-    )
-    .into();
-    let modifiers: Value = ValArray::from_iter_exact(
-        [literal!("modifiers").into(), key_modifiers_to_value(&e.modifiers)].into_iter(),
-    )
-    .into();
-    let row = ValArray::from_iter_exact(
-        [literal!("row").into(), (e.row as i64).into()].into_iter(),
-    )
-    .into();
-    ValArray::from_iter_exact([column, kind, modifiers, row].into_iter()).into()
+    #[derive(IntoValue)]
+    struct Fields {
+        column: i64,
+        kind: Value,
+        modifiers: Value,
+        row: i64,
+    }
+    Fields {
+        column: e.column as i64,
+        kind: mouse_event_kind_to_value(&e.kind),
+        modifiers: key_modifiers_to_value(&e.modifiers),
+        row: e.row as i64,
+    }
+    .into()
 }
 
 pub(super) fn event_to_value(e: &Event) -> Value {
@@ -369,8 +364,14 @@ pub(super) struct InputHandlerW<X: GXExt> {
 
 impl<X: GXExt> InputHandlerW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [(_, child), (_, enabled), (_, handle)] =
-            v.cast_to::<[(ArcStr, u64); 3]>().context("input handler fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: u64,
+            enabled: u64,
+            handle: u64,
+        }
+        let Fields { child, enabled, handle } =
+            v.cast_to().context("input handler fields")?;
         let (child_ref, enabled, handle_ref) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(enabled),

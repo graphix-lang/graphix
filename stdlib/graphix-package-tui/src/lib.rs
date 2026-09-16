@@ -3,7 +3,7 @@
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
 use anyhow::{Result, anyhow, bail};
-use arcstr::{ArcStr, literal};
+use arcstr::ArcStr;
 use async_trait::async_trait;
 use barchart::BarChartW;
 use block::BlockW;
@@ -42,6 +42,7 @@ use list::ListW;
 use log::error;
 use netidx::publisher::{FromValue, Value};
 use netidx_core::pack::PackError;
+use netidx_derive::{FromValue, IntoValue};
 use paragraph::ParagraphW;
 use parking_lot::Mutex;
 use ratatui::{
@@ -132,7 +133,13 @@ impl FromValue for ColorV {
             },
             v => match v.cast_to::<(ArcStr, Value)>()? {
                 (s, v) if &*s == "Rgb" => {
-                    let [(_, b), (_, g), (_, r)] = v.cast_to::<[(ArcStr, u8); 3]>()?;
+                    #[derive(FromValue)]
+                    struct Rgb {
+                        b: u8,
+                        g: u8,
+                        r: u8,
+                    }
+                    let Rgb { b, g, r } = v.cast_to()?;
                     Ok(Self(Color::Rgb(r, g, b)))
                 }
                 (s, v) if &*s == "Indexed" => {
@@ -175,19 +182,23 @@ struct StyleV(Style);
 
 impl FromValue for StyleV {
     fn from_value(v: Value) -> Result<Self> {
-        let [
-            (_, add_modifier),
-            (_, bg),
-            (_, fg),
-            (_, sub_modifier),
-            (_, underline_color),
-        ] = v.cast_to::<[(ArcStr, Value); 5]>()?;
-        let add_modifier = add_modifier.cast_to::<ModifierV>()?.0;
-        let bg = bg.cast_to::<Option<ColorV>>()?.map(|c| c.0);
-        let fg = fg.cast_to::<Option<ColorV>>()?.map(|c| c.0);
-        let sub_modifier = sub_modifier.cast_to::<ModifierV>()?.0;
-        let underline_color = underline_color.cast_to::<Option<ColorV>>()?.map(|c| c.0);
-        Ok(Self(Style { fg, bg, underline_color, add_modifier, sub_modifier }))
+        #[derive(FromValue)]
+        struct Fields {
+            add_modifier: ModifierV,
+            bg: Option<ColorV>,
+            fg: Option<ColorV>,
+            sub_modifier: ModifierV,
+            underline_color: Option<ColorV>,
+        }
+        let Fields { add_modifier, bg, fg, sub_modifier, underline_color } =
+            v.cast_to()?;
+        Ok(Self(Style {
+            fg: fg.map(|c| c.0),
+            bg: bg.map(|c| c.0),
+            underline_color: underline_color.map(|c| c.0),
+            add_modifier: add_modifier.0,
+            sub_modifier: sub_modifier.0,
+        }))
     }
 }
 
@@ -195,11 +206,13 @@ struct SpanV(Span<'static>);
 
 impl FromValue for SpanV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, content), (_, style)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
-        Ok(Self(Span {
-            content: Cow::Owned(content.cast_to::<String>()?),
-            style: style.cast_to::<StyleV>()?.0,
-        }))
+        #[derive(FromValue)]
+        struct Fields {
+            content: String,
+            style: StyleV,
+        }
+        let Fields { content, style } = v.cast_to()?;
+        Ok(Self(Span { content: Cow::Owned(content), style: style.0 }))
     }
 }
 
@@ -208,9 +221,13 @@ struct LineV(Line<'static>);
 
 impl FromValue for LineV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, alignment), (_, spans), (_, style)] =
-            v.cast_to::<[(ArcStr, Value); 3]>()?;
-        let alignment = alignment.cast_to::<Option<AlignmentV>>()?.map(|a| a.0);
+        #[derive(FromValue)]
+        struct Fields {
+            alignment: Option<AlignmentV>,
+            spans: Value,
+            style: StyleV,
+        }
+        let Fields { alignment, spans, style } = v.cast_to()?;
         let spans = match spans {
             Value::String(s) => vec![Span::raw(String::from(&*s))],
             v => v
@@ -220,8 +237,7 @@ impl FromValue for LineV {
                 .map(|s| s.0)
                 .collect::<Vec<_>>(),
         };
-        let style = style.cast_to::<StyleV>()?.0;
-        Ok(Self(Line { style, alignment, spans }))
+        Ok(Self(Line { style: style.0, alignment: alignment.map(|a| a.0), spans }))
     }
 }
 
@@ -255,17 +271,18 @@ impl FromValue for FlexV {
     }
 }
 
-/// Raw scroll offset as graphix delivers it: (y, x) i64 pair. Kept as
-/// i64 so out-of-range values reach a downstream clamp + warn instead
-/// of failing the whole widget compile.
-#[derive(Debug, Clone, Copy)]
-struct ScrollV((i64, i64));
+/// An out-of-range offset reaches the draw-time clamp and warns; it
+/// never fails the widget compile.
+#[derive(Debug, Clone, Copy, FromValue)]
+struct ScrollV {
+    x: i64,
+    y: i64,
+}
 
-impl FromValue for ScrollV {
-    fn from_value(v: Value) -> Result<Self> {
-        let [(_, x), (_, y)] = v.cast_to::<[(ArcStr, i64); 2]>()?;
-        Ok(Self((y, x)))
-    }
+#[derive(Clone, Copy, FromValue)]
+struct BoundsV {
+    max: f64,
+    min: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -309,33 +326,27 @@ impl FromValue for HighlightSpacingV {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, IntoValue)]
 struct SizeV {
-    width: u16,
-    height: u16,
-}
-
-impl Into<Value> for SizeV {
-    fn into(self) -> Value {
-        [
-            (literal!("height"), (self.height as i64)),
-            (literal!("width"), (self.width as i64)),
-        ]
-        .into()
-    }
+    width: i64,
+    height: i64,
 }
 
 impl From<Rect> for SizeV {
     fn from(r: Rect) -> Self {
         let s = r.as_size();
-        Self { width: s.width, height: s.height }
+        Self::new(s.width, s.height)
     }
 }
 
 impl SizeV {
+    fn new(width: u16, height: u16) -> Self {
+        Self { width: width.into(), height: height.into() }
+    }
+
     fn from_terminal() -> Result<Self> {
         let (width, height) = terminal::size()?;
-        Ok(Self { width, height })
+        Ok(Self::new(width, height))
     }
 }
 
@@ -815,7 +826,7 @@ async fn run<X: GXExt>(
                 Ok(e) => {
                     let v = event_to_value(&e);
                     if let Event::Resize(width, height) = e
-                        && let Err(e) = set_size(&gx, size, SizeV { width, height }) {
+                        && let Err(e) = set_size(&gx, size, SizeV::new(width, height)) {
                         error!("could not set the size ref {e:?}")
                     }
                     if let Err(e) = gx.set(event, v.clone()) {

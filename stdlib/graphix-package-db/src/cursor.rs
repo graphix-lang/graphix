@@ -6,6 +6,7 @@ use arcstr::ArcStr;
 use graphix_compiler::errf;
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync};
 use netidx::publisher::Typ;
+use netidx_derive::FromValue;
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use std::{fmt, sync::Arc};
@@ -180,19 +181,19 @@ pub(crate) type DbCursorReadMany = CachedArgsAsync<DbCursorReadManyEv>;
 
 fn parse_bound(key_typ: Option<Typ>, v: &Value) -> Option<std::ops::Bound<Vec<u8>>> {
     use std::ops::Bound;
-    match v {
-        Value::Null => Some(Bound::Unbounded),
-        Value::Array(a) if a.len() >= 2 => match &a[0] {
-            Value::String(tag) if &**tag == "Included" => {
-                Some(Bound::Included(encode_key(key_typ, &a[1])?.drain(..).collect()))
-            }
-            Value::String(tag) if &**tag == "Excluded" => {
-                Some(Bound::Excluded(encode_key(key_typ, &a[1])?.drain(..).collect()))
-            }
-            _ => None,
-        },
-        _ => None,
+    #[derive(FromValue)]
+    enum Repr {
+        Included(Value),
+        Excluded(Value),
     }
+    let encode = |k: &Value| -> Option<Vec<u8>> {
+        Some(encode_key(key_typ, k)?.drain(..).collect())
+    };
+    Some(match v.clone().cast_to::<Option<Repr>>().ok()? {
+        None => Bound::Unbounded,
+        Some(Repr::Included(k)) => Bound::Included(encode(&k)?),
+        Some(Repr::Excluded(k)) => Bound::Excluded(encode(&k)?),
+    })
 }
 
 #[derive(Debug)]

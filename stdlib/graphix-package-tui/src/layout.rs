@@ -1,12 +1,12 @@
 use super::{DirectionV, FlexV, SizeV, TuiW, TuiWidget, compile};
-use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use crossterm::event::Event;
 use futures::future;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect, Spacing},
@@ -19,22 +19,23 @@ pub(super) struct ConstraintV(pub Constraint);
 
 impl FromValue for ConstraintV {
     fn from_value(v: Value) -> Result<Self> {
-        let t = match &v.cast_to::<SmallVec<[Value; 3]>>()?[..] {
-            [Value::String(s), Value::I64(p)] => match &**s {
-                "Min" => Constraint::Min(*p as u16),
-                "Max" => Constraint::Max(*p as u16),
-
-                "Length" => Constraint::Length(*p as u16),
-                "Percentage" => Constraint::Percentage(*p as u16),
-                "Fill" => Constraint::Fill(*p as u16),
-                s => bail!("invalid constraint tag {s}"),
-            },
-            [Value::String(s), Value::I64(n), Value::I64(d)] if &**s == "Ratio" => {
-                Constraint::Ratio(*n as u32, *d as u32)
-            }
-            v => bail!("invalid constraint {v:?}"),
-        };
-        Ok(Self(t))
+        #[derive(FromValue)]
+        enum Repr {
+            Min(i64),
+            Max(i64),
+            Length(i64),
+            Percentage(i64),
+            Ratio(i64, i64),
+            Fill(i64),
+        }
+        Ok(Self(match v.cast_to()? {
+            Repr::Min(p) => Constraint::Min(p as u16),
+            Repr::Max(p) => Constraint::Max(p as u16),
+            Repr::Length(p) => Constraint::Length(p as u16),
+            Repr::Percentage(p) => Constraint::Percentage(p as u16),
+            Repr::Ratio(n, d) => Constraint::Ratio(n as u32, d as u32),
+            Repr::Fill(p) => Constraint::Fill(p as u16),
+        }))
     }
 }
 
@@ -43,12 +44,15 @@ struct SpacingV(Spacing);
 
 impl FromValue for SpacingV {
     fn from_value(v: Value) -> Result<Self> {
-        let t = match v.cast_to::<(ArcStr, u16)>()? {
-            (s, p) if &*s == "Space" => Spacing::Space(p),
-            (s, p) if &*s == "Overlap" => Spacing::Overlap(p),
-            (s, _) => bail!("invalid spacing tag {s}"),
-        };
-        Ok(Self(t))
+        #[derive(FromValue)]
+        enum Repr {
+            Space(u16),
+            Overlap(u16),
+        }
+        Ok(Self(match v.cast_to()? {
+            Repr::Space(p) => Spacing::Space(p),
+            Repr::Overlap(p) => Spacing::Overlap(p),
+        }))
     }
 }
 
@@ -61,8 +65,13 @@ struct ChildW<X: GXExt> {
 
 impl<X: GXExt> ChildW<X> {
     async fn compile(gx: GXHandle<X>, v: Value) -> Result<Self> {
-        let ((_, child), (_, constraint), (_, size)) =
-            v.cast_to::<((ArcStr, Value), (ArcStr, ConstraintV), (ArcStr, u64))>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: Value,
+            constraint: ConstraintV,
+            size: u64,
+        }
+        let Fields { child, constraint, size } = v.cast_to()?;
         let child = compile(gx.clone(), child).await.context("compiling child")?;
         let constraint = constraint.0;
         let size_ref = gx.compile_ref(size).await.context("compiling size ref")?;
@@ -85,16 +94,27 @@ pub(super) struct LayoutW<X: GXExt> {
 
 impl<X: GXExt> LayoutW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, children),
-            (_, direction),
-            (_, flex),
-            (_, focused),
-            (_, horizontal_margin),
-            (_, margin),
-            (_, spacing),
-            (_, vertical_margin),
-        ] = v.cast_to::<[(ArcStr, u64); 8]>().context("layout fields")?;
+        #[derive(FromValue)]
+        struct Fields {
+            children: u64,
+            direction: u64,
+            flex: u64,
+            focused: u64,
+            horizontal_margin: u64,
+            margin: u64,
+            spacing: u64,
+            vertical_margin: u64,
+        }
+        let Fields {
+            children,
+            direction,
+            flex,
+            focused,
+            horizontal_margin,
+            margin,
+            spacing,
+            vertical_margin,
+        } = v.cast_to().context("layout fields")?;
         let (
             children_ref,
             direction,

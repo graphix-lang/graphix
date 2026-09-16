@@ -6,6 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -33,10 +34,14 @@ impl FromValue for SparklineBarV {
     fn from_value(v: Value) -> Result<Self> {
         match v {
             Value::Array(_) => {
-                let [(_, style), (_, value)] = v.cast_to::<[(ArcStr, Value); 2]>()?;
-                let style = style.cast_to::<Option<StyleV>>()?.map(|s| s.0);
-                let value = value.cast_to::<Option<f64>>()?.map(|v| v as u64);
-                Ok(Self(SparklineBar::from(value).style(style)))
+                #[derive(FromValue)]
+                struct Fields {
+                    style: Option<StyleV>,
+                    value: Option<f64>,
+                }
+                let Fields { style, value } = v.cast_to()?;
+                let value = value.map(|v| v as u64);
+                Ok(Self(SparklineBar::from(value).style(style.map(|s| s.0))))
             }
             v => {
                 let value = v.cast_to::<Option<f64>>()?.map(|v| v as u64);
@@ -58,14 +63,23 @@ pub(super) struct SparklineW<X: GXExt> {
 
 impl<X: GXExt> SparklineW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, absent_value_style),
-            (_, absent_value_symbol),
-            (_, data),
-            (_, direction),
-            (_, max),
-            (_, style),
-        ] = v.cast_to::<[(ArcStr, u64); 6]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            absent_value_style: u64,
+            absent_value_symbol: u64,
+            data: u64,
+            direction: u64,
+            max: u64,
+            style: u64,
+        }
+        let Fields {
+            absent_value_style,
+            absent_value_symbol,
+            data,
+            direction,
+            max,
+            style,
+        } = v.cast_to()?;
         let (absent_value_style, absent_value_symbol, data_ref, direction, max, style) =
             try_join! {
                 gx.compile_ref(absent_value_style),

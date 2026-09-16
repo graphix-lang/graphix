@@ -1,10 +1,10 @@
 use super::{GuiW, GuiWidget, IcedElement};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget::rule;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 
 pub(crate) struct HorizontalRuleW<X: GXExt> {
     height: TRef<X, f64>,
@@ -12,8 +12,11 @@ pub(crate) struct HorizontalRuleW<X: GXExt> {
 
 impl<X: GXExt> HorizontalRuleW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, height)] =
-            source.cast_to::<[(ArcStr, u64); 1]>().context("horizontal_rule flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            height: u64,
+        }
+        let Fields { height } = source.cast_to().context("horizontal_rule flds")?;
         let height = gx.compile_ref(height).await?;
         Ok(Box::new(Self {
             height: TRef::new(height).context("horizontal_rule tref height")?,
@@ -43,8 +46,11 @@ pub(crate) struct VerticalRuleW<X: GXExt> {
 
 impl<X: GXExt> VerticalRuleW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, width)] =
-            source.cast_to::<[(ArcStr, u64); 1]>().context("vertical_rule flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            width: u64,
+        }
+        let Fields { width } = source.cast_to().context("vertical_rule flds")?;
         let width = gx.compile_ref(width).await?;
         Ok(Box::new(Self {
             width: TRef::new(width).context("vertical_rule tref width")?,

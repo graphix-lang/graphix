@@ -1,11 +1,11 @@
 use super::{GuiW, IcedElement};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use log::error;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct QrCodeW<X: GXExt> {
@@ -16,8 +16,12 @@ pub(crate) struct QrCodeW<X: GXExt> {
 
 impl<X: GXExt> QrCodeW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, cell_size), (_, data)] =
-            source.cast_to::<[(ArcStr, u64); 2]>().context("qr_code flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            cell_size: u64,
+            data: u64,
+        }
+        let Fields { cell_size, data } = source.cast_to().context("qr_code flds")?;
         let (cell_size, data) = try_join! {
             gx.compile_ref(cell_size),
             gx.compile_ref(data),

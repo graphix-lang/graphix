@@ -17,6 +17,7 @@ mod chart_test;
 mod clipboard_test;
 mod data_table_test;
 mod interaction_test;
+mod theme_test;
 mod widgets_test;
 
 const TEST_REGISTER: &[&dyn graphix_package::Package<NoExt>] = &[

@@ -1,8 +1,4 @@
-use crate::theme::{
-    ButtonSpec, CheckboxSpec, ContainerSpec, GraphixTheme, MenuSpec, PickListSpec,
-    ProgressBarSpec, RadioSpec, RuleSpec, ScrollableSpec, SliderSpec, StyleOverrides,
-    TextEditorSpec, TextInputSpec, TogglerSpec,
-};
+use crate::theme::{GraphixTheme, StyleOverrides};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_compiler::abstract_value::payload as abstract_payload;
@@ -13,6 +9,7 @@ use iced_core::{
 };
 use iced_widget::{scrollable, tooltip};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::{FromValue, IntoValue};
 use smallvec::SmallVec;
 use std::{
     collections::HashSet,
@@ -28,24 +25,19 @@ pub struct LengthV(pub Length);
 
 impl FromValue for LengthV {
     fn from_value(v: Value) -> Result<Self> {
-        match v {
-            Value::String(s) => match &*s {
-                "Fill" => Ok(Self(Length::Fill)),
-                "Shrink" => Ok(Self(Length::Shrink)),
-                s => bail!("invalid length {s}"),
-            },
-            v => match v.cast_to::<(ArcStr, Value)>()? {
-                (s, v) if &*s == "FillPortion" => {
-                    let n = v.cast_to::<u16>()?;
-                    Ok(Self(Length::FillPortion(n)))
-                }
-                (s, v) if &*s == "Fixed" => {
-                    let n = v.cast_to::<f64>()? as f32;
-                    Ok(Self(Length::Fixed(n)))
-                }
-                (s, _) => bail!("invalid length {s}"),
-            },
+        #[derive(FromValue)]
+        enum Repr {
+            Fill,
+            Shrink,
+            FillPortion(u16),
+            Fixed(f32),
         }
+        Ok(Self(match v.cast_to::<Repr>()? {
+            Repr::Fill => Length::Fill,
+            Repr::Shrink => Length::Shrink,
+            Repr::FillPortion(n) => Length::FillPortion(n),
+            Repr::Fixed(n) => Length::Fixed(n),
+        }))
     }
 }
 
@@ -54,27 +46,19 @@ pub struct PaddingV(pub Padding);
 
 impl FromValue for PaddingV {
     fn from_value(v: Value) -> Result<Self> {
-        match v.cast_to::<(ArcStr, Value)>()? {
-            (s, v) if &*s == "All" => {
-                let n = v.cast_to::<f64>()? as f32;
-                Ok(Self(Padding::new(n)))
-            }
-            (s, v) if &*s == "Axis" => {
-                let [(_, x), (_, y)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
-                Ok(Self(Padding::from([y as f32, x as f32])))
-            }
-            (s, v) if &*s == "Each" => {
-                let [(_, bottom), (_, left), (_, right), (_, top)] =
-                    v.cast_to::<[(ArcStr, f64); 4]>()?;
-                Ok(Self(Padding {
-                    top: top as f32,
-                    right: right as f32,
-                    bottom: bottom as f32,
-                    left: left as f32,
-                }))
-            }
-            (s, _) => bail!("invalid padding {s}"),
+        #[derive(FromValue)]
+        enum Repr {
+            All(f32),
+            Axis { x: f32, y: f32 },
+            Each { top: f32, right: f32, bottom: f32, left: f32 },
         }
+        Ok(Self(match v.cast_to::<Repr>()? {
+            Repr::All(n) => Padding::new(n),
+            Repr::Axis { x, y } => Padding::from([y, x]),
+            Repr::Each { top, right, bottom, left } => {
+                Padding { top, right, bottom, left }
+            }
+        }))
     }
 }
 
@@ -83,16 +67,24 @@ pub struct SizeV(pub Size);
 
 impl FromValue for SizeV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, height), (_, width)] = v.cast_to::<[(ArcStr, f64); 2]>()?;
-        Ok(Self(Size::new(width as f32, height as f32)))
+        #[derive(FromValue)]
+        struct Fields {
+            width: f32,
+            height: f32,
+        }
+        let Fields { width, height } = v.cast_to()?;
+        Ok(Self(Size::new(width, height)))
     }
 }
 
 impl From<SizeV> for Value {
-    fn from(v: SizeV) -> Value {
-        use arcstr::literal;
-        [(literal!("height"), v.0.height as f64), (literal!("width"), v.0.width as f64)]
-            .into()
+    fn from(SizeV(s): SizeV) -> Value {
+        #[derive(IntoValue)]
+        struct Fields {
+            width: f64,
+            height: f64,
+        }
+        Fields { width: s.width as f64, height: s.height as f64 }.into()
     }
 }
 
@@ -101,11 +93,17 @@ pub struct ColorV(pub Color);
 
 impl FromValue for ColorV {
     fn from_value(v: Value) -> Result<Self> {
-        let v = abstract_payload(&v)
+        #[derive(FromValue)]
+        struct Fields {
+            r: f32,
+            g: f32,
+            b: f32,
+            a: f32,
+        }
+        let Fields { r, g, b, a } = abstract_payload(&v)
             .ok_or_else(|| anyhow!("expected a Color, got {v}"))?
-            .clone();
-        let [(_, a), (_, b), (_, g), (_, r)] = v.cast_to::<[(ArcStr, f64); 4]>()?;
-        let [r, g, b, a] = [r as f32, g as f32, b as f32, a as f32];
+            .clone()
+            .cast_to()?;
         if !(0.0..=1.0).contains(&r)
             || !(0.0..=1.0).contains(&g)
             || !(0.0..=1.0).contains(&b)
@@ -150,8 +148,13 @@ pub struct FontV(pub Font);
 
 impl FromValue for FontV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, family), (_, style), (_, weight)] =
-            v.cast_to::<[(ArcStr, Value); 3]>()?;
+        #[derive(FromValue)]
+        struct Fields {
+            family: Value,
+            weight: ArcStr,
+            style: ArcStr,
+        }
+        let Fields { family, weight, style } = v.cast_to()?;
         let family = match family {
             Value::String(s) => match &*s {
                 "SansSerif" => Family::SansSerif,
@@ -177,7 +180,7 @@ impl FromValue for FontV {
                 (s, _) => bail!("invalid font family {s}"),
             },
         };
-        let weight = match &*weight.cast_to::<ArcStr>()? {
+        let weight = match &*weight {
             "Thin" => Weight::Thin,
             "ExtraLight" => Weight::ExtraLight,
             "Light" => Weight::Light,
@@ -189,7 +192,7 @@ impl FromValue for FontV {
             "Black" => Weight::Black,
             s => bail!("invalid font weight {s}"),
         };
-        let style = match &*style.cast_to::<ArcStr>()? {
+        let style = match &*style {
             "Normal" => Style::Normal,
             "Italic" => Style::Italic,
             "Oblique" => Style::Oblique,
@@ -204,16 +207,19 @@ pub struct PaletteV(pub iced_core::theme::palette::Palette);
 
 impl FromValue for PaletteV {
     fn from_value(v: Value) -> Result<Self> {
-        let [(_, bg), (_, danger), (_, primary), (_, success), (_, text), (_, warning)] =
-            v.cast_to::<[(ArcStr, Value); 6]>()?;
-        let bg = ColorV::from_value(bg)?;
-        let text = ColorV::from_value(text)?;
-        let primary = ColorV::from_value(primary)?;
-        let success = ColorV::from_value(success)?;
-        let warning = ColorV::from_value(warning)?;
-        let danger = ColorV::from_value(danger)?;
+        #[derive(FromValue)]
+        struct Fields {
+            background: ColorV,
+            text: ColorV,
+            primary: ColorV,
+            success: ColorV,
+            warning: ColorV,
+            danger: ColorV,
+        }
+        let Fields { background, text, primary, success, warning, danger } =
+            v.cast_to()?;
         Ok(Self(iced_core::theme::palette::Palette {
-            background: bg.0,
+            background: background.0,
             text: text.0,
             primary: primary.0,
             success: success.0,
@@ -225,222 +231,6 @@ impl FromValue for PaletteV {
 
 #[derive(Clone, Debug)]
 pub struct ThemeV(pub GraphixTheme);
-
-pub fn parse_opt_color(v: Value) -> Result<Option<Color>> {
-    if v == Value::Null { Ok(None) } else { Ok(Some(ColorV::from_value(v)?.0)) }
-}
-
-fn parse_opt_f32(v: Value) -> Result<Option<f32>> {
-    if v == Value::Null { Ok(None) } else { Ok(Some(v.cast_to::<f64>()? as f32)) }
-}
-
-fn parse_opt_spec<T>(v: Value, f: impl FnOnce(Value) -> Result<T>) -> Result<Option<T>> {
-    if v == Value::Null { Ok(None) } else { Ok(Some(f(v)?)) }
-}
-
-fn parse_button_spec(v: Value) -> Result<ButtonSpec> {
-    let [(_, bg), (_, bc), (_, br), (_, bw), (_, tc)] =
-        v.cast_to::<[(ArcStr, Value); 5]>()?;
-    Ok(ButtonSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        text_color: parse_opt_color(tc)?,
-    })
-}
-
-fn parse_checkbox_spec(v: Value) -> Result<CheckboxSpec> {
-    let [(_, accent), (_, bg), (_, bc), (_, br), (_, bw), (_, ic), (_, tc)] =
-        v.cast_to::<[(ArcStr, Value); 7]>()?;
-    Ok(CheckboxSpec {
-        accent: parse_opt_color(accent)?,
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        icon_color: parse_opt_color(ic)?,
-        text_color: parse_opt_color(tc)?,
-    })
-}
-
-fn parse_container_spec(v: Value) -> Result<ContainerSpec> {
-    let [(_, bg), (_, bc), (_, br), (_, bw), (_, tc)] =
-        v.cast_to::<[(ArcStr, Value); 5]>()?;
-    Ok(ContainerSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        text_color: parse_opt_color(tc)?,
-    })
-}
-
-fn parse_menu_spec(v: Value) -> Result<MenuSpec> {
-    let [(_, bg), (_, bc), (_, br), (_, bw), (_, sb), (_, stc), (_, tc)] =
-        v.cast_to::<[(ArcStr, Value); 7]>()?;
-    Ok(MenuSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        selected_background: parse_opt_color(sb)?,
-        selected_text_color: parse_opt_color(stc)?,
-        text_color: parse_opt_color(tc)?,
-    })
-}
-
-fn parse_pick_list_spec(v: Value) -> Result<PickListSpec> {
-    let [(_, bg), (_, bc), (_, br), (_, bw), (_, hc), (_, pc), (_, tc)] =
-        v.cast_to::<[(ArcStr, Value); 7]>()?;
-    Ok(PickListSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        handle_color: parse_opt_color(hc)?,
-        placeholder_color: parse_opt_color(pc)?,
-        text_color: parse_opt_color(tc)?,
-    })
-}
-
-fn parse_progress_bar_spec(v: Value) -> Result<ProgressBarSpec> {
-    let [(_, bg), (_, bar), (_, br)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
-    Ok(ProgressBarSpec {
-        background: parse_opt_color(bg)?,
-        bar_color: parse_opt_color(bar)?,
-        border_radius: parse_opt_f32(br)?,
-    })
-}
-
-fn parse_radio_spec(v: Value) -> Result<RadioSpec> {
-    let [(_, bg), (_, bc), (_, bw), (_, dc), (_, tc)] =
-        v.cast_to::<[(ArcStr, Value); 5]>()?;
-    Ok(RadioSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_width: parse_opt_f32(bw)?,
-        dot_color: parse_opt_color(dc)?,
-        text_color: parse_opt_color(tc)?,
-    })
-}
-
-fn parse_rule_spec(v: Value) -> Result<RuleSpec> {
-    let [(_, color), (_, radius), (_, width)] = v.cast_to::<[(ArcStr, Value); 3]>()?;
-    Ok(RuleSpec {
-        color: parse_opt_color(color)?,
-        radius: parse_opt_f32(radius)?,
-        width: parse_opt_f32(width)?,
-    })
-}
-
-fn parse_scrollable_spec(v: Value) -> Result<ScrollableSpec> {
-    let [(_, bg), (_, bc), (_, br), (_, bw), (_, sc)] =
-        v.cast_to::<[(ArcStr, Value); 5]>()?;
-    Ok(ScrollableSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        scroller_color: parse_opt_color(sc)?,
-    })
-}
-
-fn parse_slider_spec(v: Value) -> Result<SliderSpec> {
-    let [(_, hbc), (_, hbw), (_, hc), (_, hr), (_, rc), (_, rfc), (_, rw)] =
-        v.cast_to::<[(ArcStr, Value); 7]>()?;
-    Ok(SliderSpec {
-        handle_border_color: parse_opt_color(hbc)?,
-        handle_border_width: parse_opt_f32(hbw)?,
-        handle_color: parse_opt_color(hc)?,
-        handle_radius: parse_opt_f32(hr)?,
-        rail_color: parse_opt_color(rc)?,
-        rail_fill_color: parse_opt_color(rfc)?,
-        rail_width: parse_opt_f32(rw)?,
-    })
-}
-
-fn parse_text_editor_spec(v: Value) -> Result<TextEditorSpec> {
-    let [(_, bg), (_, bc), (_, br), (_, bw), (_, pc), (_, sc), (_, vc)] =
-        v.cast_to::<[(ArcStr, Value); 7]>()?;
-    Ok(TextEditorSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        placeholder_color: parse_opt_color(pc)?,
-        selection_color: parse_opt_color(sc)?,
-        value_color: parse_opt_color(vc)?,
-    })
-}
-
-fn parse_text_input_spec(v: Value) -> Result<TextInputSpec> {
-    let [(_, bg), (_, bc), (_, br), (_, bw), (_, ic), (_, pc), (_, sc), (_, vc)] =
-        v.cast_to::<[(ArcStr, Value); 8]>()?;
-    Ok(TextInputSpec {
-        background: parse_opt_color(bg)?,
-        border_color: parse_opt_color(bc)?,
-        border_radius: parse_opt_f32(br)?,
-        border_width: parse_opt_f32(bw)?,
-        icon_color: parse_opt_color(ic)?,
-        placeholder_color: parse_opt_color(pc)?,
-        selection_color: parse_opt_color(sc)?,
-        value_color: parse_opt_color(vc)?,
-    })
-}
-
-fn parse_toggler_spec(v: Value) -> Result<TogglerSpec> {
-    let [(_, bg), (_, bbc), (_, br), (_, fg), (_, fbc), (_, tc)] =
-        v.cast_to::<[(ArcStr, Value); 6]>()?;
-    Ok(TogglerSpec {
-        background: parse_opt_color(bg)?,
-        background_border_color: parse_opt_color(bbc)?,
-        border_radius: parse_opt_f32(br)?,
-        foreground: parse_opt_color(fg)?,
-        foreground_border_color: parse_opt_color(fbc)?,
-        text_color: parse_opt_color(tc)?,
-    })
-}
-
-fn parse_stylesheet(
-    v: Value,
-) -> Result<(iced_core::theme::palette::Palette, StyleOverrides)> {
-    let [
-        (_, button),
-        (_, checkbox),
-        (_, container),
-        (_, menu),
-        (_, palette),
-        (_, pick_list),
-        (_, progress_bar),
-        (_, radio),
-        (_, rule),
-        (_, scrollable),
-        (_, slider),
-        (_, text_editor),
-        (_, text_input),
-        (_, toggler),
-    ] = v.cast_to::<[(ArcStr, Value); 14]>()?;
-    let palette = PaletteV::from_value(palette)?;
-    Ok((
-        palette.0,
-        StyleOverrides {
-            button: parse_opt_spec(button, parse_button_spec)?,
-            checkbox: parse_opt_spec(checkbox, parse_checkbox_spec)?,
-            container: parse_opt_spec(container, parse_container_spec)?,
-            menu: parse_opt_spec(menu, parse_menu_spec)?,
-            pick_list: parse_opt_spec(pick_list, parse_pick_list_spec)?,
-            progress_bar: parse_opt_spec(progress_bar, parse_progress_bar_spec)?,
-            radio: parse_opt_spec(radio, parse_radio_spec)?,
-            rule: parse_opt_spec(rule, parse_rule_spec)?,
-            scrollable: parse_opt_spec(scrollable, parse_scrollable_spec)?,
-            slider: parse_opt_spec(slider, parse_slider_spec)?,
-            text_editor: parse_opt_spec(text_editor, parse_text_editor_spec)?,
-            text_input: parse_opt_spec(text_input, parse_text_input_spec)?,
-            toggler: parse_opt_spec(toggler, parse_toggler_spec)?,
-        },
-    ))
-}
 
 impl FromValue for ThemeV {
     fn from_value(v: Value) -> Result<Self> {
@@ -483,9 +273,14 @@ impl FromValue for ThemeV {
                     }))
                 }
                 (s, v) if &*s == "Custom" => {
-                    let (palette, overrides) = parse_stylesheet(v)?;
+                    #[derive(FromValue)]
+                    struct Fields {
+                        palette: PaletteV,
+                    }
+                    let Fields { palette } = v.clone().cast_to()?;
+                    let overrides = v.cast_to::<StyleOverrides>()?;
                     Ok(Self(GraphixTheme {
-                        inner: Theme::custom("Custom", palette),
+                        inner: Theme::custom("Custom", palette.0),
                         overrides: Some(Arc::new(overrides)),
                     }))
                 }
@@ -648,14 +443,13 @@ impl FromValue for ImageSourceV {
                     },
                     "Svg" => Ok(Self::Svg(val.cast_to::<String>()?)),
                     "Rgba" => {
-                        let [(_, height), (_, pixels), (_, width)] =
-                            val.cast_to::<[(ArcStr, Value); 3]>()?;
-                        let width = width.cast_to::<u32>()?;
-                        let height = height.cast_to::<u32>()?;
-                        let pixels = match pixels {
-                            Value::Bytes(b) => (*b).clone(),
-                            _ => bail!("ImageSource Rgba: expected bytes for pixels"),
-                        };
+                        #[derive(FromValue)]
+                        struct Fields {
+                            width: u32,
+                            height: u32,
+                            pixels: iced_core::Bytes,
+                        }
+                        let Fields { width, height, pixels } = val.cast_to()?;
                         Ok(Self::Rgba { width, height, pixels })
                     }
                     s => bail!("invalid ImageSource variant: {s}"),
@@ -665,28 +459,10 @@ impl FromValue for ImageSourceV {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, FromValue)]
 pub enum GridColumnsV {
     Fixed(usize),
     Fluid(f32),
-}
-
-impl FromValue for GridColumnsV {
-    fn from_value(v: Value) -> Result<Self> {
-        match v {
-            v => match v.cast_to::<(ArcStr, Value)>()? {
-                (s, v) if &*s == "Fixed" => {
-                    let n = v.cast_to::<i64>()? as usize;
-                    Ok(Self::Fixed(n))
-                }
-                (s, v) if &*s == "Fluid" => {
-                    let n = v.cast_to::<f64>()? as f32;
-                    Ok(Self::Fluid(n))
-                }
-                (s, _) => bail!("invalid grid columns {s}"),
-            },
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -694,17 +470,16 @@ pub struct GridSizingV(pub iced_widget::grid::Sizing);
 
 impl FromValue for GridSizingV {
     fn from_value(v: Value) -> Result<Self> {
-        match v.cast_to::<(ArcStr, Value)>()? {
-            (s, v) if &*s == "AspectRatio" => {
-                let r = v.cast_to::<f64>()? as f32;
-                Ok(Self(iced_widget::grid::Sizing::AspectRatio(r)))
-            }
-            (s, v) if &*s == "EvenlyDistribute" => {
-                let l = LengthV::from_value(v)?;
-                Ok(Self(iced_widget::grid::Sizing::EvenlyDistribute(l.0)))
-            }
-            (s, _) => bail!("invalid grid sizing {s}"),
+        use iced_widget::grid::Sizing;
+        #[derive(FromValue)]
+        enum Repr {
+            AspectRatio(f32),
+            EvenlyDistribute(LengthV),
         }
+        Ok(Self(match v.cast_to::<Repr>()? {
+            Repr::AspectRatio(r) => Sizing::AspectRatio(r),
+            Repr::EvenlyDistribute(l) => Sizing::EvenlyDistribute(l.0),
+        }))
     }
 }
 
@@ -718,16 +493,18 @@ pub struct ShortcutV {
 
 impl FromValue for ShortcutV {
     fn from_value(v: Value) -> Result<Self> {
-        let v = abstract_payload(&v)
+        #[derive(FromValue)]
+        struct Fields {
+            alt: bool,
+            ctrl: bool,
+            key: ArcStr,
+            logo: bool,
+            shift: bool,
+        }
+        let Fields { alt, ctrl, key, logo, shift } = abstract_payload(&v)
             .ok_or_else(|| anyhow!("expected a Shortcut, got {v}"))?
-            .clone();
-        let [(_, alt), (_, ctrl), (_, key), (_, logo), (_, shift)] =
-            v.cast_to::<[(ArcStr, Value); 5]>()?;
-        let alt = alt.cast_to::<bool>()?;
-        let ctrl = ctrl.cast_to::<bool>()?;
-        let key_str = key.cast_to::<ArcStr>()?;
-        let logo = logo.cast_to::<bool>()?;
-        let shift = shift.cast_to::<bool>()?;
+            .clone()
+            .cast_to()?;
         let mut display = String::new();
         if ctrl {
             display.push_str("Ctrl+");
@@ -741,7 +518,7 @@ impl FromValue for ShortcutV {
         if logo {
             display.push_str("Super+");
         }
-        display.push_str(&key_str.to_uppercase());
+        display.push_str(&key.to_uppercase());
         let mut modifiers = iced_core::keyboard::Modifiers::empty();
         if ctrl {
             modifiers |= iced_core::keyboard::Modifiers::CTRL;
@@ -755,7 +532,7 @@ impl FromValue for ShortcutV {
         if logo {
             modifiers |= iced_core::keyboard::Modifiers::LOGO;
         }
-        let iced_key = iced_core::keyboard::Key::Character(key_str.to_lowercase().into());
+        let iced_key = iced_core::keyboard::Key::Character(key.to_lowercase().into());
         Ok(Self { display, key: iced_key, modifiers })
     }
 }

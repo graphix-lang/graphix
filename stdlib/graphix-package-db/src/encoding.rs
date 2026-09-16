@@ -153,13 +153,6 @@ pub(crate) fn decode_key(key_typ: Option<Typ>, data: &[u8]) -> Option<Value> {
     }
 }
 
-pub(crate) fn kv_struct(key: Value, value: Value) -> Value {
-    Value::Array(ValArray::from([
-        Value::Array(ValArray::from([Value::String(arcstr::literal!("key")), key])),
-        Value::Array(ValArray::from([Value::String(arcstr::literal!("value")), value])),
-    ]))
-}
-
 pub(crate) fn parse_batch_ops(
     key_typ: Option<Typ>,
     arr: &ValArray,
@@ -183,11 +176,4 @@ pub(crate) fn parse_batch_ops(
         }
     }
     Some(batch)
-}
-
-pub(crate) fn key_struct(key: Value) -> Value {
-    Value::Array(ValArray::from([Value::Array(ValArray::from([
-        Value::String(arcstr::literal!("key")),
-        key,
-    ]))]))
 }

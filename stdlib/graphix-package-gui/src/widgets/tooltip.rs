@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, compile};
 use crate::types::TooltipPositionV;
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct TooltipW<X: GXExt> {
@@ -20,8 +20,15 @@ pub(crate) struct TooltipW<X: GXExt> {
 
 impl<X: GXExt> TooltipW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, child), (_, gap), (_, position), (_, tip)] =
-            source.cast_to::<[(ArcStr, u64); 4]>().context("tooltip flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            child: u64,
+            gap: u64,
+            position: u64,
+            tip: u64,
+        }
+        let Fields { child, gap, position, tip } =
+            source.cast_to().context("tooltip flds")?;
         let (child_ref, gap, position, tip_ref) = try_join! {
             gx.compile_ref(child),
             gx.compile_ref(gap),

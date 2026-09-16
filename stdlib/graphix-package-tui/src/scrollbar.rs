@@ -6,6 +6,7 @@ use crossterm::event::Event;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref};
 use netidx::publisher::{FromValue, Value};
+use netidx_derive::FromValue;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -56,23 +57,41 @@ pub(super) struct ScrollbarW<X: GXExt> {
 
 impl<X: GXExt> ScrollbarW<X> {
     pub(super) async fn compile(gx: GXHandle<X>, v: Value) -> Result<TuiW> {
-        let [
-            (_, begin_style),
-            (_, begin_symbol),
-            (_, child),
-            (_, content_length),
-            (_, end_style),
-            (_, end_symbol),
-            (_, orientation),
-            (_, position),
-            (_, size),
-            (_, style),
-            (_, thumb_style),
-            (_, thumb_symbol),
-            (_, track_style),
-            (_, track_symbol),
-            (_, viewport_length),
-        ] = v.cast_to::<[(ArcStr, u64); 15]>().context("scrollbar flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            begin_style: u64,
+            begin_symbol: u64,
+            child: u64,
+            content_length: u64,
+            end_style: u64,
+            end_symbol: u64,
+            orientation: u64,
+            position: u64,
+            size: u64,
+            style: u64,
+            thumb_style: u64,
+            thumb_symbol: u64,
+            track_style: u64,
+            track_symbol: u64,
+            viewport_length: u64,
+        }
+        let Fields {
+            begin_style,
+            begin_symbol,
+            child,
+            content_length,
+            end_style,
+            end_symbol,
+            orientation,
+            position,
+            size,
+            style,
+            thumb_style,
+            thumb_symbol,
+            track_style,
+            track_symbol,
+            viewport_length,
+        } = v.cast_to().context("scrollbar flds")?;
         let (
             begin_style,
             begin_symbol,

@@ -11,190 +11,125 @@ use graphix_package_core::{FireOnce, ProgramArgs};
 use immutable_chunkmap::map::Map as CMap;
 use netidx::subscriber::Value;
 use netidx_core::pack::{Pack, PackError};
+use netidx_derive::{FromValue, IntoValue};
 use netidx_value::ValArray;
+use poolshark::local::LPooled;
 
-fn get_field<'a>(v: &'a Value, name: &str) -> Option<&'a Value> {
-    match v {
-        Value::Array(a) => {
-            for pair in a.iter() {
-                if let Value::Array(kv) = pair {
-                    if kv.len() == 2 {
-                        if let Value::String(k) = &kv[0] {
-                            if &**k == name {
-                                return Some(&kv[1]);
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
+#[derive(FromValue)]
+enum Kind {
+    Positional,
+    Option,
+    Flag,
 }
 
-fn get_str(v: &Value) -> Option<&ArcStr> {
-    match v {
-        Value::String(s) => Some(s),
-        _ => None,
-    }
+#[derive(FromValue)]
+struct Arg {
+    name: ArcStr,
+    kind: Kind,
+    short: Option<ArcStr>,
+    help: Option<ArcStr>,
+    default: Option<ArcStr>,
+    required: Option<bool>,
 }
 
-fn get_opt_str(v: &Value) -> Option<Option<&ArcStr>> {
-    match v {
-        Value::Null => Some(None),
-        Value::String(s) => Some(Some(s)),
-        _ => None,
-    }
+#[derive(FromValue)]
+struct Command {
+    name: ArcStr,
+    version: Option<ArcStr>,
+    about: Option<ArcStr>,
+    args: LPooled<Vec<Arg>>,
+    subcommands: LPooled<Vec<Command>>,
 }
 
-fn get_opt_bool(v: &Value) -> Option<Option<bool>> {
-    match v {
-        Value::Null => Some(None),
-        Value::Bool(b) => Some(Some(*b)),
-        _ => None,
-    }
-}
-
-fn get_variant_tag(v: &Value) -> Option<&ArcStr> {
-    match v {
-        Value::String(s) => Some(s),
-        Value::Array(a) if !a.is_empty() => {
-            if let Value::String(s) = &a[0] {
-                Some(s)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-fn build_clap_arg(spec: &Value) -> Result<clap::Arg, String> {
-    let name = get_field(spec, "name").and_then(get_str).ok_or("arg missing name")?;
-    let kind =
-        get_field(spec, "kind").and_then(get_variant_tag).ok_or("arg missing kind")?;
-    let short =
-        get_field(spec, "short").and_then(get_opt_str).ok_or("arg missing short")?;
-    let help = get_field(spec, "help").and_then(get_opt_str).ok_or("arg missing help")?;
-    let default =
-        get_field(spec, "default").and_then(get_opt_str).ok_or("arg missing default")?;
-    let required = get_field(spec, "required")
-        .and_then(get_opt_bool)
-        .ok_or("arg missing required")?;
-
-    let name_owned: String = name.to_string();
+fn build_clap_arg(spec: &Arg) -> clap::Arg {
+    let name_owned: String = spec.name.to_string();
     let mut arg = clap::Arg::new(name_owned.clone());
 
-    if let Some(h) = help {
+    if let Some(h) = &spec.help {
         arg = arg.help(h.to_string());
     }
 
-    match &**kind {
-        "Positional" => {
-            if let Some(true) = required {
+    match spec.kind {
+        Kind::Positional => {
+            if let Some(true) = spec.required {
                 arg = arg.required(true);
             }
         }
-        "Option" => {
+        Kind::Option => {
             arg = arg.long(name_owned);
-            if let Some(s) = short {
+            if let Some(s) = &spec.short {
                 if let Some(c) = s.chars().next() {
                     arg = arg.short(c);
                 }
             }
-            if let Some(true) = required {
+            if let Some(true) = spec.required {
                 arg = arg.required(true);
             }
         }
-        "Flag" => {
+        Kind::Flag => {
             arg = arg.long(name_owned).action(clap::ArgAction::SetTrue);
-            if let Some(s) = short {
+            if let Some(s) = &spec.short {
                 if let Some(c) = s.chars().next() {
                     arg = arg.short(c);
                 }
             }
         }
-        other => return Err(format!("unknown arg kind: {other}")),
     }
 
-    if let Some(d) = default {
+    if let Some(d) = &spec.default {
         arg = arg.default_value(d.to_string());
     }
 
-    Ok(arg)
+    arg
 }
 
-fn build_clap_command(spec: &Value) -> Result<clap::Command, String> {
-    let name = get_field(spec, "name").and_then(get_str).ok_or("command missing name")?;
-    let version = get_field(spec, "version")
-        .and_then(get_opt_str)
-        .ok_or("command missing version")?;
-    let about =
-        get_field(spec, "about").and_then(get_opt_str).ok_or("command missing about")?;
+fn build_clap_command(spec: &Command) -> clap::Command {
+    let mut cmd = clap::Command::new(spec.name.to_string());
 
-    let mut cmd = clap::Command::new(name.to_string());
-
-    if let Some(v) = version {
+    if let Some(v) = &spec.version {
         cmd = cmd.version(v.to_string());
     }
-    if let Some(a) = about {
+    if let Some(a) = &spec.about {
         cmd = cmd.about(a.to_string());
     }
 
-    if let Some(Value::Array(args)) = get_field(spec, "args") {
-        for arg_spec in args.iter() {
-            cmd = cmd.arg(build_clap_arg(arg_spec)?);
-        }
+    for arg_spec in spec.args.iter() {
+        cmd = cmd.arg(build_clap_arg(arg_spec));
     }
 
-    if let Some(Value::Array(subs)) = get_field(spec, "subcommands") {
-        for sub_spec in subs.iter() {
-            cmd = cmd.subcommand(build_clap_command(sub_spec)?);
-        }
+    for sub_spec in spec.subcommands.iter() {
+        cmd = cmd.subcommand(build_clap_command(sub_spec));
     }
 
-    Ok(cmd)
+    cmd
 }
 
 fn extract_matches(
     matches: &clap::ArgMatches,
-    spec: &Value,
+    spec: &Command,
     command_chain: &mut Vec<Value>,
     values: &mut CMap<Value, Value, 32>,
 ) {
-    if let Some(Value::Array(args)) = get_field(spec, "args") {
-        for arg_spec in args.iter() {
-            let Some(name) = get_field(arg_spec, "name").and_then(get_str) else {
-                continue;
-            };
-            let kind = get_field(arg_spec, "kind").and_then(get_variant_tag);
-            let key = Value::String(name.clone());
-            let val = match kind.map(|s| &**s) {
-                Some("Flag") => {
-                    let set = matches.get_flag(&**name);
-                    Value::String(ArcStr::from(if set { "true" } else { "false" }))
-                }
-                _ => match matches.get_one::<String>(&**name) {
-                    Some(s) => Value::String(ArcStr::from(s.as_str())),
-                    None => Value::Null,
-                },
-            };
-            *values = values.insert(key, val).0;
-        }
+    for arg_spec in spec.args.iter() {
+        let name = &arg_spec.name;
+        let key = Value::String(name.clone());
+        let val = match arg_spec.kind {
+            Kind::Flag => {
+                let set = matches.get_flag(&**name);
+                Value::String(ArcStr::from(if set { "true" } else { "false" }))
+            }
+            Kind::Positional | Kind::Option => match matches.get_one::<String>(&**name) {
+                Some(s) => Value::String(ArcStr::from(s.as_str())),
+                None => Value::Null,
+            },
+        };
+        *values = values.insert(key, val).0;
     }
 
     if let Some((sub_name, sub_matches)) = matches.subcommand() {
         command_chain.push(Value::String(ArcStr::from(sub_name)));
-        if let Some(Value::Array(subs)) = get_field(spec, "subcommands") {
-            for sub_spec in subs.iter() {
-                if let Some(sn) = get_field(sub_spec, "name").and_then(get_str) {
-                    if &**sn == sub_name {
-                        extract_matches(sub_matches, sub_spec, command_chain, values);
-                        break;
-                    }
-                }
-            }
+        if let Some(sub_spec) = spec.subcommands.iter().find(|s| &*s.name == sub_name) {
+            extract_matches(sub_matches, sub_spec, command_chain, values);
         }
     }
 }
@@ -253,13 +188,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
             return self.out.ride();
         }
 
-        let cmd = match build_clap_command(&spec) {
-            Ok(c) => c,
+        let spec = match spec.cast_to::<Command>() {
+            Ok(spec) => spec,
             Err(e) => {
                 let v = errf!("ArgError", "{e}");
                 return self.out.set(TagValue::fired(v));
             }
         };
+        let cmd = build_clap_command(&spec);
 
         let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
         // argv[0] is the script filename — clap consumes it as the binary name
@@ -270,14 +206,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
                 let mut command_chain = Vec::new();
                 let mut values = CMap::new();
                 extract_matches(&matches, &spec, &mut command_chain, &mut values);
-                let command_arr =
-                    Value::Array(ValArray::from_iter_exact(command_chain.drain(..)));
-                let result: Value = (
-                    (ArcStr::from("command"), command_arr),
-                    (ArcStr::from("values"), Value::Map(values)),
-                )
-                    .into();
-                result
+                #[derive(IntoValue)]
+                struct Fields {
+                    command: ValArray,
+                    values: Value,
+                }
+                let command = ValArray::from_iter_exact(command_chain.drain(..));
+                Fields { command, values: Value::Map(values) }.into()
             }
             Err(e) => errf!("ArgError", "{e}"),
         };

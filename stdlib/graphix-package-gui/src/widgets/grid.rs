@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, compile_children};
 use crate::types::{GridColumnsV, GridSizingV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 pub(crate) struct GridW<X: GXExt> {
@@ -20,8 +20,16 @@ pub(crate) struct GridW<X: GXExt> {
 
 impl<X: GXExt> GridW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, children), (_, columns), (_, height), (_, spacing), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("grid flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            children: u64,
+            columns: u64,
+            height: u64,
+            spacing: u64,
+            width: u64,
+        }
+        let Fields { children, columns, height, spacing, width } =
+            source.cast_to().context("grid flds")?;
         let (children_ref, columns, height, spacing, width) = try_join! {
             gx.compile_ref(children),
             gx.compile_ref(columns),

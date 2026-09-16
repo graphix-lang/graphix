@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement, compile, compile_children};
 use crate::types::{HAlignV, LengthV, VAlignV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use smallvec::SmallVec;
 use tokio::try_join;
 
@@ -33,10 +33,21 @@ async fn compile_columns<X: GXExt>(
     v: Value,
 ) -> Result<Vec<CompiledColumn<X>>> {
     let items = v.cast_to::<SmallVec<[Value; 8]>>()?;
+    #[derive(FromValue)]
+    struct Fields {
+        halign: u64,
+        header: u64,
+        valign: u64,
+        width: u64,
+    }
     let mut cols = Vec::with_capacity(items.len());
     for item in items {
-        let [(_, halign_id), (_, header_id), (_, valign_id), (_, width_id)] =
-            item.cast_to::<[(ArcStr, u64); 4]>().context("table column flds")?;
+        let Fields {
+            halign: halign_id,
+            header: header_id,
+            valign: valign_id,
+            width: width_id,
+        } = item.cast_to().context("table column flds")?;
         let (halign, header_ref, valign, width) = try_join! {
             gx.compile_ref(halign_id),
             gx.compile_ref(header_id),
@@ -72,8 +83,16 @@ async fn compile_rows<X: GXExt>(gx: &GXHandle<X>, v: Value) -> Result<Vec<Vec<Gu
 
 impl<X: GXExt> TableW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, columns), (_, padding), (_, rows), (_, separator), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("table flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            columns: u64,
+            padding: u64,
+            rows: u64,
+            separator: u64,
+            width: u64,
+        }
+        let Fields { columns, padding, rows, separator, width } =
+            source.cast_to().context("table flds")?;
         let (columns_ref, padding, rows_ref, separator, width) = try_join! {
             gx.compile_ref(columns),
             gx.compile_ref(padding),

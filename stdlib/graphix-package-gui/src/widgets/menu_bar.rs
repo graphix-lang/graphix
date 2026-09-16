@@ -3,12 +3,12 @@ use super::{
     menu_bar_widget::{MenuGroupDesc, MenuItemDesc, OwnedMenuBar},
 };
 use crate::types::{LengthV, ShortcutV};
-use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
+use anyhow::{Context, Result};
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{Callable, GXExt, GXHandle, Ref, TRef};
 use iced_core::Length;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use smallvec::SmallVec;
 use tokio::try_join;
 
@@ -40,18 +40,19 @@ pub(crate) async fn compile_menu_item<X: GXExt>(
     gx: &GXHandle<X>,
     v: Value,
 ) -> Result<MenuItemKind<X>> {
-    // `Divider has no payload, so it encodes as a bare string tag
-    if let Value::String(tag) = &v {
-        return match tag.as_str() {
-            "Divider" => Ok(MenuItemKind::Divider),
-            s => bail!("invalid menu item variant: {s}"),
-        };
+    #[derive(FromValue)]
+    enum Repr {
+        Divider,
+        Action { disabled: u64, label: u64, on_click: u64, shortcut: u64 },
     }
-    let (tag, inner) = v.cast_to::<(ArcStr, Value)>().context("menu item tag")?;
-    match &*tag {
-        "Action" => {
-            let [(_, disabled_id), (_, label_id), (_, on_click_id), (_, shortcut_id)] =
-                inner.cast_to::<[(ArcStr, u64); 4]>().context("menu action flds")?;
+    match v.cast_to::<Repr>().context("menu item")? {
+        Repr::Divider => Ok(MenuItemKind::Divider),
+        Repr::Action {
+            disabled: disabled_id,
+            label: label_id,
+            on_click: on_click_id,
+            shortcut: shortcut_id,
+        } => {
             let (disabled, label, on_click, shortcut) = try_join! {
                 gx.compile_ref(disabled_id),
                 gx.compile_ref(label_id),
@@ -74,7 +75,6 @@ pub(crate) async fn compile_menu_item<X: GXExt>(
                 disabled: TRef::new(disabled).context("menu action tref disabled")?,
             })
         }
-        s => bail!("invalid menu item variant: {s}"),
     }
 }
 
@@ -94,8 +94,13 @@ async fn compile_menu_group<X: GXExt>(
     gx: &GXHandle<X>,
     v: Value,
 ) -> Result<CompiledMenuGroup<X>> {
-    let [(_, items_id), (_, label_id)] =
-        v.cast_to::<[(ArcStr, u64); 2]>().context("menu group flds")?;
+    #[derive(FromValue)]
+    struct Fields {
+        items: u64,
+        label: u64,
+    }
+    let Fields { items: items_id, label: label_id } =
+        v.cast_to().context("menu group flds")?;
     let (items_ref, label) =
         try_join! { gx.compile_ref(items_id), gx.compile_ref(label_id), }?;
     let items = match items_ref.last.as_ref() {
@@ -123,8 +128,13 @@ async fn compile_menus<X: GXExt>(
 
 impl<X: GXExt> MenuBarW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, menus_id), (_, width_id)] =
-            source.cast_to::<[(ArcStr, u64); 2]>().context("menu_bar flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            menus: u64,
+            width: u64,
+        }
+        let Fields { menus: menus_id, width: width_id } =
+            source.cast_to().context("menu_bar flds")?;
         let (menus_ref, width) =
             try_join! { gx.compile_ref(menus_id), gx.compile_ref(width_id), }?;
         let menus = match menus_ref.last.as_ref() {

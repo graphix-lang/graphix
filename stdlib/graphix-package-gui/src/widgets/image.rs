@@ -1,11 +1,11 @@
 use super::{GuiW, GuiWidget, IcedElement};
 use crate::types::{ContentFitV, ImageSourceV, LengthV};
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, TRef};
 use iced_widget as widget;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use tokio::try_join;
 
 fn make_handle(source: &ImageSourceV) -> ImageHandle {
@@ -31,8 +31,15 @@ pub(crate) struct ImageW<X: GXExt> {
 
 impl<X: GXExt> ImageW<X> {
     pub(crate) async fn compile(gx: GXHandle<X>, source: Value) -> Result<GuiW<X>> {
-        let [(_, content_fit), (_, height), (_, src), (_, width)] =
-            source.cast_to::<[(ArcStr, u64); 4]>().context("image flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            content_fit: u64,
+            height: u64,
+            source: u64,
+            width: u64,
+        }
+        let Fields { content_fit, height, source: src, width } =
+            source.cast_to().context("image flds")?;
         let (content_fit, height, src, width) = try_join! {
             gx.compile_ref(content_fit),
             gx.compile_ref(height),

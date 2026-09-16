@@ -27,6 +27,7 @@ use netidx::{
     publisher::Value,
     subscriber::{Dval, Event, SubId, UpdatesFlags},
 };
+use netidx_derive::FromValue;
 use nohash::IntMap;
 use parking_lot::Mutex;
 use poolshark::{global::GPooled, local::LPooled};
@@ -285,18 +286,18 @@ impl<X: GXExt> DataTableW<X> {
         else {
             return pending;
         };
-        // Table is { columns: Array<[string, ColumnSpec]>, rows: Array<string> }
-        let (cols_val, rows_val) =
-            match table_val.clone().cast_to::<[(ArcStr, Value); 2]>() {
-                Ok([(_, cv), (_, rv)]) => (cv, rv),
-                Err(_) => {
-                    warn!("failed to parse table value");
-                    return pending;
-                }
-            };
-        let mut new_specs = parse_table_columns(&cols_val);
+        #[derive(FromValue)]
+        struct Table {
+            columns: Value,
+            rows: Value,
+        }
+        let Ok(Table { columns, rows }) = table_val.clone().cast_to::<Table>() else {
+            warn!("failed to parse table value");
+            return pending;
+        };
+        let mut new_specs = parse_table_columns(&columns);
         let mut rows_raw: LPooled<Vec<Value>> =
-            rows_val.cast_to::<LPooled<Vec<Value>>>().unwrap_or_default();
+            rows.cast_to::<LPooled<Vec<Value>>>().unwrap_or_default();
         self.row_paths.extend(rows_raw.drain(..).filter_map(|v| match v {
             Value::String(s) => Some(Path::from(s)),
             _ => None,

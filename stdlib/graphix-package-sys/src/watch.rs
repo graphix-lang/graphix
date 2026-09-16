@@ -18,6 +18,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{CachedVals, seam_tick, seam_value};
 use netidx_core::pack::{Pack, PackError};
+use netidx_derive::IntoValue;
 use netidx_value::{FromValue, ValArray, Value};
 use nohash::IntSet;
 use parking_lot::Mutex;
@@ -542,8 +543,13 @@ fn convert_events(w: &mut WEvent) -> Value {
         EventKind::Event(int) => WInterest(*int).into(),
         EventKind::Error(_) => unreachable!(),
     };
+    #[derive(IntoValue)]
+    struct Fields {
+        event: Value,
+        paths: ValArray,
+    }
     let paths = ValArray::from_iter_exact(w.0.paths.drain().map(utf8_path));
-    ((literal!("event"), event), (literal!("paths"), Value::Array(paths))).into()
+    Fields { event, paths }.into()
 }
 
 #[derive(Debug)]

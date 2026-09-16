@@ -3,11 +3,11 @@ use crate::{
     widgets::{EmptyW, GuiW, compile},
 };
 use anyhow::{Context, Result};
-use arcstr::ArcStr;
 use graphix_compiler::expr::ExprId;
 use graphix_rt::{GXExt, GXHandle, Ref, TRef};
 use iced_core::mouse;
 use netidx::publisher::Value;
+use netidx_derive::FromValue;
 use std::{sync::Arc, time::Instant};
 
 use tokio::try_join;
@@ -28,8 +28,16 @@ pub struct ResolvedWindow<X: GXExt> {
 impl<X: GXExt> ResolvedWindow<X> {
     /// Compile a window struct value into resolved refs without creating an OS window.
     pub async fn compile(gx: GXHandle<X>, source: Value) -> Result<Self> {
-        let [(_, content), (_, icon), (_, size), (_, theme), (_, title)] =
-            source.cast_to::<[(ArcStr, u64); 5]>().context("window flds")?;
+        #[derive(FromValue)]
+        struct Fields {
+            content: u64,
+            icon: u64,
+            size: u64,
+            theme: u64,
+            title: u64,
+        }
+        let Fields { content, icon, size, theme, title } =
+            source.cast_to().context("window flds")?;
         let (content_ref, icon, size, theme, title) = try_join! {
             gx.compile_ref(content),
             gx.compile_ref(icon),
