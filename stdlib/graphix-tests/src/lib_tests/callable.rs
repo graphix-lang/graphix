@@ -334,6 +334,96 @@ async fn callable_body_flip_reads_standing_key_stale() -> Result<()> {
     }
 }
 
+/// The screen dispatcher shape of a TUI: the handler routes the key to
+/// one of two callees by a screen variable that the callee itself
+/// moves. The key that moved the screen must not be delivered again to
+/// the callee the move woke. The woken callee reads its formal stale
+/// (`opened <- e ~ ..` stays quiet), but a select arm that binds that
+/// stale formal delivers the binding fresh, and `kk ~ ..` fires.
+const DISPATCH: &str = r#"
+let screen: [`Landing, `Panels] = `Landing;
+let opened = 0;
+let pan_handle = |e: string| -> i64 select e {
+  kk if kk == "enter" => { opened <- kk ~ opened + 1; 1 },
+  _ => 0
+};
+let land_handle = |e: string| -> i64 select e {
+  kk if kk == "enter" => { screen <- kk ~ `Panels; 1 },
+  _ => 0
+};
+let handle = |e: string| -> i64 select e {
+  "" => 0,
+  ev => select screen {
+    `Landing => land_handle(ev),
+    `Panels => pan_handle(ev)
+  }
+};
+let result = opened
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn arm_wake_does_not_redeliver_the_key_to_the_woken_callee() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(100);
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(DISPATCH)),
+    )]);
+    let resolver = VfsResolver::new(tbl);
+    let ctx =
+        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
+    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
+    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let expr_id = compiled.exprs.last().context("no exprs")?.id;
+    let handle_l = {
+        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        gx.compile_callable(r.last.clone().context("no handle")?).await?
+    };
+    // Enter on the landing moves the screen; the panels callee it wakes
+    // must not see that Enter. A second Enter is the one legitimate count.
+    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
+    for _ in 0..3 {
+        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+    }
+    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
+    let deadline = tokio::time::sleep(Duration::from_secs(30));
+    tokio::pin!(deadline);
+    let mut last = None;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => {
+                    for ev in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = ev {
+                            if id == expr_id {
+                                last = Some(v.clone());
+                                if v == Value::I64(2) {
+                                    bail!("the woken callee counted the key that woke it");
+                                }
+                            }
+                        }
+                    }
+                    if last == Some(Value::I64(1)) {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        while let Ok(mut b) = rx.try_recv() {
+                            for ev in b.drain(..) {
+                                if let GXEvent::Updated(id, v) = ev {
+                                    if id == expr_id && v == Value::I64(2) {
+                                        bail!("the woken callee counted the key late");
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    bail!("the second Enter never counted (last={last:?})")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
     let (tx, _rx) = mpsc::channel(100);
@@ -367,4 +457,97 @@ async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
     gx.update_callable(&mut current, poke).await?;
     assert_ne!(current.as_ref().context("no callable")?.id(), first);
     Ok(())
+}
+
+/// A handler's select that slept while another screen had the keys
+/// wakes to a key it never saw. It selects the arm for that key, but the
+/// key is a past event: the arm's bind is stale and `kk ~ ..` stays quiet.
+const WAKE_SWITCH: &str = r#"
+type Key = [`Enter, `Esc, `Other];
+let screen: [`Landing, `Panels] = `Panels;
+let closed = 0;
+let pan_handle = |e: Key| -> i64 select e {
+  kk@ `Enter => { screen <- kk ~ `Landing; 1 },
+  kk@ `Esc => { closed <- kk ~ closed + 1; 2 },
+  `Other => 0
+};
+let land_handle = |e: Key| -> i64 select e {
+  kk@ `Esc => { screen <- kk ~ `Panels; 1 },
+  _ => 0
+};
+let handle = |e: Key| -> i64 select e {
+  `Other => 0,
+  ev => select screen {
+    `Landing => land_handle(ev),
+    `Panels => pan_handle(ev)
+  }
+};
+let result = closed
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn arm_wake_switch_binds_the_standing_key_stale() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(100);
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(WAKE_SWITCH)),
+    )]);
+    let resolver = VfsResolver::new(tbl);
+    let ctx =
+        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
+    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
+    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let expr_id = compiled.exprs.last().context("no exprs")?.id;
+    let handle_l = {
+        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        gx.compile_callable(r.last.clone().context("no handle")?).await?
+    };
+    // Enter on the panels selects its Enter arm and moves to the landing,
+    // so the panels handler sleeps. Esc on the landing moves back: the
+    // panels handler wakes to Esc and must not count it. A second Esc is
+    // the one legitimate count.
+    for k in ["Enter", "Esc"] {
+        handle_l.call(ValArray::from_iter_exact([k.into()].into_iter())).await?;
+        for _ in 0..3 {
+            let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+        }
+    }
+    handle_l.call(ValArray::from_iter_exact(["Esc".into()].into_iter())).await?;
+    let deadline = tokio::time::sleep(Duration::from_secs(30));
+    tokio::pin!(deadline);
+    let mut last = None;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => {
+                    for ev in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = ev {
+                            if id == expr_id {
+                                last = Some(v.clone());
+                                if v == Value::I64(2) {
+                                    bail!("the woken handler counted the key that woke it");
+                                }
+                            }
+                        }
+                    }
+                    if last == Some(Value::I64(1)) {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        while let Ok(mut b) = rx.try_recv() {
+                            for ev in b.drain(..) {
+                                if let GXEvent::Updated(id, v) = ev {
+                                    if id == expr_id && v == Value::I64(2) {
+                                        bail!("the woken handler counted the key late");
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    bail!("the second Esc never counted (last={last:?})")
 }

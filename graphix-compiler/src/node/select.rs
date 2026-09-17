@@ -865,17 +865,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         tracked.refresh_arm(&ctx.env, j, &arms[j].0, &arms[j].1);
                     }
                     selected.set(Some(i));
-                    // The wake bind is part of the arm's init view: a
-                    // guard-flip wake binds FIRED so interior call sites
-                    // dispatch; a stale first consult binds a past value.
+                    // The bind carries the scrutinee's tag: a stale
+                    // scrutinee is a past event, whether this is a first
+                    // consult or a wake that finds the value changed. Only
+                    // a guard flip binds FIRED, so interior call sites
+                    // dispatch; under an init view a guard's fire is its
+                    // birth (its constants fire), not a flip.
                     let wake_tag = if tail {
                         bind_tag
                     } else if arg_prod.triggers() {
                         arg_prod
-                    } else if route_unselected_present && !pat_up {
-                        Tag::STALE
-                    } else {
+                    } else if pat_up && !event.init && !woke {
                         Tag::FIRED
+                    } else {
+                        Tag::STALE
                     };
                     bind!(i, wake_tag);
                     // A slept arm resumes under the wake view; a
