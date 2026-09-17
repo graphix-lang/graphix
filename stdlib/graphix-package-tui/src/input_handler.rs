@@ -409,8 +409,7 @@ impl<X: GXExt> InputHandlerW<X> {
     }
 
     async fn set_handle(&mut self, v: Value) -> Result<()> {
-        let handle = self.gx.compile_callable(v).await?;
-        self.handle = Some(handle);
+        self.gx.update_callable(&mut self.handle, v).await?;
         self.maybe_send_queued().await?;
         Ok(())
     }

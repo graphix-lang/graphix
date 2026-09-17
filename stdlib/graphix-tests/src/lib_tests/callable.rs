@@ -333,3 +333,38 @@ async fn callable_body_flip_reads_standing_key_stale() -> Result<()> {
         v => bail!("the screen never flipped: {v:?}"),
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(100);
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(PROG)),
+    )]);
+    let resolver = VfsResolver::new(tbl);
+    let ctx =
+        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
+    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
+    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let lambda = |name: &str| -> Result<Value> {
+        let bid = find_bind_id(&compiled.env, name)?;
+        let gx = gx.clone();
+        Ok(tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async move { gx.compile_ref(bid).await })
+        })?
+        .last
+        .clone()
+        .context("no value")?)
+    };
+    let handle = lambda("test::handle")?;
+    let poke = lambda("test::poke")?;
+    let mut current = None;
+    gx.update_callable(&mut current, handle.clone()).await?;
+    let first = current.as_ref().context("no callable")?.id();
+    gx.update_callable(&mut current, handle).await?;
+    assert_eq!(current.as_ref().context("no callable")?.id(), first);
+    gx.update_callable(&mut current, poke).await?;
+    assert_ne!(current.as_ref().context("no callable")?.id(), first);
+    Ok(())
+}

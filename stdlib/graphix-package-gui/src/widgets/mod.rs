@@ -26,9 +26,8 @@ macro_rules! update_callable {
     ($self:ident, $rt:ident, $id:ident, $v:ident, $field:ident, $callable:ident, $label:expr) => {
         if $id == $self.$field.id {
             $self.$field.last = Some($v.clone());
-            $self.$callable = Some(
-                $rt.block_on($self.gx.compile_callable($v.clone())).context($label)?,
-            );
+            $rt.block_on($self.gx.update_callable(&mut $self.$callable, $v.clone()))
+                .context($label)?;
         }
     };
 }

@@ -405,12 +405,21 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 }
                 ColumnRefKind::Width => {}
                 ColumnRefKind::OnResize => {
-                    let new_cb = match v {
-                        Value::Null => None,
-                        v => rt.block_on(self.gx.compile_callable(v.clone())).ok(),
-                    };
                     if let Some(c) = self.columns.get_mut(&col_name) {
-                        c.on_resize = new_cb;
+                        match v {
+                            Value::Null => c.on_resize = None,
+                            v => {
+                                if rt
+                                    .block_on(
+                                        self.gx
+                                            .update_callable(&mut c.on_resize, v.clone()),
+                                    )
+                                    .is_err()
+                                {
+                                    c.on_resize = None
+                                }
+                            }
+                        }
                     }
                 }
             }

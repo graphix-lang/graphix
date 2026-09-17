@@ -15,11 +15,13 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    BindId, CFlag, Control, Event, ExecCtx, FusionStats, NoUserEvent, Scope, UserEvent,
+    BindId, CFlag, Control, Event, ExecCtx, FusionStats, LambdaId, NoUserEvent, Scope,
+    UserEvent,
     env::Env,
     expr::{ExprId, ModPath, ResolverFactory, ResolverRef, Source},
     ide::Ide,
     image::ProgramRoot,
+    node::lambda::LambdaDef,
     typ::{FnType, Type},
 };
 use log::error;
@@ -257,6 +259,7 @@ atomic_id!(CallableId);
 pub struct Callable<X: GXExt> {
     rt: GXHandle<X>,
     id: CallableId,
+    lambda: LambdaId,
     env: Env,
     pub typ: FnType,
     pub expr: ExprId,
@@ -272,6 +275,12 @@ impl<X: GXExt> Callable<X> {
     /// Get the id of this callable
     pub fn id(&self) -> CallableId {
         self.id
+    }
+
+    /// Whether this call site was compiled for the lambda `v`
+    pub fn is_for(&self, v: &Value) -> bool {
+        v.downcast_ref::<LambdaDef<GXRt<X>, X::UserEvent>>()
+            .is_some_and(|l| l.id == self.lambda)
     }
 
     /// Call the lambda with args
@@ -335,6 +344,7 @@ impl<X: GXExt> NamedCallable<X> {
         v: &'a Value,
     ) -> Result<Option<&'a Value>> {
         match self.fname.update(id, v) {
+            Some(v) if self.current.as_ref().is_some_and(|c| c.is_for(v)) => Ok(None),
             Some(v) => {
                 let callable = self.h.compile_callable(v.clone()).await?;
                 self.ids.insert(callable.expr);
@@ -839,6 +849,21 @@ impl<X: GXExt> GXHandle<X> {
         Ok(self
             .exec(|tx| ToGX::CompileCallable { id, rt: self.clone(), res: tx })
             .await??)
+    }
+
+    /// Point `current` at the lambda `v`, keeping the call site it already
+    /// has when `v` is the lambda it was compiled for. A reference to a
+    /// struct field fires with every update of the struct, so a handler
+    /// read out of a widget record arrives again and again unchanged.
+    pub async fn update_callable(
+        &self,
+        current: &mut Option<Callable<X>>,
+        v: Value,
+    ) -> Result<()> {
+        if current.as_ref().is_none_or(|c| !c.is_for(&v)) {
+            *current = Some(self.compile_callable(v).await?);
+        }
+        Ok(())
     }
 
     /// Compile a callable interface to a late bound function by name

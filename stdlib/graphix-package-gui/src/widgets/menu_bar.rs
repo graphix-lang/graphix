@@ -214,10 +214,10 @@ impl<X: GXExt> super::GuiWidget<X> for MenuBarW<X> {
                             .is_some();
                         if id == on_click.id {
                             on_click.last = Some(v.clone());
-                            *on_click_callable = Some(
-                                rt.block_on(self.gx.compile_callable(v.clone()))
-                                    .context("menu item on_click recompile")?,
-                            );
+                            rt.block_on(
+                                self.gx.update_callable(on_click_callable, v.clone()),
+                            )
+                            .context("menu item on_click recompile")?;
                         }
                     }
                     MenuItemKind::Divider => {}

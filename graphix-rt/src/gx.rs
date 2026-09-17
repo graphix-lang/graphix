@@ -915,7 +915,14 @@ impl<X: GXExt> GX<X> {
         self.callables.insert(cid, CallableInt { expr: eid, args });
         self.nodes.insert(eid, n);
         let env = self.ctx.env.clone();
-        Ok(Callable { expr: eid, rt, env, id: cid, typ: (*lb.typ).clone() })
+        Ok(Callable {
+            expr: eid,
+            rt,
+            env,
+            id: cid,
+            lambda: lb.id,
+            typ: (*lb.typ).clone(),
+        })
     }
 
     fn compile_ref(&mut self, rt: GXHandle<X>, id: BindId) -> Result<Ref<X>> {
