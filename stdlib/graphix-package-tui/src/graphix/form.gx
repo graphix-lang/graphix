@@ -17,6 +17,7 @@ let form = |
   let n = array::len(fields);
   let vals: Array<line_edit::State> = array::map(fields, |f: Field| line_edit::state(f.value));
   let focus = 0;
+  focus <- fields ~ 0;
   let handle = |e: input_handler::Event| -> [`Stop, `Continue] select e {
     `Key(k) => select k.kind {
       `Press => select k.code {
