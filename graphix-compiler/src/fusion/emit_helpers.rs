@@ -382,6 +382,32 @@ safe fn graphix_abort_set() {
     KERNEL_ABORT.with(|c| c.set(true))
 }
 
+/// A `$` or handler-less `?` site swallowing a fresh error: the same
+/// diagnostic the node-walk emits. `site` is the interned "origin at
+/// position" string; `(disc, payload)` is the error Value, borrowed.
+unsafe fn graphix_swallowed_error(
+    site: *const arcstr::ArcStr,
+    unhandled: u8,
+    disc: u64,
+    payload: u64,
+) {
+    // SAFETY: the words are a valid clean `Value`; viewed, never owned.
+    let tv = unsafe { crate::TagValue::from_raw(disc, payload) };
+    // SAFETY: the kernel's interned string outlives this invocation.
+    let site = unsafe { &*site };
+    tv.with_value(|v| {
+        if let Value::Error(e) = v {
+            if unhandled == 0 {
+                log::warn!("ignored error in {site} {e}")
+            } else {
+                log::error!("unhandled error in {site} {e}");
+                eprintln!("unhandled error in {site} {e}");
+            }
+        }
+    });
+    std::mem::forget(tv);
+}
+
 /// Raise a `?` site's error onto the invocation's delivery queue
 /// (`QOP_RAISES`). `(disc, payload)` is the error Value, borrowed: the
 /// queue takes a clone. `Kernel::update` drains the queue in order.

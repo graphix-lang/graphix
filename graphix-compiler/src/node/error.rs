@@ -14,12 +14,14 @@ use crate::{
     env::Env,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
-    fusion::emit::{BodyCx, CompiledExpr, emit_qop_node},
+    fusion::emit::{BodyCx, CompiledExpr, QopSink, emit_qop_node},
     typ::{Type, TypeRef},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
+use compact_str::format_compact;
+use cranelift_codegen::ir::Value as ClifValue;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
@@ -424,6 +426,12 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     }
 }
 
+/// The interned "origin at position" a fused `$` or handler-less `?`
+/// names when it logs a swallowed error.
+fn diagnostic_site(cx: &mut BodyCx, spec: &Expr) -> Result<ClifValue> {
+    cx.interned_str(&format_compact!("{} at {}", spec.ori, spec.pos).as_str().into())
+}
+
 /// A fused handler-ful `?` site: what the kernel's delivery drain needs
 /// to run [`deliver_error`] for an error raised there.
 #[derive(Debug)]
@@ -721,15 +729,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let handler = match self.handler.as_ref() {
-            None => None,
-            Some(handler) => Some(cx.interned_qop_site(QopSite {
+        let sink = match self.handler.as_ref() {
+            None => {
+                QopSink::Log { site: diagnostic_site(cx, &self.spec)?, unhandled: true }
+            }
+            Some(handler) => QopSink::Deliver(cx.interned_qop_site(QopSite {
                 handler: handler.clone(),
                 own_top: self.top_id,
                 spec: self.spec.clone(),
             })?),
         };
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, handler)
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, sink)
     }
 }
 
@@ -1010,7 +1020,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        // `$` has no handler, so no delivery
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, None)
+        let sink =
+            QopSink::Log { site: diagnostic_site(cx, &self.spec)?, unhandled: false };
+        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, sink)
     }
 }

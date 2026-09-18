@@ -516,7 +516,8 @@ node graph IS the IR — there is no parallel typed IR
   NaN`, below every number) so `Value` is map-key-able; checked arith
   (`+?` …) yields a catchable `ArithError`, unchecked wraps, integer
   div0 bottoms; indexing is bounds-checked through shared helpers on
-  both backends; swallowed-error diagnostics are node-walk-only (debug
+  both backends; `$` and handler-less `?` log a swallowed error from
+  both backends; unchecked-arith diagnostics are node-walk-only (debug
   with `--no-fusion`).
 - **Emit contracts** (`design/distributed_jit.md`): effects de-fuse,
   never silently skip; owned select-arm binds drop at every arm exit

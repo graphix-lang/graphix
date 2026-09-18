@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-5148a797.js";
+            window.path_to_searchindex_js = "../searchindex-e7eb307f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -305,12 +305,9 @@ nothing. This is a concise way of writing,</p>
 <pre><code class="language-graphix">might_fail(1, 2, 3)$
 </code></pre>
 <p>The <code>$</code> operator logs errors rather than silently discarding them, making it
-easier to debug issues while still allowing execution to continue.</p>
-<p>One caveat: the log message is produced by the interpreter. When the
-expression is compiled by the JIT (fusion is on by default), the error is
-dropped without a diagnostic — the resulting value is the same, but nothing
-is logged. If you’re debugging a swallowed error, run with <code>--no-fusion</code> to
-see the logged diagnostics.</p>
+easier to debug issues while still allowing execution to continue. The log
+line names the site and the error, and is the same whether the expression
+runs in the interpreter or in a JIT-compiled kernel.</p>
 
                     </main>
 

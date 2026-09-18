@@ -154,9 +154,11 @@ each was obvious in hindsight and invisible in advance.
    (`stmt_subtree_effect_free`, `flow.rs`) is conservative by
    construction — every CallSite counts as effectful — and a
    statement binds whatever its subtree binds. The error DIAGNOSTICS of
-   `$`, handler-less `?` and unchecked arith are not effects: the
-   node-walk logs when it swallows an error, a kernel produces the same
-   bottom silently (`--no-fusion` shows them).
+   `$`, handler-less `?` and unchecked arith are not effects. `$` and
+   handler-less `?` log the swallowed error from both engines (the
+   kernel through `graphix_swallowed_error`, against an interned
+   site string); unchecked arith logs from the node-walk only
+   (`--no-fusion` shows it).
 
 3. **First call is init.** A cross-kernel call site forces the callee's
    init view on its first call ever (the first-call words in the

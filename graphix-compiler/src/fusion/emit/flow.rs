@@ -38,8 +38,7 @@ use super::{
 
 /// True only when no node in the subtree could carry an effect.
 /// Every CallSite counts as effectful. Handler-less `?` and `$` are
-/// not effects: their diagnostics are node-walk-only, and their
-/// non-scalar error paths would abort the kernel.
+/// not effects: what they do with an error is a diagnostic.
 pub(super) fn stmt_subtree_effect_free<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     let mut ok = true;
     fusion::for_each_node(node, &mut |n| {
@@ -497,30 +496,47 @@ fn type_always_error(t: &Type) -> bool {
     }
 }
 
-/// The `?`/`$` bad path: with a catch site, raise a deliverable
-/// (real, fresh) error onto the invocation's queue, then drop the
-/// error if the inner owns it (a borrowed inner is dropped by its
-/// env slot).
+/// Where a `?`/`$` site's fresh error goes.
+#[derive(Clone, Copy)]
+pub(crate) enum QopSink {
+    /// A handler-ful `?`: raised onto the invocation's delivery queue,
+    /// keyed by the interned `QopSite`.
+    Deliver(cranelift_codegen::ir::Value),
+    /// `$` (or a handler-less `?` when `unhandled`): logged against the
+    /// interned "origin at position" string, then dropped.
+    Log { site: cranelift_codegen::ir::Value, unhandled: bool },
+}
+
+/// The `?`/`$` bad path: a deliverable (real, fresh) error goes to its
+/// sink, then the error is dropped if the inner owns it (a borrowed
+/// inner is dropped by its env slot).
 fn emit_qop_error_disposal(
     cx: &mut BodyCx,
-    site: Option<cranelift_codegen::ir::Value>,
+    sink: QopSink,
     deliverable: cranelift_codegen::ir::Value,
     clean: cranelift_codegen::ir::Value,
     payload: cranelift_codegen::ir::Value,
     inner_owned: bool,
 ) -> Result<()> {
-    if let Some(site) = site {
-        let raise_bl = cx.b.create_block();
-        let cont_bl = cx.b.create_block();
-        cx.b.ins().brif(deliverable, raise_bl, &[], cont_bl, &[]);
-        cx.b.switch_to_block(raise_bl);
-        cx.b.seal_block(raise_bl);
-        let raise = cx.helper("graphix_qop_raise")?;
-        cx.b.ins().call(raise, &[site, clean, payload]);
-        cx.b.ins().jump(cont_bl, &[]);
-        cx.b.switch_to_block(cont_bl);
-        cx.b.seal_block(cont_bl);
+    let sink_bl = cx.b.create_block();
+    let cont_bl = cx.b.create_block();
+    cx.b.ins().brif(deliverable, sink_bl, &[], cont_bl, &[]);
+    cx.b.switch_to_block(sink_bl);
+    cx.b.seal_block(sink_bl);
+    match sink {
+        QopSink::Deliver(site) => {
+            let raise = cx.helper("graphix_qop_raise")?;
+            cx.b.ins().call(raise, &[site, clean, payload]);
+        }
+        QopSink::Log { site, unhandled } => {
+            let log = cx.helper("graphix_swallowed_error")?;
+            let unhandled = cx.b.ins().iconst(types::I8, unhandled as i64);
+            cx.b.ins().call(log, &[site, unhandled, clean, payload]);
+        }
     }
+    cx.b.ins().jump(cont_bl, &[]);
+    cx.b.switch_to_block(cont_bl);
+    cx.b.seal_block(cont_bl);
     if inner_owned {
         let value_drop = cx.helper("graphix_value_drop")?;
         cx.b.ins().call(value_drop, &[clean, payload]);
@@ -528,13 +544,12 @@ fn emit_qop_error_disposal(
     Ok(())
 }
 
-/// `?` over an inner that is always an error: raise it to the handler
-/// when it is fresh; the result is a fresh bottom, stale iff the inner
-/// was.
+/// `?`/`$` over an inner that is always an error: a fresh one goes to
+/// its sink; the result is a fresh bottom, stale iff the inner was.
 fn emit_qop_always_error<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
-    site: cranelift_codegen::ir::Value,
+    sink: QopSink,
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
     let clean = clean_disc(cx.b, cv.disc);
@@ -542,7 +557,7 @@ fn emit_qop_always_error<R: Rt, E: UserEvent>(
     let fresh = is_fresh(cx.b, cv.disc);
     let deliverable = cx.b.ins().band(is_err, fresh);
     let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
-    emit_qop_error_disposal(cx, Some(site), deliverable, clean, cv.payload, inner_owned)?;
+    emit_qop_error_disposal(cx, sink, deliverable, clean, cv.payload, inner_owned)?;
     let bottom = super::nodes::emit_bottom_of_kind(cx, AbiKind::Value)?;
     let stale_bit = cx.b.ins().band_imm(cv.disc, STALE);
     let disc = cx.b.ins().bor(bottom.disc, stale_bit);
@@ -559,7 +574,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     _spec_id: ExprId,
     inner: &Node<R, E>,
     result_typ: &Type,
-    handler: Option<cranelift_codegen::ir::Value>,
+    sink: QopSink,
 ) -> Result<CompiledExpr> {
     // Normalized, in lockstep with the discovery-side freeze.
     let Some(inner_typ) = kernel_abi::freeze_for_abi_normalized(inner.typ()) else {
@@ -571,7 +586,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     if kernel_abi::nullable_inner(&inner_typ).is_none() {
         // `nullable_inner` only detects a `[T, Error<E>]` union.
         if !type_may_error(&inner_typ) {
-            // No error possible — passthrough; the handler (if any) never fires.
+            // No error possible — passthrough; the sink never fires.
             return inner.emit_clif(cx);
         }
         if !type_always_error(&inner_typ) {
@@ -580,15 +595,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
                  but is not a [T, Error<E>] union — node-walk handles it"
             ));
         }
-        // A bare `Error<T>` inner is always an error: its diagnostics
-        // are node-walk-only, its delivery is not.
-        let Some(site) = handler else {
-            return Err(anyhow!(
-                "emit_clif: `?`/`$` inner type {inner_typ:?} is always an error \
-                 and has no handler — node-walk handles it"
-            ));
-        };
-        return emit_qop_always_error(cx, inner, site);
+        return emit_qop_always_error(cx, inner, sink);
     }
     let Some(success_typ) = kernel_abi::freeze_for_abi_normalized(result_typ) else {
         return Err(anyhow!(
@@ -612,25 +619,15 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
         // disposed or it leaks once per cycle.
         Some(AbiKind::Scalar(p)) => {
             let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
-            if inner_owned || handler.is_some() {
-                // Deliver to the handler or drop the owned error.
-                let err_block = cx.b.create_block();
-                let after = cx.b.create_block();
-                cx.b.ins().brif(is_err, err_block, &[], after, &[]);
-                cx.b.switch_to_block(err_block);
-                cx.b.seal_block(err_block);
-                emit_qop_error_disposal(
-                    cx,
-                    handler,
-                    deliverable,
-                    clean,
-                    payload,
-                    inner_owned,
-                )?;
-                cx.b.ins().jump(after, &[]);
-                cx.b.switch_to_block(after);
-                cx.b.seal_block(after);
-            }
+            let err_block = cx.b.create_block();
+            let after = cx.b.create_block();
+            cx.b.ins().brif(is_err, err_block, &[], after, &[]);
+            cx.b.switch_to_block(err_block);
+            cx.b.seal_block(err_block);
+            emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
+            cx.b.ins().jump(after, &[]);
+            cx.b.switch_to_block(after);
+            cx.b.seal_block(after);
             let value = cast_u64_to_prim(cx.b, payload, p);
             let base = scalar_disc(cx.b, p);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
@@ -658,14 +655,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.ins().brif(bad, bad_bl, &[], continue_block, &[]);
             cx.b.switch_to_block(bad_bl);
             cx.b.seal_block(bad_bl);
-            emit_qop_error_disposal(
-                cx,
-                handler,
-                deliverable,
-                clean,
-                payload,
-                inner_owned,
-            )?;
+            emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
             // The inner's STALE carries; TAINT marks no-value.
             let ph_helper = if is_string {
                 cx.helper("graphix_arcstr_empty")?
@@ -726,14 +716,7 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             cx.b.ins().brif(is_err, bad_bl, &[], continue_block, &[]);
             cx.b.switch_to_block(bad_bl);
             cx.b.seal_block(bad_bl);
-            emit_qop_error_disposal(
-                cx,
-                handler,
-                deliverable,
-                clean,
-                payload,
-                inner_owned,
-            )?;
+            emit_qop_error_disposal(cx, sink, deliverable, clean, payload, inner_owned)?;
             // Tainted Value::Null placeholder (helper-safe by
             // construction); the inner's STALE carries.
             let tainted_base = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
