@@ -141,6 +141,19 @@ let f = |@args: i64| args         // variadic (builtins only)
 Calls dispatch statically. A HOF nested under its own callback is a
 fresh instance, not recursion.
 
+## Annotations
+
+The checker infers nearly everything; annotate only what it names.
+It needs two things. A parameter whose fields you read and whose type
+no call fixes: a top-level function, a handler handed to a widget
+(`|e: Event|`). A callback passed to `array::map`/`find`/`fold` over a
+typed array needs none. And a `let` whose initial value is narrower
+than its writers: `let notice: [string, null] = null`, `let go: Any =
+never()` with writers of two types, `let verify: Any = known` written
+by a key. A `let` over a call, a select or a seq needs nothing, and a
+lambda's return type is never needed. To find the set: strip, `--check`,
+restore what it names.
+
 ## Select
 
 The only branching construct. Arms are consulted top down, structure
