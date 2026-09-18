@@ -155,8 +155,12 @@ never()` with writers of two types, `let verify: Any = known` written
 by a key. A fold's accumulator is the type of its init, so
 `array::fold(xs, null, |acc, x| ..)` makes `acc` null: annotate the init
 (`let init: [i64, null] = null`), never the callback. A `let` over a
-call, a select or a seq needs nothing, and a lambda's return type is
-never needed. To find the set: strip, `--check`, restore what it names.
+call, a select or a seq needs nothing. A lambda's return type is needed
+in two places only: a function declared in the `.gxi` keeps its `-> T`
+in the `.gx` (an inferred return does not cross modules), and a
+function with a type variable in its signature keeps it when a caller
+reads a field of the result. To find the set: strip, `--check`, restore
+what it names.
 
 ## Select
 
@@ -301,6 +305,9 @@ SYNTAX: typed bottom, args stay live; an unannotated `let` over
 `opt` (over `['a, null]`): `or_never` — `f(opt::or_never(x ~ maybe))`
 replaces the `select .. { null as _ => never(), v => f(v) }` ladder —
 `is_some is_none or_default or and map flat_map filter ok_or zip`.
+`or_never` is a value, not a gate: `f(k ~ t, opt::or_never(sel))` fires
+on `k` while `sel` is null, with the stale bound value. When another
+argument carries the trigger, keep the select; its arm sleeps the call.
 
 `array`: map filter filter_map fold flatten find find_map concat push
 window(#n, trig, v) len iter iterq sort enumerate zip. `map`, `str`
@@ -375,6 +382,10 @@ let result = seqq go { let r = fetch(go); publish(path, r); r }   // ceremony
   `net::subscribe`, not `subscribe`.
 - Slice patterns bind `[init.., x]` (all but last, last); List patterns
   have no suffix form.
+- An `[] => ..` arm over a scrutinee typed `[Array<'a>, null]` binds `'a`
+  to null and every call then mismatches (compiler bug, 2026-09-18);
+  over a bare `Array<'a>` it is fine. Until fixed, write the arm as a
+  guard: `rows if array::len(rows) == 0 => null`.
 - A type test over an untyped parameter binds it: `|x| select x { null
   as _ => 0, v => v }` makes `x` null and the second arm dead. Annotate
   the parameter, `|x: [i64, null]|`. Arms of different types are not the
