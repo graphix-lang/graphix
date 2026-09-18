@@ -31,7 +31,6 @@ const BIND_IS_SCOPED: &str = r#"{
   c
 }"#;
 
-// Refused by the parser: a trigger has no self to recurse on.
 const BIND_REC_REFUSED: &str = r#"{
   let go = 1;
   seq let rec c = go { c }
@@ -49,7 +48,7 @@ async fn seq_let_binds_the_trigger() -> Result<()> {
         assert_eq!(v, Value::I64(expected), "{src}");
         ctx.shutdown().await;
     }
-    for (src, refusal) in [(BIND_IS_SCOPED, "c"), (BIND_REC_REFUSED, "parse error")] {
+    for (src, refusal) in [(BIND_IS_SCOPED, "c"), (BIND_REC_REFUSED, "cannot be rec")] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => format!("{e:#}"),
             Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),

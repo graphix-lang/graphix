@@ -52,11 +52,9 @@ impl Rewrite<'_> {
 
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     match &spec.kind {
-        ExprKind::Seq {
-            queued,
-            trigger: Some(SeqTrigger::Bind { pattern, typ, value }),
-            body,
-        } => desugar_let(spec, *queued, pattern, typ, value, body),
+        ExprKind::Seq { queued, trigger: Some(SeqTrigger::Bind(b)), body } => {
+            desugar_let(spec, *queued, b, body)
+        }
         ExprKind::Seq { queued: true, .. } => desugar_queued(spec, env, scope),
         _ => desugar_plain(spec, None),
     }
@@ -69,12 +67,15 @@ pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
 fn desugar_let(
     spec: &Expr,
     queued: bool,
-    pattern: &StructurePattern,
-    typ: &Option<Type>,
-    value: &Expr,
+    b: &BindExpr,
     body: &Arc<[Expr]>,
 ) -> Result<Expr> {
     let pos = spec.pos;
+    if b.rec {
+        return Err(anyhow!("a seq trigger cannot be rec: it has no self to recurse on")
+            .context(ErrorContext(spec.clone())));
+    }
+    let BindExpr { pattern, typ, value, .. } = b;
     let name = match pattern {
         StructurePattern::Bind(n) => n.clone(),
         _ => ArcStr::from(format_compact!("seqbind{}", spec.id.inner()).as_str()),

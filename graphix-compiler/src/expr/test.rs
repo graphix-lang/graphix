@@ -1448,11 +1448,19 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                 any::<bool>(),
                 option::of(prop_oneof![
                     reference().prop_map(|e| SeqTrigger::Expr(Arc::new(e))),
-                    (reference(), structure_pattern_no_or(), option::of(typexp()))
-                        .prop_map(|(value, pattern, typ)| SeqTrigger::Bind {
-                            pattern,
-                            typ,
-                            value: Arc::new(value)
+                    (
+                        reference(),
+                        any::<bool>(),
+                        structure_pattern_no_or(),
+                        option::of(typexp())
+                    )
+                        .prop_map(|(value, rec, pattern, typ)| {
+                            SeqTrigger::Bind(Arc::new(BindExpr {
+                                rec,
+                                pattern,
+                                typ,
+                                value,
+                            }))
                         }),
                 ]),
                 collection::vec(seq_item!(inner.clone()), 1..5),
@@ -2139,13 +2147,11 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             let trig = match (t0, t1) {
                 (None, None) => true,
                 (Some(SeqTrigger::Expr(a)), Some(SeqTrigger::Expr(b))) => check(a, b),
-                (
-                    Some(SeqTrigger::Bind { pattern: p0, typ: typ0, value: v0 }),
-                    Some(SeqTrigger::Bind { pattern: p1, typ: typ1, value: v1 }),
-                ) => {
-                    check_structure_pattern(p0, p1)
-                        && check_type_opt(typ0, typ1)
-                        && check(v0, v1)
+                (Some(SeqTrigger::Bind(b0)), Some(SeqTrigger::Bind(b1))) => {
+                    b0.rec == b1.rec
+                        && check_structure_pattern(&b0.pattern, &b1.pattern)
+                        && check_type_opt(&b0.typ, &b1.typ)
+                        && check(&b0.value, &b1.value)
                 }
                 _ => false,
             };

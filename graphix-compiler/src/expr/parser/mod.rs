@@ -2,7 +2,7 @@ use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
         ParserContext, Pattern, SelectExpr, SeqTrigger, Sig, SigItem, StructExpr,
-        StructWithExpr, StructurePattern, TryWithExpr, set_origin,
+        StructWithExpr, TryWithExpr, set_origin,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -560,12 +560,14 @@ where
         })
 }
 
-/// `let [rec] pattern[: type] =`, the head of a binding.
-fn let_head<I>() -> impl Parser<I, Output = (bool, StructurePattern, Option<Type>)>
+/// `let [rec] pattern[: type] = value`, with the value read by `value`:
+/// the full `expr()` for a binding, the head form for a seq trigger.
+fn letbind_with<I, P>(val: P) -> impl Parser<I, Output = BindExpr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
+    P: Parser<I, Output = Expr>,
 {
     attempt(string("let").skip(spaces1()))
         .with((
@@ -581,6 +583,8 @@ where
             spaces().with(optional(token(':').with(typ()))),
         ))
         .skip(sptoken('='))
+        .and(val)
+        .map(|((rec, pattern, typ), value)| BindExpr { rec, pattern, typ, value })
 }
 
 pub(super) fn letbind<I>() -> impl Parser<I, Output = Expr>
@@ -589,9 +593,8 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), let_head(), expr()).map(|(pos, (rec, pattern, typ), value)| {
-        ExprKind::Bind(Arc::new(BindExpr { rec, pattern, typ, value })).to_expr(pos)
-    })
+    (position(), letbind_with(expr()))
+        .map(|(pos, b)| ExprKind::Bind(Arc::new(b)).to_expr(pos))
 }
 
 fn connect<I>() -> impl Parser<I, Output = Expr>
@@ -811,10 +814,8 @@ where
         )),
         spaces(),
         optional(attempt(not_followed_by(token('{')).with(choice((
-            (let_head(), arithexp::arith(false)).map(|((rec, pattern, typ), trig)| {
-                (rec, SeqTrigger::Bind { pattern, typ, value: Arc::new(trig) })
-            }),
-            arithexp::arith(false).map(|e| (false, SeqTrigger::Expr(Arc::new(e)))),
+            letbind_with(arithexp::arith(false)).map(|b| SeqTrigger::Bind(Arc::new(b))),
+            arithexp::arith(false).map(|e| SeqTrigger::Expr(Arc::new(e))),
         ))))),
         seq_stmts(),
     )
@@ -823,16 +824,10 @@ where
                 _,
                 _,
                 _,
-                Option<(bool, SeqTrigger)>,
+                Option<SeqTrigger>,
                 LPooled<Vec<Expr>>,
             )| {
-                let (rec, trigger) = match trigger {
-                    Some((rec, t)) => (rec, Some(t)),
-                    None => (false, None),
-                };
-                if rec {
-                    unexpected_any("a seq trigger cannot be rec").left()
-                } else if body.is_empty()
+                if body.is_empty()
                     || (body.len() == 1 && matches!(body[0].kind, ExprKind::NoOp))
                 {
                     unexpected_any("a seq block must contain at least one step").left()

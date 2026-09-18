@@ -332,30 +332,27 @@ pub struct BindExpr {
 #[pack(unwrapped)]
 pub enum SeqTrigger {
     Expr(Arc<Expr>),
-    /// `let pattern[: typ] = value`
-    Bind {
-        pattern: StructurePattern,
-        typ: Option<Type>,
-        value: Arc<Expr>,
-    },
+    /// `let pattern[: typ] = value`; `rec` is refused at lowering
+    Bind(Arc<BindExpr>),
 }
 
 impl SeqTrigger {
     pub fn expr(&self) -> &Expr {
         match self {
             SeqTrigger::Expr(e) => e,
-            SeqTrigger::Bind { value, .. } => value,
+            SeqTrigger::Bind(b) => &b.value,
         }
     }
 
     pub fn map(&self, f: impl FnOnce(&Expr) -> Expr) -> SeqTrigger {
         match self {
             SeqTrigger::Expr(e) => SeqTrigger::Expr(Arc::new(f(e))),
-            SeqTrigger::Bind { pattern, typ, value } => SeqTrigger::Bind {
-                pattern: pattern.clone(),
-                typ: typ.clone(),
-                value: Arc::new(f(value)),
-            },
+            SeqTrigger::Bind(b) => SeqTrigger::Bind(Arc::new(BindExpr {
+                rec: b.rec,
+                pattern: b.pattern.clone(),
+                typ: b.typ.clone(),
+                value: f(&b.value),
+            })),
         }
     }
 }

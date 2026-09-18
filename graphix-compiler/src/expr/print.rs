@@ -3,8 +3,8 @@ use crate::{
     expr::{
         ApplyExpr, Attr, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind, ImplExpr,
         LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqTrigger, SigItem, SigKind,
-        StructExpr, StructWithExpr, StructurePattern, TraitExpr, TraitMethod,
-        TypeDefBody, TypeDefExpr, UseItem, parser,
+        StructExpr, StructWithExpr, TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr,
+        UseItem, parser,
     },
     typ::Type,
 };
@@ -16,14 +16,11 @@ use std::fmt::{self, Formatter, Write};
 
 /// The `let pattern[: type] = ` of a bound seq trigger; the value
 /// follows under the trigger's own parenthesization.
-fn write_seq_let(
-    f: &mut impl Write,
-    pattern: &StructurePattern,
-    typ: &Option<Type>,
-) -> fmt::Result {
-    match typ {
-        None => write!(f, "let {pattern} = "),
-        Some(typ) => write!(f, "let {pattern}: {typ} = "),
+fn write_seq_let(f: &mut impl Write, b: &BindExpr) -> fmt::Result {
+    let rec = if b.rec { " rec" } else { "" };
+    match &b.typ {
+        None => write!(f, "let{rec} {} = ", b.pattern),
+        Some(typ) => write!(f, "let{rec} {}: {typ} = ", b.pattern),
     }
 }
 
@@ -982,8 +979,8 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Seq { queued, trigger, body } => {
                 write!(buf, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
-                    if let SeqTrigger::Bind { pattern, typ, .. } = t {
-                        write_seq_let(buf, pattern, typ)?;
+                    if let SeqTrigger::Bind(b) = t {
+                        write_seq_let(buf, b)?;
                     }
                     let t = t.expr();
                     let parens = trigger_needs_parens(t);
@@ -1388,8 +1385,8 @@ impl ExprKind {
             ExprKind::Seq { queued, trigger, body } => {
                 write!(f, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
-                    if let SeqTrigger::Bind { pattern, typ, .. } = t {
-                        write_seq_let(f, pattern, typ)?;
+                    if let SeqTrigger::Bind(b) = t {
+                        write_seq_let(f, b)?;
                     }
                     let t = t.expr();
                     if trigger_needs_parens(t) {
