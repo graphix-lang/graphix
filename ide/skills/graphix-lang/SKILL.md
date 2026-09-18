@@ -152,7 +152,11 @@ no call fixes: a top-level function, a handler handed to a widget
 typed array needs none. And a `let` whose initial value is narrower
 than its writers: `let notice: [string, null] = null`, `let go: Any =
 never()` with writers of two types, `let verify: Any = known` written
-by a key. A fold's accumulator is the type of its init, so
+by a key. An array literal of records whose variant field differs
+per element (`[{act: `A, ..}, {act: `B, ..}]`) is typed as a union of
+record types, not one record with a union field, so it keeps its
+element type (`let choices: Array<Choice> = [..]`) if a field is read
+through an index. A fold's accumulator is the type of its init, so
 `array::fold(xs, null, |acc, x| ..)` makes `acc` null: annotate the init
 (`let init: [i64, null] = null`), never the callback. A `let` over a
 call, a select or a seq needs nothing. A lambda's return type is needed
