@@ -271,20 +271,18 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             cx.b.ins().brif(bad, bad_bl, &[], ok_bl, &[]);
             cx.b.switch_to_block(bad_bl);
             cx.b.seal_block(bad_bl);
-            // A shape-mismatched (untainted) result still owns the
-            // returned Value: warn and drop it. A bottom's placeholder
-            // pair owns nothing.
+            // An untainted result of the wrong shape is an invariant
+            // violation; the helper does not return. A bottom's
+            // placeholder pair owns nothing and passes.
             {
                 let untainted = cx.b.ins().icmp_imm(IntCC::Equal, t, 0);
-                let drop_bl = cx.b.create_block();
+                let bad_shape_bl = cx.b.create_block();
                 let cont_bl = cx.b.create_block();
-                cx.b.ins().brif(untainted, drop_bl, &[], cont_bl, &[]);
-                cx.b.switch_to_block(drop_bl);
-                cx.b.seal_block(drop_bl);
-                let warn_h = cx.helper("graphix_shape_mismatch_warn")?;
-                cx.b.ins().call(warn_h, &[raw0]);
-                let val_drop = cx.helper("graphix_value_drop")?;
-                cx.b.ins().call(val_drop, &[raw0, raw1]);
+                cx.b.ins().brif(untainted, bad_shape_bl, &[], cont_bl, &[]);
+                cx.b.switch_to_block(bad_shape_bl);
+                cx.b.seal_block(bad_shape_bl);
+                let mismatch_h = cx.helper("graphix_shape_mismatch")?;
+                cx.b.ins().call(mismatch_h, &[raw0]);
                 cx.b.ins().jump(cont_bl, &[]);
                 cx.b.switch_to_block(cont_bl);
                 cx.b.seal_block(cont_bl);

@@ -260,14 +260,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 let ptag = param_tags[i];
                 let flag = if ptag.is_fired() { 0 } else { stale };
                 let bflag = taint | if ptag.triggers() { 0 } else { stale };
-                let mismatch = |v: &Value| {
-                    log::error!(
-                        "kernel param `{}`: runtime {v:?} doesn't match the \
-                         compiled {:?} slot (typechecker static/dynamic \
-                         mismatch) — treating as bottom",
-                        p.name,
-                        p.kind,
-                    );
+                // The typechecker and the runtime disagree about this slot:
+                // a compiler bug, not a program's, and nothing downstream
+                // could be trusted past it.
+                let mismatch = |v: &Value| -> ! {
+                    panic!(
+                        "kernel param `{}`: runtime {v:?} does not match the \
+                         compiled {:?} slot",
+                        p.name, p.kind,
+                    )
                 };
                 match (&p.kind, param_opts[i].as_ref()) {
                     (ParamKind::Scalar(prim), Some(v)) => {
@@ -276,11 +277,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                                 let disc = prim_to_value_disc(*prim) as u64 | flag;
                                 (disc, payload, Value::Null)
                             }
-                            None => {
-                                mismatch(v);
-                                let disc = prim_to_value_disc(*prim) as u64 | taint;
-                                (disc, 0, Value::Null)
-                            }
+                            None => mismatch(v),
                         }
                     }
                     (ParamKind::Scalar(prim), None) => {
@@ -295,10 +292,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                     ) => {
                         let staged = match v {
                             Some(v @ Value::Array(_)) => Some(v.clone()),
-                            Some(v) => {
-                                mismatch(v);
-                                None
-                            }
+                            Some(v) => mismatch(v),
                             None => None,
                         };
                         match staged {
@@ -316,10 +310,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                     (ParamKind::String, v) => {
                         let staged = match v {
                             Some(v @ Value::String(_)) => Some(v.clone()),
-                            Some(v) => {
-                                mismatch(v);
-                                None
-                            }
+                            Some(v) => mismatch(v),
                             None => None,
                         };
                         match staged {

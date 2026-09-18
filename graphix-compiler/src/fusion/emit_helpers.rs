@@ -367,14 +367,15 @@ safe fn graphix_abort_peek() -> u8 {
     KERNEL_ABORT.with(|c| if c.get() { 1 } else { 0 })
 }
 
-/// Logged on a fused call's return-shape mismatch branch, where the
-/// wrong-shaped Value is dropped as bottom.
-safe fn graphix_shape_mismatch_warn(got_disc: u64) {
-    log::warn!(
-        "fused call returned a Value whose shape (disc {got_disc:#x}) doesn't \
-         match its declared return type — dropped as bottom (a stdlib builtin \
-         violating its declared type, or a compiler bug)"
-    );
+/// A fused call returned a Value whose shape is not its declared return
+/// type: a builtin violating its signature, or a compiler bug. Either
+/// way an invariant is gone, and a panic here aborts (the helper ABI
+/// cannot unwind), which is what the fuzzer records as a crash.
+safe fn graphix_shape_mismatch(got_disc: u64) {
+    panic!(
+        "fused call returned a Value whose shape (disc {got_disc:#x}) does not \
+         match its declared return type"
+    )
 }
 
 /// Set `KERNEL_ABORT`; emitted on every whole-kernel abort path.
