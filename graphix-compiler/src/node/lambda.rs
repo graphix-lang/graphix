@@ -1274,7 +1274,7 @@ pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
             typ: Type::empty_tvar(),
             pos: SourcePosition::default(),
             ori: Arc::new(Origin::default()),
-            pattern: false,
+            pattern: None,
             facet: None,
         },
     );
@@ -1411,7 +1411,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 typ: Type::empty_tvar(),
                 pos: SourcePosition::default(),
                 ori: Arc::new(Origin::default()),
-                pattern: false,
+                pattern: None,
                 facet: None,
             },
         );

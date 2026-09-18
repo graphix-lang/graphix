@@ -40,9 +40,12 @@ pub struct Bind {
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
-    /// Bound by a select arm's pattern: a facet of the scrutinee
-    /// delivery, so no nested select tracks it for wake catch-up.
-    pub pattern: bool,
+    /// Bound by a select arm's pattern, with the inputs that select's
+    /// scrutinee reads (closed over enclosing pattern binds): a facet
+    /// of the scrutinee delivery, so no nested select tracks it for
+    /// wake catch-up, and an arm that reads it consumes those inputs'
+    /// fires.
+    pub pattern: Option<Arc<[BindId]>>,
     /// Bound by a destructuring `let`: the group's representative bind,
     /// which wake catch-up tracks as one input for all siblings.
     pub facet: Option<BindId>,
@@ -65,7 +68,7 @@ impl Clone for Bind {
             typ: self.typ.clone(),
             pos: self.pos,
             ori: self.ori.clone(),
-            pattern: self.pattern,
+            pattern: self.pattern.clone(),
             facet: self.facet,
         }
     }
@@ -1475,7 +1478,7 @@ impl Env {
             typ,
             pos,
             ori,
-            pattern: false,
+            pattern: None,
             facet: None,
         });
         if self.lsp_mode {
@@ -1486,15 +1489,23 @@ impl Env {
         self.by_id.get_mut_cow(id).unwrap()
     }
 
-    /// Record that `id` is bound by a select arm's pattern.
-    pub fn mark_pattern_bind(&mut self, id: BindId) {
+    /// Record that `id` is bound by a select arm's pattern, over a
+    /// scrutinee that reads `inputs`.
+    pub fn mark_pattern_bind(&mut self, id: BindId, inputs: Arc<[BindId]>) {
         if let Some(b) = self.by_id.get_mut_cow(&id) {
-            b.pattern = true;
+            b.pattern = Some(inputs);
         }
     }
 
     pub fn is_pattern_bind(&self, id: BindId) -> bool {
-        self.by_id.get(&id).is_some_and(|b| b.pattern)
+        self.by_id.get(&id).is_some_and(|b| b.pattern.is_some())
+    }
+
+    /// The inputs a pattern bind is a facet of: what its select's
+    /// scrutinee reads, closed over enclosing pattern binds. `None`
+    /// for any other bind.
+    pub fn pattern_inputs(&self, id: BindId) -> Option<&[BindId]> {
+        self.by_id.get(&id).and_then(|b| b.pattern.as_deref())
     }
 
     /// Record that `id` is one of a destructuring `let`'s siblings,

@@ -424,6 +424,92 @@ async fn arm_wake_does_not_redeliver_the_key_to_the_woken_callee() -> Result<()>
     bail!("the second Enter never counted (last={last:?})")
 }
 
+/// The dispatcher hands one callee the pattern bind `ev` and the other
+/// the formal `e` itself. `ev` is a facet of `e`, so the landing arm's
+/// read of `ev` consumes `e`'s fire, and the panels callee woken by the
+/// screen change does not catch the key up.
+const ALIAS: &str = r#"
+let screen: [`Landing, `Panels] = `Landing;
+let opened = 0;
+let pan_handle = |e: string| -> i64 select e {
+  "enter" => { opened <- e ~ opened + 1; 1 },
+  _ => 0
+};
+let land_handle = |e: string| -> i64 select e {
+  "enter" => { screen <- e ~ `Panels; 1 },
+  _ => 0
+};
+let handle = |e: string| -> i64 select e {
+  "" => 0,
+  ev => select screen {
+    `Landing => land_handle(ev),
+    `Panels => pan_handle(e)
+  }
+};
+let result = opened
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alias_read_consumes_the_formals_fire() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(100);
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(ALIAS)),
+    )]);
+    let resolver = VfsResolver::new(tbl);
+    let ctx =
+        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
+    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
+    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let expr_id = compiled.exprs.last().context("no exprs")?.id;
+    let handle_l = {
+        let r = gx.compile_ref(find_bind_id(&compiled.env, "test::handle")?).await?;
+        gx.compile_callable(r.last.clone().context("no handle")?).await?
+    };
+    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
+    for _ in 0..3 {
+        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+    }
+    handle_l.call(ValArray::from_iter_exact(["enter".into()].into_iter())).await?;
+    let deadline = tokio::time::sleep(Duration::from_secs(30));
+    tokio::pin!(deadline);
+    let mut last = None;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => {
+                    for ev in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = ev {
+                            if id == expr_id {
+                                last = Some(v.clone());
+                                if v == Value::I64(2) {
+                                    bail!("the woken callee caught up a key its alias had consumed");
+                                }
+                            }
+                        }
+                    }
+                    if last == Some(Value::I64(1)) {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        while let Ok(mut b) = rx.try_recv() {
+                            for ev in b.drain(..) {
+                                if let GXEvent::Updated(id, v) = ev {
+                                    if id == expr_id && v == Value::I64(2) {
+                                        bail!("the woken callee caught up the key late");
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    bail!("the second Enter never counted (last={last:?})")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
     let (tx, _rx) = mpsc::channel(100);

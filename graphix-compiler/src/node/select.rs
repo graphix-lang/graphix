@@ -21,8 +21,10 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Typ;
 use netidx_value::Value;
+use nohash::IntSet;
 use poolshark::local::LPooled;
 use std::sync::atomic::Ordering;
+use triomphe::Arc;
 
 atomic_id!(SelectId);
 
@@ -219,6 +221,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         arms: &[(Pattern, Expr)],
     ) -> Result<Node<R, E>> {
         let arg = Held::new(compile(ctx, flags, arg.clone(), scope, top_id)?);
+        let inputs = scrutinee_inputs(&ctx.env, &arg.node);
         let arms = arms
             .iter()
             .map(|(pat, spec)| {
@@ -233,7 +236,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     spec.ori.clone(),
                 )
                 .with_context(|| format!("in select at {}", spec.pos))?;
-                pat.structure_predicate.ids(&mut |id| ctx.env.mark_pattern_bind(id));
+                pat.structure_predicate
+                    .ids(&mut |id| ctx.env.mark_pattern_bind(id, inputs.clone()));
                 let n = compile(ctx, flags, spec.clone(), &scope, top_id)?;
                 Ok((pat, n))
             })
@@ -253,6 +257,27 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arm_facts: None,
         }))
     }
+}
+
+/// The inputs a scrutinee reads, for the pattern binds it delivers:
+/// its free refs, with a pattern bind among them standing for its own
+/// inputs.
+fn scrutinee_inputs<R: Rt, E: UserEvent>(
+    env: &crate::env::Env,
+    arg: &Node<R, E>,
+) -> Arc<[BindId]> {
+    let mut r = Refs::default();
+    arg.refs(&mut r);
+    let mut out: LPooled<IntSet<BindId>> = LPooled::take();
+    for id in r.refed.difference(&r.bound) {
+        match env.pattern_inputs(*id) {
+            Some(inputs) => out.extend(inputs.iter().copied()),
+            None => {
+                out.insert(*id);
+            }
+        }
+    }
+    Arc::from_iter(out.drain())
 }
 
 /// Collect every array/list member of `t` (through refs, bound tvars
@@ -334,6 +359,10 @@ struct TrackedFires {
     /// group's representative, `Env::facet_of`). Refreshed at each
     /// deselect, when the arm's subtree is fully materialized.
     per_arm: Vec<nohash::IntMap<BindId, smallvec::SmallVec<[BindId; 2]>>>,
+    /// Per arm: the inputs the pattern binds the body reads are facets
+    /// of. Reading a facet consumes the input's fire; the facet itself
+    /// is never delivered.
+    consumes: Vec<nohash::IntSet<BindId>>,
     /// The union of `per_arm`'s keys.
     all: nohash::IntSet<BindId>,
     /// Sound fires no arm evaluation has consumed yet.
@@ -345,7 +374,8 @@ impl TrackedFires {
         env: &crate::env::Env,
         pat: &PatternNode<R, E>,
         arm: &Node<R, E>,
-    ) -> nohash::IntMap<BindId, smallvec::SmallVec<[BindId; 2]>> {
+    ) -> (nohash::IntMap<BindId, smallvec::SmallVec<[BindId; 2]>>, nohash::IntSet<BindId>)
+    {
         let mut r = Refs::default();
         arm.refs(&mut r);
         pat.structure_predicate.ids(&mut |id| {
@@ -353,22 +383,26 @@ impl TrackedFires {
         });
         let mut out: nohash::IntMap<BindId, smallvec::SmallVec<[BindId; 2]>> =
             nohash::IntMap::default();
+        let mut consumes = nohash::IntSet::default();
         for id in r.refed.difference(&r.bound).copied() {
-            if !env.is_pattern_bind(id) {
-                out.entry(env.facet_of(id)).or_default().push(id);
+            match env.pattern_inputs(id) {
+                None => out.entry(env.facet_of(id)).or_default().push(id),
+                Some(inputs) => {
+                    consumes.extend(inputs.iter().map(|id| env.facet_of(*id)))
+                }
             }
         }
-        out
+        (out, consumes)
     }
 
     fn init<R: Rt, E: UserEvent>(
         env: &crate::env::Env,
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
-        let per_arm: Vec<_> =
-            arms.iter().map(|(pat, n)| Self::arm_refs(env, pat, n)).collect();
+        let (per_arm, consumes): (Vec<_>, Vec<_>) =
+            arms.iter().map(|(pat, n)| Self::arm_refs(env, pat, n)).unzip();
         let all = per_arm.iter().flat_map(|m| m.keys().copied()).collect();
-        TrackedFires { per_arm, all, pending: nohash::IntSet::default() }
+        TrackedFires { per_arm, consumes, all, pending: nohash::IntSet::default() }
     }
 
     fn refresh_arm<R: Rt, E: UserEvent>(
@@ -378,7 +412,9 @@ impl TrackedFires {
         pat: &PatternNode<R, E>,
         arm: &Node<R, E>,
     ) {
-        self.per_arm[i] = Self::arm_refs(env, pat, arm);
+        let (refs, consumes) = Self::arm_refs(env, pat, arm);
+        self.per_arm[i] = refs;
+        self.consumes[i] = consumes;
         self.all = self.per_arm.iter().flat_map(|m| m.keys().copied()).collect();
         self.pending.retain(|id| self.all.contains(id));
     }
@@ -422,6 +458,11 @@ impl TrackedFires {
             smallvec::SmallVec::new();
         if ctx.frame_depth > 0 || self.pending.is_empty() {
             return injected;
+        }
+        if let Some(consumed) = self.consumes.get(i) {
+            for id in consumed.iter() {
+                self.pending.remove(id);
+            }
         }
         let Some(set) = self.per_arm.get(i) else { return injected };
         let keys: smallvec::SmallVec<[BindId; 8]> =
