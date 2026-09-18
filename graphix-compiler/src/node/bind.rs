@@ -643,7 +643,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        refs.refed.insert(self.id);
+        refs.read(self.id);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1367,7 +1367,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     fn refs(&self, refs: &mut Refs) {
         self.child.refs(refs);
         if let Some(id) = self.id {
-            refs.refed.insert(id);
+            refs.read(id);
         }
     }
 

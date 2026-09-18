@@ -1,7 +1,7 @@
 # Wake catch-up
 
 Status: built 2026-09-01
-Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_wake_delivers_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_sibling_binds_spent`)
+Pins: `graphix-fuzz/findings/wake-catchup-sep2026/`, `dyncall-arm-init-stale-aug2026/`, `default-arg-birth-sep2026/`, `select-wake-rematch-sep2026/`; `stdlib/graphix-tests/src/lib_tests/callable.rs` (`arm_wake_delivers_standing_args_stale`, `callable_body_flip_reads_standing_key_stale`, `alias_read_consumes_the_formals_fire`, `banked_bind_does_not_consume_the_level`); `stdlib/graphix-tests/src/lang/select.rs` (`select_sibling_binds_spent`, `let_sibling_binds_spent`)
 Supersedes: `pure_select.md`, `levels_and_events.md`, `pure_dataflow_plan.md` part A (the sleep-free select proposals, withdrawn — sleep is pause)
 
 ## The hole
@@ -59,13 +59,19 @@ machinery); pattern binds of THIS select and of every enclosing select
 — a pattern bind is a facet of its arm's scrutinee delivery, which that
 arm's match consumed, so `k` beside ``ev@ `Key(k)`` is never re-raised
 at a nested flip after the `ev` reader handled the key. The facet cuts
-the other way too (2026-09-17): a pattern bind carries the inputs its
-scrutinee reads (`Bind::pattern`, closed over enclosing pattern binds),
-and an arm that reads the facet consumes those inputs' bits. So `ev`
-read by the landing arm consumes `e`, and a panels arm that takes `e`
-itself does not catch the key up at the flip — the same key was
-handled once, through its alias. Consumption follows the alias;
-delivery never does. A destructuring
+the other way too (2026-09-17): a pattern bind carries the inputs
+whose fires reach its scrutinee (`Bind::pattern`, the scrutinee's
+triggering refs closed over enclosing pattern binds), and an arm that
+reads the facet consumes those inputs' bits. So `ev` read by the
+landing arm consumes `e`, and a panels arm that takes `e` itself does
+not catch the key up at the flip — the same key was handled once,
+through its alias. Consumption follows the alias; delivery never does.
+A level under a sample's right side is not an input of the binds:
+`select kk ~ (toast, sel) { (t, i) => .. }` binds facets of `kk` alone,
+the tuple was banked, so a read of `i` leaves `toast`'s bit for the
+sibling arm that watches `toast` itself. A tuple or struct literal
+scrutinee stays joined: every fire of any member rebinds every leaf
+FIRED, so each leaf is a facet of all of them. A destructuring
 `let`'s siblings ARE tracked, as one input: a `let` bind is a real
 input whose catch-up is wanted, but its siblings are one delivery.
 Nesting needs nothing extra: an outer arm's ref set includes everything

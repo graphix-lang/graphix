@@ -40,11 +40,11 @@ pub struct Bind {
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
-    /// Bound by a select arm's pattern, with the inputs that select's
-    /// scrutinee reads (closed over enclosing pattern binds): a facet
-    /// of the scrutinee delivery, so no nested select tracks it for
-    /// wake catch-up, and an arm that reads it consumes those inputs'
-    /// fires.
+    /// Bound by a select arm's pattern, with the inputs whose fires
+    /// reach that select's scrutinee (closed over enclosing pattern
+    /// binds): a facet of the scrutinee delivery, so no nested select
+    /// tracks it for wake catch-up, and an arm that reads it consumes
+    /// those inputs' fires.
     pub pattern: Option<Arc<[BindId]>>,
     /// Bound by a destructuring `let`: the group's representative bind,
     /// which wake catch-up tracks as one input for all siblings.
@@ -1490,7 +1490,7 @@ impl Env {
     }
 
     /// Record that `id` is bound by a select arm's pattern, over a
-    /// scrutinee that reads `inputs`.
+    /// scrutinee whose fires come from `inputs`.
     pub fn mark_pattern_bind(&mut self, id: BindId, inputs: Arc<[BindId]>) {
         if let Some(b) = self.by_id.get_mut_cow(&id) {
             b.pattern = Some(inputs);
@@ -1501,9 +1501,9 @@ impl Env {
         self.by_id.get(&id).is_some_and(|b| b.pattern.is_some())
     }
 
-    /// The inputs a pattern bind is a facet of: what its select's
-    /// scrutinee reads, closed over enclosing pattern binds. `None`
-    /// for any other bind.
+    /// The inputs a pattern bind is a facet of: those whose fires reach
+    /// its select's scrutinee, closed over enclosing pattern binds.
+    /// `None` for any other bind.
     pub fn pattern_inputs(&self, id: BindId) -> Option<&[BindId]> {
         self.by_id.get(&id).and_then(|b| b.pattern.as_deref())
     }

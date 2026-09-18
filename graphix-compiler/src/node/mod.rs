@@ -1657,7 +1657,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        refs.refed.insert(self.src_id);
+        refs.read(self.src_id);
         self.rhs.refs(refs)
     }
 
@@ -2201,8 +2201,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        refs.refed.insert(self.id);
+        refs.read(self.id);
+        refs.banked += 1;
         self.arg.node.refs(refs);
+        refs.banked -= 1;
         self.trigger.refs(refs);
     }
 

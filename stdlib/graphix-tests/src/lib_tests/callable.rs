@@ -510,6 +510,90 @@ async fn alias_read_consumes_the_formals_fire() -> Result<()> {
     bail!("the second Enter never counted (last={last:?})")
 }
 
+/// A bind delivered by a sampled scrutinee aliases the trigger only:
+/// the levels under the sample's right side were banked, not fired, so
+/// an arm reading such a bind does not consume their fires, and a
+/// sibling arm that reads the level itself still catches up at wake.
+const BANKED: &str = r#"
+let toast: string = "";
+let mode = false;
+let ticks = 0;
+let set_toast = |s: string| -> null { toast <- s; null };
+let set_mode = |b: bool| -> null { mode <- b; null };
+let handle = |k: string| -> i64 select k {
+  "" => 0,
+  key => select key ~ (toast, 1) {
+    (_, one) => select mode {
+      false => str::len(key) + one,
+      true => { ticks <- toast ~ ticks + 1; 1 }
+    }
+  }
+};
+let result = ticks
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn banked_bind_does_not_consume_the_level() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(100);
+    let tbl = AHashMap::from_iter([(
+        Path::from("/test.gx"),
+        graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(BANKED)),
+    )]);
+    let resolver = VfsResolver::new(tbl);
+    let ctx =
+        testing::init_with_resolvers(tx, crate::TEST_REGISTER, vec![resolver]).await?;
+    let gx: graphix_rt::GXHandle<NoExt> = ctx.rt.clone();
+    let compiled = gx.compile(arcstr::literal!("{ mod test; test::result }")).await?;
+    let expr_id = compiled.exprs.last().context("no exprs")?.id;
+    let callable = |name: &str| {
+        let gx = gx.clone();
+        let bid = find_bind_id(&compiled.env, name);
+        async move {
+            let r = gx.compile_ref(bid?).await?;
+            gx.compile_callable(r.last.clone().context("no value")?).await
+        }
+    };
+    let handle_l = callable("test::handle").await?;
+    let set_toast = callable("test::set_toast").await?;
+    let set_mode = callable("test::set_mode").await?;
+    // a key binds `one` from the banked tuple; then the toast fires
+    // while the false arm, which reads `one`, is selected; then the
+    // mode flips and the true arm must catch the toast up
+    handle_l.call(ValArray::from_iter_exact(["x".into()].into_iter())).await?;
+    for _ in 0..3 {
+        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+    }
+    set_toast.call(ValArray::from_iter_exact(["hi".into()].into_iter())).await?;
+    for _ in 0..3 {
+        let _e = gx.compile(arcstr::literal!("i64:0")).await?;
+    }
+    set_mode.call(ValArray::from_iter_exact([Value::Bool(true)].into_iter())).await?;
+    let deadline = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(deadline);
+    let mut last = None;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            batch = rx.recv() => match batch {
+                None => bail!("runtime died"),
+                Some(mut batch) => {
+                    for ev in batch.drain(..) {
+                        if let GXEvent::Updated(id, v) = ev {
+                            if id == expr_id {
+                                last = Some(v.clone());
+                            }
+                        }
+                    }
+                    if last == Some(Value::I64(1)) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    bail!("the woken arm never caught the toast up (last={last:?})")
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn update_callable_keeps_the_site_for_the_same_lambda() -> Result<()> {
     let (tx, _rx) = mpsc::channel(100);

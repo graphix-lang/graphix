@@ -259,9 +259,10 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 }
 
-/// The inputs a scrutinee reads, for the pattern binds it delivers:
-/// its free refs, with a pattern bind among them standing for its own
-/// inputs.
+/// The inputs whose fires reach a scrutinee, for the pattern binds it
+/// delivers: its triggering free refs (a level under a sample's right
+/// side is banked, never fired through), with a pattern bind among
+/// them standing for its own inputs.
 fn scrutinee_inputs<R: Rt, E: UserEvent>(
     env: &crate::env::Env,
     arg: &Node<R, E>,
@@ -269,7 +270,7 @@ fn scrutinee_inputs<R: Rt, E: UserEvent>(
     let mut r = Refs::default();
     arg.refs(&mut r);
     let mut out: LPooled<IntSet<BindId>> = LPooled::take();
-    for id in r.refed.difference(&r.bound) {
+    for id in r.triggering.difference(&r.bound) {
         match env.pattern_inputs(*id) {
             Some(inputs) => out.extend(inputs.iter().copied()),
             None => {

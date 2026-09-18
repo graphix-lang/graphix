@@ -409,7 +409,22 @@ impl<E: UserEvent> Event<E> {
 #[derive(Debug, Clone, Default)]
 pub struct Refs {
     refed: LPooled<IntSet<BindId>>,
+    /// The refs a fire can reach the collected node through: `refed`
+    /// minus those read only under a sample's right side.
+    triggering: LPooled<IntSet<BindId>>,
     bound: LPooled<IntSet<BindId>>,
+    banked: usize,
+}
+
+impl Refs {
+    /// Record a read of `id`, triggering unless under a sample's right
+    /// side.
+    pub(crate) fn read(&mut self, id: BindId) {
+        self.refed.insert(id);
+        if self.banked == 0 {
+            self.triggering.insert(id);
+        }
+    }
 }
 
 pub use combine::stream::position::SourcePosition;
