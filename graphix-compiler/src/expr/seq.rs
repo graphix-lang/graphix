@@ -9,7 +9,7 @@
 
 use super::{
     ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
-    Pattern, SelectExpr, StructurePattern, TryWithExpr,
+    Pattern, SelectExpr, SeqTrigger, StructurePattern, TryWithExpr,
 };
 use crate::{
     env::Env,
@@ -52,9 +52,54 @@ impl Rewrite<'_> {
 
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     match &spec.kind {
+        ExprKind::Seq {
+            queued,
+            trigger: Some(SeqTrigger::Bind { pattern, typ, value }),
+            body,
+        } => desugar_let(spec, *queued, pattern, typ, value, body),
         ExprKind::Seq { queued: true, .. } => desugar_queued(spec, env, scope),
         _ => desugar_plain(spec, None),
     }
+}
+
+/// `seq let pat = e { body }` is `{ let pat = e; seq name { body } }`:
+/// the trigger is a level named for the body, bound outside the machine
+/// so the run costs no step. A pattern that is not one name gets the
+/// level a name of its own and is destructured beside it.
+fn desugar_let(
+    spec: &Expr,
+    queued: bool,
+    pattern: &StructurePattern,
+    typ: &Option<Type>,
+    value: &Expr,
+    body: &Arc<[Expr]>,
+) -> Result<Expr> {
+    let pos = spec.pos;
+    let name = match pattern {
+        StructurePattern::Bind(n) => n.clone(),
+        _ => ArcStr::from(format_compact!("seqbind{}", spec.id.inner()).as_str()),
+    };
+    let mut exprs = vec![let_bind(pos, &name, typ.clone(), value.clone())];
+    if !matches!(pattern, StructurePattern::Bind(_)) {
+        exprs.push(
+            ExprKind::Bind(Arc::new(BindExpr {
+                rec: false,
+                pattern: pattern.clone(),
+                typ: None,
+                value: r#ref(pos, &name),
+            }))
+            .to_expr(pos),
+        );
+    }
+    exprs.push(
+        ExprKind::Seq {
+            queued,
+            trigger: Some(SeqTrigger::Expr(Arc::new(r#ref(pos, &name)))),
+            body: body.clone(),
+        }
+        .to_expr(pos),
+    );
+    Ok(block(pos, exprs))
 }
 
 fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
@@ -83,15 +128,16 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
     let result = format_compact!("seqr{id}");
     let trig_cell = format_compact!("seqt{id}");
 
-    let trigger_bind =
-        trigger.as_ref().and_then(|t| simple_ref_name(t).map(|n| (n, t.pos)));
+    let trigger_bind = trigger
+        .as_ref()
+        .and_then(|t| simple_ref_name(t.expr()).map(|n| (n, t.expr().pos)));
     let mut cells = CarriedBinds::new();
     for e in &steps {
         collect_step_binds(e, &mut cells)?;
     }
 
     let trig_expr = match trigger {
-        Some(t) => (**t).clone(),
+        Some(t) => t.expr().clone(),
         None => ExprKind::Constant(Value::Bool(true)).to_expr(pos),
     };
     let t_name = format_compact!("seqgo{id}");
@@ -570,7 +616,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let activation = format_compact!("seqqactivation{id}");
     let input = format_compact!("seqqinput{id}");
     let result = format_compact!("seqqresult{id}");
-    let trigger_name = trigger.as_ref().and_then(|t| simple_ref_name(t));
+    let trigger_name = trigger.as_ref().and_then(|t| simple_ref_name(t.expr()));
     let body =
         ExprKind::Seq { queued: false, trigger: None, body: body.clone() }.to_expr(pos);
     let captures = body.fold(IndexMap::new(), &mut |mut caps, e| {
@@ -626,7 +672,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
             pos,
             request.as_str(),
             None,
-            trigger.as_ref().map_or_else(|| boolean(pos, true), |t| (**t).clone()),
+            trigger.as_ref().map_or_else(|| boolean(pos, true), |t| t.expr().clone()),
         ),
     ];
     let mut args = vec![r#ref(pos, request.as_str())];
@@ -702,7 +748,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let ExprKind::Seq { body, .. } = &body.kind else { unreachable!() };
     let machine = ExprKind::Seq {
         queued: false,
-        trigger: Some(Arc::new(r#ref(pos, input.as_str()))),
+        trigger: Some(SeqTrigger::Expr(Arc::new(r#ref(pos, input.as_str())))),
         body: body.clone(),
     }
     .to_expr(pos);
@@ -1223,7 +1269,7 @@ fn rewrite_with_inner(
             }))
         }
         ExprKind::Seq { queued, trigger, body } => {
-            let trigger = trigger.as_ref().map(|t| Arc::new(rewrite(t, map)));
+            let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));
             let mut inner = map.clone();
             let mut out = Vec::with_capacity(body.len());
             for x in body.iter() {

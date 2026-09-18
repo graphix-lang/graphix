@@ -1446,12 +1446,20 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             do_block!(inner.clone()),
             (
                 any::<bool>(),
-                option::of(reference()),
+                option::of(prop_oneof![
+                    reference().prop_map(|e| SeqTrigger::Expr(Arc::new(e))),
+                    (reference(), structure_pattern_no_or(), option::of(typexp()))
+                        .prop_map(|(value, pattern, typ)| SeqTrigger::Bind {
+                            pattern,
+                            typ,
+                            value: Arc::new(value)
+                        }),
+                ]),
                 collection::vec(seq_item!(inner.clone()), 1..5),
             )
                 .prop_map(|(queued, trigger, body)| ExprKind::Seq {
                     queued,
-                    trigger: trigger.map(Arc::new),
+                    trigger,
                     body: Arc::from(body),
                 }
                 .to_expr_nopos()),
@@ -2130,7 +2138,15 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => {
             let trig = match (t0, t1) {
                 (None, None) => true,
-                (Some(a), Some(b)) => check(a, b),
+                (Some(SeqTrigger::Expr(a)), Some(SeqTrigger::Expr(b))) => check(a, b),
+                (
+                    Some(SeqTrigger::Bind { pattern: p0, typ: typ0, value: v0 }),
+                    Some(SeqTrigger::Bind { pattern: p1, typ: typ1, value: v1 }),
+                ) => {
+                    check_structure_pattern(p0, p1)
+                        && check_type_opt(typ0, typ1)
+                        && check(v0, v1)
+                }
                 _ => false,
             };
             q0 == q1

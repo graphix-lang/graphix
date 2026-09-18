@@ -888,7 +888,16 @@ module.exports = grammar({
     // `select`. `until` is a seq-body item.
     seq_block: $ => seq(
       choice('seq', 'seqq'),
-      optional(field('trigger', $._expression)),
+      optional(choice(
+        seq(
+          'let',
+          field('pattern', $.structure_pattern),
+          optional(seq(':', field('type', $._type))),
+          '=',
+          field('trigger', $._expression),
+        ),
+        field('trigger', $._expression),
+      )),
       '{',
       $._seq_items,
       '}',

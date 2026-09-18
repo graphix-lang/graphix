@@ -2246,6 +2246,11 @@ fn seq_parses() {
         "seq t.x { 1 }",
         "seq t[0]? { 1 }",
         "seq t{ 1 }",
+        "seq let c = f(t) { c }",
+        "seqq let {a, b} = t { a }",
+        "seq let c: i64 = t ~ x { until ready; c }",
+        "seq let (a, b) = pair() { a + b }",
+        "seq let c = (t) { c }",
     ] {
         let e = parse_one(s).unwrap();
         assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);

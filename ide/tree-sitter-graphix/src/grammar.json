@@ -5228,12 +5228,71 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "FIELD",
-              "name": "trigger",
-              "content": {
-                "type": "SYMBOL",
-                "name": "_expression"
-              }
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "let"
+                    },
+                    {
+                      "type": "FIELD",
+                      "name": "pattern",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "structure_pattern"
+                      }
+                    },
+                    {
+                      "type": "CHOICE",
+                      "members": [
+                        {
+                          "type": "SEQ",
+                          "members": [
+                            {
+                              "type": "STRING",
+                              "value": ":"
+                            },
+                            {
+                              "type": "FIELD",
+                              "name": "type",
+                              "content": {
+                                "type": "SYMBOL",
+                                "name": "_type"
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "type": "BLANK"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "="
+                    },
+                    {
+                      "type": "FIELD",
+                      "name": "trigger",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "_expression"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "FIELD",
+                  "name": "trigger",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "_expression"
+                  }
+                }
+              ]
             },
             {
               "type": "BLANK"

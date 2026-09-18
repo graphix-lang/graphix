@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
-        ParserContext, Pattern, SelectExpr, Sig, SigItem, StructExpr, StructWithExpr,
-        TryWithExpr, set_origin,
+        ParserContext, Pattern, SelectExpr, SeqTrigger, Sig, SigItem, StructExpr,
+        StructWithExpr, StructurePattern, TryWithExpr, set_origin,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -560,35 +560,38 @@ where
         })
 }
 
+/// `let [rec] pattern[: type] =`, the head of a binding.
+fn let_head<I>() -> impl Parser<I, Output = (bool, StructurePattern, Option<Type>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(string("let").skip(spaces1()))
+        .with((
+            optional(attempt(string("rec").with(spaces1()))).map(|r| r.is_some()),
+            structure_pattern().skip(optional(attempt(spaces().with(token('|')))).then(
+                |t| match t {
+                    Some(_) => {
+                        unexpected_any("or-patterns are only legal in select arms").left()
+                    }
+                    None => value(()).right(),
+                },
+            )),
+            spaces().with(optional(token(':').with(typ()))),
+        ))
+        .skip(sptoken('='))
+}
+
 pub(super) fn letbind<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (
-        position(),
-        attempt(string("let").skip(spaces1()))
-            .with((
-                optional(attempt(string("rec").with(spaces1()))),
-                structure_pattern().skip(
-                    optional(attempt(spaces().with(token('|')))).then(|t| match t {
-                        Some(_) => {
-                            unexpected_any("or-patterns are only legal in select arms")
-                                .left()
-                        }
-                        None => value(()).right(),
-                    }),
-                ),
-                spaces().with(optional(token(':').with(typ()))),
-            ))
-            .skip(sptoken('=')),
-        expr(),
-    )
-        .map(|(pos, (rec, pattern, typ), value)| {
-            let rec = rec.is_some();
-            ExprKind::Bind(Arc::new(BindExpr { rec, pattern, typ, value })).to_expr(pos)
-        })
+    (position(), let_head(), expr()).map(|(pos, (rec, pattern, typ), value)| {
+        ExprKind::Bind(Arc::new(BindExpr { rec, pattern, typ, value })).to_expr(pos)
+    })
 }
 
 fn connect<I>() -> impl Parser<I, Output = Expr>
@@ -807,7 +810,12 @@ where
             attempt(string("seq").skip(not_prefix())).map(|_| false),
         )),
         spaces(),
-        optional(attempt(not_followed_by(token('{')).with(arithexp::arith(false)))),
+        optional(attempt(not_followed_by(token('{')).with(choice((
+            (let_head(), arithexp::arith(false)).map(|((rec, pattern, typ), trig)| {
+                (rec, SeqTrigger::Bind { pattern, typ, value: Arc::new(trig) })
+            }),
+            arithexp::arith(false).map(|e| (false, SeqTrigger::Expr(Arc::new(e)))),
+        ))))),
         seq_stmts(),
     )
         .then(
@@ -815,20 +823,22 @@ where
                 _,
                 _,
                 _,
-                Option<Expr>,
+                Option<(bool, SeqTrigger)>,
                 LPooled<Vec<Expr>>,
             )| {
-                if body.is_empty()
+                let (rec, trigger) = match trigger {
+                    Some((rec, t)) => (rec, Some(t)),
+                    None => (false, None),
+                };
+                if rec {
+                    unexpected_any("a seq trigger cannot be rec").left()
+                } else if body.is_empty()
                     || (body.len() == 1 && matches!(body[0].kind, ExprKind::NoOp))
                 {
                     unexpected_any("a seq block must contain at least one step").left()
                 } else {
                     let body = Arc::from_iter(body.drain(..));
-                    value(
-                        ExprKind::Seq { queued, trigger: trigger.map(Arc::new), body }
-                            .to_expr(pos),
-                    )
-                    .right()
+                    value(ExprKind::Seq { queued, trigger, body }.to_expr(pos)).right()
                 }
             },
         )

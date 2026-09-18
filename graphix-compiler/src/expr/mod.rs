@@ -325,6 +325,41 @@ pub struct BindExpr {
     pub value: Expr,
 }
 
+/// What starts a seq run: the expression whose fire enters the machine,
+/// or `let pattern = expr`, which also names that fire's value inside
+/// the body.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub enum SeqTrigger {
+    Expr(Arc<Expr>),
+    /// `let pattern[: typ] = value`
+    Bind {
+        pattern: StructurePattern,
+        typ: Option<Type>,
+        value: Arc<Expr>,
+    },
+}
+
+impl SeqTrigger {
+    pub fn expr(&self) -> &Expr {
+        match self {
+            SeqTrigger::Expr(e) => e,
+            SeqTrigger::Bind { value, .. } => value,
+        }
+    }
+
+    pub fn map(&self, f: impl FnOnce(&Expr) -> Expr) -> SeqTrigger {
+        match self {
+            SeqTrigger::Expr(e) => SeqTrigger::Expr(Arc::new(f(e))),
+            SeqTrigger::Bind { pattern, typ, value } => SeqTrigger::Bind {
+                pattern: pattern.clone(),
+                typ: typ.clone(),
+                value: Arc::new(f(value)),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct LambdaExpr {
@@ -485,7 +520,7 @@ pub enum ExprKind {
     /// a select over a step variable.
     Seq {
         queued: bool,
-        trigger: Option<Arc<Expr>>,
+        trigger: Option<SeqTrigger>,
         body: Arc<[Expr]>,
     },
     /// `until expr` — wait until a bool level is true. Legal only as a
@@ -964,7 +999,7 @@ impl Expr {
                 c.seq_abort.iter().for_each(|e| f(e));
             }
             Seq { trigger, body, .. } => {
-                trigger.iter().for_each(|t| f(t));
+                trigger.iter().for_each(|t| f(t.expr()));
                 body.iter().for_each(|e| f(e));
             }
             TryWith(t) => {
@@ -1146,7 +1181,7 @@ impl Expr {
             })),
             Seq { queued, trigger, body } => Seq {
                 queued: *queued,
-                trigger: trigger.as_ref().map(|t| a(f, t)),
+                trigger: trigger.as_ref().map(|t| t.map(|e| f(e))),
                 body: xs(f, body),
             },
             TryWith(t) => TryWith(Arc::new(TryWithExpr {

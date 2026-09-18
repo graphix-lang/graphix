@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-1d6e6d8a.js";
+            window.path_to_searchindex_js = "../searchindex-db97e84d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -199,6 +199,15 @@ nested block).</p>
 <p>A <code>seq</code> is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
 to a variable, or feed it to another expression.</p>
+<p><code>seq let name = expr { ... }</code> names the trigger’s value for the body,
+and nothing outside the block sees the name. It is
+<code>{ let name = expr; seq name { ... } }</code> written once, and the pattern
+may destructure (<code>seq let {x, y} = point { ... }</code>):</p>
+<pre><code class="language-graphix">seq let session = opt::or_never(*connected) {
+    known &lt;- upsert(known, session.domain, session.server, session.fingerprint);
+    save &lt;- session
+}
+</code></pre>
 <p>A <code>seq</code> can also be a step of another <code>seq</code>. Written without a trigger
 it runs every time its statement is reached, and the enclosing step
 waits for that run to complete:</p>

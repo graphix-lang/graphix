@@ -207,6 +207,10 @@ let r = seqq request {             // seqq queues triggers; seq drops while busy
 
 The trigger is any expression. `seqq sys::time::after_idle(duration:250.ms,
 key) { .. }` runs once per burst of presses, not once per press.
+`seq let c = e { .. }` names the trigger's value for the body and nothing
+after it; `seq let {x, y} = pt { .. }` destructures. Under `seqq` it is
+the value that queued the run. `seq let c = opt::or_never(*r) { .. c.f .. }`
+is how a nullable reference is consumed; `(*r).f` is refused.
 
 A busy flag set on a trigger, a call sampled on that trigger, and the
 flag cleared on the result is a seq written by hand, three statements

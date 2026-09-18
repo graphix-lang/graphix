@@ -104,6 +104,8 @@ source reads in execution order while the semantics stay the machine's.
 ```
 seq  [trigger] { stmt* [expr] }
 seqq [trigger] { stmt* [expr] }          // queued form, §8
+trigger := expr
+         | let pat [: T] = expr          // the fire's value, named for the body
 
 stmt := let pat = expr ;
       | { stmt* [expr] } ;               // a block: statements issued together
@@ -115,6 +117,10 @@ stmt := let pat = expr ;
 `trigger` is any expression that does not begin with `{`, and its
 postfix chain admits no map access `{k}`: `seq t { f(t) }` is a trigger
 and a body, never `t{f(t)}`. Parenthesize a trigger that needs either.
+`seq let pat = e { .. }` lowers to `{ let pat = e; seq name { .. } }`
+before the machine is built: the trigger is a level bound outside the
+machine, so naming it costs no step, and a pattern that is not one name
+is destructured beside the level. `rec` is refused there.
 `seq { .. }` without a trigger runs once at init. `let rec` is not a
 step. `catch` is refused anywhere in a seq body — as a statement,
 inside a block, or nested in a step's expression; a lambda literal's

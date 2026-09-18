@@ -974,9 +974,13 @@ impl Expr {
             }),
             ExprKind::Seq { queued, trigger, body } => Box::pin(async move {
                 let trigger = match trigger {
-                    Some(t) => Some(Arc::new(
-                        t.resolve_modules_int(scope, prepend, resolvers).await?,
-                    )),
+                    Some(t) => {
+                        let e = t
+                            .expr()
+                            .resolve_modules_int(scope, prepend, resolvers)
+                            .await?;
+                        Some(t.map(|_| e))
+                    }
                     None => None,
                 };
                 let body = Arc::from(subexprs!(body));

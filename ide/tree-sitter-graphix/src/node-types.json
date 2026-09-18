@@ -7977,6 +7977,16 @@
     "type": "seq_block",
     "named": true,
     "fields": {
+      "pattern": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "structure_pattern",
+            "named": true
+          }
+        ]
+      },
       "trigger": {
         "multiple": true,
         "required": false,
@@ -8159,6 +8169,80 @@
           },
           {
             "type": "variant",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "abstract_type",
+            "named": true
+          },
+          {
+            "type": "array_type",
+            "named": true
+          },
+          {
+            "type": "by_ref_type",
+            "named": true
+          },
+          {
+            "type": "error_type",
+            "named": true
+          },
+          {
+            "type": "function_type",
+            "named": true
+          },
+          {
+            "type": "map_type",
+            "named": true
+          },
+          {
+            "type": "parenthesized_type",
+            "named": true
+          },
+          {
+            "type": "primitive_type",
+            "named": true
+          },
+          {
+            "type": "ref_type",
+            "named": true
+          },
+          {
+            "type": "self_type",
+            "named": true
+          },
+          {
+            "type": "struct_type",
+            "named": true
+          },
+          {
+            "type": "tuple_type",
+            "named": true
+          },
+          {
+            "type": "type_identifier",
+            "named": true
+          },
+          {
+            "type": "type_variable",
+            "named": true
+          },
+          {
+            "type": "union_type",
+            "named": true
+          },
+          {
+            "type": "variant_type",
+            "named": true
+          },
+          {
+            "type": "wildcard_type",
             "named": true
           }
         ]

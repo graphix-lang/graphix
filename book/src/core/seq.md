@@ -31,6 +31,18 @@ A `seq` is still a Graphix expression. Its value is the value of its last
 step, produced once per completed run, so you can bind it, connect it
 to a variable, or feed it to another expression.
 
+`seq let name = expr { ... }` names the trigger's value for the body,
+and nothing outside the block sees the name. It is
+`{ let name = expr; seq name { ... } }` written once, and the pattern
+may destructure (`seq let {x, y} = point { ... }`):
+
+```graphix
+seq let session = opt::or_never(*connected) {
+    known <- upsert(known, session.domain, session.server, session.fingerprint);
+    save <- session
+}
+```
+
 A `seq` can also be a step of another `seq`. Written without a trigger
 it runs every time its statement is reached, and the enclosing step
 waits for that run to complete:

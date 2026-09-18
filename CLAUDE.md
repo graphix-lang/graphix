@@ -412,7 +412,7 @@ blocker profile, not a gap count.
   delivery; a dynamic key is a moving reference. References de-fuse.
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
   block; it is not control flow.
-- **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger] { stmt* }`
+- **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`
   desugars to a pc machine (busy-drop, carried lets as cells, calls
   issued once per entry over an argument snapshot). A statement starts
   in the first cycle its predecessor's effect can be seen: statements
