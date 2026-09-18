@@ -45,9 +45,11 @@ constant argument to `exit` runs at init — always gate it).
 - **A function returning a level it does not derive from its argument
   fires nothing when re-called** (`|v| k`); write `|v| v ~ k`. This is
   what makes `f(trigger)` a sequencing tool only when `f` uses its arg.
-- **`select` over a value with `never()` arms needs an annotation when
-  the value's shape is used downstream** (`let r: Result<T, E> = select
-  ..`): a `never()` arm is a free type member and stays free.
+- **A `never()` arm adds nothing to a select's type**: `let r = select b
+  { true => never(), false => error(`E) }` makes `r` the error type alone,
+  and a downstream `select r { error as e => .., v => .. }` is refused for
+  a dead arm. Annotate the let with the union the reader will match:
+  `let r: [i64, Error<`E>] = select ..`.
 - **`~` banks, `~!` does not**: `e ~ v` is `v` at each fire of `e`, and a
   fire that finds `v` absent is paid when `v` first arrives; `e ~! v` is
   bottom then. Use `~!` when a late payment would be a phantom event.
@@ -143,16 +145,18 @@ fresh instance, not recursion.
 
 ## Annotations
 
-The checker infers nearly everything; annotate only what it names.
-It needs two things. A parameter whose fields you read and whose type
+Do not write a type annotation unless the checker asks for one. It
+asks for two things. A parameter whose fields you read and whose type
 no call fixes: a top-level function, a handler handed to a widget
 (`|e: Event|`). A callback passed to `array::map`/`find`/`fold` over a
 typed array needs none. And a `let` whose initial value is narrower
 than its writers: `let notice: [string, null] = null`, `let go: Any =
 never()` with writers of two types, `let verify: Any = known` written
-by a key. A `let` over a call, a select or a seq needs nothing, and a
-lambda's return type is never needed. To find the set: strip, `--check`,
-restore what it names.
+by a key. A fold's accumulator is the type of its init, so
+`array::fold(xs, null, |acc, x| ..)` makes `acc` null: annotate the init
+(`let init: [i64, null] = null`), never the callback. A `let` over a
+call, a select or a seq needs nothing, and a lambda's return type is
+never needed. To find the set: strip, `--check`, restore what it names.
 
 ## Select
 
@@ -367,7 +371,10 @@ let result = seqq go { let r = fetch(go); publish(path, r); r }   // ceremony
   `net::subscribe`, not `subscribe`.
 - Slice patterns bind `[init.., x]` (all but last, last); List patterns
   have no suffix form.
-- A `select` whose arms mix a free type variable and a concrete type is
-  not inferred to the concrete one — annotate.
+- A type test over an untyped parameter binds it: `|x| select x { null
+  as _ => 0, v => v }` makes `x` null and the second arm dead. Annotate
+  the parameter, `|x: [i64, null]|`. Arms of different types are not the
+  problem: `select b { true => x, false => 1 }` is `['a, i64]`, and `[]`
+  against `[1]` is `Array<i64>`.
 - Labeled arguments are never positional, even without a default.
 - `--check` a witness before arguing about a semantics question.

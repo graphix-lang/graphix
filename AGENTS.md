@@ -511,8 +511,8 @@ node graph IS the IR — there is no parallel typed IR
   freely; a labeled default is checked at the definition against its
   parameter's type, or a declared tvar's constraints (`check_defaults`),
   and again at each omitting site, where it may narrow that site's
-  cells; union collapse requires strict tvar identity; a free union member stays free (annotate a select whose
-  arms are `'b` and `i64`); float comparison is a total order (`NaN ==
+  cells; union collapse requires strict tvar identity; a free union member stays free (a type test over an
+  untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able; checked arith
   (`+?` …) yields a catchable `ArithError`, unchecked wraps, integer
   div0 bottoms; indexing is bounds-checked through shared helpers on
