@@ -4,6 +4,7 @@ This directory contains IDE support tools for the Graphix programming language:
 
 - **tree-sitter-graphix/** - Tree-sitter grammar for syntax highlighting
 - **editors/** - Editor-specific configurations
+- **skills/** - The language reference for coding agents (Claude Code)
 
 The LSP server is built into the main `graphix` binary and launched via `graphix lsp`.
 
@@ -69,6 +70,17 @@ grammar blocks to `~/.config/helix/languages.toml`, and runs
 
 See `editors/zed/README.md` for Zed-specific instructions.
 
+#### Claude Code
+
+Graphix is not in any model's training set, so an agent writing it
+needs the language reference in front of it. `skills/graphix-lang` is
+that reference as a Claude Code skill; symlink it in and load it with
+`/graphix-lang` before touching a `.gx` file:
+
+```bash
+ln -s "$(pwd)/skills/graphix-lang" ~/.claude/skills/graphix-lang
+```
+
 ## Features
 
 ### Tree-sitter Grammar
@@ -122,11 +134,15 @@ colors at all — the whole query is refused), the regex ones die quiet
 4. `editors/vim/syntax/graphix.vim` and
    `editors/vscode/syntaxes/graphix.tmLanguage.json` — regex
    highlighters, no grammar to check them against.
+5. `skills/graphix-lang/SKILL.md` — the quietest of all: an agent
+   reading a stale rule writes the old form, and `--check` is the only
+   thing that tells it. Fix the rule, and when awkward code came from a
+   rule that was missing rather than wrong, add the rule.
 
 The gate for 1–3 is `cargo test -p graphix-compiler queries_compile`
 (every query compiles against the built grammar) plus the ts-compat
 proptests in the same module (the grammar parses what the compiler
-parses). 4 has no gate; check it by eye.
+parses). 4 and 5 have no gate; check them by eye.
 
 ## Architecture
 
@@ -140,12 +156,15 @@ ide/
 │       ├── locals.scm      # Scope tracking
 │       └── indents.scm     # Auto-indentation
 │
-└── editors/
-    ├── vscode/             # VS Code extension
-    ├── nvim/               # Neovim configuration
-    ├── emacs/              # Emacs major mode
-    ├── helix/              # Helix install script + queries
-    └── zed/                # Zed configuration
+├── editors/
+│   ├── vscode/             # VS Code extension
+│   ├── nvim/               # Neovim configuration
+│   ├── emacs/              # Emacs major mode
+│   ├── helix/              # Helix install script + queries
+│   └── zed/                # Zed configuration
+│
+└── skills/
+    └── graphix-lang/       # Claude Code skill: the language reference
 ```
 
 The LSP server source lives in `graphix-shell/src/lsp/`.
