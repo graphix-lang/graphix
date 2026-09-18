@@ -386,10 +386,6 @@ let result = seqq go { let r = fetch(go); publish(path, r); r }   // ceremony
   `net::subscribe`, not `subscribe`.
 - Slice patterns bind `[init.., x]` (all but last, last); List patterns
   have no suffix form.
-- An `[] => ..` arm over a scrutinee typed `[Array<'a>, null]` binds `'a`
-  to null and every call then mismatches (compiler bug, 2026-09-18);
-  over a bare `Array<'a>` it is fine. Until fixed, write the arm as a
-  guard: `rows if array::len(rows) == 0 => null`.
 - A type test over an untyped parameter binds it: `|x| select x { null
   as _ => 0, v => v }` makes `x` null and the second arm dead. Annotate
   the parameter, `|x: [i64, null]|`. Arms of different types are not the

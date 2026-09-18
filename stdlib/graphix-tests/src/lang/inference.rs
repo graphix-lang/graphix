@@ -63,6 +63,55 @@ const EMPTY_ARRAY_ARM: &str = r#"{
   array::len(x)
 }"#;
 
+// A declared type variable stays rigid through a cell merge: an arm's
+// alias of `'a` over a union scrutinee is still `'a` at the return
+// check, so the union does not bind it to a sibling member (u2), a
+// foreign member is refused rather than absorbed (u5), and the empty
+// slice arm over `[Array<'a>, null]` is ordinary (s1).
+const RIGID_ALIAS_UNION_RETURN: &str = r#"{
+  let first = |rows: [Array<'a>, null]| -> ['a, null] select rows {
+    null as _ => null,
+    [a, ..] => a,
+    _ => null
+  };
+  select first([1, 2]) { null as _ => 0, v => v }
+}"#;
+const RIGID_ALIAS_FOREIGN_MEMBER: &str = r#"{
+  let first = |rows: [Array<'a>, null]| -> ['a, null] select rows {
+    null as _ => null,
+    [a, ..] => a,
+    _ => 0
+  };
+  select first(["s"]) { null as _ => "", v => v }
+}"#;
+const RIGID_ALIAS_EMPTY_SLICE: &str = r#"{
+  let selected = |rows: [Array<'a>, null], i: i64| -> ['a, null] select rows {
+    null as _ => null,
+    [] => null,
+    rows => rows[min(i, array::len(rows) - 1)]$
+  };
+  let q: [Array<{code: string}>, null] = [{code: "x"}];
+  select selected(q, 0) { null as _ => "", c => c.code }
+}"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn rigid_type_variables_survive_a_cell_merge() -> Result<()> {
+    for (src, expected) in [
+        (RIGID_ALIAS_UNION_RETURN, Value::I64(1)),
+        (RIGID_ALIAS_EMPTY_SLICE, Value::from("x")),
+    ] {
+        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        assert_eq!(v, expected, "{src}");
+        ctx.shutdown().await;
+    }
+    let msg = match eval(RIGID_ALIAS_FOREIGN_MEMBER, crate::TEST_REGISTER).await {
+        Err(e) => format!("{e:#}"),
+        Ok((v, _)) => panic!("must be refused: {v:?}"),
+    };
+    assert!(msg.contains("does not contain"), "{msg}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn annotations_the_checker_asks_for() -> Result<()> {
     for (src, refusal) in [

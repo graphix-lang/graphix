@@ -478,7 +478,13 @@ impl TVar {
     /// Merge self's cell into other's for a unification-driven merge:
     /// bypasses the `frozen` gate [`Self::alias`] honors (frozen means
     /// name-aliasing already happened) but keeps its occurs checks.
+    /// A rigid cell is the survivor whichever side it is on: its gate
+    /// counts on that cell, and a var re-pointed away from it would
+    /// read as free for the rest of the def's check and take a binding.
     pub(super) fn alias_cells(&self, other: &Self) {
+        if self.is_rigid() && !other.is_rigid() {
+            return other.alias_cells(self);
+        }
         {
             let self_addr = Arc::as_ptr(&self.read().typ).addr();
             let other_addr = Arc::as_ptr(&other.read().typ).addr();
