@@ -1452,7 +1452,8 @@ run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, |v: Result<&Value>| match v {
 
 // A `never(args..)` arm is a standing bottom whatever its args do, but
 // the args are consumed: the handler-ful `?` inside one delivers its
-// raise from the kernel.
+// raise (its select node-walks: the raise is an edge the arm may owe
+// to the select's fire tracker).
 const NEVER_ARM_ARGS_RAISE: &str = r#"
 {
   let x = array::iter([1, 2, 3]);
@@ -1463,6 +1464,23 @@ const NEVER_ARM_ARGS_RAISE: &str = r#"
 "#;
 
 run!(never_arm_args_raise, NEVER_ARM_ARGS_RAISE, |v: Result<&Value>| match v {
+    Ok(Value::I64(1)) => true,
+    _ => false,
+}, timeout: 5; FuseExpect::Jit);
+
+// The error derives from `n`, a let whose init fire no selected arm
+// read: the tracker re-delivers it when the arm is entered and the
+// raise lands. A kernel reads `n` standing and would lose the raise.
+const ARM_RAISE_STANDING_INPUT: &str = r#"
+{
+  let x = array::iter([1, 2, 3]);
+  let n = 0;
+  { catch(e) n <- e ~ n + 1; select x { 2 => never(error(`E(n))?), _ => x } };
+  select count(x) { 3 => n, _ => never() }
+}
+"#;
+
+run!(arm_raise_standing_input, ARM_RAISE_STANDING_INPUT, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 }, timeout: 5; FuseExpect::Jit);

@@ -141,17 +141,19 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
         let Some(reason) = reason else { return };
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
-    match failure.or_else(|| entry_raise_blocker(&selects)) {
+    match failure.or_else(|| arm_raise_blocker(&selects)) {
         Some(failure) => Err(failure),
         None => Ok(()),
     }
 }
 
-/// A handler-ful `?` whose error derives from a constant raises when
-/// its arm is entered: the constant fires at the arm's wake. A kernel
-/// derives its selection fresh every run and has no arm-entry view, so
-/// the raise node-walks.
-fn entry_raise_blocker<R: Rt, E: UserEvent>(
+/// A handler-ful `?` under a select arm raises on an edge its arm may
+/// owe to the select's fire tracker: an input whose fire no selected
+/// arm saw is re-delivered FIRED when this arm reads it
+/// (design/wake_catchup.md), and a constant fires at the arm's wake. A
+/// kernel derives its selection fresh every run and remembers neither,
+/// so the raise node-walks.
+fn arm_raise_blocker<R: Rt, E: UserEvent>(
     selects: &[&Node<R, E>],
 ) -> Option<FusionBlocker> {
     let mut found = None;
@@ -163,11 +165,12 @@ fn entry_raise_blocker<R: Rt, E: UserEvent>(
                     return;
                 }
                 let NodeView::Qop(q) = n.view() else { return };
-                if q.handler.is_some() && has_constant(&q.n) {
+                if q.handler.is_some() {
                     found = Some(FusionBlocker {
                         spec: n.spec().clone(),
-                        reason: "a `?` under a handler raises a constant error when \
-                                 its arm is entered — arm entry is the node-walk's"
+                        reason: "a `?` under a handler raises an edge its arm may owe \
+                                 to the select's fire tracker — arm entry is the \
+                                 node-walk's"
                             .into(),
                     });
                 }
@@ -177,38 +180,6 @@ fn entry_raise_blocker<R: Rt, E: UserEvent>(
             }
         }
     }
-    found
-}
-
-/// A constant under an inner select's arm fires that select through
-/// its scrutinee fold on both engines; one reachable outside any arm
-/// fires at entry.
-fn has_constant<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
-    let mut under_arm: LPooled<nohash::IntSet<ExprId>> = LPooled::take();
-    let mut found = false;
-    fusion::for_each_reachable_node(node, &mut |n| match n.view() {
-        NodeView::Constant(_) => found |= !under_arm.contains(&n.spec().id),
-        NodeView::Variant(v) if v.n.is_empty() => {
-            found |= !under_arm.contains(&n.spec().id)
-        }
-        NodeView::Array(a) if a.n.is_empty() => {
-            found |= !under_arm.contains(&n.spec().id)
-        }
-        NodeView::ListLit(l) if l.n.is_empty() => {
-            found |= !under_arm.contains(&n.spec().id)
-        }
-        NodeView::Map(m) if m.keys.is_empty() => {
-            found |= !under_arm.contains(&n.spec().id)
-        }
-        NodeView::Select(s) => {
-            for (_, body) in s.arms.iter() {
-                fusion::for_each_node(body, &mut |b| {
-                    under_arm.insert(b.spec().id);
-                });
-            }
-        }
-        _ => {}
-    });
     found
 }
 

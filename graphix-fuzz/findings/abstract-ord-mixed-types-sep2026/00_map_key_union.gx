@@ -1,0 +1,10 @@
+// sep16a (2026-09-17): 35 swallowed panics across aieka, katana and
+// ryouko at netidx-value abstract_type.rs `ord`, which compared the
+// TypeId of the `Abstract` wrapper (equal for every value) and then
+// unwrapped a downcast of the other side. A map keyed by a union of a
+// user abstract type and a lambda orders a GxAbstract against a
+// LambdaDef and panicked the runtime task; both engines died alike, so
+// the verdict read AGREE. The registry now orders by the registered
+// uuid; a worker aborts on any panic so it counts as a crash.
+// Expected (both engines): 2.
+{type T = Abstract<i64>; let f = |x: i64| x; let u: [T, fn(x: i64) -> i64] = T(i64:1); let w: [T, fn(x: i64) -> i64] = f; let m = {u => i64:1, w => i64:2}; map::len(m)}

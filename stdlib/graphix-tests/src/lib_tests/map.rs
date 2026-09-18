@@ -286,3 +286,21 @@ run!(map_map_key_collision, MAP_MAP_KEY_COLLISION, |v: Result<&Value>| {
         Ok(Ok((1, n))) if n == 1 || n == 2
     )
 });
+
+const MAP_KEY_MIXED_ABSTRACT_KINDS: &str = r#"
+{
+  type T = Abstract<i64>;
+  let f = |x: i64| x;
+  let u: [T, fn(x: i64) -> i64] = T(1);
+  let w: [T, fn(x: i64) -> i64] = f;
+  let m = {u => 1, w => 2};
+  map::len(m)
+}
+"#;
+
+run!(map_key_mixed_abstract_kinds, MAP_KEY_MIXED_ABSTRACT_KINDS, |v: Result<&Value>| {
+    match v {
+        Ok(Value::I64(2)) => true,
+        _ => false,
+    }
+});

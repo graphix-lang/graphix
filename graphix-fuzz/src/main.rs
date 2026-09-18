@@ -236,6 +236,33 @@ async fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
     let reactive = args.iter().any(|a| a == "--reactive");
     args.retain(|a| a != "--reactive");
+    // A panic on a subject's runtime thread is caught by tokio and both
+    // engines then fail alike, which a verdict reads as AGREE. A worker
+    // aborts instead, so the pool records the program as a crash.
+    if matches!(
+        args.get(1).map(String::as_str),
+        Some(
+            "check-one"
+                | "check-batch"
+                | "gen-batch"
+                | "detcheck-one"
+                | "selfcheck-one"
+                | "minimize-one"
+                | "typemorph-one"
+                | "gen-check"
+                | "regress"
+                | "fusecheck"
+                | "leakcheck"
+                | "check"
+                | "run"
+        )
+    ) {
+        let report = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            report(info);
+            std::process::abort()
+        }));
+    }
     // Generated programs call `sys::fs::write_all` & co. with arbitrary
     // paths. Worker processes are sandboxed by the spawning campaign
     // (GRAPHIX_FUZZ_SANDBOXED); this covers manual invocations.
