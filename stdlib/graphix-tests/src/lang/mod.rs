@@ -12,6 +12,7 @@ mod errors;
 mod functions;
 mod fusion;
 mod image;
+mod inference;
 mod interfaces;
 mod lists;
 mod maps;
