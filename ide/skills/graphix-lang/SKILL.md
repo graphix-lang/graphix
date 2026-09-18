@@ -191,6 +191,19 @@ let r = seqq request {             // seqq queues triggers; seq drops while busy
 The trigger is any expression. `seqq sys::time::after_idle(duration:250.ms,
 key) { .. }` runs once per burst of presses, not once per press.
 
+A busy flag set on a trigger, a call sampled on that trigger, and the
+flag cleared on the result is a seq written by hand, three statements
+apart:
+
+```graphix
+busy <- go ~ true;  let r = f(go ~ x);  busy <- r ~ false      // never this
+let r = seqq go { busy <- true; let r = f(x); busy <- false; r }   // this
+```
+
+`seqq` when the result must track the latest input (a dropped trigger
+would leave `r` aligned with a stale `x`); `seq` when a re-trigger during
+a run is noise. Debounce the trigger when a burst should cost one run.
+
 A statement starts in the first cycle its predecessor's effect can be
 seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
 `n <- n + 1; publish(n)` publishes the NEW `n` (a cycle later);
