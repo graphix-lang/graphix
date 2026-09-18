@@ -1557,7 +1557,10 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    pub(super) fn arm_match(&self, env: &Env, v: &Value) -> ArmMatch {
+    /// Whether the arm's type and structure predicates admit `v`. The
+    /// checker narrows the arm's binds by exactly this, so a value that
+    /// fails it is never delivered to them.
+    pub(super) fn shape_matches(&self, env: &Env, v: &Value) -> bool {
         // the type predicate is checked whether written or inferred: a
         // tuple and an array are the same `Value::Array` at runtime. An
         // inferred predicate is checked permissively (an abstract's
@@ -1569,7 +1572,11 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         } else {
             self.type_predicate.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         };
-        if !(typed && self.structure_predicate.is_match(v)) {
+        typed && self.structure_predicate.is_match(v)
+    }
+
+    pub(super) fn arm_match(&self, env: &Env, v: &Value) -> ArmMatch {
+        if !self.shape_matches(env, v) {
             return ArmMatch::NoStruct;
         }
         match &self.guard {

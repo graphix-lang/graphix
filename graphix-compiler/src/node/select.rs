@@ -747,9 +747,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }};
         }
         // Guards are live nodes and tick every cycle, even under a
-        // tainted scrutinee; only the bind is gated on a value view.
+        // tainted scrutinee. The bind is delivered only to an arm whose
+        // shape admits the value: the checker narrowed the binds by that
+        // shape, and a guard fused to the narrowing must never see the
+        // value an earlier arm claimed.
         for (pat, _) in arms.iter_mut() {
-            let bind_guard = arg_up && pat.guard.is_some();
+            let bind_guard = arg_up
+                && pat.guard.is_some()
+                && arg.value.as_ref().is_some_and(|v| pat.shape_matches(&ctx.env, v));
             if bind_guard {
                 if let Some(arg) = arg.value.as_ref() {
                     pat.bind_event(ctx, event, arg, bind_tag);
