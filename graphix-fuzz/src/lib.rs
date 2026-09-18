@@ -34,7 +34,7 @@ use graphix_package_core::testing::{
 use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
-use std::{future, time::Duration};
+use std::{collections::BTreeMap, fmt, future, str::FromStr, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 
 /// Every stdlib package, so generated programs can use the whole
@@ -299,6 +299,9 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
     match compile_with_stats(code, mode, Duration::from_secs(60)).await {
         CompileOutcome::Compiled(_) => None,
         CompileOutcome::Rejected(e, _) | CompileOutcome::Failed(e) => Some(e),
+        CompileOutcome::BudgetAborted => {
+            Some("stack budget exceeded: the runtime aborted".to_string())
+        }
     }
 }
 
@@ -309,6 +312,9 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
 enum CompileOutcome {
     Compiled(FusionStats),
     Rejected(String, FusionStats),
+    /// The first update cycle recursed past the stack budget, which
+    /// aborts the runtime before its stats can be read.
+    BudgetAborted,
     Failed(String),
 }
 
@@ -351,6 +357,9 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         // Debug format is the anyhow chain; gen-check buckets on the
         // last line, the innermost cause.
         let verdict = program_result(&ctx).await;
+        if ctx.rt.budget_aborted() {
+            return CompileOutcome::BudgetAborted;
+        }
         match ctx.fusion_stats().await {
             Ok(s) => match verdict {
                 Ok(_) => CompileOutcome::Compiled(s),
@@ -2730,30 +2739,63 @@ pub fn regression_corpus_len() -> usize {
     corpus::REGRESSION_CORPUS.len()
 }
 
-/// The checked-in fusion-coverage manifest: one `fused_count<TAB>name`
-/// line per corpus program. `fusecheck` diffs live counts against it so
-/// a silent de-fusion regression fails loud; `fusecheck --bless`
-/// rewrites the file (then rebuild to embed).
+/// The checked-in fusion-coverage manifest: one `count<TAB>name` line
+/// per corpus program, `count` a [`FuseCount`]. `regress` diffs live
+/// counts against it so a silent de-fusion regression fails loud;
+/// `fusecheck --bless` rewrites the file (then rebuild to embed).
 pub static FUSECHECK_MANIFEST: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/fusecheck.manifest"));
+
+/// What a compile-only measurement of a corpus program records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuseCount {
+    /// Regions that fused.
+    Fused(u64),
+    /// The program's first cycle aborts the runtime by the stack budget,
+    /// so it has no count; that it aborts is what the manifest pins.
+    BudgetAbort,
+}
+
+impl fmt::Display for FuseCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FuseCount::Fused(n) => write!(f, "{n}"),
+            FuseCount::BudgetAbort => write!(f, "abort"),
+        }
+    }
+}
+
+impl FromStr for FuseCount {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "abort" => Ok(FuseCount::BudgetAbort),
+            n => n.parse().map(FuseCount::Fused).map_err(|_| ()),
+        }
+    }
+}
 
 /// Fused-region count per corpus program, in corpus order. Jit mode,
 /// compile only, so the count cannot depend on run-time pacing. A count
 /// that could not be measured is `Err` and must be treated as a gate
 /// failure, never as 0.
-pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, Result<u64, String>)> {
+pub async fn run_fusecheck(
+    timeout: Duration,
+) -> Vec<(String, Result<FuseCount, String>)> {
     use tokio::task::JoinSet;
     let par = parallelism();
     let entries = corpus::REGRESSION_CORPUS;
-    let mut set: JoinSet<(usize, Result<u64, String>)> = JoinSet::new();
+    let mut set: JoinSet<(usize, Result<FuseCount, String>)> = JoinSet::new();
     let mut next = 0usize;
     let spawn_one = |set: &mut JoinSet<_>, i: usize| {
         let prog = entries[i].1.to_string();
         set.spawn(async move {
             let r = match compile_with_stats(&prog, Mode::Jit, timeout).await {
                 CompileOutcome::Compiled(s) | CompileOutcome::Rejected(_, s) => {
-                    Ok(s.fused as u64)
+                    Ok(FuseCount::Fused(s.fused as u64))
                 }
+                CompileOutcome::BudgetAborted => Ok(FuseCount::BudgetAbort),
                 CompileOutcome::Failed(e) => Err(e),
             };
             (i, r)
@@ -2763,7 +2805,7 @@ pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, Result<u64, String
         spawn_one(&mut set, next);
         next += 1;
     }
-    let mut counts: Vec<Option<Result<u64, String>>> = vec![None; entries.len()];
+    let mut counts: Vec<Option<Result<FuseCount, String>>> = vec![None; entries.len()];
     while let Some(res) = set.join_next().await {
         if let Ok((i, c)) = res {
             counts[i] = Some(c);
@@ -2780,6 +2822,48 @@ pub async fn run_fusecheck(timeout: Duration) -> Vec<(String, Result<u64, String
             (name.to_string(), c.unwrap_or_else(|| Err("worker panicked".to_string())))
         })
         .collect()
+}
+
+/// Every way the live counts disagree with the `manifest`, one line
+/// each: an unreadable count, a program that lost or gained fusion, one
+/// the manifest does not record, or a row whose program is gone. Empty
+/// means the manifest holds.
+pub fn fusecheck_mismatches(
+    manifest: &str,
+    counts: &[(String, Result<FuseCount, String>)],
+) -> Vec<String> {
+    let mut recorded: BTreeMap<&str, FuseCount> = BTreeMap::new();
+    for l in manifest.lines() {
+        if let Some((c, n)) = l.split_once('\t') {
+            if let Ok(c) = c.parse() {
+                recorded.insert(n, c);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (n, c) in counts {
+        let rec = recorded.remove(n.as_str());
+        let c = match c {
+            Ok(c) => c,
+            Err(e) => {
+                let last = e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(e);
+                out.push(format!("unreadable: {n}: {last}"));
+                continue;
+            }
+        };
+        match rec {
+            Some(r) if r == *c => {}
+            Some(FuseCount::Fused(r)) if matches!(c, FuseCount::Fused(c) if *c < r) => {
+                out.push(format!("LOST fusion: {n}: {r} -> {c}"))
+            }
+            Some(r) => out.push(format!("changed fusion: {n}: {r} -> {c}")),
+            None => out.push(format!("unrecorded: {n} ({c}) — bless to record")),
+        }
+    }
+    for (n, r) in recorded {
+        out.push(format!("stale manifest row: {n} ({r}) — bless to drop"));
+    }
+    out
 }
 
 /// The oracle-soundness gate: same program, same mode, twice → identical
@@ -5638,6 +5722,41 @@ mod batch_files_test {
                  (a `ran: false` agreement means the batch child never \
                  compiled the subject)"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod fusecheck_test {
+    use super::*;
+
+    #[test]
+    fn mismatches_name_every_way_the_manifest_can_be_wrong() {
+        let manifest =
+            "3\tholds\n2\tlost\n1\tgained\n4\tnow_aborts\nabort\tstill_aborts\n0\tgone\n";
+        let live = [
+            ("holds", Ok(FuseCount::Fused(3))),
+            ("lost", Ok(FuseCount::Fused(1))),
+            ("gained", Ok(FuseCount::Fused(2))),
+            ("now_aborts", Ok(FuseCount::BudgetAbort)),
+            ("still_aborts", Ok(FuseCount::BudgetAbort)),
+            ("unrecorded", Ok(FuseCount::Fused(5))),
+            ("wedged", Err("runtime init failed\ncompile timed out".to_string())),
+        ]
+        .map(|(n, c)| (n.to_string(), c));
+        assert_eq!(
+            fusecheck_mismatches(manifest, &live),
+            [
+                "LOST fusion: lost: 2 -> 1",
+                "changed fusion: gained: 1 -> 2",
+                "changed fusion: now_aborts: 4 -> abort",
+                "unrecorded: unrecorded (5) — bless to record",
+                "unreadable: wedged: compile timed out",
+                "stale manifest row: gone (0) — bless to drop",
+            ]
+        );
+        for c in [FuseCount::Fused(7), FuseCount::BudgetAbort] {
+            assert_eq!(c.to_string().parse(), Ok(c));
         }
     }
 }

@@ -5,8 +5,8 @@
 
 use anyhow::{Result, bail};
 use graphix_fuzz::{
-    CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, Outcome, check, fuzz, generate_campaign,
-    minimize, regression_corpus_len, run_regression,
+    CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, Outcome, check, fusecheck_mismatches, fuzz,
+    generate_campaign, minimize, regression_corpus_len, run_fusecheck, run_regression,
 };
 use std::{
     sync::{Arc, LazyLock},
@@ -86,6 +86,22 @@ fn regress_timeout() -> Duration {
 // real divergence surfaces well within 3s.
 fn campaign_timeout() -> Duration {
     scaled(3)
+}
+
+fn fusecheck_timeout() -> Duration {
+    scaled(60)
+}
+
+/// The fusion half of `regress`: every corpus program's fused-region
+/// count against the embedded manifest. Returns the mismatch count.
+async fn print_fusecheck() -> usize {
+    let counts = run_fusecheck(fusecheck_timeout()).await;
+    let bad = fusecheck_mismatches(graphix_fuzz::FUSECHECK_MANIFEST, &counts);
+    for l in &bad {
+        println!("  {l}");
+    }
+    println!("fusion manifest: {} programs, {} mismatches", counts.len(), bad.len());
+    bad.len()
 }
 
 async fn print_regression() -> usize {
@@ -403,7 +419,7 @@ async fn main() -> Result<()> {
             }
         }
         Some("regress") => {
-            let n = print_regression().await;
+            let n = print_regression().await + print_fusecheck().await;
             if n > 0 {
                 drop(cwd_guard);
                 std::process::exit(1);
@@ -463,34 +479,28 @@ async fn main() -> Result<()> {
             }
         }
         Some("fusecheck") => {
-            // fused-region counts per corpus program vs the checked-in
-            // manifest. `--bless` rewrites the manifest (rebuild afterward:
-            // the compare reads the embedded copy). An unmeasurable
-            // count is a failure, never a 0.
-            let bless = args.iter().any(|a| a == "--bless");
-            let timeout = scaled(60);
-            let counts = graphix_fuzz::run_fusecheck(timeout).await;
-            let mut unreadable = 0usize;
-            for (n, c) in &counts {
-                if let Err(e) = c {
-                    unreadable += 1;
-                    let last =
-                        e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(e);
-                    println!("  unreadable: {n}: {last}");
+            // `--bless` rewrites the manifest from the live counts
+            // (rebuild afterward: the compare reads the embedded copy);
+            // without it this is the fusion half of `regress`.
+            if args.iter().any(|a| a == "--bless") {
+                let counts = graphix_fuzz::run_fusecheck(fusecheck_timeout()).await;
+                let mut unreadable = 0usize;
+                let mut out = String::new();
+                for (n, c) in &counts {
+                    match c {
+                        Ok(c) => out.push_str(&format!("{c}\t{n}\n")),
+                        Err(e) => {
+                            unreadable += 1;
+                            println!("  unreadable: {n}: {}", first_line(e));
+                        }
+                    }
                 }
-            }
-            if bless {
                 if unreadable > 0 {
                     eprintln!(
                         "fusecheck: refusing to bless — {unreadable} unreadable counts"
                     );
                     drop(cwd_guard);
                     std::process::exit(1);
-                }
-                let mut out = String::new();
-                for (n, c) in &counts {
-                    let c = c.as_ref().expect("unreadable counts checked above");
-                    out.push_str(&format!("{c}\t{n}\n"));
                 }
                 let path = orig_cwd.join("graphix-fuzz/fusecheck.manifest");
                 std::fs::write(&path, out).unwrap_or_else(|e| {
@@ -500,42 +510,9 @@ async fn main() -> Result<()> {
                     "fusecheck: blessed {} entries — rebuild to embed",
                     counts.len()
                 );
-            } else {
-                let mut recorded: std::collections::BTreeMap<&str, u64> =
-                    std::collections::BTreeMap::new();
-                for l in graphix_fuzz::FUSECHECK_MANIFEST.lines() {
-                    if let Some((c, n)) = l.split_once('\t') {
-                        if let Ok(c) = c.parse() {
-                            recorded.insert(n, c);
-                        }
-                    }
-                }
-                let mut bad = unreadable;
-                for (n, c) in &counts {
-                    let rec = recorded.remove(n.as_str());
-                    let Ok(c) = c else { continue };
-                    match rec {
-                        Some(r) if r == *c => {}
-                        Some(r) => {
-                            bad += 1;
-                            let dir = if *c < r { "LOST" } else { "gained" };
-                            println!("  {dir} fusion: {n}: {r} -> {c}");
-                        }
-                        None => {
-                            bad += 1;
-                            println!("  unrecorded: {n} ({c} fused) — bless to record");
-                        }
-                    }
-                }
-                for (n, r) in recorded {
-                    bad += 1;
-                    println!("  stale manifest row: {n} ({r}) — bless to drop");
-                }
-                println!("fusecheck: {} programs, {bad} mismatches", counts.len());
-                if bad > 0 {
-                    drop(cwd_guard);
-                    std::process::exit(1);
-                }
+            } else if print_fusecheck().await > 0 {
+                drop(cwd_guard);
+                std::process::exit(1);
             }
         }
         Some("reactive-check") => {

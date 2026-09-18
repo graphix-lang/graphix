@@ -38,7 +38,8 @@ dedup, the minimizer, the findings corpus.
 Subcommands: `check`/`run`/`minimize`/`typemorph <file>`; `generate
 [--reactive]`; `fuzz` (a campaign); `regress` (the findings corpus);
 `selfcheck`, `detcheck`, `gen-check`, `reactive-check`, `leakcheck`,
-`typemorph-scan` (gates). `check-one`/`minimize-one`/`selfcheck-one`/
+`typemorph-scan` (gates); `fusecheck [--bless]` (the fusion half of
+`regress` alone, or re-recording its manifest). `check-one`/`minimize-one`/`selfcheck-one`/
 `typemorph-one` are the hidden child-process forms.
 
 Sources: **corpus mutation** (seeds = the hand seeds plus every `run!`
@@ -325,6 +326,15 @@ After minimization a finding is a `.gx` file in a directory under
 adjudication; the directory IS the regression gate. `regress` runs the
 whole corpus through `check` in-process; the corpus is embedded in the
 binary, so a soak's startup gate carries the count of pins it verified.
+`regress` also compiles every pin once more in JIT mode, compile only,
+and compares its fused-region count with `graphix-fuzz/fusecheck.manifest`
+(one `count<TAB>name` row per pin; `abort` for a pin whose first cycle
+trips the stack budget, which kills the runtime before its stats can be
+read). The oracle cannot see a region that quietly falls back to the
+node-walk, since both engines then agree; the manifest can. A count that
+moves is a finding until the change is understood, and an intended one is
+re-recorded with `fusecheck --bless` (then rebuild: the compare reads the
+embedded copy) in the commit that made it.
 A finding's pin commits to cross-mode agreement, not to a value, until
 a human confirms the intended semantics — the node-walk isn't
 infallible, and only a value pin also guards against both engines

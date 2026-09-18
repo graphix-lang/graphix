@@ -362,7 +362,13 @@ blocker profile, not a gap count.
   pin both engines reject is a regression unless it says
   `// expect: reject`; `check`/`run`/`generate`/`fuzz`/`minimize`/
   `regress`/`selfcheck`/`gen-check`/`detcheck`/`typemorph`. The
-  committed `findings/` corpus is the regression gate. `sys::`/`http::`
+  committed `findings/` corpus is the regression gate: `regress` runs
+  every pin through `check` and also compares each pin's fused-region
+  count with `graphix-fuzz/fusecheck.manifest`, so a de-fusion fails
+  loud; a program whose first cycle aborts the runtime by the stack
+  budget records `abort`. After an INTENDED fusion change, `fusecheck
+  --bless` rewrites the manifest (rebuild to embed it) and the diff is
+  reviewed like code. `sys::`/`http::`
   programs compare settled values per epoch (`FinalValues`); the
   `Excluded` markers (`oracle_tier`) never record a divergence.
   Soaks run under `nice -n 19` from a campaign-private copy of the
