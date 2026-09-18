@@ -1,0 +1,14 @@
+// The node-walk select delivered every scrutinee update to every
+// guarded arm's binds before ticking the guard, whether or not the
+// arm's shape admitted the value. The checker narrows the binds by
+// that shape, so `rows` here is Array<i64> and the guard fuses to that
+// type, and the Null the `null as _` arm had already claimed arrived
+// in it as a kernel param of the wrong shape (now a panic; then a
+// logged mismatch treated as bottom). The select itself node-walks
+// (a nullable scrutinee's bind predicate is not scalar), which is what
+// leaves the guard to fuse on its own. Found by the admin TUI suite,
+// 390 mismatches per run. The bind is now gated on the arm's shape.
+{let step = i64:0; step <- select step {s if s < i64:6 => s + i64:1, _ => never()};
+ let q: [Array<i64>, null] = null;
+ q <- select step {i64:1 => [i64:7, i64:8], i64:2 => null, i64:3 => [], i64:4 => [i64:9], i64:5 => null, _ => never()};
+ select q {null as _ => i64:0, rows if array::len(rows) == i64:0 => i64:1, rows => rows[i64:0]$}}
