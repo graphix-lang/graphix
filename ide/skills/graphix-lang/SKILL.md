@@ -188,6 +188,9 @@ let r = seqq request {             // seqq queues triggers; seq drops while busy
 }
 ```
 
+The trigger is any expression. `seqq sys::time::after_idle(duration:250.ms,
+key) { .. }` runs once per burst of presses, not once per press.
+
 A statement starts in the first cycle its predecessor's effect can be
 seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
 `n <- n + 1; publish(n)` publishes the NEW `n` (a cycle later);

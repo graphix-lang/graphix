@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e7eb307f.js";
+            window.path_to_searchindex_js = "searchindex-1d6e6d8a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2043,6 +2043,10 @@ time. Use it when every request must be served, such as a stream of
 jobs. The queue is unbounded; see <a href="#captured-inputs">Captured inputs</a>
 for what a queued request carries.</li>
 </ul>
+<p>The trigger is any expression. A burst of triggers that should cost one
+run, such as a key held down, is debounced at the trigger:
+<code>seqq sys::time::after_idle(duration:250.ms, key) { ... }</code> runs once,
+250ms after the last press.</p>
 <pre><code class="language-graphix">let request = count(sys::time::timer(duration:20.ms, 3)?);
 let label = "job";
 seqq request {

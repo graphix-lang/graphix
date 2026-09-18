@@ -112,6 +112,9 @@ stmt := let pat = expr ;
       | try { stmt* [expr] } with(e[: T]) { stmt* [expr] } ;   // §7
 ```
 
+`trigger` is any expression that does not begin with `{`, and its
+postfix chain admits no map access `{k}`: `seq t { f(t) }` is a trigger
+and a body, never `t{f(t)}`. Parenthesize a trigger that needs either.
 `seq { .. }` without a trigger runs once at init. `let rec` is not a
 step. `catch` is refused anywhere in a seq body — as a statement,
 inside a block, or nested in a step's expression; a lambda literal's

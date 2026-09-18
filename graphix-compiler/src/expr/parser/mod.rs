@@ -807,10 +807,7 @@ where
             attempt(string("seq").skip(not_prefix())).map(|_| false),
         )),
         spaces(),
-        optional(attempt(
-            not_followed_by(token('{'))
-                .with(choice((between(token('('), sptoken(')'), expr()), reference()))),
-        )),
+        optional(attempt(not_followed_by(token('{')).with(arithexp::arith(false)))),
         seq_stmts(),
     )
         .then(
@@ -1161,7 +1158,7 @@ parser! {
                 letbind(),
                 attempt(lambda()),
                 attempt(connect()),
-                attempt(arith()),
+                attempt(arith(true)),
                 byref(),
                 qop(deref()),
                 qop((position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
@@ -1244,7 +1241,7 @@ pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
 
 #[cfg(test)]
 pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
-    arithexp::arith_term()
+    arithexp::arith_term(true)
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(&*s))

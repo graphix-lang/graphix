@@ -58,6 +58,11 @@ is in progress:
   jobs. The queue is unbounded; see [Captured inputs](#captured-inputs)
   for what a queued request carries.
 
+The trigger is any expression. A burst of triggers that should cost one
+run, such as a key held down, is debounced at the trigger:
+`seqq sys::time::after_idle(duration:250.ms, key) { ... }` runs once,
+250ms after the last press.
+
 ```graphix
 let request = count(sys::time::timer(duration:20.ms, 3)?);
 let label = "job";

@@ -5228,17 +5228,12 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "SYMBOL",
-                  "name": "parenthesized_expression"
-                },
-                {
-                  "type": "SYMBOL",
-                  "name": "reference"
-                }
-              ]
+              "type": "FIELD",
+              "name": "trigger",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_expression"
+              }
             },
             {
               "type": "BLANK"
@@ -7317,6 +7312,22 @@
     [
       "_expression",
       "map_ref"
+    ],
+    [
+      "_binding_name",
+      "_field_name"
+    ],
+    [
+      "_seq_item",
+      "do_block"
+    ],
+    [
+      "boolean",
+      "_field_name"
+    ],
+    [
+      "null",
+      "_field_name"
     ],
     [
       "_expression",

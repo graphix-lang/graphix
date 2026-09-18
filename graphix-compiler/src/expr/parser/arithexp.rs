@@ -29,7 +29,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), token('&').with(arith_term()))
+    (position(), token('&').with(arith_term(true)))
         .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
 }
 
@@ -39,7 +39,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), token('*').with(arith_term()))
+    (position(), token('*').with(arith_term(true)))
         .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
 }
 
@@ -50,7 +50,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), token('-').with(arith_term()))
+    (position(), token('-').with(arith_term(true)))
         .map(|(pos, expr)| ExprKind::Neg(Arc::new(expr)).to_expr(pos))
 }
 
@@ -70,7 +70,9 @@ enum QopSuffix {
 
 // Each alternative is `attempt`-wrapped so a partial parse (the `{` of a
 // map access that is really a block) ends the postfix loop cleanly.
-fn postfix_op<I>() -> impl Parser<I, Output = Post>
+// `key` admits `{k}`; the head of a `seq` refuses it so that its body
+// is not read as a map access of the trigger.
+fn postfix_op<I>(key: bool) -> impl Parser<I, Output = Post>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -82,7 +84,15 @@ where
             spfldname().map(Post::Field),
         )))),
         attempt(array_index_suffix()).map(Post::Array),
-        attempt(between(sptoken('{'), sptoken('}'), expr())).map(Post::Key),
+        attempt(between(sptoken('{'), sptoken('}'), expr()).and_then(move |k| {
+            if key {
+                Ok(Post::Key(k))
+            } else {
+                Err(<StreamErrorFor<I>>::message_static_message(
+                    "a seq trigger takes no map access",
+                ))
+            }
+        })),
         attempt(apply_args()).map(Post::Call),
     ))
 }
@@ -158,7 +168,7 @@ where
     I::Range: Range,
 {
     choice((
-        (position(), token('!').with(arith_term()))
+        (position(), token('!').with(arith_term(true)))
             .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
         raw_string().map(|e| (e, None)),
         list_lit().map(|e| (e, None)),
@@ -172,7 +182,7 @@ where
         never_expr().map(|e| (e, None)),
         any().map(|e| (e, None)),
         interpolated().map(|e| (e, None)),
-        (position(), token('!').with(arith()))
+        (position(), token('!').with(arith(true)))
             .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
         attempt(map()).map(|e| (e, None)),
         attempt(structure()).map(|e| (e, None)),
@@ -187,7 +197,7 @@ where
 }
 
 parser! {
-    pub(crate) fn arith_term[I]()(I) -> Expr
+    pub(crate) fn arith_term[I](key: bool)(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow(spaces()
@@ -195,7 +205,7 @@ parser! {
                 (
                     position(),
                     primary(),
-                    many::<LPooled<Vec<Post>>, _, _>(postfix_op()),
+                    many::<LPooled<Vec<Post>>, _, _>(postfix_op(*key)),
                     optional(qop_suffix()),
                 )
                     .and_then(|(pos, (base, paren), mut ops, qop)| {
@@ -310,11 +320,11 @@ fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(&'static str, Expr)>>) -> E
 }
 
 parser! {
-    pub(crate) fn arith[I]()(I) -> Expr
+    pub(crate) fn arith[I](key: bool)(I) -> Expr
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow((
-            arith_term(),
+            arith_term(*key),
             many((
                 attempt(spaces().with(choice((
                     attempt(string("==")),
@@ -340,7 +350,7 @@ parser! {
                     attempt(string("~!")),
                     string("~"),
                 )))),
-                arith_term(),
+                arith_term(*key),
             )),
         ).and_then(|(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
             // The iterative operator chain builds one AST level per operator.

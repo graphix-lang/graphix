@@ -14,6 +14,25 @@ use netidx_value::{Value, parser::VAL_ESC};
 use poolshark::local::LPooled;
 use std::fmt::{self, Formatter, Write};
 
+/// A seq trigger the head parser reads back bare; any other shape is
+/// parenthesized so it cannot be taken for the body or for a map access.
+fn trigger_needs_parens(t: &Expr) -> bool {
+    !matches!(
+        t.kind,
+        ExprKind::Ref { .. }
+            | ExprKind::Apply(_)
+            | ExprKind::ExplicitParens(_)
+            | ExprKind::StructRef { .. }
+            | ExprKind::TupleRef { .. }
+            | ExprKind::ArrayRef { .. }
+            | ExprKind::ArraySlice { .. }
+            | ExprKind::Qop(_)
+            | ExprKind::OrNever(_)
+            | ExprKind::Sample { .. }
+            | ExprKind::StrictSample { .. }
+    )
+}
+
 fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
     buf: &mut PrettyBuf,
     exprs: &'a [A],
@@ -950,10 +969,7 @@ impl PrettyDisplay for ExprKind {
             ExprKind::Seq { queued, trigger, body } => {
                 write!(buf, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
-                    let parens = !matches!(
-                        t.kind,
-                        ExprKind::Ref { .. } | ExprKind::ExplicitParens(_)
-                    );
+                    let parens = trigger_needs_parens(t);
                     if parens {
                         write!(buf, "(")?;
                     }
@@ -1355,13 +1371,10 @@ impl ExprKind {
             ExprKind::Seq { queued, trigger, body } => {
                 write!(f, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
-                    if matches!(
-                        t.kind,
-                        ExprKind::Ref { .. } | ExprKind::ExplicitParens(_)
-                    ) {
-                        write!(f, "{t} ")?;
-                    } else {
+                    if trigger_needs_parens(t) {
                         write!(f, "({t}) ")?;
+                    } else {
+                        write!(f, "{t} ")?;
                     }
                 }
                 print_exprs(f, body, "{", "}", "; ")

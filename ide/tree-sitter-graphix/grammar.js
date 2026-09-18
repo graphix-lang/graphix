@@ -48,6 +48,12 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$._expression, $.map_ref],
+    // `seq {x}`: a punned struct literal as trigger, or a body with no
+    // trigger; the trigger reading dies when no body follows.
+    [$._binding_name, $._field_name],
+    [$._seq_item, $.do_block],
+    [$.boolean, $._field_name],
+    [$.null, $._field_name],
     [$._expression, $.lambda],
     [$._expression, $.apply],
     [$._expression, $.array_ref, $.array_slice],
@@ -877,14 +883,12 @@ module.exports = grammar({
       '}',
     ),
 
-    // `seq [trigger] { stmts }` — trigger is a path or `(expr)`, never a
-    // full expr (postfix `{` is map_ref). `until` is a seq-body item.
+    // `seq [trigger] { stmts }` — the trigger is a full expression; the
+    // parse where its `{` opens a map_ref dies for want of a body, as in
+    // `select`. `until` is a seq-body item.
     seq_block: $ => seq(
       choice('seq', 'seqq'),
-      optional(choice(
-        $.parenthesized_expression,
-        $.reference,
-      )),
+      optional(field('trigger', $._expression)),
       '{',
       $._seq_items,
       '}',

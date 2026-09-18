@@ -67,6 +67,18 @@ async fn stale_capture(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+async fn call_trigger_debounces(fusion_disabled: bool) -> Result<()> {
+    let code = format!(
+        r#"{{
+        {BURST}
+        seqq sys::time::after_idle(duration:20.ms, request) {{ request }}
+    }}"#
+    );
+    let (values, _) = run_delta(&code, fusion_disabled).await?;
+    assert_eq!(as_i64s(&values), [3]);
+    Ok(())
+}
+
 async fn live_until(fusion_disabled: bool) -> Result<()> {
     let code = r#"{
         let ready = false;
@@ -250,6 +262,7 @@ modes!(burst_captures, burst_captures_interp, burst_captures_jit);
 modes!(repeated_outputs, repeated_outputs_interp, repeated_outputs_jit);
 modes!(delayed_capture, delayed_capture_interp, delayed_capture_jit);
 modes!(stale_capture, stale_capture_interp, stale_capture_jit);
+modes!(call_trigger_debounces, call_trigger_debounces_interp, call_trigger_debounces_jit);
 modes!(live_until, live_until_interp, live_until_jit);
 modes!(live_writes, live_writes_interp, live_writes_jit);
 modes!(capture_scopes, capture_scopes_interp, capture_scopes_jit);

@@ -2240,6 +2240,12 @@ fn seq_parses() {
         "seqq { 1 }",
         "seqq request { let x = 1; x }",
         "seqq (request ~ value) { until ready; { 1; 2 } }",
+        "seq f(t) { 1 }",
+        "seqq sys::time::after_idle(duration:250.ms, t) { 1 }",
+        "seq request ~ value { until ready; 1 }",
+        "seq t.x { 1 }",
+        "seq t[0]? { 1 }",
+        "seq t{ 1 }",
     ] {
         let e = parse_one(s).unwrap();
         assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);
