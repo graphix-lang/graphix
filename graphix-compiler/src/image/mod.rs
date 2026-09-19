@@ -810,7 +810,10 @@ fn dynscope_len(scope: &DynScope) -> usize {
                 |e| &mut e.handlers,
                 || {
                     let (bind, expr) = h.id();
-                    bind.encoded_len() + expr.encoded_len() + dynscope_len(&h.parent())
+                    bind.encoded_len()
+                        + expr.encoded_len()
+                        + h.is_machine().encoded_len()
+                        + dynscope_len(&h.parent())
                 },
             )
         }
@@ -853,6 +856,7 @@ fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackEr
             let (bind, expr) = h.id();
             bind.encode(buf)?;
             expr.encode(buf)?;
+            h.is_machine().encode(buf)?;
             dynscope_encode(&h.parent(), buf)
         },
     )
@@ -876,8 +880,9 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
             DEF => {
                 let bind = BindId::decode(sub)?;
                 let expr = ExprId::decode(sub)?;
+                let machine = bool::decode(sub)?;
                 let parent = dynscope_decode(sub)?;
-                let scope = parent.with_catch((bind, expr));
+                let scope = parent.with_catch((bind, expr), machine);
                 let h = scope.handler().expect("with_catch installs a handler");
                 decoding(|d| d.handlers.insert(at, h));
                 Ok(scope)

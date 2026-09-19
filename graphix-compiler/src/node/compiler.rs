@@ -5,7 +5,7 @@ use super::{
     bind::{Bind, ByRef, Deref, Ref},
     callsite::CallSite,
     data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-    error::{Qop, SeqGuard},
+    error::{Qop, SeqAbortEvent, SeqGuard},
     lambda::Lambda,
     module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
@@ -274,6 +274,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::SeqGuard(e) => {
             SeqGuard::compile(ctx, flags, spec.clone(), scope, top_id, e)
+        }
+        ExprKind::SeqAbort(e) => {
+            SeqAbortEvent::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
         ExprKind::OrNever(e) => {
             OrNever::compile(ctx, flags, spec.clone(), scope, top_id, e)

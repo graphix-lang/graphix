@@ -35,7 +35,7 @@ node_tags! {
     ListLit, Tuple, Variant, ExplicitParens, StringInterpolate, Connect,
     ConnectDeref, TypeCast, Any, Sample, ArrayRef, ArraySlice, StructWith,
     StructRef, Construct, TupleRef, ByRef, Deref, Map, MapRef, Catch, Qop,
-    SeqGuard, OrNever, CallSite, Select, Collection, Fused,
+    SeqGuard, OrNever, CallSite, Select, Collection, Fused, SeqAbort,
 }
 
 pub(crate) fn tag_len() -> usize {
@@ -116,7 +116,7 @@ pub fn decode_node<R: Rt, E: UserEvent>(
         bind::{Bind, ByRef, Deref, Ref},
         callsite::CallSite,
         data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
-        error::{Catch, OrNever, Qop, SeqGuard},
+        error::{Catch, OrNever, Qop, SeqAbortEvent, SeqGuard},
         lambda::Lambda,
         map::{Map, MapRef},
         module::Module,
@@ -192,6 +192,7 @@ pub fn decode_node<R: Rt, E: UserEvent>(
         NodeTag::Catch => Catch::image_decode(ctx, buf),
         NodeTag::Qop => Qop::image_decode(ctx, buf),
         NodeTag::SeqGuard => SeqGuard::image_decode(ctx, buf),
+        NodeTag::SeqAbort => SeqAbortEvent::image_decode(ctx, buf),
         NodeTag::OrNever => OrNever::image_decode(ctx, buf),
         NodeTag::CallSite => CallSite::image_decode(ctx, buf),
         NodeTag::Select => Select::image_decode(ctx, buf),

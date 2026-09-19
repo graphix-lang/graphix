@@ -23,7 +23,7 @@ let shr = 'a: Int |a: 'a, b: 'a| -> 'a 'core_shr;
 let product = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_product;
 let sum = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_sum;
 let uniq = |v: 'a| -> 'a 'core_uniq;
-let queue = |#clock: Any, v: 'a| -> 'a 'core_queue;
+let queue = |#clock: Any, #flush: Any = null, v: 'a| -> 'a 'core_queue;
 let queuefn = |#count: &[i64, null] = &null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
 let hold = |#clock: Any, v: 'a| -> 'a 'core_hold;
 let dbg = |#dest: [`Stdout, `Stderr, Log] = `Stderr, v: 'a| -> 'a 'core_dbg;

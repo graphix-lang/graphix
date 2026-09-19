@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-db97e84d.js";
+            window.path_to_searchindex_js = "../searchindex-31118cca.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -308,6 +308,31 @@ nothing. This is a concise way of writing,</p>
 easier to debug issues while still allowing execution to continue. The log
 line names the site and the error, and is the same whether the expression
 runs in the interpreter or in a JIT-compiled kernel.</p>
+<h2 id="-and--on-nullable-values"><a class="header" href="#-and--on-nullable-values">? and $ on Nullable Values</a></h2>
+<p>Both operators also work on an optional value, a <code>['a, null]</code>. <code>$</code> is still
+“or never”: a null produces nothing, and because a null is not a failure
+nothing is logged. It is the way to say “wait until this is there”,</p>
+<pre><code class="language-graphix">let session = (*connected)$
+</code></pre>
+<p><code>?</code> raises. There is no error value to raise, so it makes one,
+<code>`NullError(string)</code>, where the string is the expression that was null. Only
+a <code>?</code> on a nullable adds that tag to the error type of the catch it raises to,</p>
+<pre><code class="language-graphix">〉catch(e) println((e.0).error)
+〉let m = {"a" =&gt; 1}
+〉let v = map::get(m, "b")
+〉v?
+-: i64
+`NullError("v")
+</code></pre>
+<p>When a type has both an error and a null, the errors come off first, and the
+null is left in place. That is what you want from a function that returns
+<code>Result&lt;null, 'e&gt;</code>, its <code>?</code> must not raise on success, and it means each
+operator takes one layer, as in Rust. To take both, write both,</p>
+<pre><code class="language-graphix">db::txn::get(tree, key)?$
+</code></pre>
+<p>raises a database error to the nearest catch, and then waits for the key to
+have a value. Use <code>opt::ok_or(v, e)?</code> instead of a bare <code>?</code> when the catch
+should hear something more specific than <code>NullError</code>.</p>
 
                     </main>
 

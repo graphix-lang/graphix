@@ -289,6 +289,67 @@ performed inside an ordinary expression remain performed, and the
 statements of a block are issued together, so a sibling's write is not
 retracted.
 
+## Aborting a run
+
+`abort(event)` after the trigger ends the run in progress when `event`
+fires:
+
+```graphix
+seq go abort(cancel) {
+  let child = sys::process::spawn(options(cmd))?;
+  let status = sys::process::wait(child.proc)?;
+  report(status.code)
+}
+```
+
+The run stops where it is. The block produces no value, no error is
+raised, and a `try` around the current step is not taken: an abort is
+not a failure to recover from. The sequence is idle and the next
+trigger starts a fresh run. The step that was waiting drops its work as
+any sleeping expression does (a pending timer is cancelled, a request
+in flight is forgotten), so nothing from the aborted run arrives in the
+next one.
+
+The event is evaluated as the run's first step. It is asleep between
+runs and wakes when a run starts, so a timer in it times the run, and
+an event that fired while nothing was running aborts nothing:
+
+```graphix
+// a ten second budget for each run
+seq go abort(sys::time::timer(duration:10.s, false)) { ... }
+
+// the trigger's name is this run's trigger
+seqq let job = jobs abort(sys::time::after_idle(job.budget, job)) { ... }
+```
+
+Only fires after the run has started count; a value the event already
+holds when the run starts is not a fire.
+
+Nothing is undone. Writes the run already made stay made, and a value
+bound by a `let` stays alive until the next run replaces it, a spawned
+process included. Undo what needs undoing outside the block, on the
+same event: `busy <- cancel ~ false`. A child that must die with the
+run is written to a variable outside the block rather than bound with
+`let`.
+
+Under `seqq`, `abort` ends the current run and the next queued request
+starts. `flush(event)` also empties the queue:
+
+```graphix
+seqq request abort(skip) flush(cancel_all) { ... }
+```
+
+`flush` follows `abort` when both are present, and only `seqq` accepts
+it. A request that arrives with the flush or after it is kept.
+
+## Sleeping
+
+A sequence inside a `select` arm, or inside a function called from one,
+sleeps with the arm. A run in progress does not survive that: the
+sequence is idle when the arm wakes, and a `seq` without a trigger
+starts a fresh run there. The same holds for a `seq` nested in a step of
+an outer run that was aborted.
+
 The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
 Sleeping the enclosing expression discards pending queued work, following

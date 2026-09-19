@@ -1278,7 +1278,7 @@ pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
             facet: None,
         },
     );
-    let gate_scope = def.scope.with_catch((faux_id, ExprId::new()));
+    let gate_scope = def.scope.with_catch((faux_id, ExprId::new()), false);
     let mut f = (def.init)(
         &gate_scope,
         ctx,
@@ -1415,7 +1415,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 facet: None,
             },
         );
-        let gate_scope = def.scope.with_catch((faux_id, ExprId::new()));
+        let gate_scope = def.scope.with_catch((faux_id, ExprId::new()), false);
         // Declared (named) signature tvars are rigid for the duration of
         // the def gate: the body must be well-typed for arbitrary 'a.
         // Anonymous '_N inference cells stay bindable.

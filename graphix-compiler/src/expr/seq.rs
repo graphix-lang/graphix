@@ -52,24 +52,31 @@ impl Rewrite<'_> {
 
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     match &spec.kind {
-        ExprKind::Seq { queued, trigger: Some(SeqTrigger::Bind(b)), body } => {
-            desugar_let(spec, *queued, b, body)
-        }
+        ExprKind::Seq { trigger: Some(SeqTrigger::Bind(b)), .. } => desugar_let(spec, b),
         ExprKind::Seq { queued: true, .. } => desugar_queued(spec, env, scope),
+        ExprKind::Seq { flush: Some(f), .. } => Err(anyhow!(
+            "flush empties a queue, and a seq has none: write seqq, or abort(..)"
+        )
+        .context(ErrorContext((**f).clone()))),
         _ => desugar_plain(spec, None),
     }
+}
+
+/// The variables a `seqq` hands its machine: the credit clock an abort
+/// returns a credit on, and the variable a flush is written to.
+struct Queue<'a> {
+    clock: &'a str,
+    flush: &'a str,
 }
 
 /// `seq let pat = e { body }` is `{ let pat = e; seq name { body } }`:
 /// the trigger is a level named for the body, bound outside the machine
 /// so the run costs no step. A pattern that is not one name gets the
 /// level a name of its own and is destructured beside it.
-fn desugar_let(
-    spec: &Expr,
-    queued: bool,
-    b: &BindExpr,
-    body: &Arc<[Expr]>,
-) -> Result<Expr> {
+fn desugar_let(spec: &Expr, b: &BindExpr) -> Result<Expr> {
+    let ExprKind::Seq { queued, abort, flush, body, .. } = &spec.kind else {
+        panic!("desugar_let on a non-seq");
+    };
     let pos = spec.pos;
     if b.rec {
         return Err(anyhow!("a seq trigger cannot be rec: it has no self to recurse on")
@@ -94,8 +101,10 @@ fn desugar_let(
     }
     exprs.push(
         ExprKind::Seq {
-            queued,
+            queued: *queued,
             trigger: Some(SeqTrigger::Expr(Arc::new(r#ref(pos, &name)))),
+            abort: abort.clone(),
+            flush: flush.clone(),
             body: body.clone(),
         }
         .to_expr(pos),
@@ -103,8 +112,8 @@ fn desugar_let(
     Ok(block(pos, exprs))
 }
 
-fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
-    let ExprKind::Seq { trigger, body, .. } = &spec.kind else {
+fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
+    let ExprKind::Seq { trigger, abort, flush, body, .. } = &spec.kind else {
         panic!("desugar_seq on a non-seq");
     };
     let pos = spec.pos;
@@ -142,18 +151,19 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
         None => ExprKind::Constant(Value::Bool(true)).to_expr(pos),
     };
     let t_name = format_compact!("seqgo{id}");
-    let filter = apply_filter(pos, trig_expr, lambda_idle(pos, idle.as_str()));
+    let filter = apply_filter(pos, trig_expr, lambda_sampling(pos, idle.as_str()));
 
     let mut visible: AHashMap<ArcStr, ArcStr> = AHashMap::new();
     if let Some((n, _)) = &trigger_bind {
         visible.insert(n.clone(), ArcStr::from(trig_cell.as_str()));
     }
+    let aborted = format_compact!("seqab{id}");
     let err_bind = ArcStr::from("e");
     let catch_node = {
         let reset = connect(pos, pc.as_str(), variant(pos, "Idle"));
         let mut abort_body = vec![reset];
-        if let Some(clock) = abort_clock {
-            abort_body.push(connect(pos, clock, boolean(pos, true)));
+        if let Some(q) = queue {
+            abort_body.push(connect(pos, q.clock, boolean(pos, true)));
         }
         ExprKind::Catch(Arc::new(CatchExpr {
             bind: err_bind.clone(),
@@ -163,6 +173,9 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
             ),
             seq_abort: Some(Arc::new(block(pos, abort_body))),
             seq_capture: None,
+            seq_manual: (abort.is_some() || flush.is_some())
+                .then(|| Arc::new(r#ref(pos, aborted.as_str()))),
+            seq_pc: Some(ArcStr::from(pc.as_str())),
         }))
         .to_expr(pos)
     };
@@ -197,6 +210,38 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
     for (cell, cpos, typ) in cells.values() {
         prelude.push(let_bind(*cpos, cell.as_str(), typ.clone(), never(*cpos)));
     }
+    if abort.is_some() || flush.is_some() {
+        let edge = format_compact!("seqedge{id}");
+        let armed = format_compact!("seqarmed{id}");
+        let flushed = format_compact!("seqfl{id}");
+        prelude.push(let_bind(
+            pos,
+            edge.as_str(),
+            None,
+            apply_core(pos, "uniq", [(None, r#ref(pos, idle.as_str()))]),
+        ));
+        prelude.push(let_bind(pos, armed.as_str(), None, boolean(pos, false)));
+        prelude.push(connect(
+            pos,
+            armed.as_str(),
+            ExprKind::Not { expr: Arc::new(r#ref(pos, edge.as_str())) }.to_expr(pos),
+        ));
+        let mut events: SmallVec<[Expr; 2]> = SmallVec::new();
+        if let Some(e) = abort {
+            events.push(run_event(&rewrite(e, &visible), edge.as_str(), armed.as_str()));
+        }
+        if let (Some(e), Some(q)) = (flush, queue) {
+            let event = run_event(&rewrite(e, &visible), edge.as_str(), armed.as_str());
+            prelude.push(let_bind(e.pos, flushed.as_str(), None, event));
+            prelude.push(connect(e.pos, q.flush, r#ref(e.pos, flushed.as_str())));
+            events.push(r#ref(e.pos, flushed.as_str()));
+        }
+        let event = match events.len() {
+            1 => events.pop().unwrap(),
+            _ => ExprKind::Any { args: Arc::from_iter(events) }.to_expr(pos),
+        };
+        prelude.push(let_bind(pos, aborted.as_str(), None, event));
+    }
     let mut start: Vec<Expr> = Vec::new();
     start.push(let_bind(pos, t_name.as_str(), None, filter));
     start.push(connect(
@@ -214,10 +259,32 @@ fn desugar_plain(spec: &Expr, abort_clock: Option<&str>) -> Result<Expr> {
     let select_pc = select(pos, r#ref(pos, pc.as_str()), arms);
     let mut body_exprs = prelude;
     body_exprs.push(catch_node);
+    if abort.is_some() || flush.is_some() {
+        body_exprs.push(
+            ExprKind::SeqAbort(Arc::new(r#ref(pos, aborted.as_str()))).to_expr(pos),
+        );
+    }
     body_exprs.extend(start);
     body_exprs.push(select_pc);
     body_exprs.push(r#ref(pos, result.as_str()));
     Ok(block(pos, body_exprs))
+}
+
+/// An `abort(..)` or `flush(..)` event: `e` is an initial step, woken
+/// when a run starts and asleep between runs, and only its fires after
+/// the entry cycle count. What stands at entry, and the fires it missed
+/// asleep, belong to no run.
+fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
+    let pos = e.pos;
+    let live = select(
+        pos,
+        r#ref(pos, edge),
+        vec![
+            (pat_lit(Value::Bool(true)), never(pos)),
+            (pat_lit(Value::Bool(false)), e.clone()),
+        ],
+    );
+    apply_filter(pos, live, lambda_sampling(pos, armed))
 }
 
 /// `catch` is refused anywhere in a seq body: an install cannot produce
@@ -556,6 +623,8 @@ impl Machine<'_> {
                     variant(pos, with_entry.as_str()),
                 ))),
                 seq_capture: Some(e_cell.clone()),
+                seq_manual: None,
+                seq_pc: None,
             }))
             .to_expr(pos);
             let inner = std::mem::replace(arm, never(pos));
@@ -609,17 +678,27 @@ fn sink_writes(
 }
 
 fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
-    let ExprKind::Seq { trigger, body, .. } = &spec.kind else { unreachable!() };
+    let ExprKind::Seq { trigger, abort, flush, body, .. } = &spec.kind else {
+        unreachable!()
+    };
     let pos = spec.pos;
     let id = spec.id.inner();
+    let flushed = format_compact!("seqqflush{id}");
+    let dequeued = format_compact!("seqqrun{id}");
     let request = format_compact!("seqqrequest{id}");
     let clock = format_compact!("seqqclock{id}");
     let activation = format_compact!("seqqactivation{id}");
     let input = format_compact!("seqqinput{id}");
     let result = format_compact!("seqqresult{id}");
     let trigger_name = trigger.as_ref().and_then(|t| simple_ref_name(t.expr()));
-    let body =
-        ExprKind::Seq { queued: false, trigger: None, body: body.clone() }.to_expr(pos);
+    let body = ExprKind::Seq {
+        queued: false,
+        trigger: None,
+        abort: None,
+        flush: None,
+        body: body.clone(),
+    }
+    .to_expr(pos);
     let captures = body.fold(IndexMap::new(), &mut |mut caps, e| {
         if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
             &e.kind
@@ -676,6 +755,9 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
             trigger.as_ref().map_or_else(|| boolean(pos, true), |t| t.expr().clone()),
         ),
     ];
+    if flush.is_some() {
+        prelude.push(let_bind(pos, flushed.as_str(), None, never(pos)));
+    }
     let mut args = vec![r#ref(pos, request.as_str())];
     for (name, (expr, _, _)) in &captures {
         args.push(if trigger_name.as_ref() == Some(name) {
@@ -712,27 +794,25 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     } else {
         ExprKind::Tuple { args: Arc::from(args) }.to_expr(pos)
     };
+    let mut queue_args = vec![(
+        Some(ArcStr::from("clock")),
+        ExprKind::Any {
+            args: Arc::from_iter([
+                r#ref(pos, activation.as_str()),
+                r#ref(pos, clock.as_str()),
+            ]),
+        }
+        .to_expr(pos),
+    )];
+    if flush.is_some() {
+        queue_args.push((Some(ArcStr::from("flush")), r#ref(pos, flushed.as_str())));
+    }
+    queue_args.push((None, sample(pos, r#ref(pos, request.as_str()), payload)));
     prelude.push(let_bind(
         pos,
         input.as_str(),
         None,
-        apply_core(
-            pos,
-            "queue",
-            vec![
-                (
-                    Some(ArcStr::from("clock")),
-                    ExprKind::Any {
-                        args: Arc::from_iter([
-                            r#ref(pos, activation.as_str()),
-                            r#ref(pos, clock.as_str()),
-                        ]),
-                    }
-                    .to_expr(pos),
-                ),
-                (None, sample(pos, r#ref(pos, request.as_str()), payload)),
-            ],
-        ),
+        apply_core(pos, "queue", queue_args),
     ));
     for (i, (_, (_, name, _))) in captures.iter().enumerate() {
         prelude.push(let_bind(
@@ -747,17 +827,35 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         ));
     }
     let ExprKind::Seq { body, .. } = &body.kind else { unreachable!() };
+    // an abort or flush event reads everything live but the trigger's
+    // name, which is the request this run dequeued
+    let run_names: AHashMap<ArcStr, ArcStr> = trigger_name
+        .iter()
+        .map(|n| (n.clone(), ArcStr::from(dequeued.as_str())))
+        .collect();
+    if trigger_name.is_some() && (abort.is_some() || flush.is_some()) {
+        let input = r#ref(pos, input.as_str());
+        let request = if captures.is_empty() {
+            input
+        } else {
+            ExprKind::TupleRef { source: Arc::new(input), field: 0 }.to_expr(pos)
+        };
+        prelude.push(let_bind(pos, dequeued.as_str(), None, request));
+    }
     let machine = ExprKind::Seq {
         queued: false,
         trigger: Some(SeqTrigger::Expr(Arc::new(r#ref(pos, input.as_str())))),
+        abort: abort.as_ref().map(|e| Arc::new(rewrite(e, &run_names))),
+        flush: flush.as_ref().map(|e| Arc::new(rewrite(e, &run_names))),
         body: body.clone(),
     }
     .to_expr(pos);
+    let queue = Queue { clock: clock.as_str(), flush: flushed.as_str() };
     prelude.push(let_bind(
         pos,
         result.as_str(),
         None,
-        desugar_plain(&machine, Some(clock.as_str()))?,
+        desugar_plain(&machine, Some(&queue))?,
     ));
     prelude.push(connect(
         pos,
@@ -1058,7 +1156,7 @@ fn idle_of(pos: SourcePosition, pc: &str) -> Expr {
     )
 }
 
-fn lambda_idle(pos: SourcePosition, idle: &str) -> Expr {
+fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
     let x = ArcStr::from("x");
     ExprKind::Lambda(Arc::new(LambdaExpr {
         args: Arc::from(vec![Arg {
@@ -1071,7 +1169,7 @@ fn lambda_idle(pos: SourcePosition, idle: &str) -> Expr {
         rtype: None,
         constraints: Arc::from(Vec::<(TVar, Type)>::new()),
         throws: None,
-        body: Either::Left(sample(pos, r#ref(pos, "x"), r#ref(pos, idle))),
+        body: Either::Left(sample(pos, r#ref(pos, "x"), r#ref(pos, level))),
     }))
     .to_expr(pos)
 }
@@ -1269,15 +1367,22 @@ fn rewrite_with_inner(
                 handler: stmts(&t.handler, with_map),
             }))
         }
-        ExprKind::Seq { queued, trigger, body } => {
+        ExprKind::Seq { queued, trigger, abort, flush, body } => {
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));
             let mut inner = map.clone();
+            if let Some(SeqTrigger::Bind(b)) = &trigger {
+                b.pattern.with_names(&mut |n| {
+                    inner.remove(n);
+                });
+            }
+            let abort = abort.as_ref().map(|e| Arc::new(rewrite(e, &inner)));
+            let flush = flush.as_ref().map(|e| Arc::new(rewrite(e, &inner)));
             let mut out = Vec::with_capacity(body.len());
             for x in body.iter() {
                 out.push(rewrite_with(x, &inner, mode.deferred()));
                 shadow_step(x, &mut inner);
             }
-            ExprKind::Seq { queued: *queued, trigger, body: Arc::from(out) }
+            ExprKind::Seq { queued: *queued, trigger, abort, flush, body: Arc::from(out) }
         }
         ExprKind::Qop(x) => {
             let x = rewrite(x, map);
@@ -1347,6 +1452,11 @@ fn rewrite_with_inner(
                     .as_ref()
                     .map(|e| Arc::new(rewrite_with(e, &inner, mode.deferred()))),
                 seq_capture: c.seq_capture.clone(),
+                seq_manual: c
+                    .seq_manual
+                    .as_ref()
+                    .map(|e| Arc::new(rewrite_with(e, map, mode.deferred()))),
+                seq_pc: c.seq_pc.clone(),
             }))
         }
         ExprKind::Lambda(l) => {

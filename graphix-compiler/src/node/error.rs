@@ -96,6 +96,12 @@ pub struct Catch<R: Rt, E: UserEvent> {
 #[derive(Debug)]
 pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
     pub(crate) node: Node<R, E>,
+    /// A machine's `abort(..)` event, which a [`SeqAbortEvent`] counted
+    /// into the handler's generation before the machine updated: a fired
+    /// production runs `node` with no error in flight.
+    pub(crate) manual: Option<Node<R, E>>,
+    /// A machine's step variable, written idle when the machine sleeps.
+    pc: Option<BindId>,
     pending: bool,
 }
 
@@ -106,8 +112,15 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let handler = decode_node(ctx, buf)?;
-        let seq_abort =
-            opt_node_decode(ctx, buf)?.map(|node| SeqAbort { node, pending: false });
+        let seq_abort = match opt_node_decode(ctx, buf)? {
+            None => None,
+            Some(node) => Some(SeqAbort {
+                node,
+                manual: opt_node_decode(ctx, buf)?,
+                pc: Option::<BindId>::decode(buf)?,
+                pending: false,
+            }),
+        };
         let capture = Option::<BindId>::decode(buf)?;
         let own_handler = image::handler_decode(buf)?;
         let constraint = Option::<Type>::decode(buf)?;
@@ -157,27 +170,31 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         // the handler compiles before this catch registers, so a
         // rethrowing `?` inside it never resolves to itself
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
-        let covered = scope.with_catch((bind_id, top_id));
-        let seq_abort = c
-            .seq_abort
-            .as_ref()
-            .map(|e| {
-                Ok::<_, anyhow::Error>(SeqAbort {
-                    node: compile(ctx, flags, (**e).clone(), &catch_scope, top_id)?,
-                    pending: false,
-                })
-            })
-            .transpose()?;
-        let capture = match &c.seq_capture {
-            None => None,
-            Some(name) => {
-                let path = ModPath::from([name.as_str()]);
-                match ctx.env.lookup_bind(&scope.lexical, &path)? {
-                    Some((_, b)) => Some(b.id),
-                    None => bail!("BUG: seq capture cell {name} is not bound"),
-                }
+        let covered = scope.with_catch((bind_id, top_id), c.seq_pc.is_some());
+        let lookup = |ctx: &ExecCtx<R, E>, name: &ArcStr| {
+            let path = ModPath::from([name.as_str()]);
+            match ctx.env.lookup_bind(&scope.lexical, &path)? {
+                Some((_, b)) => Ok(b.id),
+                None => bail!("BUG: seq cell {name} is not bound"),
             }
         };
+        let seq_abort = match &c.seq_abort {
+            None if c.seq_manual.is_some() || c.seq_pc.is_some() => {
+                bail!("BUG: a seq abort event without an abort action")
+            }
+            None => None,
+            Some(e) => Some(SeqAbort {
+                node: compile(ctx, flags, (**e).clone(), &catch_scope, top_id)?,
+                manual: c
+                    .seq_manual
+                    .as_ref()
+                    .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
+                    .transpose()?,
+                pc: c.seq_pc.as_ref().map(|n| lookup(ctx, n)).transpose()?,
+                pending: false,
+            }),
+        };
+        let capture = c.seq_capture.as_ref().map(|n| lookup(ctx, n)).transpose()?;
         ctx.rt.ref_var(bind_id, top_id);
         let node = Node::new(Self {
             spec,
@@ -203,6 +220,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             + self.spec.encoded_len()
             + self.handler.image_len()
             + opt_node_len(self.seq_abort.as_ref().map(|a| &a.node))
+            + self
+                .seq_abort
+                .as_ref()
+                .map_or(0, |a| opt_node_len(a.manual.as_ref()) + a.pc.encoded_len())
             + self.capture.encoded_len()
             + image::handler_len(&self.own_handler)
             + self.constraint.encoded_len()
@@ -217,6 +238,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.spec.encode(buf)?;
         self.handler.image_encode(buf)?;
         opt_node_encode(self.seq_abort.as_ref().map(|a| &a.node), buf)?;
+        if let Some(a) = &self.seq_abort {
+            opt_node_encode(a.manual.as_ref(), buf)?;
+            a.pc.encode(buf)?;
+        }
         self.capture.encode(buf)?;
         image::handler_encode(&self.own_handler, buf)?;
         self.constraint.encode(buf)?;
@@ -250,6 +275,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             }
         }
         if let Some(abort) = &mut self.seq_abort {
+            if let Some(manual) = &mut abort.manual
+                && manual.update(ctx, event).is_fired()
+            {
+                self.received = self.received.wrapping_add(1);
+                abort.pending = true;
+            }
             if abort.pending
                 && self.received == self.own_handler.generation()
                 && !self.own_handler.has_nested_errors()
@@ -270,6 +301,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.delete(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.delete(ctx);
+            abort.manual.iter_mut().for_each(|n| n.delete(ctx));
         }
     }
 
@@ -277,6 +309,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.sleep(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.sleep(ctx);
+            abort.manual.iter_mut().for_each(|n| n.sleep(ctx));
+            abort.pending = false;
+            if let Some(pc) = abort.pc {
+                ctx.rt.set_var(pc, Value::String(literal!("Idle")));
+            }
         }
     }
 
@@ -284,6 +321,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.reset_replay(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.reset_replay(ctx);
+            abort.manual.iter_mut().for_each(|n| n.reset_replay(ctx));
         }
     }
 
@@ -311,6 +349,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         wrap!(self.handler, self.handler.typecheck0(ctx))?;
         if let Some(abort) = &mut self.seq_abort {
             wrap!(abort.node, abort.node.typecheck0(ctx))?;
+            if let Some(manual) = &mut abort.manual {
+                wrap!(manual, manual.typecheck0(ctx))?;
+            }
         }
         // the capture cell's type is the union of every covering
         // handler's throws
@@ -351,6 +392,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         wrap!(self.handler, self.handler.typecheck1(ctx))?;
         if let Some(abort) = &mut self.seq_abort {
             wrap!(abort.node, abort.node.typecheck1(ctx))?;
+            if let Some(manual) = &mut abort.manual {
+                wrap!(manual, manual.typecheck1(ctx))?;
+            }
         }
         // `T` must cover every error the region throws (the typecheck0
         // snapshot); a call site's `ftype.throws` supersets later
@@ -378,6 +422,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.refs(refs);
         if let Some(abort) = &self.seq_abort {
             abort.node.refs(refs);
+            abort.manual.iter().for_each(|n| n.refs(refs));
         }
     }
 
@@ -390,6 +435,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         crate::fusion::fuse(&mut self.handler, ctx)?;
         if let Some(abort) = &mut self.seq_abort {
             crate::fusion::fuse(&mut abort.node, ctx)?;
+            if let Some(manual) = &mut abort.manual {
+                crate::fusion::fuse(manual, ctx)?;
+            }
         }
         Ok(None)
     }
@@ -820,7 +868,7 @@ enum GuardState {
     /// Entered under this handler generation; before a fired production
     /// has passed, a standing value is the previous run's answer.
     Running {
-        generation: u64,
+        generation: (u64, u64),
         fired_since_entry: bool,
     },
     Failed,
@@ -831,6 +879,9 @@ pub struct SeqGuard<R: Rt, E: UserEvent> {
     spec: Expr,
     pub(crate) n: Node<R, E>,
     handler: ErrorHandler,
+    /// The machine's handler: an `abort(..)` fails the run there, and a
+    /// try-body arm's nearest handler is its jump.
+    machine: ErrorHandler,
     state: GuardState,
     resident: TagValue,
 }
@@ -843,10 +894,12 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
         let spec = Expr::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         let handler = image::handler_decode(buf)?;
+        let machine = image::handler_decode(buf)?;
         Ok(Node::new(Self {
             spec,
             n,
             handler,
+            machine,
             state: GuardState::Sleeping,
             resident: TagValue::phantom(),
         }))
@@ -862,11 +915,13 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
     ) -> Result<Node<R, E>> {
         let handler =
             scope.dynamic.handler().ok_or_else(|| anyhow!("BUG: seq handler"))?;
+        let machine = handler.machine().ok_or_else(|| anyhow!("BUG: seq machine"))?;
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         Ok(Node::new(Self {
             spec,
             n,
             handler,
+            machine,
             state: GuardState::Sleeping,
             resident: TagValue::phantom(),
         }))
@@ -879,19 +934,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
             + self.spec.encoded_len()
             + self.n.image_len()
             + image::handler_len(&self.handler)
+            + image::handler_len(&self.machine)
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqGuard, buf);
         self.spec.encode(buf)?;
         self.n.image_encode(buf)?;
-        image::handler_encode(&self.handler, buf)
+        image::handler_encode(&self.handler, buf)?;
+        image::handler_encode(&self.machine, buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let current = (self.handler.generation(), self.machine.generation());
         let (generation, fired_since_entry) = match self.state {
+            GuardState::Sleeping if self.machine.aborted_in(ctx.rt.cycle()) => {
+                self.state = GuardState::Failed;
+                return self
+                    .resident
+                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+            }
             GuardState::Sleeping => {
-                let generation = self.handler.generation();
+                let generation = current;
                 self.state = GuardState::Running { generation, fired_since_entry: false };
                 (generation, false)
             }
@@ -905,11 +969,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
                 return self.resident.ride();
             }
         };
-        if generation == self.handler.generation() || self.handler.has_nested_errors() {
+        if generation == current || self.handler.has_nested_errors() {
             let value = self.n.update(ctx, event);
-            if generation == self.handler.generation()
-                && !self.handler.has_nested_errors()
-            {
+            let current = (self.handler.generation(), self.machine.generation());
+            if generation == current && !self.handler.has_nested_errors() {
                 if fired_since_entry || value.tag().is_bottom() {
                     return value;
                 }
@@ -921,7 +984,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
                 return TagValue::bottom_null(false);
             }
         }
-        if generation != self.handler.generation() {
+        if generation != (self.handler.generation(), self.machine.generation()) {
             self.state = GuardState::Failed;
         }
         self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
@@ -963,6 +1026,110 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::SeqGuard(self)
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        crate::fusion::fuse(&mut self.n, ctx)?;
+        Ok(None)
+    }
+}
+
+/// A seq's `abort(..)` event, placed before the machine's select: a
+/// fired production fails the run in the cycle it fires, so no guard
+/// under the machine passes a completion that cycle. A block updates its
+/// catches after their covered children, which is too late for that.
+#[derive(Debug)]
+pub struct SeqAbortEvent<R: Rt, E: UserEvent> {
+    spec: Expr,
+    pub(crate) n: Node<R, E>,
+    machine: ErrorHandler,
+}
+
+impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        let machine = image::handler_decode(buf)?;
+        Ok(Node::new(Self { spec, n, machine }))
+    }
+
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        e: &Expr,
+    ) -> Result<Node<R, E>> {
+        let machine = scope
+            .dynamic
+            .handler()
+            .and_then(|h| h.machine())
+            .ok_or_else(|| anyhow!("BUG: seq machine"))?;
+        let n = compile(ctx, flags, e.clone(), scope, top_id)?;
+        Ok(Node::new(Self { spec, n, machine }))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len()
+            + self.spec.encoded_len()
+            + self.n.image_len()
+            + image::handler_len(&self.machine)
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        put_tag(NodeTag::SeqAbort, buf);
+        self.spec.encode(buf)?;
+        self.n.image_encode(buf)?;
+        image::handler_encode(&self.machine, buf)
+    }
+
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        if self.n.update(ctx, event).is_fired() {
+            self.machine.abort(ctx.rt.cycle());
+        }
+        TagValue::phantom_ref()
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.n.typecheck0(ctx)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        self.n.typecheck1(ctx)
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &Type::Bottom
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.refs(refs);
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::SeqAbort(self)
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {

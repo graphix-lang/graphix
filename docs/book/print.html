@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-db97e84d.js";
+            window.path_to_searchindex_js = "searchindex-31118cca.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2025,7 +2025,7 @@ to a variable, or feed it to another expression.</p>
 and nothing outside the block sees the name. It is
 <code>{ let name = expr; seq name { ... } }</code> written once, and the pattern
 may destructure (<code>seq let {x, y} = point { ... }</code>):</p>
-<pre><code class="language-graphix">seq let session = opt::or_never(*connected) {
+<pre><code class="language-graphix">seq let session = (*connected)$ {
     known &lt;- upsert(known, session.domain, session.server, session.fingerprint);
     save &lt;- session
 }
@@ -2229,6 +2229,51 @@ start the statements after it. This is not rollback: effects already
 performed inside an ordinary expression remain performed, and the
 statements of a block are issued together, so a sibling’s write is not
 retracted.</p>
+<h2 id="aborting-a-run"><a class="header" href="#aborting-a-run">Aborting a run</a></h2>
+<p><code>abort(event)</code> after the trigger ends the run in progress when <code>event</code>
+fires:</p>
+<pre><code class="language-graphix">seq go abort(cancel) {
+  let child = sys::process::spawn(options(cmd))?;
+  let status = sys::process::wait(child.proc)?;
+  report(status.code)
+}
+</code></pre>
+<p>The run stops where it is. The block produces no value, no error is
+raised, and a <code>try</code> around the current step is not taken: an abort is
+not a failure to recover from. The sequence is idle and the next
+trigger starts a fresh run. The step that was waiting drops its work as
+any sleeping expression does (a pending timer is cancelled, a request
+in flight is forgotten), so nothing from the aborted run arrives in the
+next one.</p>
+<p>The event is evaluated as the run’s first step. It is asleep between
+runs and wakes when a run starts, so a timer in it times the run, and
+an event that fired while nothing was running aborts nothing:</p>
+<pre><code class="language-graphix">// a ten second budget for each run
+seq go abort(sys::time::timer(duration:10.s, false)) { ... }
+
+// the trigger's name is this run's trigger
+seqq let job = jobs abort(sys::time::after_idle(job.budget, job)) { ... }
+</code></pre>
+<p>Only fires after the run has started count; a value the event already
+holds when the run starts is not a fire.</p>
+<p>Nothing is undone. Writes the run already made stay made, and a value
+bound by a <code>let</code> stays alive until the next run replaces it, a spawned
+process included. Undo what needs undoing outside the block, on the
+same event: <code>busy &lt;- cancel ~ false</code>. A child that must die with the
+run is written to a variable outside the block rather than bound with
+<code>let</code>.</p>
+<p>Under <code>seqq</code>, <code>abort</code> ends the current run and the next queued request
+starts. <code>flush(event)</code> also empties the queue:</p>
+<pre><code class="language-graphix">seqq request abort(skip) flush(cancel_all) { ... }
+</code></pre>
+<p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
+it. A request that arrives with the flush or after it is kept.</p>
+<h2 id="sleeping"><a class="header" href="#sleeping">Sleeping</a></h2>
+<p>A sequence inside a <code>select</code> arm, or inside a function called from one,
+sleeps with the arm. A run in progress does not survive that: the
+sequence is idle when the arm wakes, and a <code>seq</code> without a trigger
+starts a fresh run there. The same holds for a <code>seq</code> nested in a step of
+an outer run that was aborted.</p>
 <p>The queue is unbounded. A producer faster than the block can consume will
 grow it; a permanently stalled run can retain all subsequent requests.
 Sleeping the enclosing expression discards pending queued work, following
@@ -2368,6 +2413,31 @@ nothing. This is a concise way of writing,</p>
 easier to debug issues while still allowing execution to continue. The log
 line names the site and the error, and is the same whether the expression
 runs in the interpreter or in a JIT-compiled kernel.</p>
+<h2 id="-and--on-nullable-values"><a class="header" href="#-and--on-nullable-values">? and $ on Nullable Values</a></h2>
+<p>Both operators also work on an optional value, a <code>['a, null]</code>. <code>$</code> is still
+“or never”: a null produces nothing, and because a null is not a failure
+nothing is logged. It is the way to say “wait until this is there”,</p>
+<pre><code class="language-graphix">let session = (*connected)$
+</code></pre>
+<p><code>?</code> raises. There is no error value to raise, so it makes one,
+<code>`NullError(string)</code>, where the string is the expression that was null. Only
+a <code>?</code> on a nullable adds that tag to the error type of the catch it raises to,</p>
+<pre><code class="language-graphix">〉catch(e) println((e.0).error)
+〉let m = {"a" =&gt; 1}
+〉let v = map::get(m, "b")
+〉v?
+-: i64
+`NullError("v")
+</code></pre>
+<p>When a type has both an error and a null, the errors come off first, and the
+null is left in place. That is what you want from a function that returns
+<code>Result&lt;null, 'e&gt;</code>, its <code>?</code> must not raise on success, and it means each
+operator takes one layer, as in Rust. To take both, write both,</p>
+<pre><code class="language-graphix">db::txn::get(tree, key)?$
+</code></pre>
+<p>raises a database error to the nearest catch, and then waits for the key to
+have a value. Use <code>opt::ok_or(v, e)?</code> instead of a bare <code>?</code> when the catch
+should hear something more specific than <code>NullError</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="functions-1"><a class="header" href="#functions-1">Functions</a></h1>
 <p>Functions are first class values. They can be stored in variables, in data
@@ -5098,10 +5168,6 @@ val is_none: fn(v: ['a, null]) -&gt; bool;
 /// true if v is not null and equals x. Produces false when v is null
 /// regardless of x.
 val contains: fn(v: ['a, null], y: 'a) -&gt; bool;
-
-/// or_never(v) does not return anything if v is null, otherwise it
-/// returns v.
-val or_never: fn(v: ['a, null]) -&gt; 'a;
 
 /// or_default(v, d): if v is null return d, otherwise return v
 val or_default: fn(v: ['a, null], y: 'a) -&gt; 'a;
@@ -13800,7 +13866,7 @@ let on_update = |#path: string, #value: Primitive| {
     let v = cast&lt;i64&gt;(value)$;
     // run only when v updates
     let d = v ~ data;
-    let (row, col) = opt::or_never(str::row_col(path));
+    let (row, col) = str::row_col(path)$;
     let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
     let sum = map::fold(d, 0, |sum, (col, rows)| select col {
         "sum" =&gt; sum,

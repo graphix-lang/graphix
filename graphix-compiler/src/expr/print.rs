@@ -27,7 +27,14 @@ fn write_seq_let(f: &mut impl Write, b: &BindExpr) -> fmt::Result {
 /// A seq trigger the head parser reads back bare; any other shape is
 /// parenthesized so it cannot be taken for the body or for a map access.
 fn trigger_needs_parens(t: &Expr) -> bool {
-    !matches!(
+    let reads_as_clause = match &t.kind {
+        ExprKind::Apply(a) => {
+            matches!(&a.function.kind, ExprKind::Ref { name } if &*name.0 == "/flush")
+        }
+        _ => false,
+    };
+    reads_as_clause
+        || !matches!(
         t.kind,
         ExprKind::Ref { .. }
             | ExprKind::Apply(_)
@@ -978,7 +985,7 @@ impl PrettyDisplay for ExprKind {
                 writeln!(buf, ")")
             }
             ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
-            ExprKind::Seq { queued, trigger, body } => {
+            ExprKind::Seq { queued, trigger, abort, flush, body } => {
                 write!(buf, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
                     if let SeqTrigger::Bind(b) = t {
@@ -995,6 +1002,14 @@ impl PrettyDisplay for ExprKind {
                         write!(buf, ")")?;
                     }
                     write!(buf, " ")?;
+                }
+                for (name, e) in [("abort", abort), ("flush", flush)] {
+                    if let Some(e) = e {
+                        write!(buf, "{name}(")?;
+                        e.fmt_pretty(buf)?;
+                        buf.kill_newline();
+                        write!(buf, ") ")?;
+                    }
                 }
                 pretty_print_exprs(buf, body, "{", "}", ";")
             }
@@ -1088,7 +1103,7 @@ impl PrettyDisplay for ExprKind {
                 buf.kill_newline();
                 writeln!(buf, "?")
             }
-            ExprKind::SeqGuard(e) => e.fmt_pretty(buf),
+            ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => e.fmt_pretty(buf),
             ExprKind::OrNever(e) => {
                 e.fmt_pretty(buf)?;
                 buf.kill_newline();
@@ -1384,7 +1399,7 @@ impl ExprKind {
             ExprKind::Trait(t) => write!(f, "{t}"),
             ExprKind::Impl(i) => write!(f, "{i}"),
             ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
-            ExprKind::Seq { queued, trigger, body } => {
+            ExprKind::Seq { queued, trigger, abort, flush, body } => {
                 write!(f, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
                     if let SeqTrigger::Bind(b) = t {
@@ -1396,6 +1411,12 @@ impl ExprKind {
                     } else {
                         write!(f, "{t} ")?;
                     }
+                }
+                if let Some(e) = abort {
+                    write!(f, "abort({e}) ")?;
+                }
+                if let Some(e) = flush {
+                    write!(f, "flush({e}) ")?;
                 }
                 print_exprs(f, body, "{", "}", "; ")
             }
@@ -1450,7 +1471,7 @@ impl ExprKind {
             ExprKind::Construct { name, arg } => write!(f, "{name}({arg})"),
             ExprKind::Struct(st) => write!(f, "{st}"),
             ExprKind::Qop(e) | ExprKind::Rethrow(e) => write!(f, "{}?", e),
-            ExprKind::SeqGuard(e) => write!(f, "{e}"),
+            ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => write!(f, "{e}"),
             ExprKind::OrNever(e) => write!(f, "{}$", e),
             ExprKind::Catch(c) => match &c.constraint {
                 None => write!(f, "catch({}) {}", c.bind, c.handler),

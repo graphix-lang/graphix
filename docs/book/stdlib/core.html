@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-db97e84d.js";
+            window.path_to_searchindex_js = "../searchindex-31118cca.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -578,10 +578,6 @@ val is_none: fn(v: ['a, null]) -&gt; bool;
 /// true if v is not null and equals x. Produces false when v is null
 /// regardless of x.
 val contains: fn(v: ['a, null], y: 'a) -&gt; bool;
-
-/// or_never(v) does not return anything if v is null, otherwise it
-/// returns v.
-val or_never: fn(v: ['a, null]) -&gt; 'a;
 
 /// or_default(v, d): if v is null return d, otherwise return v
 val or_default: fn(v: ['a, null], y: 'a) -&gt; 'a;

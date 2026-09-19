@@ -380,6 +380,12 @@ pub struct CatchExpr {
     /// delivered per failure is written to this cell, and the handler's
     /// inferred throws are unioned into the cell's type.
     pub seq_capture: Option<ArcStr>,
+    /// Compiler-only: a seq's `abort(..)` event. A fired production
+    /// requests the abort action without an error.
+    pub seq_manual: Option<Arc<Expr>>,
+    /// Compiler-only: the machine's step variable, written idle when the
+    /// machine sleeps.
+    pub seq_pc: Option<ArcStr>,
 }
 
 /// `try { stmts } with(e[: T]) { stmts }` — a seq statement: an
@@ -518,6 +524,10 @@ pub enum ExprKind {
     Seq {
         queued: bool,
         trigger: Option<SeqTrigger>,
+        /// `abort(e)`: a fire of `e` during a run ends it
+        abort: Option<Arc<Expr>>,
+        /// `flush(e)`, `seqq` only: an abort that also empties the queue
+        flush: Option<Arc<Expr>>,
         body: Arc<[Expr]>,
     },
     /// `until expr` — wait until a bool level is true. Legal only as a
@@ -530,6 +540,9 @@ pub enum ExprKind {
     Rethrow(Arc<Expr>),
     /// Compiler-generated sequence completion boundary.
     SeqGuard(Arc<Expr>),
+    /// Compiler-generated: a fired production fails the enclosing seq
+    /// machine's run.
+    SeqAbort(Arc<Expr>),
     OrNever(Arc<Expr>),
     Catch(Arc<CatchExpr>),
     ByRef(Arc<Expr>),
@@ -924,6 +937,7 @@ impl Expr {
             | Qop(x)
             | Rethrow(x)
             | SeqGuard(x)
+            | SeqAbort(x)
             | OrNever(x)
             | ByRef(x)
             | Deref(x)
@@ -994,9 +1008,12 @@ impl Expr {
             Catch(c) => {
                 f(&c.handler);
                 c.seq_abort.iter().for_each(|e| f(e));
+                c.seq_manual.iter().for_each(|e| f(e));
             }
-            Seq { trigger, body, .. } => {
+            Seq { trigger, abort, flush, body, .. } => {
                 trigger.iter().for_each(|t| f(t.expr()));
+                abort.iter().for_each(|e| f(e));
+                flush.iter().for_each(|e| f(e));
                 body.iter().for_each(|e| f(e));
             }
             TryWith(t) => {
@@ -1069,6 +1086,7 @@ impl Expr {
             Qop(x) => Qop(a(f, x)),
             Rethrow(x) => Rethrow(a(f, x)),
             SeqGuard(x) => SeqGuard(a(f, x)),
+            SeqAbort(x) => SeqAbort(a(f, x)),
             OrNever(x) => OrNever(a(f, x)),
             ByRef(x) => ByRef(a(f, x)),
             Deref(x) => Deref(a(f, x)),
@@ -1175,10 +1193,14 @@ impl Expr {
                 handler: a(f, &c.handler),
                 seq_abort: c.seq_abort.as_ref().map(|e| a(f, e)),
                 seq_capture: c.seq_capture.clone(),
+                seq_manual: c.seq_manual.as_ref().map(|e| a(f, e)),
+                seq_pc: c.seq_pc.clone(),
             })),
-            Seq { queued, trigger, body } => Seq {
+            Seq { queued, trigger, abort, flush, body } => Seq {
                 queued: *queued,
                 trigger: trigger.as_ref().map(|t| t.map(|e| f(e))),
+                abort: abort.as_ref().map(|e| a(f, e)),
+                flush: flush.as_ref().map(|e| a(f, e)),
                 body: xs(f, body),
             },
             TryWith(t) => TryWith(Arc::new(TryWithExpr {

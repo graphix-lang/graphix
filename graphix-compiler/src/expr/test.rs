@@ -774,6 +774,8 @@ macro_rules! catch_stmt {
                     handler: Arc::new(handler),
                     seq_abort: None,
                     seq_capture: None,
+                    seq_manual: None,
+                    seq_pc: None,
                 }))
                 .to_expr_nopos()
             },
@@ -1463,11 +1465,15 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                             }))
                         }),
                 ]),
+                option::of(inner.clone()),
+                option::of(inner.clone()),
                 collection::vec(seq_item!(inner.clone()), 1..5),
             )
-                .prop_map(|(queued, trigger, body)| ExprKind::Seq {
+                .prop_map(|(queued, trigger, abort, flush, body)| ExprKind::Seq {
                     queued,
                     trigger,
+                    abort: abort.map(Arc::new),
+                    flush: flush.map(Arc::new),
                     body: Arc::from(body),
                 }
                 .to_expr_nopos()),
@@ -1996,6 +2002,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 handler: h0,
                 seq_abort: a0,
                 seq_capture: s0,
+                seq_manual: _,
+                seq_pc: _,
             } = &**c0;
             let CatchExpr {
                 bind: b1,
@@ -2003,6 +2011,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 handler: h1,
                 seq_abort: a1,
                 seq_capture: s1,
+                seq_manual: _,
+                seq_pc: _,
             } = &**c1;
             b0 == b1
                 && s0 == s1
@@ -2141,9 +2151,14 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => check(l0, l1) && check(r0, r1),
         (ExprKind::NoOp, ExprKind::NoOp) => true,
         (
-            ExprKind::Seq { queued: q0, trigger: t0, body: b0 },
-            ExprKind::Seq { queued: q1, trigger: t1, body: b1 },
+            ExprKind::Seq { queued: q0, trigger: t0, abort: a0, flush: f0, body: b0 },
+            ExprKind::Seq { queued: q1, trigger: t1, abort: a1, flush: f1, body: b1 },
         ) => {
+            let clause = |a: &Option<Arc<Expr>>, b: &Option<Arc<Expr>>| match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) => check(a, b),
+                _ => false,
+            };
             let trig = match (t0, t1) {
                 (None, None) => true,
                 (Some(SeqTrigger::Expr(a)), Some(SeqTrigger::Expr(b))) => check(a, b),
@@ -2157,6 +2172,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             };
             q0 == q1
                 && trig
+                && clause(a0, a1)
+                && clause(f0, f1)
                 && b0.len() == b1.len()
                 && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
         }

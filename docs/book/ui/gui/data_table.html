@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-db97e84d.js";
+            window.path_to_searchindex_js = "../../searchindex-31118cca.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -823,7 +823,7 @@ let on_update = |#path: string, #value: Primitive| {
     let v = cast&lt;i64&gt;(value)$;
     // run only when v updates
     let d = v ~ data;
-    let (row, col) = opt::or_never(str::row_col(path));
+    let (row, col) = str::row_col(path)$;
     let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
     let sum = map::fold(d, 0, |sum, (col, rows)| select col {
         "sum" =&gt; sum,

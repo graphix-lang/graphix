@@ -224,6 +224,18 @@ after it; `seq let {x, y} = pt { .. }` destructures. Under `seqq` it is
 the value that queued the run. `seq let c = (*r)$ { .. c.f .. }`
 is how a nullable reference is consumed; `(*r).f` is refused.
 
+`seq go abort(cancel) { .. }` ends the run in progress when `cancel`
+fires: silently (no value, no error, a `try` is not taken), and the next
+trigger starts fresh. The event is the run's first step, asleep between
+runs: `abort(sys::time::timer(duration:10.s, false))` is a budget per
+run, and a fire while idle aborts nothing. It reads the trigger's name as
+this run's trigger (`seq let c = go abort(sys::time::after_idle(d, c))`).
+Nothing is undone: clean up outside on the same event (`busy <- cancel ~
+false`), and write a child that must die with the run to an outer
+variable, not a `let`. Under `seqq`, `abort` starts the next queued
+request and `flush(e)` (after `abort`, `seqq` only) also empties the
+queue. A seq whose select arm sleeps mid-run is idle when it wakes.
+
 A busy flag set on a trigger, a call sampled on that trigger, and the
 flag cleared on the result is a seq written by hand, three statements
 apart:

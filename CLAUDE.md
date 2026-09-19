@@ -293,8 +293,8 @@ node graph IS the IR — there is no parallel typed IR
   LOCAL: every skip-owning node owns a `slept` bit its `sleep()` sets and
   its next update takes — no ExecCtx globals (parallel compile and a
   parallel evaluator stay possible). The restart builtins
-  (`once`/`take`/`skip`/`uniq`/`hold`/`count`) clear in their own
-  `sleep()`. A labeled DEFAULT is born with the binding and delivers
+  (`once`/`take`/`skip`/`uniq`/`hold`/`count`) and a seq machine's `pc`
+  clear in their own `sleep()`. A labeled DEFAULT is born with the binding and delivers
   FIRED at a fresh callee's first dispatch. Async builtins clear their
   output on sleep (`design/async_sleep_outputs.md`). A pure non-recursive
   arm skips `sleep` and is not updated while untaken.
@@ -430,7 +430,13 @@ blocker profile, not a gap count.
   in a seq body outside lambda literals). A step completes on a FIRED
   production after its entry, never on a standing value; a call-free
   step reads its level as it stands at entry. `seqq` queues triggers
-  with captured values. `--expand` prints the machine. `range(i, j)` is
+  with captured values. `abort(e)` after the trigger ends the run when
+  `e` fires: silent, past any `try`, and it wins the cycle it fires in
+  (the compiler-only `SeqAbort` node fails the machine's guards before
+  the select updates); `e` is an initial step, asleep between runs, and
+  only its fires after the entry cycle count. `flush(e)` (`seqq` only)
+  also empties the queue. A machine resets to idle in its handler's
+  `sleep()`: a run does not survive its arm's sleep. `--expand` prints the machine. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
 - **Comments** are legal only above an expression, a select arm, an impl
   method or a struct-literal field; parse errors report the furthest

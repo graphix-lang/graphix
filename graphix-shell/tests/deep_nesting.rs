@@ -93,6 +93,13 @@ fn program(shape: &str, d: usize) -> String {
             let body = std::iter::repeat("1").take(d).collect::<Vec<_>>().join("; ");
             format!("seq {{ {body} }}")
         }
+        "seqabort" => {
+            let mut s = String::from("1");
+            for _ in 0..d {
+                s = format!("seq abort({s}) {{ 1 }}");
+            }
+            format!("let x = {s}")
+        }
         _ => panic!("unknown shape {shape}"),
     }
 }
@@ -121,6 +128,7 @@ const SHAPES: &[&str] = &[
     "not",
     "modnest",
     "seqarm",
+    "seqabort",
 ];
 
 /// The child half: compile one shape on a small-stack runtime.

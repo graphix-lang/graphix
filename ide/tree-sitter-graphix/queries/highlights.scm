@@ -17,6 +17,8 @@
   "with"
   "seqq"
   "until"
+  "abort"
+  "flush"
   "if"
   "catch"
 ] @keyword.control

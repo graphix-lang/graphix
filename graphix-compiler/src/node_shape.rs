@@ -304,6 +304,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::TypeCast(n) => kids.push(&n.n),
         V::Qop(n) => kids.push(&n.n),
         V::SeqGuard(n) => kids.push(&n.n),
+        V::SeqAbort(n) => kids.push(&n.n),
         V::OrNever(n) => kids.push(&n.n),
         V::Not(n) => kids.push(&n.n),
         V::Neg(n) => kids.push(&n.n),
@@ -317,6 +318,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
             kids.push(&n.handler);
             if let Some(abort) = &n.seq_abort {
                 kids.push(&abort.node);
+                kids.extend(abort.manual.iter());
             }
         }
         V::ByRef(n) => kids.push(&n.child),
@@ -404,6 +406,7 @@ pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> ArcStr {
         NodeView::TypeCast(_) => literal!("TypeCast"),
         NodeView::Qop(_) => literal!("Qop"),
         NodeView::SeqGuard(_) => literal!("SeqGuard"),
+        NodeView::SeqAbort(_) => literal!("SeqAbort"),
         NodeView::OrNever(_) => literal!("OrNever"),
         NodeView::Catch(_) => literal!("Catch"),
         _ => literal!("Other"),

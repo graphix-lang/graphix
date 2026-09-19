@@ -99,7 +99,7 @@ pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
             "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
             "never", "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any",
             "use", "rec", "catch", "try", "self", "super", "package", "pub", "trait",
-            "impl", "seq", "seqq", "until",
+            "impl", "seq", "seqq", "until", "abort",
         ]
         .into_iter()
         .chain(TYPE_KEYWORDS.iter().copied()),
@@ -788,6 +788,36 @@ where
     )
 }
 
+/// The head of a seq clause, `abort(` or `flush(`. `flush` is not a
+/// reserved word, so a trigger that calls a function of that name is
+/// parenthesized.
+fn seq_clause_head<I>(name: &'static str) -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    attempt(spaces().with(string(name)).skip(spaces()).skip(token('('))).map(|_| ())
+}
+
+fn seq_clause_ahead<I>(name: &'static str) -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    not_followed_by(seq_clause_head(name).map(move |()| name))
+}
+
+fn seq_clause<I>(name: &'static str) -> impl Parser<I, Output = Option<Arc<Expr>>>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    optional(seq_clause_head(name).with(expr()).skip(sptoken(')')).map(Arc::new))
+}
+
 pub(super) fn seq<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -801,18 +831,28 @@ where
             attempt(string("seq").skip(not_prefix())).map(|_| false),
         )),
         spaces(),
-        optional(attempt(not_followed_by(token('{')).with(choice((
-            letbind_with(arithexp::arith(false)).map(|b| SeqTrigger::Bind(Arc::new(b))),
-            arithexp::arith(false).map(|e| SeqTrigger::Expr(Arc::new(e))),
-        ))))),
+        optional(attempt(
+            not_followed_by(token('{'))
+                .skip(seq_clause_ahead("abort"))
+                .skip(seq_clause_ahead("flush"))
+                .with(choice((
+                    letbind_with(arithexp::arith(false))
+                        .map(|b| SeqTrigger::Bind(Arc::new(b))),
+                    arithexp::arith(false).map(|e| SeqTrigger::Expr(Arc::new(e))),
+                ))),
+        )),
+        seq_clause("abort"),
+        seq_clause("flush"),
         seq_stmts(),
     )
         .then(
-            |(pos, queued, _, trigger, mut body): (
+            |(pos, queued, _, trigger, abort, flush, mut body): (
                 _,
                 _,
                 _,
                 Option<SeqTrigger>,
+                Option<Arc<Expr>>,
+                Option<Arc<Expr>>,
                 LPooled<Vec<Expr>>,
             )| {
                 if body.is_empty()
@@ -821,7 +861,11 @@ where
                     unexpected_any("a seq block must contain at least one step").left()
                 } else {
                     let body = Arc::from_iter(body.drain(..));
-                    value(ExprKind::Seq { queued, trigger, body }.to_expr(pos)).right()
+                    value(
+                        ExprKind::Seq { queued, trigger, abort, flush, body }
+                            .to_expr(pos),
+                    )
+                    .right()
                 }
             },
         )
@@ -1049,6 +1093,8 @@ where
                 handler: Arc::new(handler),
                 seq_abort: None,
                 seq_capture: None,
+                seq_manual: None,
+                seq_pc: None,
             }))
             .to_expr(pos)
         })

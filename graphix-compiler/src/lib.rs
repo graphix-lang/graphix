@@ -729,6 +729,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Select(&'a node::select::Select<R, E>),
     Catch(&'a node::error::Catch<R, E>),
     SeqGuard(&'a node::error::SeqGuard<R, E>),
+    SeqAbort(&'a node::error::SeqAbortEvent<R, E>),
     Qop(&'a node::error::Qop<R, E>),
     OrNever(&'a node::error::OrNever<R, E>),
     ExplicitParens(&'a node::ExplicitParens<R, E>),
@@ -1674,9 +1675,13 @@ impl Scope {
         self.append(block_component(kind, id).as_str())
     }
 
-    /// The scope covered by a handler installed here.
-    pub fn with_catch(&self, catch: (BindId, ExprId)) -> Self {
-        Self { lexical: self.lexical.clone(), dynamic: self.dynamic.with_catch(catch) }
+    /// The scope covered by a handler installed here; `machine` marks a
+    /// seq machine's own handler.
+    pub fn with_catch(&self, catch: (BindId, ExprId), machine: bool) -> Self {
+        Self {
+            lexical: self.lexical.clone(),
+            dynamic: self.dynamic.with_catch(catch, machine),
+        }
     }
 
     pub fn root() -> Self {
@@ -1692,6 +1697,9 @@ pub struct DynScope(Option<ErrorHandler>);
 
 struct DynNode {
     catch: (BindId, ExprId),
+    machine: bool,
+    /// One past the cycle of the last `abort(..)`; zero before any.
+    aborted: AtomicU64,
     raised: AtomicU64,
     /// Raised to descendant handlers and not yet processed by them.
     nested: AtomicU64,
@@ -1724,8 +1732,37 @@ impl ErrorHandler {
         }
     }
 
+    /// A seq's `abort(..)` fired: the run fails with no error in flight.
+    pub(crate) fn abort(&self, cycle: u64) {
+        self.0.raised.fetch_add(1, Ordering::Relaxed);
+        self.0.aborted.store(cycle.wrapping_add(1), Ordering::Relaxed);
+    }
+
+    /// Whether an `abort(..)` fired in `cycle`: a step entered in that
+    /// cycle is entered into a failed run.
+    pub(crate) fn aborted_in(&self, cycle: u64) -> bool {
+        self.0.aborted.load(Ordering::Relaxed) == cycle.wrapping_add(1)
+    }
+
     pub(crate) fn generation(&self) -> u64 {
         self.0.raised.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn is_machine(&self) -> bool {
+        self.0.machine
+    }
+
+    /// The handler of the innermost seq machine covering this one,
+    /// itself included.
+    pub(crate) fn machine(&self) -> Option<ErrorHandler> {
+        let mut cur = Some(self);
+        while let Some(h) = cur {
+            if h.0.machine {
+                return Some(h.clone());
+            }
+            cur = h.0.parent.0.as_ref();
+        }
+        None
     }
 
     /// The handler's allocation address: equal for every scope under
@@ -1758,9 +1795,11 @@ impl DynScope {
         Self(Some(h))
     }
 
-    pub fn with_catch(&self, catch: (BindId, ExprId)) -> Self {
+    pub fn with_catch(&self, catch: (BindId, ExprId), machine: bool) -> Self {
         Self(Some(ErrorHandler(Arc::new(DynNode {
             catch,
+            machine,
+            aborted: AtomicU64::new(0),
             raised: AtomicU64::new(0),
             nested: AtomicU64::new(0),
             parent: self.clone(),

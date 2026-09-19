@@ -972,7 +972,7 @@ impl Expr {
                 .await?;
                 expr!(ExprKind::Select(SelectExpr { arg, arms: Arc::from(arms) }))
             }),
-            ExprKind::Seq { queued, trigger, body } => Box::pin(async move {
+            ExprKind::Seq { queued, trigger, abort, flush, body } => Box::pin(async move {
                 let trigger = match trigger {
                     Some(t) => {
                         let e = t
@@ -983,8 +983,20 @@ impl Expr {
                     }
                     None => None,
                 };
+                let abort = match abort {
+                    Some(e) => Some(Arc::new(
+                        e.resolve_modules_int(scope, prepend, resolvers).await?,
+                    )),
+                    None => None,
+                };
+                let flush = match flush {
+                    Some(e) => Some(Arc::new(
+                        e.resolve_modules_int(scope, prepend, resolvers).await?,
+                    )),
+                    None => None,
+                };
                 let body = Arc::from(subexprs!(body));
-                expr!(ExprKind::Seq { queued, trigger, body })
+                expr!(ExprKind::Seq { queued, trigger, abort, flush, body })
             }),
             ExprKind::Until(e) => Box::pin(async move {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
@@ -1012,6 +1024,10 @@ impl Expr {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::SeqGuard(Arc::new(e)))
             }),
+            ExprKind::SeqAbort(e) => Box::pin(async move {
+                let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
+                expr!(ExprKind::SeqAbort(Arc::new(e)))
+            }),
             ExprKind::OrNever(e) => Box::pin(async move {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::OrNever(Arc::new(e)))
@@ -1025,12 +1041,20 @@ impl Expr {
                     )),
                     None => None,
                 };
+                let seq_manual = match &c.seq_manual {
+                    Some(e) => Some(Arc::new(
+                        e.resolve_modules_int(scope, prepend, resolvers).await?,
+                    )),
+                    None => None,
+                };
                 expr!(ExprKind::Catch(Arc::new(CatchExpr {
                     bind: c.bind.clone(),
                     constraint: c.constraint.clone(),
                     handler: Arc::new(handler),
                     seq_abort,
                     seq_capture: c.seq_capture.clone(),
+                    seq_manual,
+                    seq_pc: c.seq_pc.clone(),
                 })))
             }),
             ExprKind::ByRef(e) => Box::pin(async move {

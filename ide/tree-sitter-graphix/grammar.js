@@ -883,7 +883,7 @@ module.exports = grammar({
       '}',
     ),
 
-    // `seq [trigger] { stmts }` — the trigger is a full expression; the
+    // `seq [trigger] [abort(e)] [flush(e)] { stmts }` — the trigger is a full expression; the
     // parse where its `{` opens a map_ref dies for want of a body, as in
     // `select`. `until` is a seq-body item.
     seq_block: $ => seq(
@@ -898,6 +898,8 @@ module.exports = grammar({
         ),
         field('trigger', $._expression),
       )),
+      optional(seq('abort', '(', field('abort', $._expression), ')')),
+      optional(seq('flush', '(', field('flush', $._expression), ')')),
       '{',
       $._seq_items,
       '}',

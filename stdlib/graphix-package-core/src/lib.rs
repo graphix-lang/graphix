@@ -1856,7 +1856,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         match from {
-            [_, _] => {
+            [_, _, _] => {
                 let id = BindId::new();
                 ctx.rt.ref_var(id, top_id);
                 Ok(Box::new(Self {
@@ -1867,7 +1867,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
                     out: TagValue::phantom(),
                 }))
             }
-            _ => bail!("expected two arguments"),
+            _ => bail!("queue: expected three arguments (#clock, #flush, v)"),
         }
     }
 }
@@ -1900,7 +1900,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         if seam_tick(from[0].update(ctx, event)).is_some() {
             self.triggered += 1;
         }
-        if let Some(tv) = seam_tick(from[1].update(ctx, event)) {
+        if seam_tick(from[1].update(ctx, event)).is_some() {
+            self.queue.clear();
+        }
+        if let Some(tv) = seam_tick(from[2].update(ctx, event)) {
             self.queue.push_back(tv.value_cloned());
         }
         while self.triggered > 0 && self.queue.len() > 0 {

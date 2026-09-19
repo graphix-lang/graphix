@@ -391,10 +391,14 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             rec!(&c.handler);
             if let Some(abort) = &c.seq_abort {
                 rec!(&abort.node);
+                if let Some(manual) = &abort.manual {
+                    rec!(manual);
+                }
             }
         }
         NodeView::Qop(q) => rec!(&q.n),
         NodeView::SeqGuard(g) => rec!(&g.n),
+        NodeView::SeqAbort(a) => rec!(&a.n),
         NodeView::OrNever(o) => rec!(&o.n),
         NodeView::ExplicitParens(p) => rec!(&p.n),
         NodeView::TypeCast(t) => rec!(&t.n),
@@ -1066,6 +1070,7 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
         NodeView::Connect(_) | NodeView::ConnectDeref(_) => Some("connect is an effect"),
         NodeView::Catch(_) => Some("catch installs an error handler"),
         NodeView::SeqGuard(_) => Some("sequence guard keeps cross-cycle state"),
+        NodeView::SeqAbort(_) => Some("sequence abort fails a run"),
         NodeView::Module(_) => Some("module statement is structure, not computation"),
         NodeView::Block(b) if b.module => {
             Some("module statement is structure, not computation")

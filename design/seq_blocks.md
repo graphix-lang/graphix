@@ -2,8 +2,9 @@
 
 Status: built 2026-09-07 (straight-line, `until`, `try … with`, `seqq`;
 `if`/loops inside a seq are not built); arms by read-after-write and the
-`{ … }` block built 2026-09-11 (the `do` keyword is gone).
-Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow}.rs`,
+`{ … }` block built 2026-09-11 (the `do` keyword is gone); `abort(..)`,
+`flush(..)` and the reset on sleep built 2026-09-19.
+Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow,seq_abort}.rs`,
 `graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
 `graphix-compiler/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`,
@@ -102,8 +103,8 @@ source reads in execution order while the semantics stay the machine's.
 ## 4. Syntax
 
 ```
-seq  [trigger] { stmt* [expr] }
-seqq [trigger] { stmt* [expr] }          // queued form, §8
+seq  [trigger] [abort(expr)] { stmt* [expr] }
+seqq [trigger] [abort(expr)] [flush(expr)] { stmt* [expr] }   // queued form, §8
 trigger := expr
          | let pat [: T] = expr          // the fire's value, named for the body
 
@@ -121,7 +122,10 @@ and a body, never `t{f(t)}`. Parenthesize a trigger that needs either.
 before the machine is built: the trigger is a level bound outside the
 machine, so naming it costs no step, and a pattern that is not one name
 is destructured beside the level. `rec` is refused there.
-`seq { .. }` without a trigger runs once at init. `let rec` is not a
+`abort` is a reserved word; `flush` is not (it is an io method), so a
+trigger that calls a function named `flush` is parenthesized. The
+clauses come in that order, and `flush` on a `seq` is refused: it has no
+queue. `seq { .. }` without a trigger runs once at init. `let rec` is not a
 step. `catch` is refused anywhere in a seq body — as a statement,
 inside a block, or nested in a step's expression; a lambda literal's
 body and its defaults are exempt, because a function is its own dynamic
@@ -204,6 +208,9 @@ and rethrows to the enclosing handler. An error raised inside a `try`
 body takes the with branch instead (§7). A wrapper `catch` around the
 seq is ordinary Graphix and sees an aborted run's error once.
 
+**`abort(e)` ends the run when `e` fires** (§9): silently, past any
+`try`, and the machine is idle for the next trigger.
+
 **The value** is the last expression's, fired once per completed run,
 stale between runs, bottom before the first completion. A `seq` inside
 a lambda is a callable ceremony; a call to one from a step is itself an
@@ -219,7 +226,9 @@ costs two cycles over the same statements written inline, one for the
 inner start and one for its result. An error in the inner seq resets
 the inner machine and rethrows: outside a `try` it aborts the outer
 run too; inside one it takes the with branch, and the next run's inner
-seq starts afresh.
+seq starts afresh. An outer run that ends while the inner one is
+mid-run puts the inner machine to sleep, and a sleeping machine is
+reset (§6.5).
 
 **Levels live outside.** A level effect (`tui::suspend`,
 `sys::net::publish`, a subscription the ceremony watches) must not be a
@@ -252,6 +261,7 @@ its error boundaries.
   let r = never();                          // the block's value
   let x_c = never();                        // one cell per let read across arms
   catch(e) { pc <- `Idle; e? };             // the machine's handler + abort action
+  <abort event>;                            // §9, when the seq has one
   let go = filter(<trigger>, |x| x ~ idle); // busy-drop
   pc <- go ~ `S0;
   select pc {
@@ -356,10 +366,22 @@ be an expression.
 A passed arm sleeps, and sleep is pause: a timer step's pending timer
 is cancelled (`Timer::sleep` unrefs it), a `sys::net` level effect
 inside it tears down, a process spawn is not cancelled (`kill_on_drop`
-is on drop). There is no cancellation beyond that: a retrigger cannot
-stop an in-flight step, and a step that never completes stalls the run
-exactly as a hand-written machine does. Busy-drop is the default
-because a restart would deliver a stale production into a fresh run.
+is on drop). That is all the cancellation `abort` (§9) needs: every
+async builtin discards its in-flight work when it sleeps
+(`async_sleep_outputs.md`), so an abandoned step cannot deliver into a
+later run. A retrigger does not stop an in-flight step — busy-drop is
+the default — and a step that never completes stalls the run until it
+is aborted.
+
+**A machine that sleeps is reset.** A seq inside a select arm, a
+lambda instance or an outer seq's step sleeps with its arm, and its
+interior cannot resume: the step it was waiting on has dropped its
+work, and on wake the machine would be busy, so it would drop the
+trigger that woke it (a `seqq` would lose its one credit for good).
+The machine's handler writes `pc` idle in its `sleep()`, as the
+restart builtins clear themselves in theirs; the write lands before the
+arm can wake. The carried cells keep their values and are overwritten
+by the next run.
 
 ## 7. Errors
 
@@ -543,13 +565,80 @@ old value. A taken `with` branch is not an abort: the run continues
 and returns its credit at completion; an abort from the with body is
 the machine's abort.
 
-## 9. Costs
+## 9. `abort` and `flush`
+
+```graphix
+seq go abort(cancel) { .. }
+seq let c = go abort(sys::time::after_idle(duration:10.s, c)) { .. }
+seqq request abort(skip) flush(cancel) { .. }
+```
+
+**The event is an initial step.** The expression is asleep while the
+machine is idle and wakes when a run starts, so a timer in it times
+the run: `abort(sys::time::timer(duration:10.s, false))` is a ten
+second budget per run. Only its fires AFTER the entry cycle count. A
+value standing at entry, and a fire that happened between runs (which
+wake catch-up re-raises at entry), belong to no run and are dropped;
+there is nothing to bank. The expression reads everything live except
+the trigger's name, which is this run's trigger: the snapshot cell
+under `seq` (so a busy-dropped trigger does not restart an
+`after_idle` over it), the dequeued request under `seqq`.
+
+**An abort is silent.** The run stops where it is, the block's value
+does not fire, nothing is raised to an enclosing handler, and a `try`
+around the current step is not taken: a with body that produced a
+fallback would continue an aborted run. Whatever must be undone is
+written outside the seq on the same event (`busy <- cancel ~ false`);
+the levels a ceremony drives already live there (§5). The carried
+cells keep their values until the next run overwrites them, so a
+`Proc` bound by a `let` stays alive: a child that must die with the
+run is written to a variable outside.
+
+**`seqq`.** `abort` ends the current run and returns its credit, so the
+next queued request starts. `flush` is an abort that also empties the
+queue; a request arriving with or after the flush is kept.
+
+**The lowering.**
+
+```graphix
+let edge = uniq(idle);
+let armed = false;
+armed <- !edge;                             // true from the cycle after entry
+let ab = filter(select edge { true => never(), false => <expr> }, |x| x ~ armed);
+catch(e) ..;
+ab;                                         // SeqAbort: fails the run
+```
+
+`uniq` keeps a same-arm re-match from re-emitting the expression's
+standing value at each `pc` transition. The machine's `Catch` takes the
+event as `seq_manual`: a fire marks the abort action pending without an
+error delivery, so the action (`pc <- \`Idle`, the `seqq` credit) still
+runs ONCE when an error and an abort meet, under the same
+received-equals-raised rule as §7.4.
+
+The abort must win the cycle it fires in: a step completing in that
+cycle would queue its `pc` advance behind the reset and resume a dead
+run. A block updates its catches after the children they cover, which
+is too late, so the compiler-only `SeqAbort` node
+(`node/error.rs::SeqAbortEvent`) sits before the machine's select and
+advances the MACHINE handler's generation when the event fires. Every
+`SeqGuard` holds its machine's handler beside its nearest one (a
+try-body arm's nearest handler is its jump; `DynNode::machine` marks
+the machine's, found once at compile time), and fails on a change in
+either. A guard that activates in the abort cycle itself is born
+failed (`ErrorHandler::aborted_in`). For `flush` the event is also
+connected to the variable `core::queue` takes as `#flush`, so the queue
+empties in the cycle the credit returns; the queue clears before it
+pushes and before it releases.
+
+## 10. Costs
 
 One cycle per async completion and per read of an earlier statement's
 write; a cycle is well under
 a millisecond in release (a text key is 0.17ms end to end at 5.4k
 lines), so a six-step ceremony adds about a millisecond to work that
-takes seconds. A taken with branch costs the failed step's drain (one
+takes seconds. An abort clause costs a `uniq`, a `filter` and one
+compiler node per machine, and nothing per step. A taken with branch costs the failed step's drain (one
 cycle per extra error that step raised) plus the jump. The machine is
 longer than the `~` chain it replaces — it does not save typing; the
 keyword earns its keep as the surface in §2.
