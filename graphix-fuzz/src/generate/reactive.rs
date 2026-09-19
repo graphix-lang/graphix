@@ -36,6 +36,10 @@ pub struct ReactiveStats {
     /// Ceremonies whose trigger is a burst, so a second trigger lands
     /// while the first run is busy.
     pub burst_ceremonies: usize,
+    /// Ceremonies with an `abort(..)` clause.
+    pub aborts: usize,
+    /// `seqq` ceremonies with a `flush(..)` clause.
+    pub flushes: usize,
     /// Ceremony steps by kind, in [`STEP_KINDS`] order.
     pub steps: [usize; STEP_KINDS.len()],
 }
@@ -49,7 +53,7 @@ pub enum StepKind {
     Call,
     /// `acc <- e`: a generated connect to an outer accumulator.
     Connect,
-    /// `do { let y = e; acc <- e }`: several statements as one arm.
+    /// `{ let y = e; acc <- e }`: statements issued together.
     Do,
     /// `until cond`: a wait on a bool level.
     Until,
@@ -538,10 +542,14 @@ fn dyn_reload(
 /// queues it. The body is a run of [`StepKind`]s over the enriched
 /// vocabulary plus the trigger and earlier step lets; every run is
 /// observable through the accumulator its connects write, a run
-/// counter and the last block value, all present from init. A body
-/// that can stall (an `until` on a level nothing in the program is
-/// guaranteed to flip) or abort keeps its cells out of
-/// `fires_per_injection`.
+/// counter and the last block value, all present from init, and every
+/// completed run prints its value, so the oracle sees a run that an
+/// abort ended whatever the program's result reads. An
+/// `abort(..)` or `flush(..)` event is a cycle of a clock the ceremony's
+/// input restarts (before, at, or inside the run) or an injected input
+/// (which frees a run stalled since an earlier epoch). A body that can stall (an `until` on
+/// a level nothing in the program is guaranteed to flip), abort, or be
+/// aborted keeps its cells out of `fires_per_injection`.
 fn ceremony(
     ctx: &mut GenCtx,
     rng: &mut Rng,
@@ -634,7 +642,7 @@ fn ceremony(
                 ctx.push(y.clone(), I64);
                 let e1 = exprs::gen_typed(ctx, rng, &I64, 1);
                 ctx.truncate(m);
-                body.push(format!("do {{ let {y} = {e0}; {acc} <- {e1} }}"));
+                body.push(format!("{{ let {y} = {e0}; {acc} <- {e1} }}"));
             }
             StepKind::Until => {
                 let cond = match (&burst_counter, bool_inputs.is_empty()) {
@@ -688,14 +696,54 @@ fn ceremony(
     } else {
         st.seqs += 1;
     }
+    // A run starts the cycle after its trigger and an event counts from
+    // the cycle after that, so a clock restarted by the ceremony's input
+    // puts the event before, at, or inside the run by its cycle number. A
+    // body is only a few cycles long, so most clocked events also get a
+    // wait on the same clock that holds the run open past them.
+    let mut clock: Option<String> = None;
+    let mut run_event = |ctx: &mut GenCtx,
+                         stmts: &mut Vec<String>,
+                         body: &mut Vec<String>,
+                         rng: &mut Rng| {
+        if chance(rng, 0.2) {
+            return inputs[rng.below(inputs.len())].0.clone();
+        }
+        let k = clock.get_or_insert_with(|| {
+            let k = ctx.fresh();
+            stmts.push(format!("let {k} = {input} ~ i64:0"));
+            stmts.push(format!(
+                "{k} <- select {k} {{ s if s < i64:6 => s + i64:1, _ => never() }}"
+            ));
+            k
+        });
+        let at = 1 + rng.below(5);
+        if chance(rng, 0.7) {
+            let wait = format!("until ({k} >= i64:{})", at + 1 + rng.below(6 - at));
+            body.insert(rng.below(body.len()), wait);
+        }
+        format!("select {k} {{ i64:{at} => {k}, _ => never() }}")
+    };
+    let mut head = trigger.clone();
+    if chance(rng, 0.4) {
+        st.aborts += 1;
+        reliable = false;
+        head.push_str(&format!("; abort({})", run_event(ctx, stmts, &mut body, rng)));
+    }
+    if queued && chance(rng, 0.3) {
+        st.flushes += 1;
+        reliable = false;
+        head.push_str(&format!("; flush({})", run_event(ctx, stmts, &mut body, rng)));
+    }
     let done = ctx.fresh();
     stmts.push(format!(
-        "let {done} = {} {trigger} {{ {} }}",
+        "let {done} = {} {head} {{ {} }}",
         if queued { "seqq" } else { "seq" },
         body.join("; ")
     ));
     let runs = ctx.fresh();
     let last = ctx.fresh();
+    stmts.push(format!("println(\"run [{done}]\")"));
     stmts.push(format!("let {runs} = i64:0"));
     stmts.push(format!("{runs} <- {done} ~ ({runs} + i64:1)"));
     stmts.push(format!("let {last} = i64:0"));
@@ -787,8 +835,8 @@ mod test {
         assert!(slept * 100 / N >= 8, "slept-arm selects in only {slept}/{N}");
     }
 
-    /// Both ceremony forms, both trigger shapes and every step kind
-    /// appear at the default profile.
+    /// Both ceremony forms, both trigger shapes, both head clauses and
+    /// every step kind appear at the default profile.
     #[test]
     fn ceremony_presence() {
         let mut rng = Rng::new(0x5e9);
@@ -799,6 +847,8 @@ mod test {
             sum.seqs += st.seqs;
             sum.seqqs += st.seqqs;
             sum.burst_ceremonies += st.burst_ceremonies;
+            sum.aborts += st.aborts;
+            sum.flushes += st.flushes;
             for (a, b) in sum.steps.iter_mut().zip(st.steps) {
                 *a += b;
             }
@@ -810,6 +860,8 @@ mod test {
             "bursts: {}/{N}",
             sum.burst_ceremonies
         );
+        assert!(sum.aborts * 100 / N >= 5, "aborts: {}/{N}", sum.aborts);
+        assert!(sum.flushes * 100 / N >= 2, "flushes: {}/{N}", sum.flushes);
         for (kind, n) in STEP_KINDS.iter().zip(sum.steps) {
             assert!(n * 100 / N >= 3, "{kind:?} steps: only {n} over {N} programs");
         }
