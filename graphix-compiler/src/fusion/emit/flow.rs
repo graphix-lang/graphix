@@ -15,6 +15,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{BlockArg, InstBuilder, condcodes::IntCC, types};
+use netidx_value::Typ;
 use nohash::IntSet;
 use poolshark::local::LPooled;
 
@@ -472,31 +473,30 @@ pub(super) fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
     Ok(())
 }
 
-/// True iff a frozen type has any error member.
-fn type_may_error(t: &Type) -> bool {
+/// True iff a frozen type has any `marker` (error or null) member.
+fn type_may_be(t: &Type, marker: Typ) -> bool {
     match t {
-        Type::Error(_) => true,
-        Type::Primitive(p) => p.contains(netidx_value::Typ::Error),
-        Type::Set(members) => members.iter().any(type_may_error),
+        Type::Error(_) => marker == Typ::Error,
+        Type::Primitive(p) => p.contains(marker),
+        Type::Set(members) => members.iter().any(|m| type_may_be(m, marker)),
         _ => false,
     }
 }
 
-/// True iff every value of a frozen type is an error.
-fn type_always_error(t: &Type) -> bool {
+/// True iff every value of a frozen type is a `marker` (error or null).
+fn type_always(t: &Type, marker: Typ) -> bool {
     match t {
-        Type::Error(_) => true,
-        Type::Primitive(p) => {
-            p.contains(netidx_value::Typ::Error) && p.iter().count() == 1
-        }
+        Type::Error(_) => marker == Typ::Error,
+        Type::Primitive(p) => p.contains(marker) && p.iter().count() == 1,
         Type::Set(members) => {
-            !members.is_empty() && members.iter().all(type_always_error)
+            !members.is_empty() && members.iter().all(|m| type_always(m, marker))
         }
         _ => false,
     }
 }
 
-/// Where a `?`/`$` site's fresh error goes.
+/// Where a `?`/`$` site's fresh stripped value goes. The first two
+/// strip the operand's errors, the rest its null.
 #[derive(Clone, Copy)]
 pub(crate) enum QopSink {
     /// A handler-ful `?`: raised onto the invocation's delivery queue,
@@ -505,10 +505,35 @@ pub(crate) enum QopSink {
     /// `$` (or a handler-less `?` when `unhandled`): logged against the
     /// interned "origin at position" string, then dropped.
     Log { site: cranelift_codegen::ir::Value, unhandled: bool },
+    /// A handler-ful `?` over a nullable: `NullError` raised onto the
+    /// delivery queue, keyed by the interned `QopSite`.
+    DeliverNull(cranelift_codegen::ir::Value),
+    /// A handler-less `?` over a nullable: the interned diagnostic is
+    /// logged whole.
+    UnhandledNull(cranelift_codegen::ir::Value),
+    /// `$` over a nullable: a null is not a failure, nothing is said.
+    DropNull,
 }
 
-/// The `?`/`$` bad path: a deliverable (real, fresh) error goes to its
-/// sink, then the error is dropped if the inner owns it (a borrowed
+impl QopSink {
+    fn marker(self) -> Typ {
+        match self {
+            Self::Deliver(_) | Self::Log { .. } => Typ::Error,
+            Self::DeliverNull(_) | Self::UnhandledNull(_) | Self::DropNull => Typ::Null,
+        }
+    }
+
+    /// The clean disc of the value this site strips.
+    fn bad_disc(self) -> i64 {
+        match self.marker() {
+            Typ::Null => value_disc::NULL,
+            _ => 0x2000_0000,
+        }
+    }
+}
+
+/// The `?`/`$` bad path: a deliverable (real, fresh) error or null goes
+/// to its sink, then it is dropped if the inner owns it (a borrowed
 /// inner is dropped by its env slot).
 fn emit_qop_error_disposal(
     cx: &mut BodyCx,
@@ -533,6 +558,15 @@ fn emit_qop_error_disposal(
             let unhandled = cx.b.ins().iconst(types::I8, unhandled as i64);
             cx.b.ins().call(log, &[site, unhandled, clean, payload]);
         }
+        QopSink::DeliverNull(site) => {
+            let raise = cx.helper("graphix_qop_raise_null")?;
+            cx.b.ins().call(raise, &[site]);
+        }
+        QopSink::UnhandledNull(msg) => {
+            let log = cx.helper("graphix_unhandled_null")?;
+            cx.b.ins().call(log, &[msg]);
+        }
+        QopSink::DropNull => {}
     }
     cx.b.ins().jump(cont_bl, &[]);
     cx.b.switch_to_block(cont_bl);
@@ -544,16 +578,17 @@ fn emit_qop_error_disposal(
     Ok(())
 }
 
-/// `?`/`$` over an inner that is always an error: a fresh one goes to
-/// its sink; the result is a fresh bottom, stale iff the inner was.
-fn emit_qop_always_error<R: Rt, E: UserEvent>(
+/// `?`/`$` over an inner that is always what the site strips: a fresh
+/// one goes to its sink; the result is a fresh bottom, stale iff the
+/// inner was.
+fn emit_qop_always_bad<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     inner: &Node<R, E>,
     sink: QopSink,
 ) -> Result<CompiledExpr> {
     let cv = inner.emit_clif(cx)?;
     let clean = clean_disc(cx.b, cv.disc);
-    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, 0x2000_0000_i64);
+    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, sink.bad_disc());
     let fresh = is_fresh(cx.b, cv.disc);
     let deliverable = cx.b.ins().band(is_err, fresh);
     let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
@@ -564,11 +599,11 @@ fn emit_qop_always_error<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, bottom.payload))
 }
 
-/// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`; a non-error
-/// inner passes through. `result_typ` is the qop node's static type,
-/// which selects the arm: the typechecker strips every error member
-/// of the flattened inner union, so it can differ from the inner's
-/// one-layer success type.
+/// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`, or a `[T, null]`
+/// inner under a null sink; an inner with nothing to strip passes
+/// through. `result_typ` is the qop node's static type, which selects
+/// the arm: the typechecker strips every error member of the flattened
+/// inner union, so it can differ from the inner's one-layer success type.
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     _spec_id: ExprId,
@@ -583,19 +618,20 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             inner.typ()
         ));
     };
+    let marker = sink.marker();
     if kernel_abi::nullable_inner(&inner_typ).is_none() {
-        // `nullable_inner` only detects a `[T, Error<E>]` union.
-        if !type_may_error(&inner_typ) {
-            // No error possible — passthrough; the sink never fires.
+        // `nullable_inner` only detects a two member union.
+        if !type_may_be(&inner_typ, marker) {
+            // Nothing to strip — passthrough; the sink never fires.
             return inner.emit_clif(cx);
         }
-        if !type_always_error(&inner_typ) {
+        if !type_always(&inner_typ, marker) {
             return Err(anyhow!(
-                "emit_clif: `?`/`$` inner type {inner_typ:?} can be an error \
-                 but is not a [T, Error<E>] union — node-walk handles it"
+                "emit_clif: `?`/`$` inner type {inner_typ:?} can be {marker:?} \
+                 but is not a two member union — node-walk handles it"
             ));
         }
-        return emit_qop_always_error(cx, inner, sink);
+        return emit_qop_always_bad(cx, inner, sink);
     }
     let Some(success_typ) = kernel_abi::freeze_for_abi_normalized(result_typ) else {
         return Err(anyhow!(
@@ -605,10 +641,10 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     };
     let cv = inner.emit_clif(cx)?;
     let (disc, payload) = (cv.disc, cv.payload);
-    // `clean(disc) == Typ::Error` (`0x2000_0000`) means bottom (mask
-    // taint first — a tainted disc is not a structural Error).
+    // `clean(disc) == sink.bad_disc()` means bottom (mask taint first —
+    // a tainted disc is not a structural Error).
     let clean = clean_disc(cx.b, disc);
-    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, 0x2000_0000_i64);
+    let is_err = cx.b.ins().icmp_imm(IntCC::Equal, clean, sink.bad_disc());
     // Delivery requires a fresh error: a tainted error is a phantom
     // computed from placeholders and a stale one never fired.
     let fresh = is_fresh(cx.b, disc);

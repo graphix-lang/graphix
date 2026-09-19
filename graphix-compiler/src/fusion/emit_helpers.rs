@@ -423,6 +423,25 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     QOP_RAISES.with(|q| q.borrow_mut().push((site, v)));
 }
 
+/// Raise a `?` site's `NullError` for a fresh null operand onto the
+/// invocation's delivery queue (`QOP_RAISES`).
+unsafe fn graphix_qop_raise_null(site: u64) {
+    // SAFETY: the kernel's interned QopSite outlives this invocation.
+    let site = unsafe { &*(site as *const crate::node::error::QopSite) };
+    site.handler.raise();
+    let e = Value::Error(crate::node::error::null_error(&site.spec).into());
+    QOP_RAISES.with(|q| q.borrow_mut().push((site, e)));
+}
+
+/// A handler-less `?` site meeting a fresh null: the same diagnostic
+/// the node-walk emits, interned whole as `msg`.
+unsafe fn graphix_unhandled_null(msg: *const arcstr::ArcStr) {
+    // SAFETY: the kernel's interned string outlives this invocation.
+    let msg = unsafe { &*msg };
+    log::error!("{msg}");
+    eprintln!("{msg}");
+}
+
 /// 1 if the active runtime has an `interrupt()`/`abort()` pending, else
 /// 0. Emitted at every JIT loop head.
 safe fn graphix_interrupted() -> i8 {

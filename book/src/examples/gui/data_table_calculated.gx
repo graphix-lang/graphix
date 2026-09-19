@@ -53,7 +53,7 @@ let on_update = |#path: string, #value: Primitive| {
     let v = cast<i64>(value)$;
     // run only when v updates
     let d = v ~ data;
-    let (row, col) = opt::or_never(str::row_col(path));
+    let (row, col) = str::row_col(path)$;
     let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
     let sum = map::fold(d, 0, |sum, (col, rows)| select col {
         "sum" => sum,

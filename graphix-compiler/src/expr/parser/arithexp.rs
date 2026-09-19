@@ -12,7 +12,7 @@ use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice,
     error::StreamError,
-    many, not_followed_by, optional,
+    many, not_followed_by,
     parser::char::string,
     position,
     stream::{Range, StreamErrorFor, position::SourcePosition},
@@ -61,9 +61,10 @@ enum Post {
     Array(Either<(Option<Expr>, Option<Expr>), Expr>), // `[i]`/`[a..b]`
     Key(Expr),                                         // `{k}`    -> MapRef
     Call(LPooled<Vec<(Option<ArcStr>, Expr)>>),        // `(args)` -> Apply
+    Qop(QopSuffix),                                    // `?`/`$`  -> Qop/OrNever
 }
 
-enum QopSuffix {
+pub(super) enum QopSuffix {
     Qop,
     OrNever,
 }
@@ -94,10 +95,13 @@ where
             }
         })),
         attempt(apply_args()).map(Post::Call),
+        qop_suffix().map(Post::Qop),
     ))
 }
 
-fn qop_suffix<I>() -> impl Parser<I, Output = QopSuffix>
+/// One `?`/`$`. They chain innermost first: `x?$` takes the errors off
+/// `x`, then the null.
+pub(super) fn qop_suffix<I>() -> impl Parser<I, Output = QopSuffix>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -109,26 +113,39 @@ where
     ))))
 }
 
+pub(super) fn apply_qop(pos: SourcePosition, e: Expr, qop: QopSuffix) -> Expr {
+    match qop {
+        QopSuffix::Qop => ExprKind::Qop(Arc::new(e)).to_expr(pos),
+        QopSuffix::OrNever => ExprKind::OrNever(Arc::new(e)).to_expr(pos),
+    }
+}
+
 fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
-    let source = Arc::new(src);
     match op {
-        Post::Field(field) => ExprKind::StructRef { source, field }.to_expr(pos),
-        Post::Index(field) => ExprKind::TupleRef { source, field }.to_expr(pos),
+        Post::Field(field) => {
+            ExprKind::StructRef { source: Arc::new(src), field }.to_expr(pos)
+        }
+        Post::Index(field) => {
+            ExprKind::TupleRef { source: Arc::new(src), field }.to_expr(pos)
+        }
         Post::Array(Either::Right(i)) => {
-            ExprKind::ArrayRef { source, i: Arc::new(i) }.to_expr(pos)
+            ExprKind::ArrayRef { source: Arc::new(src), i: Arc::new(i) }.to_expr(pos)
         }
         Post::Array(Either::Left((start, end))) => ExprKind::ArraySlice {
-            source,
+            source: Arc::new(src),
             start: start.map(Arc::new),
             end: end.map(Arc::new),
         }
         .to_expr(pos),
-        Post::Key(key) => ExprKind::MapRef { source, key: Arc::new(key) }.to_expr(pos),
+        Post::Key(key) => {
+            ExprKind::MapRef { source: Arc::new(src), key: Arc::new(key) }.to_expr(pos)
+        }
         Post::Call(mut args) => ExprKind::Apply(ApplyExpr {
-            function: source,
+            function: Arc::new(src),
             args: Arc::from_iter(args.drain(..)),
         })
         .to_expr(pos),
+        Post::Qop(qop) => apply_qop(pos, src, qop),
     }
 }
 
@@ -206,9 +223,8 @@ parser! {
                     position(),
                     primary(),
                     many::<LPooled<Vec<Post>>, _, _>(postfix_op(*key)),
-                    optional(qop_suffix()),
                 )
-                    .and_then(|(pos, (base, paren), mut ops, qop)| {
+                    .and_then(|(pos, (base, paren), mut ops)| {
                         // The iterative postfix loop escapes `grow`'s depth
                         // counter, but the fold builds an N-deep AST.
                         if ops.len() > max_nesting() {
@@ -217,25 +233,15 @@ parser! {
                                 "expression nesting too deep",
                             ));
                         }
-                        let folded = if ops.is_empty() {
-                            match paren {
-                                Some(Parenthesized) => {
-                                    ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos)
-                                }
-                                None => base,
+                        // `?`/`$` print their operand bare, so a
+                        // parenthesized one keeps its parens
+                        let base = match (paren, ops.first()) {
+                            (Some(Parenthesized), None | Some(Post::Qop(_))) => {
+                                ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos)
                             }
-                        } else {
-                            ops.drain(..).fold(base, |acc, op| apply_post(pos, acc, op))
+                            _ => base,
                         };
-                        Ok(match qop {
-                            None => folded,
-                            Some(QopSuffix::Qop) => {
-                                ExprKind::Qop(Arc::new(folded)).to_expr(pos)
-                            }
-                            Some(QopSuffix::OrNever) => {
-                                ExprKind::OrNever(Arc::new(folded)).to_expr(pos)
-                            }
-                        })
+                        Ok(ops.drain(..).fold(base, |acc, op| apply_post(pos, acc, op)))
                     }),
             ))
         // arith_term must not skip trailing spaces: `m{"k"}` is a map

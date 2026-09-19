@@ -76,28 +76,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
 
 pub(crate) type Contains = CachedArgs<ContainsEv>;
 
-fn fc_or_never(args: &[Value]) -> Option<Value> {
-    match &args[0] {
-        Value::Null => None,
-        v => Some(v.clone()),
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct OrNeverEv;
-crate::unit_image_state!(OrNeverEv);
-
-impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrNeverEv {
-    const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_or_never)));
-    const NAME: &str = "core_opt_or_never";
-
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        crate::fast_eval(fc_or_never, from)
-    }
-}
-
-pub(crate) type OrNever = CachedArgs<OrNeverEv>;
-
 #[derive(Debug, Default)]
 pub(crate) struct OrDefaultEv;
 crate::unit_image_state!(OrDefaultEv);

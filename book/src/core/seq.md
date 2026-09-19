@@ -37,7 +37,7 @@ and nothing outside the block sees the name. It is
 may destructure (`seq let {x, y} = point { ... }`):
 
 ```graphix
-seq let session = opt::or_never(*connected) {
+seq let session = (*connected)$ {
     known <- upsert(known, session.domain, session.server, session.fingerprint);
     save <- session
 }

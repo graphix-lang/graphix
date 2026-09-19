@@ -1,7 +1,6 @@
 let is_some = |v: ['a, null]| -> bool 'core_opt_is_some;
 let is_none = |v: ['a, null]| -> bool 'core_opt_is_none;
 let contains = |v: ['a, null], x: 'a| -> bool 'core_opt_contains;
-let or_never = |v: ['a, null]| -> 'a 'core_opt_or_never;
 let or_default = |v: ['a, null], d: 'a| -> 'a 'core_opt_or_default;
 let or = |a: ['a, null], b: ['a, null]| -> ['a, null] 'core_opt_or;
 let and = |a: ['a, null], b: ['b, null]| -> ['b, null] 'core_opt_and;

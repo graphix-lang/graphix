@@ -10,7 +10,7 @@ use crate::{
     BindId, CFlag, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
     compiler::compile,
-    deref_typ,
+    defetyp, deref_typ,
     env::Env,
     expr::{self, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
@@ -24,7 +24,7 @@ use compact_str::format_compact;
 use cranelift_codegen::ir::Value as ClifValue;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::{Typ, Value};
+use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use std::{collections::hash_map::Entry, sync::LazyLock};
 use triomphe::Arc;
@@ -395,6 +395,76 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 }
 
+defetyp!(NULL_ERR, NULL_ERR_TAG, "NullError", "Error<`{}(string)>");
+
+/// What a `?`/`$` takes out of its operand: the errors when the operand
+/// has any, otherwise the null.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Strip {
+    Error,
+    Null,
+}
+
+impl Strip {
+    fn of<R: Rt, E: UserEvent>(
+        ctx: &ExecCtx<R, E>,
+        op: char,
+        typ: &Type,
+    ) -> Result<Self> {
+        let err = Type::Error(Arc::new(Type::empty_tvar()));
+        let null = Type::Primitive(Typ::Null.into());
+        if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
+            Ok(Self::Error)
+        } else if typ.contains_with_flags(BitFlags::empty(), &ctx.env, &null)? {
+            Ok(Self::Null)
+        } else {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "cannot use the {op} operator on {typ}, it has no error and no null"
+                )
+            })
+        }
+    }
+
+    fn removed(self) -> Type {
+        match self {
+            Self::Error => Type::Primitive(Typ::Error.into()),
+            Self::Null => Type::Primitive(Typ::Null.into()),
+        }
+    }
+
+    fn strips(self, v: &Value) -> bool {
+        match self {
+            Self::Error => matches!(v, Value::Error(_)),
+            Self::Null => matches!(v, Value::Null),
+        }
+    }
+
+    fn decode(buf: &mut &[u8]) -> Result<Self, PackError> {
+        Ok(if bool::decode(buf)? { Self::Null } else { Self::Error })
+    }
+
+    fn encode(self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        (self == Self::Null).encode(buf)
+    }
+}
+
+/// The payload a `?` raises for a null operand: `NullError` naming the
+/// operand.
+pub(crate) fn null_error(spec: &Expr) -> Value {
+    let operand = match &spec.kind {
+        ExprKind::Qop(e) => format_compact!("{e}"),
+        _ => format_compact!("{spec}"),
+    };
+    let tag = Value::String(NULL_ERR_TAG.clone());
+    Value::Array(ValArray::from_iter([tag, Value::from(operand)]))
+}
+
+/// What a handler-less `?` reports for the error payload `e` it raised.
+pub(crate) fn unhandled_msg(spec: &Expr, e: &Value) -> ArcStr {
+    format_compact!("unhandled error in {} at {} {e}", spec.ori, spec.pos).as_str().into()
+}
+
 /// Deliver a `?`'s raw error payload `e` to `handler` on behalf of the
 /// `?` at `spec` under `own_top`. The one handler path, shared by
 /// `Qop::update` and the fused kernel's delivery drain: same-top
@@ -450,6 +520,7 @@ pub struct Qop<R: Rt, E: UserEvent> {
     pub(crate) handler: Option<ErrorHandler>,
     pub(crate) top_id: ExprId,
     pub n: Node<R, E>,
+    pub(crate) strip: Strip,
     resident: TagValue,
     flags: BitFlags<CFlag>,
 }
@@ -467,6 +538,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         };
         let top_id = ExprId::decode(buf)?;
         let n = decode_node(ctx, buf)?;
+        let strip = Strip::decode(buf)?;
         let flags = image::flags_decode(buf)?;
         Ok(Node::new(Self {
             spec,
@@ -474,6 +546,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             handler,
             top_id,
             n,
+            strip,
             resident: TagValue::phantom(),
             flags,
         }))
@@ -499,6 +572,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             handler,
             top_id,
             n,
+            strip: Strip::Error,
             resident: TagValue::phantom(),
             flags,
         }))
@@ -531,6 +605,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             + self.handler.as_ref().map_or(0, image::handler_len)
             + self.top_id.encoded_len()
             + self.n.image_len()
+            + 1
             + image::flags_len(self.flags)
     }
 
@@ -544,6 +619,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         }
         self.top_id.encode(buf)?;
         self.n.image_encode(buf)?;
+        self.strip.encode(buf)?;
         image::flags_encode(self.flags, buf)
     }
 
@@ -553,8 +629,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             // a bottom is not an error value
             return tv;
         }
+        let strip = self.strip;
         let err = tv.with_value(|v| match v {
-            Value::Error(e) => Some(e.clone()),
+            Value::Error(e) if strip == Strip::Error => Some((**e).clone()),
+            Value::Null if strip == Strip::Null => Some(null_error(&self.spec)),
             _ => None,
         });
         let fired = tv.tag().is_fired();
@@ -564,26 +642,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             Some(e) => match &self.handler {
                 Some(handler) => {
                     handler.raise();
-                    deliver_error(
-                        ctx,
-                        event,
-                        handler,
-                        self.top_id,
-                        &self.spec,
-                        (*e).clone(),
-                    );
+                    deliver_error(ctx, event, handler, self.top_id, &self.spec, e);
                     self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 }
                 None => {
-                    log::error!(
-                        "unhandled error in {} at {} {e}",
-                        self.spec.ori,
-                        self.spec.pos
-                    );
-                    eprintln!(
-                        "unhandled error in {} at {} {e}",
-                        self.spec.ori, self.spec.pos
-                    );
+                    let msg = unhandled_msg(&self.spec, &e);
+                    log::error!("{msg}");
+                    eprintln!("{msg}");
                     self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 }
             },
@@ -683,21 +748,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 Self::check_unhandled(self.flags, &self.spec)?;
             }
         }
-        let err = Type::Error(Arc::new(Type::empty_tvar()));
-        if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!("cannot use the ? operator on non error type {}", self.n.typ())
-            })?
-        }
-        let err = Type::Primitive(Typ::Error.into());
-        let rtyp = self.n.typ().diff(&ctx.env, &err)?;
-        // a `?` with no non-error member never produces: bottom, which a
+        self.strip = wrap!(self, Strip::of(ctx, '?', self.n.typ()))?;
+        let rtyp = self.n.typ().diff(&ctx.env, &self.strip.removed())?;
+        // a `?` with no member left never produces: bottom, which a
         // select absorbs, not an empty union no pattern could match
         let rtyp = if rtyp.is_uninhabited() { Type::Bottom } else { rtyp };
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         if let Some(handler) = &self.handler {
             let (id, _) = handler.id();
-            let etyp = self.n.typ().diff(&ctx.env, &rtyp)?;
+            let etyp = match self.strip {
+                Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
+                Strip::Null => NULL_ERR.clone(),
+            };
             let etyp = if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
                 etyp
             } else {
@@ -729,15 +791,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let sink = match self.handler.as_ref() {
-            None => {
+        let sink = match (self.handler.as_ref(), self.strip) {
+            (None, Strip::Error) => {
                 QopSink::Log { site: diagnostic_site(cx, &self.spec)?, unhandled: true }
             }
-            Some(handler) => QopSink::Deliver(cx.interned_qop_site(QopSite {
-                handler: handler.clone(),
-                own_top: self.top_id,
-                spec: self.spec.clone(),
-            })?),
+            (None, Strip::Null) => QopSink::UnhandledNull(
+                cx.interned_str(&unhandled_msg(&self.spec, &null_error(&self.spec)))?,
+            ),
+            (Some(handler), strip) => {
+                let site = cx.interned_qop_site(QopSite {
+                    handler: handler.clone(),
+                    own_top: self.top_id,
+                    spec: self.spec.clone(),
+                })?;
+                match strip {
+                    Strip::Error => QopSink::Deliver(site),
+                    Strip::Null => QopSink::DeliverNull(site),
+                }
+            }
         };
         emit_qop_node(cx, self.spec.id, &self.n, &self.typ, sink)
     }
@@ -905,6 +976,7 @@ pub struct OrNever<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Node<R, E>,
+    pub(crate) strip: Strip,
     resident: TagValue,
 }
 
@@ -916,7 +988,8 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+        let strip = Strip::decode(buf)?;
+        Ok(Node::new(Self { spec, typ, n, strip, resident: TagValue::phantom() }))
     }
 
     pub(crate) fn compile(
@@ -929,20 +1002,26 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let typ = Type::empty_tvar();
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+        let strip = Strip::Error;
+        Ok(Node::new(Self { spec, typ, n, strip, resident: TagValue::phantom() }))
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
     fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + self.n.image_len()
+            + 1
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::OrNever, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        self.n.image_encode(buf)
+        self.n.image_encode(buf)?;
+        self.strip.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -950,26 +1029,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         if tv.tag().is_bottom() {
             return tv;
         }
-        let err = tv.with_value(|v| match v {
-            Value::Error(e) => Some(e.clone()),
-            _ => None,
-        });
-        match err {
-            None => tv,
-            Some(e) => {
-                // only a fresh error logs
-                if tv.tag().is_fired() {
-                    log::warn!(
-                        "ignored error in {} at {} {e}",
-                        self.spec.ori,
-                        self.spec.pos
-                    );
-                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                } else {
-                    self.resident.ride()
-                }
-            }
+        let strip = self.strip;
+        if !tv.with_value(|v| strip.strips(v)) {
+            return tv;
         }
+        if !tv.tag().is_fired() {
+            return self.resident.ride();
+        }
+        // only a fresh error logs; a null is not a failure
+        tv.with_value(|v| {
+            if let Value::Error(e) = v {
+                log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos)
+            }
+        });
+        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
     }
 
     fn typ(&self) -> &Type {
@@ -998,14 +1071,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
-        let err = Type::Error(Arc::new(Type::empty_tvar()));
-        if !self.n.typ().contains_with_flags(BitFlags::empty(), &ctx.env, &err)? {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!("cannot use the $ operator on non error type {}", self.n.typ())
-            })?
-        }
-        let err = Type::Primitive(Typ::Error.into());
-        let rtyp = self.n.typ().diff(&ctx.env, &err)?;
+        self.strip = wrap!(self, Strip::of(ctx, '$', self.n.typ()))?;
+        let rtyp = self.n.typ().diff(&ctx.env, &self.strip.removed())?;
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         Ok(())
     }
@@ -1020,8 +1087,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        let sink =
-            QopSink::Log { site: diagnostic_site(cx, &self.spec)?, unhandled: false };
+        let sink = match self.strip {
+            Strip::Error => {
+                QopSink::Log { site: diagnostic_site(cx, &self.spec)?, unhandled: false }
+            }
+            Strip::Null => QopSink::DropNull,
+        };
         emit_qop_node(cx, self.spec.id, &self.n, &self.typ, sink)
     }
 }

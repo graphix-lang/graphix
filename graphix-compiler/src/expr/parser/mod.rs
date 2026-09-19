@@ -709,23 +709,11 @@ where
     I::Range: Range,
     P: Parser<I, Output = Expr>,
 {
-    enum Op {
-        Qop,
-        OrNever,
-    }
-    (
-        position(),
-        p,
-        optional(attempt(spaces().with(choice((
-            token('?').map(|_| Op::Qop),
-            token('$').map(|_| Op::OrNever),
-        ))))),
+    (position(), p, many::<LPooled<Vec<_>>, _, _>(arithexp::qop_suffix())).map(
+        |(pos, e, mut qops)| {
+            qops.drain(..).fold(e, |e, qop| arithexp::apply_qop(pos, e, qop))
+        },
     )
-        .map(|(pos, e, qop)| match qop {
-            None => e,
-            Some(Op::Qop) => ExprKind::Qop(Arc::new(e)).to_expr(pos),
-            Some(Op::OrNever) => ExprKind::OrNever(Arc::new(e)).to_expr(pos),
-        })
 }
 
 /// Rust-style raw strings: `r"…"`, `r#"…"#`, `r##"…"##`, … No escapes,

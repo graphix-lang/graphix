@@ -494,3 +494,86 @@ run!(arm_input_raise_fuses, ARM_INPUT_RAISE_FUSES, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// `$` over a nullable waits out the null, and says nothing about it.
+const OR_NEVER_NULL: &str = r#"
+{
+    let a: Array<[i64, null]> = [null, 42];
+    array::iter(a)$
+}
+"#;
+
+run!(or_never_null, OR_NEVER_NULL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// `?` over a nullable raises `NullError` naming its operand; the
+// handler's one arm select proves that is the whole error type.
+const QOP_NULL_RAISES: &str = r#"
+{
+    let res = never();
+    catch(e) select (e.0).error {
+        `NullError(s) => res <- s
+    };
+    let a: Array<[i64, null]> = [null];
+    let x = array::iter(a);
+    x?;
+    res
+}
+"#;
+
+run!(qop_null_raises, QOP_NULL_RAISES, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "x")
+});
+
+const QOP_NULL_PASSES: &str = r#"
+{
+    let caught = never();
+    catch(e) caught <- e ~ 1;
+    let x: [i64, null] = 41;
+    x? + 1
+}
+"#;
+
+run!(qop_null_passes, QOP_NULL_PASSES, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Errors come off first: one `$` leaves a Result's null success in
+// place, a second takes it.
+const QOP_ERROR_BEFORE_NULL: &str = r#"
+{
+    let a: Array<[i64, null, Error<`E>]> = [error(`E), null, 7];
+    array::iter(a)$$
+}
+"#;
+
+run!(qop_error_before_null, QOP_ERROR_BEFORE_NULL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(7)))
+});
+
+const QOP_NULL_SUCCESS_SURVIVES: &str = r#"
+{
+    let r: [null, Error<`E>] = null;
+    select r$ {
+        null as _ => 1
+    }
+}
+"#;
+
+run!(qop_null_success_survives, QOP_NULL_SUCCESS_SURVIVES, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// `?`/`$` sit inside a postfix chain, and chain with each other.
+const QOP_IN_POSTFIX_CHAIN: &str = r#"
+{
+    let s: [{cfg: [i64, null]}, null] = {cfg: 42};
+    let t = sys::time::timer(duration:0.05s, false);
+    (t ~ s)$.cfg$
+}
+"#;
+
+run!(qop_in_postfix_chain, QOP_IN_POSTFIX_CHAIN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});

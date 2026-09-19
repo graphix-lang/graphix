@@ -420,10 +420,6 @@ val is_none: fn(v: ['a, null]) -> bool;
 /// regardless of x.
 val contains: fn(v: ['a, null], y: 'a) -> bool;
 
-/// or_never(v) does not return anything if v is null, otherwise it
-/// returns v.
-val or_never: fn(v: ['a, null]) -> 'a;
-
 /// or_default(v, d): if v is null return d, otherwise return v
 val or_default: fn(v: ['a, null], y: 'a) -> 'a;
 

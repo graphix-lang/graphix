@@ -2972,7 +2972,6 @@ graphix_derive::defpackage! {
         opt::IsSome,
         opt::IsNone,
         opt::Contains,
-        opt::OrNever,
         opt::OrDefault,
         opt::Or,
         opt::And,

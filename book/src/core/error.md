@@ -171,3 +171,39 @@ The `$` operator logs errors rather than silently discarding them, making it
 easier to debug issues while still allowing execution to continue. The log
 line names the site and the error, and is the same whether the expression
 runs in the interpreter or in a JIT-compiled kernel.
+
+## ? and $ on Nullable Values
+
+Both operators also work on an optional value, a `['a, null]`. `$` is still
+"or never": a null produces nothing, and because a null is not a failure
+nothing is logged. It is the way to say "wait until this is there",
+
+```graphix
+let session = (*connected)$
+```
+
+`?` raises. There is no error value to raise, so it makes one,
+`` `NullError(string) ``, where the string is the expression that was null. Only
+a `?` on a nullable adds that tag to the error type of the catch it raises to,
+
+```graphix
+〉catch(e) println((e.0).error)
+〉let m = {"a" => 1}
+〉let v = map::get(m, "b")
+〉v?
+-: i64
+`NullError("v")
+```
+
+When a type has both an error and a null, the errors come off first, and the
+null is left in place. That is what you want from a function that returns
+`Result<null, 'e>`, its `?` must not raise on success, and it means each
+operator takes one layer, as in Rust. To take both, write both,
+
+```graphix
+db::txn::get(tree, key)?$
+```
+
+raises a database error to the nearest catch, and then waits for the key to
+have a value. Use `opt::ok_or(v, e)?` instead of a bare `?` when the catch
+should hear something more specific than `NullError`.

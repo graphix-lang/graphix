@@ -121,7 +121,11 @@ datetime:"2020-01-01T00:00:00Z"  duration:1.0s  duration:500.ms   // units: ns u
 Unchecked arithmetic logs and bottoms on failure; checked (`+?` …)
 returns `[T, Error<`ArithError(string)>]`. `&&`/`||` are strict
 (`false && ⊥ = ⊥`). Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
-nearest catch), `x$` (log and drop). Both yield the bare success type.
+nearest catch), `x$` (or never). Both take the errors off `x`, or, when
+`x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
+chain (`(k ~ sel)$.name`). On an untyped parameter they read as the
+error form, so a nullable one is annotated: `|t, scope: [Scope, null]|
+.. (t ~ scope)$`.
 `datetime - datetime` is refused: use `sys::time::diff(later, earlier)
 -> duration`, `add`/`sub` for datetime ± duration. Durations print as
 `1800.s`; format your own "30m".
@@ -217,7 +221,7 @@ The trigger is any expression. `seqq sys::time::after_idle(duration:250.ms,
 key) { .. }` runs once per burst of presses, not once per press.
 `seq let c = e { .. }` names the trigger's value for the body and nothing
 after it; `seq let {x, y} = pt { .. }` destructures. Under `seqq` it is
-the value that queued the run. `seq let c = opt::or_never(*r) { .. c.f .. }`
+the value that queued the run. `seq let c = (*r)$ { .. c.f .. }`
 is how a nullable reference is consumed; `(*r).f` is refused.
 
 A busy flag set on a trigger, a call sampled on that trigger, and the
@@ -267,6 +271,20 @@ and `--log-dir` in the shell). Use `$` when the failure is an expected
 non-event (a missing optional file); use `catch` when something must
 be told.
 
+Both operators also take an option. `x$` on a `[T, null]` is `T` or
+bottom, and says nothing, since a null is not a failure: it replaces the
+`select x { null as _ => never(), v => v }` ladder. `x?` raises
+`` `NullError(string) `` naming the operand, and only such a `?` adds that
+tag to its catch. Errors come off first: on `[T, null, Error<E>]` one
+`?` leaves `[T, null]` (so `commit(txn)?`, a `Result<null, E>`, does not
+raise on success) and `get(t, k)?$` takes both. `opt::ok_or(x, `E)?`
+when the catch should hear more than `NullError`.
+
+`$` gates: while `x` is null or an error, a call or struct taking `x$`
+does not fire and owes nothing when `x` returns. `f(k ~ t, sel$)` is
+silent while `sel` is null, and so are `k ~ sel$` and `(k ~ sel)$`:
+there is no stale last-good value to read.
+
 ## References and places
 
 `&v`, `*r`, `*r <- new`. Widgets take `&` parameters so updates
@@ -306,17 +324,12 @@ gate a stream; to branch on a Result, select on it. `never()` / `never<T>()` is
 SYNTAX: typed bottom, args stay live; an unannotated `let` over
 `never()` takes its type from its writers.
 
-`opt` (over `['a, null]`): `or_never` — `f(opt::or_never(x ~ maybe))`
-replaces the `select .. { null as _ => never(), v => f(v) }` ladder —
-`is_some is_none or_default or and map flat_map filter ok_or zip`.
-The same ladder hides in two steps: `let p = select d { null as _ =>
-null, v => f(v) }; let q = opt::or_never(p)` is `let q =
-f(opt::or_never(d))`. A null carried forward only to be dropped is
-unwrapped at the source, once: `let dir = opt::or_never(d)`, and every
-reader (a later seq step included) takes `dir`.
-`or_never` is a value, not a gate: `f(k ~ t, opt::or_never(sel))` fires
-on `k` while `sel` is null, with the stale bound value. When another
-argument carries the trigger, keep the select; its arm sleeps the call.
+`opt` (over `['a, null]`): `is_some is_none or_default or and map
+flat_map filter ok_or zip`. Unwrapping is the `$` operator, above. The
+ladder it replaces also hides in two steps: `let p = select d { null as
+_ => null, v => f(v) }; let q = p$` is `let q = f(d$)`. A null carried
+forward only to be dropped is unwrapped at the source, once: `let dir =
+d$`, and every reader (a later seq step included) takes `dir`.
 
 `array`: map filter filter_map fold flatten find find_map concat push
 window(#n, trig, v) len iter iterq sort enumerate zip. `map`, `str`

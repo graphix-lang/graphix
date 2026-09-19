@@ -678,7 +678,7 @@ impl PrettyDisplay for StructExpr {
 }
 
 /// Whether `e` can be the bare source of a postfix operator without parens:
-/// true exactly for identifiers and postfix-chain nodes. Anything else
+/// true exactly for identifiers and postfix-chain nodes (`?`/`$` included). Anything else
 /// must be parenthesized (`(a+b).c`; `(42).0` would lex as a float).
 pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
     matches!(
@@ -690,6 +690,8 @@ pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
             | ExprKind::ArraySlice { .. }
             | ExprKind::MapRef { .. }
             | ExprKind::Apply(_)
+            | ExprKind::Qop(_)
+            | ExprKind::OrNever(_)
     )
 }
 
