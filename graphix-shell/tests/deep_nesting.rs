@@ -96,7 +96,7 @@ fn program(shape: &str, d: usize) -> String {
         "seqabort" => {
             let mut s = String::from("1");
             for _ in 0..d {
-                s = format!("seq abort({s}) {{ 1 }}");
+                s = format!("seq 1; abort({s}) {{ 1 }}");
             }
             format!("let x = {s}")
         }

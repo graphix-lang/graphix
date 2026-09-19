@@ -1001,15 +1001,19 @@ impl PrettyDisplay for ExprKind {
                     if parens {
                         write!(buf, ")")?;
                     }
-                    write!(buf, " ")?;
                 }
+                let mut first = trigger.is_none();
                 for (name, e) in [("abort", abort), ("flush", flush)] {
                     if let Some(e) = e {
-                        write!(buf, "{name}(")?;
+                        write!(buf, "{}{name}(", if first { "" } else { "; " })?;
+                        first = false;
                         e.fmt_pretty(buf)?;
                         buf.kill_newline();
-                        write!(buf, ") ")?;
+                        write!(buf, ")")?;
                     }
+                }
+                if !first {
+                    write!(buf, " ")?;
                 }
                 pretty_print_exprs(buf, body, "{", "}", ";")
             }
@@ -1407,16 +1411,20 @@ impl ExprKind {
                     }
                     let t = t.expr();
                     if trigger_needs_parens(t) {
-                        write!(f, "({t}) ")?;
+                        write!(f, "({t})")?;
                     } else {
-                        write!(f, "{t} ")?;
+                        write!(f, "{t}")?;
                     }
                 }
-                if let Some(e) = abort {
-                    write!(f, "abort({e}) ")?;
+                let mut first = trigger.is_none();
+                for (name, e) in [("abort", abort), ("flush", flush)] {
+                    if let Some(e) = e {
+                        write!(f, "{}{name}({e})", if first { "" } else { "; " })?;
+                        first = false;
+                    }
                 }
-                if let Some(e) = flush {
-                    write!(f, "flush({e}) ")?;
+                if !first {
+                    write!(f, " ")?;
                 }
                 print_exprs(f, body, "{", "}", "; ")
             }

@@ -788,34 +788,46 @@ where
     )
 }
 
-/// The head of a seq clause, `abort(` or `flush(`. `flush` is not a
-/// reserved word, so a trigger that calls a function of that name is
-/// parenthesized.
-fn seq_clause_head<I>(name: &'static str) -> impl Parser<I, Output = ()>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    attempt(spaces().with(string(name)).skip(spaces()).skip(token('('))).map(|_| ())
+enum SeqHead {
+    Trigger(SeqTrigger),
+    Abort(Arc<Expr>),
+    Flush(Arc<Expr>),
 }
 
-fn seq_clause_ahead<I>(name: &'static str) -> impl Parser<I, Output = ()>
+/// `abort(e)` or `flush(e)`. `flush` is not a reserved word, so a trigger
+/// that calls a function of that name is parenthesized.
+fn seq_clause<I>(name: &'static str) -> impl Parser<I, Output = Arc<Expr>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    not_followed_by(seq_clause_head(name).map(move |()| name))
+    attempt(spaces().with(string(name)).skip(spaces()).skip(token('(')))
+        .with(expr())
+        .skip(sptoken(')'))
+        .map(Arc::new)
 }
 
-fn seq_clause<I>(name: &'static str) -> impl Parser<I, Output = Option<Arc<Expr>>>
+/// The `;`-separated head of a seq: `[trigger][; abort(e)][; flush(e)]`.
+fn seq_head<I>() -> impl Parser<I, Output = LPooled<Vec<SeqHead>>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    optional(seq_clause_head(name).with(expr()).skip(sptoken(')')).map(Arc::new))
+    combine::sep_by(
+        choice((
+            seq_clause("abort").map(SeqHead::Abort),
+            seq_clause("flush").map(SeqHead::Flush),
+            attempt(spaces().with(not_followed_by(token('{'))).with(choice((
+                letbind_with(arithexp::arith(false))
+                    .map(|b| SeqHead::Trigger(SeqTrigger::Bind(Arc::new(b)))),
+                arithexp::arith(false)
+                    .map(|e| SeqHead::Trigger(SeqTrigger::Expr(Arc::new(e)))),
+            )))),
+        )),
+        attempt(spaces().with(token(';'))),
+    )
 }
 
 pub(super) fn seq<I>() -> impl Parser<I, Output = Expr>
@@ -830,31 +842,32 @@ where
             attempt(string("seqq").skip(not_prefix())).map(|_| true),
             attempt(string("seq").skip(not_prefix())).map(|_| false),
         )),
-        spaces(),
-        optional(attempt(
-            not_followed_by(token('{'))
-                .skip(seq_clause_ahead("abort"))
-                .skip(seq_clause_ahead("flush"))
-                .with(choice((
-                    letbind_with(arithexp::arith(false))
-                        .map(|b| SeqTrigger::Bind(Arc::new(b))),
-                    arithexp::arith(false).map(|e| SeqTrigger::Expr(Arc::new(e))),
-                ))),
-        )),
-        seq_clause("abort"),
-        seq_clause("flush"),
+        seq_head(),
         seq_stmts(),
     )
         .then(
-            |(pos, queued, _, trigger, abort, flush, mut body): (
+            |(pos, queued, mut head, mut body): (
                 _,
                 _,
-                _,
-                Option<SeqTrigger>,
-                Option<Arc<Expr>>,
-                Option<Arc<Expr>>,
+                LPooled<Vec<SeqHead>>,
                 LPooled<Vec<Expr>>,
             )| {
+                let (mut trigger, mut abort, mut flush) = (None, None, None);
+                for (i, item) in head.drain(..).enumerate() {
+                    let in_order = match item {
+                        SeqHead::Trigger(t) => i == 0 && trigger.replace(t).is_none(),
+                        SeqHead::Abort(e) => {
+                            flush.is_none() && abort.replace(e).is_none()
+                        }
+                        SeqHead::Flush(e) => flush.replace(e).is_none(),
+                    };
+                    if !in_order {
+                        return unexpected_any(
+                            "a seq head is [trigger][; abort(..)][; flush(..)]",
+                        )
+                        .left();
+                    }
+                }
                 if body.is_empty()
                     || (body.len() == 1 && matches!(body[0].kind, ExprKind::NoOp))
                 {

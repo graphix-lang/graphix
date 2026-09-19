@@ -103,8 +103,8 @@ source reads in execution order while the semantics stay the machine's.
 ## 4. Syntax
 
 ```
-seq  [trigger] [abort(expr)] { stmt* [expr] }
-seqq [trigger] [abort(expr)] [flush(expr)] { stmt* [expr] }   // queued form, §8
+seq  [trigger] [; abort(expr)] { stmt* [expr] }
+seqq [trigger] [; abort(expr)] [; flush(expr)] { stmt* [expr] }   // queued form, §8
 trigger := expr
          | let pat [: T] = expr          // the fire's value, named for the body
 
@@ -122,6 +122,8 @@ and a body, never `t{f(t)}`. Parenthesize a trigger that needs either.
 before the machine is built: the trigger is a level bound outside the
 machine, so naming it costs no step, and a pattern that is not one name
 is destructured beside the level. `rec` is refused there.
+The head is a `;`-separated list like a block's statements, so a clause
+that comes first takes no `;`: `seq abort(e) { .. }`.
 `abort` is a reserved word; `flush` is not (it is an io method), so a
 trigger that calls a function named `flush` is parenthesized. The
 clauses come in that order, and `flush` on a `seq` is refused: it has no
@@ -568,9 +570,9 @@ the machine's abort.
 ## 9. `abort` and `flush`
 
 ```graphix
-seq go abort(cancel) { .. }
-seq let c = go abort(sys::time::after_idle(duration:10.s, c)) { .. }
-seqq request abort(skip) flush(cancel) { .. }
+seq go; abort(cancel) { .. }
+seq let c = go; abort(sys::time::after_idle(duration:10.s, c)) { .. }
+seqq request; abort(skip); flush(cancel) { .. }
 ```
 
 **The event is an initial step.** The expression is asleep while the

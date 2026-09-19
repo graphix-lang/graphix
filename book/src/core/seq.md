@@ -291,11 +291,11 @@ retracted.
 
 ## Aborting a run
 
-`abort(event)` after the trigger ends the run in progress when `event`
-fires:
+`abort(event)` in the head, separated from the trigger by `;`, ends the
+run in progress when `event` fires:
 
 ```graphix
-seq go abort(cancel) {
+seq go; abort(cancel) {
   let child = sys::process::spawn(options(cmd))?;
   let status = sys::process::wait(child.proc)?;
   report(status.code)
@@ -316,10 +316,10 @@ an event that fired while nothing was running aborts nothing:
 
 ```graphix
 // a ten second budget for each run
-seq go abort(sys::time::timer(duration:10.s, false)) { ... }
+seq go; abort(sys::time::timer(duration:10.s, false)) { ... }
 
 // the trigger's name is this run's trigger
-seqq let job = jobs abort(sys::time::after_idle(job.budget, job)) { ... }
+seqq let job = jobs; abort(sys::time::after_idle(job.budget, job)) { ... }
 ```
 
 Only fires after the run has started count; a value the event already
@@ -336,7 +336,7 @@ Under `seqq`, `abort` ends the current run and the next queued request
 starts. `flush(event)` also empties the queue:
 
 ```graphix
-seqq request abort(skip) flush(cancel_all) { ... }
+seqq request; abort(skip); flush(cancel_all) { ... }
 ```
 
 `flush` follows `abort` when both are present, and only `seqq` accepts

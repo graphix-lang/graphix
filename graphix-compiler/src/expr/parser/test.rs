@@ -2251,13 +2251,13 @@ fn seq_parses() {
         "seq let c: i64 = t ~ x { until ready; c }",
         "seq let (a, b) = pair() { a + b }",
         "seq let c = (t) { c }",
-        "seq t abort(cancel) { 1 }",
+        "seq t; abort(cancel) { 1 }",
         "seq abort(cancel) { 1 }",
-        "seq t abort(m{k}) { 1 }",
-        "seq let c = t abort(sys::time::after_idle(duration:5.s, c)) { c }",
-        "seqq t flush(f) { 1 }",
+        "seq t; abort(m{k}) { 1 }",
+        "seq let c = t; abort(sys::time::after_idle(duration:5.s, c)) { c }",
+        "seqq t; flush(f) { 1 }",
         "seqq flush(f) { 1 }",
-        "seqq t abort(a ~ b) flush({ f; g }) { 1 }",
+        "seqq t; abort(a ~ b); flush({ f; g }) { 1 }",
         "seqq (flush(s)) { 1 }",
     ] {
         let e = parse_one(s).unwrap();
@@ -2278,10 +2278,10 @@ fn seq_parses() {
         k => panic!("{s} -> {k:?}"),
     };
     assert_eq!(clauses("seq abort(cancel) { 1 }"), (false, true, false));
-    assert_eq!(clauses("seqq t abort(a) flush(f) { 1 }"), (true, true, true));
+    assert_eq!(clauses("seqq t; abort(a); flush(f) { 1 }"), (true, true, true));
     assert_eq!(clauses("seqq flush(f) { 1 }"), (false, false, true));
     assert_eq!(clauses("seqq (flush(s)) { 1 }"), (true, false, false));
-    assert!(parse_one("seqq t flush(f) abort(a) { 1 }").is_err());
+    assert!(parse_one("seqq t; flush(f); abort(a) { 1 }").is_err());
     assert!(parse_one("let abort = 1").is_err());
     assert!(parse_one("let seq = 1").is_err());
     assert!(parse_one("let seqq = 1").is_err());

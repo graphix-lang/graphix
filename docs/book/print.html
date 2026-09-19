@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-31118cca.js";
+            window.path_to_searchindex_js = "searchindex-f703b659.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2230,9 +2230,9 @@ performed inside an ordinary expression remain performed, and the
 statements of a block are issued together, so a sibling’s write is not
 retracted.</p>
 <h2 id="aborting-a-run"><a class="header" href="#aborting-a-run">Aborting a run</a></h2>
-<p><code>abort(event)</code> after the trigger ends the run in progress when <code>event</code>
-fires:</p>
-<pre><code class="language-graphix">seq go abort(cancel) {
+<p><code>abort(event)</code> in the head, separated from the trigger by <code>;</code>, ends the
+run in progress when <code>event</code> fires:</p>
+<pre><code class="language-graphix">seq go; abort(cancel) {
   let child = sys::process::spawn(options(cmd))?;
   let status = sys::process::wait(child.proc)?;
   report(status.code)
@@ -2249,10 +2249,10 @@ next one.</p>
 runs and wakes when a run starts, so a timer in it times the run, and
 an event that fired while nothing was running aborts nothing:</p>
 <pre><code class="language-graphix">// a ten second budget for each run
-seq go abort(sys::time::timer(duration:10.s, false)) { ... }
+seq go; abort(sys::time::timer(duration:10.s, false)) { ... }
 
 // the trigger's name is this run's trigger
-seqq let job = jobs abort(sys::time::after_idle(job.budget, job)) { ... }
+seqq let job = jobs; abort(sys::time::after_idle(job.budget, job)) { ... }
 </code></pre>
 <p>Only fires after the run has started count; a value the event already
 holds when the run starts is not a fire.</p>
@@ -2264,7 +2264,7 @@ run is written to a variable outside the block rather than bound with
 <code>let</code>.</p>
 <p>Under <code>seqq</code>, <code>abort</code> ends the current run and the next queued request
 starts. <code>flush(event)</code> also empties the queue:</p>
-<pre><code class="language-graphix">seqq request abort(skip) flush(cancel_all) { ... }
+<pre><code class="language-graphix">seqq request; abort(skip); flush(cancel_all) { ... }
 </code></pre>
 <p><code>flush</code> follows <code>abort</code> when both are present, and only <code>seqq</code> accepts
 it. A request that arrives with the flush or after it is kept.</p>

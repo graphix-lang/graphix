@@ -21,7 +21,7 @@ async fn values(body: &str, fusion_disabled: bool) -> Result<Vec<i64>> {
 async fn abort_ends_run(fusion_disabled: bool) -> Result<()> {
     let body = r#"
         let cancel = select step { 8 => step, _ => never() };
-        seq go abort(cancel) { until step > go + 15; go }
+        seq go; abort(cancel) { until step > go + 15; go }
     "#;
     assert_eq!(values(body, fusion_disabled).await?, [30]);
     Ok(())
@@ -32,7 +32,7 @@ async fn abort_ends_run(fusion_disabled: bool) -> Result<()> {
 async fn idle_fire_is_dropped(fusion_disabled: bool) -> Result<()> {
     let body = r#"
         let cancel = select step { 20 => step, _ => never() };
-        seq go abort(cancel) { until step > go + 5; go }
+        seq go; abort(cancel) { until step > go + 5; go }
     "#;
     assert_eq!(values(body, fusion_disabled).await?, [1, 30]);
     Ok(())
@@ -45,7 +45,7 @@ async fn abort_beats_completion(fusion_disabled: bool) -> Result<()> {
             r#"
             let cancel = select step {{ {cancel_at} => step, _ => never() }};
             let ran = 0;
-            let r = seq go abort(cancel) {{ until step > go + 6; ran <- ran + 1; go }};
+            let r = seq go; abort(cancel) {{ until step > go + 6; ran <- ran + 1; go }};
             select step {{ 60 => ran, _ => never() }}
         "#
         );
@@ -62,7 +62,7 @@ async fn abort_bypasses_try(fusion_disabled: bool) -> Result<()> {
             r#"
             let cancel = select step {{ {cancel_at} => step, _ => never() }};
             let handled = 0;
-            let r = seq go abort(cancel) {{
+            let r = seq go; abort(cancel) {{
                 let v = try {{ until step > go + 6; go }} with(_) {{ handled <- handled + 1; -1 }};
                 v
             }};
@@ -73,7 +73,7 @@ async fn abort_bypasses_try(fusion_disabled: bool) -> Result<()> {
         let body = format!(
             r#"
             let cancel = select step {{ {cancel_at} => step, _ => never() }};
-            seq go abort(cancel) {{
+            seq go; abort(cancel) {{
                 let v = try {{ until step > go + 6; go }} with(_) {{ -1 }};
                 v
             }}
@@ -89,7 +89,7 @@ async fn abort_timer_starts_with_the_run(fusion_disabled: bool) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:40.ms, 16)?);
         let go = select tick { 1 | 9 => tick, _ => never() };
-        seq go abort(sys::time::timer(duration:140.ms, false)) {
+        seq go; abort(sys::time::timer(duration:140.ms, false)) {
             until tick > go + select go { 1 => 6, _ => 1 };
             go
         }
@@ -105,7 +105,7 @@ async fn abort_reads_the_trigger(fusion_disabled: bool) -> Result<()> {
             r#"{{
             let tick = count(sys::time::timer(duration:40.ms, 16)?);
             let go = select tick {{ 1 | 9 => tick, _ => never() }};
-            {kw} let c = go abort(sys::time::after_idle(duration:140.ms, c)) {{
+            {kw} let c = go; abort(sys::time::after_idle(duration:140.ms, c)) {{
                 sys::time::after_idle(select c {{ 1 => duration:2.s, _ => duration:5.ms }}, c)
             }}
         }}"#
@@ -126,14 +126,14 @@ const BURST: &str = r#"
 "#;
 
 async fn seqq_abort_starts_the_next(fusion_disabled: bool) -> Result<()> {
-    let code = format!("{{ {BURST} seqq request abort(cancel) {{ work(request) }} }}");
+    let code = format!("{{ {BURST} seqq request; abort(cancel) {{ work(request) }} }}");
     let (values, _) = run_delta(&code, fusion_disabled).await?;
     assert_eq!(as_i64s(&values), [2, 3, 12]);
     Ok(())
 }
 
 async fn seqq_flush_empties_the_queue(fusion_disabled: bool) -> Result<()> {
-    let code = format!("{{ {BURST} seqq request flush(cancel) {{ work(request) }} }}");
+    let code = format!("{{ {BURST} seqq request; flush(cancel) {{ work(request) }} }}");
     let (values, _) = run_delta(&code, fusion_disabled).await?;
     assert_eq!(as_i64s(&values), [12]);
     Ok(())
@@ -167,7 +167,7 @@ async fn nested_machine_restarts(fusion_disabled: bool) -> Result<()> {
     let body = r#"
         let cancel = select step { 8 => step, _ => never() };
         let slow = |x: i64| seq x { until step > x + 15; x };
-        seq go abort(cancel) { let a = slow(go); a }
+        seq go; abort(cancel) { let a = slow(go); a }
     "#;
     assert_eq!(values(body, fusion_disabled).await?, [30]);
     Ok(())
@@ -186,7 +186,7 @@ async fn flush_needs_a_queue() -> Result<()> {
     .await?;
     let error = ctx
         .rt
-        .compile(arcstr::literal!("{ let t = 1; seq t flush(t) { t } }"))
+        .compile(arcstr::literal!("{ let t = 1; seq t; flush(t) { t } }"))
         .await
         .unwrap_err();
     assert!(format!("{error:#}").contains("a seq has none"), "{error:#}");

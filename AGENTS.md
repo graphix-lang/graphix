@@ -624,7 +624,7 @@ blocker profile, not a gap count.
   in a seq body outside lambda literals). A step completes on a FIRED
   production after its entry, never on a standing value; a call-free
   step reads its level as it stands at entry. `seqq` queues triggers
-  with captured values. `abort(e)` after the trigger ends the run when
+  with captured values. `seq t; abort(e) { .. }` ends the run when
   `e` fires: silent, past any `try`, and it wins the cycle it fires in
   (the compiler-only `SeqAbort` node fails the machine's guards before
   the select updates); `e` is an initial step, asleep between runs, and
