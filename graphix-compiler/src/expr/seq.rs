@@ -37,7 +37,10 @@ type CarriedBinds = IndexMap<(ExprId, ArcStr), (ArcStr, SourcePosition, Option<T
 #[derive(Clone, Copy)]
 enum Rewrite<'a> {
     Bindings,
-    Captures,
+    /// A `seqq` body's reads become the request's captures. An `until`
+    /// stays live, except for the trigger's name (the payload): a run
+    /// waits on its own request.
+    Captures(Option<&'a str>),
     Issue(&'a str),
 }
 
@@ -733,7 +736,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         .filter_map(|(_, name, id)| written.contains(name).then_some(*id))
         .collect();
     names.retain(|name, _| !written.contains(&captures[name].2));
-    let body = rewrite_with(&body, &names, Rewrite::Captures);
+    let body = rewrite_with(&body, &names, Rewrite::Captures(trigger_name.as_deref()));
     let used = body.fold(AHashSet::new(), &mut |mut names, e| {
         if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
             &e.kind
@@ -1336,10 +1339,18 @@ fn rewrite_with_inner(
     if map.is_empty() && !matches!(mode, Rewrite::Issue(_)) {
         return e.clone();
     }
-    let captures = matches!(mode, Rewrite::Captures);
+    let captures = matches!(mode, Rewrite::Captures(_));
     let rewrite = |e: &Expr, map: &AHashMap<ArcStr, ArcStr>| rewrite_with(e, map, mode);
     let kind = match &e.kind {
-        ExprKind::Until(_) | ExprKind::ByRef(_) if captures => return e.clone(),
+        ExprKind::Until(x) if captures => {
+            let Rewrite::Captures(Some(trigger)) = mode else { return e.clone() };
+            let Some((name, capture)) = map.get_key_value(trigger) else {
+                return e.clone();
+            };
+            let request = AHashMap::from_iter([(name.clone(), capture.clone())]);
+            ExprKind::Until(Arc::new(rewrite(x, &request)))
+        }
+        ExprKind::ByRef(_) if captures => return e.clone(),
         ExprKind::Ref { name } => ExprKind::Ref { name: rewrite_path(name, map) },
         ExprKind::Connect { name, value, deref } => ExprKind::Connect {
             name: if captures && !deref { name.clone() } else { rewrite_path(name, map) },

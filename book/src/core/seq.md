@@ -219,6 +219,9 @@ source reference variable subsequently points somewhere else.
 ## Live state and waits
 
 `until ready` observes the live condition, rather than a queued copy of it.
+The one name it does not read live is the trigger's: `seqq request { until
+served == request; .. }` waits on the request this run is serving, as the
+same block under `seq` does.
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 `count <- count + 1` operations can accumulate rather than overwrite one

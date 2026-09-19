@@ -103,6 +103,27 @@ async fn live_until(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+// An `until` reads everything live but the trigger's name, which is the
+// request this run serves, as it is under `seq`.
+async fn until_waits_on_its_own_request(fusion_disabled: bool) -> Result<()> {
+    for kw in ["seq", "seqq"] {
+        let code = format!(
+            r#"{{
+            let step = 0;
+            step <- select step {{ n if n < 60 => n + 1, _ => never() }};
+            let request = select step {{ 1 | 30 => step, _ => never() }};
+            let done = {kw} request {{ until step > request + 10; request }};
+            done ~ step - done
+        }}"#
+        );
+        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        let waits = as_i64s(&values);
+        assert_eq!(waits.len(), 2, "{kw}: {waits:?}");
+        assert!(waits.iter().all(|w| (11..16).contains(w)), "{kw}: {waits:?}");
+    }
+    Ok(())
+}
+
 async fn live_writes(fusion_disabled: bool) -> Result<()> {
     for body in ["n <- n + 1; n", "let target = &n; *target <- *target + 1; *target"] {
         let code = format!(r#"{{ {BURST} let n = 0; seqq request {{ {body} }} }}"#);
@@ -278,6 +299,11 @@ modes!(stale_capture, stale_capture_interp, stale_capture_jit);
 modes!(call_trigger_debounces, call_trigger_debounces_interp, call_trigger_debounces_jit);
 modes!(let_binds_each_request, let_binds_each_request_interp, let_binds_each_request_jit);
 modes!(live_until, live_until_interp, live_until_jit);
+modes!(
+    until_waits_on_its_own_request,
+    until_waits_on_its_own_request_interp,
+    until_waits_on_its_own_request_jit
+);
 modes!(live_writes, live_writes_interp, live_writes_jit);
 modes!(capture_scopes, capture_scopes_interp, capture_scopes_jit);
 modes!(abort_releases, abort_releases_interp, abort_releases_jit);

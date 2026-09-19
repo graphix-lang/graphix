@@ -549,8 +549,9 @@ and the sample accumulates request debt, so the first complete tuple
 can satisfy several pending requests with the same snapshot — ordinary
 sample behaviour, deliberately inherited; exact arrival-time snapshots
 require initialized inputs. The body reads its captures as tuple
-projections of the dequeued request. `until` conditions, address-taking
-and variables the body itself writes stay LIVE (read-modify-write
+projections of the dequeued request. `until` conditions (all but the
+trigger's name, which is this run's request as it is under `seq`),
+address-taking and variables the body itself writes stay LIVE (read-modify-write
 state must see its own writes across requests); direct write targets
 are never redirected into a snapshot, and a dereferenced write uses
 the queued reference handle.

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f703b659.js";
+            window.path_to_searchindex_js = "../searchindex-87250aa9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -348,6 +348,8 @@ read inside that function.</p>
 source reference variable subsequently points somewhere else.</p>
 <h2 id="live-state-and-waits"><a class="header" href="#live-state-and-waits">Live state and waits</a></h2>
 <p><code>until ready</code> observes the live condition, rather than a queued copy of it.
+The one name it does not read live is the trigger’s: <code>seqq request { until served == request; .. }</code> waits on the request this run is serving, as the
+same block under <code>seq</code> does.
 Connect destinations remain the original variables. An external variable
 written directly by the block also remains live when read, so queued
 <code>count &lt;- count + 1</code> operations can accumulate rather than overwrite one
