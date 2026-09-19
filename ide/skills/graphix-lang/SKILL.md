@@ -309,6 +309,11 @@ SYNTAX: typed bottom, args stay live; an unannotated `let` over
 `opt` (over `['a, null]`): `or_never` — `f(opt::or_never(x ~ maybe))`
 replaces the `select .. { null as _ => never(), v => f(v) }` ladder —
 `is_some is_none or_default or and map flat_map filter ok_or zip`.
+The same ladder hides in two steps: `let p = select d { null as _ =>
+null, v => f(v) }; let q = opt::or_never(p)` is `let q =
+f(opt::or_never(d))`. A null carried forward only to be dropped is
+unwrapped at the source, once: `let dir = opt::or_never(d)`, and every
+reader (a later seq step included) takes `dir`.
 `or_never` is a value, not a gate: `f(k ~ t, opt::or_never(sel))` fires
 on `k` while `sel` is null, with the stale bound value. When another
 argument carries the trigger, keep the select; its arm sleeps the call.
