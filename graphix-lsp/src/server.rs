@@ -166,10 +166,10 @@ fn handle_request(
                 serde_json::from_value(req.params)?;
             match handlers::formatting::handle(state, params) {
                 Ok(edits) => Response::new_ok(req_id, edits),
-                Err(refused) => Response::new_err(
+                Err(e) => Response::new_err(
                     req_id,
                     lsp_server::ErrorCode::RequestFailed as i32,
-                    refused.to_string(),
+                    format!("{e:#}"),
                 ),
             }
         }

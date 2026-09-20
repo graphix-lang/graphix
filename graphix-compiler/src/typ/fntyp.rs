@@ -1342,10 +1342,10 @@ impl PrettyDisplay for FnType {
             writeln!(buf, "fn(")?;
         } else {
             writeln!(buf, "fn<")?;
-            buf.with_indent(2, |buf| {
+            buf.nested(|buf| {
                 for (i, (tv, t)) in constraints.iter().enumerate() {
                     write!(buf, "{tv}: ")?;
-                    buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                    buf.nested(|buf| t.fmt_pretty(buf))?;
                     if i < constraints.len() - 1 {
                         buf.kill_newline();
                         writeln!(buf, ",")?;
@@ -1355,7 +1355,7 @@ impl PrettyDisplay for FnType {
             })?;
             writeln!(buf, ">(")?;
         }
-        buf.with_indent(2, |buf| {
+        buf.nested(|buf| {
             for (i, a) in self.args.iter().enumerate() {
                 if is_self_param(a) {
                     writeln!(buf, "{}", a.typ)?;
@@ -1370,7 +1370,7 @@ impl PrettyDisplay for FnType {
                         FnArgKind::Positional { name: Some(n) } => write!(buf, "{n}: ")?,
                         FnArgKind::Positional { name: None } => (),
                     }
-                    buf.with_indent(2, |buf| a.typ.fmt_pretty(buf))?;
+                    buf.nested(|buf| a.typ.fmt_pretty(buf))?;
                 }
                 if i < self.args.len() - 1 || self.vargs.is_some() {
                     buf.kill_newline();
@@ -1379,7 +1379,7 @@ impl PrettyDisplay for FnType {
             }
             if let Some(vargs) = &self.vargs {
                 write!(buf, "@args: ")?;
-                buf.with_indent(2, |buf| vargs.fmt_pretty(buf))?;
+                buf.nested(|buf| vargs.fmt_pretty(buf))?;
             }
             Ok(())
         })?;

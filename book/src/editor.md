@@ -228,8 +228,36 @@ graphix fmt src/main.gx src/lib.gxi   # rewrite in place
 graphix fmt --check src/*.gx          # list files that would change, fail if any
 graphix fmt --stdout src/main.gx      # print instead of rewriting
 graphix fmt < main.gx                 # stdin to stdout (--interface for a .gxi)
-graphix fmt --width 100 main.gx       # fit a different line width (default 80)
+graphix fmt --width 100 --indent 2 main.gx   # override graphixfmt.json for this run
 ```
+
+### Configuration
+
+The line width and the indent come from a `graphixfmt.json`; anything it
+leaves out keeps its default:
+
+```json
+{ "width": 80, "indent": 4 }
+```
+
+The formatter uses the nearest `graphixfmt.json` in the source file's
+directory or any directory above it, so a project keeps one at the base
+of its repository. Failing that it uses yours, in `graphix/` under your
+platform's configuration directory:
+
+| Platform | Path |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME/graphix/graphixfmt.json`, else `~/.config/graphix/graphixfmt.json` |
+| macOS | `~/Library/Application Support/graphix/graphixfmt.json` |
+| Windows | `%APPDATA%\graphix\graphixfmt.json` |
+
+With neither it fits 80 columns and indents by 4. `--width` and
+`--indent` override the file for one run, and the language server reads
+the same files. A `graphixfmt.json` that does not parse, or that names a
+setting the formatter does not have, is an error rather than a silent
+fallback.
+
+### What it changes
 
 The formatter keeps what you chose where the choice is yours: the order
 of struct fields and of the variants in a union, the delimiters of a
@@ -243,6 +271,21 @@ compared with your program; if the two differ in any way the file is left
 untouched and the difference is reported, so a formatter bug can never
 change what your code means.
 
+The language server formats through the same code, and the editor
+configurations in `ide/editors/` turn format-on-save ON by default, with
+a four-space indent to match the formatter. To turn it off:
+
+| Editor | Setting |
+| --- | --- |
+| VS Code | `"[graphix]": { "editor.formatOnSave": false }` in `settings.json` |
+| Neovim | `require('graphix').setup({ format_on_save = false })` |
+| Helix | `auto-format = false` in the graphix entry of `languages.toml` |
+| Emacs | `(setq graphix-format-on-save nil)` |
+| Zed | `"languages": { "Graphix": { "format_on_save": "off" } }` in `settings.json` |
+
+A file that does not parse is left alone. Plain Vim has no LSP client of
+its own; use `:%!graphix fmt` there.
+
 ## What the LSP currently supports
 
 | Feature | Status |
@@ -251,9 +294,11 @@ change what your code means.
 | Completions from the active environment | ✓ |
 | Hover with type and doc information | ✓ |
 | Go-to-definition | ✓ |
+| Find references | ✓ |
+| Document and workspace symbols | ✓ |
+| Formatting (whole document) | ✓ |
 
-Find references, rename, code actions, and formatting are not yet
-implemented. File issues at
+Rename and code actions are not yet implemented. File issues at
 [graphix-lang/graphix](https://github.com/graphix-lang/graphix/issues)
 if something specific would unblock you.
 

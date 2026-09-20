@@ -5,20 +5,63 @@ use crate::{
         TryWithExpr, UseItem,
         parser::{parse, parse_sig},
         print::{
-            PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items, use_seg,
-            use_seg_key,
+            DEFAULT_INDENT, PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items,
+            use_seg, use_seg_key,
         },
     },
     format_with_flags,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use compact_str::{CompactString, format_compact};
 use netidx_value::Value;
 use poolshark::local::LPooled;
-use std::fmt;
+use serde_derive::Deserialize;
+use std::{fmt, fs, path::Path};
 use triomphe::Arc;
 
 pub const DEFAULT_WIDTH: usize = 80;
+
+/// The name of the formatter's configuration file.
+pub const CONFIG_FILE: &str = "graphixfmt.json";
+
+/// What `graphixfmt.json` can say; a field it leaves out keeps its default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FormatConfig {
+    /// the line width to fit
+    pub width: usize,
+    /// the spaces one level of nesting indents by
+    pub indent: usize,
+}
+
+impl Default for FormatConfig {
+    fn default() -> Self {
+        Self { width: DEFAULT_WIDTH, indent: DEFAULT_INDENT }
+    }
+}
+
+impl FormatConfig {
+    fn load(path: &Path) -> Result<Self> {
+        let text = fs::read_to_string(path)
+            .with_context(|| format_compact!("reading {}", path.display()))?;
+        serde_json::from_str(&text)
+            .with_context(|| format_compact!("parsing {}", path.display()))
+    }
+
+    /// The configuration that governs a source file in `dir`: the nearest
+    /// `graphixfmt.json` in `dir` or above it (a project keeps one at its
+    /// base), else the user's, in the platform's configuration directory
+    /// under `graphix`, else the defaults. A file that is found and does
+    /// not parse is an error, never the defaults.
+    pub fn discover(dir: &Path) -> Result<Self> {
+        let project = dir.ancestors().map(|d| d.join(CONFIG_FILE)).find(|p| p.is_file());
+        let user = || dirs::config_dir().map(|d| d.join("graphix").join(CONFIG_FILE));
+        match project.or_else(|| user().filter(|p| p.is_file())) {
+            Some(path) => Self::load(&path),
+            None => Ok(Self::default()),
+        }
+    }
+}
 
 /// The formatter would not hand back its own output: a bug in it, never
 /// in the source, which is left as it was.
@@ -42,7 +85,7 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
-    pub fn of_path(path: &std::path::Path) -> Self {
+    pub fn of_path(path: &Path) -> Self {
         match path.extension().and_then(|e| e.to_str()) {
             Some("gxi") => Self::Interface,
             _ => Self::Program,
@@ -261,9 +304,14 @@ impl Parsed {
     }
 }
 
-fn layout(kind: SourceKind, text: &str, width: usize) -> Result<(Parsed, PrettyBuf)> {
+fn layout(
+    kind: SourceKind,
+    text: &str,
+    cfg: &FormatConfig,
+) -> Result<(Parsed, PrettyBuf)> {
     let parsed = Parsed::new(kind, text)?;
-    let mut buf = PrettyBuf::new(width);
+    let mut buf = PrettyBuf::new(cfg.width);
+    buf.step = cfg.indent;
     format_with_flags(PrintFlag::AsWritten, || parsed.print(&mut buf))?;
     Ok((parsed, buf))
 }
@@ -272,9 +320,9 @@ fn layout(kind: SourceKind, text: &str, width: usize) -> Result<(Parsed, PrettyB
 pub fn format_source_unchecked(
     kind: SourceKind,
     text: &str,
-    width: usize,
+    cfg: &FormatConfig,
 ) -> Result<LPooled<String>> {
-    Ok(layout(kind, text, width)?.1.buf)
+    Ok(layout(kind, text, cfg)?.1.buf)
 }
 
 /// `text` laid out canonically. The result is reparsed and refused unless
@@ -282,9 +330,9 @@ pub fn format_source_unchecked(
 pub fn format_source(
     kind: SourceKind,
     text: &str,
-    width: usize,
+    cfg: &FormatConfig,
 ) -> Result<LPooled<String>> {
-    let (parsed, buf) = layout(kind, text, width)?;
+    let (parsed, buf) = layout(kind, text, cfg)?;
     let reparsed = match Parsed::new(kind, &buf.buf) {
         Ok(p) => p,
         Err(e) => {
@@ -311,8 +359,9 @@ mod tests {
 
     fn stable(kind: SourceKind, src: &str) {
         for width in [0, DEFAULT_WIDTH] {
-            let once = format_source(kind, src, width).unwrap();
-            let twice = format_source(kind, &once, width).unwrap();
+            let cfg = FormatConfig { width, ..FormatConfig::default() };
+            let once = format_source(kind, src, &cfg).unwrap();
+            let twice = format_source(kind, &once, &cfg).unwrap();
             assert_eq!(*once, *twice, "not idempotent at width {width}")
         }
     }
@@ -344,7 +393,7 @@ mod tests {
     }
 
     fn formats_to(kind: SourceKind, src: &str, want: &str) {
-        assert_eq!(&**format_source(kind, src, DEFAULT_WIDTH).unwrap(), want);
+        assert_eq!(&**format_source(kind, src, &FormatConfig::default()).unwrap(), want);
         stable(kind, src)
     }
 
@@ -382,7 +431,7 @@ mod tests {
         formats_to(
             Program,
             long,
-            "use tui::{\n  block::block,\n  input_handler::{Event, on_press},\n  layout::{child, layout},\n  line,\n  list::list,\n  span,\n  style\n}\n",
+            "use tui::{\n    block::block,\n    input_handler::{Event, on_press},\n    layout::{child, layout},\n    line,\n    list::list,\n    span,\n    style\n}\n",
         );
     }
 
@@ -484,6 +533,32 @@ mod tests {
         for (src, want) in cases {
             assert_eq!(parse_one(src).unwrap().to_string(), want)
         }
+    }
+
+    #[test]
+    fn the_config_sets_width_and_indent() {
+        let cfg: FormatConfig = serde_json::from_str(r#"{ "indent": 2 }"#).unwrap();
+        assert_eq!(cfg, FormatConfig { width: DEFAULT_WIDTH, indent: 2 });
+        assert!(serde_json::from_str::<FormatConfig>(r#"{ "indnt": 2 }"#).is_err());
+        let src = "let f = |a| { let b = a + 1; b * 2 }";
+        let narrow = FormatConfig { width: 20, indent: 2 };
+        let want = "let f = |a| {\n  let b = a + 1;\n  b * 2\n}\n";
+        assert_eq!(&**format_source(SourceKind::Program, src, &narrow).unwrap(), want);
+    }
+
+    #[test]
+    fn the_nearest_project_config_governs() {
+        let root = tempfile::tempdir().unwrap();
+        let deep = root.path().join("src/graphix/tui");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(root.path().join(CONFIG_FILE), r#"{ "width": 100 }"#).unwrap();
+        let base = FormatConfig { width: 100, indent: DEFAULT_INDENT };
+        assert_eq!(FormatConfig::discover(&deep).unwrap(), base);
+        fs::write(deep.join(CONFIG_FILE), r#"{ "indent": 2 }"#).unwrap();
+        let nearest = FormatConfig { width: DEFAULT_WIDTH, indent: 2 };
+        assert_eq!(FormatConfig::discover(&deep).unwrap(), nearest);
+        fs::write(deep.join(CONFIG_FILE), "{ width: 100 }").unwrap();
+        assert!(FormatConfig::discover(&deep).is_err());
     }
 
     #[test]

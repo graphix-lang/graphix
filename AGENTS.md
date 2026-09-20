@@ -402,7 +402,17 @@ run the corpus harness over every `.gx`/`.gxi` here and in `../netidx`:
 `cargo run -p graphix-compiler --example gxfmt -- <files>` (many files:
 round trip + idempotence; one file: prints it; `GXFMT_UNCHECKED=1`
 skips the reparse). The print round-trip proptests are randomized: a
-printer bug can pass several runs.
+printer bug can pass several runs. Width and indent are
+`format::FormatConfig` (defaults 80 and 4), discovered by
+`FormatConfig::discover`: the nearest `graphixfmt.json` at or above the
+source file, else `dirs::config_dir()/graphix/graphixfmt.json`, else the
+defaults; a malformed file is an error; `--width`/`--indent` override.
+A new layout setting is a field there, never a constant in the printer
+(`PrettyBuf::nested` is the one indent step). The LSP serves
+`textDocument/formatting` from the same `format_source`
+(`graphix-lsp/src/handlers/formatting.rs`): one whole-document edit,
+no edit for a document that does not parse, an error response only for
+`format::Refused` (the formatter declined its own output).
 
 **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`);
 `VfsResolver`/`FilesResolver` are in-core, `NetidxResolver` is in

@@ -216,7 +216,7 @@ impl PrettyDisplay for Type {
                     writeln!(buf, "{name}")
                 } else {
                     writeln!(buf, "{name}<")?;
-                    buf.with_indent(2, |buf| {
+                    buf.nested(|buf| {
                         for (i, t) in params.iter().enumerate() {
                             t.fmt_pretty(buf)?;
                             if i < params.len() - 1 {
@@ -233,22 +233,22 @@ impl PrettyDisplay for Type {
             Self::Fn(t) => t.fmt_pretty(buf),
             Self::Error(t) => {
                 writeln!(buf, "Error<")?;
-                buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                buf.nested(|buf| t.fmt_pretty(buf))?;
                 writeln!(buf, ">")
             }
             Self::Array(t) => {
                 writeln!(buf, "Array<")?;
-                buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                buf.nested(|buf| t.fmt_pretty(buf))?;
                 writeln!(buf, ">")
             }
             Self::List(t) => {
                 writeln!(buf, "List<")?;
-                buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                buf.nested(|buf| t.fmt_pretty(buf))?;
                 writeln!(buf, ">")
             }
             Self::Map { key, value } => {
                 writeln!(buf, "Map<")?;
-                buf.with_indent(2, |buf| {
+                buf.nested(|buf| {
                     key.fmt_pretty(buf)?;
                     buf.kill_newline();
                     writeln!(buf, ",")?;
@@ -262,7 +262,7 @@ impl PrettyDisplay for Type {
             }
             Self::Tuple(ts) => {
                 writeln!(buf, "(")?;
-                buf.with_indent(2, |buf| {
+                buf.nested(|buf| {
                     for (i, t) in ts.iter().enumerate() {
                         t.fmt_pretty(buf)?;
                         if i < ts.len() - 1 {
@@ -277,7 +277,7 @@ impl PrettyDisplay for Type {
             Self::Variant(tag, ts, _) if ts.is_empty() => writeln!(buf, "`{tag}"),
             Self::Variant(tag, ts, _) => {
                 writeln!(buf, "`{tag}(")?;
-                buf.with_indent(2, |buf| {
+                buf.nested(|buf| {
                     for (i, t) in ts.iter().enumerate() {
                         t.fmt_pretty(buf)?;
                         if i < ts.len() - 1 {
@@ -295,10 +295,10 @@ impl PrettyDisplay for Type {
                     written.sort_by_key(|(_, _, at)| at.order());
                 }
                 writeln!(buf, "{{")?;
-                buf.with_indent(2, |buf| {
+                buf.nested(|buf| {
                     for (i, (n, t, _)) in written.iter().enumerate() {
                         write!(buf, "{n}: ")?;
-                        buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
+                        buf.nested(|buf| t.fmt_pretty(buf))?;
                         if i < ts.len() - 1 {
                             buf.kill_newline();
                             writeln!(buf, ",")?;
@@ -310,7 +310,7 @@ impl PrettyDisplay for Type {
             }
             Self::Set(s) => {
                 writeln!(buf, "[")?;
-                buf.with_indent(2, |buf| {
+                buf.nested(|buf| {
                     for (i, t) in set_members(s).iter().enumerate() {
                         match t {
                             Type::Primitive(_) => writeln!(buf, "{}", SetMember(t))?,

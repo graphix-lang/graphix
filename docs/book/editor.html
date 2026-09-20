@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-34dd0dab.js";
+            window.path_to_searchindex_js = "searchindex-17f0e3c0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -337,8 +337,35 @@ an editor’s “format on save” hook wants:</p>
 graphix fmt --check src/*.gx          # list files that would change, fail if any
 graphix fmt --stdout src/main.gx      # print instead of rewriting
 graphix fmt &lt; main.gx                 # stdin to stdout (--interface for a .gxi)
-graphix fmt --width 100 main.gx       # fit a different line width (default 80)
+graphix fmt --width 100 --indent 2 main.gx   # override graphixfmt.json for this run
 </code></pre>
+<h3 id="configuration"><a class="header" href="#configuration">Configuration</a></h3>
+<p>The line width and the indent come from a <code>graphixfmt.json</code>; anything it
+leaves out keeps its default:</p>
+<pre><code class="language-json">{ "width": 80, "indent": 4 }
+</code></pre>
+<p>The formatter uses the nearest <code>graphixfmt.json</code> in the source file’s
+directory or any directory above it, so a project keeps one at the base
+of its repository. Failing that it uses yours, in <code>graphix/</code> under your
+platform’s configuration directory:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Platform</th><th>Path</th></tr>
+</thead>
+<tbody>
+<tr><td>Linux</td><td><code>$XDG_CONFIG_HOME/graphix/graphixfmt.json</code>, else <code>~/.config/graphix/graphixfmt.json</code></td></tr>
+<tr><td>macOS</td><td><code>~/Library/Application Support/graphix/graphixfmt.json</code></td></tr>
+<tr><td>Windows</td><td><code>%APPDATA%\graphix\graphixfmt.json</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>With neither it fits 80 columns and indents by 4. <code>--width</code> and
+<code>--indent</code> override the file for one run, and the language server reads
+the same files. A <code>graphixfmt.json</code> that does not parse, or that names a
+setting the formatter does not have, is an error rather than a silent
+fallback.</p>
+<h3 id="what-it-changes"><a class="header" href="#what-it-changes">What it changes</a></h3>
 <p>The formatter keeps what you chose where the choice is yours: the order
 of struct fields and of the variants in a union, the delimiters of a
 string (<code>"…"</code>, <code>r"…"</code>, <code>"""…"""</code>), your comments and attributes. It
@@ -350,6 +377,25 @@ width. Before anything is written the formatted text is parsed again and
 compared with your program; if the two differ in any way the file is left
 untouched and the difference is reported, so a formatter bug can never
 change what your code means.</p>
+<p>The language server formats through the same code, and the editor
+configurations in <code>ide/editors/</code> turn format-on-save ON by default, with
+a four-space indent to match the formatter. To turn it off:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Editor</th><th>Setting</th></tr>
+</thead>
+<tbody>
+<tr><td>VS Code</td><td><code>"[graphix]": { "editor.formatOnSave": false }</code> in <code>settings.json</code></td></tr>
+<tr><td>Neovim</td><td><code>require('graphix').setup({ format_on_save = false })</code></td></tr>
+<tr><td>Helix</td><td><code>auto-format = false</code> in the graphix entry of <code>languages.toml</code></td></tr>
+<tr><td>Emacs</td><td><code>(setq graphix-format-on-save nil)</code></td></tr>
+<tr><td>Zed</td><td><code>"languages": { "Graphix": { "format_on_save": "off" } }</code> in <code>settings.json</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>A file that does not parse is left alone. Plain Vim has no LSP client of
+its own; use <code>:%!graphix fmt</code> there.</p>
 <h2 id="what-the-lsp-currently-supports"><a class="header" href="#what-the-lsp-currently-supports">What the LSP currently supports</a></h2>
 <div class="table-wrapper">
 <table>
@@ -361,11 +407,13 @@ change what your code means.</p>
 <tr><td>Completions from the active environment</td><td>✓</td></tr>
 <tr><td>Hover with type and doc information</td><td>✓</td></tr>
 <tr><td>Go-to-definition</td><td>✓</td></tr>
+<tr><td>Find references</td><td>✓</td></tr>
+<tr><td>Document and workspace symbols</td><td>✓</td></tr>
+<tr><td>Formatting (whole document)</td><td>✓</td></tr>
 </tbody>
 </table>
 </div>
-<p>Find references, rename, code actions, and formatting are not yet
-implemented. File issues at
+<p>Rename and code actions are not yet implemented. File issues at
 <a href="https://github.com/graphix-lang/graphix/issues">graphix-lang/graphix</a>
 if something specific would unblock you.</p>
 <h2 id="reporting-editor-issues"><a class="header" href="#reporting-editor-issues">Reporting editor issues</a></h2>

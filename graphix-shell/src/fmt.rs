@@ -1,11 +1,11 @@
 //! `graphix fmt`: the source formatter's command line.
 
 use anyhow::{Context, Result, bail};
-use graphix_compiler::expr::format::{SourceKind, format_source};
+use graphix_compiler::expr::format::{FormatConfig, SourceKind, format_source};
 use std::{
     fs,
     io::{self, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 pub struct Args {
@@ -13,14 +13,30 @@ pub struct Args {
     pub check: bool,
     pub stdout: bool,
     pub interface: bool,
-    pub width: usize,
+    /// override the configured line width
+    pub width: Option<usize>,
+    /// override the configured indent
+    pub indent: Option<usize>,
+}
+
+impl Args {
+    /// The configuration for a source file in `dir`, under the command
+    /// line's overrides.
+    fn config(&self, dir: &Path) -> Result<FormatConfig> {
+        let cfg = FormatConfig::discover(dir)?;
+        Ok(FormatConfig {
+            width: self.width.unwrap_or(cfg.width),
+            indent: self.indent.unwrap_or(cfg.indent),
+        })
+    }
 }
 
 fn format_stdin(args: &Args) -> Result<()> {
     let kind = if args.interface { SourceKind::Interface } else { SourceKind::Program };
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).context("reading stdin")?;
-    let formatted = format_source(kind, &text, args.width)?;
+    let cfg = args.config(&std::env::current_dir()?)?;
+    let formatted = format_source(kind, &text, &cfg)?;
     if args.check {
         if *formatted != text {
             bail!("stdin is not formatted")
@@ -41,7 +57,9 @@ pub fn run(args: Args) -> Result<()> {
     for path in &args.files {
         let res = (|| -> Result<bool> {
             let text = fs::read_to_string(path)?;
-            let formatted = format_source(SourceKind::of_path(path), &text, args.width)?;
+            let file = fs::canonicalize(path)?;
+            let cfg = args.config(file.parent().unwrap_or(&file))?;
+            let formatted = format_source(SourceKind::of_path(path), &text, &cfg)?;
             if args.stdout {
                 io::stdout().write_all(formatted.as_bytes())?;
                 return Ok(false);

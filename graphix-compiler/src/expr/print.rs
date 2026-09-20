@@ -153,7 +153,7 @@ fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
         return writeln!(buf, "{close}");
     }
     writeln!(buf, "{}", open)?;
-    buf.with_indent::<fmt::Result, _>(2, |buf| {
+    buf.nested::<fmt::Result, _>(|buf| {
         for i in 0..exprs.len() {
             f(&exprs[i]).fmt_pretty(buf)?;
             if i < exprs.len() - 1 {
@@ -262,7 +262,7 @@ fn pretty_tail(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
         return pretty_tail_bare(buf, e);
     }
     writeln!(buf)?;
-    buf.with_indent(2, |buf| e.fmt_pretty(buf))
+    buf.nested(|buf| e.fmt_pretty(buf))
 }
 
 /// `pretty_tail` for an expression whose decorations the caller placed.
@@ -283,7 +283,7 @@ fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     }
     buf.buf.pop();
     writeln!(buf)?;
-    buf.with_indent(2, |buf| Bare(e).fmt_pretty(buf))
+    buf.nested(|buf| Bare(e).fmt_pretty(buf))
 }
 
 /// The lines above a decorated expression: its comments, then its
@@ -318,16 +318,26 @@ impl fmt::Display for Literal<'_> {
     }
 }
 
+/// The spaces one level of nesting indents by, unless configured.
+pub const DEFAULT_INDENT: usize = 4;
+
 #[derive(Debug)]
 pub struct PrettyBuf {
     pub indent: usize,
+    /// what `nested` adds to `indent`
+    pub step: usize,
     pub limit: usize,
     pub buf: LPooled<String>,
 }
 
 impl PrettyBuf {
     pub fn new(limit: usize) -> Self {
-        Self { indent: 0, limit, buf: LPooled::take() }
+        Self { indent: 0, step: DEFAULT_INDENT, limit, buf: LPooled::take() }
+    }
+
+    /// Run `f` one level of nesting deeper.
+    pub fn nested<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
+        self.with_indent(self.step, f)
     }
 
     pub fn len(&self) -> usize {
@@ -559,7 +569,7 @@ impl fmt::Display for TraitExpr {
 impl PrettyDisplay for TraitExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         writeln!(buf, "trait {} {{", self.name)?;
-        buf.with_indent(2, |buf| {
+        buf.nested(|buf| {
             for (i, m) in self.methods.iter().enumerate() {
                 m.fmt_pretty_inner(buf)?;
                 if i < self.methods.len() - 1 {
@@ -621,7 +631,7 @@ impl PrettyDisplay for ImplExpr {
             return writeln!(buf);
         }
         writeln!(buf, " {{")?;
-        buf.with_indent(2, |buf| {
+        buf.nested(|buf| {
             for (i, m) in self.methods.iter().enumerate() {
                 m.fmt_pretty(buf)?;
                 if i < self.methods.len() - 1 {
@@ -663,7 +673,7 @@ impl PrettyDisplay for Sandbox {
         macro_rules! write_sandbox {
             ($kind:literal, $l:expr) => {{
                 writeln!(buf, "sandbox {} [ ", $kind)?;
-                buf.with_indent::<fmt::Result, _>(2, |buf| {
+                buf.nested::<fmt::Result, _>(|buf| {
                     for (i, p) in $l.iter().enumerate() {
                         if i < $l.len() - 1 {
                             writeln!(buf, "{}, ", p)?
@@ -760,7 +770,7 @@ impl PrettyDisplay for Sig {
         if self.toplevel {
             pretty_file_items(buf, &self.items, |buf, si| si.fmt_pretty_inner(buf))?
         } else {
-            buf.with_indent(2, |buf| {
+            buf.nested(|buf| {
                 for (i, si) in self.iter().enumerate() {
                     si.fmt_pretty_inner(buf)?;
                     if i < self.len() - 1 {
@@ -835,7 +845,7 @@ impl PrettyDisplay for StructWithExpr {
             ExprKind::Ref { .. } => writeln!(buf, "{{ {source} with")?,
             _ => writeln!(buf, "{{ ({source}) with")?,
         }
-        buf.with_indent::<fmt::Result, _>(2, |buf| {
+        buf.nested::<fmt::Result, _>(|buf| {
             for (i, (name, e)) in as_written(replace).into_iter().enumerate() {
                 write_leading(buf, &e.dec)?;
                 match &e.kind {
@@ -890,7 +900,7 @@ impl PrettyDisplay for StructExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let Self { args } = self;
         writeln!(buf, "{{")?;
-        buf.with_indent::<fmt::Result, _>(2, |buf| {
+        buf.nested::<fmt::Result, _>(|buf| {
             for (i, (n, e)) in as_written(args).into_iter().enumerate() {
                 write_leading(buf, &e.dec)?;
                 match &e.kind {
@@ -997,7 +1007,7 @@ impl PrettyDisplay for ApplyExpr {
             return writeln!(buf, ")");
         }
         writeln!(buf, "(")?;
-        buf.with_indent::<fmt::Result, _>(2, |buf| {
+        buf.nested::<fmt::Result, _>(|buf| {
             for i in 0..args.len() {
                 match &args[i].0 {
                     None => args[i].1.fmt_pretty(buf)?,
@@ -1118,7 +1128,7 @@ impl PrettyDisplay for LambdaExpr {
             buf.buf.truncate(start);
             self.write_constraints(buf)?;
             writeln!(buf, "|")?;
-            buf.with_indent(2, |buf| self.write_args(buf, ",\n", "\n"))?;
+            buf.nested(|buf| self.write_args(buf, ",\n", "\n"))?;
             write!(buf, "|")?;
             self.write_returns(buf)?;
         }
@@ -1158,7 +1168,7 @@ impl PrettyDisplay for SelectExpr {
         arg.fmt_pretty(buf)?;
         buf.kill_newline();
         writeln!(buf, " {{")?;
-        buf.with_indent(2, |buf| {
+        buf.nested(|buf| {
             for (i, (pat, expr)) in arms.iter().enumerate() {
                 write_leading(buf, &expr.dec)?;
                 if let Some(tp) = &pat.type_predicate {
@@ -1167,7 +1177,7 @@ impl PrettyDisplay for SelectExpr {
                 write!(buf, "{} ", pat.structure_predicate)?;
                 if let Some(guard) = &pat.guard {
                     write!(buf, "if ")?;
-                    buf.with_indent(2, |buf| guard.fmt_pretty(buf))?;
+                    buf.nested(|buf| guard.fmt_pretty(buf))?;
                     buf.kill_newline();
                     write!(buf, " ")?;
                 }
@@ -1211,7 +1221,7 @@ impl PrettyDisplay for ExprKind {
             }
             ExprKind::ExplicitParens(e) => {
                 writeln!(buf, "(")?;
-                buf.with_indent(2, |buf| e.fmt_pretty(buf))?;
+                buf.nested(|buf| e.fmt_pretty(buf))?;
                 writeln!(buf, ")")
             }
             ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
@@ -1273,7 +1283,7 @@ impl PrettyDisplay for ExprKind {
                 value: ModuleKind::Dynamic { sandbox, sig, source },
             } => {
                 writeln!(buf, "mod {name} dynamic {{")?;
-                buf.with_indent(2, |buf| {
+                buf.nested(|buf| {
                     sandbox.fmt_pretty(buf)?;
                     buf.kill_newline();
                     writeln!(buf, ";")?;
@@ -1281,7 +1291,7 @@ impl PrettyDisplay for ExprKind {
                     buf.kill_newline();
                     writeln!(buf, ";")?;
                     write!(buf, "source ")?;
-                    buf.with_indent(2, |buf| source.fmt_pretty(buf))?;
+                    buf.nested(|buf| source.fmt_pretty(buf))?;
                     buf.kill_newline();
                     writeln!(buf, ";")
                 })?;
@@ -1294,12 +1304,12 @@ impl PrettyDisplay for ExprKind {
             }
             ExprKind::TypeCast { expr, typ } => {
                 writeln!(buf, "cast<{typ}>(")?;
-                buf.with_indent(2, |buf| expr.fmt_pretty(buf))?;
+                buf.nested(|buf| expr.fmt_pretty(buf))?;
                 writeln!(buf, ")")
             }
             ExprKind::Map { args } => {
                 writeln!(buf, "{{")?;
-                buf.with_indent::<fmt::Result, _>(2, |buf| {
+                buf.nested::<fmt::Result, _>(|buf| {
                     for (i, (k, v)) in args.iter().enumerate() {
                         writeln!(buf, "{k} => {v}")?;
                         if i < args.len() - 1 {
@@ -1388,7 +1398,7 @@ impl PrettyDisplay for ExprKind {
             }
             ExprKind::Deref(e) => {
                 write!(buf, "*")?;
-                buf.with_indent(2, |buf| e.fmt_pretty(buf))
+                buf.nested(|buf| e.fmt_pretty(buf))
             }
             ExprKind::Neg(e) if matches!(e.kind, ExprKind::Constant(_)) => {
                 writeln!(buf, "{self}")
@@ -1524,7 +1534,7 @@ impl<'a> UseNames<'a> {
 
     fn pretty_group(&self, buf: &mut PrettyBuf) -> fmt::Result {
         writeln!(buf, "{{")?;
-        buf.with_indent::<fmt::Result, _>(2, |buf| {
+        buf.nested::<fmt::Result, _>(|buf| {
             let n = self.entries().count();
             for (i, e) in self.entries().enumerate() {
                 let start = buf.len();

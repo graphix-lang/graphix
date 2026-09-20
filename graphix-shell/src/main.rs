@@ -127,7 +127,9 @@ enum Command {
     /// Editors typically launch this automatically; you don't usually run it directly.
     Lsp,
     /// Format graphix source: each named file in place, or stdin to
-    /// stdout when no file is named
+    /// stdout when no file is named. Width and indent come from the
+    /// nearest graphixfmt.json at or above the file, else the one in the
+    /// user's configuration directory under graphix/, else 80 and 4
     Fmt {
         /// the .gx and .gxi files to format
         files: Vec<PathBuf>,
@@ -140,9 +142,12 @@ enum Command {
         /// stdin is an interface (.gxi)
         #[arg(long)]
         interface: bool,
-        /// the line width to fit
-        #[arg(long, default_value_t = graphix_compiler::expr::format::DEFAULT_WIDTH)]
-        width: usize,
+        /// the line width to fit, over graphixfmt.json's
+        #[arg(long)]
+        width: Option<usize>,
+        /// the spaces one level of nesting indents by, over graphixfmt.json's
+        #[arg(long)]
+        indent: Option<usize>,
     },
 }
 
@@ -452,13 +457,14 @@ fn main() -> Result<()> {
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
         Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
-        Some(Command::Fmt { files, check, stdout, interface, width }) => {
+        Some(Command::Fmt { files, check, stdout, interface, width, indent }) => {
             return graphix_shell::fmt::run(graphix_shell::fmt::Args {
                 files,
                 check,
                 stdout,
                 interface,
                 width,
+                indent,
             });
         }
         None => (),
