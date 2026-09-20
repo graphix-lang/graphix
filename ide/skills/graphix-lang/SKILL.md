@@ -53,6 +53,24 @@ constant argument to `exit` runs at init — always gate it).
 - **`~` banks, `~!` does not**: `e ~ v` is `v` at each fire of `e`, and a
   fire that finds `v` absent is paid when `v` first arrives; `e ~! v` is
   bottom then. Use `~!` when a late payment would be a phantom event.
+- **`seqq` reads the world once per run, `seq` once per step**: `seqq`
+  captures every outer variable the body only reads along with the
+  queued request, so two steps see the same `known`. Under `seq` a later
+  step reads it as it stands then, and `let snap = known` does not help
+  (a `let` is a name for the node, it tracks). `array::zip(known, states)`
+  after a slow `let states = array::map(known, ..)` is misaligned under
+  `seq`. Steps that must agree use `seqq`, or take the value from the
+  trigger: `seq let snap = trig { .. }`.
+- **A seq's value is bottom until its first run completes**, and so is
+  every tuple, select or call over it: `select (polling, array::len(rows))`
+  shows nothing during the first run, the one the "loading…" arm was
+  written for. A level the view needs from the first frame is state with
+  an initial value, written in the body: `let rows = []; seqq t { busy <-
+  true; rows <- fetch(..); busy <- false }`.
+- **A seq triggered on a state variable runs at init over the initial
+  value.** "Save whenever `book` changes" writes the empty book over the
+  file while the load is still reading it. Trigger on the event that
+  means "this was changed", never on the state.
 - **Comments** are legal only on their own line above an expression, a
   select arm, an impl method or a struct-literal field. Trailing,
   interior and dangling comments are parse errors. `///` doc comments
@@ -163,7 +181,11 @@ element type (`let choices: Array<Choice> = [..]`) if a field is read
 through an index. A fold's accumulator is the type of its init, so
 `array::fold(xs, null, |acc, x| ..)` makes `acc` null: annotate the init
 (`let init: [i64, null] = null`), never the callback. A `let` over a
-call, a select or a seq needs nothing. A lambda's return type is needed
+call, a select or a seq needs nothing. A struct literal that meets a
+named type in a select (`select o { null as _ => book, _ => upsert(book,
+..) }` with `let book = { domains: [] }`) makes the select a union of
+two struct shapes, and a field read fails with `expected struct not
+[{domains: ..}, {domains: ..}]`: annotate the literal, `let book: Book`. A lambda's return type is needed
 in two places only: a function declared in the `.gxi` keeps its `-> T`
 in the `.gx` (an inferred return does not cross modules), and a
 function with a type variable in its signature keeps it when a caller
@@ -249,6 +271,21 @@ let r = seqq go { busy <- true; let r = f(x); busy <- false; r }   // this
 would leave `r` aligned with a stale `x`); `seq` when a re-trigger during
 a run is noise. Debounce the trigger when a burst should cost one run.
 
+An effect that follows a change takes the change as its trigger. A
+state write and a separate "go" pulse are two statements someone must
+keep paired, and the effect reads the state later, not the value that
+caused it:
+
+```graphix
+book <- upsert(book, x); save <- ev       // never this, at every writer
+let edit = never();  book <- edit;        // this: writers do `edit <- upsert(book, x)`
+seqq let b = edit { write(path, b)? }
+```
+
+To gate a seq on a nullable, put it in the trigger: `seqq let (dir, b) =
+(d$, edit) { .. }` never runs while `d` is null. A `d$` in a step stalls
+the run instead, and a stalled `seqq` queues every later trigger forever.
+
 A statement starts in the first cycle its predecessor's effect can be
 seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
 `n <- n + 1; publish(n)` publishes the NEW `n` (a cycle later);
@@ -256,7 +293,8 @@ seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
 after a connect waits for the write (it may read anything); a block is
 the override. A step completes when it produces a NEW value after its
 entry, never on a value standing from an earlier run; a step that reads
-a level takes it as it stands at entry and waits for it if absent. A `let`'s fire is
+a level takes it as it stands at entry (under `seq`; `seqq` captured it
+with the request) and waits for it if absent. A `let`'s fire is
 live only in the next step (a later `t ~ x` on it does not write).
 `never()` in a step stalls the run. A seq inside a step is a step: with
 no trigger it runs at every entry of its statement and the outer step
@@ -403,6 +441,19 @@ select array::filter_map(xs, |x| select probe(x) { error as _ => null, v if ok(v
 }
 let result = seqq go { let r = fetch(go); publish(path, r); r }   // ceremony
 ```
+
+Derive, do not add a second writer. Two unordered writers to one
+variable race when one replaces it wholesale (a file load landing after
+a seed erases the seed). State holds only what is written; the merged
+view is a pure select over its sources:
+
+```graphix
+let known = select local_domain(true) { null as _ => book, own => upsert(book, own) }
+```
+
+A mapped array zipped back against its source means the callback threw
+away the element it had in hand. Build the final row there:
+`array::filter_map(xs, |x| select probe(x) { [] => null, [a, ..] => {x, a} })`.
 
 ## Gotchas
 
