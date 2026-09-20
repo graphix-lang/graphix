@@ -91,6 +91,16 @@ let rec f = |n| ...            // recursive binding (monomorphic)
 let result = { let tmp = compute(); tmp + 1 }
 ```
 
+Bind a name in the smallest block that uses it. A `let` at the top of a
+function tells the reader the rest of the function uses it, and they
+carry it to the end; one that only a single block or seq reads is noise
+everywhere else. So a helper value goes inside its user (`let known = seq
+{ let blank = ..; .. }`, not `let blank` above it), and an intermediate
+that feeds one result lives in the block that computes the result:
+`book` is a step of the seq whose value is `known`, and below that seq
+there is no `book` to think about. Between two correct shapes, prefer
+the one that leaves fewer names live in the function's scope.
+
 ## Types
 
 Structural: same shape, same type.
@@ -463,6 +473,7 @@ the state's absence is the sequencing: every reader (an edit's
 
 ```graphix
 let known: Book = seq {
+  let blank: Book = { domains: [] };
   let book = select sys::fs::is_file(path) {
     error as _ => blank,
     file => seq { try { let b: Book = json::read(sys::fs::read_all(file)?)?; b } with(e) { notice <- ..; blank } }
