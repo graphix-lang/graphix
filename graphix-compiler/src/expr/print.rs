@@ -177,6 +177,64 @@ fn pretty_body(
     }
 }
 
+/// Whether the multi-line layout of `e` opens with a short head and a
+/// bracket, closing at its own indent: it can sit on the line of
+/// whatever introduces it.
+fn opens_with_bracket(e: &ExprKind) -> bool {
+    use ExprKind::*;
+    match e {
+        Do { .. }
+        | Lambda(_)
+        | Select(_)
+        | Seq { .. }
+        | TryWith(_)
+        | Struct(_)
+        | StructWith(_)
+        | Array { .. }
+        | List { .. }
+        | Tuple { .. }
+        | Map { .. }
+        | Apply(_)
+        | Any { .. }
+        | Never { .. }
+        | Construct { .. }
+        | TypeCast { .. }
+        | ExplicitParens(_) => true,
+        Variant { args, .. } => !args.is_empty(),
+        Qop(e) | OrNever(e) | Rethrow(e) | ByRef(e) | Deref(e) | Neg(e) => {
+            opens_with_bracket(&e.kind)
+        }
+        Not { expr } => opens_with_bracket(&expr.kind),
+        _ => false,
+    }
+}
+
+/// The expression a head introduces (`let x =`, `x <-`, `name:`, `=>`);
+/// the head has been written without its trailing space. It follows on
+/// the head's line when it fits there or opens with a bracket, else it
+/// moves to its own line, indented.
+fn pretty_tail(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
+    if e.dec.is_none() {
+        return pretty_tail_kind(buf, &e.kind);
+    }
+    writeln!(buf)?;
+    buf.with_indent(2, |buf| e.fmt_pretty(buf))
+}
+
+/// `pretty_tail` for an expression whose decorations the caller placed.
+fn pretty_tail_kind(buf: &mut PrettyBuf, e: &ExprKind) -> fmt::Result {
+    write!(buf, " ")?;
+    if e.fmt_flat(buf)? {
+        return Ok(());
+    }
+    if opens_with_bracket(e) {
+        return e.fmt_pretty_inner(buf);
+    }
+    buf.buf.pop();
+    writeln!(buf)?;
+    buf.with_indent(2, |buf| e.fmt_pretty(buf))
+}
+
 /// The lines above a decorated expression: its comments, then its
 /// attributes.
 pub(crate) fn write_leading(
@@ -256,20 +314,25 @@ pub trait PrettyDisplay: fmt::Display {
     /// form does not fit.
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result;
 
-    /// Format on a single line when it fits, else via `pretty_fmt`.
-    fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
+    /// Write the single-line form and a newline if it fits the rest of
+    /// the line, else write nothing.
+    fn fmt_flat(&self, buf: &mut PrettyBuf) -> Result<bool, fmt::Error> {
         use fmt::Write;
         let start = buf.len();
         let col = start - buf.buf.rfind('\n').map_or(0, |i| i + 1);
         writeln!(buf, "{}", self)?;
         // Best-effort: embedded newlines overcount and a long token can
         // exceed any limit.
-        if col + buf.len() - start - 1 <= buf.limit {
-            return Ok(());
-        } else {
+        let fits = col + buf.len() - start - 1 <= buf.limit;
+        if !fits {
             buf.buf.truncate(start);
-            self.fmt_pretty_inner(buf)
         }
+        Ok(fits)
+    }
+
+    /// Format on a single line when it fits, else via `pretty_fmt`.
+    fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        if self.fmt_flat(buf)? { Ok(()) } else { self.fmt_pretty_inner(buf) }
     }
 
     /// Pretty print to a pooled string
@@ -384,14 +447,15 @@ impl fmt::Display for TraitMethod {
 
 impl PrettyDisplay for TraitMethod {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        write!(buf, "{}val {}: ", self.doc, self.name)?;
+        self.doc.fmt_pretty_inner(buf)?;
+        write!(buf, "val {}: ", self.name)?;
         self.typ.fmt_pretty(buf)?;
         match &self.default {
             None => Ok(()),
             Some(d) => {
                 buf.kill_newline();
-                write!(buf, " = ")?;
-                buf.with_indent(2, |buf| d.fmt_pretty(buf))
+                write!(buf, " =")?;
+                pretty_tail(buf, d)
             }
         }
     }
@@ -415,7 +479,7 @@ impl PrettyDisplay for TraitExpr {
         writeln!(buf, "trait {} {{", self.name)?;
         buf.with_indent(2, |buf| {
             for (i, m) in self.methods.iter().enumerate() {
-                m.fmt_pretty(buf)?;
+                m.fmt_pretty_inner(buf)?;
                 if i < self.methods.len() - 1 {
                     buf.kill_newline();
                     writeln!(buf, ";")?;
@@ -567,7 +631,7 @@ impl fmt::Display for SigItem {
 
 impl PrettyDisplay for SigItem {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        write!(buf, "{}", self.doc)?;
+        self.doc.fmt_pretty_inner(buf)?;
         match &self.kind {
             SigKind::Bind(b) => b.fmt_pretty(buf),
             SigKind::TypeDef(d) => d.fmt_pretty(buf),
@@ -605,9 +669,9 @@ impl PrettyDisplay for Sig {
         if !self.toplevel {
             writeln!(buf, "sig {{")?;
         }
-        buf.with_indent(2, |buf| {
+        buf.with_indent(if self.toplevel { 0 } else { 2 }, |buf| {
             for (i, si) in self.iter().enumerate() {
-                si.fmt_pretty(buf)?;
+                si.fmt_pretty_inner(buf)?;
                 if i < self.len() - 1 {
                     buf.kill_newline();
                     writeln!(buf, ";")?
@@ -638,10 +702,10 @@ impl PrettyDisplay for BindExpr {
         let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
         match typ {
-            None => writeln!(buf, "let{rec} {pattern} = ")?,
-            Some(typ) => writeln!(buf, "let{rec} {pattern}: {typ} = ")?,
+            None => write!(buf, "let{rec} {pattern} =")?,
+            Some(typ) => write!(buf, "let{rec} {pattern}: {typ} =")?,
         }
-        buf.with_indent(2, |buf| value.fmt_pretty(buf))
+        pretty_tail(buf, value)
     }
 }
 
@@ -691,8 +755,8 @@ impl PrettyDisplay for StructWithExpr {
                         write!(buf, "{name}")?
                     }
                     e => {
-                        write!(buf, "{name}: ")?;
-                        buf.with_indent(2, |buf| e.fmt_pretty(buf))?
+                        write!(buf, "{name}:")?;
+                        pretty_tail_kind(buf, e)?
                     }
                 }
                 if i < replace.len() - 1 {
@@ -746,13 +810,13 @@ impl PrettyDisplay for StructExpr {
                         write!(buf, "{n}")?
                     }
                     e => {
-                        write!(buf, "{n}: ")?;
-                        buf.with_indent(2, |buf| e.fmt_pretty(buf))?;
+                        write!(buf, "{n}:")?;
+                        pretty_tail_kind(buf, e)?;
                     }
                 }
                 if i < args.len() - 1 {
                     buf.kill_newline();
-                    writeln!(buf, ", ")?
+                    writeln!(buf, ",")?
                 }
             }
             Ok(())
@@ -834,8 +898,8 @@ impl PrettyDisplay for ApplyExpr {
                             writeln!(buf, "#{name}")?
                         }
                         _ => {
-                            write!(buf, "#{name}: ")?;
-                            buf.with_indent(2, |buf| args[i].1.fmt_pretty(buf))?
+                            write!(buf, "#{name}:")?;
+                            pretty_tail(buf, &args[i].1)?
                         }
                     },
                 }
@@ -947,27 +1011,28 @@ impl PrettyDisplay for LambdaExpr {
                 write!(buf, ": {t}")?
             }
         }
-        write!(buf, "| ")?;
+        write!(buf, "|")?;
         if let Some(t) = rtype {
             match t {
-                Type::Fn(ft) => write!(buf, "-> ({ft}) ")?,
+                Type::Fn(ft) => write!(buf, " -> ({ft})")?,
                 Type::ByRef(t) => match &**t {
-                    Type::Fn(ft) => write!(buf, "-> &({ft}) ")?,
-                    t => write!(buf, "-> &{t} ")?,
+                    Type::Fn(ft) => write!(buf, " -> &({ft})")?,
+                    t => write!(buf, " -> &{t}")?,
                 },
-                t => write!(buf, "-> {t} ")?,
+                t => write!(buf, " -> {t}")?,
             }
         }
         if let Some(t) = throws {
-            write!(buf, "throws {t} ")?
+            write!(buf, " throws {t}")?
         }
         match body {
-            Either::Right(builtin) => {
-                writeln!(buf, "'{builtin}")
+            Either::Right(builtin) => writeln!(buf, " '{builtin}"),
+            Either::Left(body) if matches!(body.kind, ExprKind::Do { .. }) => {
+                pretty_tail(buf, body)
             }
             Either::Left(body) => {
-                write_leading(buf, &body.dec)?;
-                pretty_body(buf, &body.kind, "{", "}", ";")
+                writeln!(buf)?;
+                buf.with_indent(2, |buf| body.fmt_pretty(buf))
             }
         }
     }
@@ -1015,11 +1080,9 @@ impl PrettyDisplay for SelectExpr {
                     buf.kill_newline();
                     write!(buf, " ")?;
                 }
-                write!(buf, "=> ")?;
-                let last = i == arms.len() - 1;
-                let term = if last { "}" } else { "}," };
-                buf.with_indent(2, |buf| pretty_body(buf, &expr.kind, "{", term, ";"))?;
-                if !last && !matches!(expr.kind, ExprKind::Do { .. }) {
+                write!(buf, "=>")?;
+                pretty_tail_kind(buf, &expr.kind)?;
+                if i < arms.len() - 1 {
                     buf.kill_newline();
                     writeln!(buf, ",")?
                 }
@@ -1100,6 +1163,7 @@ impl PrettyDisplay for ExprKind {
             }
             ExprKind::TryWith(t) => {
                 pretty_print_exprs(buf, &t.body, "try {", "}", ";")?;
+                buf.kill_newline();
                 match &t.constraint {
                     None => write!(buf, " with({}) ", t.bind)?,
                     Some(ty) => write!(buf, " with({}: {ty}) ", t.bind)?,
@@ -1134,8 +1198,8 @@ impl PrettyDisplay for ExprKind {
             }
             ExprKind::Connect { name, value, deref } => {
                 let deref = if *deref { "*" } else { "" };
-                writeln!(buf, "{deref}{name} <- ")?;
-                buf.with_indent(2, |buf| value.fmt_pretty(buf))
+                write!(buf, "{deref}{name} <-")?;
+                pretty_tail(buf, value)
             }
             ExprKind::TypeCast { expr, typ } => {
                 writeln!(buf, "cast<{typ}>(")?;
