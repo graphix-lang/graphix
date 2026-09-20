@@ -446,6 +446,50 @@ let result = input_handler(#handle: &handle, &paragraph(&"base"))
 }
 
 #[tokio::test]
+async fn a_modal_handler_over_on_press_lets_nothing_through() -> Result<()> {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use netidx::publisher::Value;
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::*;
+use tui::input_handler::{self, *};
+use tui::paragraph::{self, *};
+let leaked = 0;
+let closed = 0;
+let inner = |e: Event| { leaked <- (e ~ leaked) + 1; e ~ `Stop };
+let modal = |e: Event| {
+  on_press(e, |k| select k.code {
+    `Esc => { closed <- (k ~ closed) + 1; `Stop },
+    _ => `Stop
+  });
+  e ~ `Stop
+};
+let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &paragraph(&"base")))
+"#,
+    )
+    .await?;
+    h.watch("test::leaked").await?;
+    h.watch("test::closed").await?;
+    h.render()?;
+    let key = |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
+    for e in [
+        key(KeyCode::Esc, KeyEventKind::Press),
+        key(KeyCode::Esc, KeyEventKind::Release),
+        key(KeyCode::Esc, KeyEventKind::Release),
+        Event::Resize(80, 24),
+        Event::Resize(81, 24),
+        key(KeyCode::Char('x'), KeyEventKind::Press),
+        key(KeyCode::Esc, KeyEventKind::Press),
+    ] {
+        h.dispatch_event(e).await?;
+        h.drain().await?;
+    }
+    assert_eq!(h.get_watched("test::closed"), Some(&Value::I64(2)), "two presses of Esc");
+    assert_eq!(h.get_watched("test::leaked"), Some(&Value::I64(0)), "the child saw an event");
+    Ok(())
+}
+
+#[tokio::test]
 async fn line_edit_types_moves_and_deletes() -> Result<()> {
     use crossterm::event::{Event, KeyCode, KeyEvent};
     use netidx::publisher::Value;

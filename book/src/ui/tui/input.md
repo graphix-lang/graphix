@@ -102,8 +102,14 @@ input_handler(#handle: &handle, &view)
 ```
 
 A handler that wants mouse, paste, resize or a release selects on the
-`Event` itself, and a modal one that lets nothing through wraps the
-call: `|e: Event| { on_press(e, keys); `Stop }`.
+`Event` itself. A modal one that lets nothing through wraps the call
+and answers every event, which means sampling the answer on the event
+(a bare `` `Stop `` is a constant: it answers the first event and no
+other):
+
+```graphix
+let modal = |e: Event| { on_press(e, keys); e ~ `Stop };
+```
 
 ### Key Modifiers
 

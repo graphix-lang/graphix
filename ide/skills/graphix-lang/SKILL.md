@@ -425,7 +425,9 @@ hand: forgetting the kind runs every key twice where the terminal
 reports releases (Windows). A handler that also wants mouse, paste or
 resize selects on the `Event` and calls `on_press` in its `` `Key `` arm;
 a modal one that lets nothing through is `|e: Event| { on_press(e, keys);
-`Stop }`.
+e ~ `Stop }`. The `e ~` is not optional: a handler whose result is a
+constant answers the first event and then never again (the `|v| k` rule),
+and the keys after it are lost.
 
 Widgets: gui — window text button text_input checkbox toggler radio
 slider progress_bar pick_list column row container scrollable stack
