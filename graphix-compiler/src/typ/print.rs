@@ -1,12 +1,102 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
-    expr::print::{PrettyBuf, PrettyDisplay},
+    expr::{
+        WrittenAt,
+        print::{PrettyBuf, PrettyDisplay},
+    },
     print_as_written,
     typ::{Type, TypeRef},
 };
+use enumflags2::BitFlags;
 use netidx_value::Typ;
 use smallvec::SmallVec;
 use std::fmt::{self, Write};
+
+/// A set's members in print order: canonical, or under `AsWritten` the
+/// members nobody wrote first and then the written ones as written.
+fn set_members(s: &[Type]) -> SmallVec<[&Type; 16]> {
+    let mut members: SmallVec<[&Type; 16]> = s.iter().collect();
+    if print_as_written() {
+        members.sort_by_key(|t| match t {
+            Type::Variant(_, _, at) => {
+                Some(at.order()).filter(|o| *o != WrittenAt::NOWHERE.order())
+            }
+            Type::Ref(r) => r.pos.map(|p| (p.line, p.column)),
+            _ => None,
+        });
+    }
+    members
+}
+
+/// A primitive set; `bracketed` is false for a member of a larger set,
+/// whose brackets already hold it.
+fn write_primitives(
+    f: &mut fmt::Formatter<'_>,
+    mut s: BitFlags<Typ>,
+    bracketed: bool,
+) -> fmt::Result {
+    let replace = PRINT_FLAGS.get().contains(PrintFlag::ReplacePrims);
+    if replace && s == Typ::number() {
+        write!(f, "Number")
+    } else if replace && s == Typ::float() {
+        write!(f, "Float")
+    } else if replace && s == Typ::real() {
+        write!(f, "Real")
+    } else if replace && s == Typ::integer() {
+        write!(f, "Int")
+    } else if replace && s == Typ::unsigned_integer() {
+        write!(f, "Uint")
+    } else if replace && s == Typ::signed_integer() {
+        write!(f, "Sint")
+    } else if s.len() == 0 {
+        write!(f, "[]")
+    } else if s.len() == 1 {
+        write!(f, "{}", s.iter().next().unwrap())
+    } else {
+        macro_rules! builtin {
+            ($set:expr, $name:literal) => {
+                if replace && s.contains($set) {
+                    s.remove($set);
+                    write!(f, $name)?;
+                    if !s.is_empty() {
+                        write!(f, ", ")?
+                    }
+                }
+            };
+        }
+        if bracketed {
+            write!(f, "[")?;
+        }
+        builtin!(Typ::number(), "Number");
+        builtin!(Typ::real(), "Real");
+        builtin!(Typ::float(), "Float");
+        builtin!(Typ::integer(), "Int");
+        builtin!(Typ::unsigned_integer(), "Uint");
+        builtin!(Typ::signed_integer(), "Sint");
+        for (i, t) in s.iter().enumerate() {
+            write!(f, "{t}")?;
+            if i < s.len() - 1 {
+                write!(f, ", ")?;
+            }
+        }
+        if bracketed {
+            write!(f, "]")?;
+        }
+        Ok(())
+    }
+}
+
+/// A member of a set as it prints between the set's brackets.
+struct SetMember<'a>(&'a Type);
+
+impl fmt::Display for SetMember<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Type::Primitive(p) => write_primitives(f, *p, false),
+            t => write!(f, "{t}"),
+        }
+    }
+}
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -73,10 +163,10 @@ impl Type {
                 }
                 write!(f, ")")
             }
-            Self::Variant(tag, ts) if ts.len() == 0 => {
+            Self::Variant(tag, ts, _) if ts.len() == 0 => {
                 write!(f, "`{tag}")
             }
-            Self::Variant(tag, ts) => {
+            Self::Variant(tag, ts, _) => {
                 write!(f, "`{tag}(")?;
                 for (i, t) in ts.iter().enumerate() {
                     write!(f, "{t}")?;
@@ -102,61 +192,15 @@ impl Type {
             }
             Self::Set(s) => {
                 write!(f, "[")?;
-                for (i, t) in s.iter().enumerate() {
-                    write!(f, "{t}")?;
+                for (i, t) in set_members(s).iter().enumerate() {
+                    write!(f, "{}", SetMember(t))?;
                     if i < s.len() - 1 {
                         write!(f, ", ")?;
                     }
                 }
                 write!(f, "]")
             }
-            Self::Primitive(s) => {
-                let replace = PRINT_FLAGS.get().contains(PrintFlag::ReplacePrims);
-                if replace && *s == Typ::number() {
-                    write!(f, "Number")
-                } else if replace && *s == Typ::float() {
-                    write!(f, "Float")
-                } else if replace && *s == Typ::real() {
-                    write!(f, "Real")
-                } else if replace && *s == Typ::integer() {
-                    write!(f, "Int")
-                } else if replace && *s == Typ::unsigned_integer() {
-                    write!(f, "Uint")
-                } else if replace && *s == Typ::signed_integer() {
-                    write!(f, "Sint")
-                } else if s.len() == 0 {
-                    write!(f, "[]")
-                } else if s.len() == 1 {
-                    write!(f, "{}", s.iter().next().unwrap())
-                } else {
-                    let mut s = *s;
-                    macro_rules! builtin {
-                        ($set:expr, $name:literal) => {
-                            if replace && s.contains($set) {
-                                s.remove($set);
-                                write!(f, $name)?;
-                                if !s.is_empty() {
-                                    write!(f, ", ")?
-                                }
-                            }
-                        };
-                    }
-                    write!(f, "[")?;
-                    builtin!(Typ::number(), "Number");
-                    builtin!(Typ::real(), "Real");
-                    builtin!(Typ::float(), "Float");
-                    builtin!(Typ::integer(), "Int");
-                    builtin!(Typ::unsigned_integer(), "Uint");
-                    builtin!(Typ::signed_integer(), "Sint");
-                    for (i, t) in s.iter().enumerate() {
-                        write!(f, "{t}")?;
-                        if i < s.len() - 1 {
-                            write!(f, ", ")?;
-                        }
-                    }
-                    write!(f, "]")
-                }
-            }
+            Self::Primitive(s) => write_primitives(f, *s, true),
         }
     }
 }
@@ -230,8 +274,8 @@ impl PrettyDisplay for Type {
                 })?;
                 writeln!(buf, ")")
             }
-            Self::Variant(tag, ts) if ts.is_empty() => writeln!(buf, "`{tag}"),
-            Self::Variant(tag, ts) => {
+            Self::Variant(tag, ts, _) if ts.is_empty() => writeln!(buf, "`{tag}"),
+            Self::Variant(tag, ts, _) => {
                 writeln!(buf, "`{tag}(")?;
                 buf.with_indent(2, |buf| {
                     for (i, t) in ts.iter().enumerate() {
@@ -267,8 +311,11 @@ impl PrettyDisplay for Type {
             Self::Set(s) => {
                 writeln!(buf, "[")?;
                 buf.with_indent(2, |buf| {
-                    for (i, t) in s.iter().enumerate() {
-                        t.fmt_pretty(buf)?;
+                    for (i, t) in set_members(s).iter().enumerate() {
+                        match t {
+                            Type::Primitive(_) => writeln!(buf, "{}", SetMember(t))?,
+                            t => t.fmt_pretty(buf)?,
+                        }
                         if i < s.len() - 1 {
                             buf.kill_newline();
                             writeln!(buf, ",")?;

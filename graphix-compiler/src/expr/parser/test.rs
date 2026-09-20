@@ -2340,3 +2340,19 @@ fn try_with_parses() {
     assert!(parse_one("seq { try { 1 } }").is_err());
     assert!(parse_one("let try = 1").is_err());
 }
+
+#[test]
+fn an_integer_before_dots_is_a_slice_bound() {
+    let slice = |s: &str| match &parse_one(s).unwrap().kind {
+        ExprKind::ArraySlice { start, end, .. } => (
+            start.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+            end.as_ref().map(|e| e.to_string()).unwrap_or_default(),
+        ),
+        other => panic!("{s} is not a slice: {other:?}"),
+    };
+    assert_eq!(slice("a[0..n]"), ("0".into(), "n".into()));
+    assert_eq!(slice("a[i + 1..n]"), ("i + 1".into(), "n".into()));
+    assert_eq!(slice("a[-2..f(x)]"), ("-2".into(), "f(x)".into()));
+    assert_eq!(slice("a[0.5..n]"), ("0.5".into(), "n".into()));
+    assert_eq!(slice("a[1..]"), ("1".into(), "".into()));
+}

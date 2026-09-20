@@ -603,11 +603,11 @@ fn scrutinee_member(
                 Ok(matches!(shape, Shape::Tuple(n) if *n == ts.len())
                     .then(|| Type::Tuple(ts.clone())))
             }
-            Some(Type::Variant(tag, ts)) => Ok(matches!(
+            Some(Type::Variant(tag, ts, at)) => Ok(matches!(
                 shape,
                 Shape::Variant(st, n) if st == tag && *n == ts.len()
             )
-            .then(|| Type::Variant(tag.clone(), ts.clone()))),
+            .then(|| Type::Variant(tag.clone(), ts.clone(), *at))),
             Some(Type::Struct(fs)) => {
                 let same = match shape {
                     Shape::Struct(names) => {

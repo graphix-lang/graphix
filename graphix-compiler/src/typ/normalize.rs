@@ -70,7 +70,7 @@ pub(crate) fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Hole
         | Type::Ref(_)
         | Type::TVar(_)
-        | Type::Variant(_, _) => None,
+        | Type::Variant(_, _, _) => None,
     }
 }
 
@@ -256,8 +256,8 @@ impl Type {
                 t.resolve_tvars_seen(cx).map(|t| (n.clone(), t, *at))
             })
             .map(Type::Struct),
-            Type::Variant(tag, t) => Self::cow_slice(t, |t| t.resolve_tvars_seen(cx))
-                .map(|t| Type::Variant(tag.clone(), t)),
+            Type::Variant(tag, t, at) => Self::cow_slice(t, |t| t.resolve_tvars_seen(cx))
+                .map(|t| Type::Variant(tag.clone(), t, *at)),
             Type::Fn(ft) => {
                 ft.resolve_tvars_seen_int(cx).map(|ft| Type::Fn(Arc::new(ft)))
             }
@@ -341,8 +341,8 @@ impl Type {
                 t.normalize_int(cx).map(|t| (n.clone(), t, *at))
             })
             .map(Type::Struct),
-            Type::Variant(tag, t) => Self::cow_slice(t, |t| t.normalize_int(cx))
-                .map(|t| Type::Variant(tag.clone(), t)),
+            Type::Variant(tag, t, at) => Self::cow_slice(t, |t| t.normalize_int(cx))
+                .map(|t| Type::Variant(tag.clone(), t, *at)),
             Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
         };
         if let Some(k) = key {
@@ -478,14 +478,14 @@ impl Type {
                     None
                 }
             }
-            (Type::Variant(tag0, t0), Type::Variant(tag1, t1)) => {
+            (Type::Variant(tag0, t0, at), Type::Variant(tag1, t1, _)) => {
                 if tag0 == tag1 && t0.len() == t1.len() {
                     let t = t0
                         .iter()
                         .zip(t1.iter())
                         .map(|(t0, t1)| t0.merge(t1))
                         .collect::<Option<SmallVec<[Type; 8]>>>()?;
-                    Some(Type::Variant(tag0.clone(), Arc::from_iter(t)))
+                    Some(Type::Variant(tag0.clone(), Arc::from_iter(t), *at))
                 } else {
                     None
                 }
@@ -534,8 +534,8 @@ impl Type {
             | (_, Type::Tuple(_))
             | (Type::Struct(_), _)
             | (_, Type::Struct(_))
-            | (Type::Variant(_, _), _)
-            | (_, Type::Variant(_, _))
+            | (Type::Variant(_, _, _), _)
+            | (_, Type::Variant(_, _, _))
             | (_, Type::Fn(_))
             | (Type::Fn(_), _)
             | (Type::Error(_), _)

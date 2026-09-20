@@ -1035,7 +1035,7 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
                         Some(t @ (
                             Type::Primitive(_) | Type::Fn(_) | Type::Set(_)
                             | Type::Error(_) | Type::Array(_) | Type::ByRef(_)
-                            | Type::Tuple(_) | Type::Struct(_) | Type::Variant(_, _)
+                            | Type::Tuple(_) | Type::Struct(_) | Type::Variant(_, _, _)
                             | Type::Map { .. } | Type::Abstract { .. }
                         )) => check(t)
                     )?;

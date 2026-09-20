@@ -68,7 +68,7 @@ impl Type {
             Type::Struct(ts) => Ok(for (_, t, _) in ts.iter() {
                 t.check_cast_int(env, hist)?
             }),
-            Type::Variant(_, ts) => Ok(for t in ts.iter() {
+            Type::Variant(_, ts, _) => Ok(for t in ts.iter() {
                 t.check_cast_int(env, hist)?
             }),
             Type::Ref(TypeRef { .. }) => {
@@ -259,11 +259,11 @@ impl Type {
                 }
                 v => bail!("can't cast {v} to {self}"),
             },
-            Type::Variant(tag, ts) if ts.len() == 0 => match &v {
+            Type::Variant(tag, ts, _) if ts.len() == 0 => match &v {
                 Value::String(s) if s == tag => Ok(v),
                 _ => bail!("variant tag mismatch expected {tag} got {v}"),
             },
-            Type::Variant(tag, ts) => match &v {
+            Type::Variant(tag, ts, _) => match &v {
                 Value::Array(elts) => {
                     if ts.len() + 1 == elts.len() {
                         match &elts[0] {
@@ -439,11 +439,11 @@ impl Type {
                 }
                 _ => false,
             },
-            Type::Variant(tag, ts) if ts.len() == 0 => match &v {
+            Type::Variant(tag, ts, _) if ts.len() == 0 => match &v {
                 Value::String(s) => s == tag,
                 _ => false,
             },
-            Type::Variant(tag, ts) => match &v {
+            Type::Variant(tag, ts, _) => match &v {
                 Value::Array(elts) => {
                     ts.len() + 1 == elts.len()
                         && match &elts[0] {
@@ -561,8 +561,8 @@ fn member_facts(t: &Type) -> MemberFacts {
             bits.contains(Typ::Error),
             true,
         ),
-        Type::Variant(_, ps) if ps.is_empty() => f(None, false, false, true),
-        Type::Variant(tag, ps) => {
+        Type::Variant(_, ps, _) if ps.is_empty() => f(None, false, false, true),
+        Type::Variant(tag, ps, _) => {
             f(Some((Some(tag.clone()), ArrCon::Len(ps.len() + 1))), false, false, false)
         }
         Type::Tuple(ts) => f(Some((None, ArrCon::Len(ts.len()))), false, false, false),
@@ -606,9 +606,10 @@ fn arr_overlap(
 
 fn shallowify(t: &Type) -> Type {
     match t {
-        Type::Variant(tag, ps) => Type::Variant(
+        Type::Variant(tag, ps, at) => Type::Variant(
             tag.clone(),
             triomphe::Arc::from(ps.iter().map(|_| Type::Any).collect::<Vec<_>>()),
+            *at,
         ),
         Type::Tuple(ts) => Type::Tuple(triomphe::Arc::from(
             ts.iter().map(|_| Type::Any).collect::<Vec<_>>(),

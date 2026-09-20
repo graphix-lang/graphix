@@ -191,7 +191,7 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             Type::List(_) => return Some(AbiKind::Value),
             Type::Tuple(_) => return Some(AbiKind::Tuple),
             Type::Struct(_) => return Some(AbiKind::Struct),
-            Type::Variant(_, _) => return Some(AbiKind::Variant),
+            Type::Variant(_, _, _) => return Some(AbiKind::Variant),
             Type::Abstract { .. } => return Some(AbiKind::Value),
             // A constructor application whose ctor is a bound TVar is
             // unreduced by typecheck; classify its filled form.
@@ -243,7 +243,7 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             }
             let all_variants = members
                 .iter()
-                .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _)))));
+                .all(|m| m.with_deref(|r| matches!(r, Some(Type::Variant(_, _, _)))));
             if all_variants {
                 return Some(AbiKind::Variant);
             }
@@ -454,11 +454,11 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 let mut frozen = frozen?;
                 Ok(Type::Struct(Arc::from_iter(frozen.drain(..))))
             }
-            Type::Variant(tag, payloads) => {
+            Type::Variant(tag, payloads, at) => {
                 let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                     payloads.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                 let mut frozen = frozen?;
-                Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..))))
+                Ok(Type::Variant(tag.clone(), Arc::from_iter(frozen.drain(..)), *at))
             }
             Type::Set(members) => {
                 if let Some(succ) = option_result_success(members) {
@@ -477,7 +477,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                     .map(|m| {
                         let m = m.deref_cloned();
                         match m {
-                            Some(Type::Variant(tag, payloads)) => {
+                            Some(Type::Variant(tag, payloads, at)) => {
                                 let fp: Result<LPooled<Vec<Type>>, FreezeError> =
                                     payloads
                                         .iter()
@@ -487,6 +487,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                                 Ok(Type::Variant(
                                     tag.clone(),
                                     Arc::from_iter(fp.drain(..)),
+                                    at,
                                 ))
                             }
                             _ => Err(NonCanonical),
@@ -570,14 +571,14 @@ pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type, WrittenAt)]> {
 pub fn variant_cases(t: &Type) -> Option<Vec<(ArcStr, Vec<Type>)>> {
     fn one(t: &Type) -> Option<(ArcStr, Vec<Type>)> {
         t.with_deref(|r| match r {
-            Some(Type::Variant(tag, payloads)) => {
+            Some(Type::Variant(tag, payloads, _)) => {
                 Some((tag.clone(), payloads.iter().cloned().collect()))
             }
             _ => None,
         })
     }
     match t {
-        Type::Variant(_, _) => one(t).map(|c| vec![c]),
+        Type::Variant(_, _, _) => one(t).map(|c| vec![c]),
         Type::Set(members) => members.iter().map(one).collect(),
         _ => None,
     }
@@ -711,7 +712,11 @@ pub fn struct_type(fields: Vec<(ArcStr, Type)>) -> Type {
 /// of [`variant_cases`].
 pub fn variant_type_from_cases(cases: &[(ArcStr, Vec<Type>)]) -> Type {
     let mk = |(tag, payloads): &(ArcStr, Vec<Type>)| {
-        Type::Variant(tag.clone(), triomphe::Arc::from_iter(payloads.clone()))
+        Type::Variant(
+            tag.clone(),
+            triomphe::Arc::from_iter(payloads.clone()),
+            WrittenAt::NOWHERE,
+        )
     };
     if cases.len() == 1 {
         mk(&cases[0])
@@ -1026,11 +1031,18 @@ mod tests {
     fn normalized_freeze_preserves_shared_cells() {
         let raw = Type::Set(Arc::from_iter([i64_t(), i64_t()]));
         let cell = TVar::named(literal!("payload"), raw.clone());
-        let typ =
-            Type::Variant(literal!("V"), Arc::from_iter([Type::TVar(cell.clone())]));
+        let typ = Type::Variant(
+            literal!("V"),
+            Arc::from_iter([Type::TVar(cell.clone())]),
+            WrittenAt::NOWHERE,
+        );
         assert_eq!(
             freeze_for_abi_normalized(&typ),
-            Some(Type::Variant(literal!("V"), Arc::from_iter([i64_t()])))
+            Some(Type::Variant(
+                literal!("V"),
+                Arc::from_iter([i64_t()]),
+                WrittenAt::NOWHERE,
+            ))
         );
         assert_eq!(Type::TVar(cell).deref_cloned(), Some(raw));
     }
@@ -1078,9 +1090,9 @@ mod tests {
                 inner.clone().prop_map(|t| {
                     Type::Struct(Arc::from_iter([(literal!("f"), t, WrittenAt::NOWHERE)]))
                 }),
-                inner
-                    .clone()
-                    .prop_map(|t| { Type::Variant(literal!("V"), Arc::from_iter([t])) }),
+                inner.clone().prop_map(|t| {
+                    Type::Variant(literal!("V"), Arc::from_iter([t]), WrittenAt::NOWHERE)
+                }),
                 (inner.clone(), inner.clone()).prop_map(|(a, b)| {
                     Type::Map { key: Arc::new(a), value: Arc::new(b) }
                 }),

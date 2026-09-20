@@ -592,7 +592,7 @@ fn frozen_may_be_null(t: &Type) -> bool {
             | Type::List(_)
             | Type::Tuple(_)
             | Type::Struct(_)
-            | Type::Variant(_, _)
+            | Type::Variant(_, _, _)
             | Type::Fn(_)
             | Type::Error(_)
             | Type::Map { .. }

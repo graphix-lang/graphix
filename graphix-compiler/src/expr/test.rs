@@ -332,8 +332,13 @@ fn typexp() -> impl Strategy<Value = Type> {
             collection::vec(inner.clone(), (2, 20)).prop_map(|t| Type::Set(Arc::from(t))),
             collection::vec(inner.clone(), (2, 20))
                 .prop_map(|t| Type::Tuple(Arc::from(t))),
-            (typart(), collection::vec(inner.clone(), (0, 20)))
-                .prop_map(|(tag, typs)| Type::Variant(tag, Arc::from_iter(typs))),
+            (typart(), collection::vec(inner.clone(), (0, 20))).prop_map(
+                |(tag, typs)| Type::Variant(
+                    tag,
+                    Arc::from_iter(typs),
+                    WrittenAt::NOWHERE
+                )
+            ),
             collection::vec((field_name(), inner.clone()), (1, 20)).prop_map(|mut t| {
                 t.sort_by_key(|(n, _)| n.clone());
                 t.dedup_by_key(|(n, _)| n.clone());

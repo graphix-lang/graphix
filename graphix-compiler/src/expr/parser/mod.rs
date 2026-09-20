@@ -617,18 +617,24 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    // An integer in front of `..` is a slice bound: the value parser
+    // would read `1.` as a float and leave `.n` to be a field access.
+    let slice_bound =
+        attempt((position(), arrayexp::idx().skip(look_ahead(string("..")))))
+            .map(|(pos, v)| ExprKind::Constant(v).to_expr(pos));
     // `parse_value` recurses outside this crate; `grow` gives it headroom
     // at the boundary. A quoted string is `interpolated()`'s alone, so its
     // failure is reported inside it rather than past it.
-    attempt(
-        grow((
-            position(),
-            not_followed_by(token('"')),
-            parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix()),
+    slice_bound
+        .or(attempt(
+            grow((
+                position(),
+                not_followed_by(token('"')),
+                parse_value(&VAL_MUST_ESC, &VAL_ESC).skip(not_prefix()),
+            ))
+            .map(|(pos, _, v)| ExprKind::Constant(v).to_expr(pos)),
         ))
-        .map(|(pos, _, v)| ExprKind::Constant(v).to_expr(pos)),
-    )
-    .or(grow(duration_unit_note()))
+        .or(grow(duration_unit_note()))
 }
 
 /// A diagnostic arm behind the literal parser: a `duration:` literal with

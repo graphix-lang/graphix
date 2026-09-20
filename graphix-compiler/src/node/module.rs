@@ -11,8 +11,8 @@ use crate::{
     errf,
     expr::{
         BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
-        Source, StructurePattern, TypeDefBody, TypeDefExpr, add_interface_modules,
-        parser,
+        Source, StructurePattern, TypeDefBody, TypeDefExpr, WrittenAt,
+        add_interface_modules, parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
     node::{Nop, bind::Bind, traits},
@@ -447,7 +447,8 @@ fn check_sig<R: Rt, E: UserEvent>(
 static ERR_TAG: ArcStr = literal!("DynamicLoadError");
 static TYP: LazyLock<Type> = LazyLock::new(|| {
     let t = Arc::from_iter([Type::Primitive(Typ::String.into())]);
-    let err = Type::Error(Arc::new(Type::Variant(ERR_TAG.clone(), t)));
+    let err =
+        Type::Error(Arc::new(Type::Variant(ERR_TAG.clone(), t, WrittenAt::NOWHERE)));
     Type::Set(Arc::from_iter([err, Type::Primitive(Typ::Null.into())]))
 });
 

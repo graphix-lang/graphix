@@ -114,7 +114,7 @@ impl<H: IsoPoolable> RefHist<H> {
     /// the tag's allocation identity.
     fn probe_key(t: &Type) -> Option<NormKey> {
         match t {
-            Type::Variant(tag, ts) => Some((
+            Type::Variant(tag, ts, _) => Some((
                 std::mem::discriminant(t),
                 (**ts).as_ptr() as usize,
                 tag.as_ptr() as usize,
@@ -616,7 +616,7 @@ pub enum Type {
     ByRef(Arc<Type>),
     Tuple(Arc<[Type]>),
     Struct(Arc<[(ArcStr, Type, WrittenAt)]>),
-    Variant(ArcStr, Arc<[Type]>),
+    Variant(ArcStr, Arc<[Type]>, WrittenAt),
     Map {
         key: Arc<Type>,
         value: Arc<Type>,
@@ -758,7 +758,7 @@ impl Type {
                     },
                 );
             }
-            Type::Variant(name, ts) => {
+            Type::Variant(name, ts, _) => {
                 out.put_u8(tag::VARIANT);
                 key_text(name, out);
                 key_list(ts, out);
@@ -793,7 +793,7 @@ impl Type {
                 t.encoded_len()
             }
             Type::Struct(fs) => fs.encoded_len(),
-            Type::Variant(name, ts) => name.encoded_len() + ts.encoded_len(),
+            Type::Variant(name, ts, _) => name.encoded_len() + ts.encoded_len(),
             Type::Map { key, value } => key.encoded_len() + value.encoded_len(),
             Type::Abstract { id, params } => id.encoded_len() + params.encoded_len(),
             Type::App(c, a) => c.encoded_len() + a.encoded_len(),
@@ -849,7 +849,7 @@ impl Type {
                 buf.put_u8(tag::STRUCT);
                 fs.encode(buf)
             }
-            Type::Variant(name, ts) => {
+            Type::Variant(name, ts, _) => {
                 buf.put_u8(tag::VARIANT);
                 name.encode(buf)?;
                 ts.encode(buf)
@@ -893,7 +893,7 @@ impl Type {
             tag::STRUCT => Type::Struct(PackTrait::decode(buf)?),
             tag::VARIANT => {
                 let name = PackTrait::decode(buf)?;
-                Type::Variant(name, PackTrait::decode(buf)?)
+                Type::Variant(name, PackTrait::decode(buf)?, WrittenAt::NOWHERE)
             }
             tag::MAP => {
                 let key = PackTrait::decode(buf)?;
@@ -980,8 +980,8 @@ impl PartialEq for Type {
                 other,
                 Type::Struct(b) if (**a).as_ptr() == (**b).as_ptr() || **a == **b
             ),
-            Type::Variant(t0, a) => {
-                matches!(other, Type::Variant(t1, b) if t0 == t1 && slice_eq(a, b))
+            Type::Variant(t0, a, _) => {
+                matches!(other, Type::Variant(t1, b, _) if t0 == t1 && slice_eq(a, b))
             }
             Type::Map { key: k0, value: v0 } => matches!(
                 other,
@@ -1056,7 +1056,7 @@ impl Type {
                 }
                 ControlFlow::Continue(())
             }
-            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts) => {
+            Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
                 for t in ts.iter() {
                     f(t)?;
                 }
@@ -1122,9 +1122,8 @@ impl Type {
                 }),
             },
             Type::Tuple(ts) => Type::cow_slice(ts, |t| f(t)).map(Type::Tuple),
-            Type::Variant(tag, ts) => {
-                Type::cow_slice(ts, |t| f(t)).map(|ts| Type::Variant(tag.clone(), ts))
-            }
+            Type::Variant(tag, ts, at) => Type::cow_slice(ts, |t| f(t))
+                .map(|ts| Type::Variant(tag.clone(), ts, *at)),
             Type::Set(ts) => Type::cow_slice(ts, |t| f(t)).map(Type::Set),
             Type::Struct(fs) => {
                 Type::cow_slice(fs, |(n, t, at)| f(t).map(|t| (n.clone(), t, *at)))
@@ -1345,7 +1344,7 @@ impl Type {
             | Self::ByRef(_)
             | Self::Tuple(_)
             | Self::Struct(_)
-            | Self::Variant(_, _)
+            | Self::Variant(_, _, _)
             | Self::Ref(TypeRef { .. })
             | Self::Map { .. }
             | Self::Abstract { .. } => true,
@@ -1382,7 +1381,7 @@ impl Type {
         }
         fn go(t: &Type, env: &Env, seen: &mut Seen) -> bool {
             let node = match t {
-                Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a) => {
+                Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a, _) => {
                     Some((**a).as_ptr().addr())
                 }
                 Type::Struct(a) => Some((**a).as_ptr().addr()),
@@ -1425,7 +1424,7 @@ impl Type {
                     go(t, env, seen)
                 }
                 Type::Map { key, value } => go(key, env, seen) & go(value, env, seen),
-                Type::Tuple(ts) | Type::Variant(_, ts) | Type::Set(ts) => {
+                Type::Tuple(ts) | Type::Variant(_, ts, _) | Type::Set(ts) => {
                     ts.iter().fold(true, |all, t| all & go(t, env, seen))
                 }
                 Type::Struct(ts) => {
@@ -1642,7 +1641,7 @@ impl Type {
             | Type::ByRef(_)
             | Type::Tuple(_)
             | Type::Struct(_)
-            | Type::Variant(_, _)
+            | Type::Variant(_, _, _)
             | Type::Fn(_)
             | Type::Any
             | Type::Bottom
@@ -1675,7 +1674,7 @@ impl Type {
             | Type::ByRef(_)
             | Type::Tuple(_)
             | Type::Struct(_)
-            | Type::Variant(_, _)
+            | Type::Variant(_, _, _)
             | Type::Set(_)
             | Type::Map { .. } => false,
         }
@@ -1704,7 +1703,7 @@ impl Type {
                     Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t),
                 ) => t.has_bottom(),
                 Some(Type::Map { key, value }) => key.has_bottom() || value.has_bottom(),
-                Some(Type::Tuple(ts) | Type::Variant(_, ts) | Type::Set(ts)) => {
+                Some(Type::Tuple(ts) | Type::Variant(_, ts, _) | Type::Set(ts)) => {
                     ts.iter().any(|t| t.has_bottom())
                 }
                 Some(Type::Struct(fs)) => fs.iter().any(|(_, t, _)| t.has_bottom()),
@@ -1738,7 +1737,7 @@ impl Type {
             | Self::ByRef(_)
             | Self::Tuple(_)
             | Self::Struct(_)
-            | Self::Variant(_, _)
+            | Self::Variant(_, _, _)
             | Self::Ref(TypeRef { .. })
             | Self::Map { .. } => f(Some(self)),
             Self::TVar(tv) => match tv.read().typ.read().typ.as_ref() {

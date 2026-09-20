@@ -800,7 +800,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
             .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
         let typs = Arc::from_iter(n.iter().map(|n| n.typ().clone()));
-        let typ = Type::Variant(tag.clone(), typs);
+        let typ = Type::Variant(tag.clone(), typs, WrittenAt::NOWHERE);
         let tag = ctx.tag(tag);
         Ok(Node::new(Self {
             spec,
@@ -895,7 +895,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
             wrap!(n, n.typecheck0(ctx))?
         }
         match &self.typ {
-            Type::Variant(ttag, typs) => {
+            Type::Variant(ttag, typs, _) => {
                 if ttag != &self.tag {
                     bail!("expected {ttag} not {}", self.tag)
                 }

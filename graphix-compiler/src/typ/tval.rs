@@ -218,7 +218,7 @@ impl<'a> TVal<'a> {
                 Some(typ) => TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist),
                 None => fmt_naked(f, v),
             },
-            (Type::Variant(n, flds), Value::Array(a)) if a.len() >= 2 => {
+            (Type::Variant(n, flds, _), Value::Array(a)) if a.len() >= 2 => {
                 write!(f, "`{n}(")?;
                 for (i, (t, v)) in flds.iter().zip(a[1..].iter()).enumerate() {
                     Self { typ: t, env: self.env, v }.fmt_int(f, hist)?;
@@ -228,8 +228,8 @@ impl<'a> TVal<'a> {
                 }
                 write!(f, ")")
             }
-            (Type::Variant(_, _), Value::String(s)) => write!(f, "`{s}"),
-            (Type::Variant(_, _), v) => fmt_naked(f, v),
+            (Type::Variant(_, _, _), Value::String(s)) => write!(f, "`{s}"),
+            (Type::Variant(_, _, _), v) => fmt_naked(f, v),
             // Member selection is `coretraits::union_member`: the first
             // strict match (blind leaves match nothing), else plain is_a.
             (Type::Set(ts), v) => {

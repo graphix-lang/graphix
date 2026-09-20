@@ -1768,7 +1768,7 @@ fn emit_structure_cond(
                 )
             })?;
             let elts = match &pred {
-                Type::Variant(ptag, elts)
+                Type::Variant(ptag, elts, _)
                     if ptag == tag && elts.len() == pbinds.len() =>
                 {
                     elts

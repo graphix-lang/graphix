@@ -208,7 +208,7 @@ impl StructPatternNode {
             }
             Self::Variant { binds, all: _, tag: _ } => {
                 let ts = typ.with_deref(|t| match t {
-                    Some(Type::Variant(_, ts)) => Some(ts.clone()),
+                    Some(Type::Variant(_, ts, _)) => Some(ts.clone()),
                     _ => None,
                 });
                 if let Some(ts) = ts {
@@ -619,10 +619,11 @@ impl StructPatternNode {
                     &Type::Variant(
                         tag.clone(),
                         Arc::from_iter(binds.iter().map(|_| Type::empty_tvar())),
+                        WrittenAt::NOWHERE,
                     ),
                 )?;
                 match &type_predicate.deref_cloned() {
-                    Some(Type::Variant(ttag, elts)) => {
+                    Some(Type::Variant(ttag, elts, _)) => {
                         if ttag != tag {
                             bail!(
                                 "pattern cannot match type, tag mismatch {ttag} vs {tag}"
@@ -1470,7 +1471,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Map { .. }
             | Type::ByRef(_)
             | Type::Tuple(_)
-            | Type::Variant(_, _)
+            | Type::Variant(_, _, _)
             | Type::Struct(_)
             | Type::Ref(TypeRef { .. }) => (),
         }

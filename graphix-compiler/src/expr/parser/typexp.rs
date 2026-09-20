@@ -297,6 +297,7 @@ where
     I::Range: Range,
 {
     (
+        position(),
         token('`').with(ident(true)),
         optional(attempt(between(
             token('('),
@@ -304,12 +305,12 @@ where
             sep_by1_tok(typ(), csep(), token(')')),
         ))),
     )
-        .map(|(tag, typs): (ArcStr, Option<LPooled<Vec<Type>>>)| {
+        .map(|(pos, tag, typs): (_, ArcStr, Option<LPooled<Vec<Type>>>)| {
             let mut t = match typs {
                 None => LPooled::take(),
                 Some(v) => v,
             };
-            Type::Variant(tag.clone(), Arc::from_iter(t.drain(..)))
+            Type::Variant(tag.clone(), Arc::from_iter(t.drain(..)), WrittenAt(pos))
         })
 }
 

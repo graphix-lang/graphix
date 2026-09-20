@@ -154,7 +154,7 @@ fn link_equal_inner(t0: &Type, t1: &Type) {
         }
         (Type::Set(a), Type::Set(b))
         | (Type::Tuple(a), Type::Tuple(b))
-        | (Type::Variant(_, a), Type::Variant(_, b))
+        | (Type::Variant(_, a, _), Type::Variant(_, b, _))
         | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => {
             for (x, y) in a.iter().zip(b.iter()) {
                 link_equal(x, y);
@@ -432,7 +432,7 @@ fn same_content(a: &Type, b: &Type) -> bool {
             (**x).as_ptr() == (**y).as_ptr()
         }
         (Type::Struct(x), Type::Struct(y)) => (**x).as_ptr() == (**y).as_ptr(),
-        (Type::Variant(t0, x), Type::Variant(t1, y)) => {
+        (Type::Variant(t0, x, _), Type::Variant(t1, y, _)) => {
             t0 == t1 && (**x).as_ptr() == (**y).as_ptr()
         }
         (Type::Fn(x), Type::Fn(y)) => Arc::ptr_eq(x, y),
@@ -680,7 +680,7 @@ impl Type {
             (Self::Primitive(p0), Self::Primitive(p1)) => Ok(p0.contains(*p1)),
             (
                 Self::Primitive(p),
-                Self::Array(_) | Self::Tuple(_) | Self::Struct(_) | Self::Variant(_, _),
+                Self::Array(_) | Self::Tuple(_) | Self::Struct(_) | Self::Variant(..),
             ) => Ok(p.contains(Typ::Array)),
             (Self::Array(t0), Self::Array(t1)) => t0.contains_int(flags, env, hist, t1),
             (Self::List(t0), Self::List(t1)) => t0.contains_int(flags, env, hist, t1),
@@ -690,7 +690,7 @@ impl Type {
                 | Self::Array(_)
                 | Self::Tuple(_)
                 | Self::Struct(_)
-                | Self::Variant(_, _)
+                | Self::Variant(_, _, _)
                 | Self::Error(_)
                 | Self::Map { .. },
             )
@@ -699,7 +699,7 @@ impl Type {
                 | Self::Array(_)
                 | Self::Tuple(_)
                 | Self::Struct(_)
-                | Self::Variant(_, _)
+                | Self::Variant(_, _, _)
                 | Self::Error(_)
                 | Self::Map { .. },
                 Self::List(_),
@@ -744,12 +744,12 @@ impl Type {
                         .0
                 })
             }
-            (Self::Variant(tg0, t0), Self::Variant(tg1, t1))
+            (Self::Variant(tg0, t0, _), Self::Variant(tg1, t1, _))
                 if tg0.as_ptr() == tg1.as_ptr() && Arc::ptr_eq(t0, t1) =>
             {
                 Ok(true)
             }
-            (Self::Variant(tg0, t0), Self::Variant(tg1, t1)) => Ok(tg0 == tg1
+            (Self::Variant(tg0, t0, _), Self::Variant(tg1, t1, _)) => Ok(tg0 == tg1
                 && t0.len() == t1.len()
                 && t0
                     .iter()
@@ -1194,37 +1194,37 @@ impl Type {
             | (Self::Tuple(_), Self::Array(_))
             | (Self::Tuple(_), Self::Primitive(_))
             | (Self::Tuple(_), Self::Struct(_))
-            | (Self::Tuple(_), Self::Variant(_, _))
+            | (Self::Tuple(_), Self::Variant(_, _, _))
             | (Self::Tuple(_), Self::Error(_))
             | (Self::Tuple(_), Self::Map { .. })
             | (Self::Array(_), Self::Primitive(_))
             | (Self::Array(_), Self::Tuple(_))
             | (Self::Array(_), Self::Struct(_))
-            | (Self::Array(_), Self::Variant(_, _))
+            | (Self::Array(_), Self::Variant(_, _, _))
             | (Self::Array(_), Self::Error(_))
             | (Self::Array(_), Self::Map { .. })
             | (Self::Struct(_), Self::Array(_))
             | (Self::Struct(_), Self::Primitive(_))
             | (Self::Struct(_), Self::Tuple(_))
-            | (Self::Struct(_), Self::Variant(_, _))
+            | (Self::Struct(_), Self::Variant(_, _, _))
             | (Self::Struct(_), Self::Error(_))
             | (Self::Struct(_), Self::Map { .. })
-            | (Self::Variant(_, _), Self::Array(_))
-            | (Self::Variant(_, _), Self::Struct(_))
-            | (Self::Variant(_, _), Self::Primitive(_))
-            | (Self::Variant(_, _), Self::Tuple(_))
-            | (Self::Variant(_, _), Self::Error(_))
-            | (Self::Variant(_, _), Self::Map { .. })
+            | (Self::Variant(_, _, _), Self::Array(_))
+            | (Self::Variant(_, _, _), Self::Struct(_))
+            | (Self::Variant(_, _, _), Self::Primitive(_))
+            | (Self::Variant(_, _, _), Self::Tuple(_))
+            | (Self::Variant(_, _, _), Self::Error(_))
+            | (Self::Variant(_, _, _), Self::Map { .. })
             | (Self::Error(_), Self::Array(_))
             | (Self::Error(_), Self::Primitive(_))
             | (Self::Error(_), Self::Struct(_))
-            | (Self::Error(_), Self::Variant(_, _))
+            | (Self::Error(_), Self::Variant(_, _, _))
             | (Self::Error(_), Self::Tuple(_))
             | (Self::Error(_), Self::Map { .. })
             | (Self::Map { .. }, Self::Array(_))
             | (Self::Map { .. }, Self::Primitive(_))
             | (Self::Map { .. }, Self::Struct(_))
-            | (Self::Map { .. }, Self::Variant(_, _))
+            | (Self::Map { .. }, Self::Variant(_, _, _))
             | (Self::Map { .. }, Self::Tuple(_))
             | (Self::Map { .. }, Self::Error(_)) => Ok(false),
         }
@@ -1286,7 +1286,7 @@ impl Type {
         }
         let mut targs: LPooled<Vec<Type>> = LPooled::take();
         match &t {
-            Type::Variant(_, args) => targs.extend(args.iter().cloned()),
+            Type::Variant(_, args, _) => targs.extend(args.iter().cloned()),
             Type::Tuple(args) => targs.extend(args.iter().cloned()),
             Type::Struct(flds) => targs.extend(flds.iter().map(|(_, t, _)| t.clone())),
             _ => return Ok(false),
@@ -1295,7 +1295,7 @@ impl Type {
         for m in s.iter() {
             let m = head(env, m);
             let args: Option<LPooled<Vec<Type>>> = match (&t, &m) {
-                (Type::Variant(tt, ta), Type::Variant(mt, ma))
+                (Type::Variant(tt, ta, _), Type::Variant(mt, ma, _))
                     if tt == mt && ta.len() == ma.len() =>
                 {
                     Some(ma.iter().cloned().collect())

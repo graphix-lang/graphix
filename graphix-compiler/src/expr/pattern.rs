@@ -181,7 +181,7 @@ impl StructurePattern {
                     .iter()
                     .map(|p| p.infer_type_predicate(env, scope))
                     .collect::<Result<SmallVec<[_; 8]>>>()?;
-                Ok(Type::Variant(tag.clone(), Arc::from_iter(a)))
+                Ok(Type::Variant(tag.clone(), Arc::from_iter(a), WrittenAt::NOWHERE))
             }
             Self::Abstract { all: _, name, bind: _ } => {
                 let td = env
@@ -404,21 +404,22 @@ impl StructurePattern {
             }
             Self::Abstract { .. } => Ok(None),
             Self::Variant { all: _, tag, binds } => {
-                let pts = match ptype {
-                    Type::Variant(_, pts) if pts.len() == binds.len() => pts,
+                let (pts, at) = match ptype {
+                    Type::Variant(_, pts, at) if pts.len() == binds.len() => (pts, *at),
                     _ => return Ok(None),
                 };
                 let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
                 members(env, scrutinee, depth, &mut ms);
                 let sts = match ms.iter().find(
-                    |m| matches!(m, Type::Variant(t, s) if t == tag && s.len() == binds.len()),
+                    |m| matches!(m, Type::Variant(t, s, _) if t == tag && s.len() == binds.len()),
                 ) {
-                    Some(Type::Variant(_, sts)) => sts.clone(),
+                    Some(Type::Variant(_, sts, _)) => sts.clone(),
                     _ => return Ok(None),
                 };
                 let (changed, out) = complete_elems!(binds, pts, sts);
-                Ok(changed
-                    .then(|| Type::Variant(tag.clone(), Arc::from_iter(out.into_iter()))))
+                Ok(changed.then(|| {
+                    Type::Variant(tag.clone(), Arc::from_iter(out.into_iter()), at)
+                }))
             }
             Self::Slice { list: true, all: _, binds }
             | Self::SlicePrefix { list: true, all: _, prefix: binds, tail: _ } => {

@@ -97,7 +97,7 @@ impl Type {
                     })
                     .collect::<Result<AndAc>>()?
                     .0),
-            (Type::Variant(n0, ts0), Type::Variant(n1, ts1)) => Ok(ts0.len()
+            (Type::Variant(n0, ts0, _), Type::Variant(n1, ts1, _)) => Ok(ts0.len()
                 == ts1.len()
                 && n0 == n1
                 && ts0
@@ -154,8 +154,8 @@ impl Type {
             | (_, Type::Tuple(_))
             | (Type::Struct(_), _)
             | (_, Type::Struct(_))
-            | (Type::Variant(_, _), _)
-            | (_, Type::Variant(_, _))
+            | (Type::Variant(_, _, _), _)
+            | (_, Type::Variant(_, _, _))
             | (Type::ByRef(_), _)
             | (_, Type::ByRef(_))
             | (Type::Array(_), _)
@@ -258,7 +258,7 @@ impl Type {
                 }
                 Ok(())
             }
-            (Self::Variant(tag0, t0), Self::Variant(tag1, t1))
+            (Self::Variant(tag0, t0, _), Self::Variant(tag1, t1, _))
                 if tag0 == tag1 && t0.len() == t1.len() =>
             {
                 for (t0, t1) in t0.iter().zip(t1.iter()) {

@@ -39,7 +39,7 @@ fn would_cycle_seen_inner(
     // `seen` is a true visited set holding both cell and composite
     // node addresses; the answer depends only on reachable leaves.
     let node = match t {
-        Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a) => {
+        Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a, _) => {
             Some((**a).as_ptr().addr())
         }
         Type::Abstract { params: a, .. } => Some((**a).as_ptr().addr()),

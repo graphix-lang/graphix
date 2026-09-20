@@ -69,7 +69,7 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
         let t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
         match t {
             Type::Bottom => true,
-            Type::Set(els) | Type::Tuple(els) | Type::Variant(_, els) => {
+            Type::Set(els) | Type::Tuple(els) | Type::Variant(_, els, _) => {
                 els.iter().any(|e| contains_bottom(e, depth + 1))
             }
             Type::Array(e) | Type::Error(e) | Type::ByRef(e) => {

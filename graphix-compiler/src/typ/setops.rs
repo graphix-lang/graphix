@@ -123,7 +123,7 @@ pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
                     .zip(b.iter())
                     .all(|((n0, x, _), (n1, y, _))| n0 == n1 && union_identical(x, y))
         }
-        (Type::Variant(tg0, a), Type::Variant(tg1, b)) => {
+        (Type::Variant(tg0, a, _), Type::Variant(tg1, b, _)) => {
             tg0 == tg1
                 && a.len() == b.len()
                 && a.iter().zip(b.iter()).all(|(x, y)| union_identical(x, y))
@@ -214,10 +214,10 @@ impl Type {
             }
             (
                 Type::Primitive(p),
-                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(_, _),
+                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
             )
             | (
-                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(_, _),
+                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
                 Type::Primitive(p),
             ) if p.contains(Typ::Array) => Ok(Type::Primitive(*p)),
             (Type::Primitive(p), Type::Array(t))
@@ -310,7 +310,7 @@ impl Type {
             (u @ Type::Tuple(_), t) | (t, u @ Type::Tuple(_)) => {
                 Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
             }
-            (u @ Type::Variant(tg0, t0), t @ Type::Variant(tg1, t1)) => {
+            (u @ Type::Variant(tg0, t0, at), t @ Type::Variant(tg1, t1, _)) => {
                 // Component-wise union is exact only when at most one
                 // position differs: `P(A, X) ∪ `P(B, Y) is not
                 // `P([A, B], [X, Y]) (that invents `P(A, Y)).
@@ -326,12 +326,12 @@ impl Type {
                         .zip(t1.iter())
                         .map(|(t0, t1)| t0.union_int(env, hist, t1))
                         .collect::<Result<LPooled<Vec<_>>>>()?;
-                    Ok(Type::Variant(tg0.clone(), Arc::from_iter(typs.drain(..))))
+                    Ok(Type::Variant(tg0.clone(), Arc::from_iter(typs.drain(..)), *at))
                 } else {
                     Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
                 }
             }
-            (u @ Type::Variant(_, _), t) | (t, u @ Type::Variant(_, _)) => {
+            (u @ Type::Variant(_, _, _), t) | (t, u @ Type::Variant(_, _, _)) => {
                 Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
             }
             (Type::Fn(f0), Type::Fn(f1)) => {
@@ -476,7 +476,7 @@ impl Type {
                     Ok(self.clone())
                 }
             }
-            (Type::Variant(tg0, t0), Type::Variant(tg1, t1)) => {
+            (Type::Variant(tg0, t0, _), Type::Variant(tg1, t1, _)) => {
                 if tg0 == tg1 && same_resolved(t0.iter(), t1.iter()) {
                     Ok(Type::Primitive(BitFlags::empty()))
                 } else {
@@ -568,7 +568,7 @@ impl Type {
                 }
             }
             (
-                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(_, _),
+                Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
                 Type::Primitive(p),
             ) => {
                 if p.contains(Typ::Array) {
@@ -634,8 +634,8 @@ impl Type {
             | (_, Type::Tuple(_))
             | (Type::Struct(_), _)
             | (_, Type::Struct(_))
-            | (Type::Variant(_, _), _)
-            | (_, Type::Variant(_, _))
+            | (Type::Variant(_, _, _), _)
+            | (_, Type::Variant(_, _, _))
             | (Type::ByRef(_), _)
             | (_, Type::ByRef(_))
             | (Type::Error(_), _)

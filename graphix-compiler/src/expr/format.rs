@@ -438,6 +438,22 @@ mod tests {
     }
 
     #[test]
+    fn union_members_keep_their_order() {
+        use SourceKind::*;
+        formats_to(
+            Interface,
+            "type Log = [`Trace, `Debug, `Info, `Warn, `Error]",
+            "type Log = [`Trace, `Debug, `Info, `Warn, `Error]\n",
+        );
+        formats_to(
+            Program,
+            "let x: [`Zed(i64), string, `Apple, null] = `Apple",
+            "let x: [null, string, `Zed(i64), `Apple] = `Apple\n",
+        );
+        formats_to(Interface, "type N = [Real, Int]", "type N = [Real, Int]\n");
+    }
+
+    #[test]
     fn printing_outside_the_formatter_is_canonical() {
         use crate::expr::parser::parse_one;
         let cases = [
@@ -446,6 +462,7 @@ mod tests {
             ("let r: { z: i64, a: i64 } = s", "let r: { a: i64, z: i64 } = s"),
             ("f(r\"x\")?", "f(\"x\")?"),
             ("\"\"\"x \\[y]\"\"\"", "\"x [y]\""),
+            ("let x: [`B, `A] = `A", "let x: [`A, `B] = `A"),
         ];
         for (src, want) in cases {
             assert_eq!(parse_one(src).unwrap().to_string(), want)

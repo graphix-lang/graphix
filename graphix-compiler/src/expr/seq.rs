@@ -9,7 +9,7 @@
 
 use super::{
     ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
-    Pattern, SelectExpr, SeqTrigger, StructurePattern, TryWithExpr,
+    Pattern, SelectExpr, SeqTrigger, StructurePattern, TryWithExpr, WrittenAt,
 };
 use crate::{
     env::Env,
@@ -1141,9 +1141,17 @@ fn lower_block(
 
 fn pc_type(labels: &[ArcStr]) -> Type {
     let mut mem = Vec::with_capacity(labels.len() + 1);
-    mem.push(Type::Variant(ArcStr::from("Idle"), Arc::from(Vec::<Type>::new())));
+    mem.push(Type::Variant(
+        ArcStr::from("Idle"),
+        Arc::from(Vec::<Type>::new()),
+        WrittenAt::NOWHERE,
+    ));
     for l in labels {
-        mem.push(Type::Variant(l.clone(), Arc::from(Vec::<Type>::new())));
+        mem.push(Type::Variant(
+            l.clone(),
+            Arc::from(Vec::<Type>::new()),
+            WrittenAt::NOWHERE,
+        ));
     }
     Type::Set(Arc::from(mem))
 }
