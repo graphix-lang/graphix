@@ -184,19 +184,31 @@ Pins: `stdlib/graphix-tests/src/lang/image.rs`.
 
 **Formatter** (`graphix fmt`, `expr/format.rs`): parse → the one
 printer (`PrettyDisplay`, `expr/print.rs`) → reparse; a result whose
-syntax, comments or attributes differ from the input is refused, never
-written. The AST is canonical, not author-faithful, and the formatter
-prints the canonical form: struct fields, union members and a use
-statement's names (`UseItem::sorted`) are held sorted; `i64`/`f64`
-literals print bare; a run of adjacent undecorated `use` statements
-merges into one per root and visibility, a tree with every shared
-prefix written once. Layout rule: a value follows its head (`let x =`,
-`<-`, `name:`, `=>`) on the head's line when it fits or opens with a
-bracket, else it moves under the head. After a printer change run the
-corpus harness over every `.gx`/`.gxi` here and in `../netidx`:
+syntax, comments, attributes or string delimiters differ from the input
+is refused, never written. The AST stays canonical (struct fields, union
+members and a use statement's names are held sorted); what the author
+chose rides beside it as metadata that decides nothing: `WrittenAt` (a
+position that is always equal, hashes to nothing, packs to nothing) on
+struct pattern binds, struct type fields and variant types, `Expr::pos`
+for struct literal fields, `Expr::str_form` for a string's delimiters.
+**Printing is canonical unless `PrintFlag::AsWritten` is set, and only
+the formatter sets it**: printed types and expressions reach
+program-visible values (a cast error, a null error), and neither
+positions nor string forms survive a session image. What the formatter
+does normalize: `i64`/`f64` literals print bare; a run of adjacent
+undecorated `use` statements merges into one per root and visibility, a
+sorted tree with every shared prefix written once; a blank line stands
+around every file-level item that spans lines; primitives in a union
+print first, in canonical order. Layout: a value follows its head
+(`let x =`, `<-`, `name:`, `=>`) on the head's line when it fits or
+opens with a bracket whose first line fits, else it moves under the
+head; a lambda head that does not fit lists one argument to a line; a
+lone bracketed argument hugs its call (`f({`). After a printer change
+run the corpus harness over every `.gx`/`.gxi` here and in `../netidx`:
 `cargo run -p graphix-compiler --example gxfmt -- <files>` (many files:
 round trip + idempotence; one file: prints it; `GXFMT_UNCHECKED=1`
-skips the reparse).
+skips the reparse). The print round-trip proptests are randomized: a
+printer bug can pass several runs.
 
 **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`);
 `VfsResolver`/`FilesResolver` are in-core, `NetidxResolver` is in

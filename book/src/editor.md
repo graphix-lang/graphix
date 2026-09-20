@@ -231,14 +231,17 @@ graphix fmt < main.gx                 # stdin to stdout (--interface for a .gxi)
 graphix fmt --width 100 main.gx       # fit a different line width (default 80)
 ```
 
-The formatter prints Graphix's canonical form rather than preserving
-every choice you made: struct fields and union members come out sorted,
-adjacent `use` statements are merged into one tree per root and sorted,
-and `i64`/`f64` literals lose a redundant type prefix. Comments and
-attributes stay where you put them. Before anything is written the
-formatted text is parsed again and compared with your program; if the
-two differ in any way the file is left untouched and the difference is
-reported, so a formatter bug can never change what your code means.
+The formatter keeps what you chose where the choice is yours: the order
+of struct fields and of the variants in a union, the delimiters of a
+string (`"…"`, `r"…"`, `"""…"""`), your comments and attributes. It
+normalizes the rest: adjacent `use` statements are merged into one sorted
+tree per root, `i64`/`f64` literals lose a redundant type prefix,
+primitive types come first in a union, a blank line separates every
+top-level item that spans more than one line, and lines are fitted to the
+width. Before anything is written the formatted text is parsed again and
+compared with your program; if the two differ in any way the file is left
+untouched and the difference is reported, so a formatter bug can never
+change what your code means.
 
 ## What the LSP currently supports
 
