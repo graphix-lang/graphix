@@ -457,6 +457,26 @@ select array::filter_map(xs, |x| select probe(x) { error as _ => null, v if ok(v
 let result = seqq go { let r = fetch(go); publish(path, r); r }   // ceremony
 ```
 
+State loaded once is a triggerless `seq` whose value is the state, and
+the state's absence is the sequencing: every reader (an edit's
+`upsert(known, ..)` in a seq step) waits for the load, with no flag.
+
+```graphix
+let known: Book = seq {
+  let book = select sys::fs::is_file(path) {
+    error as _ => blank,
+    file => seq { try { let b: Book = json::read(sys::fs::read_all(file)?)?; b } with(e) { notice <- ..; blank } }
+  };
+  seed(book, local_domain(true))
+};
+known <- edit
+```
+
+A guard cannot bind (`_ if !is_err(is_file(p)) => .. file ..` has no
+`file`): select on the Result. `json::read` needs its type where it is
+called; an annotation on the outer `let` does not reach through a nested
+seq or `try` (`json read requires a concrete return type`).
+
 Derive, do not add a second writer. Two unordered writers to one
 variable race when one replaces it wholesale (a file load landing after
 a seed erases the seed). State holds only what is written; the merged
