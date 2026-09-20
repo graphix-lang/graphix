@@ -175,6 +175,21 @@ let f = |@args: i64| args         // variadic (builtins only)
 Calls dispatch statically. A HOF nested under its own callback is a
 fresh instance, not recursion.
 
+A function is more than a computation: each call is a live piece of
+graph that stays. It can hold state (`let x = ..; x <- ..`), run seqs
+and own effects, its arguments are streams and so is its result. What
+another language builds as an object with fields and methods is here one
+function from its input events to its current state: `let known =
+saved_domains(#notice: &notice, dir, edit)` is the load-once seq, the
+edit that replaces the value and the save to disk, and none of their
+names reach the caller. The convention: the caller owns status (a
+notice, a busy flag, a toast) and lends it by `&`; events come in as
+arguments (`edit`, `recheck`, a key); the function returns the data. One
+that produces a change returns it for the caller to connect (`edit <-
+discovered(#toast: &toast, known, at)`), so the state's writers are all
+visible in one place. When a function's body has grown sections, each
+section with its own lets is a candidate.
+
 No currying: a call supplies every required argument, and `add(1)` on a
 two-argument `add` is refused (`missing required argument`), not a
 partial application. A combinator takes everything it needs and returns
