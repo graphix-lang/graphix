@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -222,8 +222,7 @@ val command: fn(#name: string, ?#version: [string, null], ?#about: [string, null
 val parse: fn(cmd: Command) -&gt; [ParseResult, Error&lt;`ArgError(string)&gt;];
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
-<pre><code class="language-graphix">use args::Command;
-
+<pre><code class="language-graphix">
 let cli = args::parse(
     args::command(
         #name: "example",

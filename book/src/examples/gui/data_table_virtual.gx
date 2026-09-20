@@ -1,8 +1,10 @@
-use gui::window;
-use gui::data_table::{self, *};
-use gui::slider::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
+use gui::{
+  window,
+  column::column,
+  data_table::{data_table, progress_column, text_column},
+  slider::slider,
+  text::text
+};
 use sys::{net, time};
 mod icon;
 

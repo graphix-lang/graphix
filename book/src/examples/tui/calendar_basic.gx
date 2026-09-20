@@ -1,4 +1,4 @@
-use tui::calendar::{self, *};
+use tui::calendar::{calendar, date};
 
 let current_date = date(2024, 5, 15);
 

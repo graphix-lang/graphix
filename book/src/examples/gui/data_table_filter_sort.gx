@@ -1,13 +1,13 @@
-use gui::data_table::{self, *};
-use gui::row::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use gui::text_input::{self, *};
-use gui::pick_list::{self, *};
-use array::{filter, sort};
-use opt::or;
-use gui::data_table::Table;
-use gui::window;
+use gui::{
+  window,
+  column::column,
+  data_table::{SortBy, SortDirection, Table, data_table},
+  pick_list::pick_list,
+  row::row,
+  text::text,
+  text_input::text_input
+};
+use array::filter;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls

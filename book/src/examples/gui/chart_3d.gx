@@ -1,7 +1,4 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::chart::{self, *};
-use gui::column::{self, *};
+use gui::{window, chart, column::column, text::text};
 mod icon;
 
 let surface_data = [

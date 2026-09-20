@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -210,9 +210,7 @@ val scrollbar: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui::text;
-use tui::scrollbar::{self, *};
-use tui::paragraph::{self, *};
+<pre><code class="language-graphix">use tui::{paragraph::paragraph, scrollbar::scrollbar};
 
 let long_text = "This is a very long text that needs scrolling. More content here. Even more content. And even more. Keep going with lots of text to demonstrate scrolling.";
 let position = 0;
@@ -228,44 +226,39 @@ scrollbar(
 </code></pre>
 <p><img src="./media/scroll_basic.png" alt="Basic Scrollbar"></p>
 <h3 id="scrollable-paragraph"><a class="header" href="#scrollable-paragraph">Scrollable Paragraph</a></h3>
-<pre><code class="language-graphix">use tui::line;
-use tui::scrollbar::{self, *};
-use tui::paragraph::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
-use tui::input_handler::{self, *};
+<pre><code class="language-graphix">use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph,
+  scrollbar::scrollbar
+};
 
 let long_text = "Very long text content...";
 let position = 0;
 let max_position = 100;
 
-let handle_event = |e: Event| -&gt; [`Stop, `Continue] select e {
-    `Key(k) =&gt; select k.kind {
-        `Press =&gt; select k.code {
-            k@`Up if position &gt; 0 =&gt; {
-                position &lt;- (k ~ position) - 1;
-                `Stop
-            },
-            k@`Down if position &lt; max_position =&gt; {
-                position &lt;- (k ~ position) + 1;
-                `Stop
-            },
-            k@`PageUp if position &gt; 10 =&gt; {
-                position &lt;- (k ~ position) - 10;
-                `Stop
-            },
-            k@`PageDown if position &lt; (max_position - 10) =&gt; {
-                position &lt;- (k ~ position) + 10;
-                `Stop
-            },
-            k@`Home =&gt; { position &lt;- k ~ 0; `Stop },
-            k@`End =&gt; { position &lt;- k ~ max_position; `Stop },
-            _ =&gt; `Continue
-        },
-        _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Up if position &gt; 0 =&gt; {
+        position &lt;- (k ~ position) - 1;
+        `Stop
     },
+    k@`Down if position &lt; max_position =&gt; {
+        position &lt;- (k ~ position) + 1;
+        `Stop
+    },
+    k@`PageUp if position &gt; 10 =&gt; {
+        position &lt;- (k ~ position) - 10;
+        `Stop
+    },
+    k@`PageDown if position &lt; (max_position - 10) =&gt; {
+        position &lt;- (k ~ position) + 10;
+        `Stop
+    },
+    k@`Home =&gt; { position &lt;- k ~ 0; `Stop },
+    k@`End =&gt; { position &lt;- k ~ max_position; `Stop },
     _ =&gt; `Continue
-};
+});
 
 input_handler(
     #handle: &amp;handle_event,
@@ -282,10 +275,7 @@ input_handler(
 </code></pre>
 <p><img src="./media/scroll_paragraph.gif" alt="Scrollable Paragraph"></p>
 <h3 id="scrollable-list"><a class="header" href="#scrollable-list">Scrollable List</a></h3>
-<pre><code class="language-graphix">use tui::line;
-use tui::scrollbar::{self, *};
-use tui::list::{self, *};
-use tui::text::{self, *};
+<pre><code class="language-graphix">use tui::{line, list::list, scrollbar::scrollbar};
 
 let items = [
     line("Item 1"),

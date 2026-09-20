@@ -1,7 +1,4 @@
-use gui::{Widget, window};
-use gui::text::{self, *};
-use gui::image::{self, *};
-use gui::column::{self, *};
+use gui::{window, column::column, image::image, text::text};
 mod icon;
 
 let pixels = bytes:/wAA/wD/AP8AAP////8A/wD/////AP///4AA/4AA//8AgAD/gICA//////8AAAD//8DL/6UqKv8AgID//9cA/w==;

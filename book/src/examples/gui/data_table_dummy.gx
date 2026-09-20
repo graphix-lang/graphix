@@ -1,11 +1,7 @@
 // demonstrates using a default value for netidx subscriptions to show
 // a dummy value when a subscription isn't available.
-use gui::window;
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
+use gui::{window, column::column, data_table::{data_table, text_column}, text::text};
 use sys::time;
-use sys::net::Table;
 mod icon;
 
 let publish_host = |#name, #status, #cpu, #mem| {

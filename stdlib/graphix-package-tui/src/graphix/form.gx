@@ -1,9 +1,10 @@
-use super::{line, style};
-use super::block::{self, *};
-use super::layout::{self, *};
-use super::line_edit;
-use super::paragraph::{self, *};
-use super::text::{self, *};
+use super::{
+  line, line_edit, style,
+  block::block,
+  layout::{child, layout},
+  paragraph::paragraph,
+  text::text
+};
 
 let form = |
   #title: string,

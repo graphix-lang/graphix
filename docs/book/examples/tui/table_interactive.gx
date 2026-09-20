@@ -1,8 +1,9 @@
-use tui::{line, style};
-use tui::table::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
-use tui::input_handler::{self, *};
+use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  table::{cell, row, table}
+};
 
 type User = {name: string, age: i64, city: string};
 
@@ -36,23 +37,17 @@ let rows = [&row1, &row2, &row3];
 
 let selected = 0;
 
-let handle_event = |e: Event| -> [`Stop, `Continue] select e {
-    `Key(k) => select k.kind {
-        `Press => select k.code {
-            k@`Up if selected > 0 => {
-                selected <- (k ~ selected) - 1;
-                `Stop
-            },
-            k@`Down if selected < 2 => {
-                selected <- (k ~ selected) + 1;
-                `Stop
-            },
-            _ => `Continue
-        },
-        _ => `Continue
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Up if selected > 0 => {
+        selected <- (k ~ selected) - 1;
+        `Stop
+    },
+    k@`Down if selected < 2 => {
+        selected <- (k ~ selected) + 1;
+        `Stop
     },
     _ => `Continue
-};
+});
 
 input_handler(
     #handle: &handle_event,

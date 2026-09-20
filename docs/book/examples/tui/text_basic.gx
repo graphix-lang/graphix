@@ -1,3 +1,3 @@
-use tui::text::{self, *};
+use tui::text::text;
 
 text(&"Hello, World!")

@@ -1,6 +1,4 @@
-use tui::layout::{self, *};
-use tui::text::{self, *};
-use tui::block::{self, *};
+use tui::{block::block, layout::{child, layout}, text::text};
 
 let header = block(#border:&`All, &text(&"Header"));
 let content = block(#border:&`All, &text(&"Main Content"));

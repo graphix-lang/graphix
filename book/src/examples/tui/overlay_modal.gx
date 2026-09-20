@@ -1,8 +1,10 @@
-use tui::line;
-use tui::block::{self, *};
-use tui::input_handler::{self, *};
-use tui::overlay::{self, *};
-use tui::paragraph::{self, *};
+use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
 
 let open = false;
 
@@ -44,7 +46,7 @@ let modal = layer(
   )
 );
 
-let layers: Array<overlay::Layer> = select open {
+let layers: Array<Layer> = select open {
   true => [modal],
   false => []
 };

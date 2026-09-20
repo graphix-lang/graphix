@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -418,11 +418,7 @@ scrolls into view as needed). <code>Enter</code> on a row-name cell fires
 <code>sys::net::list_table</code> output to <code>data_table</code> with no column
 configuration. Bare-string columns become default Text columns with
 <code>`Netidx</code> source.</p>
-<pre><code class="language-graphix">use gui::window;
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use sys::net::Table;
+<pre><code class="language-graphix">use gui::{window, column::column, data_table::data_table, text::text};
 mod icon;
 
 let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {
@@ -461,16 +457,16 @@ let layout = column(
 <p>Row filtering (a regex over basenames) and sort configuration done
 in graphix before the <code>Table</code> is handed to the widget. Shows how the
 caller owns the data pipeline end to end.</p>
-<pre><code class="language-graphix">use gui::data_table::{self, *};
-use gui::row::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use gui::text_input::{self, *};
-use gui::pick_list::{self, *};
-use array::{filter, sort};
-use opt::or;
-use gui::data_table::Table;
-use gui::window;
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  data_table::{SortBy, SortDirection, Table, data_table},
+  pick_list::pick_list,
+  row::row,
+  text::text,
+  text_input::text_input
+};
+use array::filter;
 mod icon;
 
 // Publish 6 sensors across three environments; the sidebar controls
@@ -632,11 +628,12 @@ round-trip through netidx. The example shows the
 <code>array::map(raw_columns, …)</code> pattern for attaching custom
 <code>ColumnSpec</code>s to specific column names while leaving everything else
 as bare-string Netidx-sourced columns.</p>
-<pre><code class="language-graphix">use gui::window;
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use sys::net::Table;
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  data_table::{combo_column, data_table, spin_column, text_column, toggle_column},
+  text::text
+};
 mod icon;
 
 // Four editable columns demonstrating every ColumnType that takes
@@ -768,13 +765,13 @@ let layout = column(
 <p>A virtual column whose <code>source</code> is a reactive <code>Map&lt;string, Any&gt;</code>,
 rebuilt whenever any subscribed cell updates. Demonstrates deriving
 per-row aggregates (here, sums) without touching netidx.</p>
-<pre><code class="language-graphix">use gui::{row, window};
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use sys::time;
-use sys::net::publish;
-use gui::data_table::Table;
+<pre><code class="language-graphix">use gui::{
+  row, window,
+  column::column,
+  data_table::{ColumnSpec, Table, data_table, text_column},
+  text::text
+};
+use sys::{time, net::publish};
 mod icon;
 
 // Two published columns A and B. A virtual "sum" column has its
@@ -856,12 +853,13 @@ let layout = column(
 <p>Live rolling charts per row with automatic column-wide y-axis
 sharing, so cells are visually comparable without the caller picking
 bounds.</p>
-<pre><code class="language-graphix">use gui::window;
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  data_table::{data_table, sparkline_column},
+  text::text
+};
 use core::math;
-use sys::net::Table;
 use sys::time;
 mod icon;
 
@@ -925,11 +923,13 @@ let layout = column(
 <p>Mix live subscribed rows with virtual rows whose cells come from
 non-Netidx sources. Virtual-column-plus-virtual-row combinations
 give you fully client-side cells.</p>
-<pre><code class="language-graphix">use gui::window;
-use gui::data_table::{self, *};
-use gui::slider::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  data_table::{data_table, progress_column, text_column},
+  slider::slider,
+  text::text
+};
 use sys::{net, time};
 mod icon;
 
@@ -1007,17 +1007,20 @@ let layout = column(
 CPU metrics, <code>Progress</code> uptime, a <code>Button</code> action column, a regex
 row filter in a text input, sort controlled by pick-lists, and
 selection echoed in the footer.</p>
-<pre><code class="language-graphix">use gui::data_table::{self, *};
-use gui::row::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use gui::text_input::{self, *};
-use gui::pick_list::{self, *};
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  data_table::{
+    SortBy, SortDirection, Table, button_column, combo_column, data_table,
+    progress_column, sparkline_column
+  },
+  pick_list::pick_list,
+  row::row,
+  text::text,
+  text_input::text_input
+};
 use core::math;
-use opt::or;
 use sys::time;
-use gui::data_table::Table;
-use gui::window;
 mod icon;
 
 // Kitchen-sink example combining the main data_table features:

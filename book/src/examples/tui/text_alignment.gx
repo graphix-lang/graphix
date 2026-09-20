@@ -1,5 +1,4 @@
-use tui::line;
-use tui::text::{self, *};
+use tui::{line, text::text};
 
 text(&[
     line(#alignment: `Left, "Left aligned"),

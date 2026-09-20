@@ -1,7 +1,4 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::pick_list::{self, *};
-use gui::column::{self, *};
+use gui::{window, column::column, pick_list::pick_list, text::text};
 mod icon;
 
 let language: [string, null] = null;

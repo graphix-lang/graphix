@@ -1,5 +1,4 @@
-use tui::style;
-use tui::calendar::{self, *};
+use tui::{style, calendar::{Date, calendar, calendar_event, date}};
 
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};

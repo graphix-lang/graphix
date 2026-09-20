@@ -1,6 +1,4 @@
-use tui::{line, style};
-use tui::block::{self, *};
-use tui::paragraph::{self, *};
+use tui::{line, style, block::block, paragraph::paragraph};
 
 let focused_block = 0;
 let content = paragraph(&"Content here");

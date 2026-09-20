@@ -1,7 +1,4 @@
-use tui::{line, style};
-use tui::sparkline::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
+use tui::{line, style, block::block, sparkline::{sparkline, sparkline_bar}};
 
 let data = {
     let clock = sys::time::timer(duration:0.3s, true);

@@ -1,5 +1,4 @@
-use tui::line;
-use tui::list::{self, *};
+use tui::{line, list::list};
 
 let items = [
     line("Apple"),

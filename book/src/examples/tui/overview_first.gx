@@ -1,7 +1,4 @@
-use tui::{line, style};
-use tui::block::{self, *};
-use tui::text::{self, *};
-use tui::layout::{self, *};
+use tui::{line, style, block::block, text::text};
 
 let counter = count(sys::time::timer(duration:1.s, true));
 

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -295,8 +295,7 @@ impl Seek for File;
 </code></pre>
 <p>An open <code>File</code> reads, writes and closes through the <a href="io.html">sys::io</a>
 traits, and seeks through <code>Seek</code>:</p>
-<pre><code class="language-graphix">use sys::fs::{self, *};
-use sys::io::{Read, Write, Close};
+<pre><code class="language-graphix">use sys::{fs::{Seek, open}, io::{Close, Read, Write}};
 
 let f = open(`Create, path)?;
 let written = Write::write_exact(f, buffer::from_string("hello"))?;

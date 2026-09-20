@@ -1,7 +1,4 @@
-use tui::{line, style};
-use tui::line_gauge::{self, *};
-use tui::text::{self, *};
-use tui::layout::{self, *};
+use tui::{line, style, layout::{child, layout}, line_gauge::line_gauge};
 
 layout(
     #direction: &`Vertical,

@@ -1,7 +1,4 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::toggler::{self, *};
-use gui::column::{self, *};
+use gui::{window, column::column, text::text, toggler::toggler};
 mod icon;
 
 let wifi = true;

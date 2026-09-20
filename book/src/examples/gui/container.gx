@@ -1,7 +1,4 @@
-use gui::{Widget, window};
-use gui::text::{self, *};
-use gui::column::{self, *};
-use gui::container::{self, *};
+use gui::{window, column::column, container::container, text::text};
 mod icon;
 
 [&window(

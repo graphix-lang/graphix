@@ -1,8 +1,9 @@
-use gui::window;
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use sys::net::Table;
+use gui::{
+  window,
+  column::column,
+  data_table::{combo_column, data_table, spin_column, text_column, toggle_column},
+  text::text
+};
 mod icon;
 
 // Four editable columns demonstrating every ColumnType that takes

@@ -1,6 +1,4 @@
-use tui::line;
-use tui::tabs::{self, *};
-use tui::paragraph::{self, *};
+use tui::{line, paragraph::paragraph, tabs::tabs};
 
 let tab1 = paragraph(&"This is tab 1");
 let tab2 = paragraph(&"This is tab 2");

@@ -1,7 +1,4 @@
-use gui::{color, window};
-use gui::text::{self, *};
-use gui::canvas::{self, *};
-use gui::column::{self, *};
+use gui::{color, window, canvas::canvas, column::column, text::text};
 mod icon;
 
 let shapes = &[

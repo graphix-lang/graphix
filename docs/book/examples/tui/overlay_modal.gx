@@ -1,38 +1,28 @@
-use tui::line;
-use tui::block::{self, *};
-use tui::input_handler::{self, *};
-use tui::overlay::{self, *};
-use tui::paragraph::{self, *};
+use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
 
 let open = false;
 
-let handle_base = |e: Event| -> [`Stop, `Continue] select e {
-  `Key(k) => select k.kind {
-    `Press => select k.code {
-      c@ `Char("o") => {
-        open <- c ~ true;
-        `Stop
-      },
-      _ => `Continue
-    },
-    _ => `Continue
+let handle_base = |e: Event| on_press(e, |k| select k.code {
+  c@ `Char("o") => {
+    open <- c ~ true;
+    `Stop
   },
   _ => `Continue
-};
+});
 
-let handle_modal = |e: Event| -> [`Stop, `Continue] select e {
-  `Key(k) => select k.kind {
-    `Press => select k.code {
-      c@ `Esc => {
-        open <- c ~ false;
-        `Stop
-      },
-      _ => `Continue
-    },
-    _ => `Continue
+let handle_modal = |e: Event| on_press(e, |k| select k.code {
+  c@ `Esc => {
+    open <- c ~ false;
+    `Stop
   },
   _ => `Continue
-};
+});
 
 let base = input_handler(
   #handle: &handle_base,
@@ -56,7 +46,7 @@ let modal = layer(
   )
 );
 
-let layers: Array<overlay::Layer> = select open {
+let layers: Array<Layer> = select open {
   true => [modal],
   false => []
 };

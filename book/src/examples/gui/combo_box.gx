@@ -1,7 +1,4 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::combo_box::{self, *};
-use gui::column::{self, *};
+use gui::{window, column::column, combo_box::combo_box, text::text};
 mod icon;
 
 let selected: [string, null] = null;

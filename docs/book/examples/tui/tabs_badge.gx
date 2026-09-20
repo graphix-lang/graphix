@@ -1,6 +1,4 @@
-use tui::{line, span, style};
-use tui::tabs::{self, *};
-use tui::text::{self, *};
+use tui::{line, span, style, tabs::tabs, text::text};
 
 let unread_count = 5;
 

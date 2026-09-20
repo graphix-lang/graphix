@@ -1,5 +1,4 @@
-use tui::style;
-use tui::line_gauge::{self, *};
+use tui::{style, line_gauge::line_gauge};
 
 // 75%
 let progress = 0.75;

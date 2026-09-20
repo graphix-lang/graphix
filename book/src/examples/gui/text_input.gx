@@ -1,7 +1,4 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::text_input::{self, *};
-use gui::column::{self, *};
+use gui::{window, column::column, text::text, text_input::text_input};
 mod icon;
 
 let name = "";

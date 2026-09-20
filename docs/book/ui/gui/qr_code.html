@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -189,11 +189,13 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="qr-code-from-text-input"><a class="header" href="#qr-code-from-text-input">QR Code from Text Input</a></h3>
-<pre><code class="language-graphix">use gui::window;
-use gui::text::{self, *};
-use gui::text_input::{self, *};
-use gui::qr_code::{self, *};
-use gui::column::{self, *};
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  qr_code::qr_code,
+  text::text,
+  text_input::text_input
+};
 mod icon;
 
 let url = "https://graphix-lang.github.io/graphix";

@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -211,41 +211,31 @@ and captures input</li>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <p>A modal opened with <code>o</code> and closed with <code>Esc</code>. While it is up, its
 input handler sees every key; the base handler sees none.</p>
-<pre><code class="language-graphix">use tui::line;
-use tui::block::{self, *};
-use tui::input_handler::{self, *};
-use tui::overlay::{self, *};
-use tui::paragraph::{self, *};
+<pre><code class="language-graphix">use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
 
 let open = false;
 
-let handle_base = |e: Event| -&gt; [`Stop, `Continue] select e {
-  `Key(k) =&gt; select k.kind {
-    `Press =&gt; select k.code {
-      c@ `Char("o") =&gt; {
-        open &lt;- c ~ true;
-        `Stop
-      },
-      _ =&gt; `Continue
-    },
-    _ =&gt; `Continue
+let handle_base = |e: Event| on_press(e, |k| select k.code {
+  c@ `Char("o") =&gt; {
+    open &lt;- c ~ true;
+    `Stop
   },
   _ =&gt; `Continue
-};
+});
 
-let handle_modal = |e: Event| -&gt; [`Stop, `Continue] select e {
-  `Key(k) =&gt; select k.kind {
-    `Press =&gt; select k.code {
-      c@ `Esc =&gt; {
-        open &lt;- c ~ false;
-        `Stop
-      },
-      _ =&gt; `Continue
-    },
-    _ =&gt; `Continue
+let handle_modal = |e: Event| on_press(e, |k| select k.code {
+  c@ `Esc =&gt; {
+    open &lt;- c ~ false;
+    `Stop
   },
   _ =&gt; `Continue
-};
+});
 
 let base = input_handler(
   #handle: &amp;handle_base,
@@ -269,7 +259,7 @@ let modal = layer(
   )
 );
 
-let layers: Array&lt;overlay::Layer&gt; = select open {
+let layers: Array&lt;Layer&gt; = select open {
   true =&gt; [modal],
   false =&gt; []
 };

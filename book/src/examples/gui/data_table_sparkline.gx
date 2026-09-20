@@ -1,9 +1,10 @@
-use gui::window;
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
+use gui::{
+  window,
+  column::column,
+  data_table::{data_table, sparkline_column},
+  text::text
+};
 use core::math;
-use sys::net::Table;
 use sys::time;
 mod icon;
 

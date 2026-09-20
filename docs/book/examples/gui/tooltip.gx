@@ -1,8 +1,4 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::tooltip::{self, *};
-use gui::button::{self, *};
-use gui::column::{self, *};
+use gui::{window, button::button, column::column, text::text, tooltip::tooltip};
 mod icon;
 
 let col = column(

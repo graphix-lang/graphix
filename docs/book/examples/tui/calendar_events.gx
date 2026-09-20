@@ -1,7 +1,4 @@
-use tui::{line, style};
-use tui::calendar::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
+use tui::{line, style, block::block, calendar::{calendar, calendar_event, date}};
 
 let today = date(2024, 5, 15);
 

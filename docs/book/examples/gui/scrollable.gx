@@ -1,8 +1,10 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::scrollable::{self, *};
-use gui::column::{self, *};
-use gui::rule::horizontal_rule;
+use gui::{
+  window,
+  column::column,
+  rule::horizontal_rule,
+  scrollable::scrollable,
+  text::text
+};
 mod icon;
 
 let col = column(

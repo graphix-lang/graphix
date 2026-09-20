@@ -1,6 +1,4 @@
-use tui::layout::{self, *};
-use tui::text::{self, *};
-use tui::block::{self, *};
+use tui::{block::block, layout::{child, layout}, text::text};
 
 let widget1 = block(#border:&`All, &text(&"Widget 1"));
 let widget2 = block(#border:&`All, &text(&"Widget 2"));

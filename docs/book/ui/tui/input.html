@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -245,7 +245,26 @@ Function keys use <code>F(i64)</code>, e.g., <code>F(1)</code> for F1.</p>
   `Release
 ];
 </code></pre>
-<p>Most applications only care about <code>Press</code> events.</p>
+<p>Most applications only care about <code>Press</code> events, and must say so: a
+terminal that reports releases (the Windows console does) delivers two
+events per keystroke, and a handler that matches <code>`Key(k)</code> alone
+runs twice. <code>on_press(e, f)</code> calls <code>f</code> with the <code>KeyEvent</code> when <code>e</code> is a
+press and continues on everything else. It returns what a handler
+returns, so it is usually the handler’s whole body:</p>
+<pre><code class="language-graphix">let handle = |e: Event| on_press(e, |k| select k.code {
+  `Up =&gt; { sel &lt;- k ~ max(0, sel - 1); `Stop },
+  `Down =&gt; { sel &lt;- k ~ sel + 1; `Stop },
+  _ =&gt; `Continue
+});
+input_handler(#handle: &amp;handle, &amp;view)
+</code></pre>
+<p>A handler that wants mouse, paste, resize or a release selects on the
+<code>Event</code> itself. A modal one that lets nothing through wraps the call
+and answers every event, which means sampling the answer on the event
+(a bare <code>`Stop</code> is a constant: it answers the first event and no
+other):</p>
+<pre><code class="language-graphix">let modal = |e: Event| { on_press(e, keys); e ~ `Stop };
+</code></pre>
 <h3 id="key-modifiers"><a class="header" href="#key-modifiers">Key Modifiers</a></h3>
 <pre><code class="language-graphix">type KeyModifier = [
   `Shift,

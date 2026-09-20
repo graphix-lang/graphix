@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -195,11 +195,13 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="rendered-markdown-with-link-callback"><a class="header" href="#rendered-markdown-with-link-callback">Rendered Markdown with Link Callback</a></h3>
-<pre><code class="language-graphix">use gui::{Widget, window};
-use gui::text::{self, *};
-use gui::text_editor::{self, *};
-use gui::markdown::{self, *};
-use gui::column::{self, *};
+<pre><code class="language-graphix">use gui::{
+  window,
+  column::column,
+  markdown::markdown,
+  text::text,
+  text_editor::text_editor
+};
 mod icon;
 
 let content = r"# Markdown Demo

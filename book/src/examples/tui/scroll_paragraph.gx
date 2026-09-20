@@ -1,9 +1,10 @@
-use tui::line;
-use tui::scrollbar::{self, *};
-use tui::paragraph::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
-use tui::input_handler::{self, *};
+use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  paragraph::paragraph,
+  scrollbar::scrollbar
+};
 
 let long_text = "Very long text content...";
 let position = 0;

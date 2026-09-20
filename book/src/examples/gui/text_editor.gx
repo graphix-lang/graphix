@@ -1,7 +1,4 @@
-use gui::{Length, window};
-use gui::text::{self, *};
-use gui::text_editor::{self, *};
-use gui::column::{self, *};
+use gui::{window, column::column, text::text, text_editor::text_editor};
 mod icon;
 
 let content = "";

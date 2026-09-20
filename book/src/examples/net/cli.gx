@@ -1,4 +1,3 @@
-use args::Command;
 
 let cli = args::parse(
     args::command(

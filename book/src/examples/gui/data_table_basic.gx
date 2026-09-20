@@ -1,8 +1,4 @@
-use gui::window;
-use gui::data_table::{self, *};
-use gui::column::{self, *};
-use gui::text::{self, *};
-use sys::net::Table;
+use gui::{window, column::column, data_table::data_table, text::text};
 mod icon;
 
 let publish_host = |#name: string, #status: [`Up, `Degraded], #cpu: f64, #mem: f64| {

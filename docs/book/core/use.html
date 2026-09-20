@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -205,11 +205,18 @@ same syntax works in <code>.gxi</code> interface files.</p>
 <p>Globs are legal but discouraged outside test modules — an explicit
 list documents where every name comes from, and two globs that both
 provide a name make that name an error at its first use.</p>
-<p>The <code>{self, *}</code> group is the idiom for the UI packages’ widget
-modules, where a module and its main function share a name:
-<code>use tui::text::{self, *}</code> imports the module <code>text</code> <em>and</em> its
-contents, so both the widget call <code>text(&amp;"hi")</code> and qualified access
-to the module’s other items work.</p>
+<p>In the UI packages a widget module and its main function share a
+name. Import the function by its path, <code>use tui::text::text</code>, and the
+module’s other items the same way, <code>use tui::overlay::{Layer, layer, overlay}</code>. A group may name the module (<code>self</code>) or the function, not
+both: <code>use tui::overlay::{self, overlay}</code> is refused, because both are
+<code>overlay</code>. Collect everything from one root in one statement:</p>
+<pre><code class="language-graphix">use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout}
+};
+</code></pre>
 <h2 id="path-roots"><a class="header" href="#path-roots">Path roots</a></h2>
 <p>The leading segment of any path — in <code>use</code>, in expressions, and in
 type annotations — is one of:</p>

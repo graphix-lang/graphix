@@ -1,6 +1,6 @@
 use super::{Constraint, Flex, line, Size, size, Style, style, Tui};
 use sys::net;
-use tui::table::{self, *};
+use tui::table::{cell, row, table};
 
 type MoveCursor = [
     `Left(i64),

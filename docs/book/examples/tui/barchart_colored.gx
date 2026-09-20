@@ -1,5 +1,4 @@
-use tui::{line, style};
-use tui::barchart::{bar, bar_chart, bar_group};
+use tui::{line, style, barchart::{bar, bar_chart, bar_group}};
 
 let make_colored_bar = |label, value| {
     let color = select value {

@@ -1,8 +1,10 @@
-use gui::window;
-use gui::text::{self, *};
-use gui::slider::{self, *};
-use gui::progress_bar::{self, *};
-use gui::column::{self, *};
+use gui::{
+  window,
+  column::column,
+  progress_bar::progress_bar,
+  slider::slider,
+  text::text
+};
 mod icon;
 
 let volume = 50.0;

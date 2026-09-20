@@ -1,8 +1,10 @@
-use gui::{Widget, window};
-use gui::text::{self, *};
-use gui::text_editor::{self, *};
-use gui::markdown::{self, *};
-use gui::column::{self, *};
+use gui::{
+  window,
+  column::column,
+  markdown::markdown,
+  text::text,
+  text_editor::text_editor
+};
 mod icon;
 
 let content = r"# Markdown Demo

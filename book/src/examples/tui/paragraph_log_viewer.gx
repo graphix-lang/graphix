@@ -1,6 +1,4 @@
-use tui::line;
-use tui::paragraph::{self, *};
-use tui::text::{self, *};
+use tui::{line, paragraph::paragraph};
 use sys::time;
 
 // Self-contained: publish a simulated log entry every second, then

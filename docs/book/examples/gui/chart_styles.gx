@@ -1,7 +1,4 @@
-use gui::{color, window};
-use gui::text::{self, *};
-use gui::chart::{self, *};
-use gui::column::{self, *};
+use gui::{color, window, chart, column::column, text::text};
 mod icon;
 
 let clock = sys::time::timer(duration:0.5s, true);

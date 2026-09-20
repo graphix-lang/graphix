@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -234,8 +234,7 @@ val table: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui::line;
-use tui::table::{self, *};
+<pre><code class="language-graphix">use tui::{line, table::{cell, row, table}};
 
 let header = row([
     cell(line("Name")),
@@ -263,11 +262,12 @@ table(
 </code></pre>
 <p><img src="./media/table_basic.png" alt="Basic Table"></p>
 <h3 id="interactive-table"><a class="header" href="#interactive-table">Interactive Table</a></h3>
-<pre><code class="language-graphix">use tui::{line, style};
-use tui::table::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
-use tui::input_handler::{self, *};
+<pre><code class="language-graphix">use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  table::{cell, row, table}
+};
 
 type User = {name: string, age: i64, city: string};
 
@@ -301,23 +301,17 @@ let rows = [&amp;row1, &amp;row2, &amp;row3];
 
 let selected = 0;
 
-let handle_event = |e: Event| -&gt; [`Stop, `Continue] select e {
-    `Key(k) =&gt; select k.kind {
-        `Press =&gt; select k.code {
-            k@`Up if selected &gt; 0 =&gt; {
-                selected &lt;- (k ~ selected) - 1;
-                `Stop
-            },
-            k@`Down if selected &lt; 2 =&gt; {
-                selected &lt;- (k ~ selected) + 1;
-                `Stop
-            },
-            _ =&gt; `Continue
-        },
-        _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Up if selected &gt; 0 =&gt; {
+        selected &lt;- (k ~ selected) - 1;
+        `Stop
+    },
+    k@`Down if selected &lt; 2 =&gt; {
+        selected &lt;- (k ~ selected) + 1;
+        `Stop
     },
     _ =&gt; `Continue
-};
+});
 
 input_handler(
     #handle: &amp;handle_event,
@@ -337,9 +331,7 @@ input_handler(
 </code></pre>
 <p><img src="./media/table_interactive.gif" alt="Interactive Table"></p>
 <h3 id="conditional-cell-styling"><a class="header" href="#conditional-cell-styling">Conditional Cell Styling</a></h3>
-<pre><code class="language-graphix">use tui::{line, style};
-use tui::table::{self, *};
-use tui::text::{self, *};
+<pre><code class="language-graphix">use tui::{line, style, table::{cell, row, table}};
 
 let make_cpu_cell = |cpu| {
     let s = select cpu {
@@ -381,9 +373,7 @@ table(
 </code></pre>
 <p><img src="./media/table_styled_cells.png" alt="Conditional Styling"></p>
 <h3 id="real-time-updates"><a class="header" href="#real-time-updates">Real-time Updates</a></h3>
-<pre><code class="language-graphix">use tui::line;
-use tui::table::{self, *};
-use tui::text::{self, *};
+<pre><code class="language-graphix">use tui::{line, table::{cell, row, table}};
 
 let clock = sys::time::timer(duration:1.s, true);
 

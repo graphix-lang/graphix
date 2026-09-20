@@ -1,7 +1,4 @@
-use gui::{color, window};
-use gui::text::{self, *};
-use gui::chart::{self, *};
-use gui::column::{self, *};
+use gui::{color, window, chart, column::column, text::text};
 mod icon;
 
 let dark_bg = color(#r: 0.1, #g: 0.1, #b: 0.15)$;

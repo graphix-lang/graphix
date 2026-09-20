@@ -1,5 +1,4 @@
-use tui::line;
-use tui::table::{self, *};
+use tui::{line, table::{cell, row, table}};
 
 let header = row([
     cell(line("Name")),

@@ -1,5 +1,7 @@
-use tui::browser::{self, *};
-use tui::input_handler::{self, *};
+use tui::{
+  browser::{MoveCursor, browser},
+  input_handler::{Event, input_handler, on_press}
+};
 
 let path = "/";
 let selected_path: string = never();

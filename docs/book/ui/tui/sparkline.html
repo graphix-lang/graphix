@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -214,7 +214,7 @@ val sparkline: fn(
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui::sparkline::{self, *};
+<pre><code class="language-graphix">use tui::sparkline::sparkline;
 
 let data = [10.0, 25.0, 40.0, 55.0, 70.0, 85.0, 100.0];
 
@@ -222,10 +222,7 @@ sparkline(#max: &amp;100, &amp;data)
 </code></pre>
 <p><img src="./media/sparkline_basic.png" alt="Basic Sparkline"></p>
 <h3 id="threshold-based-coloring"><a class="header" href="#threshold-based-coloring">Threshold-based Coloring</a></h3>
-<pre><code class="language-graphix">use tui::{line, style};
-use tui::sparkline::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
+<pre><code class="language-graphix">use tui::{line, style, block::block, sparkline::{sparkline, sparkline_bar}};
 
 let data = {
     let clock = sys::time::timer(duration:0.3s, true);
@@ -253,11 +250,7 @@ block(
 </code></pre>
 <p><img src="./media/sparkline_threshold.gif" alt="Threshold Colors"></p>
 <h3 id="multi-metric-dashboard"><a class="header" href="#multi-metric-dashboard">Multi-metric Dashboard</a></h3>
-<pre><code class="language-graphix">use tui::{line, style};
-use tui::sparkline::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
-use tui::layout::{self, *};
+<pre><code class="language-graphix">use tui::{line, style, block::block, layout::{child, layout}, sparkline::sparkline};
 
 let cpu_data = [50., 60., 55., 70., 65.];
 let mem_data = [30., 35., 40., 38., 42.];
@@ -292,7 +285,7 @@ grep --line-buffered Cpu | \
 awk '{ printf("/local/metrics/cpu|f64|%s\n", $6); fflush() }' | \
 netidx publisher
 </code></pre>
-<pre><code class="language-graphix">use tui::sparkline::{self, *};
+<pre><code class="language-graphix">use tui::sparkline::sparkline;
 use core::math;
 use sys::time;
 

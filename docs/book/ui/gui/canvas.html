@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -336,10 +336,7 @@ val canvas: fn(
 </code></pre>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-shapes"><a class="header" href="#basic-shapes">Basic Shapes</a></h3>
-<pre><code class="language-graphix">use gui::{color, window};
-use gui::text::{self, *};
-use gui::canvas::{self, *};
-use gui::column::{self, *};
+<pre><code class="language-graphix">use gui::{color, window, canvas::canvas, column::column, text::text};
 mod icon;
 
 let shapes = &amp;[

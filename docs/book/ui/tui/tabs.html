@@ -35,7 +35,7 @@
             const path_to_root = "../../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-87250aa9.js";
+            window.path_to_searchindex_js = "../../searchindex-3c0315f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-ca61ab31.js"></script>
@@ -197,9 +197,7 @@
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <h3 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h3>
-<pre><code class="language-graphix">use tui::line;
-use tui::tabs::{self, *};
-use tui::paragraph::{self, *};
+<pre><code class="language-graphix">use tui::{line, paragraph::paragraph, tabs::tabs};
 
 let tab1 = paragraph(&amp;"This is tab 1");
 let tab2 = paragraph(&amp;"This is tab 2");
@@ -216,35 +214,31 @@ tabs(
 </code></pre>
 <p><img src="./media/tabs_basic.png" alt="Basic Tabs"></p>
 <h3 id="navigation-between-tabs"><a class="header" href="#navigation-between-tabs">Navigation Between Tabs</a></h3>
-<pre><code class="language-graphix">use tui::{line, style};
-use tui::tabs::{self, *};
-use tui::block::{self, *};
-use tui::text::{self, *};
-use tui::input_handler::{self, *};
+<pre><code class="language-graphix">use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  tabs::tabs,
+  text::text
+};
 
 let selected_tab = 0;
 
-let handle_event = |e: Event| -&gt; [`Stop, `Continue] select e {
-    `Key(k) =&gt; select k.kind {
-        `Press =&gt; select k.code {
-            k@`Left if selected_tab &gt; 0 =&gt; {
-                selected_tab &lt;- (k ~ selected_tab) - 1;
-                `Stop
-            },
-            k@`Right if selected_tab &lt; 2 =&gt; {
-                selected_tab &lt;- (k ~ selected_tab) + 1;
-                `Stop
-            },
-            k@`Tab =&gt; {
-                selected_tab &lt;- ((k ~ selected_tab) + 1) % 3;
-                `Stop
-            },
-            _ =&gt; `Continue
-        },
-        _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| select k.code {
+    k@`Left if selected_tab &gt; 0 =&gt; {
+        selected_tab &lt;- (k ~ selected_tab) - 1;
+        `Stop
+    },
+    k@`Right if selected_tab &lt; 2 =&gt; {
+        selected_tab &lt;- (k ~ selected_tab) + 1;
+        `Stop
+    },
+    k@`Tab =&gt; {
+        selected_tab &lt;- ((k ~ selected_tab) + 1) % 3;
+        `Stop
     },
     _ =&gt; `Continue
-};
+});
 
 let overview = text(&amp;"Overview");
 let items = text(&amp;"Items");
@@ -271,9 +265,7 @@ input_handler(
 </code></pre>
 <p><img src="./media/tabs_navigation.gif" alt="Tabs With Navigation"></p>
 <h3 id="styled-tab-titles"><a class="header" href="#styled-tab-titles">Styled Tab Titles</a></h3>
-<pre><code class="language-graphix">use tui::{line, span, style};
-use tui::tabs::{self, *};
-use tui::text::{self, *};
+<pre><code class="language-graphix">use tui::{line, span, style, tabs::tabs, text::text};
 
 let completed_content = text(&amp;"Completed");
 let progress_content = text(&amp;"In Progress");
@@ -298,9 +290,7 @@ tabs(&amp;tab_list)
 </code></pre>
 <p><img src="./media/tabs_styled.png" alt="Styled Tabs"></p>
 <h3 id="tab-with-badge"><a class="header" href="#tab-with-badge">Tab with Badge</a></h3>
-<pre><code class="language-graphix">use tui::{line, span, style};
-use tui::tabs::{self, *};
-use tui::text::{self, *};
+<pre><code class="language-graphix">use tui::{line, span, style, tabs::tabs, text::text};
 
 let unread_count = 5;
 

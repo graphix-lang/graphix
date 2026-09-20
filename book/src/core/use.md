@@ -39,11 +39,21 @@ Globs are legal but discouraged outside test modules — an explicit
 list documents where every name comes from, and two globs that both
 provide a name make that name an error at its first use.
 
-The `{self, *}` group is the idiom for the UI packages' widget
-modules, where a module and its main function share a name:
-`use tui::text::{self, *}` imports the module `text` *and* its
-contents, so both the widget call `text(&"hi")` and qualified access
-to the module's other items work.
+In the UI packages a widget module and its main function share a
+name. Import the function by its path, `use tui::text::text`, and the
+module's other items the same way, `use tui::overlay::{Layer, layer,
+overlay}`. A group may name the module (`self`) or the function, not
+both: `use tui::overlay::{self, overlay}` is refused, because both are
+`overlay`. Collect everything from one root in one statement:
+
+```graphix
+use tui::{
+  line, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout}
+};
+```
 
 ## Path roots
 

@@ -126,8 +126,7 @@ An open `File` reads, writes and closes through the [sys::io](io.md)
 traits, and seeks through `Seek`:
 
 ```graphix
-use sys::fs::{self, *};
-use sys::io::{Read, Write, Close};
+use sys::{fs::{Seek, open}, io::{Close, Read, Write}};
 
 let f = open(`Create, path)?;
 let written = Write::write_exact(f, buffer::from_string("hello"))?;

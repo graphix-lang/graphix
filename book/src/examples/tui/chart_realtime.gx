@@ -1,6 +1,4 @@
-use tui::{line, style};
-use tui::chart::{self, *};
-use tui::text::{self, *};
+use tui::{line, style, chart::{axis, chart, dataset}};
 
 let data: Array<(f64, f64)> = {
     let clock = sys::time::timer(duration:0.5s, true);
