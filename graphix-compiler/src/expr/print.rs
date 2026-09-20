@@ -803,9 +803,19 @@ impl PrettyDisplay for BindExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
-        match typ {
-            None => write!(buf, "let{rec} {pattern} =")?,
-            Some(typ) => write!(buf, "let{rec} {pattern}: {typ} =")?,
+        write!(buf, "let{rec} {pattern}")?;
+        if let Some(typ) = typ {
+            write!(buf, ": ")?;
+            let start = buf.len();
+            write!(buf, "{typ} =")?;
+            if buf.col() > buf.limit {
+                buf.buf.truncate(start);
+                typ.fmt_pretty_inner(buf)?;
+                buf.kill_newline();
+                write!(buf, " =")?;
+            }
+        } else {
+            write!(buf, " =")?;
         }
         pretty_tail(buf, value)
     }
@@ -1110,6 +1120,34 @@ impl fmt::Display for LambdaExpr {
     }
 }
 
+impl LambdaExpr {
+    /// `write_returns` with the return type laid out over lines.
+    fn pretty_returns(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        if let Some(rtype) = &self.rtype {
+            let (open, typ, close): (&str, &dyn PrettyDisplay, &str) = match rtype {
+                Type::Fn(ft) => (" -> (", &**ft, ")"),
+                Type::ByRef(t) => match &**t {
+                    Type::Fn(ft) => (" -> &(", &**ft, ")"),
+                    t => (" -> &", t, ""),
+                },
+                t => (" -> ", t, ""),
+            };
+            write!(buf, "{open}")?;
+            typ.fmt_pretty_inner(buf)?;
+            buf.kill_newline();
+            write!(buf, "{close}")?;
+        }
+        match &self.throws {
+            None => Ok(()),
+            Some(t) => write!(buf, " throws {t}"),
+        }
+    }
+}
+
+/// The head gives way a step at a time: all of it on one line with what
+/// opens the body; else its arguments one to a line, closed by `| -> R`;
+/// else the body under that closing line; else the return type itself
+/// laid out over lines.
 impl PrettyDisplay for LambdaExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let start = buf.len();
@@ -1118,21 +1156,30 @@ impl PrettyDisplay for LambdaExpr {
         self.write_args(buf, ", ", "")?;
         write!(buf, "|")?;
         self.write_returns(buf)?;
-        // the head's line also holds a builtin's name, else the ` {` of a block
-        let tail = match &self.body {
-            Either::Right(builtin) => builtin.len() + 3,
+        let opener = match &self.body {
+            Either::Right(builtin) => builtin.chars().count() + 3,
             Either::Left(_) => 2,
         };
-        let broken = buf.col() + tail > buf.limit && !self.args.is_empty();
-        if broken {
+        let has_args = !self.args.is_empty() || self.vargs.is_some();
+        if buf.col() + opener > buf.limit && has_args {
             buf.buf.truncate(start);
             self.write_constraints(buf)?;
             writeln!(buf, "|")?;
             buf.nested(|buf| self.write_args(buf, ",\n", "\n"))?;
+            let closing = buf.len();
             write!(buf, "|")?;
             self.write_returns(buf)?;
+            if buf.col() > buf.limit && self.rtype.is_some() {
+                buf.buf.truncate(closing);
+                write!(buf, "|")?;
+                self.pretty_returns(buf)?;
+            }
         }
         match &self.body {
+            Either::Right(builtin) if buf.col() + opener > buf.limit => {
+                writeln!(buf)?;
+                buf.nested(|buf| writeln!(buf, "'{builtin}"))
+            }
             Either::Right(builtin) => writeln!(buf, " '{builtin}"),
             Either::Left(body) => pretty_tail(buf, body),
         }

@@ -562,6 +562,38 @@ mod tests {
     }
 
     #[test]
+    fn a_long_head_gives_way_a_step_at_a_time() {
+        use SourceKind::Program;
+        let cfg = FormatConfig { width: 40, indent: 4 };
+        let fmt = |src: &str| format_source(Program, src, &cfg).unwrap().to_string();
+        assert_eq!(
+            fmt("let f = |alpha: i64, beta: i64, gamma: i64| -> i64 alpha"),
+            "let f = |\n    alpha: i64,\n    beta: i64,\n    gamma: i64\n| -> i64 alpha\n"
+        );
+        assert_eq!(
+            fmt("let f = |@args: i64| -> Result<i64, `E(string)> 'a_builtin_name"),
+            "let f = |\n    @args: i64\n| -> Result<i64, `E(string)>\n    'a_builtin_name\n"
+        );
+        assert_eq!(
+            fmt("let f = |a: i64| -> { first_field: string, second_field: string } 'b"),
+            "let f = |\n    a: i64\n| -> {\n    first_field: string,\n    second_field: string\n} 'b\n"
+        );
+        stable(
+            Program,
+            "let f = |a: i64| -> { first_field: string, second_field: string } 'b",
+        );
+    }
+
+    #[test]
+    fn a_long_let_annotation_breaks_the_type() {
+        let cfg = FormatConfig { width: 40, indent: 4 };
+        let src = "let v: { first_field: string, second_field: string } = f(x)";
+        let want =
+            "let v: {\n    first_field: string,\n    second_field: string\n} = f(x)\n";
+        assert_eq!(&**format_source(SourceKind::Program, src, &cfg).unwrap(), want);
+    }
+
+    #[test]
     fn default_number_types_print_bare() {
         use SourceKind::Program;
         formats_to(
