@@ -6,6 +6,7 @@ use crate::{
         SigKind, StrForm, StructExpr, StructWithExpr, TraitExpr, TraitMethod,
         TypeDefBody, TypeDefExpr, UseItem, parser,
     },
+    print_as_written,
     typ::Type,
 };
 use arcstr::ArcStr;
@@ -921,7 +922,9 @@ impl PrettyDisplay for StructExpr {
 /// the order of their names.
 fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
     let mut fields: SmallVec<[&(ArcStr, Expr); 16]> = fields.iter().collect();
-    fields.sort_by_key(|(_, e)| (e.pos.line, e.pos.column));
+    if print_as_written() {
+        fields.sort_by_key(|(_, e)| (e.pos.line, e.pos.column));
+    }
     fields
 }
 
@@ -1676,14 +1679,20 @@ fn write_template<'a>(
     write!(f, "\"\"\"")
 }
 
-/// A string constant between the delimiters its author chose, or quoted
-/// where those cannot hold it.
+/// A string constant between the delimiters its author chose when
+/// printing as written, else raw exactly when it spans lines; quoted
+/// wherever the delimiters cannot hold it.
 fn write_str_constant(
     f: &mut Formatter<'_>,
     v: &Value,
     s: &str,
     form: StrForm,
 ) -> fmt::Result {
+    let form = match form {
+        form if print_as_written() => form,
+        _ if s.contains('\n') => StrForm::Raw,
+        _ => StrForm::Quoted,
+    };
     match form {
         StrForm::Raw if raw_writable(s) => write_raw(f, s),
         StrForm::Template if template_writable(s) && !s.is_empty() => {
@@ -1702,8 +1711,11 @@ fn write_interpolation(
     form: StrForm,
 ) -> fmt::Result {
     let parts = args.iter().map(StrPart::of);
-    let template = form == StrForm::Template
-        && parts.clone().filter_map(|p| p.text()).all(template_writable);
+    let texts = || parts.clone().filter_map(|p| p.text());
+    let template = match form {
+        form if print_as_written() => form == StrForm::Template,
+        _ => texts().any(|s| s.contains('\n')),
+    } && texts().all(template_writable);
     if template {
         return write_template(f, parts);
     }

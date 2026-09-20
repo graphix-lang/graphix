@@ -1,5 +1,5 @@
 use super::{Expr, ModPath, WrittenAt, parser, print::Literal};
-use crate::{env::Env, typ::Type};
+use crate::{env::Env, print_as_written, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use netidx_derive::Pack;
@@ -221,9 +221,12 @@ impl StructurePattern {
             Self::Struct { all: _, exhaustive: _, binds } => {
                 let mut typs = binds
                     .iter()
-                    .map(|(n, p, _)| Ok((n.clone(), p.infer_type_predicate(env, scope)?)))
-                    .collect::<Result<SmallVec<[(ArcStr, Type); 8]>>>()?;
-                typs.sort_by_key(|(n, _)| n.clone());
+                    .map(|(n, p, _)| {
+                        let t = p.infer_type_predicate(env, scope)?;
+                        Ok((n.clone(), t, WrittenAt::NOWHERE))
+                    })
+                    .collect::<Result<SmallVec<[(ArcStr, Type, WrittenAt); 8]>>>()?;
+                typs.sort_by_key(|(n, _, _)| n.clone());
                 Ok(Type::Struct(Arc::from_iter(typs.into_iter())))
             }
             Self::Or(alts) => {
@@ -311,9 +314,9 @@ impl StructurePattern {
                 let matching: SmallVec<[&Type; 8]> = ms
                     .iter()
                     .filter(|m| match m {
-                        Type::Struct(sf) => {
-                            binds.iter().all(|(n, _, _)| sf.iter().any(|(sn, _)| sn == n))
-                        }
+                        Type::Struct(sf) => binds
+                            .iter()
+                            .all(|(n, _, _)| sf.iter().any(|(sn, _, _)| sn == n)),
                         _ => false,
                     })
                     .collect();
@@ -328,21 +331,21 @@ impl StructurePattern {
                 };
                 let fields = sf
                     .iter()
-                    .map(|(sn, st)| match binds.iter().find(|(n, _, _)| n == sn) {
+                    .map(|(sn, st, at)| match binds.iter().find(|(n, _, _)| n == sn) {
                         Some((_, p, _)) => {
                             let pt = &pfields
                                 .iter()
-                                .find(|(pn, _)| pn == sn)
+                                .find(|(pn, _, _)| pn == sn)
                                 .expect("inferred field missing")
                                 .1;
                             let t = p
                                 .complete_type_predicate_inner(env, pt, st, depth + 1)?
                                 .unwrap_or_else(|| (*pt).clone());
-                            Ok((sn.clone(), t))
+                            Ok((sn.clone(), t, *at))
                         }
-                        None => Ok((sn.clone(), st.clone())),
+                        None => Ok((sn.clone(), st.clone(), *at)),
                     })
-                    .collect::<Result<SmallVec<[(ArcStr, Type); 8]>>>()?;
+                    .collect::<Result<SmallVec<[(ArcStr, Type, WrittenAt); 8]>>>()?;
                 Ok(Some(Type::Struct(Arc::from_iter(fields.into_iter()))))
             }
             Self::Struct { all: _, exhaustive: true, binds } => {
@@ -357,12 +360,13 @@ impl StructurePattern {
                     _ => return Ok(None),
                 };
                 let mut changed = false;
-                let mut fields: SmallVec<[(ArcStr, Type); 8]> = SmallVec::new();
-                for (n, pt) in pfields.iter() {
+                let mut fields: SmallVec<[(ArcStr, Type, WrittenAt); 8]> =
+                    SmallVec::new();
+                for (n, pt, at) in pfields.iter() {
                     let sub = binds.iter().find(|(bn, _, _)| bn == n);
-                    let st = sf.iter().find(|(sn, _)| sn == n);
+                    let st = sf.iter().find(|(sn, _, _)| sn == n);
                     match (sub, st) {
-                        (Some((_, p, _)), Some((_, st))) => {
+                        (Some((_, p, _)), Some((_, st, _))) => {
                             match p.complete_type_predicate_inner(
                                 env,
                                 pt,
@@ -371,12 +375,12 @@ impl StructurePattern {
                             )? {
                                 Some(t) => {
                                     changed = true;
-                                    fields.push((n.clone(), t))
+                                    fields.push((n.clone(), t, *at))
                                 }
-                                None => fields.push((n.clone(), pt.clone())),
+                                None => fields.push((n.clone(), pt.clone(), *at)),
                             }
                         }
-                        _ => fields.push((n.clone(), pt.clone())),
+                        _ => fields.push((n.clone(), pt.clone(), *at)),
                     }
                 }
                 Ok(changed.then(|| Type::Struct(Arc::from_iter(fields.into_iter()))))
@@ -595,7 +599,9 @@ impl fmt::Display for StructurePattern {
                     write!(f, "{all}@ ")?
                 }
                 let mut written: SmallVec<[_; 16]> = binds.iter().collect();
-                written.sort_by_key(|(_, _, at)| at.order());
+                if print_as_written() {
+                    written.sort_by_key(|(_, _, at)| at.order());
+                }
                 write!(f, "{{ ")?;
                 for (i, (name, pat, _)) in written.iter().enumerate() {
                     match pat {

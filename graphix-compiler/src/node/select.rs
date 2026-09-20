@@ -612,7 +612,7 @@ fn scrutinee_member(
                 let same = match shape {
                     Shape::Struct(names) => {
                         names.len() == fs.len()
-                            && names.iter().zip(fs.iter()).all(|(n, (f, _))| n == f)
+                            && names.iter().zip(fs.iter()).all(|(n, (f, _, _))| n == f)
                     }
                     _ => false,
                 };

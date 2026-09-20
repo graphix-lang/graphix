@@ -8,6 +8,7 @@
 
 use crate::{
     BindId,
+    expr::WrittenAt,
     profile::{self, Phase},
     typ::{Type, TypeRef},
 };
@@ -443,10 +444,13 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 Ok(Type::Tuple(Arc::from_iter(frozen.drain(..))))
             }
             Type::Struct(fields) => {
-                let frozen: Result<LPooled<Vec<(ArcStr, Type)>>, FreezeError> = fields
-                    .iter()
-                    .map(|(n, ft)| freeze_for_abi_d(ft, seen).map(|t| (n.clone(), t)))
-                    .collect();
+                let frozen: Result<LPooled<Vec<(ArcStr, Type, WrittenAt)>>, FreezeError> =
+                    fields
+                        .iter()
+                        .map(|(n, ft, at)| {
+                            freeze_for_abi_d(ft, seen).map(|t| (n.clone(), t, *at))
+                        })
+                        .collect();
                 let mut frozen = frozen?;
                 Ok(Type::Struct(Arc::from_iter(frozen.drain(..))))
             }
@@ -554,7 +558,7 @@ pub fn tuple_slots(t: &Type) -> Option<&[Type]> {
 }
 
 /// Sorted field list of a `Type::Struct`; `None` otherwise.
-pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type)]> {
+pub fn struct_fields(t: &Type) -> Option<&[(ArcStr, Type, WrittenAt)]> {
     match t {
         Type::Struct(fs) => Some(fs),
         _ => None,
@@ -698,7 +702,9 @@ pub fn tuple_type(elems: Vec<Type>) -> Type {
 
 /// `{f0: T0, f1: T1, ...}` from a sorted field list.
 pub fn struct_type(fields: Vec<(ArcStr, Type)>) -> Type {
-    Type::Struct(triomphe::Arc::from_iter(fields))
+    Type::Struct(triomphe::Arc::from_iter(
+        fields.into_iter().map(|(n, t)| (n, t, WrittenAt::NOWHERE)),
+    ))
 }
 
 /// A variant `Type` from a `(tag, payload-types)` case list; the inverse
@@ -1069,9 +1075,9 @@ mod tests {
                 inner.clone().prop_map(|t| Type::TVar(TVar::named(literal!("a"), t))),
                 inner.clone().prop_map(|t| unresolved_ref(Arc::from_iter([t]))),
                 inner.clone().prop_map(|t| abstract_type(Arc::from_iter([t]))),
-                inner
-                    .clone()
-                    .prop_map(|t| Type::Struct(Arc::from_iter([(literal!("f"), t)]))),
+                inner.clone().prop_map(|t| {
+                    Type::Struct(Arc::from_iter([(literal!("f"), t, WrittenAt::NOWHERE)]))
+                }),
                 inner
                     .clone()
                     .prop_map(|t| { Type::Variant(literal!("V"), Arc::from_iter([t])) }),

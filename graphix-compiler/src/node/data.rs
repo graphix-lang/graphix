@@ -6,7 +6,7 @@ use crate::image::nodes::{
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent, abstract_value, deref_typ,
-    expr::{Expr, ExprId, ExprKind, ModPath, StructWithExpr},
+    expr::{Expr, ExprId, ExprKind, ModPath, StructWithExpr, WrittenAt},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
         emit_struct_new_node, emit_struct_ref_node, emit_struct_with_node,
@@ -51,7 +51,10 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
             .iter()
             .map(|(_, e)| compile(ctx, flags, e.clone(), scope, top_id))
             .collect::<Result<Box<[_]>>>()?;
-        let typs = names.iter().zip(n.iter()).map(|(n, a)| (n.clone(), a.typ().clone()));
+        let typs = names
+            .iter()
+            .zip(n.iter())
+            .map(|(n, a)| (n.clone(), a.typ().clone(), WrittenAt::NOWHERE));
         let typ = Type::Struct(Arc::from_iter(typs));
         Ok(Node::new(Self {
             spec,
@@ -157,7 +160,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
                         self.n.len()
                     )
                 }
-                for ((_, t), n) in typs.iter().zip(self.n.iter()) {
+                for ((_, t, _), n) in typs.iter().zip(self.n.iter()) {
                     t.check_contains(&ctx.env, &n.typ())?
                 }
             }
@@ -410,9 +413,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
             match styp {
                 Some(Type::Struct(flds)) => {
                     for (rep, n) in self.replace.iter_mut().zip(fields.iter()) {
-                        let r = flds.iter().enumerate().find_map(|(i, (field, typ))| {
-                            if field == n { Some((i, typ)) } else { None }
-                        });
+                        let r =
+                            flds.iter().enumerate().find_map(|(i, (field, typ, _))| {
+                                if field == n { Some((i, typ)) } else { None }
+                            });
                         match r {
                             None => bail!("struct has no field named {n}"),
                             Some((i, typ)) => {
@@ -493,7 +497,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
             Type::Struct(flds) => {
                 flds.iter()
                     .enumerate()
-                    .find_map(|(i, (n, t))| {
+                    .find_map(|(i, (n, t, _))| {
                         if field_name == n { Some((t.clone(), Some(i))) } else { None }
                     })
                     .unwrap_or_else(|| (Type::empty_tvar(), None))
@@ -599,7 +603,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = deref_typ!("struct", ctx, self.source.typ(),
             Some(Type::Struct(flds)) => {
-                let typ = flds.iter().enumerate().find_map(|(i, (n, t))| {
+                let typ = flds.iter().enumerate().find_map(|(i, (n, t, _))| {
                     if &self.field_name == n {
                         Some((i, t.clone()))
                     } else {

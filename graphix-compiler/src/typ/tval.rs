@@ -184,7 +184,7 @@ impl<'a> TVal<'a> {
             (Type::ByRef(_), v) => fmt_naked(f, v),
             (Type::Struct(flds), Value::Array(a)) => {
                 write!(f, "{{")?;
-                for (i, ((n, et), v)) in flds.iter().zip(a.iter()).enumerate() {
+                for (i, ((n, et, _), v)) in flds.iter().zip(a.iter()).enumerate() {
                     write!(f, "{n}: ")?;
                     match v {
                         Value::Array(a) if a.len() == 2 => {

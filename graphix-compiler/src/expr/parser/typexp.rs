@@ -1,9 +1,9 @@
 use super::{
-    csep, fname, grow::grow, ident, not_prefix, path_root, sep_by_tok, sep_by1_tok,
-    spaces, spaces1, spfldname, spstring, sptoken, typname,
+    csep, fldname, fname, grow::grow, ident, not_prefix, path_root, sep_by_tok,
+    sep_by1_tok, spaces, spaces1, spstring, sptoken, typname,
 };
 use crate::{
-    expr::{Expr, ExprKind, ModPath, TypeDefBody, TypeDefExpr},
+    expr::{Expr, ExprKind, ModPath, TypeDefBody, TypeDefExpr, WrittenAt},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use ahash::AHashSet;
@@ -322,16 +322,21 @@ where
     between(
         token('{'),
         sptoken('}'),
-        sep_by1_tok((spfldname().skip(sptoken(':')), typ()), csep(), token('}')),
+        sep_by1_tok(
+            (spaces().with(position()), fldname().skip(sptoken(':')), typ()),
+            csep(),
+            token('}'),
+        ),
     )
-    .then(|mut exps: LPooled<Vec<(ArcStr, Type)>>| {
-        let s = exps.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
+    .then(|mut exps: LPooled<Vec<(SourcePosition, ArcStr, Type)>>| {
+        let s = exps.iter().map(|(_, n, _)| n).collect::<LPooled<AHashSet<_>>>();
         if s.len() < exps.len() {
             return unexpected_any("struct field names must be unique").left();
         }
         drop(s);
-        exps.sort_by_key(|(n, _)| n.clone());
-        value(Type::Struct(Arc::from_iter(exps.drain(..)))).right()
+        exps.sort_by_key(|(_, n, _)| n.clone());
+        let fields = exps.drain(..).map(|(pos, n, t)| (n, t, WrittenAt(pos)));
+        value(Type::Struct(Arc::from_iter(fields))).right()
     })
 }
 

@@ -337,7 +337,9 @@ fn typexp() -> impl Strategy<Value = Type> {
             collection::vec((field_name(), inner.clone()), (1, 20)).prop_map(|mut t| {
                 t.sort_by_key(|(n, _)| n.clone());
                 t.dedup_by_key(|(n, _)| n.clone());
-                Type::Struct(Arc::from(t))
+                Type::Struct(Arc::from_iter(
+                    t.into_iter().map(|(n, t)| (n, t, WrittenAt::NOWHERE)),
+                ))
             }),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),
             inner.clone().prop_map(|t| Type::Array(Arc::new(t))),

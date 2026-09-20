@@ -65,7 +65,7 @@ impl Type {
             Type::Tuple(ts) => Ok(for t in ts.iter() {
                 t.check_cast_int(env, hist)?
             }),
-            Type::Struct(ts) => Ok(for (_, t) in ts.iter() {
+            Type::Struct(ts) => Ok(for (_, t, _) in ts.iter() {
                 t.check_cast_int(env, hist)?
             }),
             Type::Variant(_, ts) => Ok(for t in ts.iter() {
@@ -220,7 +220,7 @@ impl Type {
                     });
                     let keys_ok = ts.iter().zip(elts_s.iter()).fold(
                         Ok(true),
-                        |acc: Result<_>, ((fname, t), v)| {
+                        |acc: Result<_>, ((fname, t, _), v)| {
                             let kok = acc?;
                             let (name, v) = match v {
                                 Value::Array(a) => match (&a[0], &a[1]) {
@@ -238,7 +238,7 @@ impl Type {
                         let mut elts = ts
                             .iter()
                             .zip(elts_s.iter())
-                            .map(|((n, t), v)| match v {
+                            .map(|((n, t, _), v)| match v {
                                 Value::Array(a) => {
                                     let a = [
                                         Value::String(n.clone()),
@@ -427,7 +427,7 @@ impl Type {
             Type::Struct(ts) => match v {
                 Value::Array(elts) => {
                     elts.len() == ts.len()
-                        && ts.iter().zip(elts.iter()).all(|((n, t), v)| match v {
+                        && ts.iter().zip(elts.iter()).all(|((n, t, _), v)| match v {
                             Value::Array(a) if a.len() == 2 => match &a[..] {
                                 [Value::String(key), v] => {
                                     n == key && t.is_a_int(env, hist, flags, v)
@@ -614,7 +614,7 @@ fn shallowify(t: &Type) -> Type {
             ts.iter().map(|_| Type::Any).collect::<Vec<_>>(),
         )),
         Type::Struct(fs) => Type::Struct(triomphe::Arc::from(
-            fs.iter().map(|(n, _)| (n.clone(), Type::Any)).collect::<Vec<_>>(),
+            fs.iter().map(|(n, _, at)| (n.clone(), Type::Any, *at)).collect::<Vec<_>>(),
         )),
         Type::Array(_) => Type::Array(triomphe::Arc::new(Type::Any)),
         Type::List(_) => Type::List(triomphe::Arc::new(Type::Any)),

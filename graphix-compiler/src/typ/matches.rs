@@ -92,7 +92,7 @@ impl Type {
                 && ts0
                     .iter()
                     .zip(ts1.iter())
-                    .map(|((n0, t0), (n1, t1))| {
+                    .map(|((n0, t0, _), (n1, t1, _))| {
                         Ok(n0 == n1 && t0.could_match_int(env, hist, t1)?)
                     })
                     .collect::<Result<AndAc>>()?
@@ -248,7 +248,7 @@ impl Type {
                 Ok(())
             }
             (Self::Struct(s0), Self::Struct(s1)) if s0.len() == s1.len() => {
-                for ((n0, t0), (n1, t1)) in s0.iter().zip(s1.iter()) {
+                for ((n0, t0, _), (n1, t1, _)) in s0.iter().zip(s1.iter()) {
                     if n0 != n1 {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bail!("struct field name mismatch: {n0} vs {n1}")

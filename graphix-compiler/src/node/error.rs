@@ -12,7 +12,7 @@ use crate::{
     compiler::compile,
     defetyp, deref_typ,
     env::Env,
-    expr::{self, Expr, ExprId, ExprKind, ModPath},
+    expr::{self, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     format_with_flags,
     fusion::emit::{BodyCx, CompiledExpr, QopSink, emit_qop_node},
     typ::{Type, TypeRef},
@@ -42,10 +42,10 @@ fn typ_echain(param: Type) -> Type {
 
 /// The fields of `ErrChain<'a>` in a structurally typed world: a struct
 /// with exactly these names IS the chain.
-fn is_echain_shape(fields: &[(ArcStr, Type)]) -> bool {
+fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
     const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
     fields.len() == NAMES.len()
-        && NAMES.iter().all(|n| fields.iter().any(|(f, _)| f.as_str() == *n))
+        && NAMES.iter().all(|n| fields.iter().any(|(f, _, _)| f.as_str() == *n))
 }
 
 pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {

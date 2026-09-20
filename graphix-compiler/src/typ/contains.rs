@@ -161,7 +161,7 @@ fn link_equal_inner(t0: &Type, t1: &Type) {
             }
         }
         (Type::Struct(a), Type::Struct(b)) => {
-            for ((_, x), (_, y)) in a.iter().zip(b.iter()) {
+            for ((_, x, _), (_, y, _)) in a.iter().zip(b.iter()) {
                 link_equal(x, y);
             }
         }
@@ -737,7 +737,7 @@ impl Type {
                     // Struct fields are sorted by name.
                     t0.iter()
                         .zip(t1.iter())
-                        .map(|((n0, t0), (n1, t1))| {
+                        .map(|((n0, t0, _), (n1, t1, _))| {
                             Ok(n0 == n1 && t0.contains_int(flags, env, hist, t1)?)
                         })
                         .collect::<Result<AndAc>>()?
@@ -1288,7 +1288,7 @@ impl Type {
         match &t {
             Type::Variant(_, args) => targs.extend(args.iter().cloned()),
             Type::Tuple(args) => targs.extend(args.iter().cloned()),
-            Type::Struct(flds) => targs.extend(flds.iter().map(|(_, t)| t.clone())),
+            Type::Struct(flds) => targs.extend(flds.iter().map(|(_, t, _)| t.clone())),
             _ => return Ok(false),
         }
         let mut cands: LPooled<Vec<LPooled<Vec<Type>>>> = LPooled::take();
@@ -1305,9 +1305,12 @@ impl Type {
                 }
                 (Type::Struct(tf), Type::Struct(mf))
                     if tf.len() == mf.len()
-                        && tf.iter().zip(mf.iter()).all(|((a, _), (b, _))| a == b) =>
+                        && tf
+                            .iter()
+                            .zip(mf.iter())
+                            .all(|((a, _, _), (b, _, _))| a == b) =>
                 {
-                    Some(mf.iter().map(|(_, t)| t.clone()).collect())
+                    Some(mf.iter().map(|(_, t, _)| t.clone()).collect())
                 }
                 _ => None,
             };

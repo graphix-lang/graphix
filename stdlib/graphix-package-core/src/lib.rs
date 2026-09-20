@@ -76,7 +76,7 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
                 contains_bottom(&e, depth + 1)
             }
             Type::Struct(fields) => {
-                fields.iter().any(|(_, e)| contains_bottom(e, depth + 1))
+                fields.iter().any(|(_, e, _)| contains_bottom(e, depth + 1))
             }
             Type::Map { key, value } => {
                 contains_bottom(&key, depth + 1) || contains_bottom(&value, depth + 1)

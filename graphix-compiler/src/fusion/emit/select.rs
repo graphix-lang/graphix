@@ -578,12 +578,13 @@ fn emit_composite_pattern_cond(
             let leaves = sbinds
                 .iter()
                 .map(|(_, i, sub)| {
-                    let typ = flds.get(*i).map(|(_, t)| t.clone()).ok_or_else(|| {
-                        anyhow!(
-                            "emit_clif: struct pattern field index {i} out \
+                    let typ =
+                        flds.get(*i).map(|(_, t, _)| t.clone()).ok_or_else(|| {
+                            anyhow!(
+                                "emit_clif: struct pattern field index {i} out \
                                  of range"
-                        )
-                    })?;
+                            )
+                        })?;
                     Ok(LeafSpec { idx: ElemIdx::StructField(*i), sub, typ })
                 })
                 .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;

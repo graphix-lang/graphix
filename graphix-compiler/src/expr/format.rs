@@ -1,4 +1,5 @@
 use crate::{
+    PrintFlag,
     expr::{
         Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind, StrForm,
         TryWithExpr, UseItem,
@@ -11,7 +12,6 @@ use crate::{
     format_with_flags,
 };
 use anyhow::{Result, bail};
-use enumflags2::BitFlags;
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -249,7 +249,7 @@ impl Parsed {
 fn layout(kind: SourceKind, text: &str, width: usize) -> Result<(Parsed, PrettyBuf)> {
     let parsed = Parsed::new(kind, text)?;
     let mut buf = PrettyBuf::new(width);
-    format_with_flags(BitFlags::empty(), || parsed.print(&mut buf))?;
+    format_with_flags(PrintFlag::AsWritten, || parsed.print(&mut buf))?;
     Ok((parsed, buf))
 }
 
@@ -420,6 +420,36 @@ mod tests {
             "select s { { y, x: 0 } => y, p@ { x, y } => x }",
             "select s { { y, x: 0 } => y, p@ { x, y } => x }\n",
         );
+    }
+
+    #[test]
+    fn struct_type_fields_keep_their_order() {
+        use SourceKind::*;
+        formats_to(
+            Program,
+            "type R = { title: string, lines: Array<string> }",
+            "type R = { title: string, lines: Array<string> }\n",
+        );
+        formats_to(
+            Interface,
+            "val f: fn(r: { z: i64, a: i64 }) -> { y: i64, b: i64 }",
+            "val f: fn(r: { z: i64, a: i64 }) -> { y: i64, b: i64 }\n",
+        );
+    }
+
+    #[test]
+    fn printing_outside_the_formatter_is_canonical() {
+        use crate::expr::parser::parse_one;
+        let cases = [
+            ("{ z: 1, a: 2 }", "{ a: 2, z: 1 }"),
+            ("let { z, a } = s", "let { a, z } = s"),
+            ("let r: { z: i64, a: i64 } = s", "let r: { a: i64, z: i64 } = s"),
+            ("f(r\"x\")?", "f(\"x\")?"),
+            ("\"\"\"x \\[y]\"\"\"", "\"x [y]\""),
+        ];
+        for (src, want) in cases {
+            assert_eq!(parse_one(src).unwrap().to_string(), want)
+        }
     }
 
     #[test]

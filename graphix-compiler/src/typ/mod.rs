@@ -1,7 +1,7 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     env::{Env, TypeDef},
-    expr::ModPath,
+    expr::{ModPath, WrittenAt},
     format_with_flags,
 };
 use ahash::{AHashMap, AHashSet};
@@ -615,7 +615,7 @@ pub enum Type {
     List(Arc<Type>),
     ByRef(Arc<Type>),
     Tuple(Arc<[Type]>),
-    Struct(Arc<[(ArcStr, Type)]>),
+    Struct(Arc<[(ArcStr, Type, WrittenAt)]>),
     Variant(ArcStr, Arc<[Type]>),
     Map {
         key: Arc<Type>,
@@ -747,11 +747,11 @@ impl Type {
             Type::Struct(fs) => {
                 out.put_u8(tag::STRUCT);
                 crate::image::shared_key(
-                    <[(ArcStr, Type)]>::as_ptr(fs) as usize,
+                    <[(ArcStr, Type, WrittenAt)]>::as_ptr(fs) as usize,
                     out,
                     |out| {
                         encode_varint(fs.len() as u64, out);
-                        for (n, t) in fs.iter() {
+                        for (n, t, _) in fs.iter() {
                             key_text(n, out);
                             t.content_key(out);
                         }
@@ -1063,7 +1063,7 @@ impl Type {
                 ControlFlow::Continue(())
             }
             Type::Struct(fs) => {
-                for (_, t) in fs.iter() {
+                for (_, t, _) in fs.iter() {
                     f(t)?;
                 }
                 ControlFlow::Continue(())
@@ -1127,7 +1127,7 @@ impl Type {
             }
             Type::Set(ts) => Type::cow_slice(ts, |t| f(t)).map(Type::Set),
             Type::Struct(fs) => {
-                Type::cow_slice(fs, |(n, t)| f(t).map(|t| (n.clone(), t)))
+                Type::cow_slice(fs, |(n, t, at)| f(t).map(|t| (n.clone(), t, *at)))
                     .map(Type::Struct)
             }
             Type::Fn(ft) => ft.cow_walk(|t| f(t)).map(|ft| Type::Fn(Arc::new(ft))),
@@ -1429,7 +1429,7 @@ impl Type {
                     ts.iter().fold(true, |all, t| all & go(t, env, seen))
                 }
                 Type::Struct(ts) => {
-                    ts.iter().fold(true, |all, (_, t)| all & go(t, env, seen))
+                    ts.iter().fold(true, |all, (_, t, _)| all & go(t, env, seen))
                 }
                 Type::TVar(tv) => {
                     let cell = tv.read().typ.clone();
@@ -1707,7 +1707,7 @@ impl Type {
                 Some(Type::Tuple(ts) | Type::Variant(_, ts) | Type::Set(ts)) => {
                     ts.iter().any(|t| t.has_bottom())
                 }
-                Some(Type::Struct(fs)) => fs.iter().any(|(_, t)| t.has_bottom()),
+                Some(Type::Struct(fs)) => fs.iter().any(|(_, t, _)| t.has_bottom()),
                 _ => false,
             })
         })

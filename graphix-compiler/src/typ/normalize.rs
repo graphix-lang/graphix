@@ -1,4 +1,7 @@
-use crate::typ::{TVar, Type, TypeRef};
+use crate::{
+    expr::WrittenAt,
+    typ::{TVar, Type, TypeRef},
+};
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
@@ -249,8 +252,8 @@ impl Type {
             Type::Tuple(t) => {
                 Self::cow_slice(t, |t| t.resolve_tvars_seen(cx)).map(Type::Tuple)
             }
-            Type::Struct(t) => Self::cow_slice(t, |(n, t)| {
-                t.resolve_tvars_seen(cx).map(|t| (n.clone(), t))
+            Type::Struct(t) => Self::cow_slice(t, |(n, t, at)| {
+                t.resolve_tvars_seen(cx).map(|t| (n.clone(), t, *at))
             })
             .map(Type::Struct),
             Type::Variant(tag, t) => Self::cow_slice(t, |t| t.resolve_tvars_seen(cx))
@@ -334,10 +337,10 @@ impl Type {
             Type::Tuple(t) => {
                 Self::cow_slice(t, |t| t.normalize_int(cx)).map(Type::Tuple)
             }
-            Type::Struct(t) => {
-                Self::cow_slice(t, |(n, t)| t.normalize_int(cx).map(|t| (n.clone(), t)))
-                    .map(Type::Struct)
-            }
+            Type::Struct(t) => Self::cow_slice(t, |(n, t, at)| {
+                t.normalize_int(cx).map(|t| (n.clone(), t, *at))
+            })
+            .map(Type::Struct),
             Type::Variant(tag, t) => Self::cow_slice(t, |t| t.normalize_int(cx))
                 .map(|t| Type::Variant(tag.clone(), t)),
             Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
@@ -492,14 +495,14 @@ impl Type {
                     let t = t0
                         .iter()
                         .zip(t1.iter())
-                        .map(|((n0, t0), (n1, t1))| {
+                        .map(|((n0, t0, at), (n1, t1, _))| {
                             if n0 != n1 {
                                 None
                             } else {
-                                t0.merge(t1).map(|t| (n0.clone(), t))
+                                t0.merge(t1).map(|t| (n0.clone(), t, *at))
                             }
                         })
-                        .collect::<Option<SmallVec<[(ArcStr, Type); 8]>>>()?;
+                        .collect::<Option<SmallVec<[(ArcStr, Type, WrittenAt); 8]>>>()?;
                     Some(Type::Struct(Arc::from_iter(t)))
                 } else {
                     None

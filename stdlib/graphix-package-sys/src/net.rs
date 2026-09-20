@@ -959,12 +959,12 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
         } else {
             bail!("rpc #spec type not available")
         };
-        for (name, field_typ) in spec_fields.iter() {
+        for (name, field_typ, _) in spec_fields.iter() {
             deref_typ!("RpcArg {{default: 'a, doc: string}}", ctx, field_typ,
                 Some(Type::Struct(inner)) => {
                     if inner.len() == 2 {
-                        let has_default = inner.iter().any(|(n, _)| n.as_str() == "default");
-                        let has_doc = inner.iter().any(|(n, _)| n.as_str() == "doc");
+                        let has_default = inner.iter().any(|(n, _, _)| n.as_str() == "default");
+                        let has_doc = inner.iter().any(|(n, _, _)| n.as_str() == "doc");
                         if has_default && has_doc { Ok(()) }
                         else { bail!("rpc #spec field '{name}' must be {{default: 'a, doc: string}}") }
                     } else {
@@ -1005,21 +1005,21 @@ impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
                 cb_fields.len()
             )
         }
-        for (spec_name, spec_field_typ) in spec_fields.iter() {
+        for (spec_name, spec_field_typ, _) in spec_fields.iter() {
             // extract the value type T from {default: T, doc: string}
             let value_typ = deref_typ!(
                 "{{default: 'a, doc: string}}", ctx, spec_field_typ,
                 Some(Type::Struct(inner)) => {
-                    match inner.iter().find(|(n, _)| n.as_str() == "default") {
-                        Some((_, t)) => Ok(t.clone()),
+                    match inner.iter().find(|(n, _, _)| n.as_str() == "default") {
+                        Some((_, t, _)) => Ok(t.clone()),
                         None => bail!("rpc #spec field '{spec_name}' missing 'default'"),
                     }
                 }
             )?;
-            let cb_field = cb_fields.iter().find(|(n, _)| n == spec_name);
+            let cb_field = cb_fields.iter().find(|(n, _, _)| n == spec_name);
             match cb_field {
                 None => bail!("rpc #f argument missing field '{spec_name}'"),
-                Some((_, cb_typ)) => {
+                Some((_, cb_typ, _)) => {
                     let check = |t: &Type| -> Result<()> {
                         if !t.contains(&ctx.env, &value_typ)? {
                             bail!(

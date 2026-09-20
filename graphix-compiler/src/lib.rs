@@ -328,6 +328,13 @@ pub enum PrintFlag {
     NoSource,
     /// Print an Origin without its parents.
     NoParents,
+    /// Print what the author chose where the canonical form differs:
+    /// fields and variants in written order, strings between their
+    /// delimiters. The formatter's flag. Without it printed text is a
+    /// function of the syntax alone, which program-visible text (a cast
+    /// error, a null error) has to be: positions and string forms do not
+    /// survive a session image.
+    AsWritten,
 }
 
 thread_local! {
@@ -337,6 +344,10 @@ thread_local! {
 /// Global pool of channel watch batches.
 pub static CBATCH_POOL: LazyLock<Pool<Vec<(BindId, Box<dyn CustomBuiltinType>)>>> =
     LazyLock::new(|| Pool::new(10000, 1000));
+
+pub(crate) fn print_as_written() -> bool {
+    PRINT_FLAGS.get().contains(PrintFlag::AsWritten)
+}
 
 /// Run `f` with the given type-formatting flags on this thread.
 pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(

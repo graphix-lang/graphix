@@ -121,7 +121,7 @@ pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
             a.len() == b.len()
                 && a.iter()
                     .zip(b.iter())
-                    .all(|((n0, x), (n1, y))| n0 == n1 && union_identical(x, y))
+                    .all(|((n0, x, _), (n1, y, _))| n0 == n1 && union_identical(x, y))
         }
         (Type::Variant(tg0, a), Type::Variant(tg1, b)) => {
             tg0 == tg1
@@ -465,10 +465,10 @@ impl Type {
             }
             (Type::Struct(t0), Type::Struct(t1)) => {
                 let same = t0.len() == t1.len()
-                    && t0.iter().zip(t1.iter()).all(|((n0, _), (n1, _))| n0 == n1)
+                    && t0.iter().zip(t1.iter()).all(|((n0, _, _), (n1, _, _))| n0 == n1)
                     && same_resolved(
-                        t0.iter().map(|(_, t)| t),
-                        t1.iter().map(|(_, t)| t),
+                        t0.iter().map(|(_, t, _)| t),
+                        t1.iter().map(|(_, t, _)| t),
                     );
                 if same {
                     Ok(Type::Primitive(BitFlags::empty()))

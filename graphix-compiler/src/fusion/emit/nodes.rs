@@ -739,7 +739,7 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
     let fields: poolshark::local::LPooled<Vec<(ArcStr, Type)>> =
         source.typ().with_deref(|t| match t {
             Some(Type::Struct(flds)) => {
-                Ok(flds.iter().map(|(n, t)| (n.clone(), t.clone())).collect())
+                Ok(flds.iter().map(|(n, t, _)| (n.clone(), t.clone())).collect())
             }
             _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
         })?;

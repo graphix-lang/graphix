@@ -2,7 +2,7 @@ use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue, UserEvent,
     env::Env,
-    expr::{ExprId, Origin, Pattern, StructurePattern},
+    expr::{ExprId, Origin, Pattern, StructurePattern, WrittenAt},
     format_with_flags,
     node::{Held, compiler},
     typ::{AbstractId, IsAFlags, Type, TypeRef},
@@ -196,7 +196,7 @@ impl StructPatternNode {
                     None => return Ok(()),
                 };
                 for (name, index, sub) in binds.iter_mut() {
-                    match elts.iter().position(|(n, _)| n == name) {
+                    match elts.iter().position(|(n, _, _)| n == name) {
                         Some(i) => {
                             *index = i;
                             sub.realign(env, &elts[i].1)?
@@ -718,11 +718,11 @@ impl StructPatternNode {
                     Type::Struct(_) => (),
                     _ if *exhaustive => type_predicate.check_contains(
                         &ctx.env,
-                        &Type::Struct(Arc::from_iter(
-                            binds
-                                .iter()
-                                .map(|(name, _, _)| (name.clone(), Type::empty_tvar())),
-                        )),
+                        &Type::Struct(Arc::from_iter(binds.iter().map(
+                            |(name, _, _)| {
+                                (name.clone(), Type::empty_tvar(), WrittenAt::NOWHERE)
+                            },
+                        ))),
                     )?,
                     _ => bail!("non exhaustive struct matches require type annotations"),
                 }
@@ -732,7 +732,7 @@ impl StructPatternNode {
                             .iter()
                             .map(|(field, pat, _)| {
                                 let r = elts.iter().enumerate().find_map(
-                                    |(i, (name, typ))| {
+                                    |(i, (name, typ, _))| {
                                         if field == name {
                                             Some(Ifo {
                                                 name: name.clone(),

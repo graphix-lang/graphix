@@ -1,9 +1,11 @@
 use crate::{
     PRINT_FLAGS, PrintFlag,
     expr::print::{PrettyBuf, PrettyDisplay},
+    print_as_written,
     typ::{Type, TypeRef},
 };
 use netidx_value::Typ;
+use smallvec::SmallVec;
 use std::fmt::{self, Write};
 
 impl fmt::Display for Type {
@@ -85,8 +87,12 @@ impl Type {
                 write!(f, ")")
             }
             Self::Struct(ts) => {
+                let mut written: SmallVec<[_; 16]> = ts.iter().collect();
+                if print_as_written() {
+                    written.sort_by_key(|(_, _, at)| at.order());
+                }
                 write!(f, "{{ ")?;
-                for (i, (n, t)) in ts.iter().enumerate() {
+                for (i, (n, t, _)) in written.iter().enumerate() {
                     write!(f, "{n}: {t}")?;
                     if i < ts.len() - 1 {
                         write!(f, ", ")?
@@ -240,9 +246,13 @@ impl PrettyDisplay for Type {
                 writeln!(buf, ")")
             }
             Self::Struct(ts) => {
+                let mut written: SmallVec<[_; 16]> = ts.iter().collect();
+                if print_as_written() {
+                    written.sort_by_key(|(_, _, at)| at.order());
+                }
                 writeln!(buf, "{{")?;
                 buf.with_indent(2, |buf| {
-                    for (i, (n, t)) in ts.iter().enumerate() {
+                    for (i, (n, t, _)) in written.iter().enumerate() {
                         write!(buf, "{n}: ")?;
                         buf.with_indent(2, |buf| t.fmt_pretty(buf))?;
                         if i < ts.len() - 1 {

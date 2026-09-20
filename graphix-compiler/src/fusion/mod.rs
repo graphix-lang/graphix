@@ -1135,7 +1135,7 @@ pub(crate) fn sig_from_inputs<'k>(
             }
             RegionInputKind::Struct(t) => {
                 let fields = kernel_abi::struct_fields(t)
-                    .map(<[(arcstr::ArcStr, Type)]>::to_vec)
+                    .map(|fs| fs.iter().map(|(n, t, _)| (n.clone(), t.clone())).collect())
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "RegionInputKind::Struct must carry a frozen \
