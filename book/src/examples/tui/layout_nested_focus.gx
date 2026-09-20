@@ -37,23 +37,17 @@ let block2rem = block(
   #title: &line("Content!"),
   &{
      let position = 0;
-     let handle_event = |e: Event| -> [`Stop, `Continue] select e {
-         `Key(k) => select k.kind {
-            `Press => select k.code {
-                k@`Up if position > 0 => {
-                    position <- (k ~ position) - 1;
-                    `Stop
-                },
-                k@`Down if position < 150 => {
-                    position <- (k ~ position) + 1;
-                    `Stop
-                },
-                _ => `Continue
-            },
-            _ => `Continue
-        },
+     let handle_event = on_press(|k| select k.code {
+         k@`Up if position > 0 => {
+             position <- (k ~ position) - 1;
+             `Stop
+         },
+         k@`Down if position < 150 => {
+             position <- (k ~ position) + 1;
+             `Stop
+         },
          _ => `Continue
-     };
+     });
      input_handler(
        #handle: &handle_event,
        &scrollbar(
@@ -81,19 +75,13 @@ let block2 = block(
   &block2_layout
 );
 
-let handle_event = |e: Event| -> [`Stop, `Continue] select e {
-    `Key(k) => select k.kind {
-        `Press => select k.code {
-            k@`Tab => {
-                focused <- ((k ~ focused) + 1) % 2;
-                `Stop
-            },
-            _ => `Continue
-        },
-        _ => `Continue
+let handle_event = on_press(|k| select k.code {
+    k@`Tab => {
+        focused <- ((k ~ focused) + 1) % 2;
+        `Stop
     },
     _ => `Continue
-};
+});
 
 input_handler(
   #handle: &handle_event,

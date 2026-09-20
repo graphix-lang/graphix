@@ -18,31 +18,25 @@ let form = |
   let vals: Array<line_edit::State> = array::map(fields, |f: Field| line_edit::state(f.value));
   let focus = 0;
   focus <- fields ~ 0;
-  let handle = |e: input_handler::Event| -> [`Stop, `Continue] select e {
-    `Key(k) => select k.kind {
-      `Press => select k.code {
-        `Tab | `Down => { focus <- (k ~ focus + 1) % n; `Stop },
-        `BackTab | `Up => { focus <- (k ~ focus + n - 1) % n; `Stop },
-        kk@ `Enter => {
-          on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
-          `Stop
-        },
-        kk@ `Esc => {
-          select kk ~ on_cancel {
-            null as _ => never(),
-            f => f(kk)
-          };
-          `Stop
-        },
-        _ => {
-          let i = k ~ focus;
-          line_edit::handle(&vals[i], e)
-        }
-      },
-      _ => `Continue
+  let handle = input_handler::on_press(|k| select k.code {
+    `Tab | `Down => { focus <- (k ~ focus + 1) % n; `Stop },
+    `BackTab | `Up => { focus <- (k ~ focus + n - 1) % n; `Stop },
+    kk@ `Enter => {
+      on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
+      `Stop
     },
-    _ => `Continue
-  };
+    kk@ `Esc => {
+      select kk ~ on_cancel {
+        null as _ => never(),
+        f => f(kk)
+      };
+      `Stop
+    },
+    _ => {
+      let i = k ~ focus;
+      line_edit::handle(&vals[i], `Key(k))
+    }
+  });
   let width = array::fold(fields, 0, |w: i64, f: Field| max(w, str::len(f.label))) + 2;
   let rows = array::map(array::enumerate(vals), |(j, st): (i64, line_edit::State)| {
     let label = (fields[j]$).label;

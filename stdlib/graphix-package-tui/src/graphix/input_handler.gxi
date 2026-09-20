@@ -134,3 +134,10 @@ val input_handler: fn(
   #handle: &fn(e: Event) -> [`Stop, `Continue] throws 'e,
   child: &Tui
 ) -> Tui throws 'e;
+
+/// A handler that calls `f` with the key event on a key press and
+/// continues on everything else: releases and repeats (a terminal that
+/// reports releases would otherwise run every key twice), mouse, paste,
+/// focus and resize. A handler that wants any of those selects on the
+/// `Event` itself.
+val on_press: fn(f: fn(k: KeyEvent) -> [`Stop, `Continue] throws 'e) -> fn(e: Event) -> [`Stop, `Continue] throws 'e;

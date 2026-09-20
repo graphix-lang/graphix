@@ -403,6 +403,49 @@ let result = overlay(#layers: &layers, base)
 }
 
 #[tokio::test]
+async fn on_press_runs_the_callback_on_presses_only() -> Result<()> {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use netidx::publisher::Value;
+    let mut h = TuiTestHarness::new(
+        r#"
+use tui::*;
+use tui::input_handler::{self, *};
+use tui::paragraph::{self, *};
+let downs = 0;
+let calls = 0;
+let handle = on_press(|k| {
+  calls <- (k ~ calls) + 1;
+  select k.code {
+    `Down => { downs <- (k ~ downs) + 1; `Stop },
+    _ => `Continue
+  }
+});
+let result = input_handler(#handle: &handle, &paragraph(&"base"))
+"#,
+    )
+    .await?;
+    h.watch("test::downs").await?;
+    h.watch("test::calls").await?;
+    h.render()?;
+    let key = |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
+    for e in [
+        key(KeyCode::Down, KeyEventKind::Press),
+        key(KeyCode::Down, KeyEventKind::Release),
+        key(KeyCode::Down, KeyEventKind::Repeat),
+        key(KeyCode::Down, KeyEventKind::Press),
+        Event::Resize(80, 24),
+        Event::Paste("x".into()),
+        key(KeyCode::Char('x'), KeyEventKind::Press),
+    ] {
+        h.dispatch_event(e).await?;
+        h.drain().await?;
+    }
+    assert_eq!(h.get_watched("test::calls"), Some(&Value::I64(3)), "one call per press");
+    assert_eq!(h.get_watched("test::downs"), Some(&Value::I64(2)), "two presses of Down");
+    Ok(())
+}
+
+#[tokio::test]
 async fn line_edit_types_moves_and_deletes() -> Result<()> {
     use crossterm::event::{Event, KeyCode, KeyEvent};
     use netidx::publisher::Value;

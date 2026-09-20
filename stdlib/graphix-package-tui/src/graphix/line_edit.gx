@@ -43,16 +43,11 @@ let step = |st: State, e: input_handler::Event| -> [State, null] select e {
     _ => null
 };
 
-let handle = |st: &State, e: input_handler::Event| -> [`Stop, `Continue] select e {
-    `Key(k) => select k.kind {
-        `Press => select step(k ~ *st, e) {
-            null as _ => `Continue,
-            s => { *st <- s; `Stop }
-        },
-        _ => `Continue
-    },
-    _ => `Continue
-};
+let handle = |st: &State, e: input_handler::Event| -> [`Stop, `Continue]
+    select step(e ~ *st, e) {
+        null as _ => `Continue,
+        s => { *st <- s; `Stop }
+    };
 
 let view = |
     #mask: [string, null] = null,

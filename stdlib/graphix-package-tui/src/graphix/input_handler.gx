@@ -2,4 +2,13 @@ let input_handler = |
   #enabled: &[bool, null] = &null,
   #handle: &fn(e: Event) -> [`Stop, `Continue] throws 'e,
   child: &Tui
-| -> Tui throws 'e `InputHandler({ child, enabled, handle })
+| -> Tui throws 'e `InputHandler({ child, enabled, handle });
+
+let on_press = |f: fn(k: KeyEvent) -> [`Stop, `Continue] throws 'e|
+  |e: Event| -> [`Stop, `Continue] throws 'e select e {
+    `Key(k) => select k.kind {
+      `Press => f(k),
+      _ => `Continue
+    },
+    _ => `Continue
+  }

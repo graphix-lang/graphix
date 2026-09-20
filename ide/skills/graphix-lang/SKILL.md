@@ -404,15 +404,19 @@ where `f: |e: Event| -> [`Stop, `Continue]`. Widget arguments are `&`
 references; `use tui::block::{self, *}` per widget module.
 
 ```graphix
-let handle = |e: Event| -> [`Stop, `Continue] select e {
-  `Key(k) => select k.kind {
-    `Press => select k.code {
-      kk@ `Up | kk@ `Char("k") if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop },
-      _ => `Continue },
-    _ => `Continue },
+let handle = on_press(|k| select k.code {
+  kk@ `Up | kk@ `Char("k") if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop },
   _ => `Continue
-};
+});
 ```
+
+`on_press(f)` (in `tui::input_handler`) is the key handler: it calls `f`
+with the `KeyEvent` on a `` `Press `` and continues on everything else.
+Never write the `` `Key(k) => select k.kind { `Press => .. } `` nest by
+hand: forgetting the kind runs every key twice where the terminal
+reports releases (Windows). A handler that also wants mouse, paste or
+resize selects on the `Event`; to pass a press on to an `Event` handler
+rebuild it, `` line_edit::handle(&st, `Key(k)) ``.
 
 Widgets: gui — window text button text_input checkbox toggler radio
 slider progress_bar pick_list column row container scrollable stack

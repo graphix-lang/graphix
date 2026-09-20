@@ -36,23 +36,17 @@ let rows = [&row1, &row2, &row3];
 
 let selected = 0;
 
-let handle_event = |e: Event| -> [`Stop, `Continue] select e {
-    `Key(k) => select k.kind {
-        `Press => select k.code {
-            k@`Up if selected > 0 => {
-                selected <- (k ~ selected) - 1;
-                `Stop
-            },
-            k@`Down if selected < 2 => {
-                selected <- (k ~ selected) + 1;
-                `Stop
-            },
-            _ => `Continue
-        },
-        _ => `Continue
+let handle_event = on_press(|k| select k.code {
+    k@`Up if selected > 0 => {
+        selected <- (k ~ selected) - 1;
+        `Stop
+    },
+    k@`Down if selected < 2 => {
+        selected <- (k ~ selected) + 1;
+        `Stop
     },
     _ => `Continue
-};
+});
 
 input_handler(
     #handle: &handle_event,

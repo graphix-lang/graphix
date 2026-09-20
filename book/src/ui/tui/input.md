@@ -85,7 +85,23 @@ type KeyEventKind = [
 ];
 ```
 
-Most applications only care about `Press` events.
+Most applications only care about `Press` events, and must say so: a
+terminal that reports releases (the Windows console does) delivers two
+events per keystroke, and a handler that matches `` `Key(k) `` alone
+runs twice. `on_press` is a handler that calls your function with the
+`KeyEvent` on a press and continues on everything else:
+
+```graphix
+let handle = on_press(|k| select k.code {
+  `Up => { sel <- k ~ max(0, sel - 1); `Stop },
+  `Down => { sel <- k ~ sel + 1; `Stop },
+  _ => `Continue
+});
+input_handler(#handle: &handle, &view)
+```
+
+A handler that wants mouse, paste, resize or a release selects on the
+`Event` itself.
 
 ### Key Modifiers
 

@@ -6,33 +6,21 @@ use tui::paragraph::{self, *};
 
 let open = false;
 
-let handle_base = |e: Event| -> [`Stop, `Continue] select e {
-  `Key(k) => select k.kind {
-    `Press => select k.code {
-      c@ `Char("o") => {
-        open <- c ~ true;
-        `Stop
-      },
-      _ => `Continue
-    },
-    _ => `Continue
+let handle_base = on_press(|k| select k.code {
+  c@ `Char("o") => {
+    open <- c ~ true;
+    `Stop
   },
   _ => `Continue
-};
+});
 
-let handle_modal = |e: Event| -> [`Stop, `Continue] select e {
-  `Key(k) => select k.kind {
-    `Press => select k.code {
-      c@ `Esc => {
-        open <- c ~ false;
-        `Stop
-      },
-      _ => `Continue
-    },
-    _ => `Continue
+let handle_modal = on_press(|k| select k.code {
+  c@ `Esc => {
+    open <- c ~ false;
+    `Stop
   },
   _ => `Continue
-};
+});
 
 let base = input_handler(
   #handle: &handle_base,
