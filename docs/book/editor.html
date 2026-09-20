@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-17f0e3c0.js";
+            window.path_to_searchindex_js = "searchindex-f5a89028.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -342,7 +342,7 @@ graphix fmt --width 100 --indent 2 main.gx   # override graphixfmt.json for this
 <h3 id="configuration"><a class="header" href="#configuration">Configuration</a></h3>
 <p>The line width and the indent come from a <code>graphixfmt.json</code>; anything it
 leaves out keeps its default:</p>
-<pre><code class="language-json">{ "width": 80, "indent": 4 }
+<pre><code class="language-json">{ "width": 90, "indent": 4 }
 </code></pre>
 <p>The formatter uses the nearest <code>graphixfmt.json</code> in the source file’s
 directory or any directory above it, so a project keeps one at the base
@@ -360,7 +360,7 @@ platform’s configuration directory:</p>
 </tbody>
 </table>
 </div>
-<p>With neither it fits 80 columns and indents by 4. <code>--width</code> and
+<p>With neither it fits 90 columns and indents by 4. <code>--width</code> and
 <code>--indent</code> override the file for one run, and the language server reads
 the same files. A <code>graphixfmt.json</code> that does not parse, or that names a
 setting the formatter does not have, is an error rather than a silent

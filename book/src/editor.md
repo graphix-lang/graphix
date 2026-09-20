@@ -237,7 +237,7 @@ The line width and the indent come from a `graphixfmt.json`; anything it
 leaves out keeps its default:
 
 ```json
-{ "width": 80, "indent": 4 }
+{ "width": 90, "indent": 4 }
 ```
 
 The formatter uses the nearest `graphixfmt.json` in the source file's
@@ -251,7 +251,7 @@ platform's configuration directory:
 | macOS | `~/Library/Application Support/graphix/graphixfmt.json` |
 | Windows | `%APPDATA%\graphix\graphixfmt.json` |
 
-With neither it fits 80 columns and indents by 4. `--width` and
+With neither it fits 90 columns and indents by 4. `--width` and
 `--indent` override the file for one run, and the language server reads
 the same files. A `graphixfmt.json` that does not parse, or that names a
 setting the formatter does not have, is an error rather than a silent

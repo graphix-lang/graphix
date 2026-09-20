@@ -19,7 +19,7 @@ use serde_derive::Deserialize;
 use std::{fmt, fs, path::Path};
 use triomphe::Arc;
 
-pub const DEFAULT_WIDTH: usize = 80;
+pub const DEFAULT_WIDTH: usize = 90;
 
 /// The name of the formatter's configuration file.
 pub const CONFIG_FILE: &str = "graphixfmt.json";

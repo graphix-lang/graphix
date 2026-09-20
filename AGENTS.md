@@ -403,7 +403,7 @@ run the corpus harness over every `.gx`/`.gxi` here and in `../netidx`:
 round trip + idempotence; one file: prints it; `GXFMT_UNCHECKED=1`
 skips the reparse). The print round-trip proptests are randomized: a
 printer bug can pass several runs. Width and indent are
-`format::FormatConfig` (defaults 80 and 4), discovered by
+`format::FormatConfig` (defaults 90 and 4), discovered by
 `FormatConfig::discover`: the nearest `graphixfmt.json` at or above the
 source file, else `dirs::config_dir()/graphix/graphixfmt.json`, else the
 defaults; a malformed file is an error; `--width`/`--indent` override.
