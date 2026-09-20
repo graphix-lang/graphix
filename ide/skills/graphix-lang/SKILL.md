@@ -71,6 +71,27 @@ constant argument to `exit` runs at init — always gate it).
   value.** "Save whenever `book` changes" writes the empty book over the
   file while the load is still reading it. Trigger on the event that
   means "this was changed", never on the state.
+- **An async call inside a select arm loses its reply when the arm
+  sleeps.** `select run { `Remove(n) => remove(n, n ~ target), _ =>
+  never() }`: a second `run` of another variant while `remove` is in
+  flight puts the arm to sleep, the builtin's result id is rebound, and
+  the reply is dropped: the op still happened, the toast and the reload
+  never come. Select the EVENT, call outside the arm:
+  `{ let n = select run { `Remove(n) => n, _ => never() }; remove(n, n ~
+  target) }`. A call that is a seq step is safe (a step does not sleep
+  mid-run).
+- **A level selected out of an event dies with the arm.** `let role =
+  select run { `Install(r, _) => r, _ => never() }` is bottom again once
+  `run` is another variant, and a seq step that reads it then stalls
+  forever. To keep the last one: `let role = never(); role <- select run
+  { .. }`. Better, carry it: `seqq let a = select run { `X(a) => a, _ =>
+  never() } { let r = call(a)?; toast <- "[a.name] done" }`, and never
+  re-read `run` after the call to learn what was asked.
+- **State never holds a value that re-fires.** A `let` keeps tracking its
+  initialiser, and a struct fires when any field does, so `let order =
+  [`Local(loc), `Remote(rem)]` written by a key snaps back to the initial
+  order whenever anything inside `loc` or `rem` changes. Store a tag
+  (`let front: [`Local, `Remote] = `Local`) and select the struct by it.
 - **Comments** are legal only on their own line above an expression, a
   select arm, an impl method or a struct-literal field. Trailing,
   interior and dangling comments are parse errors. `///` doc comments
@@ -365,7 +386,12 @@ when the catch should hear more than `NullError`.
 `$` gates: while `x` is null or an error, a call or struct taking `x$`
 does not fire and owes nothing when `x` returns. `f(k ~ t, sel$)` is
 silent while `sel` is null, and so are `k ~ sel$` and `(k ~ sel)$`:
-there is no stale last-good value to read.
+there is no stale last-good value to read. One exception, from `~`
+banking: a `sel$` that has NEVER had a value is absent, so `let v = sel$;
+k ~ v` banks a key pressed before the first selection and pays it when
+the selection arrives (a phantom confirm dialog when the rows load). A
+nullable that an event samples is unwrapped at the use site, `(k ~
+sel)$`, which samples the null and drops it.
 
 ## References and places
 
@@ -438,7 +464,8 @@ flat_map filter ok_or zip`. Unwrapping is the `$` operator, above. The
 ladder it replaces also hides in two steps: `let p = select d { null as
 _ => null, v => f(v) }; let q = p$` is `let q = f(d$)`. A null carried
 forward only to be dropped is unwrapped at the source, once: `let dir =
-d$`, and every reader (a later seq step included) takes `dir`.
+d$`, and every reader (a later seq step included) takes `dir` (unless
+an event samples it: see the banking exception under `$` gates).
 
 `array`: map filter filter_map fold flatten find find_map concat push
 window(#n, trig, v) len iter iterq sort enumerate zip. `map`, `str`
