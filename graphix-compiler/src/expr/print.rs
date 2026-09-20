@@ -248,7 +248,7 @@ fn pretty_tail_kind(buf: &mut PrettyBuf, e: &ExprKind) -> fmt::Result {
         let start = buf.len();
         let col = buf.col();
         e.fmt_pretty_inner(buf)?;
-        let first = buf.buf[start..].find('\n').unwrap_or(buf.len() - start);
+        let first = buf.buf[start..].lines().next().map_or(0, |l| l.chars().count());
         if col + first <= buf.limit {
             return Ok(());
         }
@@ -326,7 +326,12 @@ impl PrettyBuf {
 
     /// The width of the line being written.
     pub fn col(&self) -> usize {
-        self.buf.len() - self.buf.rfind('\n').map_or(0, |i| i + 1)
+        self.width_from(self.buf.rfind('\n').map_or(0, |i| i + 1))
+    }
+
+    /// The width, in characters, of what was written from `start` on.
+    pub fn width_from(&self, start: usize) -> usize {
+        self.buf[start..].chars().count()
     }
 
     pub fn kill_newline(&mut self) {
@@ -366,9 +371,9 @@ pub trait PrettyDisplay: fmt::Display {
         let col = buf.col();
         writeln!(buf, "{}", self)?;
         // Best-effort: embedded newlines overcount and a long token can
-        // exceed any limit.
-        // one column is kept for the `;` or `,` that follows
-        let fits = col + buf.len() - start < buf.limit;
+        // exceed any limit. The newline counts as the column kept for
+        // the `;` or `,` that follows.
+        let fits = col + buf.width_from(start) <= buf.limit;
         if !fits {
             buf.buf.truncate(start);
         }
@@ -691,7 +696,7 @@ impl PrettyDisplay for SigItem {
             SigKind::Use { reexport, names } => {
                 let start = buf.len();
                 write_use_names(buf, *reexport, names)?;
-                if buf.len() - start > buf.limit {
+                if buf.width_from(start) > buf.limit {
                     buf.buf.truncate(start);
                     pretty_use_names(buf, *reexport, names)
                 } else {
@@ -1475,7 +1480,7 @@ impl<'a> UseNames<'a> {
             for (i, e) in self.entries().enumerate() {
                 let start = buf.len();
                 e.write_entry(buf)?;
-                if buf.len() - start >= buf.limit {
+                if buf.width_from(start) >= buf.limit {
                     buf.buf.truncate(start);
                     if let Some(group) = e.write_path(buf)? {
                         group.pretty_group(buf)?;
