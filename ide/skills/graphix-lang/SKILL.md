@@ -352,7 +352,11 @@ entry, never on a value standing from an earlier run; a step that reads
 a level takes it as it stands at entry (under `seq`; `seqq` captured it
 with the request) and waits for it if absent. A `let`'s fire is
 live only in the next step (a later `t ~ x` on it does not write).
-`never()` in a step stalls the run. A seq inside a step is a step: with
+`never()` in a step stalls the run. So does a step that is a select
+whose arms are connects (`select err { `Admin(m) => note <- m }`): put
+the connect outside, `note <- select err { `Admin(m) => m }`. The two
+branches of a `try .. with` must have one type; end both with `null`
+when they are only effects. A seq inside a step is a step: with
 no trigger it runs at every entry of its statement and the outer step
 waits for it (two cycles over inline). `graphix --expand` shows the machine.
 `range(i, j)` is the integer sequence builtin (throws `` `RangeError ``).
