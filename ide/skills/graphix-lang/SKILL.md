@@ -377,10 +377,32 @@ delivery; a dynamic key (`&vals[focus]`) is a moving reference.
 ## Modules, interfaces, traits
 
 Rust-2018-style imports: `use array::map;` `use str::join as sjoin;`
-`use tui::text::{self, *};` (the widget-module idiom), `use super::{f,
-T};` `use package::a::b;` `mod name;`. Package names are path roots:
-`array::map(xs, f)` works bare. A submodule sees nothing of its parent
-implicitly. Declarations are statement-position only.
+`use super::{f, T};` `use package::a::b;` `mod name;`, and groups nest.
+Package names are path roots: `array::map(xs, f)` works bare. A
+submodule sees nothing of its parent implicitly. Declarations are
+statement-position only.
+
+One `use` per root, nested, and name what you use. No globs: `*` pulls
+in names the reader cannot see arriving, and `{self, *}` on a widget
+module is a habit, not a need (`block::block` imports the function; add
+`self` only when the file writes `overlay::X`).
+
+```graphix
+use package::{AdminError, Target, ceremony::{questions, result}};
+use super::{Toast, admin_text, panels::{self, CloseReason}};
+use tui::{
+  line, span, style,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  layout::{child, layout},
+  overlay::{self, Layer, layer},
+  paragraph::paragraph
+};
+```
+
+Types first, then values, then one line per module. An import nothing
+uses goes: it tells the reader the file does something it does not. The
+book's examples still glob; do not copy that.
 
 Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 `val`, `type`, `mod`, `trait`, `impl T for X;` declarations with `///`
@@ -433,7 +455,7 @@ error (`str::concat()`); it could never fire.
 GUI (iced) programs return `Array<&Window>`; TUI (ratatui) programs
 return one widget, usually under `input_handler(#handle: &f, &widget)`
 where `f: |e: Event| -> [`Stop, `Continue]`. Widget arguments are `&`
-references; `use tui::block::{self, *}` per widget module.
+references; import each widget by name, `use tui::{block::block, list::list}`.
 
 ```graphix
 let handle = |e: Event| on_press(e, |k| select k.code {
