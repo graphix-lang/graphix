@@ -26,8 +26,9 @@
 -- Options (all default to true):
 --
 --   require('graphix').setup({
---     lsp = true,         -- configure LSP via nvim-lspconfig
---     treesitter = true,  -- register tree-sitter grammar
+--     lsp = true,             -- configure LSP via nvim-lspconfig
+--     treesitter = true,      -- register tree-sitter grammar
+--     format_on_save = true,  -- format through the LSP before each write
 --   })
 
 local M = {}
@@ -123,13 +124,35 @@ function M.setup_treesitter()
   end
 end
 
+--- Format graphix buffers through the LSP before each write, and indent
+--- them the way the formatter does.
+function M.setup_format_on_save()
+  vim.api.nvim_create_autocmd('FileType', {
+    pattern = 'graphix',
+    callback = function(args)
+      vim.bo[args.buf].shiftwidth = 4
+      vim.bo[args.buf].softtabstop = 4
+      vim.bo[args.buf].expandtab = true
+      vim.api.nvim_create_autocmd('BufWritePre', {
+        buffer = args.buf,
+        callback = function()
+          vim.lsp.buf.format({ bufnr = args.buf, name = 'graphix', async = false })
+        end,
+      })
+    end,
+  })
+end
+
 --- Main setup function.
----@param opts? { lsp?: boolean, treesitter?: boolean }
+---@param opts? { lsp?: boolean, treesitter?: boolean, format_on_save?: boolean }
 function M.setup(opts)
   opts = opts or {}
   M.setup_filetype()
   if opts.lsp ~= false then
     M.setup_lsp()
+    if opts.format_on_save ~= false then
+      M.setup_format_on_save()
+    end
   end
   if opts.treesitter ~= false then
     M.setup_treesitter()

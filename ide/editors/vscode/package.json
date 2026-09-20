@@ -46,6 +46,13 @@
                     "description": "Path to the Graphix binary (LSP is launched via 'graphix lsp')"
                 }
             }
+        },
+        "configurationDefaults": {
+            "[graphix]": {
+                "editor.formatOnSave": true,
+                "editor.tabSize": 4,
+                "editor.insertSpaces": true
+            }
         }
     },
     "scripts": {

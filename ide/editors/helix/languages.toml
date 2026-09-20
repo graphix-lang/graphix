@@ -11,7 +11,7 @@ file-types = ["gx", "gxi"]
 comment-token = "//"
 indent = { tab-width = 4, unit = "    " }
 language-servers = ["graphix-lsp"]
-auto-format = false
+auto-format = true
 injection-regex = "graphix"
 roots = ["Cargo.toml", ".git"]
 

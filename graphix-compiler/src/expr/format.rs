@@ -12,11 +12,26 @@ use crate::{
     format_with_flags,
 };
 use anyhow::{Result, bail};
+use compact_str::{CompactString, format_compact};
 use netidx_value::Value;
 use poolshark::local::LPooled;
+use std::fmt;
 use triomphe::Arc;
 
 pub const DEFAULT_WIDTH: usize = 80;
+
+/// The formatter would not hand back its own output: a bug in it, never
+/// in the source, which is left as it was.
+#[derive(Debug)]
+pub struct Refused(CompactString);
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "formatter bug: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
@@ -272,18 +287,20 @@ pub fn format_source(
     let (parsed, buf) = layout(kind, text, width)?;
     let reparsed = match Parsed::new(kind, &buf.buf) {
         Ok(p) => p,
-        Err(e) => bail!("formatter bug: the formatted text does not parse: {e:?}"),
+        Err(e) => {
+            bail!(Refused(format_compact!("the formatted text does not parse: {e:?}")))
+        }
     };
     if let Some((was, now)) = parsed.difference(&reparsed) {
-        bail!(
-            "formatter bug: the formatted text says something else\nwas {was}\nnow {now}"
-        )
+        bail!(Refused(format_compact!(
+            "the formatted text says something else\nwas {was}\nnow {now}"
+        )))
     }
     if parsed.string_forms() != reparsed.string_forms() {
-        bail!("formatter bug: the formatted text changed a string's delimiters")
+        bail!(Refused("the formatted text changed a string's delimiters".into()))
     }
     if parsed.decorations() != reparsed.decorations() {
-        bail!("formatter bug: the formatted text lost a comment or an attribute")
+        bail!(Refused("the formatted text lost a comment or an attribute".into()))
     }
     Ok(buf.buf)
 }

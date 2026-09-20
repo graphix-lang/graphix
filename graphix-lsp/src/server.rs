@@ -69,6 +69,7 @@ fn server_capabilities(
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         ..Default::default()
     }
 }
@@ -159,6 +160,18 @@ fn handle_request(
             let params: lsp_types::WorkspaceSymbolParams =
                 serde_json::from_value(req.params)?;
             Response::new_ok(req_id, handlers::workspace_symbol::handle(state, params))
+        }
+        "textDocument/formatting" => {
+            let params: lsp_types::DocumentFormattingParams =
+                serde_json::from_value(req.params)?;
+            match handlers::formatting::handle(state, params) {
+                Ok(edits) => Response::new_ok(req_id, edits),
+                Err(refused) => Response::new_err(
+                    req_id,
+                    lsp_server::ErrorCode::RequestFailed as i32,
+                    refused.to_string(),
+                ),
+            }
         }
         "textDocument/references" => {
             let params: lsp_types::ReferenceParams = serde_json::from_value(req.params)?;

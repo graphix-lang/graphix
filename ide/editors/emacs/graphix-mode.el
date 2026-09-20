@@ -36,6 +36,11 @@
   :type 'integer
   :group 'graphix)
 
+(defcustom graphix-format-on-save t
+  "Format the buffer through the LSP before each save."
+  :type 'boolean
+  :group 'graphix)
+
 (defcustom graphix-lsp-server '("graphix" "lsp")
   "Command to start the Graphix LSP server."
   :type '(repeat string)
@@ -333,6 +338,20 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
 (add-to-list 'auto-mode-alist '("\\.gxi?\\'" . graphix-mode))
 
 ;;; ---- LSP integration ----
+
+(defun graphix--format-before-save ()
+  "Format the buffer through whichever LSP client manages it."
+  (when graphix-format-on-save
+    (cond ((and (fboundp 'eglot-managed-p) (eglot-managed-p))
+           (eglot-format-buffer))
+          ((bound-and-true-p lsp-mode)
+           (lsp-format-buffer)))))
+
+(defun graphix--setup-format-on-save ()
+  (add-hook 'before-save-hook #'graphix--format-before-save nil t))
+
+(add-hook 'graphix-mode-hook #'graphix--setup-format-on-save)
+(add-hook 'graphix-ts-mode-hook #'graphix--setup-format-on-save)
 
 ;; Eglot (built-in Emacs 29+)
 (with-eval-after-load 'eglot
