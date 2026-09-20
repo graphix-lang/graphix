@@ -3,7 +3,10 @@ use crate::{
         Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind,
         TryWithExpr, UseItem,
         parser::{parse, parse_sig},
-        print::{PrettyBuf, PrettyDisplay, cmp_use_items, use_seg, use_seg_key},
+        print::{
+            PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items, use_seg,
+            use_seg_key,
+        },
     },
     format_with_flags,
 };
@@ -158,13 +161,7 @@ impl Parsed {
     fn print(&self, buf: &mut PrettyBuf) -> Result<()> {
         match self {
             Self::Program(exprs) => {
-                for (i, e) in exprs.iter().enumerate() {
-                    e.fmt_pretty(buf)?;
-                    if i < exprs.len() - 1 {
-                        buf.kill_newline();
-                        writeln!(buf, ";")?
-                    }
-                }
+                pretty_file_items(buf, exprs, |buf, e| e.fmt_pretty(buf))?
             }
             Self::Interface(sig) => sig.fmt_pretty_inner(buf)?,
         }
@@ -322,8 +319,13 @@ mod tests {
         formats_to(Program, "use a::x as y; use a::x::z", "use a::x::{self as y, z}\n");
         formats_to(
             Program,
+            "use a::*; use a::*; use a::b; use a::b; use a::b::c",
+            "use a::{b, b::{self, c}, *, *}\n",
+        );
+        formats_to(
+            Program,
             "use b::x;\n// why\nuse a::x",
-            "use b::x;\n// why\nuse a::x\n",
+            "use b::x;\n\n// why\nuse a::x\n",
         );
         formats_to(Program, "{ use b::x; use a::y; y }", "{ use a::y; use b::x; y }\n");
         formats_to(
@@ -336,6 +338,18 @@ mod tests {
             Program,
             long,
             "use tui::{\n  block::block,\n  input_handler::{Event, on_press},\n  layout::{child, layout},\n  line,\n  list::list,\n  span,\n  style\n}\n",
+        );
+    }
+
+    #[test]
+    fn blank_lines_stand_around_items_that_span_lines() {
+        let src = "use a::b; let x = 1; // why\nlet y = 2; let z = 3; let f = |a| { let b = a; b }; f(x)";
+        let want = "use a::b;\nlet x = 1;\n\n// why\nlet y = 2;\n\nlet z = 3;\nlet f = |a| { let b = a; b };\nf(x)\n";
+        formats_to(SourceKind::Program, src, want);
+        formats_to(
+            SourceKind::Interface,
+            "type T = i64; /// the v\nval v: T; val w: T",
+            "type T = i64;\n\n/// the v\nval v: T;\n\nval w: T\n",
         );
     }
 

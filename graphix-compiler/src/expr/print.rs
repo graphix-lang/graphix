@@ -188,6 +188,30 @@ fn pretty_body(
     }
 }
 
+/// The `;`-separated items of a file: a blank line stands on both sides
+/// of every item that spans lines, and runs of one-line items stay tight.
+pub(crate) fn pretty_file_items<T>(
+    buf: &mut PrettyBuf,
+    items: &[T],
+    item: impl Fn(&mut PrettyBuf, &T) -> fmt::Result,
+) -> fmt::Result {
+    let mut prev_spans_lines = false;
+    for (i, it) in items.iter().enumerate() {
+        let start = buf.len();
+        item(buf, it)?;
+        let spans_lines = buf.buf[start..].trim_end_matches('\n').contains('\n');
+        if i > 0 && (spans_lines || prev_spans_lines) {
+            buf.buf.insert(start, '\n')
+        }
+        prev_spans_lines = spans_lines;
+        if i < items.len() - 1 {
+            buf.kill_newline();
+            writeln!(buf, ";")?
+        }
+    }
+    Ok(())
+}
+
 /// Whether the multi-line layout of `e` opens with a short head and a
 /// bracket, closing at its own indent: it can sit on the line of
 /// whatever introduces it.
@@ -730,16 +754,20 @@ impl PrettyDisplay for Sig {
         if !self.toplevel {
             writeln!(buf, "sig {{")?;
         }
-        buf.with_indent(if self.toplevel { 0 } else { 2 }, |buf| {
-            for (i, si) in self.iter().enumerate() {
-                si.fmt_pretty_inner(buf)?;
-                if i < self.len() - 1 {
-                    buf.kill_newline();
-                    writeln!(buf, ";")?
+        if self.toplevel {
+            pretty_file_items(buf, &self.items, |buf, si| si.fmt_pretty_inner(buf))?
+        } else {
+            buf.with_indent(2, |buf| {
+                for (i, si) in self.iter().enumerate() {
+                    si.fmt_pretty_inner(buf)?;
+                    if i < self.len() - 1 {
+                        buf.kill_newline();
+                        writeln!(buf, ";")?
+                    }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?
+        }
         if !self.toplevel {
             writeln!(buf, "}}")?
         }
@@ -1406,8 +1434,15 @@ impl<'a> UseNames<'a> {
         let UseNames { mut items, depth } = self;
         std::iter::from_fn(move || {
             let seg = use_seg(items.first()?, depth);
+            let ends =
+                |i: &UseItem| use_seg(i, depth) == seg && use_seg(i, depth + 1).is_none();
+            // a name written twice, and a glob, are entries of their own:
+            // neither can stand as a group's `self`
+            let alone =
+                ends(&items[0]) && (seg == Some("*") || items.get(1).is_some_and(ends));
             let n = match seg {
                 None => 1,
+                Some(_) if alone => 1,
                 Some(_) => items.iter().take_while(|i| use_seg(i, depth) == seg).count(),
             };
             let (entry, rest) = items.split_at(n);
