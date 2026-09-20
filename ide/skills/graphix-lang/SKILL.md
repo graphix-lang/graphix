@@ -208,8 +208,19 @@ notice, a busy flag, a toast) and lends it by `&`; events come in as
 arguments (`edit`, `recheck`, a key); the function returns the data. One
 that produces a change returns it for the caller to connect (`edit <-
 discovered(#toast: &toast, known, at)`), so the state's writers are all
-visible in one place. When a function's body has grown sections, each
-section with its own lets is a candidate.
+visible in one place. A function that must return something else (a
+modal returns its layers) answers through a callback the caller turns
+into its own event: `ca_question(#on_answer: |b| { run <- `UninstallWith(b);
+null }, ask)`. An event argument opens it (`up <- ask ~ true; sel <- ask ~
+0` inside), so the caller writes one event where it wrote an open flag, a
+cursor reset and a payload. When a function's body has grown sections,
+each section with its own lets is a candidate.
+
+A value shared across modules through a `.gxi` has the type you declare,
+not the one each use would have inferred: `&selstyle` for a list's
+`#highlight_style: &[Style, null]` needs `val selstyle: [Style, null]`,
+while `line(#style: hint)` needs a plain `Style`. Declare what the uses
+need, and take the null off with `$` at the odd one out.
 
 No currying: a call supplies every required argument, and `add(1)` on a
 two-argument `add` is refused (`missing required argument`), not a
