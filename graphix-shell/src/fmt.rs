@@ -17,8 +17,7 @@ pub struct Args {
 }
 
 fn format_stdin(args: &Args) -> Result<()> {
-    let kind =
-        if args.interface { SourceKind::Interface } else { SourceKind::Program };
+    let kind = if args.interface { SourceKind::Interface } else { SourceKind::Program };
     let mut text = String::new();
     io::stdin().read_to_string(&mut text).context("reading stdin")?;
     let formatted = format_source(kind, &text, args.width)?;
@@ -42,8 +41,7 @@ pub fn run(args: Args) -> Result<()> {
     for path in &args.files {
         let res = (|| -> Result<bool> {
             let text = fs::read_to_string(path)?;
-            let formatted =
-                format_source(SourceKind::of_path(path), &text, args.width)?;
+            let formatted = format_source(SourceKind::of_path(path), &text, args.width)?;
             if args.stdout {
                 io::stdout().write_all(formatted.as_bytes())?;
                 return Ok(false);
