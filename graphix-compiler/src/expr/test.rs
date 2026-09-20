@@ -1361,7 +1361,14 @@ fn add_parens(mut e: Expr) -> Expr {
         }
         other => other,
     };
-    Expr { kind, id: e.id, ori: e.ori.clone(), pos: e.pos, dec: e.dec.take() }
+    Expr {
+        kind,
+        id: e.id,
+        ori: e.ori.clone(),
+        pos: e.pos,
+        dec: e.dec.take(),
+        str_form: e.str_form,
+    }
 }
 
 fn arithexpr() -> impl Strategy<Value = Expr> {
@@ -1469,14 +1476,16 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                 option::of(inner.clone()),
                 collection::vec(seq_item!(inner.clone()), 1..5),
             )
-                .prop_map(|(queued, trigger, abort, flush, body)| ExprKind::Seq {
-                    queued,
-                    trigger,
-                    abort: abort.map(Arc::new),
-                    flush: flush.map(Arc::new),
-                    body: Arc::from(body),
-                }
-                .to_expr_nopos()),
+                .prop_map(|(queued, trigger, abort, flush, body)| {
+                    ExprKind::Seq {
+                        queued,
+                        trigger,
+                        abort: abort.map(Arc::new),
+                        flush: flush.map(Arc::new),
+                        body: Arc::from(body),
+                    }
+                    .to_expr_nopos()
+                }),
             lambda!(inner.clone()),
             bind!(inner.clone()),
             connect!(inner.clone()),

@@ -1513,6 +1513,7 @@ fn rewrite_with_inner(
         pos: e.pos,
         kind,
         dec: e.dec.clone(),
+        str_form: e.str_form,
     }
 }
 

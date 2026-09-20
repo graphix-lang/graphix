@@ -371,7 +371,14 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 }
             };
             let ori = self.ori.cloned().unwrap_or_else(crate::expr::get_origin);
-            Expr { id: ExprId::new(), ori, pos: self.pos, kind, dec: None }
+            Expr {
+                id: ExprId::new(),
+                ori,
+                pos: self.pos,
+                kind,
+                dec: None,
+                str_form: Default::default(),
+            }
         }
     }
     let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
@@ -623,7 +630,14 @@ async fn resolve(
             )
         });
         let _ = implementation; // implementation lives on the inner exprs
-        return Ok(Expr { id, ori: parent, pos, kind, dec: None });
+        return Ok(Expr {
+            id,
+            ori: parent,
+            pos,
+            kind,
+            dec: None,
+            str_form: Default::default(),
+        });
     }
     let mut msg = format_compact!("module {name} could not be found");
     use std::fmt::Write as _;
@@ -706,6 +720,7 @@ impl Expr {
                     pos: self.pos,
                     kind: $kind,
                     dec: self.dec.clone(),
+                    str_form: self.str_form,
                 })
             };
         }
@@ -972,32 +987,34 @@ impl Expr {
                 .await?;
                 expr!(ExprKind::Select(SelectExpr { arg, arms: Arc::from(arms) }))
             }),
-            ExprKind::Seq { queued, trigger, abort, flush, body } => Box::pin(async move {
-                let trigger = match trigger {
-                    Some(t) => {
-                        let e = t
-                            .expr()
-                            .resolve_modules_int(scope, prepend, resolvers)
-                            .await?;
-                        Some(t.map(|_| e))
-                    }
-                    None => None,
-                };
-                let abort = match abort {
-                    Some(e) => Some(Arc::new(
-                        e.resolve_modules_int(scope, prepend, resolvers).await?,
-                    )),
-                    None => None,
-                };
-                let flush = match flush {
-                    Some(e) => Some(Arc::new(
-                        e.resolve_modules_int(scope, prepend, resolvers).await?,
-                    )),
-                    None => None,
-                };
-                let body = Arc::from(subexprs!(body));
-                expr!(ExprKind::Seq { queued, trigger, abort, flush, body })
-            }),
+            ExprKind::Seq { queued, trigger, abort, flush, body } => {
+                Box::pin(async move {
+                    let trigger = match trigger {
+                        Some(t) => {
+                            let e = t
+                                .expr()
+                                .resolve_modules_int(scope, prepend, resolvers)
+                                .await?;
+                            Some(t.map(|_| e))
+                        }
+                        None => None,
+                    };
+                    let abort = match abort {
+                        Some(e) => Some(Arc::new(
+                            e.resolve_modules_int(scope, prepend, resolvers).await?,
+                        )),
+                        None => None,
+                    };
+                    let flush = match flush {
+                        Some(e) => Some(Arc::new(
+                            e.resolve_modules_int(scope, prepend, resolvers).await?,
+                        )),
+                        None => None,
+                    };
+                    let body = Arc::from(subexprs!(body));
+                    expr!(ExprKind::Seq { queued, trigger, abort, flush, body })
+                })
+            }
             ExprKind::Until(e) => Box::pin(async move {
                 let e = e.resolve_modules_int(scope, prepend, resolvers).await?;
                 expr!(ExprKind::Until(Arc::new(e)))

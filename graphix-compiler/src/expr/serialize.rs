@@ -92,7 +92,14 @@ impl Expr {
         let column = <i32 as Pack>::decode(buf)?;
         let kind = <ExprKind as Pack>::decode(buf)?;
         let dec = <Option<Box<Decorations>> as Pack>::decode(buf)?;
-        Ok(Expr { id, ori, pos: SourcePosition { line, column }, kind, dec })
+        Ok(Expr {
+            id,
+            ori,
+            pos: SourcePosition { line, column },
+            kind,
+            dec,
+            str_form: Default::default(),
+        })
     }
 }
 

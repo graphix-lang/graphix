@@ -646,7 +646,14 @@ pub enum ExprKind {
 
 impl ExprKind {
     pub fn to_expr(self, pos: SourcePosition) -> Expr {
-        Expr { id: ExprId::new(), ori: get_origin(), pos, kind: self, dec: None }
+        Expr {
+            id: ExprId::new(),
+            ori: get_origin(),
+            pos,
+            kind: self,
+            dec: None,
+            str_form: Default::default(),
+        }
     }
 
     /// does not provide any position information or comment
@@ -657,6 +664,7 @@ impl ExprKind {
             pos: Default::default(),
             kind: self,
             dec: None,
+            str_form: Default::default(),
         }
     }
 }
@@ -777,6 +785,18 @@ impl Origin {
     }
 }
 
+/// The delimiters a string literal was written between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrForm {
+    /// `"text [splice]"`
+    #[default]
+    Quoted,
+    /// `r"text"`, `r#"text"#`
+    Raw,
+    /// `"""text \[splice]"""`
+    Template,
+}
+
 #[derive(Clone)]
 pub struct Expr {
     pub id: ExprId,
@@ -787,6 +807,9 @@ pub struct Expr {
     /// expression. `None` unless the expression was decorated; not
     /// compared by equality.
     pub dec: Option<Box<Decorations>>,
+    /// How a string literal was delimited, so that it prints as written;
+    /// not compared by equality, and not part of the packed form.
+    pub str_form: StrForm,
 }
 
 /// Field drop glue runs after `drop` returns and cannot be stack-guarded,
@@ -810,14 +833,14 @@ impl fmt::Display for Expr {
         print::write_leading(f, &self.dec)?;
         // Printing descends the whole tree, including arbitrary user
         // subexpressions on error paths.
-        crate::stack::ensure_sufficient(|| write!(f, "{}", self.kind))
+        crate::stack::ensure_sufficient(|| write!(f, "{}", print::Bare(self)))
     }
 }
 
 impl PrettyDisplay for Expr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         print::write_leading(buf, &self.dec)?;
-        self.kind.fmt_pretty(buf)
+        print::Bare(self).fmt_pretty(buf)
     }
 }
 
@@ -912,8 +935,21 @@ impl<'de> Deserialize<'de> for Expr {
 }
 
 impl Expr {
+    /// This string literal, recorded as written between `form`'s delimiters.
+    pub(crate) fn written_as(mut self, form: StrForm) -> Self {
+        self.str_form = form;
+        self
+    }
+
     pub fn new(kind: ExprKind, pos: SourcePosition) -> Self {
-        Expr { id: ExprId::new(), ori: get_origin(), pos, kind, dec: None }
+        Expr {
+            id: ExprId::new(),
+            ori: get_origin(),
+            pos,
+            kind,
+            dec: None,
+            str_form: Default::default(),
+        }
     }
 
     /// fold over self and all of self's sub expressions
@@ -1245,6 +1281,7 @@ impl Expr {
             pos: self.pos,
             kind,
             dec: self.dec.clone(),
+            str_form: self.str_form,
         }
     }
 }

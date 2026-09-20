@@ -168,6 +168,7 @@ fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
         pos: Default::default(),
         kind: ExprKind::Do { exprs },
         dec: None,
+        str_form: Default::default(),
     }
 }
 

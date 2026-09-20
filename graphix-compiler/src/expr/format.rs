@@ -1,6 +1,6 @@
 use crate::{
     expr::{
-        Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind,
+        Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind, StrForm,
         TryWithExpr, UseItem,
         parser::{parse, parse_sig},
         print::{
@@ -12,8 +12,8 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use enumflags2::BitFlags;
+use netidx_value::Value;
 use poolshark::local::LPooled;
-use std::fmt::Write;
 use triomphe::Arc;
 
 pub const DEFAULT_WIDTH: usize = 80;
@@ -104,6 +104,7 @@ fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
             pos: e.pos,
             kind: ExprKind::Use { reexport, names },
             dec: None,
+            str_form: Default::default(),
         },
     )
 }
@@ -136,7 +137,14 @@ fn merge_uses_within(e: &Expr) -> Expr {
         },
         _ => return e,
     };
-    Expr { id: e.id, ori: e.ori.clone(), pos: e.pos, kind, dec: e.dec.clone() }
+    Expr {
+        id: e.id,
+        ori: e.ori.clone(),
+        pos: e.pos,
+        kind,
+        dec: e.dec.clone(),
+        str_form: e.str_form,
+    }
 }
 
 enum Parsed {
@@ -175,6 +183,23 @@ impl Parsed {
                 e.fold((), &mut |(), e| {
                     if let Some(d) = &e.dec {
                         acc.push((**d).clone())
+                    }
+                })
+            }
+        }
+        acc
+    }
+
+    /// The delimiters of every string literal, in source order.
+    fn string_forms(&self) -> LPooled<Vec<StrForm>> {
+        let mut acc: LPooled<Vec<StrForm>> = LPooled::take();
+        if let Self::Program(exprs) = self {
+            for e in exprs.iter() {
+                e.fold((), &mut |(), e| {
+                    if let ExprKind::Constant(Value::String(_))
+                    | ExprKind::StringInterpolate { .. } = &e.kind
+                    {
+                        acc.push(e.str_form)
                     }
                 })
             }
@@ -253,6 +278,9 @@ pub fn format_source(
         bail!(
             "formatter bug: the formatted text says something else\nwas {was}\nnow {now}"
         )
+    }
+    if parsed.string_forms() != reparsed.string_forms() {
+        bail!("formatter bug: the formatted text changed a string's delimiters")
     }
     if parsed.decorations() != reparsed.decorations() {
         bail!("formatter bug: the formatted text lost a comment or an attribute")
@@ -351,6 +379,32 @@ mod tests {
             "type T = i64; /// the v\nval v: T; val w: T",
             "type T = i64;\n\n/// the v\nval v: T;\n\nval w: T\n",
         );
+    }
+
+    #[test]
+    fn strings_keep_their_delimiters() {
+        use SourceKind::Program;
+        formats_to(Program, r#"f("a\nb [x]", "plain")"#, "f(\"a\\nb [x]\", \"plain\")\n");
+        formats_to(Program, "r\"a\nb\"", "r\"a\nb\"\n");
+        formats_to(Program, "r#\"say \"hi\"\"#", "r#\"say \"hi\"\"#\n");
+        formats_to(Program, "\"\"\"one line \\[x]\"\"\"", "\"\"\"one line \\[x]\"\"\"\n");
+        formats_to(
+            Program,
+            "\"\"\"\n\nfirst [plain]\n\\[x] \"q\\\"\"\"\"",
+            "\"\"\"\n\nfirst [plain]\n\\[x] \"q\\\"\"\"\"\n",
+        );
+    }
+
+    #[test]
+    fn struct_literal_fields_keep_their_order() {
+        use SourceKind::Program;
+        formats_to(
+            Program,
+            "{ domain, fingerprint: fp, addrs: [addr] }",
+            "{ domain, fingerprint: fp, addrs: [addr] }\n",
+        );
+        formats_to(Program, "{ s with z: 1, a: 2 }", "{ s with z: 1, a: 2 }\n");
+        stable(Program, "{ zebra: 1,\n// the a\n apple: 2 }");
     }
 
     #[test]

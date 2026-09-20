@@ -1766,6 +1766,7 @@ mod tests {
             pos: Default::default(),
             kind: ExprKind::Constant(Value::I64(1)),
             dec: None,
+            str_form: Default::default(),
         };
         let parent = Expr {
             id: ExprId::new(),
@@ -1773,6 +1774,7 @@ mod tests {
             pos: Default::default(),
             kind: ExprKind::Array { args: Arc::from_iter([child]) },
             dec: None,
+            str_form: Default::default(),
         };
         let clone = parent.clone();
         let ExprKind::Array { args } = &parent.kind else { unreachable!() };
@@ -1808,6 +1810,7 @@ mod tests {
             pos: Default::default(),
             kind: ExprKind::Constant(Value::I64(v)),
             dec: None,
+            str_form: Default::default(),
         };
         let (e1, e2) = (mk(1), mk(2));
         let mut enc = ImageEncoder::new();

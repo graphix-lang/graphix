@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
-        ParserContext, Pattern, SelectExpr, SeqTrigger, Sig, SigItem, StructExpr,
-        StructWithExpr, TryWithExpr, set_origin,
+        ParserContext, Pattern, SelectExpr, SeqTrigger, Sig, SigItem, StrForm,
+        StructExpr, StructWithExpr, TryWithExpr, set_origin,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -743,7 +743,11 @@ where
             )
                 .map(move |(s, _, _): (String, _, _)| (pos, s))
         })
-        .map(|(pos, s)| ExprKind::Constant(Value::String(s.into())).to_expr(pos))
+        .map(|(pos, s)| {
+            ExprKind::Constant(Value::String(s.into()))
+                .to_expr(pos)
+                .written_as(StrForm::Raw)
+        })
 }
 
 fn until_expr<I>() -> impl Parser<I, Output = Expr>
@@ -819,12 +823,14 @@ where
         choice((
             seq_clause("abort").map(SeqHead::Abort),
             seq_clause("flush").map(SeqHead::Flush),
-            attempt(spaces().with(not_followed_by(token('{'))).with(choice((
-                letbind_with(arithexp::arith(false))
-                    .map(|b| SeqHead::Trigger(SeqTrigger::Bind(Arc::new(b)))),
-                arithexp::arith(false)
-                    .map(|e| SeqHead::Trigger(SeqTrigger::Expr(Arc::new(e)))),
-            )))),
+            attempt(
+                spaces().with(not_followed_by(token('{'))).with(choice((
+                    letbind_with(arithexp::arith(false))
+                        .map(|b| SeqHead::Trigger(SeqTrigger::Bind(Arc::new(b)))),
+                    arithexp::arith(false)
+                        .map(|e| SeqHead::Trigger(SeqTrigger::Expr(Arc::new(e)))),
+                ))),
+            ),
         )),
         attempt(spaces().with(token(';'))),
     )

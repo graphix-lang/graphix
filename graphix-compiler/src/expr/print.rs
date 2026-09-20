@@ -3,15 +3,17 @@ use crate::{
     expr::{
         ApplyExpr, Arg, Attr, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind,
         ImplExpr, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqTrigger, SigItem,
-        SigKind, StructExpr, StructWithExpr, TraitExpr, TraitMethod, TypeDefBody,
-        TypeDefExpr, UseItem, parser,
+        SigKind, StrForm, StructExpr, StructWithExpr, TraitExpr, TraitMethod,
+        TypeDefBody, TypeDefExpr, UseItem, parser,
     },
     typ::Type,
 };
+use arcstr::ArcStr;
 use compact_str::format_compact;
 use netidx_core::{path::Path, utils::Either};
 use netidx_value::{Value, parser::VAL_ESC};
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     cmp::Ordering,
     fmt::{self, Formatter, Write},
@@ -177,14 +179,14 @@ fn pretty_print_exprs(
 /// The body's own decorations are the caller's to place.
 fn pretty_body(
     buf: &mut PrettyBuf,
-    body: &ExprKind,
+    body: &Expr,
     open: &str,
     close: &str,
     sep: &str,
 ) -> fmt::Result {
-    match body {
+    match &body.kind {
         ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, open, close, sep),
-        body => body.fmt_pretty(buf),
+        _ => Bare(body).fmt_pretty(buf),
     }
 }
 
@@ -256,22 +258,22 @@ fn hugs_parens(e: &Expr) -> bool {
 /// moves to its own line, indented.
 fn pretty_tail(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     if e.dec.is_none() {
-        return pretty_tail_kind(buf, &e.kind);
+        return pretty_tail_bare(buf, e);
     }
     writeln!(buf)?;
     buf.with_indent(2, |buf| e.fmt_pretty(buf))
 }
 
 /// `pretty_tail` for an expression whose decorations the caller placed.
-fn pretty_tail_kind(buf: &mut PrettyBuf, e: &ExprKind) -> fmt::Result {
+fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     write!(buf, " ")?;
-    if e.fmt_flat(buf)? {
+    if Bare(e).fmt_flat(buf)? {
         return Ok(());
     }
-    if opens_with_bracket(e) {
+    if opens_with_bracket(&e.kind) {
         let start = buf.len();
         let col = buf.col();
-        e.fmt_pretty_inner(buf)?;
+        Bare(e).fmt_pretty_inner(buf)?;
         let first = buf.buf[start..].lines().next().map_or(0, |l| l.chars().count());
         if col + first <= buf.limit {
             return Ok(());
@@ -280,7 +282,7 @@ fn pretty_tail_kind(buf: &mut PrettyBuf, e: &ExprKind) -> fmt::Result {
     }
     buf.buf.pop();
     writeln!(buf)?;
-    buf.with_indent(2, |buf| e.fmt_pretty(buf))
+    buf.with_indent(2, |buf| Bare(e).fmt_pretty(buf))
 }
 
 /// The lines above a decorated expression: its comments, then its
@@ -805,7 +807,7 @@ impl fmt::Display for StructWithExpr {
             ExprKind::Ref { .. } => write!(f, "{{ {source} with ")?,
             _ => write!(f, "{{ ({source}) with ")?,
         }
-        for (i, (name, e)) in replace.iter().enumerate() {
+        for (i, (name, e)) in as_written(replace).into_iter().enumerate() {
             write_leading(f, &e.dec)?;
             match &e.kind {
                 ExprKind::Ref { name: n }
@@ -815,7 +817,7 @@ impl fmt::Display for StructWithExpr {
                 {
                     write!(f, "{name}")?
                 }
-                e => write!(f, "{name}: {e}")?,
+                _ => write!(f, "{name}: {}", Bare(e))?,
             }
             if i < replace.len() - 1 {
                 write!(f, ", ")?
@@ -833,7 +835,7 @@ impl PrettyDisplay for StructWithExpr {
             _ => writeln!(buf, "{{ ({source}) with")?,
         }
         buf.with_indent::<fmt::Result, _>(2, |buf| {
-            for (i, (name, e)) in replace.iter().enumerate() {
+            for (i, (name, e)) in as_written(replace).into_iter().enumerate() {
                 write_leading(buf, &e.dec)?;
                 match &e.kind {
                     ExprKind::Ref { name: n }
@@ -843,9 +845,9 @@ impl PrettyDisplay for StructWithExpr {
                     {
                         writeln!(buf, "{name}")?
                     }
-                    e => {
+                    _ => {
                         write!(buf, "{name}:")?;
-                        pretty_tail_kind(buf, e)?
+                        pretty_tail_bare(buf, e)?
                     }
                 }
                 if i < replace.len() - 1 {
@@ -863,7 +865,7 @@ impl fmt::Display for StructExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let Self { args } = self;
         write!(f, "{{ ")?;
-        for (i, (n, e)) in args.iter().enumerate() {
+        for (i, (n, e)) in as_written(args).into_iter().enumerate() {
             write_leading(f, &e.dec)?;
             match &e.kind {
                 ExprKind::Ref { name }
@@ -873,7 +875,7 @@ impl fmt::Display for StructExpr {
                 {
                     write!(f, "{n}")?
                 }
-                e => write!(f, "{n}: {e}")?,
+                _ => write!(f, "{n}: {}", Bare(e))?,
             }
             if i < args.len() - 1 {
                 write!(f, ", ")?
@@ -888,7 +890,7 @@ impl PrettyDisplay for StructExpr {
         let Self { args } = self;
         writeln!(buf, "{{")?;
         buf.with_indent::<fmt::Result, _>(2, |buf| {
-            for (i, (n, e)) in args.iter().enumerate() {
+            for (i, (n, e)) in as_written(args).into_iter().enumerate() {
                 write_leading(buf, &e.dec)?;
                 match &e.kind {
                     ExprKind::Ref { name }
@@ -898,9 +900,9 @@ impl PrettyDisplay for StructExpr {
                     {
                         writeln!(buf, "{n}")?
                     }
-                    e => {
+                    _ => {
                         write!(buf, "{n}:")?;
-                        pretty_tail_kind(buf, e)?;
+                        pretty_tail_bare(buf, e)?;
                     }
                 }
                 if i < args.len() - 1 {
@@ -912,6 +914,15 @@ impl PrettyDisplay for StructExpr {
         })?;
         writeln!(buf, "}}")
     }
+}
+
+/// Struct fields in the order they were written, which is the order of
+/// their values' positions; compiler-built values have none and keep
+/// the order of their names.
+fn as_written(fields: &[(ArcStr, Expr)]) -> SmallVec<[&(ArcStr, Expr); 16]> {
+    let mut fields: SmallVec<[&(ArcStr, Expr); 16]> = fields.iter().collect();
+    fields.sort_by_key(|(_, e)| (e.pos.line, e.pos.column));
+    fields
 }
 
 /// Whether `e` can be the bare source of a postfix operator without parens:
@@ -1128,7 +1139,7 @@ impl fmt::Display for SelectExpr {
             if let Some(guard) = &pat.guard {
                 write!(f, "if {guard} ")?;
             }
-            write!(f, "=> {}", rhs.kind)?;
+            write!(f, "=> {}", Bare(rhs))?;
             if i < arms.len() - 1 {
                 write!(f, ", ")?
             }
@@ -1158,7 +1169,7 @@ impl PrettyDisplay for SelectExpr {
                     write!(buf, " ")?;
                 }
                 write!(buf, "=>")?;
-                pretty_tail_kind(buf, &expr.kind)?;
+                pretty_tail_bare(buf, expr)?;
                 if i < arms.len() - 1 {
                     buf.kill_newline();
                     writeln!(buf, ",")?
@@ -1337,7 +1348,7 @@ impl PrettyDisplay for ExprKind {
                     Some(t) => write!(buf, "catch({}: {t}) ", c.bind)?,
                 }
                 write_leading(buf, &c.handler.dec)?;
-                pretty_body(buf, &c.handler.kind, "{", "}", "; ")
+                pretty_body(buf, &c.handler, "{", "}", "; ")
             }
             ExprKind::Apply(ae) => ae.fmt_pretty(buf),
             ExprKind::Lambda(l) => l.fmt_pretty(buf),
@@ -1565,6 +1576,176 @@ fn pretty_use_names(
     }
 }
 
+/// Whether `s` prints as itself between raw-string delimiters.
+fn raw_writable(s: &str) -> bool {
+    !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+}
+
+/// Whether `s` prints between template delimiters, as itself or escaped.
+fn template_writable(s: &str) -> bool {
+    !s.chars().any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r' | '\0'))
+}
+
+/// The hashes a raw string needs so that no `"#..` inside `s` closes it.
+fn raw_hashes(s: &str) -> usize {
+    let mut n = 0;
+    let mut run: Option<usize> = None;
+    for c in s.chars() {
+        match (c, &mut run) {
+            ('"', _) => run = Some(0),
+            ('#', Some(r)) => {
+                *r += 1;
+                n = n.max(*r);
+            }
+            _ => run = None,
+        }
+    }
+    if s.contains('"') { n + 1 } else { 0 }
+}
+
+fn write_raw(f: &mut Formatter<'_>, s: &str) -> fmt::Result {
+    let n = raw_hashes(s);
+    write!(f, "r{:#<n$}\"{s}\"{:#<n$}", "", "")
+}
+
+/// One part of a string literal: text, or a spliced expression.
+#[derive(Clone, Copy)]
+enum StrPart<'a> {
+    Text(&'a str),
+    Splice(&'a Expr),
+}
+
+impl<'a> StrPart<'a> {
+    fn of(e: &'a Expr) -> Self {
+        match &e.kind {
+            ExprKind::Constant(Value::String(s)) if !s.is_empty() => Self::Text(s),
+            _ => Self::Splice(e),
+        }
+    }
+
+    fn text(&self) -> Option<&'a str> {
+        match self {
+            Self::Text(s) => Some(s),
+            Self::Splice(_) => None,
+        }
+    }
+}
+
+/// A `"""template"""`. One newline after the opener is the parser's to
+/// strip, so text that spans lines starts on its own line; a `"` that
+/// would touch another quote is escaped so no `"""` forms inside.
+fn write_template<'a>(
+    f: &mut Formatter<'_>,
+    parts: impl Iterator<Item = StrPart<'a>> + Clone,
+) -> fmt::Result {
+    write!(f, "\"\"\"")?;
+    if parts.clone().filter_map(|p| p.text()).any(|s| s.contains('\n')) {
+        writeln!(f)?
+    }
+    let mut parts = parts.peekable();
+    while let Some(part) = parts.next() {
+        let text = match part {
+            StrPart::Text(s) => s,
+            StrPart::Splice(e) => {
+                write!(f, "\\[{e}]")?;
+                continue;
+            }
+        };
+        let quote_follows = match parts.peek() {
+            None => true,
+            Some(next) => next.text().is_some_and(|s| s.starts_with('"')),
+        };
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => write!(f, "\\\\")?,
+                '\t' => write!(f, "\\t")?,
+                '\r' => write!(f, "\\r")?,
+                '\0' => write!(f, "\\0")?,
+                '"' => {
+                    let touches = match chars.peek() {
+                        Some(next) => *next == '"',
+                        None => quote_follows,
+                    };
+                    write!(f, "{}\"", if touches { "\\" } else { "" })?
+                }
+                c => write!(f, "{c}")?,
+            }
+        }
+    }
+    write!(f, "\"\"\"")
+}
+
+/// A string constant between the delimiters its author chose, or quoted
+/// where those cannot hold it.
+fn write_str_constant(
+    f: &mut Formatter<'_>,
+    v: &Value,
+    s: &str,
+    form: StrForm,
+) -> fmt::Result {
+    match form {
+        StrForm::Raw if raw_writable(s) => write_raw(f, s),
+        StrForm::Template if template_writable(s) && !s.is_empty() => {
+            write_template(f, std::iter::once(StrPart::Text(s)))
+        }
+        StrForm::Quoted | StrForm::Raw | StrForm::Template => {
+            v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
+        }
+    }
+}
+
+/// `write_str_constant` for an interpolated string.
+fn write_interpolation(
+    f: &mut Formatter<'_>,
+    args: &[Expr],
+    form: StrForm,
+) -> fmt::Result {
+    let parts = args.iter().map(StrPart::of);
+    let template = form == StrForm::Template
+        && parts.clone().filter_map(|p| p.text()).all(template_writable);
+    if template {
+        return write_template(f, parts);
+    }
+    write!(f, "\"")?;
+    for part in parts {
+        match part {
+            StrPart::Text(s) => write!(f, "{}", parser::GRAPHIX_ESC.escape(s))?,
+            StrPart::Splice(e) => write!(f, "[{e}]")?,
+        }
+    }
+    write!(f, "\"")
+}
+
+/// An expression without the lines above it, which its caller places.
+pub(crate) struct Bare<'a>(pub &'a Expr);
+
+impl fmt::Display for Bare<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let Expr { kind, str_form, .. } = self.0;
+        match kind {
+            ExprKind::Constant(v @ Value::String(s)) => {
+                write_str_constant(f, v, s, *str_form)
+            }
+            ExprKind::StringInterpolate { args } => {
+                write_interpolation(f, args, *str_form)
+            }
+            kind => write!(f, "{kind}"),
+        }
+    }
+}
+
+impl PrettyDisplay for Bare<'_> {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        match &self.0.kind {
+            ExprKind::Constant(Value::String(_)) | ExprKind::StringInterpolate { .. } => {
+                writeln!(buf, "{self}")
+            }
+            kind => kind.fmt_pretty_inner(buf),
+        }
+    }
+}
+
 impl fmt::Display for ExprKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))
@@ -1589,101 +1770,9 @@ impl ExprKind {
             }
             write!(f, "{close}")
         }
-        // A constant with newlines prints as a raw string, an interpolation
-        // with newlines as a triple-quoted template; other control
-        // characters keep the escaped single-line form.
-        fn raw_printable(s: &str) -> bool {
-            s.contains('\n')
-                && !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
-        }
-        fn raw_hashes(s: &str) -> usize {
-            let mut n = 0;
-            let mut run: Option<usize> = None;
-            for c in s.chars() {
-                match (c, &mut run) {
-                    ('"', _) => run = Some(0),
-                    ('#', Some(r)) => {
-                        *r += 1;
-                        n = n.max(*r);
-                    }
-                    _ => {
-                        if let Some(r) = run.take() {
-                            n = n.max(r);
-                        }
-                    }
-                }
-            }
-            if let Some(r) = run {
-                n = n.max(r);
-            }
-            if s.contains('"') { n + 1 } else { 0 }
-        }
-        fn write_raw(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
-            let n = raw_hashes(s);
-            write!(f, "r")?;
-            for _ in 0..n {
-                write!(f, "#")?;
-            }
-            write!(f, "\"{s}\"")?;
-            for _ in 0..n {
-                write!(f, "#")?;
-            }
-            Ok(())
-        }
-        fn triple_printable(args: &[Expr]) -> bool {
-            let mut any_nl = false;
-            for a in args {
-                if let ExprKind::Constant(Value::String(s)) = &a.kind {
-                    if s.contains('\n') {
-                        any_nl = true;
-                    }
-                    if s.chars().any(|c| {
-                        c.is_control() && c != '\n' && c != '\t' && c != '\r' && c != '\0'
-                    }) {
-                        return false;
-                    }
-                }
-            }
-            any_nl
-        }
-        // A `"` that would touch another quote prints `\"` so no unescaped
-        // `"""` can form; a leading newline prints escaped because the
-        // parser strips a real one.
-        fn write_triple_lit(
-            f: &mut fmt::Formatter<'_>,
-            s: &str,
-            first_content: bool,
-            next_starts_quote: bool,
-            is_final: bool,
-        ) -> fmt::Result {
-            let chars: Vec<char> = s.chars().collect();
-            for (i, c) in chars.iter().enumerate() {
-                let last = i + 1 == chars.len();
-                match c {
-                    '\\' => write!(f, "\\\\")?,
-                    '\t' => write!(f, "\\t")?,
-                    '\r' => write!(f, "\\r")?,
-                    '\0' => write!(f, "\\0")?,
-                    '\n' if i == 0 && first_content => write!(f, "\\n")?,
-                    '\n' => writeln!(f)?,
-                    '"' => {
-                        let touches = chars.get(i + 1) == Some(&'"')
-                            || (last && next_starts_quote)
-                            || (last && is_final);
-                        if touches { write!(f, "\\\"")? } else { write!(f, "\"")? }
-                    }
-                    c => write!(f, "{c}")?,
-                }
-            }
-            Ok(())
-        }
         match self {
             ExprKind::Constant(v @ Value::String(s)) => {
-                if raw_printable(s) {
-                    write_raw(f, s)
-                } else {
-                    v.fmt_ext(f, &parser::GRAPHIX_ESC, true)
-                }
+                write_str_constant(f, v, s, StrForm::Quoted)
             }
             ExprKind::NoOp => Ok(()),
             ExprKind::ExplicitParens(e) => write!(f, "({e})"),
@@ -1817,46 +1906,7 @@ impl ExprKind {
                 Some(t) => write!(f, "catch({}: {t}) {}", c.bind, c.handler),
             },
             ExprKind::StringInterpolate { args } => {
-                if triple_printable(args) {
-                    write!(f, "\"\"\"")?;
-                    for (idx, a) in args.iter().enumerate() {
-                        match &a.kind {
-                            ExprKind::Constant(Value::String(s)) if s.len() > 0 => {
-                                let next_starts_quote =
-                                    args.get(idx + 1).is_some_and(|n| {
-                                        matches!(
-                                            &n.kind,
-                                            ExprKind::Constant(Value::String(t))
-                                                if t.starts_with('"')
-                                        )
-                                    });
-                                write_triple_lit(
-                                    f,
-                                    s,
-                                    idx == 0,
-                                    next_starts_quote,
-                                    idx + 1 == args.len(),
-                                )?;
-                            }
-                            other => write!(f, "\\[{other}]")?,
-                        }
-                    }
-                    write!(f, "\"\"\"")
-                } else {
-                    write!(f, "\"")?;
-                    for s in args.iter() {
-                        match &s.kind {
-                            ExprKind::Constant(Value::String(s)) if s.len() > 0 => {
-                                let es = parser::GRAPHIX_ESC.escape(&*s);
-                                write!(f, "{es}",)?;
-                            }
-                            s => {
-                                write!(f, "[{s}]")?;
-                            }
-                        }
-                    }
-                    write!(f, "\"")
-                }
+                write_interpolation(f, args, StrForm::Quoted)
             }
             ExprKind::ArrayRef { source, i } => {
                 if prints_as_bare_postfix(source) {

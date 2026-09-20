@@ -3,7 +3,7 @@ use super::{
     grow::{grow, note_reason},
     sptoken,
 };
-use crate::expr::{Expr, ExprId, ExprKind, get_origin};
+use crate::expr::{Expr, ExprId, ExprKind, StrForm, get_origin};
 use combine::{
     RangeStream, attempt, between, choice, many, not_followed_by, optional,
     parser::char::string,
@@ -35,6 +35,7 @@ parser! {
                         pos,
                         kind: ExprKind::Constant(Value::from(s)),
                         dec: None,
+                        str_form: Default::default(),
                     },
                     Intp::Expr(s) => s,
                 }
@@ -133,7 +134,9 @@ parser! {
                     .map(|(_, toks)| toks),
             ),
         )
-            .map(|(pos, toks): (_, LPooled<Vec<Intp>>)| finish(pos, toks));
+            .map(|(pos, toks): (_, LPooled<Vec<Intp>>)| {
+                finish(pos, toks).written_as(StrForm::Template)
+            });
         let single = (
             position(),
             between(
