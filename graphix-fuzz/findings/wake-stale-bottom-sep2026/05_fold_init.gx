@@ -1,0 +1,4 @@
+// Same sleep, an empty fold whose init is the bottom.
+// Expected (both engines): the last epoch is quiet.
+// schedule-v1: cap=96 events=768; in0=i64:1 in1=i64:1; in1=i64:0; in0=i64:0; in1=i64:1
+{let v0 = i64:10 % in0; select in1 {i64:1 => { println("arm"); let e: Array<i64> = []; array::fold(e, v0, |a, x| a + x) }, _ => i64:-1}}

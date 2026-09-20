@@ -949,11 +949,7 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         event.init = saved_init;
 
         if forced_taint {
-            return if src_trig {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+            return self.resident.set_bottom(src_trig);
         }
         // A slot's taint is persistent until a clean production, so
         // bottomness is a question about the slots now; the production
@@ -988,18 +984,15 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             None => return self.resident.ride(),
         };
         if tag.is_bottom() || poisoned {
-            let t = if tag.triggers() { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
-            return self.resident.set(TagValue::tagged(Value::Null, t));
+            return self.resident.set_bottom(tag.triggers());
         }
         if self.slots.iter().all(|slot| slot.value.is_some()) {
             match self.operation.finish(&self.slots, &self.current) {
                 Some(value) => self.resident.set(TagValue::tagged(value, tag)),
                 None => self.resident.ride(),
             }
-        } else if tag.triggers() {
-            self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
         } else {
-            self.resident.ride()
+            self.resident.set_bottom(tag.triggers())
         }
     }
 
@@ -1481,12 +1474,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             // the retained init serves only quiet cycles.
             if let Some(t) = init_tag {
                 if t.is_bottom() {
-                    return if t.triggers() {
-                        self.resident
-                            .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                    } else {
-                        self.resident.ride()
-                    };
+                    return self.resident.set_bottom(t.triggers());
                 }
             }
             let tag = match (source_tag, init_tag) {
@@ -1600,11 +1588,7 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         // callback consumes it; only the last slot's state is the result.
         if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_bottom()) {
             // A resize is an event even when the chain is poisoned.
-            return if any_trig || resized {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                self.resident.ride()
-            };
+            return self.resident.set_bottom(any_trig || resized);
         }
         if let Some(last) = self.slots.last() {
             if let Some(value) = last.this_cycle.clone() {

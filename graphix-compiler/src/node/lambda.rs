@@ -460,6 +460,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                         event.variables.insert(id, TagValue::stale(v.clone()));
                     }
                 });
+            } else if woke && !tag.triggers() {
+                pat.ids(&mut |id| {
+                    ctx.rt.store_insert_standing(
+                        id,
+                        TagValue::tagged(Value::Null, Tag::STALE_BOTTOM),
+                    );
+                });
             }
             // Publish triggering deliveries only. A fresh bottom persists
             // in the store so a later quiet read sees the standing bottom,

@@ -1481,13 +1481,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         event.variables.insert(arg.id, TagValue::tagged(v, tag));
                     }
                     set.push(arg.id);
-                } else if woke && !tag.is_bottom() {
+                } else if woke {
                     // Wake catch-up: the standing entry may have drifted
                     // behind while the arm slept; refresh it, stale.
-                    ctx.rt.store_insert_standing(
-                        arg.id,
-                        TagValue::stale(tv.value_cloned()),
-                    );
+                    let standing = if tag.is_bottom() {
+                        TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
+                    } else {
+                        TagValue::stale(tv.value_cloned())
+                    };
+                    ctx.rt.store_insert_standing(arg.id, standing);
                 } else if ctx.frame_depth > 0 && !tag.is_bottom() {
                     // In a frame the store holds the pre-frame value; publish
                     // the frame's value on the cycle-scoped overlay, stale.

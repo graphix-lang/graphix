@@ -770,11 +770,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let pat_up = guard_tags.iter().any(|t| t.is_some_and(|t| t.triggers()));
         // A bottom scrutinee bottoms the select; it consults no guards.
         if bottomed {
-            return if arg_prod.triggers() {
-                resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            } else {
-                resident.ride()
-            };
+            return resident.set_bottom(arg_prod.triggers());
         }
         if crate::dbgenv::graphix_dbg_select() {
             eprintln!(

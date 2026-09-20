@@ -2193,3 +2193,102 @@ run!(skip_sleep_arm_computes_on_first_take, SKIP_SLEEP_ARM_COMPUTES_ON_FIRST_TAK
     Ok(Value::String(s)) => &**s == "CA (tls)",
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A scrutinee that went bottom while its select slept is bottom at the
+// wake: x=4 reselects the arm and emits nothing.
+// findings/wake-stale-bottom-sep2026/
+const WAKE_STALE_BOTTOM_SCRUTINEE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4, 5]);
+  let d = uniq(select x { 1 | 2 => 1, _ => 0 });
+  let v0 = 10 / d;
+  let r = select x {
+    1 | 4 => { println("arm"); select v0 { 10 => 100, n => n } },
+    _ => -1
+  };
+  array::group(r, |n, _| n == 4)
+}
+"#;
+
+run!(wake_stale_bottom_scrutinee, WAKE_STALE_BOTTOM_SCRUTINEE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![100, -1, -1, -1]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The same through a let inside the arm.
+const WAKE_STALE_BOTTOM_LET: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4, 5]);
+  let d = uniq(select x { 1 | 2 => 1, _ => 0 });
+  let v0 = 10 / d;
+  let r = select x {
+    1 | 4 => { println("arm"); { let y = v0; y + 1 } },
+    _ => -1
+  };
+  array::group(r, |n, _| n == 4)
+}
+"#;
+
+run!(wake_stale_bottom_let, WAKE_STALE_BOTTOM_LET, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![11, -1, -1, -1]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The same through a call argument.
+const WAKE_STALE_BOTTOM_CALL: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4, 5]);
+  let d = uniq(select x { 1 | 2 => 1, _ => 0 });
+  let v0 = 10 / d;
+  let f = |y: i64| -> i64 y + 1;
+  let r = select x {
+    1 | 4 => { println("arm"); f(v0) },
+    _ => -1
+  };
+  array::group(r, |n, _| n == 4)
+}
+"#;
+
+run!(wake_stale_bottom_call, WAKE_STALE_BOTTOM_CALL, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![11, -1, -1, -1]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The same through a collection source.
+const WAKE_STALE_BOTTOM_MAP_SOURCE: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4, 5]);
+  let d = uniq(select x { 1 | 2 => 1, _ => 0 });
+  let v0 = 10 / d;
+  let r = select x {
+    1 | 4 => { println("arm"); array::fold(array::map([v0, 3], |y| y + 1), 0, |a, y| a + y) },
+    _ => -1
+  };
+  array::group(r, |n, _| n == 4)
+}
+"#;
+
+run!(wake_stale_bottom_map_source, WAKE_STALE_BOTTOM_MAP_SOURCE, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![15, -1, -1, -1]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);

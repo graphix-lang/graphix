@@ -207,6 +207,15 @@ impl TagValue {
         self
     }
 
+    /// A bottom production whose stale bit follows `trig`. The resident
+    /// of a node that slept through its input's fresh bottom still holds
+    /// a value, so a bottom input sets the resident and never rides it.
+    #[inline]
+    pub fn set_bottom(&mut self, trig: bool) -> &TagValue {
+        let tag = if trig { Tag::FRESH_BOTTOM } else { Tag::STALE_BOTTOM };
+        self.set(Self::tagged(Value::Null, tag))
+    }
+
     /// The quiet-cycle production: set STALE in place, keep
     /// bottomness, hand back the borrow.
     #[inline]

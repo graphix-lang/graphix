@@ -289,7 +289,10 @@ node graph IS the IR — there is no parallel typed IR
   the only events it re-raises are the fires no selected reader saw,
   once, at their current value (one fire bit per arm-body input per
   select, consumed by whichever arm reads it; pattern binds and a
-  destructuring let's siblings are facets of one input). Sleep state is
+  destructuring let's siblings are facets of one input). An input that
+  went bottom during the sleep is bottom at the wake: a bottom input
+  SETS a node's resident (`TagValue::set_bottom`), never rides it, and
+  every wake refresh stands a stale bottom like a value. Sleep state is
   LOCAL: every skip-owning node owns a `slept` bit its `sleep()` sets and
   its next update takes — no ExecCtx globals (parallel compile and a
   parallel evaluator stay possible). The restart builtins

@@ -454,9 +454,7 @@ macro_rules! dense_gate {
     }};
     ($resident:expr, $ctx:ident, $trig:expr, $bottom:expr, $woke:expr) => {{
         if $bottom {
-            let tag =
-                if $trig { $crate::Tag::FRESH_BOTTOM } else { $crate::Tag::STALE_BOTTOM };
-            return $resident.set($crate::TagValue::tagged(Value::Null, tag));
+            return $resident.set_bottom($trig);
         }
         if !($trig || $resident.tag().is_bottom() || $ctx.frame_depth > 0 || $woke) {
             return $resident.ride();

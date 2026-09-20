@@ -189,7 +189,13 @@ downstream of a publish seam still ride: `Bind::update` re-publishes a
 quiet wake production (`<-` targets holding a value are still held
 back — sleep is pause), `CallSite` refreshes its arg ids' standing
 entries, `GXLambda` re-seeds its formals, MapQ rebuilds its collection
-from the refreshed slots.
+from the refreshed slots. A quiet BOTTOM is republished the same way: an
+input that went bottom during the sleep delivers STALE bottom at the
+wake, and the seam must stand a stale bottom in the store or its readers
+see the pre-sleep value. For the same reason a node whose input is
+bottom sets its resident (`TagValue::set_bottom`) and never rides it:
+the resident of a node that slept through the fresh bottom is a value.
+Pins: `findings/wake-stale-bottom-sep2026/`.
 
 ### The builtin wrapper (`CachedArgs`, package-core)
 

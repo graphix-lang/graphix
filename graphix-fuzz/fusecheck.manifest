@@ -491,4 +491,10 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 2	wake-catchup-sep2026/05_noarm_window.gx
 3	wake-catchup-sep2026/06_nested_composition.gx
 0	wake-catchup-sep2026/07_fold_hof_qop_missed_emission.gx
+4	wake-stale-bottom-sep2026/00_plain_select.gx
+18	wake-stale-bottom-sep2026/01_seq_step.gx
+4	wake-stale-bottom-sep2026/02_let.gx
+4	wake-stale-bottom-sep2026/03_call.gx
+5	wake-stale-bottom-sep2026/04_map_source.gx
+5	wake-stale-bottom-sep2026/05_fold_init.gx
 4	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx

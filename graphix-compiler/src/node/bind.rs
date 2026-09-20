@@ -328,26 +328,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         }
         // After a sleep the store entry may lag a stale recompute;
         // re-publish quietly (design/wake_catchup.md).
-        let wake_refresh =
-            woke && !tag.triggers() && !tag.is_bottom() && !keep_connect_target_value;
+        let wake_refresh = woke && !tag.triggers() && !keep_connect_target_value;
         if !keep_connect_target_value
             && (tag.triggers()
                 || (!self.ever_published && !tag.is_bottom())
                 || wake_refresh)
         {
+            let quiet = !tag.triggers();
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
-                    event
-                        .variables
-                        .insert(id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+                    event.variables.insert(id, TagValue::tagged(Value::Null, tag));
                     ctx.rt.store_insert(
                         id,
                         TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
                     );
-                    ctx.rt.notify_set(id);
+                    if !quiet {
+                        ctx.rt.notify_set(id);
+                    }
                 });
             } else {
-                let quiet = !tag.triggers();
                 let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
                     event.variables.insert(id, TagValue::tagged(v.clone(), tag));
