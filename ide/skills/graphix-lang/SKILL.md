@@ -401,8 +401,13 @@ use tui::{
 ```
 
 Types first, then values, then one line per module. An import nothing
-uses goes: it tells the reader the file does something it does not. The
-book's examples still glob; do not copy that.
+uses goes: it tells the reader the file does something it does not. A
+group names a widget module (`self`) or its function, not both:
+`overlay::{self, overlay}` is refused (both are `overlay`), so import
+what you would have qualified, `overlay::{Layer, layer, overlay}`. Two
+explicit imports of one name are an error where a glob silently lost to
+the explicit one. `use Collection::*` (a trait's methods) is the one
+glob the book teaches.
 
 Interfaces: `foo.gxi` beside `foo.gx` (directories: `mod.gx`/`mod.gxi`);
 `val`, `type`, `mod`, `trait`, `impl T for X;` declarations with `///`
