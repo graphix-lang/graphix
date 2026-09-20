@@ -57,12 +57,16 @@ allocation can be avoided, `smallvec` where it cannot.
 
 Builds go to `~/tmp/target` (tmpfs; centrally configured — never build
 elsewhere). Dev profile is `opt-level = "s"`, no debug info; release is
-`opt-level = 3`, LTO, one codegen unit. Do not build release unless you
-must.
+`opt-level = 3`, LTO, one codegen unit, stripped; `quick` is release
+with thin LTO and 16 codegen units: a third of the compile time, nearly
+the speed. Use `--profile quick` (`~/tmp/target/quick/`) wherever a
+release-like binary will do; build release only when you must. Dev is
+the fastest way through a full `cargo test`.
 
 ```bash
 cargo build                              # debug
 cargo build -p graphix-shell             # one crate
+cargo build --profile quick -p graphix-shell   # near-release speed, 1/3 the build
 cargo test                               # THE gate: whole workspace, from the root
 cargo test -p graphix-tests              # one crate while iterating
 cargo test --workspace --features slow-tests   # the release gate
