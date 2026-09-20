@@ -325,7 +325,7 @@ mod tests {
             "use b::x;\n// why\nuse a::x",
             "use b::x;\n// why\nuse a::x\n",
         );
-        formats_to(Program, "{ use b::x; use a::y; y }", "{use a::y; use b::x; y}\n");
+        formats_to(Program, "{ use b::x; use a::y; y }", "{ use a::y; use b::x; y }\n");
         formats_to(
             Interface,
             "use b::x; use a::{z, y}; val v: i64",

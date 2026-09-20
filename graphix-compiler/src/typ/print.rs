@@ -85,14 +85,14 @@ impl Type {
                 write!(f, ")")
             }
             Self::Struct(ts) => {
-                write!(f, "{{")?;
+                write!(f, "{{ ")?;
                 for (i, (n, t)) in ts.iter().enumerate() {
                     write!(f, "{n}: {t}")?;
                     if i < ts.len() - 1 {
                         write!(f, ", ")?
                     }
                 }
-                write!(f, "}}")
+                write!(f, " }}")
             }
             Self::Set(s) => {
                 write!(f, "[")?;

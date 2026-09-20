@@ -1,10 +1,10 @@
 use super::Sig;
 use crate::{
     expr::{
-        ApplyExpr, Attr, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind, ImplExpr,
-        LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqTrigger, SigItem, SigKind,
-        StructExpr, StructWithExpr, TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr,
-        UseItem, parser,
+        ApplyExpr, Arg, Attr, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind,
+        ImplExpr, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqTrigger, SigItem,
+        SigKind, StructExpr, StructWithExpr, TraitExpr, TraitMethod, TypeDefBody,
+        TypeDefExpr, UseItem, parser,
     },
     typ::Type,
 };
@@ -141,6 +141,14 @@ fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
     if exprs.is_empty() {
         return writeln!(buf, "{open}{close}");
     }
+    if let ([e], ")") = (exprs, close)
+        && hugs_parens(f(e))
+    {
+        write!(buf, "{open}")?;
+        f(e).fmt_pretty(buf)?;
+        buf.kill_newline();
+        return writeln!(buf, "{close}");
+    }
     writeln!(buf, "{}", open)?;
     buf.with_indent::<fmt::Result, _>(2, |buf| {
         for i in 0..exprs.len() {
@@ -212,6 +220,12 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
     }
 }
 
+/// Whether `e`, the only argument between parentheses, opens on their
+/// line and closes with them: `f({`, `` `Tag([ ``.
+fn hugs_parens(e: &Expr) -> bool {
+    e.dec.is_none() && opens_with_bracket(&e.kind)
+}
+
 /// The expression a head introduces (`let x =`, `x <-`, `name:`, `=>`);
 /// the head has been written without its trailing space. It follows on
 /// the head's line when it fits there or opens with a bracket, else it
@@ -231,7 +245,14 @@ fn pretty_tail_kind(buf: &mut PrettyBuf, e: &ExprKind) -> fmt::Result {
         return Ok(());
     }
     if opens_with_bracket(e) {
-        return e.fmt_pretty_inner(buf);
+        let start = buf.len();
+        let col = buf.col();
+        e.fmt_pretty_inner(buf)?;
+        let first = buf.buf[start..].find('\n').unwrap_or(buf.len() - start);
+        if col + first <= buf.limit {
+            return Ok(());
+        }
+        buf.buf.truncate(start);
     }
     buf.buf.pop();
     writeln!(buf)?;
@@ -303,6 +324,11 @@ impl PrettyBuf {
         r
     }
 
+    /// The width of the line being written.
+    pub fn col(&self) -> usize {
+        self.buf.len() - self.buf.rfind('\n').map_or(0, |i| i + 1)
+    }
+
     pub fn kill_newline(&mut self) {
         if let Some('\n') = self.buf.chars().next_back() {
             self.buf.pop();
@@ -337,11 +363,12 @@ pub trait PrettyDisplay: fmt::Display {
     fn fmt_flat(&self, buf: &mut PrettyBuf) -> Result<bool, fmt::Error> {
         use fmt::Write;
         let start = buf.len();
-        let col = start - buf.buf.rfind('\n').map_or(0, |i| i + 1);
+        let col = buf.col();
         writeln!(buf, "{}", self)?;
         // Best-effort: embedded newlines overcount and a long token can
         // exceed any limit.
-        let fits = col + buf.len() - start - 1 <= buf.limit;
+        // one column is kept for the `;` or `,` that follows
+        let fits = col + buf.len() - start < buf.limit;
         if !fits {
             buf.buf.truncate(start);
         }
@@ -444,10 +471,15 @@ impl PrettyDisplay for TypeDefExpr {
         self.write_name_and_params(buf)?;
         match &self.body {
             TypeDefBody::Abstract(None) => Ok(()),
-            TypeDefBody::Abstract(Some(rep)) => write!(buf, " = Abstract<{rep}>"),
+            TypeDefBody::Abstract(Some(rep)) => {
+                write!(buf, " = Abstract<")?;
+                rep.fmt_pretty(buf)?;
+                buf.kill_newline();
+                writeln!(buf, ">")
+            }
             TypeDefBody::Alias(typ) => {
-                writeln!(buf, " =")?;
-                buf.with_indent(2, |buf| typ.fmt_pretty(buf))
+                write!(buf, " = ")?;
+                typ.fmt_pretty(buf)
             }
         }
     }
@@ -776,7 +808,7 @@ impl PrettyDisplay for StructWithExpr {
                             && Path::basename(&**n) == Some(&**name)
                             && !parser::RESERVED_BINDING.contains(&name.as_str()) =>
                     {
-                        write!(buf, "{name}")?
+                        writeln!(buf, "{name}")?
                     }
                     e => {
                         write!(buf, "{name}:")?;
@@ -831,7 +863,7 @@ impl PrettyDisplay for StructExpr {
                             && Path::basename(&**name) == Some(&**n)
                             && !parser::RESERVED_BINDING.contains(&n.as_str()) =>
                     {
-                        write!(buf, "{n}")?
+                        writeln!(buf, "{n}")?
                     }
                     e => {
                         write!(buf, "{n}:")?;
@@ -909,6 +941,14 @@ impl PrettyDisplay for ApplyExpr {
             write!(buf, ")")?;
         }
         buf.kill_newline();
+        if let [(None, arg)] = &args[..]
+            && hugs_parens(arg)
+        {
+            write!(buf, "(")?;
+            arg.fmt_pretty(buf)?;
+            buf.kill_newline();
+            return writeln!(buf, ")");
+        }
         writeln!(buf, "(")?;
         buf.with_indent::<fmt::Result, _>(2, |buf| {
             for i in 0..args.len() {
@@ -938,126 +978,106 @@ impl PrettyDisplay for ApplyExpr {
     }
 }
 
-impl fmt::Display for LambdaExpr {
+impl fmt::Display for Arg {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let LambdaExpr { args, vargs, rtype, constraints, throws, body } = self;
-        for (i, (tvar, typ)) in constraints.iter().enumerate() {
+        if self.labeled.is_some() {
+            write!(f, "#")?;
+        }
+        write!(f, "{}", self.pattern)?;
+        if let Some(t) = &self.constraint {
+            write!(f, ": {t}")?
+        }
+        match &self.labeled {
+            Some(Some(def)) => write!(f, " = {def}"),
+            Some(None) | None => Ok(()),
+        }
+    }
+}
+
+impl LambdaExpr {
+    /// The quantifiers in front of the opening bar.
+    fn write_constraints(&self, f: &mut impl Write) -> fmt::Result {
+        for (i, (tvar, typ)) in self.constraints.iter().enumerate() {
             write!(f, "{tvar}: {typ}")?;
-            if i < constraints.len() - 1 {
+            if i < self.constraints.len() - 1 {
                 write!(f, ", ")?;
             }
         }
+        Ok(())
+    }
+
+    /// The arguments between the bars, each followed by `sep` but the
+    /// last, which `end` follows.
+    fn write_args(&self, f: &mut impl Write, sep: &str, end: &str) -> fmt::Result {
+        let n = self.args.len() + self.vargs.is_some() as usize;
+        let after = |i: usize| if i + 1 < n { sep } else { end };
+        for (i, a) in self.args.iter().enumerate() {
+            write!(f, "{a}{}", after(i))?;
+        }
+        match &self.vargs {
+            None => Ok(()),
+            Some(None) => write!(f, "@args{end}"),
+            Some(Some(typ)) => write!(f, "@args: {typ}{end}"),
+        }
+    }
+
+    /// What follows the closing bar, up to the body.
+    fn write_returns(&self, f: &mut impl Write) -> fmt::Result {
+        match &self.rtype {
+            None => (),
+            Some(Type::Fn(ft)) => write!(f, " -> ({ft})")?,
+            Some(Type::ByRef(t)) => match &**t {
+                Type::Fn(ft) => write!(f, " -> &({ft})")?,
+                t => write!(f, " -> &{t}")?,
+            },
+            Some(t) => write!(f, " -> {t}")?,
+        }
+        match &self.throws {
+            None => Ok(()),
+            Some(t) => write!(f, " throws {t}"),
+        }
+    }
+}
+
+impl fmt::Display for LambdaExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.write_constraints(f)?;
         write!(f, "|")?;
-        for (i, a) in args.iter().enumerate() {
-            match &a.labeled {
-                None => {
-                    write!(f, "{}", a.pattern)?;
-                    if let Some(t) = &a.constraint {
-                        write!(f, ": {t}")?
-                    }
-                }
-                Some(def) => {
-                    write!(f, "#{}", a.pattern)?;
-                    if let Some(t) = &a.constraint {
-                        write!(f, ": {t}")?
-                    }
-                    if let Some(def) = def {
-                        write!(f, " = {def}")?;
-                    }
-                }
-            }
-            if vargs.is_some() || i < args.len() - 1 {
-                write!(f, ", ")?
-            }
-        }
-        if let Some(typ) = vargs {
-            match typ {
-                None => write!(f, "@args")?,
-                Some(typ) => write!(f, "@args: {typ}")?,
-            }
-        }
-        write!(f, "| ")?;
-        if let Some(t) = rtype {
-            match t {
-                Type::Fn(ft) => write!(f, "-> ({ft}) ")?,
-                Type::ByRef(t) => match &**t {
-                    Type::Fn(ft) => write!(f, "-> &({ft}) ")?,
-                    t => write!(f, "-> &{t} ")?,
-                },
-                t => write!(f, "-> {t} ")?,
-            }
-        }
-        if let Some(t) = throws {
-            write!(f, "throws {t} ")?
-        }
-        match body {
-            Either::Right(builtin) => write!(f, "'{builtin}"),
-            Either::Left(body) => write!(f, "{body}"),
+        self.write_args(f, ", ", "")?;
+        write!(f, "|")?;
+        self.write_returns(f)?;
+        match &self.body {
+            Either::Right(builtin) => write!(f, " '{builtin}"),
+            Either::Left(body) => write!(f, " {body}"),
         }
     }
 }
 
 impl PrettyDisplay for LambdaExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let LambdaExpr { args, vargs, rtype, constraints, throws, body } = self;
-        for (i, (tvar, typ)) in constraints.iter().enumerate() {
-            write!(buf, "{tvar}: {typ}")?;
-            if i < constraints.len() - 1 {
-                write!(buf, ", ")?;
-            }
-        }
+        let start = buf.len();
+        self.write_constraints(buf)?;
         write!(buf, "|")?;
-        for (i, a) in args.iter().enumerate() {
-            match &a.labeled {
-                None => {
-                    write!(buf, "{}", a.pattern)?;
-                    if let Some(typ) = &a.constraint {
-                        write!(buf, ": {typ}")?;
-                    }
-                }
-                Some(def) => {
-                    write!(buf, "#{}", a.pattern)?;
-                    if let Some(t) = &a.constraint {
-                        write!(buf, ": {t}")?
-                    }
-                    if let Some(def) = def {
-                        write!(buf, " = {def}")?;
-                    }
-                }
-            }
-            if vargs.is_some() || i < args.len() - 1 {
-                write!(buf, ", ")?
-            }
-        }
-        if let Some(typ) = vargs {
-            write!(buf, "@args")?;
-            if let Some(t) = typ {
-                write!(buf, ": {t}")?
-            }
-        }
+        self.write_args(buf, ", ", "")?;
         write!(buf, "|")?;
-        if let Some(t) = rtype {
-            match t {
-                Type::Fn(ft) => write!(buf, " -> ({ft})")?,
-                Type::ByRef(t) => match &**t {
-                    Type::Fn(ft) => write!(buf, " -> &({ft})")?,
-                    t => write!(buf, " -> &{t}")?,
-                },
-                t => write!(buf, " -> {t}")?,
-            }
+        self.write_returns(buf)?;
+        // the head's line also holds a builtin's name, else the ` {` of a block
+        let tail = match &self.body {
+            Either::Right(builtin) => builtin.len() + 3,
+            Either::Left(_) => 2,
+        };
+        let broken = buf.col() + tail > buf.limit && !self.args.is_empty();
+        if broken {
+            buf.buf.truncate(start);
+            self.write_constraints(buf)?;
+            writeln!(buf, "|")?;
+            buf.with_indent(2, |buf| self.write_args(buf, ",\n", "\n"))?;
+            write!(buf, "|")?;
+            self.write_returns(buf)?;
         }
-        if let Some(t) = throws {
-            write!(buf, " throws {t}")?
-        }
-        match body {
+        match &self.body {
             Either::Right(builtin) => writeln!(buf, " '{builtin}"),
-            Either::Left(body) if matches!(body.kind, ExprKind::Do { .. }) => {
-                pretty_tail(buf, body)
-            }
-            Either::Left(body) => {
-                writeln!(buf)?;
-                buf.with_indent(2, |buf| body.fmt_pretty(buf))
-            }
+            Either::Left(body) => pretty_tail(buf, body),
         }
     }
 }
@@ -1065,7 +1085,7 @@ impl PrettyDisplay for LambdaExpr {
 impl fmt::Display for SelectExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let SelectExpr { arg, arms } = self;
-        write!(f, "select {arg} {{")?;
+        write!(f, "select {arg} {{ ")?;
         for (i, (pat, rhs)) in arms.iter().enumerate() {
             write_leading(f, &rhs.dec)?;
             if let Some(tp) = &pat.type_predicate {
@@ -1080,7 +1100,7 @@ impl fmt::Display for SelectExpr {
                 write!(f, ", ")?
             }
         }
-        write!(f, "}}")
+        write!(f, " }}")
     }
 }
 
@@ -1132,7 +1152,6 @@ impl PrettyDisplay for ExprKind {
             | ExprKind::Ref { .. }
             | ExprKind::StructRef { .. }
             | ExprKind::TupleRef { .. }
-            | ExprKind::TypeDef { .. }
             | ExprKind::ArrayRef { .. }
             | ExprKind::MapRef { .. }
             | ExprKind::ArraySlice { .. }
@@ -1198,6 +1217,7 @@ impl PrettyDisplay for ExprKind {
             ExprKind::List { args } => pretty_print_exprs(buf, args, "[<", ">]", ","),
             ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
             ExprKind::Bind(b) => b.fmt_pretty(buf),
+            ExprKind::TypeDef(td) => td.fmt_pretty(buf),
             ExprKind::Trait(t) => t.fmt_pretty(buf),
             ExprKind::Impl(i) => i.fmt_pretty(buf),
             ExprKind::StructWith(sw) => sw.fmt_pretty(buf),
@@ -1263,7 +1283,7 @@ impl PrettyDisplay for ExprKind {
                 pretty_print_exprs(buf, args, "(", ")", ",")
             }
             ExprKind::Construct { name, arg } => {
-                write!(buf, "{name}")?;
+                writeln!(buf, "{name}")?;
                 pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",")
             }
             ExprKind::Struct(st) => st.fmt_pretty(buf),
@@ -1673,7 +1693,7 @@ impl ExprKind {
             ExprKind::TypeDef(td) => write!(f, "{td}"),
             ExprKind::Trait(t) => write!(f, "{t}"),
             ExprKind::Impl(i) => write!(f, "{i}"),
-            ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{", "}", "; "),
+            ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{ ", " }", "; "),
             ExprKind::Seq { queued, trigger, abort, flush, body } => {
                 write!(f, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
@@ -1697,16 +1717,16 @@ impl ExprKind {
                 if !first {
                     write!(f, " ")?;
                 }
-                print_exprs(f, body, "{", "}", "; ")
+                print_exprs(f, body, "{ ", " }", "; ")
             }
             ExprKind::Until(e) => write!(f, "until {e}"),
             ExprKind::TryWith(t) => {
-                print_exprs(f, &t.body, "try {", "}", "; ")?;
+                print_exprs(f, &t.body, "try { ", " }", "; ")?;
                 match &t.constraint {
                     None => write!(f, " with({}) ", t.bind)?,
                     Some(ty) => write!(f, " with({}: {ty}) ", t.bind)?,
                 }
-                print_exprs(f, &t.handler, "{", "}", "; ")
+                print_exprs(f, &t.handler, "{ ", " }", "; ")
             }
             ExprKind::Lambda(l) => write!(f, "{l}"),
             ExprKind::Array { args } => print_exprs(f, args, "[", "]", ", "),
