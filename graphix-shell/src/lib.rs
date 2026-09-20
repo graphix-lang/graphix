@@ -32,6 +32,7 @@ use tokio::{
 mod cache;
 use cache::Entry;
 mod completion;
+pub mod fmt;
 mod input;
 pub mod lsp_backend;
 

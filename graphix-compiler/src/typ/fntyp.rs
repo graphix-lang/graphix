@@ -1260,10 +1260,15 @@ impl FnType {
 }
 
 /// Is this positional parameter a trait method's receiver (`self`
-/// typed by the `self` variable)? It prints bare.
+/// typed by the `self` variable or its application)? It prints as its
+/// type alone.
 fn is_self_param(a: &FnArgType) -> bool {
+    let is_self = |t: &Type| matches!(t, Type::TVar(tv) if &*tv.name == "self");
     matches!(&a.kind, FnArgKind::Positional { name: Some(n) } if &**n == "self")
-        && matches!(&a.typ, Type::TVar(tv) if &*tv.name == "self")
+        && match &a.typ {
+            Type::App(c, _) => is_self(c),
+            t => is_self(t),
+        }
 }
 
 /// The quantifiers a signature prints: the declared ones, minus the
@@ -1293,7 +1298,7 @@ impl fmt::Display for FnType {
         }
         for (i, a) in self.args.iter().enumerate() {
             if is_self_param(a) {
-                write!(f, "self")?;
+                write!(f, "{}", a.typ)?;
             } else {
                 match &a.kind {
                     FnArgKind::Labeled { name, has_default: true } => {
@@ -1353,7 +1358,7 @@ impl PrettyDisplay for FnType {
         buf.with_indent(2, |buf| {
             for (i, a) in self.args.iter().enumerate() {
                 if is_self_param(a) {
-                    writeln!(buf, "self")?;
+                    writeln!(buf, "{}", a.typ)?;
                 } else {
                     match &a.kind {
                         FnArgKind::Labeled { name, has_default: true } => {

@@ -126,6 +126,24 @@ enum Command {
     /// Run the Language Server Protocol server (communicates over stdio).
     /// Editors typically launch this automatically; you don't usually run it directly.
     Lsp,
+    /// Format graphix source: each named file in place, or stdin to
+    /// stdout when no file is named
+    Fmt {
+        /// the .gx and .gxi files to format
+        files: Vec<PathBuf>,
+        /// write nothing; list the files that would change and fail if any would
+        #[arg(long)]
+        check: bool,
+        /// print the formatted text instead of rewriting the files
+        #[arg(long)]
+        stdout: bool,
+        /// stdin is an interface (.gxi)
+        #[arg(long)]
+        interface: bool,
+        /// the line width to fit
+        #[arg(long, default_value_t = graphix_compiler::expr::format::DEFAULT_WIDTH)]
+        width: usize,
+    },
 }
 
 #[derive(Parser)]
@@ -434,6 +452,15 @@ fn main() -> Result<()> {
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
         Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
+        Some(Command::Fmt { files, check, stdout, interface, width }) => {
+            return graphix_shell::fmt::run(graphix_shell::fmt::Args {
+                files,
+                check,
+                stdout,
+                interface,
+                width,
+            });
+        }
         None => (),
     }
     let cfg = match &p.config {

@@ -24,30 +24,107 @@ fn write_seq_let(f: &mut impl Write, b: &BindExpr) -> fmt::Result {
     }
 }
 
-/// A seq trigger the head parser reads back bare; any other shape is
-/// parenthesized so it cannot be taken for the body or for a map access.
-fn trigger_needs_parens(t: &Expr) -> bool {
-    let reads_as_clause = match &t.kind {
-        ExprKind::Apply(a) => {
-            matches!(&a.function.kind, ExprKind::Ref { name } if &*name.0 == "/flush")
-        }
-        _ => false,
+/// The operands of a binary operator, `None` for any other kind.
+fn binop_operands(e: &ExprKind) -> Option<(&Expr, &Expr)> {
+    use ExprKind::*;
+    match e {
+        Eq { lhs, rhs }
+        | Ne { lhs, rhs }
+        | Lt { lhs, rhs }
+        | Gt { lhs, rhs }
+        | Lte { lhs, rhs }
+        | Gte { lhs, rhs }
+        | And { lhs, rhs }
+        | Or { lhs, rhs }
+        | Add { lhs, rhs }
+        | CheckedAdd { lhs, rhs }
+        | Sub { lhs, rhs }
+        | CheckedSub { lhs, rhs }
+        | Mul { lhs, rhs }
+        | CheckedMul { lhs, rhs }
+        | Div { lhs, rhs }
+        | CheckedDiv { lhs, rhs }
+        | Mod { lhs, rhs }
+        | CheckedMod { lhs, rhs }
+        | Sample { lhs, rhs }
+        | StrictSample { lhs, rhs } => Some((lhs, rhs)),
+        _ => None,
+    }
+}
+
+/// The source a postfix form prints bare in front of its suffix.
+fn bare_postfix_source(e: &ExprKind) -> Option<&Expr> {
+    use ExprKind::*;
+    let source = match e {
+        StructRef { source, .. }
+        | TupleRef { source, .. }
+        | ArrayRef { source, .. }
+        | ArraySlice { source, .. }
+        | MapRef { source, .. } => source,
+        Apply(a) => &a.function,
+        Qop(e) | OrNever(e) => e,
+        _ => return None,
     };
-    reads_as_clause
-        || !matches!(
-        t.kind,
-        ExprKind::Ref { .. }
-            | ExprKind::Apply(_)
-            | ExprKind::ExplicitParens(_)
-            | ExprKind::StructRef { .. }
-            | ExprKind::TupleRef { .. }
-            | ExprKind::ArrayRef { .. }
-            | ExprKind::ArraySlice { .. }
-            | ExprKind::Qop(_)
-            | ExprKind::OrNever(_)
-            | ExprKind::Sample { .. }
-            | ExprKind::StrictSample { .. }
-    )
+    prints_as_bare_postfix(source).then_some(&**source)
+}
+
+/// A seq trigger is parenthesized exactly where the head parser would
+/// not read it back bare: a leading `{` is the body, a map access is
+/// refused outside brackets, a call of `flush` is the clause, and the
+/// head admits operator expressions only.
+fn trigger_needs_parens(t: &Expr) -> bool {
+    use ExprKind::*;
+    // the expression whose first token the head parser meets first, and
+    // whether an argument list follows it directly
+    fn leftmost(e: &Expr, called: bool) -> (&Expr, bool) {
+        match (binop_operands(&e.kind), bare_postfix_source(&e.kind)) {
+            (Some((lhs, _)), _) => leftmost(lhs, false),
+            (None, Some(source)) => leftmost(source, matches!(&e.kind, Apply(_))),
+            (None, None) => (e, called),
+        }
+    }
+    fn reads_bare(e: &Expr) -> bool {
+        match &e.kind {
+            MapRef { .. } => false,
+            Ref { .. }
+            | Constant(_)
+            | ExplicitParens(_)
+            | Tuple { .. }
+            | Array { .. }
+            | List { .. }
+            | Map { .. }
+            | Struct(_)
+            | StructWith(_)
+            | Do { .. }
+            | Select(_)
+            | Seq { .. }
+            | Variant { .. }
+            | Construct { .. }
+            | TypeCast { .. }
+            | Never { .. }
+            | Any { .. }
+            | StringInterpolate { .. } => true,
+            k => match (binop_operands(k), bare_postfix_source(k)) {
+                (Some((lhs, rhs)), _) => reads_bare(lhs) && reads_bare(rhs),
+                (None, Some(source)) => reads_bare(source),
+                (None, None) => matches!(
+                    k,
+                    StructRef { .. }
+                        | TupleRef { .. }
+                        | ArrayRef { .. }
+                        | ArraySlice { .. }
+                        | Apply(_)
+                        | Qop(_)
+                        | OrNever(_)
+                ),
+            },
+        }
+    }
+    let reads_as_body_or_clause = match leftmost(t, false) {
+        (Expr { kind: Ref { name }, .. }, true) => &*name.0 == "/flush",
+        (e, _) => matches!(&e.kind, Do { .. } | Struct(_) | StructWith(_) | Map { .. }),
+    };
+    reads_as_body_or_clause || !reads_bare(t)
 }
 
 fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
@@ -1328,8 +1405,6 @@ impl ExprKind {
                 let last = i + 1 == chars.len();
                 match c {
                     '\\' => write!(f, "\\\\")?,
-                    '[' => write!(f, "\\[")?,
-                    ']' => write!(f, "\\]")?,
                     '\t' => write!(f, "\\t")?,
                     '\r' => write!(f, "\\r")?,
                     '\0' => write!(f, "\\0")?,
@@ -1507,7 +1582,7 @@ impl ExprKind {
                                     idx + 1 == args.len(),
                                 )?;
                             }
-                            other => write!(f, "[{other}]")?,
+                            other => write!(f, "\\[{other}]")?,
                         }
                     }
                     write!(f, "\"\"\"")

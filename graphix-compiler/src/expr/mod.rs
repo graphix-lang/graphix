@@ -33,6 +33,7 @@ use std::{
 };
 use triomphe::Arc;
 
+pub mod format;
 mod modpath;
 pub mod parser;
 mod pattern;
