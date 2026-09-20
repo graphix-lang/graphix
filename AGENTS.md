@@ -267,6 +267,7 @@ cargo test --workspace --features slow-tests   # the release gate
 cargo run --bin graphix -- file.gx       # run
 cargo run --bin graphix -- --check file.gx     # compile + typecheck only
 cargo run --bin graphix -- --expand file.gx    # check + print each seq's lowered machine
+cargo run --bin graphix -- fmt file.gx         # format in place (--check, --stdout; stdin when no file)
 ```
 
 Tests run in parallel by design (the compiler supports many instances
@@ -374,6 +375,22 @@ Compiler ids are `image_id!` (the compiler's `atomic_id!` plus
 relocation); netidx's ids and wire format are untouched. A definition
 built by Rust at runtime is `DefOrigin::Runtime` and is never imaged.
 Pins: `stdlib/graphix-tests/src/lang/image.rs`.
+
+**Formatter** (`graphix fmt`, `expr/format.rs`): parse → the one
+printer (`PrettyDisplay`, `expr/print.rs`) → reparse; a result whose
+syntax, comments or attributes differ from the input is refused, never
+written. The AST is canonical, not author-faithful, and the formatter
+prints the canonical form: struct fields, union members and a use
+statement's names (`UseItem::sorted`) are held sorted; `i64`/`f64`
+literals print bare; a run of adjacent undecorated `use` statements
+merges into one per root and visibility, a tree with every shared
+prefix written once. Layout rule: a value follows its head (`let x =`,
+`<-`, `name:`, `=>`) on the head's line when it fits or opens with a
+bracket, else it moves under the head. After a printer change run the
+corpus harness over every `.gx`/`.gxi` here and in `../netidx`:
+`cargo run -p graphix-compiler --example gxfmt -- <files>` (many files:
+round trip + idempotence; one file: prints it; `GXFMT_UNCHECKED=1`
+skips the reparse).
 
 **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`);
 `VfsResolver`/`FilesResolver` are in-core, `NetidxResolver` is in

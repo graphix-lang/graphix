@@ -1,8 +1,9 @@
 use crate::{
     expr::{
-        Decorations, Expr, Origin, Sig,
+        Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind,
+        TryWithExpr, UseItem,
         parser::{parse, parse_sig},
-        print::{PrettyBuf, PrettyDisplay},
+        print::{PrettyBuf, PrettyDisplay, cmp_use_items, use_seg, use_seg_key},
     },
     format_with_flags,
 };
@@ -10,6 +11,7 @@ use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use poolshark::local::LPooled;
 use std::fmt::Write;
+use triomphe::Arc;
 
 pub const DEFAULT_WIDTH: usize = 80;
 
@@ -30,8 +32,112 @@ impl SourceKind {
     }
 }
 
+/// `items` with each run of adjacent use statements rewritten as one
+/// statement per path root and visibility, statements and names sorted.
+/// `as_use` is `None` for anything else, a decorated use included.
+fn merge_uses<T: Clone>(
+    items: &[T],
+    as_use: impl Fn(&T) -> Option<(bool, &Arc<[UseItem]>)>,
+    mk: impl Fn(&T, bool, Arc<[UseItem]>) -> T,
+) -> Arc<[T]> {
+    fn root(n: &UseItem) -> (u8, &str) {
+        use_seg_key(use_seg(n, 0))
+    }
+    let mut merged: LPooled<Vec<T>> = LPooled::take();
+    let mut run: LPooled<Vec<(bool, UseItem)>> = LPooled::take();
+    let mut i = 0;
+    while i < items.len() {
+        let first = &items[i];
+        while let Some((reexport, names)) = items.get(i).and_then(&as_use) {
+            run.extend(names.iter().map(|n| (reexport, n.clone())));
+            i += 1;
+        }
+        if run.is_empty() {
+            merged.push(first.clone());
+            i += 1;
+            continue;
+        }
+        run.sort_by(|(ra, a), (rb, b)| {
+            root(a).cmp(&root(b)).then(ra.cmp(rb)).then_with(|| cmp_use_items(a, b))
+        });
+        for stmt in run.chunk_by(|(ra, a), (rb, b)| ra == rb && root(a) == root(b)) {
+            let names = UseItem::sorted(stmt.iter().map(|(_, n)| n.clone()));
+            merged.push(mk(first, stmt[0].0, names))
+        }
+        run.clear()
+    }
+    Arc::from_iter(merged.drain(..))
+}
+
+fn merge_sig_uses(sig: &Sig) -> Sig {
+    let items = merge_uses(
+        &sig.items,
+        |si| match &si.kind {
+            SigKind::Use { reexport, names } if si.doc.0.is_none() => {
+                Some((*reexport, names))
+            }
+            _ => None,
+        },
+        |si, reexport, names| SigItem {
+            kind: SigKind::Use { reexport, names },
+            ..si.clone()
+        },
+    );
+    Sig { items, toplevel: sig.toplevel }
+}
+
+fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
+    merge_uses(
+        exprs,
+        |e| match &e.kind {
+            ExprKind::Use { reexport, names } if e.dec.is_none() => {
+                Some((*reexport, names))
+            }
+            _ => None,
+        },
+        |e, reexport, names| Expr {
+            id: e.id,
+            ori: e.ori.clone(),
+            pos: e.pos,
+            kind: ExprKind::Use { reexport, names },
+            dec: None,
+        },
+    )
+}
+
+/// `e` with the use statements of every statement list in it merged.
+fn merge_uses_within(e: &Expr) -> Expr {
+    use ExprKind::*;
+    let e = crate::stack::ensure_sufficient(|| e.map_children(&mut merge_uses_within));
+    let kind = match &e.kind {
+        Do { exprs } => Do { exprs: merge_expr_uses(exprs) },
+        Seq { queued, trigger, abort, flush, body } => Seq {
+            queued: *queued,
+            trigger: trigger.clone(),
+            abort: abort.clone(),
+            flush: flush.clone(),
+            body: merge_expr_uses(body),
+        },
+        TryWith(t) => TryWith(Arc::new(TryWithExpr {
+            body: merge_expr_uses(&t.body),
+            handler: merge_expr_uses(&t.handler),
+            ..(**t).clone()
+        })),
+        Module { name, value: ModuleKind::Dynamic { sandbox, sig, source } } => Module {
+            name: name.clone(),
+            value: ModuleKind::Dynamic {
+                sandbox: sandbox.clone(),
+                sig: merge_sig_uses(sig),
+                source: source.clone(),
+            },
+        },
+        _ => return e,
+    };
+    Expr { id: e.id, ori: e.ori.clone(), pos: e.pos, kind, dec: e.dec.clone() }
+}
+
 enum Parsed {
-    Program(triomphe::Arc<[Expr]>),
+    Program(Arc<[Expr]>),
     Interface(Sig),
 }
 
@@ -39,8 +145,13 @@ impl Parsed {
     fn new(kind: SourceKind, text: &str) -> Result<Self> {
         let ori = Origin::from_str(text);
         Ok(match kind {
-            SourceKind::Program => Self::Program(parse(ori)?),
-            SourceKind::Interface => Self::Interface(parse_sig(ori)?),
+            SourceKind::Program => {
+                let exprs = parse(ori)?;
+                let exprs: LPooled<Vec<Expr>> =
+                    exprs.iter().map(merge_uses_within).collect();
+                Self::Program(merge_expr_uses(&exprs))
+            }
+            SourceKind::Interface => Self::Interface(merge_sig_uses(&parse_sig(ori)?)),
         })
     }
 
@@ -188,6 +299,54 @@ mod tests {
         let src = "trait Coll { val map: fn(self<'a>, f: fn(x: 'a) -> 'b) -> self<'b> }";
         stable(SourceKind::Interface, src);
         stable(SourceKind::Program, src);
+    }
+
+    fn formats_to(kind: SourceKind, src: &str, want: &str) {
+        assert_eq!(&**format_source(kind, src, DEFAULT_WIDTH).unwrap(), want);
+        stable(kind, src)
+    }
+
+    #[test]
+    fn uses_merge_at_every_level() {
+        use SourceKind::*;
+        formats_to(
+            Program,
+            "use foo::{bar::baz, bar::zee}",
+            "use foo::bar::{baz, zee}\n",
+        );
+        formats_to(
+            Program,
+            "use b::y; use a::c::{e, d}; pub use a::p; use a::c; use a::*; use super::q; x",
+            "use super::q;\nuse a::{c::{self, d, e}, *};\npub use a::p;\nuse b::y;\nx\n",
+        );
+        formats_to(Program, "use a::x as y; use a::x::z", "use a::x::{self as y, z}\n");
+        formats_to(
+            Program,
+            "use b::x;\n// why\nuse a::x",
+            "use b::x;\n// why\nuse a::x\n",
+        );
+        formats_to(Program, "{ use b::x; use a::y; y }", "{use a::y; use b::x; y}\n");
+        formats_to(
+            Interface,
+            "use b::x; use a::{z, y}; val v: i64",
+            "use a::{y, z};\nuse b::x;\nval v: i64\n",
+        );
+        let long = "use tui::{line, span, style, block::block, input_handler::{Event, on_press}, layout::{child, layout}, list::list}";
+        formats_to(
+            Program,
+            long,
+            "use tui::{\n  block::block,\n  input_handler::{Event, on_press},\n  layout::{child, layout},\n  line,\n  list::list,\n  span,\n  style\n}\n",
+        );
+    }
+
+    #[test]
+    fn default_number_types_print_bare() {
+        use SourceKind::Program;
+        formats_to(
+            Program,
+            "[i64:1, -2, f64:3., 4.5, u8:6, f32:7., - 8, 1e3]",
+            "[1, -2, 3.0, 4.5, u8:6, f32:7., -i64:8, 1000.0]\n",
+        );
     }
 
     #[test]

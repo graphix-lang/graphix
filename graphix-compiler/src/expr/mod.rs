@@ -222,6 +222,14 @@ pub struct UseItem {
 }
 
 impl UseItem {
+    /// The names of one use statement in the order every statement
+    /// holds them, so that a printed statement reads back equal.
+    pub fn sorted(names: impl IntoIterator<Item = UseItem>) -> Arc<[UseItem]> {
+        let mut names: LPooled<Vec<UseItem>> = names.into_iter().collect();
+        names.sort_by(print::cmp_use_items);
+        Arc::from_iter(names.drain(..))
+    }
+
     pub fn plain(path: ModPath) -> Self {
         Self { path, rename: None }
     }

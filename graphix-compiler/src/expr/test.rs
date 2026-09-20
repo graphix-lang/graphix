@@ -587,7 +587,7 @@ fn reexport() -> impl Strategy<Value = bool> {
 
 fn usestmt() -> impl Strategy<Value = Expr> {
     (reexport(), collection::vec(use_item(), 1..4)).prop_map(|(reexport, names)| {
-        ExprKind::Use { reexport, names: Arc::from_iter(names) }.to_expr_nopos()
+        ExprKind::Use { reexport, names: UseItem::sorted(names) }.to_expr_nopos()
     })
 }
 
@@ -1129,7 +1129,7 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
         ),
         (reexport(), collection::vec(use_item(), 1..4), option::of(arcstr())).prop_map(
             |(reexport, paths, doc)| SigItem {
-                kind: SigKind::Use { reexport, names: Arc::from_iter(paths) },
+                kind: SigKind::Use { reexport, names: UseItem::sorted(paths) },
                 doc: Doc(doc),
                 pos: Default::default(),
                 ori: None,

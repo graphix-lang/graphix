@@ -12,7 +12,10 @@ use compact_str::format_compact;
 use netidx_core::{path::Path, utils::Either};
 use netidx_value::{Value, parser::VAL_ESC};
 use poolshark::local::LPooled;
-use std::fmt::{self, Formatter, Write};
+use std::{
+    cmp::Ordering,
+    fmt::{self, Formatter, Write},
+};
 
 /// The `let pattern[: type] = ` of a bound seq trigger; the value
 /// follows under the trigger's own parenthesization.
@@ -250,6 +253,21 @@ pub(crate) fn write_leading(
         }
     }
     Ok(())
+}
+
+/// A literal as source text: `i64` and `f64`, the types an unprefixed
+/// number reads as, print bare.
+pub(crate) struct Literal<'a>(pub &'a Value);
+
+impl fmt::Display for Literal<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Value::I64(v) => write!(f, "{v}"),
+            Value::F64(v) if v.is_finite() && v.fract() == 0. => write!(f, "{v}.0"),
+            Value::F64(v) if v.is_finite() => write!(f, "{v}"),
+            v => v.fmt_ext(f, &VAL_ESC, true),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -639,8 +657,14 @@ impl PrettyDisplay for SigItem {
             SigKind::Impl(i) => i.fmt_pretty(buf),
             SigKind::Module(name) => writeln!(buf, "mod {name}"),
             SigKind::Use { reexport, names } => {
+                let start = buf.len();
                 write_use_names(buf, *reexport, names)?;
-                writeln!(buf)
+                if buf.len() - start > buf.limit {
+                    buf.buf.truncate(start);
+                    pretty_use_names(buf, *reexport, names)
+                } else {
+                    writeln!(buf)
+                }
             }
         }
     }
@@ -1102,9 +1126,9 @@ impl PrettyDisplay for ExprKind {
             }};
         }
         match self {
+            ExprKind::Use { reexport, names } => pretty_use_names(buf, *reexport, names),
             ExprKind::Constant(_)
             | ExprKind::NoOp
-            | ExprKind::Use { .. }
             | ExprKind::Ref { .. }
             | ExprKind::StructRef { .. }
             | ExprKind::TupleRef { .. }
@@ -1299,6 +1323,9 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "*")?;
                 buf.with_indent(2, |buf| e.fmt_pretty(buf))
             }
+            ExprKind::Neg(e) if matches!(e.kind, ExprKind::Constant(_)) => {
+                writeln!(buf, "{self}")
+            }
             ExprKind::Neg(e) => {
                 write!(buf, "-")?;
                 e.fmt_pretty(buf)
@@ -1308,69 +1335,174 @@ impl PrettyDisplay for ExprKind {
     }
 }
 
-/// Print a use statement's names grouped under their longest common
-/// prefix (`use a::b`, `use a::{self, b, c::d}`, `use {a, b}`).
-fn write_use_names<W: fmt::Write>(
-    f: &mut W,
+/// The order a use statement lists names in: segment by segment, the
+/// name that ends (`self`) first, then the path roots, then the rest by
+/// name, a glob last.
+pub(crate) fn cmp_use_items(a: &UseItem, b: &UseItem) -> Ordering {
+    let key = use_seg_key;
+    let (mut pa, mut pb) = (Path::parts(&a.path.0), Path::parts(&b.path.0));
+    loop {
+        let (sa, sb) = (pa.next(), pb.next());
+        match key(sa).cmp(&key(sb)) {
+            Ordering::Equal if sa.is_none() => break a.rename.cmp(&b.rename),
+            Ordering::Equal => (),
+            o => break o,
+        }
+    }
+}
+
+pub(crate) fn use_seg_key(s: Option<&str>) -> (u8, &str) {
+    match s {
+        None => (0, ""),
+        Some("self") => (1, ""),
+        Some("super") => (2, ""),
+        Some("package") => (3, ""),
+        Some("*") => (5, ""),
+        Some(s) => (4, s),
+    }
+}
+
+pub(crate) fn use_seg(item: &UseItem, depth: usize) -> Option<&str> {
+    Path::parts(&item.path.0).nth(depth)
+}
+
+/// The names of a use statement as a tree of path segments: `items` is
+/// sorted (`UseItem::sorted`) and shares its first `depth` segments.
+#[derive(Clone, Copy)]
+struct UseNames<'a> {
+    items: &'a [UseItem],
+    depth: usize,
+}
+
+impl<'a> UseNames<'a> {
+    /// The entries at this level: a name that ends here, or every name
+    /// continuing through one segment.
+    fn entries(self) -> impl Iterator<Item = UseNames<'a>> {
+        let UseNames { mut items, depth } = self;
+        std::iter::from_fn(move || {
+            let seg = use_seg(items.first()?, depth);
+            let n = match seg {
+                None => 1,
+                Some(_) => items.iter().take_while(|i| use_seg(i, depth) == seg).count(),
+            };
+            let (entry, rest) = items.split_at(n);
+            items = rest;
+            Some(UseNames { items: entry, depth })
+        })
+    }
+
+    /// The names under this entry's segment.
+    fn under(&self) -> UseNames<'a> {
+        UseNames { items: self.items, depth: self.depth + 1 }
+    }
+
+    /// Write this entry up to a group that must be laid out: the rest
+    /// of the entry when it has one, else nothing.
+    fn write_path(&self, f: &mut impl Write) -> Result<Option<UseNames<'a>>, fmt::Error> {
+        let mut this = *self;
+        loop {
+            match use_seg(&this.items[0], this.depth) {
+                None => write!(f, "self")?,
+                Some(seg) => {
+                    write!(f, "{seg}")?;
+                    let under = this.under();
+                    let ends = under.items.len() == 1
+                        && use_seg(&under.items[0], under.depth).is_none();
+                    if !ends {
+                        write!(f, "::")?;
+                        let mut entries = under.entries();
+                        match (entries.next(), entries.next()) {
+                            (Some(only), None)
+                                if use_seg(&only.items[0], only.depth).is_some() =>
+                            {
+                                this = only;
+                                continue;
+                            }
+                            _ => return Ok(Some(under)),
+                        }
+                    }
+                }
+            }
+            if let Some(n) = &this.items[0].rename {
+                write!(f, " as {n}")?;
+            }
+            return Ok(None);
+        }
+    }
+
+    fn write_entry(&self, f: &mut impl Write) -> fmt::Result {
+        match self.write_path(f)? {
+            None => Ok(()),
+            Some(group) => group.write_group(f),
+        }
+    }
+
+    fn write_group(&self, f: &mut impl Write) -> fmt::Result {
+        write!(f, "{{")?;
+        for (i, e) in self.entries().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            e.write_entry(f)?;
+        }
+        write!(f, "}}")
+    }
+
+    fn pretty_group(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        writeln!(buf, "{{")?;
+        buf.with_indent::<fmt::Result, _>(2, |buf| {
+            let n = self.entries().count();
+            for (i, e) in self.entries().enumerate() {
+                let start = buf.len();
+                e.write_entry(buf)?;
+                if buf.len() - start >= buf.limit {
+                    buf.buf.truncate(start);
+                    if let Some(group) = e.write_path(buf)? {
+                        group.pretty_group(buf)?;
+                        buf.kill_newline();
+                    }
+                }
+                writeln!(buf, "{}", if i + 1 < n { "," } else { "" })?;
+            }
+            Ok(())
+        })?;
+        writeln!(buf, "}}")
+    }
+}
+
+fn write_use_head(f: &mut impl Write, reexport: bool) -> fmt::Result {
+    write!(f, "{}use ", if reexport { "pub " } else { "" })
+}
+
+/// Print a use statement's names as one tree, every shared prefix
+/// written once (`use a::b`, `use a::{self, b, c::{d, e}}`, `use {a, b}`).
+fn write_use_names(f: &mut impl Write, reexport: bool, names: &[UseItem]) -> fmt::Result {
+    let names = UseNames { items: names, depth: 0 };
+    write_use_head(f, reexport)?;
+    let mut entries = names.entries();
+    match (entries.next(), entries.next()) {
+        (Some(only), None) => only.write_entry(f),
+        _ => names.write_group(f),
+    }
+}
+
+/// `write_use_names` with every group that does not fit its line laid
+/// out one entry to a line.
+fn pretty_use_names(
+    buf: &mut PrettyBuf,
     reexport: bool,
     names: &[UseItem],
 ) -> fmt::Result {
-    use netidx_core::path::Path;
-    if reexport {
-        write!(f, "pub ")?;
+    let names = UseNames { items: names, depth: 0 };
+    write_use_head(buf, reexport)?;
+    let mut entries = names.entries();
+    match (entries.next(), entries.next()) {
+        (Some(only), None) => match only.write_path(buf)? {
+            None => writeln!(buf),
+            Some(group) => group.pretty_group(buf),
+        },
+        _ => names.pretty_group(buf),
     }
-    write!(f, "use ")?;
-    if names.len() == 1 {
-        return write!(f, "{}", names[0]);
-    }
-    let segs: Vec<Vec<&str>> =
-        names.iter().map(|n| Path::parts(&n.path.0).collect()).collect();
-    let mut lcp = 0;
-    'lcp: loop {
-        let Some(first) = segs.first().and_then(|s| s.get(lcp)) else {
-            break;
-        };
-        // An empty suffix prints as `self`, which is not a glob.
-        if *first == "*" {
-            break;
-        }
-        for s in segs[1..].iter() {
-            if s.get(lcp) != Some(first) {
-                break 'lcp;
-            }
-        }
-        lcp += 1;
-    }
-    for (i, part) in segs[0][..lcp].iter().enumerate() {
-        if i > 0 {
-            write!(f, "::")?;
-        }
-        write!(f, "{part}")?;
-    }
-    if lcp > 0 {
-        write!(f, "::")?;
-    }
-    write!(f, "{{")?;
-    for (i, (sg, item)) in segs.iter().zip(names.iter()).enumerate() {
-        if i > 0 {
-            write!(f, ", ")?;
-        }
-        let suffix = &sg[lcp..];
-        if suffix.is_empty() {
-            write!(f, "self")?;
-        } else {
-            for (j, part) in suffix.iter().enumerate() {
-                if j > 0 {
-                    write!(f, "::")?;
-                }
-                write!(f, "{part}")?;
-            }
-        }
-        if let Some(n) = &item.rename {
-            write!(f, " as {n}")?;
-        }
-    }
-    write!(f, "}}")
 }
 
 impl fmt::Display for ExprKind {
@@ -1495,7 +1627,7 @@ impl ExprKind {
             }
             ExprKind::NoOp => Ok(()),
             ExprKind::ExplicitParens(e) => write!(f, "({e})"),
-            ExprKind::Constant(v) => v.fmt_ext(f, &VAL_ESC, true),
+            ExprKind::Constant(v) => write!(f, "{}", Literal(v)),
             ExprKind::Bind(b) => write!(f, "{b}"),
             ExprKind::StructWith(sw) => write!(f, "{sw}"),
             ExprKind::Connect { name, value, deref } => {
@@ -1712,7 +1844,16 @@ impl ExprKind {
             ExprKind::StrictSample { lhs, rhs } => write!(f, "{lhs} ~! {rhs}"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
             ExprKind::Deref(e) => write!(f, "*{e}"),
-            ExprKind::Neg(e) => write!(f, "-{e}"),
+            // `-1` reads back as the literal, so a negated one keeps its type
+            ExprKind::Neg(e) => match &e.kind {
+                ExprKind::Constant(v @ (Value::I64(0..) | Value::F64(_)))
+                    if e.dec.is_none() =>
+                {
+                    write!(f, "-")?;
+                    v.fmt_ext(f, &VAL_ESC, true)
+                }
+                _ => write!(f, "-{e}"),
+            },
             ExprKind::Not { expr } => write!(f, "!{expr}"),
         }
     }

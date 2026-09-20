@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3c0315f5.js";
+            window.path_to_searchindex_js = "searchindex-1609db37.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -421,6 +421,24 @@ the upstream queries, copy them across:</p>
 <pre><code class="language-bash">cp ide/tree-sitter-graphix/queries/{highlights,indents,locals}.scm \
    ide/editors/zed/languages/graphix/
 </code></pre>
+<h2 id="formatting"><a class="header" href="#formatting">Formatting</a></h2>
+<p><code>graphix fmt</code> is the source formatter. It rewrites each file you name in
+place, or formats stdin to stdout when you name none, which is the form
+an editor’s “format on save” hook wants:</p>
+<pre><code class="language-bash">graphix fmt src/main.gx src/lib.gxi   # rewrite in place
+graphix fmt --check src/*.gx          # list files that would change, fail if any
+graphix fmt --stdout src/main.gx      # print instead of rewriting
+graphix fmt &lt; main.gx                 # stdin to stdout (--interface for a .gxi)
+graphix fmt --width 100 main.gx       # fit a different line width (default 80)
+</code></pre>
+<p>The formatter prints Graphix’s canonical form rather than preserving
+every choice you made: struct fields and union members come out sorted,
+adjacent <code>use</code> statements are merged into one tree per root and sorted,
+and <code>i64</code>/<code>f64</code> literals lose a redundant type prefix. Comments and
+attributes stay where you put them. Before anything is written the
+formatted text is parsed again and compared with your program; if the
+two differ in any way the file is left untouched and the difference is
+reported, so a formatter bug can never change what your code means.</p>
 <h2 id="what-the-lsp-currently-supports"><a class="header" href="#what-the-lsp-currently-supports">What the LSP currently supports</a></h2>
 <div class="table-wrapper">
 <table>

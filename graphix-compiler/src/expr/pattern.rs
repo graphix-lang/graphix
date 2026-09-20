@@ -1,4 +1,4 @@
-use super::{Expr, ModPath};
+use super::{Expr, ModPath, print::Literal};
 use crate::{env::Env, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -517,7 +517,7 @@ impl fmt::Display for StructurePattern {
         }
         match self {
             StructurePattern::Ignore => write!(f, "_"),
-            StructurePattern::Literal(v) => write!(f, "{v}"),
+            StructurePattern::Literal(v) => write!(f, "{}", Literal(v)),
             StructurePattern::Bind(n) => write!(f, "{n}"),
             StructurePattern::Slice { list, all, binds } => {
                 if let Some(all) = all {

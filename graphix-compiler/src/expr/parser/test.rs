@@ -1724,7 +1724,7 @@ fn print_bare_chains_round_trip() {
         ("m{k}.f", "m{k}.f"),
         ("f(x){k}", "f(x){k}"),
         ("(a + b).c", "(a + b).c"), // non-chain source stays parenthesized
-        ("(42).0", "(i64:42).0"),   // constant source stays parenthesized
+        ("(42).0", "(42).0"),       // constant source stays parenthesized
     ] {
         let e = parse_one(src).unwrap();
         let printed = format!("{e}");
@@ -2046,7 +2046,11 @@ fn use_new_grammar() {
         ("use a::{b as c, d}", &[(&["a", "b"], Some("c")), (&["a", "d"], None)]),
         ("use a::{self as b, c}", &[(&["a"], Some("b")), (&["a", "c"], None)]),
         ("use a::*", &[(&["a", "*"], None)]),
-        ("use a::{*, b}", &[(&["a", "*"], None), (&["a", "b"], None)]),
+        ("use a::{*, b}", &[(&["a", "b"], None), (&["a", "*"], None)]),
+        (
+            "use a::{d, c::e, c}",
+            &[(&["a", "c"], None), (&["a", "c", "e"], None), (&["a", "d"], None)],
+        ),
         ("use a::{b::*, c}", &[(&["a", "b", "*"], None), (&["a", "c"], None)]),
         ("use self::a", &[(&["self", "a"], None)]),
         ("use super::a", &[(&["super", "a"], None)]),

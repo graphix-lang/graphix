@@ -217,6 +217,29 @@ cp ide/tree-sitter-graphix/queries/{highlights,indents,locals}.scm \
    ide/editors/zed/languages/graphix/
 ```
 
+## Formatting
+
+`graphix fmt` is the source formatter. It rewrites each file you name in
+place, or formats stdin to stdout when you name none, which is the form
+an editor's "format on save" hook wants:
+
+```bash
+graphix fmt src/main.gx src/lib.gxi   # rewrite in place
+graphix fmt --check src/*.gx          # list files that would change, fail if any
+graphix fmt --stdout src/main.gx      # print instead of rewriting
+graphix fmt < main.gx                 # stdin to stdout (--interface for a .gxi)
+graphix fmt --width 100 main.gx       # fit a different line width (default 80)
+```
+
+The formatter prints Graphix's canonical form rather than preserving
+every choice you made: struct fields and union members come out sorted,
+adjacent `use` statements are merged into one tree per root and sorted,
+and `i64`/`f64` literals lose a redundant type prefix. Comments and
+attributes stay where you put them. Before anything is written the
+formatted text is parsed again and compared with your program; if the
+two differ in any way the file is left untouched and the difference is
+reported, so a formatter bug can never change what your code means.
+
 ## What the LSP currently supports
 
 | Feature | Status |

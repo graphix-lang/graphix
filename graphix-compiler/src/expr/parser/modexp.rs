@@ -302,7 +302,7 @@ where
                 return unexpected_any(msg).left();
             }
         }
-        value(Arc::from_iter(items.into_iter().map(|(segs, rename)| UseItem {
+        value(UseItem::sorted(items.into_iter().map(|(segs, rename)| UseItem {
             path: ModPath(Path::from_iter(segs)),
             rename,
         })))
