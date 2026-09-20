@@ -258,6 +258,9 @@ select x {
   (f64, f64) as (n, a) => n / a,  // the WHOLE type comes before the structure pattern;
                                   // `(f64 as n, f64 as a)` is a parse error
   `Apple | `Pear => "fruit",      // or-pattern; captures type as the union
+                                  // an or-pattern does NOT narrow what follows: after
+                                  // `A(m) | `B(m) => .., a catch-all `x => f(x)` still
+                                  // has A and B in x's type. Separate arms narrow.
   `Other(name) if name != "" => name,   // a test on a capture is a GUARD, never a
                                          // nested `select cond { true => .., false => .. }`
   error as e => recover(e),  v => v,     // splits a Result; v is the bare success type
