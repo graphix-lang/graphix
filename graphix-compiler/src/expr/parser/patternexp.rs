@@ -1,6 +1,6 @@
 use crate::{
     expr::{
-        Expr, Pattern, StructurePattern,
+        Expr, Pattern, StructurePattern, WrittenAt,
         parser::{
             RESERVED_BINDING, csep, expr, fldname, fname, ident, sep_by_tok, sep_by1_tok,
             spaces, spaces1, spstring, sptoken, typ,
@@ -13,6 +13,7 @@ use arcstr::{ArcStr, literal};
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, many, optional,
     parser::char::string,
+    position,
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
@@ -272,7 +273,7 @@ where
         token('{'),
         sptoken('}'),
         spaces().with(sep_by1_tok(
-            choice((
+            (position(), choice((
                 string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
                 fldname()
                     .skip(spaces())
@@ -291,25 +292,26 @@ where
                             value((name, pat, true)).left()
                         }
                     }),
-            )),
+            ))),
             csep(),
             token('}'),
         )),
     )
-    .then(move |mut binds: LPooled<Vec<(ArcStr, StructurePattern, bool)>>| {
+    .then(move |mut binds: LPooled<Vec<(SourcePosition, (ArcStr, StructurePattern, bool))>>| {
         let mut exhaustive = true;
-        binds.retain(|(_, _, ex)| {
+        binds.retain(|(_, (_, _, ex))| {
             exhaustive &= *ex;
             *ex
         });
-        binds.sort_by_key(|(s, _, _)| s.clone());
-        let s = binds.iter().map(|(s, _, _)| s).collect::<LPooled<AHashSet<_>>>();
+        binds.sort_by_key(|(_, (s, _, _))| s.clone());
+        let s = binds.iter().map(|(_, (s, _, _))| s).collect::<LPooled<AHashSet<_>>>();
         if s.len() < binds.len() {
             unexpected_any("struct fields must be unique").left()
         } else {
             drop(s);
             let all = all.clone();
-            let binds = Arc::from_iter(binds.drain(..).map(|(s, p, _)| (s, p)));
+            let binds =
+                Arc::from_iter(binds.drain(..).map(|(pos, (s, p, _))| (s, p, WrittenAt(pos))));
             value(StructurePattern::Struct { all, exhaustive, binds }).right()
         }
     })

@@ -408,6 +408,21 @@ mod tests {
     }
 
     #[test]
+    fn struct_pattern_fields_keep_their_order() {
+        use SourceKind::Program;
+        formats_to(
+            Program,
+            "let { zed, apple: (a, _), .. } = s",
+            "let { zed, apple: (a, _), .. } = s\n",
+        );
+        formats_to(
+            Program,
+            "select s { { y, x: 0 } => y, p@ { x, y } => x }",
+            "select s { { y, x: 0 } => y, p@ { x, y } => x }\n",
+        );
+    }
+
+    #[test]
     fn default_number_types_print_bare() {
         use SourceKind::Program;
         formats_to(

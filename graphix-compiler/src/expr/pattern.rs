@@ -1,4 +1,4 @@
-use super::{Expr, ModPath, print::Literal};
+use super::{Expr, ModPath, WrittenAt, parser, print::Literal};
 use crate::{env::Env, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -52,7 +52,7 @@ pub enum StructurePattern {
     Struct {
         exhaustive: bool,
         all: Option<ArcStr>,
-        binds: Arc<[(ArcStr, StructurePattern)]>,
+        binds: Arc<[(ArcStr, StructurePattern, WrittenAt)]>,
     },
     /// Or-alternatives `p1 | p2 | …`. Flat: ≥ 2 alternatives, none itself
     /// an `Or`. Every alternative binds the same names at the same types,
@@ -141,7 +141,7 @@ impl StructurePattern {
                 if let Some(n) = all {
                     f(n)
                 }
-                for (_, t) in binds.iter() {
+                for (_, t, _) in binds.iter() {
                     t.with_names(f)
                 }
             }
@@ -221,7 +221,7 @@ impl StructurePattern {
             Self::Struct { all: _, exhaustive: _, binds } => {
                 let mut typs = binds
                     .iter()
-                    .map(|(n, p)| Ok((n.clone(), p.infer_type_predicate(env, scope)?)))
+                    .map(|(n, p, _)| Ok((n.clone(), p.infer_type_predicate(env, scope)?)))
                     .collect::<Result<SmallVec<[(ArcStr, Type); 8]>>>()?;
                 typs.sort_by_key(|(n, _)| n.clone());
                 Ok(Type::Struct(Arc::from_iter(typs.into_iter())))
@@ -312,7 +312,7 @@ impl StructurePattern {
                     .iter()
                     .filter(|m| match m {
                         Type::Struct(sf) => {
-                            binds.iter().all(|(n, _)| sf.iter().any(|(sn, _)| sn == n))
+                            binds.iter().all(|(n, _, _)| sf.iter().any(|(sn, _)| sn == n))
                         }
                         _ => false,
                     })
@@ -328,8 +328,8 @@ impl StructurePattern {
                 };
                 let fields = sf
                     .iter()
-                    .map(|(sn, st)| match binds.iter().find(|(n, _)| n == sn) {
-                        Some((_, p)) => {
+                    .map(|(sn, st)| match binds.iter().find(|(n, _, _)| n == sn) {
+                        Some((_, p, _)) => {
                             let pt = &pfields
                                 .iter()
                                 .find(|(pn, _)| pn == sn)
@@ -359,10 +359,10 @@ impl StructurePattern {
                 let mut changed = false;
                 let mut fields: SmallVec<[(ArcStr, Type); 8]> = SmallVec::new();
                 for (n, pt) in pfields.iter() {
-                    let sub = binds.iter().find(|(bn, _)| bn == n);
+                    let sub = binds.iter().find(|(bn, _, _)| bn == n);
                     let st = sf.iter().find(|(sn, _)| sn == n);
                     match (sub, st) {
-                        (Some((_, p)), Some((_, st))) => {
+                        (Some((_, p, _)), Some((_, st))) => {
                             match p.complete_type_predicate_inner(
                                 env,
                                 pt,
@@ -594,9 +594,19 @@ impl fmt::Display for StructurePattern {
                 if let Some(all) = all {
                     write!(f, "{all}@ ")?
                 }
-                write!(f, "{{")?;
-                for (i, (name, pat)) in binds.iter().enumerate() {
-                    write!(f, "{name}: {pat}")?;
+                let mut written: SmallVec<[_; 16]> = binds.iter().collect();
+                written.sort_by_key(|(_, _, at)| at.order());
+                write!(f, "{{ ")?;
+                for (i, (name, pat, _)) in written.iter().enumerate() {
+                    match pat {
+                        StructurePattern::Bind(n)
+                            if n == name
+                                && !parser::RESERVED_BINDING.contains(&name.as_str()) =>
+                        {
+                            write!(f, "{name}")?
+                        }
+                        pat => write!(f, "{name}: {pat}")?,
+                    }
                     if !exhaustive || i < binds.len() - 1 {
                         write!(f, ", ")?
                     }
@@ -604,7 +614,7 @@ impl fmt::Display for StructurePattern {
                 if !exhaustive {
                     write!(f, "..")?
                 }
-                write!(f, "}}")
+                write!(f, " }}")
             }
         }
     }

@@ -475,7 +475,10 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                 .prop_map(|(all, mut b, exhaustive)| {
                     b.sort_by_key(|(f, _)| f.clone());
                     b.dedup_by_key(|(f, _)| f.clone());
-                    StructurePattern::Struct { all, exhaustive, binds: Arc::from_iter(b) }
+                    let binds = Arc::from_iter(
+                        b.into_iter().map(|(f, p)| (f, p, WrittenAt::NOWHERE)),
+                    );
+                    StructurePattern::Struct { all, exhaustive, binds }
                 }),
             (
                 option::of(random_fname()),
@@ -1647,7 +1650,7 @@ fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> 
             e0 == e1
                 && a0 == a1
                 && p0.len() == p1.len()
-                && p0.iter().zip(p1.iter()).all(|((f0, p0), (f1, p1))| {
+                && p0.iter().zip(p1.iter()).all(|((f0, p0, _), (f1, p1, _))| {
                     f0 == f1 && check_structure_pattern(p0, p1)
                 })
         }

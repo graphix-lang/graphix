@@ -721,7 +721,7 @@ impl StructPatternNode {
                         &Type::Struct(Arc::from_iter(
                             binds
                                 .iter()
-                                .map(|(name, _)| (name.clone(), Type::empty_tvar())),
+                                .map(|(name, _, _)| (name.clone(), Type::empty_tvar())),
                         )),
                     )?,
                     _ => bail!("non exhaustive struct matches require type annotations"),
@@ -730,7 +730,7 @@ impl StructPatternNode {
                     Some(Type::Struct(elts)) => {
                         let binds = binds
                             .iter()
-                            .map(|(field, pat)| {
+                            .map(|(field, pat, _)| {
                                 let r = elts.iter().enumerate().find_map(
                                     |(i, (name, typ))| {
                                         if field == name {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::expr::WrittenAt;
 use crate::{
     expr::{
         ApplyExpr, Arg, BindExpr, Doc, ExprKind, LambdaExpr, ModuleKind, SelectExpr,
@@ -974,10 +975,22 @@ fn select1() {
                     all: None,
                     exhaustive: false,
                     binds: Arc::from_iter([
-                        (literal!("bar"), StructurePattern::Ignore),
-                        (literal!("baz"), StructurePattern::Bind(literal!("baz"))),
-                        (literal!("foo"), StructurePattern::Literal(Value::I64(42))),
-                        (literal!("foobar"), StructurePattern::Bind(literal!("a"))),
+                        (literal!("bar"), StructurePattern::Ignore, WrittenAt::NOWHERE),
+                        (
+                            literal!("baz"),
+                            StructurePattern::Bind(literal!("baz")),
+                            WrittenAt::NOWHERE,
+                        ),
+                        (
+                            literal!("foo"),
+                            StructurePattern::Literal(Value::I64(42)),
+                            WrittenAt::NOWHERE,
+                        ),
+                        (
+                            literal!("foobar"),
+                            StructurePattern::Bind(literal!("a")),
+                            WrittenAt::NOWHERE,
+                        ),
                     ]),
                 },
                 guard: None,
@@ -1557,9 +1570,17 @@ fn bindstruct() {
             all: None,
             exhaustive: true,
             binds: Arc::from_iter([
-                (literal!("bar"), StructurePattern::Ignore),
-                (literal!("baz"), StructurePattern::Bind(literal!("zam"))),
-                (literal!("foo"), StructurePattern::Bind(literal!("foo"))),
+                (literal!("bar"), StructurePattern::Ignore, WrittenAt::NOWHERE),
+                (
+                    literal!("baz"),
+                    StructurePattern::Bind(literal!("zam")),
+                    WrittenAt::NOWHERE,
+                ),
+                (
+                    literal!("foo"),
+                    StructurePattern::Bind(literal!("foo")),
+                    WrittenAt::NOWHERE,
+                ),
             ]),
         },
         typ: None,

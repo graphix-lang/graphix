@@ -7,7 +7,7 @@ use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
-use netidx_core::{path::Path, utils::Either};
+use netidx_core::{pack::PackError, path::Path, utils::Either};
 use netidx_derive::Pack;
 use netidx_value::Value;
 pub use pattern::{Pattern, StructurePattern};
@@ -782,6 +782,62 @@ impl Origin {
 
     pub fn from_str(s: &str) -> Self {
         Self { parent: None, source: Source::Unspecified, text: ArcStr::from(s) }
+    }
+}
+
+/// Where in its source something was written, for the IDE and the
+/// formatter. It never decides anything: every `WrittenAt` is equal to
+/// every other, hashes to nothing and packs to nothing, so a type that
+/// holds one derives its own comparisons as if it did not.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WrittenAt(pub SourcePosition);
+
+impl WrittenAt {
+    /// Not written: built by the compiler.
+    pub const NOWHERE: Self = Self(SourcePosition { line: 0, column: 0 });
+
+    /// The key that sorts things into the order they were written in;
+    /// a stable sort leaves what was never written where it stood.
+    pub fn order(&self) -> (i32, i32) {
+        (self.0.line, self.0.column)
+    }
+}
+
+impl PartialEq for WrittenAt {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WrittenAt {}
+
+impl PartialOrd for WrittenAt {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for WrittenAt {
+    fn cmp(&self, _: &Self) -> Ordering {
+        Ordering::Equal
+    }
+}
+
+impl std::hash::Hash for WrittenAt {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl netidx_core::pack::Pack for WrittenAt {
+    fn encoded_len(&self) -> usize {
+        0
+    }
+
+    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        Ok(())
+    }
+
+    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self::NOWHERE)
     }
 }
 
