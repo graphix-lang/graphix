@@ -37,7 +37,7 @@ let block2rem = block(
   #title: &line("Content!"),
   &{
      let position = 0;
-     let handle_event = on_press(|k| select k.code {
+     let handle_event = |e: Event| on_press(e, |k| select k.code {
          k@`Up if position > 0 => {
              position <- (k ~ position) - 1;
              `Stop
@@ -75,7 +75,7 @@ let block2 = block(
   &block2_layout
 );
 
-let handle_event = on_press(|k| select k.code {
+let handle_event = |e: Event| on_press(e, |k| select k.code {
     k@`Tab => {
         focused <- ((k ~ focused) + 1) % 2;
         `Stop

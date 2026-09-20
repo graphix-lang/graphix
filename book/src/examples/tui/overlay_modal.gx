@@ -6,7 +6,7 @@ use tui::paragraph::{self, *};
 
 let open = false;
 
-let handle_base = on_press(|k| select k.code {
+let handle_base = |e: Event| on_press(e, |k| select k.code {
   c@ `Char("o") => {
     open <- c ~ true;
     `Stop
@@ -14,7 +14,7 @@ let handle_base = on_press(|k| select k.code {
   _ => `Continue
 });
 
-let handle_modal = on_press(|k| select k.code {
+let handle_modal = |e: Event| on_press(e, |k| select k.code {
   c@ `Esc => {
     open <- c ~ false;
     `Stop

@@ -413,7 +413,7 @@ use tui::input_handler::{self, *};
 use tui::paragraph::{self, *};
 let downs = 0;
 let calls = 0;
-let handle = on_press(|k| {
+let handle = |e: Event| on_press(e, |k| {
   calls <- (k ~ calls) + 1;
   select k.code {
     `Down => { downs <- (k ~ downs) + 1; `Stop },

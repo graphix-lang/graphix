@@ -18,7 +18,7 @@ let form = |
   let vals: Array<line_edit::State> = array::map(fields, |f: Field| line_edit::state(f.value));
   let focus = 0;
   focus <- fields ~ 0;
-  let handle = input_handler::on_press(|k| select k.code {
+  let handle = |e: input_handler::Event| input_handler::on_press(e, |k| select k.code {
     `Tab | `Down => { focus <- (k ~ focus + 1) % n; `Stop },
     `BackTab | `Up => { focus <- (k ~ focus + n - 1) % n; `Stop },
     kk@ `Enter => {
@@ -34,7 +34,7 @@ let form = |
     },
     _ => {
       let i = k ~ focus;
-      line_edit::handle(&vals[i], `Key(k))
+      line_edit::handle(&vals[i], e)
     }
   });
   let width = array::fold(fields, 0, |w: i64, f: Field| max(w, str::len(f.label))) + 2;

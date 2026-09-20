@@ -6,7 +6,7 @@ let selected_path: string = never();
 let selected_row: string = never();
 let cursor: MoveCursor = never();
 
-let handle_event = on_press(|k| select k.code {
+let handle_event = |e: Event| on_press(e, |k| select k.code {
     e@ `Up => { cursor <- e ~ `Up(1); `Stop },
     e@ `Down => { cursor <- e ~ `Down(1); `Stop },
     e@ `Left => { cursor <- e ~ `Left(1); `Stop },

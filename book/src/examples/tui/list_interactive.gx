@@ -21,7 +21,7 @@ scroll_pos <- select selected {
     _ => never()
 };
 
-let handle_event = on_press(|k| select k.code {
+let handle_event = |e: Event| on_press(e, |k| select k.code {
     k@`Up if selected > 0 => {
         selected <- (k ~ selected) - 1;
         `Stop

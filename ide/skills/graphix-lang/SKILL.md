@@ -165,6 +165,13 @@ let f = |@args: i64| args         // variadic (builtins only)
 Calls dispatch statically. A HOF nested under its own callback is a
 fresh instance, not recursion.
 
+No currying: a call supplies every required argument, and `add(1)` on a
+two-argument `add` is refused (`missing required argument`), not a
+partial application. A combinator takes everything it needs and returns
+the value, `on_press(e, f) -> [`Stop, `Continue]`, never a function to
+be applied later: `|e: Event| on_press(e, f)` at the use site is the
+partial application, written out.
+
 ## Annotations
 
 Do not write a type annotation unless the checker asks for one. It
@@ -404,19 +411,21 @@ where `f: |e: Event| -> [`Stop, `Continue]`. Widget arguments are `&`
 references; `use tui::block::{self, *}` per widget module.
 
 ```graphix
-let handle = on_press(|k| select k.code {
+let handle = |e: Event| on_press(e, |k| select k.code {
   kk@ `Up | kk@ `Char("k") if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop },
   _ => `Continue
 });
 ```
 
-`on_press(f)` (in `tui::input_handler`) is the key handler: it calls `f`
-with the `KeyEvent` on a `` `Press `` and continues on everything else.
+`on_press(e, f)` (in `tui::input_handler`) calls `f` with the `KeyEvent`
+when `e` is a `` `Press `` and continues on everything else; it returns
+`` [`Stop, `Continue] ``, so it is a handler's body or a part of one.
 Never write the `` `Key(k) => select k.kind { `Press => .. } `` nest by
 hand: forgetting the kind runs every key twice where the terminal
 reports releases (Windows). A handler that also wants mouse, paste or
-resize selects on the `Event`; to pass a press on to an `Event` handler
-rebuild it, `` line_edit::handle(&st, `Key(k)) ``.
+resize selects on the `Event` and calls `on_press` in its `` `Key `` arm;
+a modal one that lets nothing through is `|e: Event| { on_press(e, keys);
+`Stop }`.
 
 Widgets: gui — window text button text_input checkbox toggler radio
 slider progress_bar pick_list column row container scrollable stack

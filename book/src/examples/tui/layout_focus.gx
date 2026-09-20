@@ -5,7 +5,7 @@ use tui::block::{self, *};
 
 let focused = 0;
 
-let handle_event = on_press(|k| select k.code {
+let handle_event = |e: Event| on_press(e, |k| select k.code {
     k@`Tab => {
         focused <- ((k ~ focused) + 1) % 3;
         `Stop
