@@ -309,13 +309,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
         // persists in the store.
-        let keep_connect_target_value = event.wake_init && self.ever_published && {
-            let mut target = false;
-            self.pattern.ids(&mut |id| {
-                target = target || ctx.connect_targets.contains(&id);
-            });
-            target
-        };
+        // A connect target's value is its last write: at a wake a quiet
+        // initializer republishes nothing over it, a standing bottom
+        // (`let x = never()`) included.
+        let keep_connect_target_value =
+            event.wake_init && (self.ever_published || tag.is_bottom()) && {
+                let mut target = false;
+                self.pattern.ids(&mut |id| {
+                    target = target || ctx.connect_targets.contains(&id);
+                });
+                target
+            };
         if crate::dbgenv::gxdbg_letbind() {
             eprintln!(
                 "LETBIND {} tag={tag:?} val={:?} ever_published={} fd={} keep_connect_target_value={keep_connect_target_value} publishing={}",
@@ -1070,9 +1074,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         if tv.is_fired() {
             let v = tv.value_cloned();
             if event.init {
-                // A standing write: `Deref`'s init read serves it this
-                // cycle; a queued write would arrive again next cycle.
-                ctx.rt.store_insert_standing(self.id, TagValue::fired(v));
+                // Delivered this cycle, so `Deref` reads the fire under a
+                // wake view too; a queued write would arrive again next
+                // cycle.
+                ctx.rt.store_insert(self.id, TagValue::fired(v));
             } else {
                 ctx.rt.set_var(self.id, v);
             }

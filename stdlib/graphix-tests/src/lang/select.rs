@@ -2292,3 +2292,83 @@ run!(wake_stale_bottom_map_source, WAKE_STALE_BOTTOM_MAP_SOURCE, |v: Result<&Val
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A source back from bottom with no slot firing (the callback ignores
+// its element): the map is present again, so x=1 re-emits the arm.
+// findings/map-source-recovers-sep2026/
+const MAP_SOURCE_RECOVERS_QUIETLY: &str = r#"
+{
+  let x = array::iter([1, 2, 3, 4, 1]);
+  let d = select x { 1 | 2 => 1, _ => 0 };
+  let v0 = 2 / d;
+  let r = select x {
+    1 | 4 => array::fold(array::map([v0, 3], |y| 2 + 1), 0, |a, y| a + y),
+    _ => 0
+  };
+  array::group(r, |n, _| n == 4)
+}
+"#;
+
+run!(map_source_recovers_quietly, MAP_SOURCE_RECOVERS_QUIETLY, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => {
+            a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                == vec![6, 0, 0, 6]
+        }
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A connect target born `never()` keeps its written value across the
+// arm's sleep: the wake at the last x=1 reads 42.
+// findings/wake-connect-target-sep2026/
+const WAKE_KEEPS_NEVER_BORN_CONNECT_TARGET: &str = r#"
+{
+  let x = array::iter([1, 3, 1, 2, 1]);
+  let r = select x {
+    1 | 3 => {
+      let y = never();
+      y <- select x { 3 => 42, _ => never() };
+      select x { 1 => y, _ => never() }
+    },
+    _ => -1
+  };
+  array::group(r, |n, _| n == 3)
+}
+"#;
+
+run!(
+    wake_keeps_never_born_connect_target,
+    WAKE_KEEPS_NEVER_BORN_CONNECT_TARGET,
+    |v: Result<&Value>| {
+        match v {
+            Ok(Value::Array(a)) => {
+                a.iter().map(|v| v.clone().cast_to::<i64>().unwrap()).collect::<Vec<_>>()
+                    == vec![42, -1, 42]
+            }
+            _ => false,
+        }
+    }; graphix_package_core::testing::FuseExpect::Jit
+);
+
+// A reference cell born in a sleepable arm delivers the cycle it is
+// born: the deref fires and `dbg` runs.
+// findings/byref-wake-view-sep2026/
+const BYREF_BORN_IN_SLEEPABLE_ARM: &str = r#"
+select 1 {
+  0 => 0,
+  _ => { let x = 0; x <- 1; dbg({ let r = &(1, 2); let t = *r; t.0 }) }
+}
+"#;
+
+run!(byref_born_in_sleepable_arm, BYREF_BORN_IN_SLEEPABLE_ARM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const BYREF_BORN_IN_FUSED_ARM: &str = r#"
+select 1 { 0 if true => 0, _ => dbg({ let r = &(1, 2); let t = *r; t.0 }) }
+"#;
+
+run!(byref_born_in_fused_arm, BYREF_BORN_IN_FUSED_ARM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(1)))
+}; graphix_package_core::testing::FuseExpect::Jit);

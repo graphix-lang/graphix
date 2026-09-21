@@ -685,11 +685,12 @@ impl SlotFlags {
         let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
         let lenp1 = cx.b.ins().iadd_imm(len, 1);
         let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
-        // A tainted source is never a resize and leaves the stored word
-        // untouched (the node-walk computes no length for it).
+        // A tainted source is never a resize and forgets the length: the
+        // source's return is one, whether or not a slot fires.
         let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
         let resized = cx.b.ins().band(resized, valid);
-        let recorded = cx.b.ins().select(valid, lenp1, stored);
+        let unobserved = cx.b.ins().iconst(types::I64, 0);
+        let recorded = cx.b.ins().select(valid, lenp1, unobserved);
         cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
         let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
         let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);

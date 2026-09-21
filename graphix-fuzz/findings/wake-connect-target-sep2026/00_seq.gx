@@ -1,0 +1,4 @@
+// sep20b aieka/1. At the wake the `let seqr = never()` refresh republished its initializer's bottom over the value the run had written.
+// Expected (both engines): the last epoch emits 43.
+// schedule-v1: cap=64 events=512; in0=i64:-9223372036854775808; in0=i64:0
+select 0 { 0 if in0 / -9223372036854775808 > 0 => array::map, _ => { let step = 0; step <- select step { s if s < 8 => s + 1, _ => never() }; let go = select step { 1 => true, _ => never() }; let delayed = never<i64>(); delayed <- select step { 4 => 42, _ => never() }; let y = seq go { { let r = delayed; r + 1 } }; select step { 8 => y, _ => never() } } }

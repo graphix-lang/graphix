@@ -1,0 +1,3 @@
+// The map alone.
+// Expected (both engines): [3, 3], [], [], then [3, 3] at x=1.
+{ let x = array::iter([1, 2, 3, 4, 1]); let d = select x { 1 | 2 => 1, _ => 0 }; let v0 = 2 / d; select x { 1 | 4 => array::map([v0, 3], |y| 2 + 1), _ => [] } }

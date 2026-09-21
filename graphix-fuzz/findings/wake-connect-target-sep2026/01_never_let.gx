@@ -1,0 +1,4 @@
+// The same with no seq: a connect-written `let y = never()` read after the arm wakes.
+// Expected (both engines): the last epoch emits 42.
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:0
+select 0 { 0 if in0 > 0 => 0, _ => { let step = 0; step <- select step { s if s < 3 => s + 1, _ => never() }; let y = never(); y <- select step { 2 => 42, _ => never() }; select step { 3 => y, _ => never() } } }

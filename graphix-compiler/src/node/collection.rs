@@ -892,7 +892,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     event.variables.insert(slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
-                if resized || T::RESULT_READS_ELEMENTS {
+                // A source back from bottom changes the result whether
+                // or not a slot fires.
+                if resized || T::RESULT_READS_ELEMENTS || self.resident.tag().is_bottom()
+                {
                     production = merge_tag(production, tag);
                 }
                 if self.slots.is_empty() {
@@ -1592,9 +1595,14 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         }
         if let Some(last) = self.slots.last() {
             if let Some(value) = last.this_cycle.clone() {
-                // A fold fires iff it resized, a slot fired, or the
-                // source fired empty.
-                let tag = if resized || any_trig { Tag::FIRED } else { Tag::STALE };
+                // A fold fires iff it resized, a slot fired, the source
+                // fired empty, or the source fired back from bottom.
+                let recovered = src_trig && self.resident.tag().is_bottom();
+                let tag = if resized || any_trig || recovered {
+                    Tag::FIRED
+                } else {
+                    Tag::STALE
+                };
                 return self.resident.set(TagValue::tagged(value, tag));
             }
             if resized && let Some(value) = last.last_good.clone() {

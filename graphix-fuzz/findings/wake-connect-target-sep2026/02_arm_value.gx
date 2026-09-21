@@ -1,0 +1,4 @@
+// The variable is the arm's value: both engines lost it alike.
+// Expected (both engines): the last epoch emits 42.
+// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:0
+select 0 { 0 if in0 > 0 => 0, _ => { let step = 0; step <- select step { s if s < 3 => s + 1, _ => never() }; let y = { let w = never(); w <- select step { 2 => 42, _ => never() }; w }; y } }

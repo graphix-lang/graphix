@@ -319,7 +319,8 @@ node graph IS the IR — there is no parallel typed IR
   follows the one frame rule (`node::produce_constant`: inside a framed
   tail pass it fires only on a genuine init dispatch). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
-  resize, a fired slot, a fired empty source, or a fired fold carry.
+  resize, a fired slot, a fired empty source, a fired fold carry, or a
+  source back from bottom (a bottom source forgets the length).
 - **Bottom scrutinee ⇒ bottom select.** No stored-selection ride of any
   kind; `hold` on the scrutinee is the tool. A STALE-PRESENT scrutinee
   still routes the taken arm's own fires. **Consulted-guard rule**: arms

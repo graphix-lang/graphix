@@ -1,0 +1,3 @@
+// The same loss in both engines once the arm sleeps for another reason (a connect).
+// Expected (both engines): 1, and one dbg line.
+select 1 { 0 => 0, _ => { let x = 0; x <- 1; dbg({ let r = &(1, 2); let t = *r; t.0 }) } }

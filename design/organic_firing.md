@@ -28,7 +28,10 @@ Consequences:
   function have the same cadence.
 - **Collection HOFs** fire by `scaffold::SlotFlags` — iff resized, or a
   slot fired, or the source fired empty — which is already
-  delivery-based.
+  delivery-based. A bottom source forgets the length, so the source's
+  return is a resize: a callback that ignores its element fires no slot,
+  and every reader above set its resident bottom and rebuilds only on a
+  fire. Pins: `findings/map-source-recovers-sep2026/`.
 
 ## Why
 

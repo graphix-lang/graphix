@@ -1,0 +1,3 @@
+// sep20b aieka/0. A fused kernel made the arm sleepable, so its first selection ran under the wake view, where the deref of a cell born that cycle read stale and `dbg` never fired.
+// Expected (both engines): 1, and one dbg line.
+select 1 { 0 if true => 0, _ => dbg({ let r = &(1, 2); let t = *r; t.0 }) }

@@ -187,7 +187,9 @@ fire, since arm locals are not arm-body inputs).
 A wake's recomputed STALE values must be republished or readers
 downstream of a publish seam still ride: `Bind::update` re-publishes a
 quiet wake production (`<-` targets holding a value are still held
-back — sleep is pause), `CallSite` refreshes its arg ids' standing
+back — sleep is pause — and so is a target born `never()`, whose
+initializer's standing bottom is no write: pins
+`findings/wake-connect-target-sep2026/`), `CallSite` refreshes its arg ids' standing
 entries, `GXLambda` re-seeds its formals, MapQ rebuilds its collection
 from the refreshed slots. A quiet BOTTOM is republished the same way: an
 input that went bottom during the sleep delivers STALE bottom at the

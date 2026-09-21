@@ -35,6 +35,8 @@
 0	bottom-typed-arm-elided-sep2026/01_recursive_bottom_arm_runaway.gx
 0	bound-cell-cycle-accepts-aug2026/00_connect_self_nesting.gx
 2	builtin-taint-gate-jul2026/00_once_tainted_not_counted.gx
+2	byref-wake-view-sep2026/00_fused_arm.gx
+3	byref-wake-view-sep2026/01_impure_arm.gx
 0	call-arity-jul2026/00_excess_pos_skips_nested_check.gx
 0	call-arity-jul2026/01_excess_pos_silently_dropped.gx
 7	callable-route-aug2026/01_connectderef_twin.gx
@@ -227,6 +229,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 5	leaf-stale-mask-jul2026/04_reactive_fold_destructure.gx
 3	leaf-stale-mask-jul2026/05_ref_connect_fold.gx
 1	map-nest-drop-jul2026/01_selfkey_map_teardown_overflow.gx
+3	map-source-recovers-sep2026/00.gx
+3	map-source-recovers-sep2026/01_map_alone.gx
 3	mapq-standing-bottom-remint-aug2026/00_find_bottom_predicate_guard.gx
 1	missing-arg-firing-jul2026/01_str_sub_dropped_len.gx
 2	modstmt-fused-no-publish-aug2026/00_trailing_expr_module_exports_die.gx
@@ -491,6 +495,9 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 2	wake-catchup-sep2026/05_noarm_window.gx
 3	wake-catchup-sep2026/06_nested_composition.gx
 0	wake-catchup-sep2026/07_fold_hof_qop_missed_emission.gx
+10	wake-connect-target-sep2026/00_seq.gx
+5	wake-connect-target-sep2026/01_never_let.gx
+4	wake-connect-target-sep2026/02_arm_value.gx
 4	wake-stale-bottom-sep2026/00_plain_select.gx
 18	wake-stale-bottom-sep2026/01_seq_step.gx
 4	wake-stale-bottom-sep2026/02_let.gx
