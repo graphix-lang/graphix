@@ -139,6 +139,52 @@ fn completion() {
     assert_eq!(c.completions("main.gx", "let w = y|"), ["y"]);
 }
 
+/// Inside a `use`, completion offers what the module under the cursor
+/// exports, however deep the tree, and nothing else.
+#[test]
+fn a_use_completes_with_the_modules_exports() {
+    let main = "mod shapes;\nuse shapes::round::{Circle, area};\narea({ r: 1.0 })\n";
+    let round = "use super::sides;\ntype Circle = { r: f64 };\n\
+                 let area = |c: Circle| -> f64 c.r * c.r * 3.14 + cast<f64>(sides)$;\n";
+    let mut c = Client::start(&[
+        ("main.gx", main),
+        ("shapes.gx", "let sides = 4;\nmod round;\n"),
+        ("shapes/round.gx", round),
+    ]);
+    c.open("main.gx");
+    c.open("shapes/round.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let mut at = |c: &mut Client, file: &str, original: &str, from: &str, to: &str| {
+        c.replace(file, from, to);
+        let got = c.completions(file, &format!("{to}|"));
+        c.edit(file, original);
+        got
+    };
+    let head = "use shapes::round::{Circle, area};";
+    assert_eq!(
+        at(&mut c, "main.gx", main, head, "use shapes::round::{"),
+        ["Circle", "area", "self"]
+    );
+    assert_eq!(
+        at(&mut c, "main.gx", main, head, "use shapes::round::{Circle, a"),
+        ["area"]
+    );
+    assert_eq!(at(&mut c, "main.gx", main, head, "use shapes::"), ["round", "sides"]);
+    assert_eq!(
+        at(&mut c, "main.gx", main, head, "use shapes::{\n  sides,\n  round::{\n    Ci"),
+        ["Circle"]
+    );
+    let top = at(&mut c, "main.gx", main, head, "use sha");
+    assert_eq!(top, ["shapes"]);
+    let up = at(&mut c, "shapes/round.gx", round, "use super::sides;", "use super::");
+    assert_eq!(up, ["round", "sides"]);
+    let std = at(&mut c, "main.gx", main, head, "use sys::time::");
+    assert!(
+        std.contains(&"timer".to_string()) && !std.contains(&"println".to_string()),
+        "{std:?}"
+    );
+}
+
 #[test]
 fn symbols_show_resolved_types() {
     let mut c = two_files();

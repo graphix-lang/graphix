@@ -488,32 +488,8 @@ pub(crate) fn compile_use_item(
     use netidx_core::path::Path;
     let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
     let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
-    // a bare keyword anchor resolves along its lexical chain (a `super`
-    // anchor may be a block level); everything else is a canonical module
-    enum Anchor<'a> {
-        Chain(&'a str),
-        Module(ModPath),
-    }
-    let n_super = prefix.iter().take_while(|s| **s == "super").count();
-    let anchor = match prefix.first() {
-        None => None,
-        Some(&"self") if prefix.len() == 1 => {
-            Some(Anchor::Chain(crate::mod_root(&scope.lexical)))
-        }
-        Some(&"super") if n_super == prefix.len() => {
-            Some(Anchor::Chain(env.super_anchor(&scope.lexical, n_super)?))
-        }
-        Some(&"package") if prefix.len() == 1 => {
-            Some(Anchor::Chain(env.package_root(&scope.lexical)))
-        }
-        Some(_) => {
-            let p = ModPath(Path::from_iter(prefix.iter().copied()));
-            match env.canonical_modpath(&scope.lexical, &p)? {
-                Some(m) => Some(Anchor::Module(m)),
-                None => bail!("use: no module `{p}` in scope"),
-            }
-        }
-    };
+    use crate::env::UseAnchor as Anchor;
+    let anchor = env.use_anchor(&scope.lexical, prefix)?;
     if item.is_glob() {
         let scope_l = &scope.lexical;
         match anchor {

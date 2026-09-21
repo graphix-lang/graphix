@@ -118,6 +118,68 @@ pub(crate) fn typed_before(text: &str, cursor: Position) -> Option<Typed> {
     Some(Typed { path, receiver })
 }
 
+/// Where the cursor stands in a `use` tree.
+#[derive(Debug, PartialEq)]
+pub(crate) struct UsePath {
+    /// The module path the cursor is under (`["super", "ceremony"]`
+    /// inside `use super::{a, ceremony::{ .. }}`).
+    pub prefix: Vec<String>,
+    /// The name being typed, possibly empty.
+    pub partial: String,
+    /// The name is an item of a `{ .. }` group, where `self` is one.
+    pub in_group: bool,
+}
+
+/// The `use` tree the cursor is in, read off the text from the nearest
+/// `use` back of the cursor: the buffer need not parse. `None` outside
+/// a `use`, and after `as`, where a new name is being written.
+pub(crate) fn use_path(text: &str, cursor: Position) -> Option<UsePath> {
+    let mut lines = text.split_inclusive('\n');
+    let mut before: String = lines.by_ref().take(cursor.line as usize).collect();
+    before.extend(lines.next()?.chars().take(cursor.character as usize));
+    let statement = &before[before.rfind(';').map_or(0, |i| i + 1)..];
+    let at = statement.rmatch_indices("use").map(|(i, _)| i).find(|i| {
+        let bounded = !statement[..*i].chars().next_back().is_some_and(is_id_char);
+        bounded && statement[i + 3..].starts_with(char::is_whitespace)
+    })?;
+    let mut groups: Vec<Vec<String>> = vec![];
+    let mut path: Vec<String> = vec![];
+    let mut partial = String::new();
+    let mut chars = statement[at + 3..].chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            c if is_id_char(c) => partial.push(c),
+            ':' if chars.next_if_eq(&':').is_some() => {
+                path.push(std::mem::take(&mut partial))
+            }
+            '{' if partial.is_empty() => groups.push(std::mem::take(&mut path)),
+            ',' => {
+                path.clear();
+                partial.clear();
+            }
+            '}' => {
+                groups.pop()?;
+                path.clear();
+                partial.clear();
+            }
+            '*' => (),
+            c if c.is_whitespace() && partial.is_empty() => (),
+            // a finished name: only `,` or `}` may follow it (`as` writes
+            // a new name, and there is nothing to complete)
+            c if c.is_whitespace() => {
+                while chars.next_if(|c| c.is_whitespace()).is_some() {}
+                if !matches!(chars.peek(), Some(',' | '}')) {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    let in_group = !groups.is_empty() && path.is_empty();
+    let prefix = groups.into_iter().flatten().chain(path).collect();
+    Some(UsePath { prefix, partial, in_group })
+}
+
 /// The callee path (`foo`, `array::map`) if the cursor is inside an open
 /// `(`'s argument list; `None` inside `[`/`{` or past a statement
 /// boundary. String literals are not parsed.
@@ -202,6 +264,36 @@ mod tests {
         assert_eq!(extent(text, at(0, 10)), at(0, 20));
         assert_eq!(extent(text, at(0, 22)), at(0, 27));
         assert_eq!(extent(text, at(3, 0)), at(3, 0));
+    }
+
+    #[test]
+    fn use_paths() {
+        let path = |text: &str| {
+            let line = text.lines().count() as u32 - 1;
+            let col = text.lines().last().unwrap().chars().count() as u32;
+            use_path(text, at(line, col)).map(|u| (u.prefix.join("::"), u.partial))
+        };
+        let in_group = |text: &str| {
+            let col = text.chars().count() as u32;
+            use_path(text, at(0, col)).unwrap().in_group
+        };
+        let is = |p: &str, partial: &str| Some((p.to_string(), partial.to_string()));
+        assert_eq!(path("use "), is("", ""));
+        assert_eq!(path("let x = 1;\nuse tu"), is("", "tu"));
+        assert_eq!(path("use tui::"), is("tui", ""));
+        assert_eq!(path("use tui::{line, sp"), is("tui", "sp"));
+        assert_eq!(
+            path("use super::{\n  A, b,\n  ceremony::{\n    Answer, "),
+            is("super::ceremony", "")
+        );
+        assert_eq!(path("use super::{a, ceremony::{X, y}, z"), is("super", "z"));
+        assert_eq!(path("use tui::{overlay::{self, La"), is("tui::overlay", "La"));
+        assert_eq!(path("let f = || { use array::m"), is("array", "m"));
+        assert_eq!(path("use str::join as "), None);
+        assert_eq!(path("use str::join as sj"), None);
+        assert_eq!(path("let user = a::b"), None);
+        assert_eq!(path("use a::b;\nfoo::"), None);
+        assert!(in_group("use tui::{overlay::{se") && !in_group("use tui::{overlay::se"));
     }
 
     #[test]

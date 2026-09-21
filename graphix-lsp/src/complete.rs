@@ -4,7 +4,9 @@
 use crate::{
     query::{display_type, in_file},
     state::{Checked, ServerState},
-    text::{Typed, call_context, label_start, typed_before, zero_based},
+    text::{
+        Typed, UsePath, call_context, label_start, typed_before, use_path, zero_based,
+    },
     uri::uri_to_path,
 };
 use ahash::AHashSet;
@@ -18,6 +20,7 @@ use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionTextEdit, Documentation,
     InsertTextFormat, Position, Range, TextEdit, Uri,
 };
+use netidx_core::path::Path as NPath;
 use std::{cmp::Reverse, fmt::Write, path::Path};
 
 /// A path as typed (`array::ma`, `array::`) for `lookup_matching`; a
@@ -88,7 +91,19 @@ impl<'a> Completer<'a> {
             })
             .max_by_key(|(pos, end, _)| (*end, Reverse(*pos)));
         let scope = before.or(around).map(|(_, _, scope)| scope.clone());
-        scope.unwrap_or_else(ModPath::root)
+        scope.unwrap_or_else(|| Self::module_of(checked, file))
+    }
+
+    /// The module a file is the body of: the shallowest scope anything
+    /// in it stands in. An interface has no expressions, only binds.
+    fn module_of(checked: Option<&Checked>, file: &Path) -> ModPath {
+        let ide = checked.iter().map(|c| &c.ide);
+        let scopes = ide.flat_map(|ide| {
+            let entries = ide.scope_map.iter().map(|e| (&e.ori, &e.scope.lexical));
+            entries.chain(ide.binds.iter().map(|b| (&b.ori, &b.scope)))
+        });
+        let here = scopes.filter(|(ori, _)| in_file(ori, file)).map(|(_, scope)| scope);
+        here.min_by_key(|scope| scope.len()).cloned().unwrap_or_else(ModPath::root)
     }
 
     /// Every binding declared before the cursor in a scope enclosing
@@ -181,6 +196,81 @@ impl<'a> Completer<'a> {
         }
     }
 
+    /// What the module a `use` path stands under exports; at the head
+    /// of a path, the modules in reach and the path keywords.
+    fn imports(&self, at: &UsePath) -> Vec<CompletionItem> {
+        let item = |label: &str, kind, detail: Option<CompactString>| CompletionItem {
+            label: label.to_string(),
+            kind: Some(kind),
+            detail: detail.map(Into::into),
+            ..Default::default()
+        };
+        let mut items = vec![];
+        let mut seen: AHashSet<&str> = AHashSet::default();
+        let prefix: Vec<&str> = at.prefix.iter().map(|s| s.as_str()).collect();
+        let module = match self.env.use_anchor(&self.scope, &prefix) {
+            Ok(Some(anchor)) => anchor.path(),
+            Ok(None) => {
+                for kw in ["self", "super", "package"] {
+                    items.push(item(kw, CompletionItemKind::KEYWORD, None));
+                }
+                let part = typed_path(&at.partial);
+                let modules = self.env.lookup_matching_modules(&self.scope, &part);
+                let modules = modules.iter().map(|m| m.to_string());
+                let roots = self.env.package_roots.into_iter().map(|r| r.to_string());
+                let mut names: Vec<String> = modules.chain(roots).collect();
+                names.sort();
+                names.dedup();
+                let names = names.iter().filter(|n| !n.contains("::"));
+                items.extend(names.map(|n| item(n, CompletionItemKind::MODULE, None)));
+                items.retain(|i| i.label.starts_with(&at.partial));
+                return items;
+            }
+            Err(_) => return vec![],
+        };
+        let env = self.env;
+        let binds = env.binds.get(&module).into_iter().flat_map(|b| b.into_iter());
+        for (name, id) in binds {
+            if let Some(b) = env.by_id.get(id)
+                && seen.insert(name)
+            {
+                let kind = match &b.typ {
+                    Type::Fn(_) => CompletionItemKind::FUNCTION,
+                    _ => CompletionItemKind::VARIABLE,
+                };
+                items.push(item(name, kind, Some(display_type(&b.typ))));
+            }
+        }
+        let types = env.typedefs.get(&module).into_iter().flat_map(|t| t.into_iter());
+        for (name, td) in types {
+            if seen.insert(name) {
+                let detail = compact_str::format_compact!("{}", td.typ);
+                items.push(item(name, CompletionItemKind::STRUCT, Some(detail)));
+            }
+        }
+        let traits = env.traits.get(&module).into_iter().flat_map(|t| t.into_iter());
+        for (name, _) in traits {
+            if seen.insert(name) {
+                items.push(item(name, CompletionItemKind::INTERFACE, None));
+            }
+        }
+        for m in env.modules.into_iter() {
+            let child = NPath::dirname(&m.0) == Some(&*module.0)
+                || (&*module.0 == "/" && NPath::levels(&m.0) == 1);
+            if let Some(name) = NPath::basename(&m.0).filter(|_| child)
+                && seen.insert(name)
+            {
+                items.push(item(name, CompletionItemKind::MODULE, None));
+            }
+        }
+        if at.in_group {
+            items.push(item("self", CompletionItemKind::KEYWORD, None));
+        }
+        items.retain(|i| i.label.starts_with(&at.partial));
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        items
+    }
+
     /// Locals shadow the environment; a name that is a function and its
     /// module (`use foo;`) shows the function.
     fn names(&self, typed: &Typed) -> Vec<CompletionItem> {
@@ -227,6 +317,9 @@ impl ServerState {
             cursor,
             scope: Completer::scope_at(checked, &file, cursor),
         };
+        if let Some(at) = use_path(&doc.text, cursor) {
+            return c.imports(&at);
+        }
         let callee = call_context(&doc.text, cursor);
         if let Some(start) = label_start(&doc.text, cursor) {
             let replace = Range { start: self.encode(&doc.text, start), end: position };

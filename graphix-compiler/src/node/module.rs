@@ -80,8 +80,13 @@ fn bind_sig(
                     typ.record_ide_refs(env, &scope.lexical);
                 }
                 let poly = matches!(typ, Type::Fn(_));
-                let bind =
-                    env.bind_variable(&scope.lexical, name, typ, name.pos_or(si.pos), si_ori.clone());
+                let bind = env.bind_variable(
+                    &scope.lexical,
+                    name,
+                    typ,
+                    name.pos_or(si.pos),
+                    si_ori.clone(),
+                );
                 if let Doc(Some(s)) = &si.doc {
                     bind.doc = Some(s.clone());
                 }

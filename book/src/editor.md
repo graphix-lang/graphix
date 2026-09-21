@@ -291,7 +291,7 @@ its own; use `:%!graphix fmt` there.
 | Feature | Status |
 | --- | --- |
 | Diagnostics (parse and type errors, warnings) | ✓ |
-| Completions: names in scope, struct fields, call labels | ✓ |
+| Completions: names in scope, struct fields, call labels, `use` trees | ✓ |
 | Hover with type and doc information | ✓ |
 | Go-to-definition | ✓ |
 | Find references | ✓ |
@@ -307,8 +307,9 @@ diagnostic at a time.
 
 While a buffer does not compile, completion, hover and navigation answer
 from the last version that did. Completion offers the names in scope
-(locals included), a struct's fields after `.`, and a call's `#labels`
-inside its parentheses.
+(locals included), a struct's fields after `.`, a call's `#labels` inside
+its parentheses, and inside a `use` what the module under the cursor
+exports, however deep the tree.
 
 Warnings (an error no `catch` will see, for instance) are shown beside
 errors, and stay while a buffer does not compile.

@@ -261,6 +261,25 @@ pub(crate) fn chain_levels(from: &str) -> impl Iterator<Item = &str> {
     })
 }
 
+/// What the prefix of a `use` path names. A bare keyword anchor
+/// (`self`, `super::super`, `package`) resolves along the lexical chain
+/// of the scope it is written in, and a `super` anchor may be a block
+/// level; everything else is a canonical module.
+pub enum UseAnchor<'a> {
+    Chain(&'a str),
+    Module(ModPath),
+}
+
+impl UseAnchor<'_> {
+    /// The anchor as a scope path.
+    pub fn path(&self) -> ModPath {
+        match self {
+            Self::Chain(a) => ModPath(Path::from(ArcStr::from(*a))),
+            Self::Module(m) => m.clone(),
+        }
+    }
+}
+
 const MAX_IMPORT_DEPTH: usize = 32;
 
 #[derive(Clone, Debug, Default)]
@@ -1032,6 +1051,35 @@ impl Env {
             eprintln!("FIND-IMPL none for {t:?}");
         }
         Ok(None)
+    }
+
+    /// Resolve the segments before a `use` item's last one, written in
+    /// `scope`; `None` for no prefix.
+    pub fn use_anchor<'a>(
+        &self,
+        scope: &'a ModPath,
+        prefix: &[&str],
+    ) -> Result<Option<UseAnchor<'a>>> {
+        let n_super = prefix.iter().take_while(|s| **s == "super").count();
+        Ok(match prefix.first() {
+            None => None,
+            Some(&"self") if prefix.len() == 1 => {
+                Some(UseAnchor::Chain(crate::mod_root(scope)))
+            }
+            Some(&"super") if n_super == prefix.len() => {
+                Some(UseAnchor::Chain(self.super_anchor(scope, n_super)?))
+            }
+            Some(&"package") if prefix.len() == 1 => {
+                Some(UseAnchor::Chain(self.package_root(scope)))
+            }
+            Some(_) => {
+                let p = ModPath(Path::from_iter(prefix.iter().copied()));
+                match self.canonical_modpath(scope, &p)? {
+                    Some(m) => Some(UseAnchor::Module(m)),
+                    None => bail!("use: no module `{p}` in scope"),
+                }
+            }
+        })
     }
 
     pub fn canonical_modpath(

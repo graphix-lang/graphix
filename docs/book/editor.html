@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-70021b54.js";
+            window.path_to_searchindex_js = "searchindex-2d3e9d80.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -404,7 +404,7 @@ its own; use <code>:%!graphix fmt</code> there.</p>
 </thead>
 <tbody>
 <tr><td>Diagnostics (parse and type errors, warnings)</td><td>✓</td></tr>
-<tr><td>Completions: names in scope, struct fields, call labels</td><td>✓</td></tr>
+<tr><td>Completions: names in scope, struct fields, call labels, <code>use</code> trees</td><td>✓</td></tr>
 <tr><td>Hover with type and doc information</td><td>✓</td></tr>
 <tr><td>Go-to-definition</td><td>✓</td></tr>
 <tr><td>Find references</td><td>✓</td></tr>
@@ -421,8 +421,9 @@ checked. The compiler stops at the first error, so a project shows one
 diagnostic at a time.</p>
 <p>While a buffer does not compile, completion, hover and navigation answer
 from the last version that did. Completion offers the names in scope
-(locals included), a struct’s fields after <code>.</code>, and a call’s <code>#labels</code>
-inside its parentheses.</p>
+(locals included), a struct’s fields after <code>.</code>, a call’s <code>#labels</code> inside
+its parentheses, and inside a <code>use</code> what the module under the cursor
+exports, however deep the tree.</p>
 <p>Warnings (an error no <code>catch</code> will see, for instance) are shown beside
 errors, and stay while a buffer does not compile.</p>
 <p>A package that defines its own builtins (an external <code>graphix-package-*</code>

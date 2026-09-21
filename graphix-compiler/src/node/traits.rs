@@ -146,7 +146,12 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         let mut sigs: LPooled<Vec<(ArcStr, Arc<FnType>, usize, bool)>> = LPooled::take();
         for m in t.methods.iter() {
             let ft = method_sig(&m.typ, &tref, &scope.lexical);
-            sigs.push((m.name.name.clone(), Arc::new(ft), m.self_index, m.default.is_some()));
+            sigs.push((
+                m.name.name.clone(),
+                Arc::new(ft),
+                m.self_index,
+                m.default.is_some(),
+            ));
         }
         let def = ctx
             .env
@@ -479,7 +484,8 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             let StructurePattern::Bind(name) = &b.pattern else {
                 unreachable!("impl methods are simple binds")
             };
-            let Some(decl) = trait_def.methods.iter().find(|d| d.name == name.name) else {
+            let Some(decl) = trait_def.methods.iter().find(|d| d.name == name.name)
+            else {
                 bail!(
                     "{} is not a method of trait {} (at {})",
                     name,
