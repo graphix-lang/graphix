@@ -263,7 +263,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
                 };
                 Arg {
                     labeled: a.is_labeled().then_some(None),
-                    pattern: StructurePattern::Bind(name),
+                    pattern: StructurePattern::Bind(name.into()),
                     constraint: Some(a.typ.clone()),
                     pos: SourcePosition::default(),
                 }

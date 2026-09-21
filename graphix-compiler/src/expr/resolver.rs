@@ -3,7 +3,7 @@ use crate::{
     expr::TraitExpr,
     expr::{
         ApplyExpr, BindExpr, CatchExpr, CouldNotResolve, Expr, ExprId, ExprKind,
-        LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr, Sig, SigItem,
+        LambdaExpr, ModPath, ModuleKind, Name, Origin, Pattern, SelectExpr, Sig, SigItem,
         SigKind, Source, StructExpr, StructWithExpr, StructurePattern, TryWithExpr,
         TypeDefExpr, UseItem, parser, read_to_arcstr, serialize,
     },
@@ -317,7 +317,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     }
     #[derive(Clone, Copy)]
     enum ItemKind<'a> {
-        Module(&'a ArcStr),
+        Module(&'a Name),
         TypeDef(&'a TypeDefExpr),
         Trait(&'a Arc<TraitExpr>),
         Use(bool, &'a Arc<[UseItem]>),
@@ -382,10 +382,10 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         }
     }
     let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
-    let mut after_bind: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
-    let mut after_td: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
-    let mut after_trait: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
-    let mut after_mod: LPooled<AHashMap<&ArcStr, Item>> = LPooled::take();
+    let mut after_bind: LPooled<AHashMap<&str, Item>> = LPooled::take();
+    let mut after_td: LPooled<AHashMap<&str, Item>> = LPooled::take();
+    let mut after_trait: LPooled<AHashMap<&str, Item>> = LPooled::take();
+    let mut after_mod: LPooled<AHashMap<&str, Item>> = LPooled::take();
     let mut after_use: LPooled<AHashMap<&UseItem, Item>> = LPooled::take();
     let mut first: Option<Item> = None;
     let mut last: Option<&SigItem> = None;
@@ -401,10 +401,10 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 None => first = Some(name),
                 Some(si) => {
                     match &si.kind {
-                        SigKind::Bind(v) => after_bind.insert(&v.name, name),
-                        SigKind::Module(m) => after_mod.insert(m, name),
-                        SigKind::TypeDef(td) => after_td.insert(&td.name, name),
-                        SigKind::Trait(t) => after_trait.insert(&t.name, name),
+                        SigKind::Bind(v) => after_bind.insert(v.name.as_str(), name),
+                        SigKind::Module(m) => after_mod.insert(m.as_str(), name),
+                        SigKind::TypeDef(td) => after_td.insert(td.name.as_str(), name),
+                        SigKind::Trait(t) => after_trait.insert(t.name.as_str(), name),
                         SigKind::Impl(_) => None,
                         SigKind::Use { names: n, .. } => {
                             n.iter().map(|p| after_use.insert(p, name)).last().flatten()
@@ -430,10 +430,14 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     None => first = Some(name),
                     Some(psi) => {
                         match &psi.kind {
-                            SigKind::Bind(v) => after_bind.insert(&v.name, name),
-                            SigKind::Module(m) => after_mod.insert(m, name),
-                            SigKind::TypeDef(td) => after_td.insert(&td.name, name),
-                            SigKind::Trait(t) => after_trait.insert(&t.name, name),
+                            SigKind::Bind(v) => after_bind.insert(v.name.as_str(), name),
+                            SigKind::Module(m) => after_mod.insert(m.as_str(), name),
+                            SigKind::TypeDef(td) => {
+                                after_td.insert(td.name.as_str(), name)
+                            }
+                            SigKind::Trait(t) => {
+                                after_trait.insert(t.name.as_str(), name)
+                            }
                             SigKind::Impl(_) => None,
                             SigKind::Use { names: n, .. } => n
                                 .iter()
@@ -506,7 +510,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         match res.last().map(|e| &e.kind) {
             Some(ExprKind::Bind(v)) => match &v.pattern {
                 StructurePattern::Bind(n) => {
-                    if let Some(name) = after_bind.remove(n)
+                    if let Some(name) = after_bind.remove(n.as_str())
                         && in_sig.shift_remove(&name)
                     {
                         res.push(name.synth());
@@ -516,7 +520,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 _ => (),
             },
             Some(ExprKind::TypeDef(td)) => {
-                if let Some(name) = after_td.remove(&td.name)
+                if let Some(name) = after_td.remove(td.name.as_str())
                     && in_sig.shift_remove(&name)
                 {
                     res.push(name.synth());
@@ -524,7 +528,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 }
             }
             Some(ExprKind::Trait(t)) => {
-                if let Some(name) = after_trait.remove(&t.name)
+                if let Some(name) = after_trait.remove(t.name.as_str())
                     && in_sig.shift_remove(&name)
                 {
                     res.push(name.synth());
@@ -532,7 +536,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 }
             }
             Some(ExprKind::Module { name, .. }) => {
-                if let Some(name) = after_mod.remove(name)
+                if let Some(name) = after_mod.remove(name.as_str())
                     && in_sig.shift_remove(&name)
                 {
                     res.push(name.synth());
@@ -652,6 +656,7 @@ impl RootFile {
 
     /// The file as the body of module `name`: what a package's root is.
     pub fn into_module(self, name: ArcStr) -> Expr {
+        let name = Name::from(name);
         let Self { ori, exprs, sig } = self;
         let value = ModuleKind::Resolved { exprs, sig, from_interface: false };
         let mut e = ExprKind::Module { name, value }.to_expr(SourcePosition::default());
@@ -667,7 +672,7 @@ async fn resolve(
     id: ExprId,
     parent: Arc<Origin>,
     pos: SourcePosition,
-    name: ArcStr,
+    module: Name,
     from_interface: bool,
 ) -> Result<Expr> {
     macro_rules! check {
@@ -684,7 +689,7 @@ async fn resolve(
         };
     }
     let ts = Instant::now();
-    let name = Path::from(name);
+    let name = Path::from(module.name.clone());
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
     for r in prepend.iter().map(|r| &**r).chain(resolvers.iter().map(|r| &**r)) {
         let (interface, implementation, impl_packed, intf_packed) =
@@ -692,7 +697,7 @@ async fn resolve(
         let (exprs, sig) =
             parse_module(&interface, &implementation, impl_packed, intf_packed).await?;
         let value = ModuleKind::Resolved { exprs, sig, from_interface };
-        let kind = ExprKind::Module { name: name.clone().into(), value };
+        let kind = ExprKind::Module { name: module, value };
         format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
             info!(
                 "load and parse {implementation:?} and {interface:?} {:?}",
@@ -848,7 +853,7 @@ impl Expr {
                         from_interface,
                     )
                     .await
-                    .with_context(|| CouldNotResolve(name.clone()))?;
+                    .with_context(|| CouldNotResolve(name.name.clone()))?;
                     let scope = ModPath(scope.append(&*name));
                     e.resolve_modules_int(&scope, &prepend, &resolvers).await
                 })

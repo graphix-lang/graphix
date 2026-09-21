@@ -52,11 +52,12 @@ fn bind_sig(
                 env.modules.insert_cow(scope.lexical.clone());
                 if env.lsp_mode {
                     env.push_module_reference(ModuleRefSite {
-                        pos: si.pos,
+                        pos: name.pos_or(si.pos),
                         ori: si_ori.clone(),
-                        name: ModPath::from_iter([name.clone()]),
+                        name: ModPath::from_iter([name.name.clone()]),
                         canonical: scope.lexical.clone(),
                         def_ori: None,
+                        segments: None,
                     });
                 }
             }
@@ -80,7 +81,7 @@ fn bind_sig(
                 }
                 let poly = matches!(typ, Type::Fn(_));
                 let bind =
-                    env.bind_variable(&scope.lexical, name, typ, si.pos, si_ori.clone());
+                    env.bind_variable(&scope.lexical, name, typ, name.pos_or(si.pos), si_ori.clone());
                 if let Doc(Some(s)) = &si.doc {
                     bind.doc = Some(s.clone());
                 }
@@ -97,7 +98,7 @@ fn bind_sig(
                     &td.body,
                     true,
                     si.doc.0.clone(),
-                    si.pos,
+                    td.name.pos_or(si.pos),
                     si_ori,
                 )?;
             }
@@ -105,14 +106,14 @@ fn bind_sig(
                 let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, &si_ori);
                 let sigs = t.methods.iter().map(|m| {
                     let ft = traits::method_sig(&m.typ, &tref, &scope.lexical);
-                    (m.name.clone(), Arc::new(ft), m.self_index, m.default.is_some())
+                    (m.name.name.clone(), Arc::new(ft), m.self_index, m.default.is_some())
                 });
                 env.deftrait(
                     &scope.lexical,
                     &t.name,
                     sigs,
                     si.doc.0.clone(),
-                    si.pos,
+                    t.name.pos_or(si.pos),
                     si_ori,
                 )?;
             }
@@ -268,7 +269,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                     impl_id: id,
                 });
             }
-            has_bind.insert(name.clone());
+            has_bind.insert(name.name.clone());
         }
         if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
             && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
@@ -319,7 +320,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                             td.name
                         )
                     };
-                    defined_abstracts.insert(td.name.clone());
+                    defined_abstracts.insert(td.name.name.clone());
                 }
                 _ => {
                     let impl_body = match &td.body {
@@ -347,7 +348,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     }
     for si in sig.items.iter() {
         let missing = match &si.kind {
-            SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name),
+            SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(&name.name),
             SigKind::Impl(im) => {
                 let trait_id = ctx
                     .env
@@ -426,7 +427,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                 name,
                 body: TypeDefBody::Abstract(None),
                 ..
-            }) if !defined_abstracts.contains(name) => {
+            }) if !defined_abstracts.contains(&name.name) => {
                 bail!(
                     "{name} is hidden by the interface, so the implementation must \
                      define it: `type {name} = Abstract<..>`, or `type {name};` for \

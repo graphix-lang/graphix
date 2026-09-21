@@ -145,7 +145,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         let mut sigs: LPooled<Vec<(ArcStr, Arc<FnType>, usize, bool)>> = LPooled::take();
         for m in t.methods.iter() {
             let ft = method_sig(&m.typ, &tref, &scope.lexical);
-            sigs.push((m.name.clone(), Arc::new(ft), m.self_index, m.default.is_some()));
+            sigs.push((m.name.name.clone(), Arc::new(ft), m.self_index, m.default.is_some()));
         }
         let def = ctx
             .env
@@ -154,7 +154,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                 &t.name,
                 sigs.drain(..),
                 None,
-                spec.pos,
+                t.name.pos_or(spec.pos),
                 spec.ori.clone(),
             )
             .with_context(|| format!("in trait declaration at {}", spec.pos))?;
@@ -477,7 +477,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             let StructurePattern::Bind(name) = &b.pattern else {
                 unreachable!("impl methods are simple binds")
             };
-            let Some(decl) = trait_def.methods.iter().find(|d| &d.name == name) else {
+            let Some(decl) = trait_def.methods.iter().find(|d| d.name == name.name) else {
                 bail!(
                     "{} is not a method of trait {} (at {})",
                     name,
@@ -485,7 +485,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                     m.pos
                 )
             };
-            if !provided.insert(name.clone()) {
+            if !provided.insert(name.name.clone()) {
                 bail!("method {name} is implemented twice (at {})", m.pos);
             }
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);

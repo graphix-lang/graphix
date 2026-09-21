@@ -1,7 +1,7 @@
 use crate::{
     expr::{
-        Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Origin,
-        ParserContext, Pattern, SelectExpr, SeqTrigger, Sig, SigItem, StrForm,
+        Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Name,
+        Origin, ParserContext, Pattern, SelectExpr, SeqTrigger, Sig, SigItem, StrForm,
         StructExpr, StructWithExpr, TryWithExpr, set_origin,
     },
     profile::{self, Phase},
@@ -359,6 +359,25 @@ where
     })
 }
 
+/// A binding name and where it stands.
+fn name<I>() -> impl Parser<I, Output = Name>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (position(), fname()).map(|(pos, name)| Name::written(name, pos))
+}
+
+fn spname<I>() -> impl Parser<I, Output = Name>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    spaces().with(name())
+}
+
 fn spfname<I>() -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -378,15 +397,6 @@ where
     I::Range: Range,
 {
     ident(false)
-}
-
-fn spfldname<I>() -> impl Parser<I, Output = ArcStr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(fldname())
 }
 
 fn typname<I>() -> impl Parser<I, Output = ArcStr>
@@ -1107,7 +1117,7 @@ where
         between(
             sptoken('('),
             sptoken(')'),
-            (spfname(), spaces().with(optional(token(':').with(typ())))),
+            (spname(), spaces().with(optional(token(':').with(typ())))),
         ),
         expr(),
     )

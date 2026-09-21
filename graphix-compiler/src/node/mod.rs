@@ -9,7 +9,7 @@ use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
     env::{Env, ImportEntry},
-    expr::{At, Expr, ExprId, ExprKind, ModPath, TypeDefBody},
+    expr::{At, Expr, ExprId, ExprKind, ModPath, Name, TypeDefBody},
     fusion::{
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_const_node,
@@ -579,6 +579,7 @@ pub(crate) fn compile_use_item(
             name: item.path.clone(),
             canonical,
             def_ori: None,
+            segments: Some(item.at.clone()),
         });
     }
     if !env.import_target_exists(&entry) {
@@ -633,7 +634,7 @@ impl TypeDef {
         ctx: &mut ExecCtx<R, E>,
         spec: Expr,
         scope: &Scope,
-        name: &ArcStr,
+        name: &Name,
         params: &Arc<[(TVar, Option<Type>)]>,
         body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
@@ -645,11 +646,11 @@ impl TypeDef {
                 body,
                 false,
                 None,
-                spec.pos,
+                name.pos_or(spec.pos),
                 spec.ori.clone(),
             )
             .with_context(|| format!("in typedef at {}", spec.pos))?;
-        let name = name.clone();
+        let name = name.name.clone();
         Ok(Node::new(Self { spec, scope: scope.lexical.clone(), name }))
     }
 }

@@ -63,14 +63,14 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
         let pattern = StructPatternNode::compile(
             ctx,
             &typ,
-            &expr::StructurePattern::Bind(name.clone()),
+            &expr::StructurePattern::Bind(name.clone().into()),
             scope,
             spec.pos,
             spec.ori.clone(),
         )?;
         let bspec = mk(ExprKind::Bind(Arc::new(expr::BindExpr {
             rec: false,
-            pattern: expr::StructurePattern::Bind(name),
+            pattern: expr::StructurePattern::Bind(name.into()),
             typ: None,
             value: node.spec().clone(),
         })));
@@ -844,7 +844,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                     cur = source;
                 }
                 ExprKind::StructRef { source, field } => {
-                    steps.push(PlaceSpec::Field(field.clone()));
+                    steps.push(PlaceSpec::Field(field.name.clone()));
                     cur = source;
                 }
                 ExprKind::MapRef { source, key } => {

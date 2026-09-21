@@ -1,7 +1,6 @@
 //! Source text around a position. Columns are char counts here; the
 //! LSP encoding is translated at the boundary (`crate::position`).
 
-use arcstr::ArcStr;
 use graphix_compiler::SourcePosition;
 use lsp_types::Position;
 use poolshark::local::LPooled;
@@ -176,97 +175,12 @@ pub(crate) fn label_start(text: &str, cursor: Position) -> Option<Position> {
     Some(Position { line: cursor.line, character: (start - 1) as u32 })
 }
 
-/// A text with the byte offset of each line's start, for position ↔
-/// offset in O(log n).
-pub(crate) struct Lines {
-    text: ArcStr,
-    starts: Vec<usize>,
-}
-
-impl Lines {
-    pub(crate) fn new(text: ArcStr) -> Self {
-        let mut starts = vec![0];
-        starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
-        Self { text, starts }
-    }
-
-    pub(crate) fn is(&self, text: &ArcStr) -> bool {
-        ArcStr::ptr_eq(&self.text, text)
-    }
-
-    fn offset(&self, pos: Position) -> usize {
-        let Some(&start) = self.starts.get(pos.line as usize) else {
-            return self.text.len();
-        };
-        let line = &self.text[start..];
-        let line = line.split('\n').next().unwrap_or("");
-        start
-            + line
-                .char_indices()
-                .nth(pos.character as usize)
-                .map(|(i, _)| i)
-                .unwrap_or(line.len())
-    }
-
-    fn position(&self, offset: usize) -> Position {
-        let line = self.starts.partition_point(|s| *s <= offset) - 1;
-        let character = self.text[self.starts[line]..offset].chars().count() as u32;
-        Position { line: line as u32, character }
-    }
-
-    /// True when the text at `pos` starts with `word`.
-    pub(crate) fn starts_with(&self, pos: Position, word: &str) -> bool {
-        self.text[self.offset(pos)..].starts_with(word)
-    }
-
-    /// The first whole-word `name` at or after `from`, comment lines
-    /// skipped, no further than the first `stop` char: where a
-    /// declaration at `from` (its keyword, or its doc comment) names
-    /// what it declares. The AST has no position for the name itself.
-    pub(crate) fn name_after(
-        &self,
-        from: Position,
-        name: &str,
-        stop: Option<char>,
-    ) -> Option<Position> {
-        let begin = self.offset(from);
-        let limit = match stop.and_then(|c| self.text[begin..].find(c)) {
-            Some(i) => begin + i,
-            None => self.text.len(),
-        };
-        let mut at = begin;
-        while let Some(i) = self.text[at..limit].find(name) {
-            let (start, end) = (at + i, at + i + name.len());
-            let bounded = !self.text[..start].chars().next_back().is_some_and(is_id_char)
-                && !self.text[end..].chars().next().is_some_and(is_id_char);
-            let line_start = self.starts[self.position(start).line as usize];
-            let commented = self.text[line_start..start].trim_start().starts_with("//");
-            if bounded && !commented {
-                return Some(self.position(start));
-            }
-            at = end;
-        }
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn at(line: u32, character: u32) -> Position {
         Position { line, character }
-    }
-
-    #[test]
-    fn names_are_found_past_keywords_and_doc_comments() {
-        let text = "/// map maps\nval map: fn(a: i64) -> i64;\nlet rec remap = map";
-        let lines = Lines::new(ArcStr::from(text));
-        assert_eq!(lines.name_after(at(0, 0), "map", None), Some(at(1, 4)));
-        assert_eq!(lines.name_after(at(2, 0), "map", None), Some(at(2, 16)));
-        assert_eq!(lines.name_after(at(2, 0), "remap", None), Some(at(2, 8)));
-        assert_eq!(lines.name_after(at(1, 0), "map", Some(':')), Some(at(1, 4)));
-        assert_eq!(lines.name_after(at(1, 0), "i64", Some(':')), None);
     }
 
     #[test]

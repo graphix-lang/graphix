@@ -3,7 +3,7 @@ use super::{
     sep_by1_tok, spaces, spaces1, spstring, sptoken, typname,
 };
 use crate::{
-    expr::{Expr, ExprKind, ModPath, TypeDefBody, TypeDefExpr, WrittenAt},
+    expr::{Expr, ExprKind, ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
 use ahash::AHashSet;
@@ -451,7 +451,7 @@ where
 {
     (
         position(),
-        attempt(string("type").skip(spaces1())).with(typname()),
+        attempt(string("type").skip(spaces1())).with((position(), typname())),
         spaces().with(optional(between(
             token('<'),
             sptoken('>'),
@@ -473,7 +473,8 @@ where
             ))),
         )),
     )
-        .map(|(pos, name, params, body)| {
+        .map(|(pos, (at, name), params, body)| {
+            let name = Name::written(name, at);
             let params = params
                 .map(|mut ps: LPooled<Vec<(TVar, Option<Type>)>>| {
                     Arc::from_iter(ps.drain(..))

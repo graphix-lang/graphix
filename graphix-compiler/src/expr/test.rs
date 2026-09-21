@@ -435,37 +435,41 @@ fn typexp() -> impl Strategy<Value = Type> {
     })
 }
 
+fn random_name() -> impl Strategy<Value = Name> {
+    random_fname().prop_map(Name::from)
+}
+
 fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
     let leaf = prop_oneof![
         value().prop_map(|v| StructurePattern::Literal(v)),
-        option::of(random_fname()).prop_map(|name| match name {
+        option::of(random_name()).prop_map(|name| match name {
             None => StructurePattern::Ignore,
             Some(name) => StructurePattern::Bind(name),
         }),
     ];
     leaf.prop_recursive(5, 20, 10, |inner| {
         prop_oneof![
-            (option::of(random_fname()), collection::vec(inner.clone(), (0, 10)))
+            (option::of(random_name()), collection::vec(inner.clone(), (0, 10)))
                 .prop_map(|(all, b)| {
                     StructurePattern::Slice { list: false, all, binds: Arc::from_iter(b) }
                 }),
-            (option::of(random_fname()), collection::vec(inner.clone(), (0, 10)))
+            (option::of(random_name()), collection::vec(inner.clone(), (0, 10)))
                 .prop_map(|(all, b)| {
                     StructurePattern::Slice { list: true, all, binds: Arc::from_iter(b) }
                 }),
-            (option::of(random_fname()), collection::vec(inner.clone(), (2, 10)))
+            (option::of(random_name()), collection::vec(inner.clone(), (2, 10)))
                 .prop_map(|(all, b)| {
                     StructurePattern::Tuple { all, binds: Arc::from_iter(b) }
                 }),
             (
-                option::of(random_fname()),
+                option::of(random_name()),
                 typart(),
                 collection::vec(inner.clone(), (0, 10))
             )
                 .prop_map(|(all, tag, b)| {
                     StructurePattern::Variant { all, tag, binds: Arc::from_iter(b) }
                 }),
-            (option::of(random_fname()), typart(), inner.clone()).prop_map(
+            (option::of(random_name()), typart(), inner.clone()).prop_map(
                 |(all, name, b)| {
                     StructurePattern::Abstract {
                         all,
@@ -475,7 +479,7 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                 }
             ),
             (
-                option::of(random_fname()),
+                option::of(random_name()),
                 collection::vec((field_name(), inner.clone()), (1, 10)),
                 any::<bool>()
             )
@@ -488,9 +492,9 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                     StructurePattern::Struct { all, exhaustive, binds }
                 }),
             (
-                option::of(random_fname()),
+                option::of(random_name()),
                 collection::vec(inner.clone(), (1, 10)),
-                option::of(random_fname())
+                option::of(random_name())
             )
                 .prop_map(|(all, p, tail)| StructurePattern::SlicePrefix {
                     list: false,
@@ -499,9 +503,9 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                     tail
                 }),
             (
-                option::of(random_fname()),
+                option::of(random_name()),
                 collection::vec(inner.clone(), (1, 10)),
-                option::of(random_fname())
+                option::of(random_name())
             )
                 .prop_map(|(all, p, tail)| StructurePattern::SlicePrefix {
                     list: true,
@@ -510,8 +514,8 @@ fn structure_pattern() -> impl Strategy<Value = StructurePattern> {
                     tail
                 }),
             (
-                option::of(random_fname()),
-                option::of(random_fname()),
+                option::of(random_name()),
+                option::of(random_name()),
                 collection::vec(inner.clone(), (1, 10))
             )
                 .prop_map(|(all, head, s)| StructurePattern::SliceSuffix {
@@ -587,6 +591,7 @@ fn use_item() -> impl Strategy<Value = UseItem> {
             UseItem {
                 path: ModPath::from_iter(parts),
                 rename: if glob { None } else { rename },
+                at: Default::default(),
             }
         })
 }
@@ -609,7 +614,8 @@ fn typedef() -> impl Strategy<Value = Expr> {
     (typart(), collection::vec((tvar(), option::of(typexp())), 0..4), body).prop_map(
         |(name, params, body)| {
             let params = Arc::from_iter(params.into_iter());
-            ExprKind::TypeDef(TypeDefExpr { name, params, body }).to_expr_nopos()
+            ExprKind::TypeDef(TypeDefExpr { name: name.into(), params, body })
+                .to_expr_nopos()
         },
     )
 }
@@ -662,13 +668,13 @@ macro_rules! trait_decl {
                     .filter(|(n, _, _, _)| seen.insert(n.clone()))
                     .map(|(name, typ, default, doc)| TraitMethod {
                         doc: Doc(doc),
-                        name,
+                        name: name.into(),
                         typ,
                         self_index: 0,
                         default,
                     });
                 ExprKind::Trait(Arc::new(TraitExpr {
-                    name,
+                    name: name.into(),
                     methods: Arc::from_iter(methods),
                 }))
                 .to_expr_nopos()
@@ -703,7 +709,7 @@ macro_rules! impl_decl {
                     .map(|(name, typ, value, dec)| {
                         let mut m = ExprKind::Bind(Arc::new(BindExpr {
                             rec: false,
-                            pattern: StructurePattern::Bind(name),
+                            pattern: StructurePattern::Bind(name.into()),
                             typ,
                             value,
                         }))
@@ -726,7 +732,8 @@ macro_rules! impl_decl {
 macro_rules! structref {
     ($inner:expr) => {
         ($inner, field_name()).prop_map(|(source, field)| {
-            ExprKind::StructRef { source: Arc::new(source), field }.to_expr_nopos()
+            ExprKind::StructRef { source: Arc::new(source), field: field.into() }
+                .to_expr_nopos()
         })
     };
 }
@@ -779,7 +786,7 @@ macro_rules! catch_stmt {
         (random_fname(), option::of(typexp()), $inner).prop_map(
             |(bind, constraint, handler)| {
                 ExprKind::Catch(Arc::new(CatchExpr {
-                    bind,
+                    bind: bind.into(),
                     constraint,
                     handler: Arc::new(handler),
                     seq_abort: None,
@@ -928,7 +935,7 @@ macro_rules! lambda {
                     let args = args.into_iter().map(
                         |(labeled, name, pattern, constraint, default)| {
                             let pattern = if labeled {
-                                StructurePattern::Bind(name)
+                                StructurePattern::Bind(name.into())
                             } else {
                                 pattern
                             };
@@ -1120,7 +1127,7 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
     prop_oneof![
         (random_fname(), typexp(), option::of(arcstr())).prop_map(|(name, typ, doc)| {
             SigItem {
-                kind: SigKind::Bind(BindSig { name, typ }),
+                kind: SigKind::Bind(BindSig { name: name.into(), typ }),
                 doc: Doc(doc),
                 pos: Default::default(),
                 ori: None,
@@ -1146,7 +1153,7 @@ fn module_sigitem() -> impl Strategy<Value = SigItem> {
             }
         ),
         (random_fname(), option::of(arcstr())).prop_map(|(name, doc)| SigItem {
-            kind: SigKind::Module(name),
+            kind: SigKind::Module(name.into()),
             doc: Doc(doc),
             pos: Default::default(),
             ori: None,
@@ -1230,7 +1237,7 @@ macro_rules! dynamic_module {
         )
             .prop_map(|(name, sandbox, sig, source)| {
                 ExprKind::Module {
-                    name,
+                    name: name.into(),
                     value: ModuleKind::Dynamic {
                         sandbox,
                         sig: Sig { items: Arc::from(sig), toplevel: false },
@@ -1244,8 +1251,11 @@ macro_rules! dynamic_module {
 
 fn module() -> impl Strategy<Value = Expr> {
     (random_fname()).prop_map(|name| {
-        ExprKind::Module { name, value: ModuleKind::Unresolved { from_interface: false } }
-            .to_expr_nopos()
+        ExprKind::Module {
+            name: name.into(),
+            value: ModuleKind::Unresolved { from_interface: false },
+        }
+        .to_expr_nopos()
     })
 }
 

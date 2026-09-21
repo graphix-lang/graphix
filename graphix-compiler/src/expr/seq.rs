@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     env::Env,
-    expr::At,
+    expr::{At, Name},
     stack::ensure_sufficient,
     typ::{TVar, Type},
 };
@@ -87,7 +87,7 @@ fn desugar_let(spec: &Expr, b: &BindExpr) -> Result<Expr> {
     }
     let BindExpr { pattern, typ, value, .. } = b;
     let name = match pattern {
-        StructurePattern::Bind(n) => n.clone(),
+        StructurePattern::Bind(n) => n.name.clone(),
         _ => ArcStr::from(format_compact!("seqbind{}", spec.id.inner()).as_str()),
     };
     let mut exprs = vec![let_bind(pos, &name, typ.clone(), value.clone())];
@@ -167,7 +167,7 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
             abort_body.push(connect(pos, q.clock, boolean(pos, true)));
         }
         ExprKind::Catch(Arc::new(CatchExpr {
-            bind: err_bind.clone(),
+            bind: err_bind.clone().into(),
             constraint: None,
             handler: Arc::new(
                 ExprKind::Rethrow(Arc::new(r#ref(pos, err_bind.as_str()))).to_expr(pos),
@@ -615,7 +615,7 @@ impl Machine<'_> {
         let caught = ArcStr::from(format_compact!("seqtry{}", spec.id.inner()).as_str());
         for (_, arm) in self.arms[mark..].iter_mut() {
             let jump = ExprKind::Catch(Arc::new(CatchExpr {
-                bind: caught.clone(),
+                bind: caught.clone().into(),
                 constraint: t.constraint.clone(),
                 handler: Arc::new(never(pos)),
                 seq_abort: Some(Arc::new(connect(
@@ -1169,7 +1169,7 @@ fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
     ExprKind::Lambda(Arc::new(LambdaExpr {
         args: Arc::from(vec![Arg {
             labeled: None,
-            pattern: StructurePattern::Bind(x.clone()),
+            pattern: StructurePattern::Bind(x.clone().into()),
             constraint: None,
             pos,
         }]),
@@ -1458,7 +1458,7 @@ fn rewrite_with_inner(
         }),
         ExprKind::Catch(c) => {
             let mut inner = map.clone();
-            inner.remove(&c.bind);
+            inner.remove(c.bind.as_str());
             ExprKind::Catch(Arc::new(CatchExpr {
                 bind: c.bind.clone(),
                 constraint: c.constraint.clone(),
@@ -1525,7 +1525,7 @@ fn rewrite_with_inner(
 fn let_bind(pos: SourcePosition, name: &str, typ: Option<Type>, value: Expr) -> Expr {
     ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
-        pattern: StructurePattern::Bind(ArcStr::from(name)),
+        pattern: StructurePattern::Bind(Name::from(name)),
         typ,
         value,
     }))
@@ -1587,7 +1587,7 @@ fn block(pos: SourcePosition, mut exprs: Vec<Expr>) -> Expr {
 fn pat_bind(name: &str) -> Pattern {
     Pattern {
         type_predicate: None,
-        structure_predicate: StructurePattern::Bind(ArcStr::from(name)),
+        structure_predicate: StructurePattern::Bind(Name::from(name)),
         guard: None,
     }
 }
@@ -1624,7 +1624,7 @@ fn pat_variant(tag: &str) -> Pattern {
 fn pat_last(n: usize, name: &str) -> Pattern {
     let binds: Vec<StructurePattern> = (1..n)
         .map(|_| StructurePattern::Ignore)
-        .chain([StructurePattern::Bind(ArcStr::from(name))])
+        .chain([StructurePattern::Bind(Name::from(name))])
         .collect();
     Pattern {
         type_predicate: None,

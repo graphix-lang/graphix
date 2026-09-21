@@ -1,10 +1,10 @@
 use super::{
-    csep, expr, fname, spaces, sptoken, structure_pattern,
+    csep, expr, fname, name, spaces, sptoken, structure_pattern,
     typexp::{bound, flatten_bounds, tvar, typ},
 };
 use crate::{
     expr::{
-        Arg, Expr, ExprKind, LambdaExpr, StructurePattern,
+        Arg, Expr, ExprKind, LambdaExpr, Name, StructurePattern,
         parser::{sep_by_tok, spaces1},
     },
     typ::{TVar, Type},
@@ -86,10 +86,18 @@ where
     sep_by_tok(
         (
             spaces().with(position()).and(choice((
-                string("@args").map(|s| (false, StructurePattern::Bind(ArcStr::from(s)))),
-                token('#').with(fname()).map(|b| (true, StructurePattern::Bind(b))),
-                attempt(string("self").skip(not_prefix()))
-                    .map(|_| (false, StructurePattern::Bind(literal!("self")))),
+                (position(), string("@args")).map(|(pos, s)| {
+                    (false, StructurePattern::Bind(Name::written(ArcStr::from(s), pos)))
+                }),
+                token('#').with(name()).map(|b| (true, StructurePattern::Bind(b))),
+                (position(), attempt(string("self").skip(not_prefix()))).map(
+                    |(pos, _)| {
+                        (
+                            false,
+                            StructurePattern::Bind(Name::written(literal!("self"), pos)),
+                        )
+                    },
+                ),
                 structure_pattern().map(|p| (false, p)),
             ))),
             spaces().with(optional(token(':').with(typ()))),

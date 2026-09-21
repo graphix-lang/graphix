@@ -1,8 +1,8 @@
 use crate::{
     expr::{
-        Expr, Pattern, StructurePattern, WrittenAt,
+        Expr, Name, Pattern, StructurePattern, WrittenAt,
         parser::{
-            RESERVED_BINDING, csep, expr, fldname, fname, ident, sep_by_tok, sep_by1_tok,
+            RESERVED_BINDING, csep, expr, fldname, ident, name, sep_by_tok, sep_by1_tok,
             spaces, spaces1, spstring, sptoken, typ,
         },
     },
@@ -28,7 +28,7 @@ use super::{grow::grow, not_prefix};
 /// SlicePrefix / SliceSuffix. `list` selects the native-list flavor,
 /// which refuses the suffix form (a list's front is an O(n) walk).
 pub(super) fn slice_pattern<I>(
-    all: Option<ArcStr>,
+    all: Option<Name>,
 ) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -58,14 +58,14 @@ where
         sep_by_tok(
             spaces().with(choice((
                 string("..").map(|_| Either::Right(None)),
-                attempt(fname().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
+                attempt(name().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
                 structure_pattern_or().map(|p| Either::Left(p)),
             ))),
             csep(),
             attempt(sptoken(']')),
         ),
     )
-    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {
+    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<Name>>>>| {
         let all = all.clone();
         if pats.len() == 0 {
             value(StructurePattern::Slice { list: false, all, binds: Arc::from_iter([]) })
@@ -114,7 +114,7 @@ where
 
 /// The native-list pattern `[<..>]` — the list-flavored slice grammar.
 pub(super) fn list_slice_pattern<I>(
-    all: Option<ArcStr>,
+    all: Option<Name>,
 ) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -144,14 +144,14 @@ where
         sep_by_tok(
             spaces().with(choice((
                 string("..").map(|_| Either::Right(None)),
-                attempt(fname().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
+                attempt(name().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
                 structure_pattern_or().map(|p| Either::Left(p)),
             ))),
             csep(),
             attempt(spstring(">]")),
         ),
     )
-    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<ArcStr>>>>| {
+    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<Name>>>>| {
         let all = all.clone();
         if pats.len() == 0 {
             value(StructurePattern::Slice { list: true, all, binds: Arc::from_iter([]) })
@@ -191,7 +191,7 @@ where
     })
 }
 
-fn tuple_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
+fn tuple_pattern<I>(all: Option<Name>) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -213,7 +213,7 @@ where
     })
 }
 
-fn variant_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
+fn variant_pattern<I>(all: Option<Name>) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -243,7 +243,7 @@ where
         )
 }
 
-fn abstract_pattern<I>(all: Option<ArcStr>) -> impl Parser<I, Output = StructurePattern>
+fn abstract_pattern<I>(all: Option<Name>) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -262,7 +262,7 @@ where
 }
 
 pub(super) fn struct_pattern<I>(
-    all: Option<ArcStr>,
+    all: Option<Name>,
 ) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -288,7 +288,7 @@ where
                         )
                         .right(),
                         None => {
-                            let pat = StructurePattern::Bind(name.clone());
+                            let pat = StructurePattern::Bind(name.clone().into());
                             value((name, pat, true)).left()
                         }
                     }),
@@ -310,8 +310,16 @@ where
         } else {
             drop(s);
             let all = all.clone();
-            let binds =
-                Arc::from_iter(binds.drain(..).map(|(pos, (s, p, _))| (s, p, WrittenAt(pos))));
+            // a shorthand field `{x}` binds `x` where the field stands
+            let binds = Arc::from_iter(binds.drain(..).map(|(pos, (s, p, _))| {
+                let p = match p {
+                    StructurePattern::Bind(n) if n.at.0 == WrittenAt::NOWHERE.0 => {
+                        StructurePattern::Bind(Name::written(n.name, pos))
+                    }
+                    p => p,
+                };
+                (s, p, WrittenAt(pos))
+            }));
             value(StructurePattern::Struct { all, exhaustive, binds }).right()
         }
     })
@@ -338,7 +346,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    fname().then(move |name| {
+    name().then(move |name| {
         if all {
             unexpected_any("all patterns are not supported by bind").left()
         } else {
@@ -362,13 +370,13 @@ where
     })
 }
 
-fn all_pattern<I>() -> impl Parser<I, Output = ArcStr>
+fn all_pattern<I>() -> impl Parser<I, Output = Name>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    fname().skip(sptoken('@')).skip(spaces())
+    name().skip(sptoken('@')).skip(spaces())
 }
 
 parser! {

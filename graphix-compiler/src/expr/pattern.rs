@@ -1,4 +1,4 @@
-use super::{Expr, ModPath, WrittenAt, parser, print::Literal};
+use super::{Expr, ModPath, Name, WrittenAt, parser, print::Literal};
 use crate::{env::Env, print_as_written, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -13,45 +13,45 @@ use triomphe::Arc;
 pub enum StructurePattern {
     Ignore,
     Literal(Value),
-    Bind(ArcStr),
+    Bind(Name),
     Slice {
         /// true = a list pattern `[<..>]` over the native List; false
         /// = an array slice.
         list: bool,
-        all: Option<ArcStr>,
+        all: Option<Name>,
         binds: Arc<[StructurePattern]>,
     },
     SlicePrefix {
         /// true = `[<h, rest..>]` — `tail` binds the tail as a List, O(1).
         list: bool,
-        all: Option<ArcStr>,
+        all: Option<Name>,
         prefix: Arc<[StructurePattern]>,
-        tail: Option<ArcStr>,
+        tail: Option<Name>,
     },
     SliceSuffix {
-        all: Option<ArcStr>,
-        head: Option<ArcStr>,
+        all: Option<Name>,
+        head: Option<Name>,
         suffix: Arc<[StructurePattern]>,
     },
     Tuple {
-        all: Option<ArcStr>,
+        all: Option<Name>,
         binds: Arc<[StructurePattern]>,
     },
     Variant {
-        all: Option<ArcStr>,
+        all: Option<Name>,
         tag: ArcStr,
         binds: Arc<[StructurePattern]>,
     },
     /// `T(p)` — destructure a value of the abstract type at `name`
     /// into its payload
     Abstract {
-        all: Option<ArcStr>,
+        all: Option<Name>,
         name: ModPath,
         bind: Arc<StructurePattern>,
     },
     Struct {
         exhaustive: bool,
-        all: Option<ArcStr>,
+        all: Option<Name>,
         binds: Arc<[(ArcStr, StructurePattern, WrittenAt)]>,
     },
     /// Or-alternatives `p1 | p2 | …`. Flat: ≥ 2 alternatives, none itself
@@ -607,7 +607,7 @@ impl fmt::Display for StructurePattern {
                 for (i, (name, pat, _)) in written.iter().enumerate() {
                     match pat {
                         StructurePattern::Bind(n)
-                            if n == name
+                            if n.name == *name
                                 && !parser::RESERVED_BINDING.contains(&name.as_str()) =>
                         {
                             write!(f, "{name}")?

@@ -116,7 +116,7 @@ fn references() {
         c.site("main.gx", "use util::{|Shape"),
         c.site("main.gx", "let s: |Shape"),
         c.site("util.gx", "type |Shape"),
-        c.site("util.gx", "s: |Shape| -> f64"),
+        c.site("util.gx", "s: ^Shape| -> f64"),
     ];
     assert_eq!(c.references("main.gx", "let s: |Shape"), shape);
 }
@@ -259,6 +259,47 @@ fn a_malformed_request_is_refused_and_the_server_lives() {
 }
 
 #[test]
+fn every_declared_name_is_a_site() {
+    let src = "\
+use array::{
+    fold,
+    map
+};
+type Pair = { left: i64, right: i64 };
+let (a, b) = (1, 2);
+let { left, right: r } = { left: a, right: b };
+let pick = |#scale: i64, p: Pair| select p {
+    { left: 0, right } => right * scale,
+    whole@ { left, right: rr } => left + rr + whole.left
+};
+pick(#scale: r, { left, right: b }) + fold(map([a], |x| x), 0, |acc, x| acc + x)
+";
+    let mut c = Client::start(&[("a.gx", src)]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let mut is = |decl: &str, sig: &str, uses: &[&str]| {
+        let h = c.hover("a.gx", decl);
+        assert_eq!(h.as_deref().and_then(|h| h.lines().nth(1)), Some(sig), "{decl}");
+        let mut sites = vec![c.site("a.gx", decl)];
+        sites.extend(uses.iter().map(|u| c.site("a.gx", u)));
+        sites.sort();
+        assert_eq!(c.references("a.gx", decl), sites, "{decl}");
+        for u in uses {
+            assert_eq!(c.definition("a.gx", u), Some(c.site("a.gx", decl)), "{u}");
+        }
+    };
+    is("let (a, |b)", "b: i64", &["right: |b }", "right: |b })"]);
+    is("let { |left,", "left: i64", &["pick(#scale: r, { |left"]);
+    is("right: |r }", "r: i64", &["#scale: |r,"]);
+    is("|#^scale: i64", "scale: i64", &["right * |scale"]);
+    is("{ left: 0, |right }", "right: i64", &["=> |right * scale"]);
+    is("|whole@", "whole: { left: i64, right: i64 }", &["rr + |whole"]);
+    is("|^acc, x| acc", "acc: i64", &["|acc + x"]);
+    assert!(c.hover("a.gx", "    |map\n").unwrap().contains("map: fn("));
+    assert!(c.hover("a.gx", "|array::{").unwrap().contains("mod array"));
+}
+
+#[test]
 fn a_save_redraws_the_project_graph() {
     let mut c = Client::start(&[("main.gx", "let a = 1"), ("helper.gx", "let h = 1")]);
     c.open("main.gx");
@@ -266,7 +307,10 @@ fn a_save_redraws_the_project_graph() {
     c.edit("main.gx", "mod helper;\nhelper::h + 1");
     c.save("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
-    assert_eq!(c.definition("main.gx", "helper::|h"), Some(c.site("helper.gx", "let |h")));
+    assert_eq!(
+        c.definition("main.gx", "helper::|h"),
+        Some(c.site("helper.gx", "let |h"))
+    );
     c.edit("helper.gx", "let h = \"one\"");
     assert_eq!(c.files_with_diagnostics(), ["main.gx"]);
 }
@@ -302,7 +346,7 @@ fn a_package_root_is_checked_with_its_interface() {
     c.open("src/graphix/mod.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
     assert_eq!(
-        c.definition("src/graphix/mod.gx", "d: |Dir| -> Dir"),
+        c.definition("src/graphix/mod.gx", "d: ^Dir| -> Dir"),
         Some(c.site("src/graphix/mod.gxi", "type |Dir")),
     );
 }

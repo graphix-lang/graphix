@@ -165,7 +165,13 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         }
         let bind_id = ctx
             .env
-            .bind_variable(&catch_scope.lexical, &c.bind, typ, spec.pos, spec.ori.clone())
+            .bind_variable(
+                &catch_scope.lexical,
+                &c.bind,
+                typ,
+                c.bind.pos_or(spec.pos),
+                spec.ori.clone(),
+            )
             .id;
         // the handler compiles before this catch registers, so a
         // rethrowing `?` inside it never resolves to itself

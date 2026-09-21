@@ -15,7 +15,8 @@ use crate::mutate;
 use arcstr::ArcStr;
 use graphix_compiler::{
     expr::{
-        BindExpr, Expr, ExprKind, ModPath, StructurePattern, TypeDefBody, TypeDefExpr,
+        BindExpr, Expr, ExprKind, ModPath, Name, StructurePattern, TypeDefBody,
+        TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
@@ -112,7 +113,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         for i in sample(&sites, cap) {
             let bind = ExprKind::Bind(Arc::new(BindExpr {
                 rec: false,
-                pattern: StructurePattern::Bind(ArcStr::from(VAL)),
+                pattern: StructurePattern::Bind(Name::from(VAL)),
                 typ: None,
                 value: pre[i].clone(),
             }))
@@ -152,7 +153,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let ExprKind::Do { exprs } = &replaced.kind else { continue };
             let bind = ExprKind::Bind(Arc::new(BindExpr {
                 rec: false,
-                pattern: StructurePattern::Bind(ArcStr::from(VAL)),
+                pattern: StructurePattern::Bind(Name::from(VAL)),
                 typ: None,
                 value: pre[gi].clone(),
             }))
@@ -250,7 +251,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
             let Some(t) = &b.typ else { continue };
             let td = ExprKind::TypeDef(TypeDefExpr {
-                name: ArcStr::from(TYP),
+                name: Name::from(TYP),
                 params: Arc::from_iter(std::iter::empty::<(TVar, Option<Type>)>()),
                 body: TypeDefBody::Alias(t.clone()),
             })
@@ -350,7 +351,7 @@ fn stmt_names(e: &Expr) -> StmtNames {
         // pattern says
         ExprKind::Bind(b) if leaks_binds(&b.value) => None,
         ExprKind::Bind(b) => match &b.pattern {
-            StructurePattern::Bind(n) => Some(vec![n.clone()]),
+            StructurePattern::Bind(n) => Some(vec![n.name.clone()]),
             _ => None,
         },
         _ if leaks_binds(e) => None,
@@ -435,7 +436,7 @@ fn leaks_binds(e: &Expr) -> bool {
 /// Does the pattern bind `name` anywhere? Conservative: an
 /// unrecognized pattern form claims it does.
 fn pattern_binds(p: &StructurePattern, name: &str) -> bool {
-    let all_binds = |all: &Option<ArcStr>, binds: &Arc<[StructurePattern]>| {
+    let all_binds = |all: &Option<Name>, binds: &Arc<[StructurePattern]>| {
         all.as_ref().is_some_and(|a| &**a == name)
             || binds.iter().any(|p| pattern_binds(p, name))
     };

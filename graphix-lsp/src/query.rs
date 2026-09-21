@@ -6,7 +6,7 @@
 
 use crate::{
     state::{Checked, ServerState},
-    text::{Lines, covers, ident_at, zero_based},
+    text::{covers, ident_at, zero_based},
     uri::{path_to_uri, uri_to_path},
 };
 use arcstr::ArcStr;
@@ -22,7 +22,7 @@ use lsp_types::{
     Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range, Uri,
 };
 use netidx_core::path::Path as NPath;
-use std::{cell::RefCell, path::Path};
+use std::path::Path;
 use triomphe::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +41,6 @@ pub(crate) struct Query<'a> {
     file: &'a Path,
     cursor: Position,
     ident: String,
-    lines: RefCell<Vec<Arc<Lines>>>,
 }
 
 pub(crate) fn in_file(ori: &Origin, file: &Path) -> bool {
@@ -92,24 +91,7 @@ impl<'a> Query<'a> {
         let checked = state.checked_for(file)?;
         let cursor = state.decode(uri, position);
         let ident = ident_at(&state.documents.get(uri)?.text, cursor)?;
-        Some(Self { state, checked, file, cursor, ident, lines: RefCell::new(vec![]) })
-    }
-
-    fn lines(&self, text: &ArcStr) -> Arc<Lines> {
-        let mut cache = self.lines.borrow_mut();
-        match cache.iter().find(|l| l.is(text)) {
-            Some(l) => l.clone(),
-            None => {
-                cache.push(Arc::new(Lines::new(text.clone())));
-                cache.last().unwrap().clone()
-            }
-        }
-    }
-
-    /// Where a declaration recorded at `pos` names `name`.
-    fn name_position(&self, ori: &Origin, pos: SourcePosition, name: &str) -> Position {
-        let from = zero_based(pos);
-        self.lines(&ori.text).name_after(from, name, None).unwrap_or(from)
+        Some(Self { state, checked, file, cursor, ident })
     }
 
     fn location(&self, ori: &Origin, at: Position) -> Option<Location> {
@@ -118,13 +100,16 @@ impl<'a> Query<'a> {
         Some(Location { uri: path_to_uri(path)?, range: Range { start: at, end: at } })
     }
 
-    fn is_use(&self, m: &ModuleRefSite) -> bool {
-        self.lines(&m.ori.text).starts_with(zero_based(m.pos), "use")
-    }
-
-    /// Where a `use` statement writes the segment `name`.
-    fn use_segment(&self, m: &ModuleRefSite, name: &str) -> Option<Position> {
-        self.lines(&m.ori.text).name_after(zero_based(m.pos), name, Some(';'))
+    /// Each segment of a `use` item that stands in this statement,
+    /// with where it stands and the canonical path it names.
+    fn use_segments(
+        m: &'a ModuleRefSite,
+    ) -> impl Iterator<Item = (&'a str, Position, ModPath)> + 'a {
+        let at = m.segments.iter().flat_map(|w| w.0.iter());
+        let n = NPath::levels(&m.name.0);
+        NPath::parts(&m.name.0).zip(at).enumerate().map(move |(i, (seg, at))| {
+            (seg, zero_based(*at), truncated(&m.canonical, n - 1 - i))
+        })
     }
 
     fn bind(&self, id: BindId) -> Option<&'a Bind> {
@@ -174,28 +159,23 @@ impl<'a> Query<'a> {
         }
         let here = |at: Position| covers(at, self.ident.chars().count(), self.cursor);
         for m in ide.module_references.iter().filter(|m| in_file(&m.ori, self.file)) {
-            if !self.is_use(m) {
-                if basename(&m.name) == self.ident
-                    && here(self.name_position(&m.ori, m.pos, &self.ident))
-                {
-                    return Some((
-                        Target::Module(m.canonical.clone()),
-                        (&*self.ident).into(),
-                    ));
+            if m.segments.is_none() {
+                if basename(&m.name) == self.ident && here(zero_based(m.pos)) {
+                    let written = (&*self.ident).into();
+                    return Some((Target::Module(m.canonical.clone()), written));
                 }
                 continue;
             }
-            let after = NPath::parts(&m.name.0).skip_while(|seg| *seg != self.ident);
-            let after = after.count();
-            if after > 0 && self.use_segment(m, &self.ident).is_some_and(here) {
-                let canonical = truncated(&m.canonical, after - 1);
-                return self.named(&canonical).map(|t| (t, (&*self.ident).into()));
+            for (seg, at, canonical) in Self::use_segments(m) {
+                if seg == self.ident && here(at) {
+                    return self.named(&canonical).map(|t| (t, seg.into()));
+                }
             }
         }
         for b in ide.binds.iter() {
             if b.name == self.ident
                 && in_file(&b.ori, self.file)
-                && here(self.name_position(&b.ori, b.pos, &b.name))
+                && here(zero_based(b.pos))
             {
                 return Some((Target::Bind(b.id), b.name.clone()));
             }
@@ -203,7 +183,7 @@ impl<'a> Query<'a> {
         for (scope, defs) in &env.typedefs {
             if let Some(td) = defs.get(&*self.ident)
                 && in_file(&td.ori, self.file)
-                && here(self.name_position(&td.ori, td.pos, &self.ident))
+                && here(zero_based(td.pos))
             {
                 let name: CompactString = (&*self.ident).into();
                 return Some((Target::Type(scope.clone(), name.clone()), name));
@@ -245,12 +225,12 @@ impl<'a> Query<'a> {
 
     fn bind_location(&self, id: BindId) -> Option<Location> {
         let b = self.bind(id)?;
-        self.location(&b.ori, self.name_position(&b.ori, b.pos, &b.name))
+        self.location(&b.ori, zero_based(b.pos))
     }
 
     fn type_location(&self, scope: &ModPath, name: &str) -> Option<Location> {
         let td = self.typedef(scope, name)?;
-        self.location(&td.ori, self.name_position(&td.ori, td.pos, name))
+        self.location(&td.ori, zero_based(td.pos))
     }
 
     /// A reference goes to its declaration; an interface `val` goes to
@@ -299,19 +279,14 @@ impl<'a> Query<'a> {
             }
         }
         for m in ide.module_references.iter() {
-            if !self.is_use(m) {
+            if m.segments.is_none() {
                 if targets.contains(&Target::Module(m.canonical.clone())) {
-                    let at = self.name_position(&m.ori, m.pos, basename(&m.name));
-                    out.extend(self.location(&m.ori, at));
+                    out.extend(self.location(&m.ori, zero_based(m.pos)));
                 }
                 continue;
             }
-            let segs: Vec<&str> = NPath::parts(&m.name.0).collect();
-            for (i, seg) in segs.iter().enumerate() {
-                let canonical = truncated(&m.canonical, segs.len() - 1 - i);
-                if self.named(&canonical).is_some_and(|t| targets.contains(&t))
-                    && let Some(at) = self.use_segment(m, seg)
-                {
+            for (_, at, canonical) in Self::use_segments(m) {
+                if self.named(&canonical).is_some_and(|t| targets.contains(&t)) {
                     out.extend(self.location(&m.ori, at));
                 }
             }

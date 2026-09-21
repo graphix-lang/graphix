@@ -1386,7 +1386,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }));
             let pat = Pattern {
                 type_predicate: Some(mem),
-                structure_predicate: StructurePattern::Bind(arcstr::literal!("#t")),
+                structure_predicate: StructurePattern::Bind(arcstr::literal!("#t").into()),
                 guard: None,
             };
             (pat, call)

@@ -2,7 +2,7 @@ use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue, UserEvent,
     env::Env,
-    expr::{ExprId, Origin, Pattern, StructurePattern, WrittenAt},
+    expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt},
     format_with_flags,
     node::{Held, compiler},
     typ::{AbstractId, IsAFlags, Type, TypeRef},
@@ -102,13 +102,15 @@ impl BindMode<'_> {
 fn leaf_bind<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     scope: &Scope,
-    name: &ArcStr,
+    name: &Name,
     typ: &Type,
     pos: SourcePosition,
     ori: &Arc<Origin>,
     mode: &mut BindMode,
     capture: bool,
 ) -> Result<BindId> {
+    let pos = name.pos_or(pos);
+    let name = &name.name;
     match mode {
         BindMode::Fresh => Ok(ctx
             .env

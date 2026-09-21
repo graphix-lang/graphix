@@ -26,8 +26,9 @@ pub struct ReferenceSite {
     pub def_ori: Arc<expr::Origin>,
 }
 
-/// A module reference (`use foo;` or `mod foo;`). For `mod foo;`,
-/// `def_ori` is the file the body was loaded from.
+/// A `mod foo;` declaration, at the name, or one item of a `use`, at
+/// the statement. For `mod foo;`, `def_ori` is the file the body was
+/// loaded from.
 #[derive(Debug, Clone)]
 pub struct ModuleRefSite {
     pub pos: SourcePosition,
@@ -38,6 +39,9 @@ pub struct ModuleRefSite {
     pub canonical: expr::ModPath,
     /// Origin of the module's body; `None` for `use` sites.
     pub def_ori: Option<Arc<expr::Origin>>,
+    /// A `use` item: where each segment of `name` stands (a group
+    /// shares its prefix's). `None` for `mod`.
+    pub segments: Option<expr::WrittenPath>,
 }
 
 /// The compiler descended into an `Expr` at `(pos, ori)` while in

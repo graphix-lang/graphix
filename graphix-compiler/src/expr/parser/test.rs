@@ -536,7 +536,7 @@ fn letbind() {
         ExprKind::Bind(Arc::new(BindExpr {
             rec: false,
             typ: None,
-            pattern: StructurePattern::Bind(literal!("foo")),
+            pattern: StructurePattern::Bind(literal!("foo").into()),
             value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
         }))
         .to_expr_nopos(),
@@ -550,7 +550,7 @@ fn letrecbind() {
         ExprKind::Bind(Arc::new(BindExpr {
             rec: true,
             typ: None,
-            pattern: StructurePattern::Bind(literal!("foo")),
+            pattern: StructurePattern::Bind(literal!("foo").into()),
             value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
         }))
         .to_expr_nopos(),
@@ -581,7 +581,7 @@ fn typed_letbind() {
         ExprKind::Bind(Arc::new(BindExpr {
             rec: false,
             typ: Some(Type::Primitive(Typ::I64.into())),
-            pattern: StructurePattern::Bind(literal!("foo")),
+            pattern: StructurePattern::Bind(literal!("foo").into()),
             value: ExprKind::Constant(Value::I64(42)).to_expr_nopos()
         }))
         .to_expr_nopos(),
@@ -842,7 +842,7 @@ fn select0() {
         (
             Pattern {
                 type_predicate: Some(Type::Primitive(Typ::I64.into())),
-                structure_predicate: StructurePattern::Bind(literal!("a")),
+                structure_predicate: StructurePattern::Bind(literal!("a").into()),
                 guard: Some(
                     ExprKind::Lt {
                         lhs: Arc::new(
@@ -862,7 +862,7 @@ fn select0() {
         (
             Pattern {
                 type_predicate: None,
-                structure_predicate: StructurePattern::Bind(literal!("a")),
+                structure_predicate: StructurePattern::Bind(literal!("a").into()),
                 guard: None,
             },
             ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos(),
@@ -895,9 +895,9 @@ fn select1() {
                     list: false,
                     all: None,
                     binds: Arc::from_iter([
-                        StructurePattern::Bind(literal!("a")),
+                        StructurePattern::Bind(literal!("a").into()),
                         StructurePattern::Ignore,
-                        StructurePattern::Bind(literal!("b")),
+                        StructurePattern::Bind(literal!("b").into()),
                     ]),
                 },
                 guard: Some(
@@ -924,8 +924,10 @@ fn select1() {
                 structure_predicate: StructurePattern::SlicePrefix {
                     list: false,
                     all: None,
-                    prefix: Arc::from_iter([StructurePattern::Bind(literal!("a"))]),
-                    tail: Some(literal!("b")),
+                    prefix: Arc::from_iter([StructurePattern::Bind(
+                        literal!("a").into(),
+                    )]),
+                    tail: Some(literal!("b").into()),
                 },
                 guard: None,
             },
@@ -938,8 +940,10 @@ fn select1() {
                 )))),
                 structure_predicate: StructurePattern::SliceSuffix {
                     all: None,
-                    suffix: Arc::from_iter([StructurePattern::Bind(literal!("b"))]),
-                    head: Some(literal!("a")),
+                    suffix: Arc::from_iter([StructurePattern::Bind(
+                        literal!("b").into(),
+                    )]),
+                    head: Some(literal!("a").into()),
                 },
                 guard: None,
             },
@@ -957,7 +961,7 @@ fn select1() {
                         StructurePattern::Literal(Value::I64(1)),
                         StructurePattern::Literal(Value::I64(2)),
                         StructurePattern::Literal(Value::I64(42)),
-                        StructurePattern::Bind(literal!("a")),
+                        StructurePattern::Bind(literal!("a").into()),
                     ]),
                 },
                 guard: None,
@@ -978,7 +982,7 @@ fn select1() {
                         (literal!("bar"), StructurePattern::Ignore, WrittenAt::NOWHERE),
                         (
                             literal!("baz"),
-                            StructurePattern::Bind(literal!("baz")),
+                            StructurePattern::Bind(literal!("baz").into()),
                             WrittenAt::NOWHERE,
                         ),
                         (
@@ -988,7 +992,7 @@ fn select1() {
                         ),
                         (
                             literal!("foobar"),
-                            StructurePattern::Bind(literal!("a")),
+                            StructurePattern::Bind(literal!("a").into()),
                             WrittenAt::NOWHERE,
                         ),
                     ]),
@@ -1000,7 +1004,7 @@ fn select1() {
         (
             Pattern {
                 type_predicate: None,
-                structure_predicate: StructurePattern::Bind(literal!("a")),
+                structure_predicate: StructurePattern::Bind(literal!("a").into()),
                 guard: None,
             },
             ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos(),
@@ -1058,7 +1062,7 @@ fn connect() {
 #[test]
 fn module() {
     let exp = ExprKind::Module {
-        name: literal!("foo"),
+        name: literal!("foo").into(),
         value: ModuleKind::Unresolved { from_interface: false },
     }
     .to_expr_nopos();
@@ -1111,7 +1115,7 @@ fn doexpr() {
             ExprKind::Bind(Arc::new(BindExpr {
                 rec: false,
                 typ: None,
-                pattern: StructurePattern::Bind(literal!("baz")),
+                pattern: StructurePattern::Bind(literal!("baz").into()),
                 value: ExprKind::Constant(Value::I64(42)).to_expr_nopos(),
             }))
             .to_expr_nopos(),
@@ -1278,7 +1282,7 @@ fn apply_typed_lambda() {
 fn typed_array() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
-        pattern: StructurePattern::Bind(literal!("f")),
+        pattern: StructurePattern::Bind(literal!("f").into()),
         typ: None,
         value: ExprKind::Lambda(Arc::new(LambdaExpr {
             args: Arc::from_iter([Arg {
@@ -1307,7 +1311,7 @@ fn typed_array() {
 fn labeled_argument_lambda() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
-        pattern: StructurePattern::Bind(literal!("a")),
+        pattern: StructurePattern::Bind(literal!("a").into()),
         typ: Some(Type::Fn(Arc::new(FnType {
             args: Arc::from_iter([
                 FnArgType {
@@ -1499,8 +1503,8 @@ fn tuple1() {
             all: None,
             binds: Arc::from_iter([
                 StructurePattern::Ignore,
-                StructurePattern::Bind(literal!("x")),
-                StructurePattern::Bind(literal!("y")),
+                StructurePattern::Bind(literal!("x").into()),
+                StructurePattern::Bind(literal!("y").into()),
             ]),
         },
         typ: None,
@@ -1532,7 +1536,7 @@ fn tuple1() {
 fn struct0() {
     let e = ExprKind::Bind(Arc::new(BindExpr {
         rec: false,
-        pattern: StructurePattern::Bind(literal!("a")),
+        pattern: StructurePattern::Bind(literal!("a").into()),
         typ: None,
         value: ExprKind::Struct(StructExpr {
             args: Arc::from_iter([
@@ -1573,12 +1577,12 @@ fn bindstruct() {
                 (literal!("bar"), StructurePattern::Ignore, WrittenAt::NOWHERE),
                 (
                     literal!("baz"),
-                    StructurePattern::Bind(literal!("zam")),
+                    StructurePattern::Bind(literal!("zam").into()),
                     WrittenAt::NOWHERE,
                 ),
                 (
                     literal!("foo"),
-                    StructurePattern::Bind(literal!("foo")),
+                    StructurePattern::Bind(literal!("foo").into()),
                     WrittenAt::NOWHERE,
                 ),
             ]),
@@ -1615,7 +1619,7 @@ fn bindstruct() {
 fn structref() {
     let e = ExprKind::StructRef {
         source: Arc::new(ExprKind::Ref { name: ["a"].into() }.to_expr_nopos()),
-        field: literal!("foo"),
+        field: literal!("foo").into(),
     }
     .to_expr_nopos();
     let s = "a.foo";
@@ -1644,9 +1648,10 @@ fn refx(name: &str) -> Expr {
 
 #[test]
 fn struct_ref_chain() {
-    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
-        .to_expr_nopos();
-    let abc = ExprKind::StructRef { source: Arc::new(ab), field: literal!("c") }
+    let ab =
+        ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b").into() }
+            .to_expr_nopos();
+    let abc = ExprKind::StructRef { source: Arc::new(ab), field: literal!("c").into() }
         .to_expr_nopos();
     assert_eq!(abc, parse_one("a.b.c").unwrap());
 }
@@ -1686,7 +1691,7 @@ fn array_ref_chain() {
 fn map_then_struct_chain() {
     let mk = ExprKind::MapRef { source: Arc::new(refx("m")), key: Arc::new(refx("k")) }
         .to_expr_nopos();
-    let mkf = ExprKind::StructRef { source: Arc::new(mk), field: literal!("f") }
+    let mkf = ExprKind::StructRef { source: Arc::new(mk), field: literal!("f").into() }
         .to_expr_nopos();
     assert_eq!(mkf, parse_one("m{k}.f").unwrap());
 }
@@ -1698,7 +1703,7 @@ fn apply_then_struct_ref() {
         args: Arc::from_iter([(None, refx("x"))]),
     })
     .to_expr_nopos();
-    let fxb = ExprKind::StructRef { source: Arc::new(fx), field: literal!("b") }
+    let fxb = ExprKind::StructRef { source: Arc::new(fx), field: literal!("b").into() }
         .to_expr_nopos();
     assert_eq!(fxb, parse_one("f(x).b").unwrap());
 }
@@ -1706,8 +1711,9 @@ fn apply_then_struct_ref() {
 #[test]
 fn paren_strip_before_postfix() {
     // (a).b strips the parens.
-    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
-        .to_expr_nopos();
+    let ab =
+        ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b").into() }
+            .to_expr_nopos();
     assert_eq!(ab, parse_one("(a).b").unwrap());
 }
 
@@ -1728,8 +1734,9 @@ fn nested_parens_linear() {
 
 #[test]
 fn qop_wraps_whole_chain() {
-    let ab = ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b") }
-        .to_expr_nopos();
+    let ab =
+        ExprKind::StructRef { source: Arc::new(refx("a")), field: literal!("b").into() }
+            .to_expr_nopos();
     let q = ExprKind::Qop(Arc::new(ab)).to_expr_nopos();
     assert_eq!(q, parse_one("a.b?").unwrap());
 }

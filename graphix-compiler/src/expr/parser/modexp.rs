@@ -1,13 +1,13 @@
 use super::{
     csep, doc_comment, expr, fname,
     grow::grow,
-    leading_comments, modpath, sep_by1_tok, spaces, spfname, spstring, sptoken,
+    leading_comments, modpath, sep_by1_tok, spaces, spname, spstring, sptoken,
     traitexp::{impl_decl, trait_decl},
     typ, typedef, typname,
 };
 use crate::expr::{
-    BindSig, Expr, ExprKind, ModPath, ModuleKind, Sandbox, Sig, SigItem, SigKind,
-    UseItem,
+    BindSig, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox, Sig, SigItem, SigKind,
+    UseItem, WrittenPath,
     parser::{semisep, spaces1},
 };
 use arcstr::ArcStr;
@@ -56,7 +56,7 @@ parser! {
                         _ => unreachable!()
                     }
                 }),
-                string("val").with(space()).with((spfname(), sptoken(':').with(typ())))
+                string("val").with(space()).with((spname(), sptoken(':').with(typ())))
                     .map({
                         let doc = doc.clone();
                         let ori = ori.clone();
@@ -74,10 +74,10 @@ parser! {
                         ori: ori.clone(),
                     }
                 }),
-                string("mod").with(space()).with(spfname().skip(spaces())).map({
+                string("mod").with(space()).with(spname().skip(spaces())).map({
                     let doc = doc.clone();
                     let ori = ori.clone();
-                    move |n: ArcStr| SigItem { doc: doc.clone(), kind: SigKind::Module(n), pos, ori: ori.clone() }
+                    move |n: Name| SigItem { doc: doc.clone(), kind: SigKind::Module(n), pos, ori: ori.clone() }
                 })
             ))
         }))
@@ -166,7 +166,7 @@ where
 {
     (
         position(),
-        attempt(string("mod").with(space())).with(spfname()),
+        attempt(string("mod").with(space())).with(spname()),
         optional(dynamic_module())
             .map(|m| m.unwrap_or(ModuleKind::Unresolved { from_interface: false })),
     )
@@ -176,40 +176,45 @@ where
 /// A use-tree path segment: an ordinary name or a path keyword
 /// (`self`/`super`/`package`); [`check_use_items`] enforces the keywords'
 /// positional rules on the assembled path.
-fn use_segment<I>() -> impl Parser<I, Output = ArcStr>
+fn use_segment<I>() -> impl Parser<I, Output = Name>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((
-        attempt(string("self").skip(not_prefix())).map(|_| arcstr::literal!("self")),
-        attempt(string("super").skip(not_prefix())).map(|_| arcstr::literal!("super")),
-        attempt(string("package").skip(not_prefix()))
-            .map(|_| arcstr::literal!("package")),
-        // A use imports every kind sharing the name, so both lowercase
-        // and uppercase segments are legal here.
-        fname(),
-        typname(),
-    ))
+    (
+        position(),
+        choice((
+            attempt(string("self").skip(not_prefix())).map(|_| arcstr::literal!("self")),
+            attempt(string("super").skip(not_prefix()))
+                .map(|_| arcstr::literal!("super")),
+            attempt(string("package").skip(not_prefix()))
+                .map(|_| arcstr::literal!("package")),
+            // A use imports every kind sharing the name, so both lowercase
+            // and uppercase segments are legal here.
+            fname(),
+            typname(),
+        )),
+    )
+        .map(|(pos, seg)| Name::written(seg, pos))
 }
 
 /// The positional rules for one assembled use path (segments +
 /// optional rename). Returns the refusal message, or None if legal.
-fn check_use_item(segs: &[ArcStr], rename: &Option<ArcStr>) -> Option<&'static str> {
+fn check_use_item(segs: &[Name], rename: &Option<ArcStr>) -> Option<&'static str> {
     if segs.is_empty() {
         return Some("`self` outside a use group");
     }
-    let lead = match &*segs[0] {
+    let lead = match segs[0].as_str() {
         "self" | "package" => 1,
-        "super" => segs.iter().take_while(|s| &***s == "super").count(),
+        "super" => segs.iter().take_while(|s| s.as_str() == "super").count(),
         _ => 0,
     };
     if lead == segs.len() {
         return Some("a use path must name something below self/super/package");
     }
     for (i, s) in segs.iter().enumerate().skip(lead) {
-        match &**s {
+        match s.as_str() {
             "self" | "super" | "package" => {
                 return Some("self/super/package are only legal leading a path");
             }
@@ -219,7 +224,7 @@ fn check_use_item(segs: &[ArcStr], rename: &Option<ArcStr>) -> Option<&'static s
             _ => (),
         }
     }
-    if segs.last().map(|s| &**s) == Some("*") && rename.is_some() {
+    if segs.last().map(|s| s.as_str()) == Some("*") && rename.is_some() {
         return Some("a glob import cannot be renamed");
     }
     None
@@ -229,7 +234,7 @@ parser! {
     /// One element of a use tree, yielding the path suffixes it denotes as
     /// (segment list, rename) pairs: a path, a path ending in a group, a
     /// bare group, a glob leaf, a renamed leaf, or `self` (an empty suffix).
-    fn use_tree[I]()(I) -> Vec<(Vec<ArcStr>, Option<ArcStr>)>
+    fn use_tree[I]()(I) -> Vec<(Vec<Name>, Option<ArcStr>)>
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
         grow(choice((
@@ -238,8 +243,8 @@ parser! {
                 sptoken('}'),
                 spaces().with(sep_by1_tok(use_tree(), csep(), token('}'))),
             )
-            .then(|mut groups: LPooled<Vec<Vec<(Vec<ArcStr>, Option<ArcStr>)>>>| {
-                let flat: Vec<(Vec<ArcStr>, Option<ArcStr>)> =
+            .then(|mut groups: LPooled<Vec<Vec<(Vec<Name>, Option<ArcStr>)>>>| {
+                let flat: Vec<(Vec<Name>, Option<ArcStr>)> =
                     groups.drain(..).flatten().collect();
                 if flat.is_empty() {
                     unexpected_any("empty use group").left()
@@ -248,8 +253,8 @@ parser! {
                 }
             }),
             spaces()
-                .with(token('*'))
-                .map(|_| vec![(vec![arcstr::literal!("*")], None)]),
+                .with((position(), token('*')))
+                .map(|(pos, _)| vec![(vec![Name::written(arcstr::literal!("*"), pos)], None)]),
             (
                 spaces().with(use_segment()),
                 optional(attempt(spstring("::").with(use_tree()))),
@@ -260,18 +265,18 @@ parser! {
                         .with(choice((fname(), typname()))),
                 )),
             )
-                .then(|(seg, tail, rename): (ArcStr, _, Option<ArcStr>)| {
+                .then(|(seg, tail, rename): (Name, _, Option<ArcStr>)| {
                     match (tail, rename) {
                         (Some(_), Some(_)) => unexpected_any(
                             "`as` renames a single imported name, not a group",
                         )
                         .left(),
-                        (None, rename) if &*seg == "self" => {
+                        (None, rename) if seg.as_str() == "self" => {
                             value(vec![(vec![], rename)]).right()
                         }
                         (None, rename) => value(vec![(vec![seg], rename)]).right(),
                         (Some(sufs), None) => {
-                            let sufs: Vec<(Vec<ArcStr>, Option<ArcStr>)> = sufs;
+                            let sufs: Vec<(Vec<Name>, Option<ArcStr>)> = sufs;
                             value(
                                 sufs.into_iter()
                                     .map(|(mut suf, rename)| {
@@ -296,14 +301,15 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    use_tree().then(|items: Vec<(Vec<ArcStr>, Option<ArcStr>)>| {
+    use_tree().then(|items: Vec<(Vec<Name>, Option<ArcStr>)>| {
         for (segs, rename) in items.iter() {
             if let Some(msg) = check_use_item(segs, rename) {
                 return unexpected_any(msg).left();
             }
         }
         value(UseItem::sorted(items.into_iter().map(|(segs, rename)| UseItem {
-            path: ModPath(Path::from_iter(segs)),
+            at: WrittenPath(segs.iter().map(|s| s.at.0).collect()),
+            path: ModPath(Path::from_iter(segs.iter().map(|s| s.as_str()))),
             rename,
         })))
         .right()

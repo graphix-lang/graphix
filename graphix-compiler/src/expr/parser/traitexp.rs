@@ -1,10 +1,10 @@
 use super::{
-    csep, doc_comment, expr, fname, leading_comments, semisep, spaces, spaces1, sptoken,
+    csep, doc_comment, expr, leading_comments, name, semisep, spaces, spaces1, sptoken,
     typexp::{bound, tvar, typ, typath},
     typname,
 };
 use crate::{
-    expr::{Expr, ExprKind, ImplExpr, StructurePattern, TraitExpr, TraitMethod},
+    expr::{Expr, ExprKind, ImplExpr, Name, StructurePattern, TraitExpr, TraitMethod},
     typ::{FnArgKind, TVar, Type},
 };
 use ahash::AHashSet;
@@ -31,7 +31,7 @@ where
 {
     (
         leading_comments().with(doc_comment()).skip(spaces()),
-        attempt(string("val").skip(spaces1())).with(fname()).skip(sptoken(':')),
+        attempt(string("val").skip(spaces1())).with(name()).skip(sptoken(':')),
         typ(),
         optional(attempt(sptoken('=')).with(expr())),
     )
@@ -63,24 +63,31 @@ where
 {
     (
         position(),
-        attempt(string("trait").skip(spaces1())).with(typname()),
+        attempt(string("trait").skip(spaces1())).with((position(), typname())),
         spaces().with(between(
             token('{'),
             sptoken('}'),
             spaces().with(sep_by_tok(trait_method(), semisep(), token('}'))),
         )),
     )
-        .then(|(pos, name, mut methods): (_, ArcStr, LPooled<Vec<TraitMethod>>)| {
-            let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
-            for m in methods.iter() {
-                if !seen.insert(m.name.clone()) {
-                    return unexpected_any("duplicate trait method").left();
+        .then(
+            |(pos, (at, name), mut methods): (
+                _,
+                (_, ArcStr),
+                LPooled<Vec<TraitMethod>>,
+            )| {
+                let name = Name::written(name, at);
+                let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
+                for m in methods.iter() {
+                    if !seen.insert(m.name.name.clone()) {
+                        return unexpected_any("duplicate trait method").left();
+                    }
                 }
-            }
-            let methods = Arc::from_iter(methods.drain(..));
-            value(ExprKind::Trait(Arc::new(TraitExpr { name, methods })).to_expr(pos))
-                .right()
-        })
+                let methods = Arc::from_iter(methods.drain(..));
+                value(ExprKind::Trait(Arc::new(TraitExpr { name, methods })).to_expr(pos))
+                    .right()
+            },
+        )
 }
 
 /// `impl<'a: C, ..> Trait for Target { let m = ..; .. }` — the body is

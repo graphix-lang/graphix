@@ -1,11 +1,11 @@
 use crate::expr::{
-    ApplyExpr, Expr, ExprKind,
+    ApplyExpr, Expr, ExprKind, Name,
     parser::{
         any, apply_args, array, array_index_suffix, cast, construct, csep, do_block,
-        expr,
+        expr, fldname,
         grow::{grow, max_nesting, note_refused},
         interpolated, list_lit, literal, map, never_expr, raw_string, reference, select,
-        seq, spaces, spfldname, sptoken, structure, structwith, variant,
+        seq, spaces, sptoken, structure, structwith, variant,
     },
 };
 use arcstr::ArcStr;
@@ -56,7 +56,7 @@ where
 
 /// A postfix operator applied to a primary in `arith_term`'s postfix loop.
 enum Post {
-    Field(ArcStr),                                     // `.name`  -> StructRef
+    Field(Name),                                       // `.name`  -> StructRef
     Index(usize),                                      // `.0`     -> TupleRef
     Array(Either<(Option<Expr>, Option<Expr>), Expr>), // `[i]`/`[a..b]`
     Key(Expr),                                         // `{k}`    -> MapRef
@@ -80,10 +80,14 @@ where
     I::Range: Range,
 {
     choice((
-        attempt(sptoken('.').with(choice((
-            attempt(int::<_, usize>()).map(Post::Index),
-            spfldname().map(Post::Field),
-        )))),
+        attempt(
+            sptoken('.').with(choice((
+                attempt(int::<_, usize>()).map(Post::Index),
+                spaces()
+                    .with((position(), fldname()))
+                    .map(|(pos, n)| Post::Field(Name::written(n, pos))),
+            ))),
+        ),
         attempt(array_index_suffix()).map(Post::Array),
         attempt(between(sptoken('{'), sptoken('}'), expr()).and_then(move |k| {
             if key {

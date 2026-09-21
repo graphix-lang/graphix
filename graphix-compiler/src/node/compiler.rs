@@ -118,7 +118,7 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
     spec: Expr,
     scope: &Scope,
     top_id: ExprId,
-    name: &arcstr::ArcStr,
+    name: &crate::expr::Name,
     value: &ModuleKind,
 ) -> Result<Node<R, E>> {
     let enclosing = scope;
@@ -134,11 +134,12 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
             _ => None,
         };
         ctx.env.push_module_reference(crate::ide::ModuleRefSite {
-            pos: spec.pos,
+            pos: name.pos_or(spec.pos),
             ori: spec.ori.clone(),
             name: crate::expr::ModPath::from([name.as_str()]),
             canonical: scope.lexical.clone(),
             def_ori,
+            segments: None,
         });
     }
     match value {

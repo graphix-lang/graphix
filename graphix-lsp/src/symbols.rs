@@ -4,13 +4,13 @@
 use crate::{
     query::{display_type, in_file},
     state::ServerState,
-    text::{Lines, zero_based},
+    text::zero_based,
     uri::{path_to_uri, uri_to_path},
 };
 use arcstr::ArcStr;
 use graphix_compiler::{
     SourcePosition,
-    expr::{ExprKind, Origin, SigKind, Source, StructurePattern, parser},
+    expr::{ExprKind, Name, Origin, SigKind, Source, StructurePattern, parser},
     typ::Type,
 };
 use lsp_types::{
@@ -21,14 +21,21 @@ use std::path::{Path, PathBuf};
 struct Symbol {
     name: ArcStr,
     kind: SymbolKind,
+    /// Where the declaration starts, and where its name stands.
     pos: SourcePosition,
+    at: SourcePosition,
 }
 
 /// The top-level declarations of a `.gx` or `.gxi` text; none when it
 /// does not parse.
 fn declared(path: &Path, text: ArcStr) -> Vec<Symbol> {
     let ori = Origin { parent: None, source: Source::File(path.to_path_buf()), text };
-    let sym = |name: &ArcStr, kind, pos| Symbol { name: name.clone(), kind, pos };
+    let sym = |name: &Name, kind, pos| Symbol {
+        name: name.name.clone(),
+        kind,
+        pos,
+        at: name.pos_or(pos),
+    };
     if path.extension().is_some_and(|e| e == "gxi") {
         let Ok(sig) = parser::parse_sig(ori) else { return vec![] };
         let item = |si: &graphix_compiler::expr::SigItem| match &si.kind {
@@ -64,9 +71,8 @@ fn declared(path: &Path, text: ArcStr) -> Vec<Symbol> {
 
 impl ServerState {
     /// The range of a symbol's name, LSP-encoded.
-    fn name_range(&self, lines: &Lines, text: &str, s: &Symbol) -> Range {
-        let from = zero_based(s.pos);
-        let start = lines.name_after(from, &s.name, None).unwrap_or(from);
+    fn name_range(&self, text: &str, s: &Symbol) -> Range {
+        let start = zero_based(s.at);
         let len = s.name.chars().count() as u32;
         let end = Position { line: start.line, character: start.character + len };
         Range { start: self.encode(text, start), end: self.encode(text, end) }
@@ -77,20 +83,18 @@ impl ServerState {
             return vec![];
         };
         let text = ArcStr::from(doc.text.as_str());
-        let lines = Lines::new(text.clone());
         let checked = self.checked_for(&file);
         let typ = |s: &Symbol| {
             let binds = checked.iter().flat_map(|c| c.ide.binds.iter());
-            let mut binds = binds.filter(|b| {
-                in_file(&b.ori, &file) && b.pos == s.pos && b.name == *s.name
-            });
+            let mut binds = binds
+                .filter(|b| in_file(&b.ori, &file) && b.pos == s.at && b.name == *s.name);
             binds.next().map(|b| display_type(&b.typ).to_string())
         };
         let symbols = declared(&file, text.clone());
         symbols
             .iter()
             .map(|s| {
-                let selection_range = self.name_range(&lines, &text, s);
+                let selection_range = self.name_range(&text, s);
                 let start =
                     self.encode(&text, zero_based(s.pos)).min(selection_range.start);
                 #[allow(deprecated)]
@@ -131,12 +135,11 @@ impl ServerState {
                     Err(_) => continue,
                 },
             };
-            let lines = Lines::new(text.clone());
             for s in declared(path, text.clone()) {
                 if !s.name.to_ascii_lowercase().contains(&needle) {
                     continue;
                 }
-                let range = self.name_range(&lines, &text, &s);
+                let range = self.name_range(&text, &s);
                 #[allow(deprecated)]
                 out.push(SymbolInformation {
                     name: s.name.to_string(),

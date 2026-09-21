@@ -112,7 +112,7 @@ pub fn extract_mod_decls(
             let sig = parser::parse_sig(ori)?;
             for item in sig.items.iter() {
                 if let SigKind::Module(name) = &item.kind {
-                    out.push(name.clone());
+                    out.push(name.name.clone());
                 }
             }
         }
@@ -126,7 +126,7 @@ fn walk_expr_for_mods(kind: &ExprKind, out: &mut Vec<ArcStr>) {
     if let ExprKind::Module { name, value } = kind {
         match value {
             ModuleKind::Unresolved { .. } | ModuleKind::Dynamic { .. } => {
-                out.push(name.clone());
+                out.push(name.name.clone());
             }
             ModuleKind::Resolved { exprs, .. } => {
                 for e in exprs.iter() {

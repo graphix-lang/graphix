@@ -22,6 +22,7 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, Visitor},
 };
+use smallvec::SmallVec;
 use std::{
     cell::RefCell,
     cmp::{Ordering, PartialEq, PartialOrd},
@@ -149,7 +150,7 @@ pub struct Decorations {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct TypeDefExpr {
-    pub name: ArcStr,
+    pub name: Name,
     pub params: Arc<[(TVar, Option<Type>)]>,
     pub body: TypeDefBody,
 }
@@ -172,7 +173,7 @@ pub enum TypeDefBody {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct TraitExpr {
-    pub name: ArcStr,
+    pub name: Name,
     pub methods: Arc<[TraitMethod]>,
 }
 
@@ -180,7 +181,7 @@ pub struct TraitExpr {
 #[pack(unwrapped)]
 pub struct TraitMethod {
     pub doc: Doc,
-    pub name: ArcStr,
+    pub name: Name,
     pub typ: Arc<FnType>,
     /// Index of the positional `self` parameter in `typ.args` — the
     /// argument whose type selects the implementation at a call.
@@ -207,7 +208,7 @@ pub struct ImplExpr {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct BindSig {
-    pub name: ArcStr,
+    pub name: Name,
     pub typ: Type,
 }
 
@@ -220,6 +221,8 @@ pub struct BindSig {
 pub struct UseItem {
     pub path: ModPath,
     pub rename: Option<ArcStr>,
+    /// Where each segment of `path` stands in the use tree.
+    pub at: WrittenPath,
 }
 
 impl UseItem {
@@ -232,7 +235,7 @@ impl UseItem {
     }
 
     pub fn plain(path: ModPath) -> Self {
-        Self { path, rename: None }
+        Self { path, rename: None, at: WrittenPath::default() }
     }
 
     /// The final segment is the glob marker.
@@ -264,7 +267,7 @@ pub enum SigKind {
     Trait(Arc<TraitExpr>),
     Impl(Arc<ImplExpr>),
     Bind(BindSig),
-    Module(ArcStr),
+    Module(Name),
     Use { reexport: bool, names: Arc<[UseItem]> },
 }
 
@@ -381,7 +384,7 @@ pub struct LambdaExpr {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct CatchExpr {
-    pub bind: ArcStr,
+    pub bind: Name,
     pub constraint: Option<Type>,
     pub handler: Arc<Expr>,
     /// Compiler-only: this catch unconditionally rethrows before aborting.
@@ -442,7 +445,7 @@ pub enum ExprKind {
     NoOp,
     Constant(Value),
     Module {
-        name: ArcStr,
+        name: Name,
         value: ModuleKind,
     },
     ExplicitParens(Arc<Expr>),
@@ -467,7 +470,7 @@ pub enum ExprKind {
     },
     StructRef {
         source: Arc<Expr>,
-        field: ArcStr,
+        field: Name,
     },
     TupleRef {
         source: Arc<Expr>,
@@ -839,6 +842,116 @@ impl netidx_core::pack::Pack for WrittenAt {
 
     fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
         Ok(Self::NOWHERE)
+    }
+}
+
+/// Where each segment of a path was written. Like [`WrittenAt`], it
+/// decides nothing: equal to every other, hashes and packs to nothing.
+#[derive(Debug, Clone, Default)]
+pub struct WrittenPath(pub SmallVec<[SourcePosition; 4]>);
+
+impl PartialEq for WrittenPath {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WrittenPath {}
+
+impl PartialOrd for WrittenPath {
+    fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
+        Some(Ordering::Equal)
+    }
+}
+
+impl std::hash::Hash for WrittenPath {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl netidx_core::pack::Pack for WrittenPath {
+    fn encoded_len(&self) -> usize {
+        0
+    }
+
+    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        Ok(())
+    }
+
+    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self::default())
+    }
+}
+
+/// A name where it is declared or selected: the identifier and where it
+/// was written. A `Name` is its identifier to every comparison, hash
+/// and encoding (see [`WrittenAt`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Name {
+    pub name: ArcStr,
+    pub at: WrittenAt,
+}
+
+impl Name {
+    pub fn written(name: ArcStr, at: SourcePosition) -> Self {
+        Self { name, at: WrittenAt(at) }
+    }
+
+    /// Where the name was written, else `enclosing` for a name the
+    /// compiler built or unpacked.
+    pub fn pos_or(&self, enclosing: SourcePosition) -> SourcePosition {
+        if self.at.0 == WrittenAt::NOWHERE.0 { enclosing } else { self.at.0 }
+    }
+}
+
+impl<T: Into<ArcStr>> From<T> for Name {
+    fn from(name: T) -> Self {
+        Self { name: name.into(), at: WrittenAt::NOWHERE }
+    }
+}
+
+impl Deref for Name {
+    type Target = ArcStr;
+
+    fn deref(&self) -> &ArcStr {
+        &self.name
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        &self.name
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.name, f)
+    }
+}
+
+impl PartialEq<str> for Name {
+    fn eq(&self, other: &str) -> bool {
+        &*self.name == other
+    }
+}
+
+impl netidx_core::pack::Pack for Name {
+    fn encoded_len(&self) -> usize {
+        self.name.encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        self.name.encode(buf)
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self::from(ArcStr::decode(buf)?))
     }
 }
 

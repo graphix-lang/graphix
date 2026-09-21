@@ -5,7 +5,8 @@
 //!
 //! Positions are written as markers: `"let y = |x + 1"` is the first
 //! occurrence of `let y = x + 1` in the file's current text, cursor at
-//! the `|`. Fixtures are ASCII.
+//! the `|`; a marker that needs a literal `|` marks the cursor with `^`
+//! (`"|^acc, x| acc"`). Fixtures are ASCII.
 
 use graphix_lsp::uri::{path_to_uri, uri_to_path};
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
@@ -109,8 +110,9 @@ impl Client {
 
     /// The position of `marker`'s `|` in the current text of `file`.
     pub fn at(&self, file: &str, marker: &str) -> Position {
-        let cursor = marker.find('|').expect("a marker has a `|`");
-        let needle = marker.replacen('|', "", 1);
+        let mark = if marker.contains('^') { '^' } else { '|' };
+        let cursor = marker.find(mark).expect("a marker has a cursor");
+        let needle = marker.replacen(mark, "", 1);
         let text = self.text(file);
         let start =
             text.find(&needle).unwrap_or_else(|| panic!("`{needle}` is not in {file}"));
