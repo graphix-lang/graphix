@@ -7,7 +7,10 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::expr::{ExprKind, ModuleKind, Origin, SigKind, Source, parser};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +27,9 @@ pub struct WorkspaceFile {
     pub path: PathBuf,
     pub kind: FileKind,
     pub mod_decls: Vec<ArcStr>,
+    /// When the file was last written, as of the parse `mod_decls` came
+    /// from.
+    pub modified: Option<SystemTime>,
 }
 
 /// One project rooted at a single file. `files` is every file
@@ -33,10 +39,6 @@ pub struct WorkspaceFile {
 pub struct Project {
     pub root: PathBuf,
     pub files: AHashSet<PathBuf>,
-    /// For a root at `<crate>/src/graphix/mod.gx` of a Cargo crate named
-    /// `graphix-package-<x>`, `Some("<x>")`: the scope the project is
-    /// typechecked under.
-    pub package_scope: Option<ArcStr>,
 }
 
 /// The scanner output: every file, every project, and a reverse
@@ -50,10 +52,11 @@ pub struct WorkspaceModel {
 
 const SKIP_DIRS: &[&str] = &["target", ".git", "node_modules", ".cache", "vendor"];
 
-/// Walk each root and collect the project graph. Per-file errors are
-/// recorded as empty `mod_decls` so a partially broken workspace still
-/// yields a graph.
-pub fn scan(roots: &[PathBuf]) -> WorkspaceModel {
+/// Walk each root and collect the project graph. A file unchanged since
+/// `known` saw it is not parsed again. Per-file errors are recorded as
+/// empty `mod_decls` so a partially broken workspace still yields a
+/// graph.
+pub fn scan(roots: &[PathBuf], known: &WorkspaceModel) -> WorkspaceModel {
     let mut files: AHashMap<PathBuf, WorkspaceFile> = AHashMap::default();
     for root in roots {
         for entry in WalkDir::new(root).into_iter().filter_entry(|e| {
@@ -69,11 +72,16 @@ pub fn scan(roots: &[PathBuf]) -> WorkspaceModel {
                 _ => continue,
             };
             let path = entry.path().to_path_buf();
-            let mod_decls = match read_and_extract_mods(&path, kind) {
-                Ok(v) => v,
-                Err(_) => Vec::new(),
+            let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
+            let file = match known.files.get(&path) {
+                Some(f) if modified.is_some() && f.modified == modified => f.clone(),
+                Some(_) | None => {
+                    let mod_decls =
+                        read_and_extract_mods(&path, kind).unwrap_or_default();
+                    WorkspaceFile { path: path.clone(), kind, mod_decls, modified }
+                }
             };
-            files.insert(path.clone(), WorkspaceFile { path, kind, mod_decls });
+            files.insert(path, file);
         }
     }
     build_projects(files)
@@ -166,8 +174,7 @@ fn build_projects(files: AHashMap<PathBuf, WorkspaceFile>) -> WorkspaceModel {
             s.insert(root.clone());
             s
         });
-        let package_scope = detect_package_scope(&root);
-        projects.push(Project { root, files: project_files, package_scope });
+        projects.push(Project { root, files: project_files });
     }
     let mut file_to_projects: AHashMap<PathBuf, Vec<usize>> = AHashMap::default();
     for (idx, project) in projects.iter().enumerate() {
@@ -217,8 +224,8 @@ fn bfs_from_root(
     out
 }
 
-/// If `root` is `<crate>/src/graphix/mod.gx` (or `mod.gxi`) and the
-/// crate's `Cargo.toml` names a `graphix-package-<x>`, return `Some("<x>")`.
+/// The module a root is checked as the body of: `x` for the
+/// `src/graphix/mod.gx` of a crate named `graphix-package-<x>`.
 pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
     let stem = root.file_stem().and_then(|s| s.to_str())?;
     if stem != "mod" {
@@ -317,7 +324,7 @@ mod tests {
         write(&root.join("util.gx"), "let helper = |x: i64| -> i64 x;\n");
         write(&root.join("tool_a.gx"), "mod util;\nuse util;\nutil::helper(1)\n");
         write(&root.join("tool_b.gx"), "mod util;\nuse util;\nutil::helper(2)\n");
-        let m = scan(&[root.to_path_buf()]);
+        let m = scan(&[root.to_path_buf()], &WorkspaceModel::default());
         assert_eq!(m.files.len(), 3);
         // util is shared, tool_a and tool_b are distinct project roots
         let project_names: Vec<String> = m
@@ -341,7 +348,7 @@ mod tests {
         write(&root.join("main.gx"), "mod sub;\n");
         write(&root.join("sub.gx"), "mod inner;\nlet x = 1;\n");
         write(&root.join("sub").join("inner.gx"), "let y = 2;\n");
-        let m = scan(&[root.to_path_buf()]);
+        let m = scan(&[root.to_path_buf()], &WorkspaceModel::default());
         let main_project = m
             .projects
             .iter()
@@ -361,13 +368,7 @@ mod tests {
         );
         let mod_path = crate_dir.join("src").join("graphix").join("mod.gx");
         write(&mod_path, "let x = 1\n");
-        let m = scan(&[crate_dir.clone()]);
-        let project = m
-            .projects
-            .iter()
-            .find(|p| p.root == mod_path)
-            .expect("mod.gx is a project root");
-        assert_eq!(project.package_scope.as_deref(), Some("tui"));
+        assert_eq!(detect_package_scope(&mod_path).as_deref(), Some("tui"));
     }
 
     #[test]
@@ -392,13 +393,7 @@ mod tests {
             &dir.path().join("graphix-package-tui").join("Cargo.toml"),
             "[package]\nname = \"graphix-package-tui\"\n",
         );
-        let m = scan(&[dir.path().to_path_buf()]);
-        let project = m
-            .projects
-            .iter()
-            .find(|p| p.root == mod_path)
-            .expect("mod.gx is a project root");
-        assert!(project.package_scope.is_none());
+        assert_eq!(detect_package_scope(&mod_path), None);
     }
 
     #[test]
@@ -408,13 +403,7 @@ mod tests {
         write(&crate_dir.join("Cargo.toml"), "[package]\nname = \"some-other-crate\"\n");
         let mod_path = crate_dir.join("src").join("graphix").join("mod.gx");
         write(&mod_path, "let x = 1\n");
-        let m = scan(&[crate_dir.clone()]);
-        let project = m
-            .projects
-            .iter()
-            .find(|p| p.root == mod_path)
-            .expect("mod.gx is a project root");
-        assert!(project.package_scope.is_none());
+        assert_eq!(detect_package_scope(&mod_path), None);
     }
 
     #[test]
@@ -424,7 +413,7 @@ mod tests {
         write(&root.join("main.gx"), "mod api\n");
         write(&root.join("api.gxi"), "val foo: i64;\n");
         write(&root.join("api.gx"), "let foo = 1;\n");
-        let m = scan(&[root.to_path_buf()]);
+        let m = scan(&[root.to_path_buf()], &WorkspaceModel::default());
         let main = m
             .projects
             .iter()

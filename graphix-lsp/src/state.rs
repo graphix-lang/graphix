@@ -11,7 +11,7 @@ use crate::{
     position::{PositionEncoding, char_col_to_position_in_text, position_to_char_col},
     text::extent,
     uri::{path_to_uri, uri_to_path},
-    workspace::{WorkspaceModel, scan},
+    workspace::{WorkspaceModel, detect_package_scope, scan},
 };
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
@@ -86,7 +86,7 @@ impl ServerState {
             base_env: backend.env(),
             documents: AHashMap::default(),
             backend,
-            workspace: scan(&workspace_roots),
+            workspace: scan(&workspace_roots, &WorkspaceModel::default()),
             workspace_roots,
             checked: AHashMap::default(),
             diagnosed: AHashMap::default(),
@@ -153,7 +153,7 @@ impl ServerState {
     /// Disk changed: the project graph may have, and every edited root
     /// may read the file.
     pub fn saved(&mut self) {
-        self.workspace = scan(&self.workspace_roots);
+        self.workspace = scan(&self.workspace_roots, &self.workspace);
         let open: Vec<PathBuf> = self.documents.keys().filter_map(uri_to_path).collect();
         for path in open {
             self.dirty.extend(self.roots_of(&path));
@@ -168,12 +168,7 @@ impl ServerState {
     }
 
     fn check(&mut self, root: &Path) -> Diagnostics {
-        let package = self
-            .workspace
-            .projects
-            .iter()
-            .find(|p| p.root == root)
-            .and_then(|p| p.package_scope.clone());
+        let package = detect_package_scope(root);
         let mut out: Diagnostics = vec![];
         match self.backend.typecheck_project(root, package) {
             Ok(checked) => {

@@ -611,21 +611,22 @@ pub struct RootFile {
 }
 
 impl RootFile {
-    /// Load `file` and the `.gxi` beside it, open buffers first. A file
-    /// read from disk is named by its canonical path, so its modules
-    /// resolve beside the real file.
+    /// Load `file` and the `.gxi` beside it, open buffers first. With
+    /// no buffers the file is named by its canonical path, so its
+    /// modules resolve beside the real file; with them the caller's
+    /// names rule, since they key the buffers.
     pub async fn load(
         file: &PathBuf,
         overrides: Option<&BufferOverrides>,
     ) -> Result<Self> {
         let buffer = |p: &PathBuf| overrides.and_then(|o| o.lock().get(p).cloned());
-        let (file, text) = match buffer(file) {
-            Some(text) => (file.clone(), text),
-            None => {
-                let file = tokio::fs::canonicalize(file).await?;
-                let text = read_to_arcstr(&file).await?;
-                (file, text)
-            }
+        let file = match overrides {
+            Some(_) => file.clone(),
+            None => tokio::fs::canonicalize(file).await?,
+        };
+        let text = match buffer(&file) {
+            Some(text) => text,
+            None => read_to_arcstr(&file).await?,
         };
         let text = match text.find('\n') {
             Some(i) if text.starts_with("#!") => ArcStr::from(&text[i..]),

@@ -259,6 +259,19 @@ fn a_malformed_request_is_refused_and_the_server_lives() {
 }
 
 #[test]
+fn a_save_redraws_the_project_graph() {
+    let mut c = Client::start(&[("main.gx", "let a = 1"), ("helper.gx", "let h = 1")]);
+    c.open("main.gx");
+    c.open("helper.gx");
+    c.edit("main.gx", "mod helper;\nhelper::h + 1");
+    c.save("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    assert_eq!(c.definition("main.gx", "helper::|h"), Some(c.site("helper.gx", "let |h")));
+    c.edit("helper.gx", "let h = \"one\"");
+    assert_eq!(c.files_with_diagnostics(), ["main.gx"]);
+}
+
+#[test]
 fn closing_a_file_clears_its_diagnostics() {
     let mut c = Client::start(&[("a.gx", "let a = 1"), ("b.gx", "let b = 1")]);
     c.open("b.gx");

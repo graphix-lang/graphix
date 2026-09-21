@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f5a89028.js";
+            window.path_to_searchindex_js = "searchindex-ff9efe06.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -496,7 +496,7 @@ its own; use <code>:%!graphix fmt</code> there.</p>
 </thead>
 <tbody>
 <tr><td>Diagnostics (parse + type errors)</td><td>✓</td></tr>
-<tr><td>Completions from the active environment</td><td>✓</td></tr>
+<tr><td>Completions: names in scope, struct fields, call labels</td><td>✓</td></tr>
 <tr><td>Hover with type and doc information</td><td>✓</td></tr>
 <tr><td>Go-to-definition</td><td>✓</td></tr>
 <tr><td>Find references</td><td>✓</td></tr>
@@ -505,6 +505,20 @@ its own; use <code>:%!graphix fmt</code> there.</p>
 </tbody>
 </table>
 </div>
+<p>Diagnostics arrive as you type, for the files you have open and the
+projects they belong to. A project is a <code>.gx</code> file that no other file
+loads with <code>mod</code>, together with everything it loads; a file outside
+every project is checked by itself. Files you have not opened are not
+checked. The compiler stops at the first error, so a project shows one
+diagnostic at a time.</p>
+<p>While a buffer does not compile, completion, hover and navigation answer
+from the last version that did. Completion offers the names in scope
+(locals included), a struct’s fields after <code>.</code>, and a call’s <code>#labels</code>
+inside its parentheses.</p>
+<p>To work on a package that defines its own builtins (an external
+<code>graphix-package-*</code> crate), run the <code>graphix</code> that was built with that
+package: the stock binary does not know its builtins and reports them as
+unknown.</p>
 <p>Rename and code actions are not yet implemented. File issues at
 <a href="https://github.com/graphix-lang/graphix/issues">graphix-lang/graphix</a>
 if something specific would unblock you.</p>
