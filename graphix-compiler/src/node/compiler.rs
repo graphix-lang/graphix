@@ -51,6 +51,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
     if ctx.env.lsp_mode {
         ctx.env.push_scope_map_entry(crate::ide::ScopeMapEntry {
             pos: spec.pos,
+            end: spec.end.0,
             ori: spec.ori.clone(),
             scope: scope.clone(),
         });

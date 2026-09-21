@@ -107,6 +107,7 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
         kind,
         dec: value.dec.clone(),
         str_form: value.str_form,
+        end: value.end,
     }
 }
 
@@ -177,6 +178,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                     kind: ExprKind::Bind(Arc::new(b)),
                     dec: None,
                     str_form: Default::default(),
+                    end: Default::default(),
                 });
             }
         }
@@ -520,6 +522,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                 kind: ExprKind::Bind(Arc::new(b)),
                 dec,
                 str_form: Default::default(),
+                end: Default::default(),
             });
         }
         for d in trait_def.methods.iter() {

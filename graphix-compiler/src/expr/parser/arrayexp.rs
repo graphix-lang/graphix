@@ -77,6 +77,18 @@ where
     )
 }
 
+/// A constant with its span.
+fn at<I, P>(value: P) -> impl Parser<I, Output = Expr>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    P: Parser<I, Output = Value>,
+{
+    (position(), value, position())
+        .map(|(pos, v, end)| ExprKind::Constant(v).to_expr(pos).ending(end))
+}
+
 /// The `[ idx ]` / `[ start..end ]` postfix suffix. `Right(e)` is a
 /// single-index `ArrayRef`; `Left((start, end))` is an `ArraySlice`.
 pub(super) fn array_index_suffix<I>()
@@ -89,29 +101,22 @@ where
     between(
         token('['),
         sptoken(']'),
-        (position(), spaces()).then(|(pos, _)| {
-            choice((
-                attempt(idx().skip(look_ahead(sptoken(']'))))
-                    .map(move |idx| Either::Right(ExprKind::Constant(idx).to_expr(pos))),
+        spaces().with(choice((
+                attempt(at(idx()).skip(look_ahead(sptoken(']')))).map(Either::Right),
                 attempt(
                     (
-                        optional(idx()).skip(spstring("..")),
-                        spaces().with(optional(idx())),
+                        optional(at(idx())).skip(spstring("..")),
+                        spaces().with(optional(at(idx()))),
                     )
                         .skip(look_ahead(sptoken(']'))),
                 )
-                .map(move |(start, end)| {
-                    let start = start.map(|e| ExprKind::Constant(e).to_expr(pos));
-                    let end = end.map(|e| ExprKind::Constant(e).to_expr(pos));
-                    Either::Left((start, end))
-                }),
+                .map(Either::Left),
                 attempt((
                     optional(attempt(expr())).skip(spstring("..")),
                     optional(attempt(expr())),
                 ))
                 .map(|(start, end)| Either::Left((start, end))),
                 attempt(expr()).map(|e| Either::Right(e)),
-            ))
-        }),
+        ))),
     )
 }

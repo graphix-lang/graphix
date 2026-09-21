@@ -3,7 +3,7 @@ use super::{
     grow::{grow, note_reason},
     sptoken,
 };
-use crate::expr::{Expr, ExprId, ExprKind, StrForm, get_origin};
+use crate::expr::{Expr, ExprId, ExprKind, StrForm, WrittenAt, get_origin};
 use combine::{
     RangeStream, attempt, between, choice, many, not_followed_by, optional,
     parser::char::string,
@@ -23,19 +23,21 @@ parser! {
     {
         #[derive(Debug, Clone)]
         enum Intp {
-            Lit(SourcePosition, String),
+            // a run of text: where it starts and ends
+            Lit(SourcePosition, SourcePosition, String),
             Expr(Expr),
         }
         impl Intp {
             fn to_expr(self) -> Expr {
                 match self {
-                    Intp::Lit(pos, s) => Expr {
+                    Intp::Lit(pos, end, s) => Expr {
                         id: ExprId::new(),
                         ori: get_origin(),
                         pos,
                         kind: ExprKind::Constant(Value::from(s)),
                         dec: None,
                         str_form: Default::default(),
+                        end: WrittenAt(end),
                     },
                     Intp::Expr(s) => s,
                 }
@@ -47,14 +49,22 @@ parser! {
             let mut merged: LPooled<Vec<Intp>> = LPooled::take();
             for t in toks.drain(..) {
                 match (merged.last_mut(), t) {
-                    (Some(Intp::Lit(_, prev)), Intp::Lit(_, s)) => prev.push_str(&s),
+                    (Some(Intp::Lit(_, prev_end, prev)), Intp::Lit(_, end, s)) => {
+                        prev.push_str(&s);
+                        *prev_end = end;
+                    }
                     (_, t) => merged.push(t),
                 }
             }
-            match &merged[..] {
-                [] => ExprKind::Constant(Value::from("")).to_expr(pos),
-                [Intp::Lit(_, _)] => merged.drain(..).next().unwrap().to_expr(),
-                _ => ExprKind::StringInterpolate {
+            // a string with no splice is one constant, quotes and all
+            let whole = match &mut merged[..] {
+                [] => Some(String::new()),
+                [Intp::Lit(_, _, s)] => Some(std::mem::take(s)),
+                _ => None,
+            };
+            match whole {
+                Some(s) => ExprKind::Constant(Value::from(s)).to_expr(pos),
+                None => ExprKind::StringInterpolate {
                     args: Arc::from_iter(merged.drain(..).map(Intp::to_expr)),
                 }
                 .to_expr(pos),
@@ -80,12 +90,13 @@ parser! {
         let chunk_part = || (
             position(),
             escaped_string(&GRAPHIX_MUST_ESC, &GRAPHIX_ESC),
+            position(),
         )
-            .then(|(pos, s)| {
+            .then(|(pos, s, end)| {
                 if s.is_empty() {
                     unexpected_any("empty string").right()
                 } else {
-                    value(Intp::Lit(pos, s)).left()
+                    value(Intp::Lit(pos, end, s)).left()
                 }
             });
         // Template form: brackets are content and the splice is marked
@@ -100,19 +111,18 @@ parser! {
             combine::many1::<String, _, _>(combine::satisfy(|c| {
                 c != '"' && c != '\\'
             })),
+            position(),
         )
-            .map(|(pos, s)| Intp::Lit(pos, s));
-        let triple_escape = || attempt(token('\\').with(choice((
+            .map(|(pos, s, end)| Intp::Lit(pos, end, s));
+        let triple_escape = || (position(), attempt(token('\\').with(choice((
             token('n').map(|_| '\n'),
             token('r').map(|_| '\r'),
             token('t').map(|_| '\t'),
             token('0').map(|_| '\0'),
             token('"').map(|_| '"'),
             token('\\').map(|_| '\\'),
-        ))))
-            .map(|c| c)
-            .and(position())
-            .map(|(c, pos)| Intp::Lit(pos, String::from(c)));
+        )))), position())
+            .map(|(pos, c, end)| Intp::Lit(pos, end, String::from(c)));
         let triple = (
             position(),
             between(
@@ -127,8 +137,9 @@ parser! {
                         attempt((
                             position(),
                             token('"').skip(not_followed_by(string("\"\""))),
+                            position(),
                         ))
-                        .map(|(pos, _)| Intp::Lit(pos, String::from("\""))),
+                        .map(|(pos, _, end)| Intp::Lit(pos, end, String::from("\""))),
                     ))),
                 )
                     .map(|(_, toks)| toks),

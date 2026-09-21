@@ -378,18 +378,6 @@ where
     spaces().with(name())
 }
 
-fn spfname<I>() -> impl Parser<I, Output = ArcStr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    spaces().with(fname())
-}
-
-/// A struct field name: any lowercase-initial identifier, reserved words
-/// included. A keyword field must use the explicit `name: …` form, which
-/// the callers that accept shorthand enforce.
 fn fldname<I>() -> impl Parser<I, Output = ArcStr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -503,7 +491,7 @@ where
             token('{'),
             sptoken('}'),
             sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp.to_expr(pos)
+                ExprKind::NoOp.to_expr(pos).ending(pos)
             }),
         ),
     )
@@ -725,11 +713,17 @@ where
     I::Range: Range,
     P: Parser<I, Output = Expr>,
 {
-    (position(), p, many::<LPooled<Vec<_>>, _, _>(arithexp::qop_suffix())).map(
-        |(pos, e, mut qops)| {
-            qops.drain(..).fold(e, |e, qop| arithexp::apply_qop(pos, e, qop))
-        },
+    (
+        position(),
+        p,
+        position(),
+        many::<LPooled<Vec<_>>, _, _>((arithexp::qop_suffix(), position())),
     )
+        .map(|(pos, e, end, mut qops)| {
+            qops.drain(..).fold(e.ending(end), |e, (qop, end)| {
+                arithexp::apply_qop(pos, e, qop).ending(end)
+            })
+        })
 }
 
 /// Rust-style raw strings: `r"…"`, `r#"…"#`, `r##"…"##`, … No escapes,
@@ -803,7 +797,7 @@ where
         sptoken('{'),
         sptoken('}'),
         sep_by1_tok_exp(seq_body_item(), semisep(), token('}'), |pos| {
-            ExprKind::NoOp.to_expr(pos)
+            ExprKind::NoOp.to_expr(pos).ending(pos)
         }),
     )
 }
@@ -968,9 +962,10 @@ where
         leading_decorations(),
         position(),
         fldname(),
+        position(),
         spaces().with(optional(token(':').with(expr()))),
     )
-        .then(|(dec, pos, name, v): (Leading, _, ArcStr, Option<Expr>)| {
+        .then(|(dec, pos, name, end, v): (Leading, _, ArcStr, _, Option<Expr>)| {
             let v = match v {
                 Some(v) => v,
                 None if RESERVED_BINDING.contains(&name.as_str()) => {
@@ -980,7 +975,8 @@ where
                     .left();
                 }
                 None => {
-                    ExprKind::Ref { name: ModPath::from([name.clone()]) }.to_expr(pos)
+                    let name = ModPath::from([name.clone()]);
+                    ExprKind::Ref { name }.to_expr(pos).ending(end)
                 }
             };
             value((name, decorate(v, dec))).right()
@@ -1241,8 +1237,9 @@ parser! {
                 attempt(literal()),
                 qop(reference()),
             )),
+            position(),
         )
-            .map(|(dec, e): (Leading, Expr)| decorate(e, dec)))
+            .map(|(dec, e, end): (Leading, Expr, _)| decorate(e.ending(end), dec)))
     }
 }
 
@@ -1252,7 +1249,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
     let mut r: LPooled<Vec<Expr>> = grow::parsing(&ori.text, || {
-        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp.to_expr(pos))
+        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp.to_expr(pos).ending(pos))
             .skip(spaces())
             .skip(eof())
             .easy_parse(position::Stream::new(&*ori.text))

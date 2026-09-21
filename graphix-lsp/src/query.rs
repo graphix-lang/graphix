@@ -192,7 +192,22 @@ impl<'a> Query<'a> {
         None
     }
 
+    /// The field selected under the cursor (`s.f`), with its type.
+    fn field(&self) -> Option<Hover> {
+        let fields = self.checked.ide.field_refs.iter();
+        let mut here = fields.filter(|f| {
+            in_file(&f.ori, self.file)
+                && f.name == self.ident
+                && covers(zero_based(f.pos), self.ident.chars().count(), self.cursor)
+        });
+        let f = here.next()?;
+        Some(markdown(&format_compact!("{}: {}", f.name, display_type(&f.typ)), None))
+    }
+
     pub(crate) fn hover(&self) -> Option<Hover> {
+        if let Some(field) = self.field() {
+            return Some(field);
+        }
         let (target, written) = self.target()?;
         Some(match target {
             Target::Bind(id) => {

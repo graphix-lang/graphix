@@ -179,6 +179,37 @@ fn an_error_is_reported_where_it_arose() {
 }
 
 #[test]
+fn a_diagnostic_underlines_the_expression() {
+    let mut c = Client::start(&[(
+        "a.gx",
+        "let f = |n: i64| n + 1;\nlet bad = f(str::len(\"four\") == 4);\nbad\n",
+    )]);
+    c.open("a.gx");
+    assert_eq!(c.underlined("a.gx"), ["str::len(\"four\") == 4"]);
+}
+
+#[test]
+fn a_field_shows_its_type() {
+    let mut c = two_files();
+    hover_is(&mut c, "p.|x", "x: f64");
+}
+
+#[test]
+fn a_block_does_not_leak_its_scope() {
+    let mut c = two_files();
+    c.replace("main.gx", "let z = f(x)", "let w = \nlet z = f(x)");
+    let after = c.completions("main.gx", "let w = |");
+    assert!(
+        after.contains(&"f".to_string()) && !after.contains(&"y".to_string()),
+        "{after:?}"
+    );
+    c.edit("main.gx", MAIN);
+    c.replace("main.gx", "    y * 2", "    let w = \n    y * 2");
+    let inside = c.completions("main.gx", "    let w = |");
+    assert!(inside.contains(&"y".to_string()), "{inside:?}");
+}
+
+#[test]
 fn an_unsaved_module_is_checked() {
     let mut c = two_files();
     c.open("util.gx");

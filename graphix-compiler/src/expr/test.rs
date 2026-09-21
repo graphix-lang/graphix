@@ -1388,6 +1388,7 @@ fn add_parens(mut e: Expr) -> Expr {
         pos: e.pos,
         dec: e.dec.take(),
         str_form: e.str_form,
+        end: e.end,
     }
 }
 

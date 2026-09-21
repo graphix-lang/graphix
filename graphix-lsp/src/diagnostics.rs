@@ -2,13 +2,19 @@
 //! `ParserContext`; a compile error an `ErrorSite` (the expression it
 //! arose in) under any number of `ErrorContext`s.
 
-use graphix_compiler::expr::{ErrorContext, ErrorSite, ParserContext, Source};
+use crate::text::zero_based;
+use graphix_compiler::{
+    SourcePosition,
+    expr::{ErrorContext, ErrorSite, ParserContext, Source, WrittenAt},
+};
 use lsp_types::Position;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
 pub struct ErrorLocation {
     pub position: Option<Position>,
+    /// Where the erring expression ends; a parse error is a point.
+    pub end: Option<Position>,
     pub file: Option<PathBuf>,
 }
 
@@ -17,28 +23,22 @@ pub struct ErrorLocation {
 /// falls back to the outermost `ErrorContext`.
 pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
     if let Some(pc) = err.downcast_ref::<ParserContext>() {
-        return location_from_origin_pos(&pc.ori.source, pc.pos);
+        return location(&pc.ori.source, pc.pos, WrittenAt::NOWHERE);
     }
     let site = err.downcast_ref::<ErrorSite>().map(|s| &s.0);
     match site.or_else(|| err.downcast_ref::<ErrorContext>()) {
-        Some(ec) => location_from_origin_pos(&ec.0.ori.source, ec.0.pos),
+        Some(ec) => location(&ec.0.ori.source, ec.0.pos, ec.0.end),
         None => ErrorLocation::default(),
     }
 }
 
-/// Compose an `ErrorLocation` from the compiler's 1-based (line, column)
-/// and the originating `Source`; LSP positions are 0-based.
-fn location_from_origin_pos(
-    source: &Source,
-    pos: graphix_compiler::SourcePosition,
-) -> ErrorLocation {
-    let line = (pos.line.saturating_sub(1).max(0)) as u32;
-    let character = (pos.column.saturating_sub(1).max(0)) as u32;
+fn location(source: &Source, pos: SourcePosition, end: WrittenAt) -> ErrorLocation {
     let file = match source {
         Source::File(p) => Some(p.clone()),
         _ => None,
     };
-    ErrorLocation { position: Some(Position { line, character }), file }
+    let end = (end.0 != WrittenAt::NOWHERE.0).then(|| zero_based(end.0));
+    ErrorLocation { position: Some(zero_based(pos)), end, file }
 }
 
 /// The chain's leaf is the human-readable failure text.

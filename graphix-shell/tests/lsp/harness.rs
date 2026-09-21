@@ -257,6 +257,22 @@ impl Client {
             .collect()
     }
 
+    /// The text each diagnostic on `file` underlines.
+    pub fn underlined(&mut self, file: &str) -> Vec<String> {
+        self.sync();
+        let text = self.text(file);
+        let offset = |p: Position| {
+            let line: usize =
+                text.split_inclusive('\n').take(p.line as usize).map(|l| l.len()).sum();
+            line + p.character as usize
+        };
+        let diags = self.diagnostics.get(file).map(|d| d.as_slice()).unwrap_or(&[]);
+        diags
+            .iter()
+            .map(|d| text[offset(d.range.start)..offset(d.range.end)].to_string())
+            .collect()
+    }
+
     /// Every file with a standing diagnostic.
     pub fn files_with_diagnostics(&mut self) -> Vec<String> {
         self.sync();

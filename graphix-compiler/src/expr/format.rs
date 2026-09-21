@@ -163,6 +163,7 @@ fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
             kind: ExprKind::Use { reexport, names },
             dec: None,
             str_form: Default::default(),
+            end: Default::default(),
         },
     )
 }
@@ -202,6 +203,7 @@ fn merge_uses_within(e: &Expr) -> Expr {
         kind,
         dec: e.dec.clone(),
         str_form: e.str_form,
+        end: e.end,
     }
 }
 

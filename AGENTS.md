@@ -385,7 +385,8 @@ is refused, never written. The AST stays canonical (struct fields, union
 members and a use statement's names are held sorted); what the author
 chose rides beside it as metadata that decides nothing: `WrittenAt` (a
 position that is always equal, hashes to nothing, packs to nothing) on
-struct pattern binds, struct type fields and variant types, `Expr::pos`
+struct pattern binds, struct type fields, variant types, every declared
+name (`Name`) and every expression's end, `Expr::pos`
 for struct literal fields, `Expr::str_form` for a string's delimiters.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
@@ -435,10 +436,17 @@ startup. The last SUCCESSFUL check of a root (`Checked`: the env and the
 compile still answers, stale; bind ids mean something only within one
 `Checked`. A query resolves the cursor to a target (bind id, canonical
 module, canonical type) from the sinks and never by looking a word up:
-what the check did not record has no answer. The AST has no position for
-a declared NAME; `text::Lines::name_after` finds it from the
-declaration's position and is the one place to change when it has. An
-error's position is its `ErrorSite`, the innermost wrap: contexts are
+what the check did not record has no answer. Positions come from the
+AST: a declared name is an `expr::Name` (identifier + `WrittenAt`), a
+`use` item carries the position of each path segment (`WrittenPath`),
+every parsed `Expr` has an `end`, and a bind, typedef, trait or `mod`
+site is recorded AT THE NAME. All three decide nothing and pack to
+nothing, so a name or an end out of a packed AST or an image is
+`NOWHERE` (`Name::pos_or`). A parser site that builds an `Expr` gives
+it its end (`Expr::ending`; `expr()`, the postfix loop, `mke` and `qop`
+cover what passes through them); pin: `graphix-compiler/tests/
+expr_spans.rs` (every node's `[pos, end)` parses back to the node, over
+the examples and the stdlib). An error's position is its `ErrorSite`, the innermost wrap: contexts are
 attached with `.at(&spec)` (`expr::At`), `wrap!` or `bailat!`, never
 `ErrorContext(..)` by hand. Pins: `graphix-shell/tests/lsp/` (the real
 server over `Connection::memory()`; positions are `"let y = |x + 1"`

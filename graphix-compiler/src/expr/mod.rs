@@ -657,6 +657,7 @@ impl ExprKind {
             kind: self,
             dec: None,
             str_form: Default::default(),
+            end: Default::default(),
         }
     }
 
@@ -669,6 +670,7 @@ impl ExprKind {
             kind: self,
             dec: None,
             str_form: Default::default(),
+            end: Default::default(),
         }
     }
 }
@@ -793,8 +795,14 @@ impl Origin {
 /// formatter. It never decides anything: every `WrittenAt` is equal to
 /// every other, hashes to nothing and packs to nothing, so a type that
 /// holds one derives its own comparisons as if it did not.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct WrittenAt(pub SourcePosition);
+
+impl Default for WrittenAt {
+    fn default() -> Self {
+        Self::NOWHERE
+    }
+}
 
 impl WrittenAt {
     /// Not written: built by the compiler.
@@ -980,6 +988,8 @@ pub struct Expr {
     /// How a string literal was delimited, so that it prints as written;
     /// not compared by equality, and not part of the packed form.
     pub str_form: StrForm,
+    /// Where the expression's text ends (exclusive), if it was parsed.
+    pub end: WrittenAt,
 }
 
 /// Field drop glue runs after `drop` returns and cannot be stack-guarded,
@@ -1027,6 +1037,15 @@ impl PartialEq for Expr {
 }
 
 impl Expr {
+    /// Record where the expression's text ends. The first writer is the
+    /// parser nearest the node, so it wins.
+    pub fn ending(mut self, end: SourcePosition) -> Self {
+        if self.end.0 == WrittenAt::NOWHERE.0 {
+            self.end = WrittenAt(end);
+        }
+        self
+    }
+
     /// Whether `other` is a clone of this expression: the same id,
     /// origin and position over equal syntax (shared children compare
     /// by pointer).
@@ -1119,6 +1138,7 @@ impl Expr {
             kind,
             dec: None,
             str_form: Default::default(),
+            end: Default::default(),
         }
     }
 
@@ -1452,6 +1472,7 @@ impl Expr {
             kind,
             dec: self.dec.clone(),
             str_form: self.str_form,
+            end: self.end,
         }
     }
 }

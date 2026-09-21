@@ -7,7 +7,9 @@ use crate::{
     BindId, Scope, SourcePosition,
     env::{Bind, Env},
     expr,
+    typ::Type,
 };
+use arcstr::ArcStr;
 use compact_str::CompactString;
 use poolshark::global::{GPooled, Pool};
 use std::sync::LazyLock;
@@ -44,12 +46,12 @@ pub struct ModuleRefSite {
     pub segments: Option<expr::WrittenPath>,
 }
 
-/// The compiler descended into an `Expr` at `(pos, ori)` while in
-/// `scope`. `cursor → scope` is the entry with the greatest `pos` ≤
-/// the cursor in the same file.
+/// The compiler compiled the `Expr` spanning `[pos, end)` in `scope`:
+/// the scope the expression stands in, not one it opens.
 #[derive(Debug, Clone)]
 pub struct ScopeMapEntry {
     pub pos: SourcePosition,
+    pub end: SourcePosition,
     pub ori: Arc<expr::Origin>,
     pub scope: Scope,
 }
@@ -66,6 +68,16 @@ pub struct TypeRefSite {
     pub canonical_scope: expr::ModPath,
     pub def_pos: SourcePosition,
     pub def_ori: Arc<expr::Origin>,
+}
+
+/// A field selected from a struct (`s.f`): where the field's name
+/// stands and what the field is.
+#[derive(Debug, Clone)]
+pub struct FieldRefSite {
+    pub pos: SourcePosition,
+    pub ori: Arc<expr::Origin>,
+    pub name: ArcStr,
+    pub typ: Type,
 }
 
 /// Links a `.gxi` `val foo: T` declaration to its `let foo = …`
@@ -103,6 +115,8 @@ pub struct Ide {
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
     /// Type-name references in type positions.
     pub type_refs: GPooled<Vec<TypeRefSite>>,
+    /// Struct field selections.
+    pub field_refs: GPooled<Vec<FieldRefSite>>,
     /// `val`-sig ↔ `let`-impl bind links.
     pub sig_links: GPooled<Vec<SigImplLink>>,
     /// Per-module impl-side env snapshots.
@@ -122,6 +136,8 @@ impl Ide {
             LazyLock::new(|| Pool::new(64, 65536));
         static TYPE_REF_SITE_POOL: LazyLock<Pool<Vec<TypeRefSite>>> =
             LazyLock::new(|| Pool::new(64, 65536));
+        static FIELD_REF_SITE_POOL: LazyLock<Pool<Vec<FieldRefSite>>> =
+            LazyLock::new(|| Pool::new(64, 65536));
         static SIG_LINK_POOL: LazyLock<Pool<Vec<SigImplLink>>> =
             LazyLock::new(|| Pool::new(32, 4096));
         static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
@@ -132,6 +148,7 @@ impl Ide {
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             type_refs: TYPE_REF_SITE_POOL.take(),
+            field_refs: FIELD_REF_SITE_POOL.take(),
             sig_links: SIG_LINK_POOL.take(),
             module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
         }

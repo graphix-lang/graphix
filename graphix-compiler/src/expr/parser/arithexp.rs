@@ -226,9 +226,14 @@ parser! {
                 (
                     position(),
                     primary(),
-                    many::<LPooled<Vec<Post>>, _, _>(postfix_op(*key)),
+                    position(),
+                    many::<LPooled<Vec<(Post, SourcePosition)>>, _, _>((
+                        postfix_op(*key),
+                        position(),
+                    )),
                 )
-                    .and_then(|(pos, (base, paren), mut ops)| {
+                    .and_then(|(pos, (base, paren), end, mut ops)| {
+                        let base = base.ending(end);
                         // The iterative postfix loop escapes `grow`'s depth
                         // counter, but the fold builds an N-deep AST.
                         if ops.len() > max_nesting() {
@@ -240,12 +245,14 @@ parser! {
                         // `?`/`$` print their operand bare, so a
                         // parenthesized one keeps its parens
                         let base = match (paren, ops.first()) {
-                            (Some(Parenthesized), None | Some(Post::Qop(_))) => {
-                                ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos)
+                            (Some(Parenthesized), None | Some((Post::Qop(_), _))) => {
+                                ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos).ending(end)
                             }
                             _ => base,
                         };
-                        Ok(ops.drain(..).fold(base, |acc, op| apply_post(pos, acc, op)))
+                        Ok(ops
+                            .drain(..)
+                            .fold(base, |acc, (op, end)| apply_post(pos, acc, op).ending(end)))
                     }),
             ))
         // arith_term must not skip trailing spaces: `m{"k"}` is a map
@@ -256,8 +263,8 @@ parser! {
 fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
     macro_rules! mk {
         ($ctor:ident) => {{
-            let pos = lhs.pos;
-            ExprKind::$ctor { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos)
+            let (pos, end) = (lhs.pos, rhs.end.0);
+            ExprKind::$ctor { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos).ending(end)
         }};
     }
     match op {

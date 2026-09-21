@@ -1247,6 +1247,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             kind,
             dec: None,
             str_form: Default::default(),
+            end: Default::default(),
         };
         let mut positional = names
             .iter()
@@ -1360,6 +1361,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             kind,
             dec: None,
             str_form: Default::default(),
+            end: Default::default(),
         };
         let (operands, names) =
             self.take_operands(Some(m.self_index), arcstr::literal!("#s"))?;

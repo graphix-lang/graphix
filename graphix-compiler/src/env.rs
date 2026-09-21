@@ -391,6 +391,13 @@ impl Env {
         }
     }
 
+    /// Push a `FieldRefSite` into the active IDE sink, if any.
+    pub fn push_field_ref(&self, site: crate::ide::FieldRefSite) {
+        if let Some(ide) = &self.ide {
+            ide.lock().field_refs.push(site);
+        }
+    }
+
     /// Push a `ScopeMapEntry` into the active IDE sink, if any.
     pub fn push_scope_map_entry(&self, entry: ScopeMapEntry) {
         if let Some(ide) = &self.ide {

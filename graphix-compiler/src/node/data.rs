@@ -617,6 +617,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         });
         let (idx, typ) = wrap!(self, etyp)?;
         self.sorted_field_idx = Some(idx);
+        if let ExprKind::StructRef { field, .. } = &self.spec.kind
+            && ctx.env.lsp_mode
+        {
+            ctx.env.push_field_ref(crate::ide::FieldRefSite {
+                pos: field.pos_or(self.spec.pos),
+                ori: self.spec.ori.clone(),
+                name: field.name.clone(),
+                typ: typ.clone(),
+            });
+        }
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))
     }
 

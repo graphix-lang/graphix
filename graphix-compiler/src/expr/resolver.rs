@@ -378,6 +378,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 kind,
                 dec: None,
                 str_form: Default::default(),
+                end: Default::default(),
             }
         }
     }
@@ -712,6 +713,7 @@ async fn resolve(
             kind,
             dec: None,
             str_form: Default::default(),
+            end: Default::default(),
         });
     }
     let mut msg = format_compact!("module {name} could not be found");
@@ -796,6 +798,7 @@ impl Expr {
                     kind: $kind,
                     dec: self.dec.clone(),
                     str_form: self.str_form,
+                    end: self.end,
                 })
             };
         }

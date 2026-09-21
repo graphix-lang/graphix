@@ -195,7 +195,7 @@ impl ServerState {
         let at = loc.position.unwrap_or_default();
         let range = |text: &str| Range {
             start: self.encode(text, at),
-            end: self.encode(text, extent(text, at)),
+            end: self.encode(text, loc.end.unwrap_or_else(|| extent(text, at))),
         };
         let range = match self.documents.get(&uri) {
             Some(doc) => range(&doc.text),

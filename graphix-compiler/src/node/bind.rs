@@ -56,6 +56,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
         kind,
         dec: None,
         str_form: Default::default(),
+        end: Default::default(),
     };
     let mut children: Vec<Node<R, E>> = Vec::new();
     for (name, node) in operands {

@@ -18,7 +18,7 @@ use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionTextEdit, Documentation,
     InsertTextFormat, Position, Range, TextEdit, Uri,
 };
-use std::{fmt::Write, path::Path};
+use std::{cmp::Reverse, fmt::Write, path::Path};
 
 /// A path as typed (`array::ma`, `array::`) for `lookup_matching`; a
 /// trailing `::` is an empty last segment.
@@ -67,15 +67,28 @@ struct Completer<'a> {
 }
 
 impl<'a> Completer<'a> {
-    /// The scope of the last expression the check entered at or before
-    /// the cursor.
+    /// The scope the cursor stands in. An entry's scope is the one its
+    /// expression stands in, so inside the innermost expression around
+    /// the cursor the statement that last ended before the cursor has
+    /// the scope a new one would get; with none, the enclosing
+    /// expression's own.
     fn scope_at(checked: Option<&Checked>, file: &Path, cursor: Position) -> ModPath {
-        let entries = checked.iter().flat_map(|c| c.ide.scope_map.iter());
-        entries
-            .filter(|e| in_file(&e.ori, file) && zero_based(e.pos) <= cursor)
-            .max_by_key(|e| zero_based(e.pos))
-            .map(|e| e.scope.lexical.clone())
-            .unwrap_or_else(ModPath::root)
+        let entries = || {
+            let all = checked.iter().flat_map(|c| c.ide.scope_map.iter());
+            all.filter(|e| in_file(&e.ori, file))
+                .map(|e| (zero_based(e.pos), zero_based(e.end), &e.scope.lexical))
+        };
+        let around = entries()
+            .filter(|(pos, end, _)| *pos <= cursor && cursor <= *end)
+            .max_by_key(|(pos, end, _)| (*pos, Reverse(*end)));
+        let floor = around.map(|(pos, _, _)| pos).unwrap_or_default();
+        let before = entries()
+            .filter(|(pos, end, _)| {
+                floor <= *pos && *end <= cursor && Some(*pos) != around.map(|a| a.0)
+            })
+            .max_by_key(|(pos, end, _)| (*end, Reverse(*pos)));
+        let scope = before.or(around).map(|(_, _, scope)| scope.clone());
+        scope.unwrap_or_else(ModPath::root)
     }
 
     /// Every binding declared before the cursor in a scope enclosing

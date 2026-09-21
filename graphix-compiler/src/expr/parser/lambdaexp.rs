@@ -29,22 +29,21 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    position().skip(spaces()).then(|pos| {
-        choice((
-            token('#').with(fname()).skip(spaces()).then(move |name| {
-                let name = name.clone();
+    spaces().with(choice((
+        // `#name` alone passes the variable of that name
+        token('#').with((position(), fname(), position())).skip(spaces()).then(
+            |(pos, name, end)| {
                 optional(token(':').with(expr())).map(move |e| match e {
                     Some(e) => (Some(name.clone()), e),
                     None => {
-                        let e =
-                            ExprKind::Ref { name: [name.clone()].into() }.to_expr(pos);
-                        (Some(name.clone()), e)
+                        let e = ExprKind::Ref { name: [name.clone()].into() };
+                        (Some(name.clone()), e.to_expr(pos).ending(end))
                     }
                 })
-            }),
-            expr().map(|e| (None, e)),
-        ))
-    })
+            },
+        ),
+        expr().map(|e| (None, e)),
+    )))
 }
 
 /// The `( args )` of a call: labeled `#name: e` args before anonymous ones,

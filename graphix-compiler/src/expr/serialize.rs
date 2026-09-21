@@ -99,6 +99,7 @@ impl Expr {
             kind,
             dec,
             str_form: Default::default(),
+            end: Default::default(),
         })
     }
 }
