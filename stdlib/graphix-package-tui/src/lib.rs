@@ -2,7 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use async_trait::async_trait;
 use barchart::BarChartW;
@@ -46,7 +46,7 @@ use netidx_derive::{FromValue, IntoValue};
 use paragraph::ParagraphW;
 use parking_lot::Mutex;
 use ratatui::{
-    Frame,
+    DefaultTerminal, Frame,
     layout::{Alignment, Direction, Flex, Rect},
     style::{Color, Modifier, Style},
     symbols,
@@ -58,9 +58,15 @@ use smallvec::SmallVec;
 use sparkline::SparklineW;
 use std::{
     borrow::Cow, fmt, future::Future, marker::PhantomData, pin::Pin, sync::LazyLock,
+    time::Duration,
 };
 use text::TextW;
-use tokio::{select, sync::oneshot, task};
+use tokio::{
+    select,
+    sync::oneshot,
+    task,
+    time::{MissedTickBehavior, interval},
+};
 use triomphe::Arc;
 
 mod barchart;
@@ -659,8 +665,23 @@ impl<X: GXExt> Tui<X> {
         let gx = gx.clone();
         let (to_tx, to_rx) = mpsc::channel(3);
         task::spawn(async move {
-            if let Err(e) = run(gx, env, root, to_rx, stop).await {
-                error!("tui::run returned {e:?}")
+            let control = gx
+                .with_ctx(move |ctx| {
+                    let control = ctx.libstate.get_or_default::<TuiControl>().clone();
+                    *control.0.stop.lock() = Some(stop);
+                    control
+                })
+                .await;
+            let control = match control {
+                Ok(control) => control,
+                Err(e) => return error!("tui: no runtime to display for {e:?}"),
+            };
+            // A display that dies takes the program with it: the shell
+            // waits on the stop signal, and nothing else would send it.
+            if let Err(e) = run(gx, env, root, to_rx, &control).await {
+                error!("tui::run returned {e:?}");
+                eprintln!("tui: {e:#}");
+                fire_stop(&control.0.stop)
             }
         });
         Self { to: to_tx, ph: PhantomData }
@@ -724,23 +745,55 @@ async fn run<X: GXExt>(
     gx: GXHandle<X>,
     env: Env,
     root_exp: CompExp<X>,
-    mut to_rx: mpsc::Receiver<ToTui>,
-    stop: oneshot::Sender<()>,
+    to_rx: mpsc::Receiver<ToTui>,
+    control: &TuiControl,
 ) -> Result<()> {
-    let control = gx
-        .with_ctx(move |ctx| {
-            let control = ctx.libstate.get_or_default::<TuiControl>().clone();
-            *control.0.stop.lock() = Some(stop);
-            control
-        })
-        .await?;
     // the suspend channel's receiver: parked in the control while no
     // display runs, ours while this one does
     let mut suspend_rx = match control.0.suspend_rx.lock().take() {
         Some(rx) => rx,
         None => mpsc::unbounded().1,
     };
-    let mut terminal = ratatui::init();
+    let notify = match ratatui::try_init().context("initializing the terminal") {
+        Err(e) => Err(e),
+        Ok(terminal) => {
+            let r = display(gx, env, root_exp, to_rx, control, &mut suspend_rx, terminal)
+                .await;
+            if r.is_err() {
+                set_mouse(false);
+                ratatui::restore()
+            }
+            r
+        }
+    };
+    *control.0.suspend_rx.lock() = Some(suspend_rx);
+    let _ = notify?.send(());
+    Ok(())
+}
+
+/// Whether the terminal is still there. Crossterm's event reader retries
+/// a dead terminal's error forever and reports nothing, so a PTY that
+/// went away (ssh, tmux) is seen only by asking. `terminal::size` cannot
+/// ask on unix: it falls back to `tput`, which answers without a terminal.
+fn terminal_connected() -> Result<()> {
+    #[cfg(unix)]
+    let r = terminal::window_size().map(|_| ());
+    #[cfg(not(unix))]
+    let r = terminal::size().map(|_| ());
+    r.context("the terminal went away")
+}
+
+/// Draw and serve events until told to stop, leaving the terminal
+/// restored; the value is who to tell that it is.
+async fn display<X: GXExt>(
+    gx: GXHandle<X>,
+    env: Env,
+    root_exp: CompExp<X>,
+    mut to_rx: mpsc::Receiver<ToTui>,
+    control: &TuiControl,
+    suspend_rx: &mut mpsc::UnboundedReceiver<Suspend>,
+    mut terminal: DefaultTerminal,
+) -> Result<oneshot::Sender<()>> {
     // the display's suspension: no draws while it holds one; the
     // resume signal is a select branch
     let mut suspended: Option<oneshot::Receiver<()>> = None;
@@ -756,6 +809,8 @@ async fn run<X: GXExt>(
     // cannot fight the child for stdin
     let mut events: Option<Fuse<EventStream>> = Some(EventStream::new().fuse());
     let mut root: TuiW = Box::new(EmptyW);
+    let mut liveness = interval(Duration::from_secs(1));
+    liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let notify = loop {
         if suspended.is_none() {
             terminal.draw(|f| {
@@ -765,6 +820,7 @@ async fn run<X: GXExt>(
             })?;
         }
         select! {
+            _ = liveness.tick() => terminal_connected()?,
             m = to_rx.next() => match m {
                 None => break oneshot::channel().0,
                 Some(ToTui::Stop(tx)) => break tx,
@@ -807,7 +863,7 @@ async fn run<X: GXExt>(
                 }
             } => {
                 suspended = None;
-                terminal = ratatui::init();
+                terminal = ratatui::try_init().context("taking the terminal back")?;
                 if let Ok(size) = terminal.size() {
                     let _ = terminal.resize(size.into());
                 }
@@ -836,10 +892,7 @@ async fn run<X: GXExt>(
                         error!("error handling event {e:?}")
                     }
                 },
-                Err(e) => {
-                    error!("error reading event from terminal {e:?}");
-                    break oneshot::channel().0
-                }
+                Err(e) => bail!("reading the terminal: {e}"),
             }
         }
     };
@@ -849,9 +902,7 @@ async fn run<X: GXExt>(
         }
         ratatui::restore();
     }
-    *control.0.suspend_rx.lock() = Some(suspend_rx);
-    let _ = notify.send(());
-    Ok(())
+    Ok(notify)
 }
 
 static TUITYP: LazyLock<Type> = LazyLock::new(|| {
