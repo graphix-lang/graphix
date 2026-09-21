@@ -528,6 +528,11 @@ impl<X: GXExt> Shell<X> {
                 },
             }
         };
+        // A custom display holds the terminal (or a window) until it is
+        // cleared. Interrupt first: a wedged runtime cannot serve
+        // `output.clear()`.
+        gx.interrupt();
+        output.clear().await;
         // `abort()` breaks a cycle still spinning before stopping the
         // runtime; the tokio runtime's drop would block on it.
         gx.abort();
