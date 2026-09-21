@@ -477,6 +477,13 @@ blocker profile, not a gap count.
   inside composite patterns; set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
   same scrutinee ref claims nothing on re-entry.
+- **`name@ pattern` captures** are typed from the SCRUTINEE: under an
+  inferred predicate a capture is a type variable that
+  `PatternNode::bind_captures` binds, after the select narrows the arm,
+  to its part of the narrowed predicate (a `_` slot and the fields a
+  partial struct pattern leaves out carry the scrutinee's types; shared
+  or-alternative captures union). Never type a capture from
+  `infer_type_predicate`. Pins: `lang::select::capture_*`.
 - **Or-patterns** (`design/or_patterns.md`): select arms and bracketed
   element positions; alternatives bind the same names at exactly equal
   payload types; captures type as the union; one guard per arm; dead

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-ff9efe06.js";
+            window.path_to_searchindex_js = "../searchindex-0d350fc6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -291,6 +291,15 @@ is structural. Graphix supports several kinds of structural matching,</p>
 <p>NB: In most contexts you can match the entire value as well as parts of it’s
 structure by adding a <code>v@</code> pattern before the pattern. You will see this in many
 of the examples.</p>
+<p>The captured <code>v</code> has the type of what the arm matched in the value being
+selected, not the type the pattern happens to spell out. A partial struct
+pattern leaves the other fields readable, and a <code>_</code> slot keeps its real type:</p>
+<pre><code class="language-graphix">type Pair = { left: i64, right: i64 };
+let p: Pair = { left: 1, right: 2 };
+select p { whole@ { left, .. } =&gt; left + whole.right }
+</code></pre>
+<p>Over a union, <code>v</code> is the member the arm matched; in an or-pattern, where every
+alternative captures the same name, it is the union of what they match.</p>
 <h3 id="slice-patterns"><a class="header" href="#slice-patterns">Slice Patterns</a></h3>
 <p>Suppose we want to classify arrays that have at least two elements vs arrays
 that don’t, and we want to return a variant with a triple of the first two

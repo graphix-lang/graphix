@@ -148,6 +148,19 @@ NB: In most contexts you can match the entire value as well as parts of it's
 structure by adding a `v@` pattern before the pattern. You will see this in many
 of the examples.
 
+The captured `v` has the type of what the arm matched in the value being
+selected, not the type the pattern happens to spell out. A partial struct
+pattern leaves the other fields readable, and a `_` slot keeps its real type:
+
+```graphix
+type Pair = { left: i64, right: i64 };
+let p: Pair = { left: 1, right: 2 };
+select p { whole@ { left, .. } => left + whole.right }
+```
+
+Over a union, `v` is the member the arm matched; in an or-pattern, where every
+alternative captures the same name, it is the union of what they match.
+
 ### Slice Patterns
 
 Suppose we want to classify arrays that have at least two elements vs arrays
