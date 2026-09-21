@@ -1039,7 +1039,12 @@ async fn session_divergence(
         if first.get(a).agrees_with_at(first.get(b), strength) {
             continue;
         }
-        let again = run_sessions(code, mode, route, timeout).await;
+        // A Timeout beside a trace measures the budget under load, not
+        // the image: confirm at the slow budget.
+        let one_sided = matches!(first.get(a), Outcome::Timeout(_))
+            != matches!(first.get(b), Outcome::Timeout(_));
+        let budget = if one_sided { slow_budget(timeout) } else { timeout };
+        let again = run_sessions(code, mode, route, budget).await;
         if !again.get(a).agrees_with_at(first.get(a), strength) {
             return None;
         }
@@ -1368,8 +1373,13 @@ struct SlowRetry {
 /// the scale gap is unbounded and load stretches CPU seconds into wall
 /// minutes. The CPU delta is process-wide, so a concurrent pool can only
 /// over-count, which errs toward dropping.
+/// The budget that tells a starved child from a hang.
+fn slow_budget(timeout: Duration) -> Duration {
+    (timeout * 8).max(Duration::from_secs(60))
+}
+
 async fn retry_one_sided_timeout(code: &str, mode: Mode, timeout: Duration) -> SlowRetry {
-    let budget = (timeout * 8).max(Duration::from_secs(60));
+    let budget = slow_budget(timeout);
     let cpu_before = self_cpu();
     let outcome = run_program(code, mode, budget).await;
     let cpu_burned = self_cpu().saturating_sub(cpu_before);

@@ -187,7 +187,9 @@ image machinery), `cold` (compiled and written to a program image) and
 but wrote no image makes the warm outcome the write's failure, so a
 codec gap is a finding (`Pair::Cold`/`Pair::Warm`). A disagreement
 reruns the three and records only if the same-kind rerun agrees with
-itself. Every session restores one registration image built once per
+itself; when exactly one side of the pair timed out the rerun takes the
+slow budget, since a Timeout beside a trace measures the box's load
+before it measures the image. Every session restores one registration image built once per
 process. The injected inputs live in their own `inputs` module so a
 program compiled as one block still publishes them by name
 (`input_scope`), with a callable's driver declarations beside them and
