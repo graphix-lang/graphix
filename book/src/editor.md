@@ -290,7 +290,7 @@ its own; use `:%!graphix fmt` there.
 
 | Feature | Status |
 | --- | --- |
-| Diagnostics (parse + type errors) | ✓ |
+| Diagnostics (parse and type errors, warnings) | ✓ |
 | Completions: names in scope, struct fields, call labels | ✓ |
 | Hover with type and doc information | ✓ |
 | Go-to-definition | ✓ |
@@ -310,10 +310,14 @@ from the last version that did. Completion offers the names in scope
 (locals included), a struct's fields after `.`, and a call's `#labels`
 inside its parentheses.
 
-To work on a package that defines its own builtins (an external
-`graphix-package-*` crate), run the `graphix` that was built with that
-package: the stock binary does not know its builtins and reports them as
-unknown.
+Warnings (an error no `catch` will see, for instance) are shown beside
+errors, and stay while a buffer does not compile.
+
+A package that defines its own builtins (an external `graphix-package-*`
+crate) can be edited with the stock `graphix`: each builtin it declares
+that this binary was not built with is a warning on its `'name`, calls to
+it are checked against its declared signature, and everything else is
+checked as usual. Run the `graphix` built with the package to clear them.
 
 Rename and code actions are not yet implemented. File issues at
 [graphix-lang/graphix](https://github.com/graphix-lang/graphix/issues)

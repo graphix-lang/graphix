@@ -9,13 +9,17 @@
 use crate::{
     diagnostics::{error_leaf_message, error_location},
     position::{PositionEncoding, char_col_to_position_in_text, position_to_char_col},
-    text::extent,
+    text::{extent, zero_based},
     uri::{path_to_uri, uri_to_path},
     workspace::{WorkspaceModel, detect_package_scope, scan},
 };
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
-use graphix_compiler::{env::Env, expr::BufferOverrides, ide::Ide};
+use graphix_compiler::{
+    env::Env,
+    expr::{BufferOverrides, Source},
+    ide::Ide,
+};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
 use std::{
     path::{Path, PathBuf},
@@ -66,6 +70,8 @@ pub struct ServerState {
     /// the previous one standing: queries over a buffer that does not
     /// compile answer from it.
     checked: AHashMap<PathBuf, Checked>,
+    /// The warnings of each root's last successful check, by file.
+    warnings: AHashMap<PathBuf, AHashMap<Uri, Vec<Diagnostic>>>,
     /// The files the last check of each root left diagnostics on.
     diagnosed: AHashMap<PathBuf, AHashSet<Uri>>,
     dirty: AHashSet<PathBuf>,
@@ -89,6 +95,7 @@ impl ServerState {
             workspace: scan(&workspace_roots, &WorkspaceModel::default()),
             workspace_roots,
             checked: AHashMap::default(),
+            warnings: AHashMap::default(),
             diagnosed: AHashMap::default(),
             dirty: AHashSet::default(),
             last_active: None,
@@ -143,6 +150,7 @@ impl ServerState {
             } else {
                 self.dirty.remove(&root);
                 self.checked.remove(&root);
+                self.warnings.remove(&root);
                 let files = self.diagnosed.remove(&root).unwrap_or_default();
                 cleared.extend(files.into_iter().map(|uri| (uri, vec![])));
             }
@@ -167,26 +175,55 @@ impl ServerState {
         roots.iter().flat_map(|root| self.check(root)).collect()
     }
 
+    /// Check `root`. What stands on its files afterwards is the warnings
+    /// of its last successful check and, when this one failed, the
+    /// error: a buffer that stops compiling keeps its warnings.
     fn check(&mut self, root: &Path) -> Diagnostics {
         let package = detect_package_scope(root);
-        let mut out: Diagnostics = vec![];
-        match self.backend.typecheck_project(root, package) {
+        let error = match self.backend.typecheck_project(root, package) {
             Ok(checked) => {
+                self.warnings.insert(root.to_path_buf(), self.warned(&checked));
                 self.checked.insert(root.to_path_buf(), checked);
+                None
             }
-            Err(e) => out.push(self.diagnostic(&e, root)),
+            Err(e) => Some(self.diagnostic(&e, root)),
+        };
+        let mut now = self.warnings.get(root).cloned().unwrap_or_default();
+        if let Some((uri, error)) = error {
+            now.entry(uri).or_default().insert(0, error);
         }
-        let now: AHashSet<Uri> = out.iter().map(|(uri, _)| uri.clone()).collect();
-        let before = self.diagnosed.insert(root.to_path_buf(), now).unwrap_or_default();
-        let recovered = before.into_iter().filter(|u| out.iter().all(|(o, _)| o != u));
-        let recovered: Diagnostics = recovered.map(|uri| (uri, vec![])).collect();
-        out.extend(recovered);
+        let files = now.keys().cloned().collect();
+        let before = self.diagnosed.insert(root.to_path_buf(), files).unwrap_or_default();
+        let cleared = before.into_iter().filter(|uri| !now.contains_key(uri));
+        let cleared: Diagnostics = cleared.map(|uri| (uri, vec![])).collect();
+        now.into_iter().chain(cleared).collect()
+    }
+
+    /// The warnings of a check, by file.
+    fn warned(&self, checked: &Checked) -> AHashMap<Uri, Vec<Diagnostic>> {
+        let mut out: AHashMap<Uri, Vec<Diagnostic>> = AHashMap::default();
+        for w in checked.ide.warnings.iter() {
+            let Source::File(path) = &w.ori.source else { continue };
+            let Some(uri) = path_to_uri(path) else { continue };
+            let (start, end) = (zero_based(w.pos), zero_based(w.end));
+            let end = if end > start { end } else { extent(&w.ori.text, start) };
+            out.entry(uri).or_default().push(Diagnostic {
+                range: Range {
+                    start: self.encode(&w.ori.text, start),
+                    end: self.encode(&w.ori.text, end),
+                },
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("graphix".to_string()),
+                message: w.message.to_string(),
+                ..Default::default()
+            });
+        }
         out
     }
 
     /// The diagnostic for a failed check, on the file the error names,
     /// else on the root.
-    fn diagnostic(&self, err: &anyhow::Error, root: &Path) -> (Uri, Vec<Diagnostic>) {
+    fn diagnostic(&self, err: &anyhow::Error, root: &Path) -> (Uri, Diagnostic) {
         let loc = error_location(err);
         let path = loc.file.unwrap_or_else(|| root.to_path_buf());
         let uri = path_to_uri(&path)
@@ -211,7 +248,7 @@ impl ServerState {
             message: error_leaf_message(err),
             ..Default::default()
         };
-        (uri, vec![diag])
+        (uri, diag)
     }
 
     /// The check that answers queries about `path`.

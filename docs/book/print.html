@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-0d350fc6.js";
+            window.path_to_searchindex_js = "searchindex-70021b54.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -495,7 +495,7 @@ its own; use <code>:%!graphix fmt</code> there.</p>
 <tr><th>Feature</th><th>Status</th></tr>
 </thead>
 <tbody>
-<tr><td>Diagnostics (parse + type errors)</td><td>✓</td></tr>
+<tr><td>Diagnostics (parse and type errors, warnings)</td><td>✓</td></tr>
 <tr><td>Completions: names in scope, struct fields, call labels</td><td>✓</td></tr>
 <tr><td>Hover with type and doc information</td><td>✓</td></tr>
 <tr><td>Go-to-definition</td><td>✓</td></tr>
@@ -515,10 +515,13 @@ diagnostic at a time.</p>
 from the last version that did. Completion offers the names in scope
 (locals included), a struct’s fields after <code>.</code>, and a call’s <code>#labels</code>
 inside its parentheses.</p>
-<p>To work on a package that defines its own builtins (an external
-<code>graphix-package-*</code> crate), run the <code>graphix</code> that was built with that
-package: the stock binary does not know its builtins and reports them as
-unknown.</p>
+<p>Warnings (an error no <code>catch</code> will see, for instance) are shown beside
+errors, and stay while a buffer does not compile.</p>
+<p>A package that defines its own builtins (an external <code>graphix-package-*</code>
+crate) can be edited with the stock <code>graphix</code>: each builtin it declares
+that this binary was not built with is a warning on its <code>'name</code>, calls to
+it are checked against its declared signature, and everything else is
+checked as usual. Run the <code>graphix</code> built with the package to clear them.</p>
 <p>Rename and code actions are not yet implemented. File issues at
 <a href="https://github.com/graphix-lang/graphix/issues">graphix-lang/graphix</a>
 if something specific would unblock you.</p>

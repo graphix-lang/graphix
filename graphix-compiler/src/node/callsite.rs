@@ -1388,7 +1388,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }));
             let pat = Pattern {
                 type_predicate: Some(mem),
-                structure_predicate: StructurePattern::Bind(arcstr::literal!("#t").into()),
+                structure_predicate: StructurePattern::Bind(
+                    arcstr::literal!("#t").into(),
+                ),
                 guard: None,
             };
             (pat, call)
@@ -2264,12 +2266,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                         )
                     }
                     if self.flags.contains(CFlag::WarnUnhandled) {
-                        eprintln!(
-                            "WARNING: {} at {} error {} raised from function call {} will not be caught",
-                            self.spec.ori,
+                        ctx.env.warn(
+                            &self.spec.ori,
                             self.spec.pos,
-                            t,
-                            self.fnode.spec()
+                            self.spec.end.0,
+                            format_args!(
+                                "error {t} raised from function call {} will not be caught",
+                                self.fnode.spec()
+                            ),
                         )
                     }
                 }

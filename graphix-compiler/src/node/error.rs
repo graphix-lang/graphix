@@ -617,7 +617,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let handler = scope.dynamic.handler();
         if handler.is_none() && !matches!(spec.kind, ExprKind::Rethrow(_)) {
-            Self::check_unhandled(flags, &spec)?;
+            Self::check_unhandled(&ctx.env, flags, &spec)?;
         }
         let typ = Type::empty_tvar();
         Ok(Node::new(Self {
@@ -632,7 +632,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }))
     }
 
-    fn check_unhandled(flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
+    fn check_unhandled(env: &Env, flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
         if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
             bail!(
                 "ERROR: {} at {} error raised by ? will not be caught",
@@ -641,10 +641,8 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
             )
         }
         if flags.contains(CFlag::WarnUnhandled) {
-            eprintln!(
-                "WARNING: {} at {} error raised by ? will not be caught",
-                spec.ori, spec.pos
-            );
+            let msg = "error raised by ? will not be caught";
+            env.warn(&spec.ori, spec.pos, spec.end.0, msg);
         }
         Ok(())
     }
@@ -799,7 +797,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 return self.typ.check_contains(&ctx.env, &Type::Bottom);
             }
             if self.handler.is_none() {
-                Self::check_unhandled(self.flags, &self.spec)?;
+                Self::check_unhandled(&ctx.env, self.flags, &self.spec)?;
             }
         }
         self.strip = wrap!(self, Strip::of(ctx, '?', self.n.typ()))?;

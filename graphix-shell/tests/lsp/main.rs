@@ -188,6 +188,55 @@ fn a_diagnostic_underlines_the_expression() {
     assert_eq!(c.underlined("a.gx"), ["str::len(\"four\") == 4"]);
 }
 
+/// A package under development declares builtins this binary was not
+/// built with: they are warnings, and everything else is still checked.
+#[test]
+fn an_unknown_builtin_is_a_warning() {
+    let mut c = Client::start(&[
+        ("Cargo.toml", "[package]\nname = \"graphix-package-demo\"\n"),
+        (
+            "src/graphix/mod.gxi",
+            "val ping: fn(n: i64) -> i64;\nval twice: fn(n: i64) -> i64;\nmod sub;\n",
+        ),
+        // `package::` names a package this binary never registered
+        (
+            "src/graphix/sub.gx",
+            "use package::ping;\nlet thrice = |n: i64| -> i64 ping(n) * 3\n",
+        ),
+        (
+            "src/graphix/mod.gx",
+            "let ping = |n: i64| -> i64 'demo_ping;\n\
+             let twice = |n: i64| -> i64 ping(n) + ping(n);\n",
+        ),
+    ]);
+    let f = "src/graphix/mod.gx";
+    c.open(f);
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let w = c.warnings(f);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0].0, "'demo_ping");
+    assert!(w[0].1.starts_with("unknown builtin function demo_ping"), "{}", w[0].1);
+    let h = c.hover(f, "|ping(n) +").unwrap();
+    assert!(h.contains("ping: fn(n: i64) -> i64"), "{h}");
+    c.replace(f, "ping(n) + ping(n)", "ping(n) + ping(\"no\")");
+    assert_eq!(c.files_with_diagnostics(), [f]);
+    assert_eq!(c.warnings(f).len(), 1, "a failed check keeps the last warnings");
+}
+
+#[test]
+fn an_uncaught_error_is_a_warning() {
+    let mut c = Client::start(&[("a.gx", "let n = cast<i64>(\"1\")?;\nn + 1\n")]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let w = c.warnings("a.gx");
+    assert_eq!(
+        w,
+        [("cast<i64>(\"1\")?".into(), "error raised by ? will not be caught".into())]
+    );
+    c.edit("a.gx", "let n = cast<i64>(\"1\")$;\nn + 1\n");
+    assert_eq!(c.warnings("a.gx"), vec![]);
+}
+
 #[test]
 fn a_field_shows_its_type() {
     let mut c = two_files();

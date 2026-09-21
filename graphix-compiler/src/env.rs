@@ -391,6 +391,26 @@ impl Env {
         }
     }
 
+    /// Warn about the text `[pos, end)`: to the IDE sink under a check
+    /// that has one, else to stderr.
+    pub fn warn(
+        &self,
+        ori: &Arc<Origin>,
+        pos: SourcePosition,
+        end: SourcePosition,
+        message: impl fmt::Display,
+    ) {
+        match &self.ide {
+            None => eprintln!("WARNING: {ori} at {pos} {message}"),
+            Some(ide) => ide.lock().warnings.push(crate::ide::Warning {
+                pos,
+                end,
+                ori: ori.clone(),
+                message: compact_str::format_compact!("{message}").as_str().into(),
+            }),
+        }
+    }
+
     /// Push a `FieldRefSite` into the active IDE sink, if any.
     pub fn push_field_ref(&self, site: crate::ide::FieldRefSite) {
         if let Some(ide) = &self.ide {

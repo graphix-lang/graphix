@@ -446,7 +446,15 @@ nothing, so a name or an end out of a packed AST or an image is
 it its end (`Expr::ending`; `expr()`, the postfix loop, `mke` and `qop`
 cover what passes through them); pin: `graphix-compiler/tests/
 expr_spans.rs` (every node's `[pos, end)` parses back to the node, over
-the examples and the stdlib). An error's position is its `ErrorSite`, the innermost wrap: contexts are
+the examples and the stdlib). A package under development is not in the binary that checks it, so
+under `lsp_mode` a package root's name is a `package::` root for the
+check and an unknown builtin is a WARNING at its `'name`
+(`node/lambda.rs::UnknownBuiltIn` stands in: typed by the declared
+signature like any builtin, never produces); without `lsp_mode` it
+stays an error. Warnings go through `Env::warn`: to `Ide.warnings`
+under a check with a sink, else to stderr as before. The server
+publishes the warnings of a root's last SUCCESSFUL check and, when the
+current one failed, the error beside them. An error's position is its `ErrorSite`, the innermost wrap: contexts are
 attached with `.at(&spec)` (`expr::At`), `wrap!` or `bailat!`, never
 `ErrorContext(..)` by hand. Pins: `graphix-shell/tests/lsp/` (the real
 server over `Connection::memory()`; positions are `"let y = |x + 1"`

@@ -80,6 +80,16 @@ pub struct FieldRefSite {
     pub typ: Type,
 }
 
+/// Something the check accepted and the author should still hear
+/// about, over the text `[pos, end)`.
+#[derive(Debug, Clone)]
+pub struct Warning {
+    pub pos: SourcePosition,
+    pub end: SourcePosition,
+    pub ori: Arc<expr::Origin>,
+    pub message: ArcStr,
+}
+
 /// Links a `.gxi` `val foo: T` declaration to its `let foo = …`
 /// implementation in the paired `.gx`.
 #[derive(Debug, Clone)]
@@ -117,6 +127,8 @@ pub struct Ide {
     pub type_refs: GPooled<Vec<TypeRefSite>>,
     /// Struct field selections.
     pub field_refs: GPooled<Vec<FieldRefSite>>,
+    /// Warnings, in place of the stderr lines a run prints.
+    pub warnings: GPooled<Vec<Warning>>,
     /// `val`-sig ↔ `let`-impl bind links.
     pub sig_links: GPooled<Vec<SigImplLink>>,
     /// Per-module impl-side env snapshots.
@@ -138,6 +150,8 @@ impl Ide {
             LazyLock::new(|| Pool::new(64, 65536));
         static FIELD_REF_SITE_POOL: LazyLock<Pool<Vec<FieldRefSite>>> =
             LazyLock::new(|| Pool::new(64, 65536));
+        static WARNING_POOL: LazyLock<Pool<Vec<Warning>>> =
+            LazyLock::new(|| Pool::new(64, 4096));
         static SIG_LINK_POOL: LazyLock<Pool<Vec<SigImplLink>>> =
             LazyLock::new(|| Pool::new(32, 4096));
         static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
@@ -149,6 +163,7 @@ impl Ide {
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             type_refs: TYPE_REF_SITE_POOL.take(),
             field_refs: FIELD_REF_SITE_POOL.take(),
+            warnings: WARNING_POOL.take(),
             sig_links: SIG_LINK_POOL.take(),
             module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
         }

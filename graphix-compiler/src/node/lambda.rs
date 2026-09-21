@@ -810,6 +810,49 @@ impl<R: Rt, E: UserEvent> BuiltInLambda<R, E> {
     }
 }
 
+/// Stands in for a builtin this binary does not have, under an IDE
+/// check: a package under development declares builtins only its own
+/// build registers. Like any builtin it is typed by its declared
+/// signature alone; it never produces, and the check never runs it.
+#[derive(Debug)]
+struct UnknownBuiltIn(TagValue);
+
+impl UnknownBuiltIn {
+    fn init<R: Rt, E: UserEvent>(
+        _: &mut ExecCtx<R, E>,
+        _: &FnType,
+        _: Option<&FnType>,
+        _: &Scope,
+        _: &[Node<R, E>],
+        _: ExprId,
+    ) -> Result<Box<dyn Apply<R, E>>> {
+        Ok(Box::new(Self(TagValue::phantom())))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Apply<R, E> for UnknownBuiltIn {
+    fn update(
+        &mut self,
+        _: &mut ExecCtx<R, E>,
+        _: &mut [Node<R, E>],
+        _: &mut Event<E>,
+    ) -> &TagValue {
+        &self.0
+    }
+
+    fn image_len(&self) -> usize {
+        0
+    }
+
+    fn image_encode(&self, _: &mut ImageBuf) -> Result<(), PackError> {
+        Err(PackError::Application(crate::image::NOT_IMAGED))
+    }
+
+    fn sleep(&mut self, _: &mut ExecCtx<R, E>) {}
+
+    fn reset_replay(&mut self, _: &mut ExecCtx<R, E>) {}
+}
+
 impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     fn image_len(&self) -> usize {
         self.typ.encoded_len() + self.name.encoded_len() + self.apply.image_len()
@@ -1015,7 +1058,12 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                     };
                     result.map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
                 } else {
-                    match ctx.builtins.get(&*builtin) {
+                    let init = match ctx.builtins.get(&*builtin).copied() {
+                        Some(init) => Some(init),
+                        None if ctx.env.lsp_mode => Some(UnknownBuiltIn::init as _),
+                        None => None,
+                    };
+                    match init {
                         None => bail!("unknown builtin function {builtin}"),
                         Some(init) => {
                             let typ = match mode.resolved() {
@@ -1126,7 +1174,19 @@ impl Lambda {
             if CollectionIntrinsic::from_name(builtin).is_none()
                 && ctx.builtins.get(builtin.as_str()).is_none()
             {
-                bail!("unknown builtin function {builtin}")
+                if !ctx.env.lsp_mode {
+                    bail!("unknown builtin function {builtin}")
+                }
+                // the `'name` that ends the lambda's text
+                let end = spec.end.0;
+                let len = builtin.chars().count() as i32 + 1;
+                let pos = SourcePosition { column: (end.column - len).max(1), ..end };
+                let pos = if end == expr::WrittenAt::NOWHERE.0 { spec.pos } else { pos };
+                let msg = format_args!(
+                    "unknown builtin function {builtin}: this graphix was not built \
+                     with it, so calls are checked against its signature only"
+                );
+                ctx.env.warn(&spec.ori, pos, end, msg);
             }
             if !ctx.builtins_allowed {
                 bail!("defining builtins is not allowed in this context")

@@ -247,13 +247,36 @@ impl Client {
         });
     }
 
-    /// The diagnostics standing on `file`: (line, column, message).
-    pub fn diagnostics(&mut self, file: &str) -> Vec<(u32, u32, String)> {
+    fn standing(&mut self, file: &str, severity: DiagnosticSeverity) -> Vec<Diagnostic> {
         self.sync();
         let diags = self.diagnostics.get(file).map(|d| d.as_slice()).unwrap_or(&[]);
-        diags
+        diags.iter().filter(|d| d.severity == Some(severity)).cloned().collect()
+    }
+
+    /// The errors standing on `file`: (line, column, message).
+    pub fn diagnostics(&mut self, file: &str) -> Vec<(u32, u32, String)> {
+        let errors = self.standing(file, DiagnosticSeverity::ERROR);
+        errors
             .iter()
             .map(|d| (d.range.start.line, d.range.start.character, d.message.clone()))
+            .collect()
+    }
+
+    /// The warnings standing on `file`: (underlined text, message).
+    pub fn warnings(&mut self, file: &str) -> Vec<(String, String)> {
+        let text = self.text(file);
+        let offset = |p: Position| {
+            let line: usize =
+                text.split_inclusive('\n').take(p.line as usize).map(|l| l.len()).sum();
+            line + p.character as usize
+        };
+        let warnings = self.standing(file, DiagnosticSeverity::WARNING);
+        warnings
+            .iter()
+            .map(|d| {
+                let under = &text[offset(d.range.start)..offset(d.range.end)];
+                (under.to_string(), d.message.clone())
+            })
             .collect()
     }
 
@@ -273,13 +296,14 @@ impl Client {
             .collect()
     }
 
-    /// Every file with a standing diagnostic.
+    /// Every file with a standing error.
     pub fn files_with_diagnostics(&mut self) -> Vec<String> {
         self.sync();
+        let is_error = |d: &Diagnostic| d.severity == Some(DiagnosticSeverity::ERROR);
         let mut files: Vec<String> = self
             .diagnostics
             .iter()
-            .filter(|(_, d)| !d.is_empty())
+            .filter(|(_, d)| d.iter().any(is_error))
             .map(|(f, _)| f.clone())
             .collect();
         files.sort();
