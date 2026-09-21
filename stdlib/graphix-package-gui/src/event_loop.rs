@@ -12,6 +12,7 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Context, Result};
 use graphix_compiler::BindId;
+use graphix_package::Stop;
 use graphix_rt::{CompExp, GXExt, GXHandle};
 use iced_core::{Size, clipboard, mouse, renderer::Style, window};
 use iced_runtime::user_interface::{self, UserInterface};
@@ -121,7 +122,7 @@ struct GuiHandler<X: GXExt> {
     root_exp: CompExp<X>,
     gpu: Option<GpuState>,
     rt: tokio::runtime::Handle,
-    stop: Option<oneshot::Sender<()>>,
+    stop: Option<Stop>,
     windows: IntMap<BindId, TrackedWindow<X>>,
     win_to_bid: AHashMap<WindowId, BindId>,
     surfaces: AHashMap<WindowId, WindowSurface>,
@@ -210,7 +211,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 self.ui_caches.clear();
                 self.gpu = None;
                 if let Some(s) = self.stop.take() {
-                    let _ = s.send(());
+                    let _ = s.send(Ok(()));
                 }
                 event_loop.exit();
             }
@@ -226,7 +227,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 self.ui_caches.clear();
                 self.gpu = None;
                 if let Some(s) = self.stop.take() {
-                    let _ = s.send(());
+                    let _ = s.send(Ok(()));
                 }
                 event_loop.exit();
             }
@@ -429,20 +430,20 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
 pub(crate) fn run<X: GXExt>(
     gx: GXHandle<X>,
     root_exp: CompExp<X>,
-    proxy_tx: oneshot::Sender<EventLoopProxy<ToGui>>,
-    stop: oneshot::Sender<()>,
+    proxy_tx: oneshot::Sender<Result<EventLoopProxy<ToGui>>>,
+    stop: Stop,
     rt: tokio::runtime::Handle,
 ) {
     let event_loop = match EventLoop::<ToGui>::with_user_event().build() {
         Ok(el) => el,
         Err(e) => {
-            error!("event loop creation failed: {e:?}");
+            let _ = proxy_tx.send(Err(e).context("creating the event loop"));
             return;
         }
     };
     let proxy = event_loop.create_proxy();
     let _ = crate::REDRAW_WAKER.set(crate::RedrawWaker::new(proxy.clone()));
-    let _ = proxy_tx.send(proxy);
+    let _ = proxy_tx.send(Ok(proxy));
     let resize_proxy = event_loop.create_proxy();
     let (resize_end_tx, resize_end_rx) = mpsc::unbounded_channel();
     let resize_end_proxy = event_loop.create_proxy();
@@ -463,8 +464,10 @@ pub(crate) fn run<X: GXExt>(
         messages: LPooled::take(),
         modifiers: ModifiersState::default(),
     };
-    if let Err(e) = event_loop.run_app(&mut handler) {
-        error!("gui event loop error: {e:?}");
+    if let Err(e) = event_loop.run_app(&mut handler)
+        && let Some(s) = handler.stop.take()
+    {
+        let _ = s.send(Err(e).context("running the event loop"));
     }
 }
 

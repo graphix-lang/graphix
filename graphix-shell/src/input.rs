@@ -71,10 +71,11 @@ impl InputReader {
         env: &mut Option<Env>,
     ) -> Result<Signal> {
         match output {
-            Output::Custom(cdc) => {
-                let _ = (&mut cdc.stop).await;
-                Ok(Signal::CtrlC)
-            }
+            Output::Custom(cdc) => match (&mut cdc.stop).await {
+                Ok(Ok(())) => Ok(Signal::CtrlC),
+                Ok(Err(e)) => Err(e.context("the display failed")),
+                Err(_) => bail!("the display died"),
+            },
             Output::EmptyScript | Output::Text(_) => {
                 tokio::signal::ctrl_c().await?;
                 Ok(Signal::CtrlC)

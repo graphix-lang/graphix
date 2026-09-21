@@ -319,19 +319,27 @@ closures in `defpackage!`:
   package should handle its display. The shell calls this to decide whether to
   use the default display or delegate to your package.
 - **`init_custom`** constructs your `CustomDisplay`. It receives a `stop`
-  channel — send on it when the display wants to exit (e.g. the user closed a
-  window), and the shell will call `clear()` before dropping the display.
+  channel (`graphix_package::Stop`), which the display keeps for as long as it
+  lives. Send `Ok(())` on it when the program is done (the user closed the
+  window, the script called your exit builtin) and `Err(e)` when the display
+  cannot go on (the terminal went away). Dropping it unsent means the display
+  died. The shell calls `clear()` before dropping the display; a script then
+  exits, with the error if there was one, and the REPL returns to its prompt.
+  It also receives `run_on_main`, for a display that needs the main thread.
 
 Here is a minimal example that prints every update to stderr:
 
 ```rust
 use async_trait::async_trait;
 use graphix_compiler::{env::Env, expr::ExprId};
-use graphix_package::CustomDisplay;
+use graphix_package::{CustomDisplay, Stop};
 use graphix_rt::GXExt;
 use netidx_value::Value;
 
-struct DebugDisplay;
+struct DebugDisplay {
+    // held so the shell knows the display is alive
+    _stop: Stop,
+}
 
 #[async_trait]
 impl<X: GXExt> CustomDisplay<X> for DebugDisplay {
@@ -352,8 +360,8 @@ defpackage! {
             matches!(t, Some(graphix_compiler::typ::Type::Array(_)))
         })
     },
-    init_custom => |_gx, _env, _stop, _e| {
-        Ok(Box::new(DebugDisplay))
+    init_custom => |_gx, _env, stop, _e, _run_on_main| {
+        Ok(Box::new(DebugDisplay { _stop: stop }))
     }
 }
 ```

@@ -86,9 +86,14 @@ pub trait CustomDisplay<X: GXExt>: Any {
     async fn process_update(&mut self, env: &Env, id: ExprId, v: Value);
 }
 
+/// How a custom display tells the shell it is done: `Ok` when the
+/// program asked to end, the error when the display cannot go on. A
+/// display that drops it unsent has died, which the shell reports too.
+pub type Stop = oneshot::Sender<Result<()>>;
+
 /// A live custom display plus the channel the shell watches for it to stop.
 pub struct Cdc<X: GXExt> {
-    pub stop: oneshot::Receiver<()>,
+    pub stop: oneshot::Receiver<Result<()>>,
     pub custom: Box<dyn CustomDisplay<X>>,
 }
 

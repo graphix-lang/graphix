@@ -2,13 +2,14 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use graphix_compiler::{
     env::Env,
     expr::{ExprId, ModPath},
     typ::{Type, TypeRef},
 };
-use graphix_package::CustomDisplay;
+use graphix_package::{CustomDisplay, Stop};
 use graphix_rt::{CompExp, GXExt, GXHandle};
 use log::error;
 use netidx::publisher::Value;
@@ -75,9 +76,9 @@ impl<X: GXExt> Gui<X> {
         gx: &GXHandle<X>,
         _env: Env,
         root: CompExp<X>,
-        stop: oneshot::Sender<()>,
+        stop: Stop,
         run_on_main: graphix_package::MainThreadHandle,
-    ) -> Self {
+    ) -> Result<Self> {
         let gx = gx.clone();
         let (proxy_tx, proxy_rx) = oneshot::channel();
         let rt_handle = tokio::runtime::Handle::current();
@@ -85,9 +86,9 @@ impl<X: GXExt> Gui<X> {
             .run(Box::new(move || {
                 event_loop::run(gx, root, proxy_tx, stop, rt_handle);
             }))
-            .expect("main thread receiver dropped");
-        let proxy = proxy_rx.await.expect("event loop failed to send proxy");
-        Self { proxy, ph: PhantomData }
+            .context("a gui needs the main thread")?;
+        let proxy = proxy_rx.await.context("the event loop did not start")??;
+        Ok(Self { proxy, ph: PhantomData })
     }
 
     fn update(&self, id: ExprId, v: Value) {
@@ -141,6 +142,6 @@ graphix_derive::defpackage! {
         }
     },
     init_custom => |gx, env, stop, e, run_on_main| {
-        Ok(Box::new(Gui::<X>::start(gx, env.clone(), e, stop, run_on_main).await))
+        Ok(Box::new(Gui::<X>::start(gx, env.clone(), e, stop, run_on_main).await?))
     },
 }

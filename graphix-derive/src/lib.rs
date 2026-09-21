@@ -401,7 +401,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             async fn __init_custom<X: ::graphix_rt::GXExt>(
                 gx: &::graphix_rt::GXHandle<X>,
                 env: &::graphix_compiler::env::Env,
-                stop: ::tokio::sync::oneshot::Sender<()>,
+                stop: ::graphix_package::Stop,
                 e: ::graphix_rt::CompExp<X>,
                 run_on_main: ::graphix_package::MainThreadHandle,
             ) -> ::anyhow::Result<Box<dyn ::graphix_package::CustomDisplay<X>>> {

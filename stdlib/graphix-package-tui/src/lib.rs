@@ -30,7 +30,7 @@ use graphix_compiler::{
     typ::FnType,
     typ::{Type, TypeRef},
 };
-use graphix_package::CustomDisplay;
+use graphix_package::{CustomDisplay, Stop};
 use graphix_package_core::{
     CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState, seam_tick,
 };
@@ -464,7 +464,7 @@ struct Suspend {
 /// suspend channel (`tui::suspend`). The receiver is parked here until
 /// a display takes it, and handed back when that display ends.
 struct TuiControlInner {
-    stop: Mutex<Option<oneshot::Sender<()>>>,
+    stop: Mutex<Option<Stop>>,
     suspend_tx: mpsc::UnboundedSender<Suspend>,
     suspend_rx: Mutex<Option<mpsc::UnboundedReceiver<Suspend>>>,
 }
@@ -489,9 +489,9 @@ impl fmt::Debug for TuiControl {
     }
 }
 
-fn fire_stop(stop: &Mutex<Option<oneshot::Sender<()>>>) {
-    if let Some(tx) = stop.lock().take() {
-        let _ = tx.send(());
+fn fire<T>(slot: &Mutex<Option<oneshot::Sender<T>>>, v: T) {
+    if let Some(tx) = slot.lock().take() {
+        let _ = tx.send(v);
     }
 }
 
@@ -507,7 +507,7 @@ struct SuspendEv {
 
 impl Drop for SuspendEv {
     fn drop(&mut self) {
-        fire_stop(&self.held)
+        fire(&self.held, ())
     }
 }
 
@@ -540,7 +540,7 @@ impl EvalCachedAsync for SuspendEv {
     ) -> impl Future<Output = Value> + Send {
         async move {
             if !suspended {
-                fire_stop(&held);
+                fire(&held, ());
                 return Value::Bool(false);
             }
             if held.lock().is_some() {
@@ -640,7 +640,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             && seam_tick(n.update(ctx, event)).is_some()
             && let Some(stop) = ctx.libstate.get::<TuiControl>()
         {
-            fire_stop(&stop.0.stop);
+            fire(&stop.0.stop, Ok(()));
         }
         TagValue::phantom_ref()
     }
@@ -656,12 +656,7 @@ struct Tui<X: GXExt> {
 }
 
 impl<X: GXExt> Tui<X> {
-    fn start(
-        gx: &GXHandle<X>,
-        env: Env,
-        root: CompExp<X>,
-        stop: oneshot::Sender<()>,
-    ) -> Self {
+    fn start(gx: &GXHandle<X>, env: Env, root: CompExp<X>, stop: Stop) -> Self {
         let gx = gx.clone();
         let (to_tx, to_rx) = mpsc::channel(3);
         task::spawn(async move {
@@ -679,9 +674,7 @@ impl<X: GXExt> Tui<X> {
             // A display that dies takes the program with it: the shell
             // waits on the stop signal, and nothing else would send it.
             if let Err(e) = run(gx, env, root, to_rx, &control).await {
-                error!("tui::run returned {e:?}");
-                eprintln!("tui: {e:#}");
-                fire_stop(&control.0.stop)
+                fire(&control.0.stop, Err(e))
             }
         });
         Self { to: to_tx, ph: PhantomData }
@@ -878,7 +871,7 @@ async fn display<X: GXExt>(
                     None => futures::future::pending().await,
                 }
             } => match e {
-                Ok(e) if is_ctrl_c(&e) => fire_stop(&control.0.stop),
+                Ok(e) if is_ctrl_c(&e) => fire(&control.0.stop, Ok(())),
                 Ok(e) => {
                     let v = event_to_value(&e);
                     if let Event::Resize(width, height) = e

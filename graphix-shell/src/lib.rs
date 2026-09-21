@@ -82,19 +82,16 @@ impl<X: GXExt> Output<X> {
         e: CompExp<X>,
         run_on_main: &MainThreadHandle,
         packages: &[Box<dyn Package<X>>],
-    ) -> Self {
+    ) -> Result<Self> {
         let mut e = e;
         for pkg in packages {
-            match pkg.maybe_init_custom(gx, env, e, run_on_main).await {
-                Err(err) => {
-                    eprintln!("error initializing custom display: {err:?}");
-                    return Self::None;
-                }
-                Ok(CustomResult::Custom(cdc)) => return Self::Custom(cdc),
-                Ok(CustomResult::NotCustom(ret)) => e = ret,
+            let r = pkg.maybe_init_custom(gx, env, e, run_on_main).await;
+            match r.context("initializing custom display")? {
+                CustomResult::Custom(cdc) => return Ok(Self::Custom(cdc)),
+                CustomResult::NotCustom(ret) => e = ret,
             }
         }
-        Self::Text(e)
+        Ok(Self::Text(e))
     }
 
     async fn clear(&mut self) {
@@ -384,7 +381,7 @@ impl<X: GXExt> Shell<X> {
                 if let Some(e) = exprs.pop() {
                     *output =
                         Output::from_expr(&gx, &env, e, run_on_main, &self.packages)
-                            .await;
+                            .await?;
                 }
                 *newenv = None
             }
@@ -488,7 +485,13 @@ impl<X: GXExt> Shell<X> {
                 },
                 input = input.read_line(&mut output, &mut newenv) => {
                     match input {
-                        Err(e) => eprintln!("error reading line {e:?}"),
+                        Err(e) if script => break Err(e),
+                        Err(e) => {
+                            eprintln!("error: {e:?}");
+                            // A display that failed is still the output.
+                            gx.interrupt();
+                            output.clear().await;
+                        }
                         Ok(Signal::CtrlC) if script => break Ok(()),
                         Ok(Signal::CtrlC) => {
                             // Interrupt first: a wedged runtime cannot serve `output.clear()`.
@@ -513,10 +516,14 @@ impl<X: GXExt> Shell<X> {
                                             || println!("-: {}", typ)
                                         );
                                         output.clear().await;
-                                        output = Output::from_expr(
+                                        let o = Output::from_expr(
                                             &gx, &env, e, &run_on_main,
                                             &self.packages,
                                         ).await;
+                                        output = o.unwrap_or_else(|e| {
+                                            eprintln!("error: {e:?}");
+                                            Output::None
+                                        });
                                     } else {
                                         output.clear().await;
                                     }
