@@ -193,8 +193,10 @@ struct pattern binds, struct type fields and variant types, `Expr::pos`
 for struct literal fields, `Expr::str_form` for a string's delimiters.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
-program-visible values (a cast error, a null error), and neither
-positions nor string forms survive a session image. What the formatter
+program-visible values (a cast error, a null error); `WrittenAt` and
+`str_form` are not part of a session image (`Expr::pos` and comments
+are), and a type is shared by content, so whose written order it carries
+is incidental. What the formatter
 does normalize: `i64`/`f64` literals print bare; a run of adjacent
 undecorated `use` statements merges into one per root and visibility, a
 sorted tree with every shared prefix written once; a blank line stands

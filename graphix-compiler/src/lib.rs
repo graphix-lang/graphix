@@ -332,8 +332,9 @@ pub enum PrintFlag {
     /// fields and variants in written order, strings between their
     /// delimiters. The formatter's flag. Without it printed text is a
     /// function of the syntax alone, which program-visible text (a cast
-    /// error, a null error) has to be: positions and string forms do not
-    /// survive a session image.
+    /// error, a null error) has to be: `WrittenAt` and `Expr::str_form`
+    /// are not part of a session image, and a type is shared by content,
+    /// so whose written order it carries is incidental.
     AsWritten,
 }
 
