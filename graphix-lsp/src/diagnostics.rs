@@ -1,30 +1,29 @@
-//! Convert anyhow errors from the graphix compiler into LSP diagnostics.
-//! Compile errors carry an `ErrorContext(Expr)` and parser errors a
-//! `ParserContext`; both are recovered by `downcast_ref`.
+//! Where a failed check says its error is. A parse error carries a
+//! `ParserContext`; a compile error an `ErrorSite` (the expression it
+//! arose in) under any number of `ErrorContext`s.
 
-use graphix_compiler::expr::{ErrorContext, ParserContext, Source};
+use graphix_compiler::expr::{ErrorContext, ErrorSite, ParserContext, Source};
 use lsp_types::Position;
 use std::path::PathBuf;
 
-/// What the chain told us about the failure: a position (line/col) and
-/// optionally the source file the error originated in.
 #[derive(Debug, Clone, Default)]
 pub struct ErrorLocation {
     pub position: Option<Position>,
     pub file: Option<PathBuf>,
 }
 
-/// Walk the error chain for the most specific position and source file.
-/// `anyhow::Error::downcast_ref` returns the outermost matching context,
-/// which is the right one for the compile path.
+/// The most specific position in the chain. `downcast_ref` finds the
+/// outermost context of a type, so an error wrapped without `At::at`
+/// falls back to the outermost `ErrorContext`.
 pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
-    if let Some(ec) = err.downcast_ref::<ErrorContext>() {
-        return location_from_origin_pos(&ec.0.ori.source, ec.0.pos);
-    }
     if let Some(pc) = err.downcast_ref::<ParserContext>() {
         return location_from_origin_pos(&pc.ori.source, pc.pos);
     }
-    ErrorLocation::default()
+    let site = err.downcast_ref::<ErrorSite>().map(|s| &s.0);
+    match site.or_else(|| err.downcast_ref::<ErrorContext>()) {
+        Some(ec) => location_from_origin_pos(&ec.0.ori.source, ec.0.pos),
+        None => ErrorLocation::default(),
+    }
 }
 
 /// Compose an `ErrorLocation` from the compiler's 1-based (line, column)
@@ -54,7 +53,7 @@ mod tests {
     use arcstr::literal;
     use graphix_compiler::{
         SourcePosition,
-        expr::{Expr, ExprKind, Origin},
+        expr::{At, Expr, ExprKind, Origin},
     };
     use std::str::FromStr;
     use triomphe::Arc;
@@ -75,15 +74,15 @@ mod tests {
         e
     }
 
-    /// A compile bail carries an outer `ErrorContext`; `error_location`
-    /// pulls position and file from it.
     #[test]
-    fn error_location_from_compile_error_context() {
+    fn a_compile_error_is_located_where_it_arose() {
         let o = ori("/tmp/foo.gx");
-        let e = expr_at(12, 4, o.clone());
-        let err = anyhow!("name not defined").context(ErrorContext(e));
+        let err = anyhow!("raw not defined")
+            .at(&expr_at(20, 26, o.clone()))
+            .at(&expr_at(12, 4, o.clone()))
+            .at(&expr_at(1, 1, o.clone()));
         let loc = error_location(&err);
-        assert_eq!(loc.position, Some(Position { line: 11, character: 3 }));
+        assert_eq!(loc.position, Some(Position { line: 19, character: 25 }));
         assert_eq!(loc.file, Some(PathBuf::from("/tmp/foo.gx")));
     }
 
@@ -98,20 +97,5 @@ mod tests {
         let loc = error_location(&err);
         assert_eq!(loc.position, Some(Position { line: 2, character: 6 }));
         assert_eq!(loc.file, Some(PathBuf::from("/tmp/bar.gx")));
-    }
-
-    /// With stacked `ErrorContext` wraps the outermost (most recently
-    /// attached) wins: a containing expression's position, still inside
-    /// the user's code.
-    #[test]
-    fn error_location_picks_outermost_context() {
-        let o = ori("/tmp/foo.gx");
-        let inner = expr_at(20, 26, o.clone());
-        let outer = expr_at(1, 1, o.clone());
-        let err = anyhow!("raw not defined")
-            .context(ErrorContext(inner))
-            .context(ErrorContext(outer));
-        let loc = error_location(&err);
-        assert_eq!(loc.position, Some(Position { line: 0, character: 0 }));
     }
 }

@@ -7,7 +7,7 @@ use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
-    expr::{self, Expr, ExprId, ExprKind, ModPath},
+    expr::{self, At, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::{
         emit::{BodyCx, CompiledExpr, emit_ref_node},
@@ -17,7 +17,7 @@ use crate::{
     typ::Type,
     wrap,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
@@ -141,7 +141,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 spec.pos,
                 spec.ori.clone(),
             )
-            .with_context(|| expr::ErrorContext(spec.clone()))?;
+            .at(&spec)?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
             if !typ.contains(&ctx.env, ntyp)? {
@@ -180,7 +180,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 spec.pos,
                 spec.ori.clone(),
             )
-            .with_context(|| expr::ErrorContext(spec.clone()))?;
+            .at(&spec)?;
             (node, pattern, typ)
         };
         if pattern.is_refutable() {
@@ -512,7 +512,7 @@ impl Ref {
         let resolved = match ctx.env.lookup_bind(&scope.lexical, name) {
             Ok(r) => r,
             Err(e) => {
-                return Err(e.context(expr::ErrorContext(spec.clone())));
+                return Err(e.at(&spec));
             }
         };
         match resolved {

@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     env::Env,
-    expr::ErrorContext,
+    expr::At,
     stack::ensure_sufficient,
     typ::{TVar, Type},
 };
@@ -60,7 +60,7 @@ pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         ExprKind::Seq { flush: Some(f), .. } => Err(anyhow!(
             "flush empties a queue, and a seq has none: write seqq, or abort(..)"
         )
-        .context(ErrorContext((**f).clone()))),
+        .at(&(**f))),
         _ => desugar_plain(spec, None),
     }
 }
@@ -83,7 +83,7 @@ fn desugar_let(spec: &Expr, b: &BindExpr) -> Result<Expr> {
     let pos = spec.pos;
     if b.rec {
         return Err(anyhow!("a seq trigger cannot be rec: it has no self to recurse on")
-            .context(ErrorContext(spec.clone())));
+            .at(&spec));
     }
     let BindExpr { pattern, typ, value, .. } = b;
     let name = match pattern {
@@ -122,8 +122,7 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
     let pos = spec.pos;
     let id = spec.id.inner();
     if body.is_empty() {
-        return Err(anyhow!("a seq block must contain at least one step")
-            .context(ErrorContext(spec.clone())));
+        return Err(anyhow!("a seq block must contain at least one step").at(&spec));
     }
     let mut steps: Vec<&Expr> = Vec::new();
     for e in body.iter() {
@@ -133,8 +132,7 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
         }
     }
     if steps.is_empty() {
-        return Err(anyhow!("a seq block must contain at least one step")
-            .context(ErrorContext(spec.clone())));
+        return Err(anyhow!("a seq block must contain at least one step").at(&spec));
     }
     let pc = format_compact!("seqpc{id}");
     let idle = format_compact!("seqidle{id}");
@@ -301,7 +299,7 @@ fn refuse_catch(e: &Expr) -> Result<()> {
              `try {{ .. }} with(e) {{ .. }} handles it, and a catch around the \
              seq sees the abort"
         )
-        .context(ErrorContext(c))),
+        .at(&c)),
     }
 }
 
@@ -901,7 +899,7 @@ fn until_arm(
             "until has no value: the last statement of a seq, or of a try \
              or with body whose value is used, must be an expression"
         )
-        .context(ErrorContext(step.clone())));
+        .at(&step));
     }
     let trans = connect(pos, pc, sample(pos, r#ref(pos, pc), variant(pos, next)));
     let e = guard(entry_fire(rewrite(cond, visible), pc));
@@ -927,9 +925,7 @@ fn collect_step_binds(e: &Expr, cells: &mut CarriedBinds) -> Result<()> {
         }
         ExprKind::Bind(b) => {
             if b.rec {
-                return Err(
-                    anyhow!("let rec is not a seq step").context(ErrorContext(e.clone()))
-                );
+                return Err(anyhow!("let rec is not a seq step").at(&e));
             }
             let annotated = matches!(b.pattern, StructurePattern::Bind(_));
             b.pattern.with_names(&mut |n| {
@@ -1092,8 +1088,9 @@ fn lower_block(
     let mut vals: Vec<Expr> = Vec::with_capacity(stmts.len());
     for (i, s) in stmts.iter().enumerate() {
         if is_try(s) {
-            return Err(anyhow!("try is a seq statement; write it at the seq level")
-                .context(ErrorContext(s.clone())));
+            return Err(
+                anyhow!("try is a seq statement; write it at the seq level").at(&s)
+            );
         }
         let v = format_compact!("seqb{}_{i}", spec.id.inner());
         match &s.kind {

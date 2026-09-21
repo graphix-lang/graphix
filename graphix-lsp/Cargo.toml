@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 homepage = "https://graphix-lang.github.io/graphix"
 repository = "https://github.com/graphix-lang/graphix"
-description = "A dataflow language for UIs and network programming, compiler"
+description = "A dataflow language for UIs and network programming, language server"
 documentation = "https://docs.rs/graphix-lsp"
 readme = "../README.md"
 license = "MIT"
@@ -18,13 +18,12 @@ lsp-server = { workspace = true }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 compact_str = { workspace = true }
-nohash = { workspace = true }
 ahash = { workspace = true }
 log = { workspace = true }
-netidx = { workspace = true }
-parking_lot = { workspace = true }
+netidx-core = { workspace = true }
 percent-encoding = { workspace = true }
 poolshark = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 triomphe = { workspace = true }
 walkdir = { workspace = true }

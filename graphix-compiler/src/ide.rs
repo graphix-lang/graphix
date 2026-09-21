@@ -3,7 +3,11 @@
 //! boundary into the check result. Nothing here is read by the
 //! compiler itself. [`Ide`] owns all of them, shared via `Env.ide`.
 
-use crate::{BindId, Scope, SourcePosition, env::Env, expr};
+use crate::{
+    BindId, Scope, SourcePosition,
+    env::{Bind, Env},
+    expr,
+};
 use compact_str::CompactString;
 use poolshark::global::{GPooled, Pool};
 use std::sync::LazyLock;
@@ -82,6 +86,10 @@ pub struct ModuleInternalView {
 /// into `Env.ide` only under an LSP-style check.
 #[derive(Debug)]
 pub struct Ide {
+    /// Every binding the check created, in order, including the
+    /// short-lived ones (lambda parameters, block lets, pattern binds)
+    /// the env has dropped by the time tooling asks.
+    pub binds: GPooled<Vec<Bind>>,
     /// Resolved name references (`textDocument/references`,
     /// `textDocument/definition`).
     pub references: GPooled<Vec<ReferenceSite>>,
@@ -100,6 +108,8 @@ pub struct Ide {
 impl Ide {
     /// Fresh, empty sinks from the pools.
     pub fn new() -> Self {
+        static BIND_POOL: LazyLock<Pool<Vec<Bind>>> =
+            LazyLock::new(|| Pool::new(64, 65536));
         static REFERENCE_SITE_POOL: LazyLock<Pool<Vec<ReferenceSite>>> =
             LazyLock::new(|| Pool::new(64, 65536));
         static MODULE_REF_SITE_POOL: LazyLock<Pool<Vec<ModuleRefSite>>> =
@@ -113,6 +123,7 @@ impl Ide {
         static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
             LazyLock::new(|| Pool::new(32, 4096));
         Self {
+            binds: BIND_POOL.take(),
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),

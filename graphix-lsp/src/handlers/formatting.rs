@@ -1,6 +1,6 @@
 use crate::{
-    ServerState,
     position::{PositionEncoding, char_col_to_position},
+    state::ServerState,
     uri::uri_to_path,
 };
 use anyhow::Result;

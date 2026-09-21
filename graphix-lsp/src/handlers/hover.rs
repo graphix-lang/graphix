@@ -1,4 +1,4 @@
-use crate::ServerState;
+use crate::state::ServerState;
 use lsp_types::{Hover, HoverParams};
 
 pub fn handle(state: &ServerState, params: HoverParams) -> Option<Hover> {

@@ -10,9 +10,8 @@ use graphix_compiler::{
     env::Env,
     expr::{BufferOverrides, FilesResolver, ResolverRef, Source, VfsResolver},
 };
-use graphix_lsp::{LspBackend, TypecheckResult};
+use graphix_lsp::{Checked, Connection, LspBackend};
 use graphix_rt::{CheckResult, GXConfig, GXEvent, GXHandle, GXRt, NoExt};
-use lsp_types::{InitializeParams, Uri};
 use parking_lot::Mutex;
 use poolshark::global::GPooled;
 use std::{
@@ -30,13 +29,18 @@ use triomphe::Arc;
 /// in-process netidx and the full stdlib loaded, and run the LSP
 /// server until it shuts down.
 pub fn run() -> Result<()> {
+    let (connection, io_threads) = Connection::stdio();
+    serve(connection)?;
+    io_threads.join()?;
+    Ok(())
+}
+
+/// [`run`] over any connection; tests drive `Connection::memory()`.
+pub fn serve(connection: Connection) -> Result<()> {
     let rt = Runtime::new().context("building tokio runtime")?;
-    let result = graphix_lsp::serve(|init| {
-        let roots = project_roots(init);
-        rt.block_on(build_backend(roots))
-    });
-    drop(rt);
-    result
+    graphix_lsp::serve(connection, |init| {
+        rt.block_on(build_backend(graphix_lsp::workspace_roots(init)))
+    })
 }
 
 async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
@@ -83,38 +87,6 @@ async fn drain(mut rx: mpsc::Receiver<GPooled<Vec<GXEvent>>>) {
     while rx.recv().await.is_some() {}
 }
 
-/// Filesystem roots from the editor: `workspaceFolders`, else the
-/// deprecated `rootUri` / `rootPath`.
-fn project_roots(init: &InitializeParams) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(folders) = &init.workspace_folders {
-        for folder in folders {
-            if let Some(p) = file_uri_to_path(&folder.uri) {
-                roots.push(p);
-            }
-        }
-    }
-    if roots.is_empty() {
-        #[allow(deprecated)]
-        if let Some(uri) = &init.root_uri {
-            if let Some(p) = file_uri_to_path(uri) {
-                roots.push(p);
-            }
-        }
-    }
-    if roots.is_empty() {
-        #[allow(deprecated)]
-        if let Some(p) = init.root_path.as_ref() {
-            roots.push(PathBuf::from(p));
-        }
-    }
-    roots
-}
-
-fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    graphix_lsp::uri::uri_to_path(uri)
-}
-
 struct ShellLspBackend {
     gx: GXHandle<NoExt>,
     rt_handle: Handle,
@@ -153,13 +125,13 @@ impl LspBackend for ShellLspBackend {
         &self,
         root: &Path,
         initial_scope: Option<ArcStr>,
-    ) -> Result<TypecheckResult> {
+    ) -> Result<Checked> {
         let CheckResult { env, ide } =
             self.rt_handle.block_on(self.gx.check_with_resolvers(
                 Source::File(root.to_path_buf()),
                 self.resolvers_for(root),
                 initial_scope,
             ))?;
-        Ok(TypecheckResult { env, ide })
+        Ok(Checked { env, ide })
     }
 }

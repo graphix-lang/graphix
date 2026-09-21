@@ -10,7 +10,7 @@ use crate::{
     UserEvent,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
-    expr::{self, Arg, ErrorContext, Expr, ExprId, Origin},
+    expr::{self, Arg, At, Expr, ExprId, Origin},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
         callsite::CallSite, collection::CollectionIntrinsic, pattern::StructPatternNode,
@@ -19,7 +19,7 @@ use crate::{
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds, tvar::RigidGate},
     wrap,
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
@@ -1330,7 +1330,7 @@ fn check_defaults<R: Rt, E: UserEvent>(
                 t => t.check_contains(&ctx.env, &typ),
             }
         });
-        let res = res.with_context(|| ErrorContext(node.spec().clone()));
+        let res = res.at(&node.spec());
         node.delete(ctx);
         res?;
     }
@@ -1441,7 +1441,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             BindMode::Definition,
             ExprId::new(),
         )
-        .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
+        .at(&Update::<R, E>::spec(self));
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             // fn-typed params knot like self-calls: a call to `f` unifies
@@ -1457,9 +1457,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                     }
                 }
             }
-            let res = f
-                .typecheck0(ctx, &mut faux_args)
-                .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()));
+            let res = f.typecheck0(ctx, &mut faux_args).at(&Update::<R, E>::spec(self));
             for id in param_knot.drain(..) {
                 ctx.def_gate_params.remove(&id);
             }
@@ -1483,7 +1481,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 .normalize();
             ftyp.throws
                 .check_contains(&ctx.env, &inferred_throws)
-                .with_context(|| ErrorContext(Update::<R, E>::spec(self).clone()))?;
+                .at(&Update::<R, E>::spec(self))?;
             // record the gate's inferred facts as cell conjuncts; a nested
             // gate records closed facts only (`FnType::constrain_known`)
             ftyp.constrain_known(ctx.def_gate_depth > 1);

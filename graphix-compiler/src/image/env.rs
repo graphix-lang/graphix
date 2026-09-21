@@ -294,7 +294,6 @@ impl Pack for Env {
             impls,
             poly_binds,
             package_roots,
-            ide_binds,
             lsp_mode,
             ide: _,
         } = self;
@@ -311,7 +310,6 @@ impl Pack for Env {
             + SharedMap(impls.clone()).encoded_len()
             + SharedSet(poly_binds.clone()).encoded_len()
             + SharedSet(package_roots.clone()).encoded_len()
-            + nested_len(ide_binds)
             + lsp_mode.encoded_len()
     }
 
@@ -330,7 +328,6 @@ impl Pack for Env {
             impls,
             poly_binds,
             package_roots,
-            ide_binds,
             lsp_mode,
             ide: _,
         } = self;
@@ -347,7 +344,6 @@ impl Pack for Env {
         SharedMap(impls.clone()).encode(buf)?;
         SharedSet(poly_binds.clone()).encode(buf)?;
         SharedSet(package_roots.clone()).encode(buf)?;
-        nested_encode(ide_binds, buf)?;
         lsp_mode.encode(buf)
     }
 
@@ -366,7 +362,6 @@ impl Pack for Env {
             impls: SharedMap::decode(buf)?.0,
             poly_binds: SharedSet::decode(buf)?.0,
             package_roots: SharedSet::decode(buf)?.0,
-            ide_binds: nested_decode(buf)?,
             lsp_mode: Pack::decode(buf)?,
             ide: None,
         })

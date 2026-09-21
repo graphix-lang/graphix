@@ -34,6 +34,8 @@ Rust workspace:
 - **graphix-package**: package manager (loading, vendoring, standalone
   builds). **graphix-derive**: proc macros (`defpackage!`).
 - **graphix-shell**: REPL and CLI; the binary is `graphix`.
+- **graphix-lsp**: the language server's protocol loop and queries; the
+  shell's `lsp_backend.rs` is the backend (`graphix lsp`).
 - **graphix-fuzz**: the differential fuzzer (`design/graphix_fuzz.md`).
 - `stdlib/`: one crate per package — `core`, `array`, `map`, `str`, `re`,
   `rand`, `sys` (streams, fs, tcp, tls, netidx, timers, processes),
@@ -221,6 +223,32 @@ A new layout setting is a field there, never a constant in the printer
 (`graphix-lsp/src/handlers/formatting.rs`): one whole-document edit,
 no edit for a document that does not parse, an error response only for
 `format::Refused` (the formatter declined its own output).
+
+**Language server.** A ROOT is a project's root file (a `.gx` no other
+file's `mod` reaches; `graphix-lsp/src/workspace.rs` scans) or an open
+file outside every project. A root at `<crate>/src/graphix/mod.gx` of a
+`graphix-package-<x>` crate is a package root, checked as the body of
+`mod <x>` over the copy registered at startup: `Env::
+unbind_scope_subtree` must drop everything a package registers, so a new
+global registry is cleared there. `--check` and the server share one
+path (`GXRt::check`); a root loads through `RootFile::load`, open
+buffers first, paired with its `.gxi`, and under buffer overrides a path
+is never canonicalized (the editor's names rule). Checks are lazy and
+coalesced: a change marks its roots dirty and `ServerState::flush`
+checks them when the client has nothing queued; nothing is checked at
+startup. The last SUCCESSFUL check of a root (`Checked`: the env and the
+`Ide` sinks, `ide.rs`) answers every query, so a buffer that does not
+compile still answers, stale; bind ids mean something only within one
+`Checked`. A query resolves the cursor to a target (bind id, canonical
+module, canonical type) from the sinks and never by looking a word up:
+what the check did not record has no answer. The AST has no position for
+a declared NAME; `text::Lines::name_after` finds it from the
+declaration's position and is the one place to change when it has. An
+error's position is its `ErrorSite`, the innermost wrap: contexts are
+attached with `.at(&spec)` (`expr::At`), `wrap!` or `bailat!`, never
+`ErrorContext(..)` by hand. Pins: `graphix-shell/tests/lsp/` (the real
+server over `Connection::memory()`; positions are `"let y = |x + 1"`
+markers).
 
 **Module loading** is the `ModuleResolver` trait (`expr/resolver.rs`);
 `VfsResolver`/`FilesResolver` are in-core, `NetidxResolver` is in

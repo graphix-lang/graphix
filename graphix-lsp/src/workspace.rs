@@ -272,7 +272,8 @@ pub fn detect_package_scope(root: &Path) -> Option<ArcStr> {
     if suffix.is_empty() {
         return None;
     }
-    Some(ArcStr::from(suffix))
+    // the module is named for the crate, as `defpackage!` does
+    Some(ArcStr::from(suffix.replace('-', "_")))
 }
 
 /// Resolve `mod name` declared at scope `<rel>` from project base
@@ -367,6 +368,18 @@ mod tests {
             .find(|p| p.root == mod_path)
             .expect("mod.gx is a project root");
         assert_eq!(project.package_scope.as_deref(), Some("tui"));
+    }
+
+    #[test]
+    fn a_dashed_package_is_scoped_by_its_crate_name() {
+        let dir = make_dir();
+        write(
+            &dir.path().join("Cargo.toml"),
+            "[package]\nname = \"graphix-package-netidx-admin\"\n",
+        );
+        let mod_path = dir.path().join("src").join("graphix").join("mod.gx");
+        write(&mod_path, "let x = 1\n");
+        assert_eq!(detect_package_scope(&mod_path).as_deref(), Some("netidx_admin"));
     }
 
     #[test]

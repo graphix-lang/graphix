@@ -291,12 +291,29 @@ its own; use `:%!graphix fmt` there.
 | Feature | Status |
 | --- | --- |
 | Diagnostics (parse + type errors) | ✓ |
-| Completions from the active environment | ✓ |
+| Completions: names in scope, struct fields, call labels | ✓ |
 | Hover with type and doc information | ✓ |
 | Go-to-definition | ✓ |
 | Find references | ✓ |
 | Document and workspace symbols | ✓ |
 | Formatting (whole document) | ✓ |
+
+Diagnostics arrive as you type, for the files you have open and the
+projects they belong to. A project is a `.gx` file that no other file
+loads with `mod`, together with everything it loads; a file outside
+every project is checked by itself. Files you have not opened are not
+checked. The compiler stops at the first error, so a project shows one
+diagnostic at a time.
+
+While a buffer does not compile, completion, hover and navigation answer
+from the last version that did. Completion offers the names in scope
+(locals included), a struct's fields after `.`, and a call's `#labels`
+inside its parentheses.
+
+To work on a package that defines its own builtins (an external
+`graphix-package-*` crate), run the `graphix` that was built with that
+package: the stock binary does not know its builtins and reports them as
+unknown.
 
 Rename and code actions are not yet implemented. File issues at
 [graphix-lang/graphix](https://github.com/graphix-lang/graphix/issues)

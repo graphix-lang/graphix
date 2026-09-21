@@ -560,6 +560,105 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     Arc::from_iter(res.drain(..))
 }
 
+/// Parse (or unpack) a module's implementation and interface, with the
+/// interface's modules, types, traits and uses spliced into the body.
+async fn parse_module(
+    interface: &Option<Origin>,
+    implementation: &Origin,
+    impl_packed: Option<Bytes>,
+    intf_packed: Option<Bytes>,
+) -> Result<(Arc<[Expr]>, Option<Sig>)> {
+    // Decode and parse both run on a blocking thread; `unpack_module`
+    // sets its per-module thread-locals on the thread that decodes.
+    let exprs = {
+        let ori = implementation.clone();
+        match impl_packed.filter(|_| !packed_ast_disabled()) {
+            Some(bytes) => task::spawn_blocking(move || {
+                serialize::unpack_module(&bytes, Arc::new(ori))
+            }),
+            None => task::spawn_blocking(move || parser::parse(ori)),
+        }
+    };
+    let sig = match interface {
+        None => None,
+        Some(ori) => {
+            let ori = ori.clone();
+            let sig = match intf_packed.filter(|_| !packed_ast_disabled()) {
+                Some(bytes) => task::spawn_blocking(move || {
+                    serialize::unpack_sig(&bytes, Arc::new(ori))
+                }),
+                None => task::spawn_blocking(move || parser::parse_sig(ori)),
+            }
+            .await?
+            .with_context(|| format!("parsing file {interface:?}"))?;
+            Some(sig)
+        }
+    };
+    let exprs =
+        exprs.await?.with_context(|| format!("parsing file {implementation:?}"))?;
+    let exprs = match &sig {
+        Some(sig) => add_interface_modules(exprs, sig),
+        None => exprs,
+    };
+    Ok((exprs, sig))
+}
+
+/// A root source file: a program, or a package's `mod.gx`.
+pub struct RootFile {
+    pub ori: Origin,
+    pub exprs: Arc<[Expr]>,
+    pub sig: Option<Sig>,
+}
+
+impl RootFile {
+    /// Load `file` and the `.gxi` beside it, open buffers first. A file
+    /// read from disk is named by its canonical path, so its modules
+    /// resolve beside the real file.
+    pub async fn load(
+        file: &PathBuf,
+        overrides: Option<&BufferOverrides>,
+    ) -> Result<Self> {
+        let buffer = |p: &PathBuf| overrides.and_then(|o| o.lock().get(p).cloned());
+        let (file, text) = match buffer(file) {
+            Some(text) => (file.clone(), text),
+            None => {
+                let file = tokio::fs::canonicalize(file).await?;
+                let text = read_to_arcstr(&file).await?;
+                (file, text)
+            }
+        };
+        let text = match text.find('\n') {
+            Some(i) if text.starts_with("#!") => ArcStr::from(&text[i..]),
+            Some(_) | None => text,
+        };
+        let intf = file.with_extension("gxi");
+        let interface = match file.extension().and_then(|s| s.to_str()) {
+            Some("gx") => match buffer(&intf) {
+                Some(text) => Some(text),
+                None => read_to_arcstr(&intf).await.ok(),
+            },
+            Some(_) | None => None,
+        };
+        let interface = interface.map(|text| Origin {
+            parent: None,
+            source: Source::File(intf),
+            text,
+        });
+        let ori = Origin { parent: None, source: Source::File(file), text };
+        let (exprs, sig) = parse_module(&interface, &ori, None, None).await?;
+        Ok(Self { ori, exprs, sig })
+    }
+
+    /// The file as the body of module `name`: what a package's root is.
+    pub fn into_module(self, name: ArcStr) -> Expr {
+        let Self { ori, exprs, sig } = self;
+        let value = ModuleKind::Resolved { exprs, sig, from_interface: false };
+        let mut e = ExprKind::Module { name, value }.to_expr(SourcePosition::default());
+        e.ori = Arc::new(ori);
+        e
+    }
+}
+
 async fn resolve(
     scope: ModPath,
     prepend: Option<ResolverRef>,
@@ -589,38 +688,8 @@ async fn resolve(
     for r in prepend.iter().map(|r| &**r).chain(resolvers.iter().map(|r| &**r)) {
         let (interface, implementation, impl_packed, intf_packed) =
             check!(r.resolve(&scope, &parent, &name, &mut errors).await);
-        // Decode and parse both run on a blocking thread; `unpack_module`
-        // sets its per-module thread-locals on the thread that decodes.
-        let exprs = {
-            let ori = implementation.clone();
-            match impl_packed.filter(|_| !packed_ast_disabled()) {
-                Some(bytes) => task::spawn_blocking(move || {
-                    serialize::unpack_module(&bytes, Arc::new(ori))
-                }),
-                None => task::spawn_blocking(move || parser::parse(ori)),
-            }
-        };
-        let sig = match &interface {
-            None => None,
-            Some(ori) => {
-                let ori = ori.clone();
-                let sig = match intf_packed.filter(|_| !packed_ast_disabled()) {
-                    Some(bytes) => task::spawn_blocking(move || {
-                        serialize::unpack_sig(&bytes, Arc::new(ori))
-                    }),
-                    None => task::spawn_blocking(move || parser::parse_sig(ori)),
-                }
-                .await?
-                .with_context(|| format!("parsing file {interface:?}"))?;
-                Some(sig)
-            }
-        };
-        let exprs =
-            exprs.await?.with_context(|| format!("parsing file {implementation:?}"))?;
-        let exprs = match &sig {
-            Some(sig) => add_interface_modules(exprs, &sig),
-            None => exprs,
-        };
+        let (exprs, sig) =
+            parse_module(&interface, &implementation, impl_packed, intf_packed).await?;
         let value = ModuleKind::Resolved { exprs, sig, from_interface };
         let kind = ExprKind::Module { name: name.clone().into(), value };
         format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {

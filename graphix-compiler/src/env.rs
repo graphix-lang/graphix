@@ -294,11 +294,7 @@ pub struct Env {
     /// Registered package names, usable as module path roots from
     /// anywhere. Global.
     pub package_roots: Set<ArcStr>,
-    /// Append-only mirror of every binding ever created, including
-    /// short-lived ones `binds` drops. IDE tooling only; populated
-    /// under `lsp_mode`.
-    pub ide_binds: Map<ModPath, Map<CompactString, Bind>>,
-    /// Populate the IDE side-channels (`ide_binds`, the `ide` sink).
+    /// Populate the IDE side-channels (the `ide` sink).
     pub lsp_mode: bool,
     /// The IDE side-channels ([`Ide`]); `Some` only under an LSP-style
     /// check. Clones share the `Arc<Mutex>` so every compile within one
@@ -322,7 +318,6 @@ impl Env {
             package_roots: _,
             modules,
             typedefs,
-            ide_binds,
             lsp_mode: _,
             ide: _,
         } = self;
@@ -338,7 +333,6 @@ impl Env {
         *poly_binds = Set::new();
         *modules = Set::new();
         *typedefs = Map::new();
-        *ide_binds = Map::new();
     }
 
     // Restore the lexical environment to the snapshot `other`; the
@@ -358,7 +352,6 @@ impl Env {
             impls: self.impls.clone(),
             poly_binds: self.poly_binds.clone(),
             package_roots: self.package_roots.clone(),
-            ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
             ide: self.ide.clone(),
         }
@@ -379,7 +372,6 @@ impl Env {
             impls: self.impls.clone(),
             poly_binds: self.poly_binds.clone(),
             package_roots: self.package_roots.clone(),
-            ide_binds: self.ide_binds.clone(),
             lsp_mode: self.lsp_mode,
             ide: self.ide.clone(),
         }
@@ -1423,10 +1415,36 @@ impl Env {
                 removed += ids.len();
                 for id in &*ids {
                     self.by_id.remove_cow(id);
+                    self.trait_methods.remove_cow(id);
                 }
             }
             self.binds.remove_cow(s);
-            self.ide_binds.remove_cow(s);
+        }
+        let trait_scopes: LPooled<Vec<ModPath>> = (&self.traits)
+            .into_iter()
+            .filter(|(s, _)| scope_is_under(s, scope))
+            .map(|(s, _)| s.clone())
+            .collect();
+        for s in &*trait_scopes {
+            if let Some(defs) = self.traits.get(s) {
+                let ids: LPooled<Vec<TraitId>> =
+                    defs.into_iter().map(|(_, id)| *id).collect();
+                removed += ids.len();
+                for id in &*ids {
+                    self.trait_defs.remove_cow(id);
+                    self.impls.remove_cow(id);
+                }
+            }
+            self.traits.remove_cow(s);
+        }
+        let impls: LPooled<Vec<Arc<ImplDef>>> = (&self.impls)
+            .into_iter()
+            .flat_map(|(_, l)| l.iter())
+            .filter(|im| scope_is_under(&im.scope, scope))
+            .cloned()
+            .collect();
+        for im in &*impls {
+            self.unregister_impl(im);
         }
         let type_scopes: LPooled<Vec<ModPath>> = (&self.typedefs)
             .into_iter()
@@ -1481,10 +1499,8 @@ impl Env {
             pattern: None,
             facet: None,
         });
-        if self.lsp_mode {
-            let ide_clone = bind.clone();
-            let ide_defs = self.ide_binds.get_or_default_cow(scope.clone());
-            ide_defs.insert_cow(CompactString::from(name), ide_clone);
+        if let Some(ide) = &self.ide {
+            ide.lock().binds.push(bind.clone());
         }
         self.by_id.get_mut_cow(id).unwrap()
     }

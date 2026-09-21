@@ -8,7 +8,7 @@ use graphix_compiler::{
     BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Rt, Scope, compile,
     expr::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
-        Resolvers, Source, parse_modpath, read_to_arcstr,
+        Resolvers, RootFile, Source, parse_modpath,
     },
     image::ProgramRoot,
     node::place::{self, VarUpdate},
@@ -26,7 +26,7 @@ use poolshark::{
 use smallvec::{SmallVec, smallvec};
 use std::{collections::hash_map::Entry, future, mem, result, time::Duration};
 use tokio::{
-    fs, select,
+    select,
     sync::{
         mpsc::{self as tmpsc, UnboundedReceiver, error::SendTimeoutError},
         oneshot,
@@ -704,40 +704,16 @@ impl<X: GXExt> GX<X> {
         Ok(CompRes { exprs: comp_exprs, env: self.ctx.env.clone() })
     }
 
-    async fn load_exprs(&self, source: &Source) -> Result<(Origin, Arc<[Expr]>)> {
+    async fn load_exprs(
+        &self,
+        source: &Source,
+        resolvers: &Resolvers,
+    ) -> Result<(Origin, Arc<[Expr]>)> {
         let (ori, exprs) = match source {
             Source::File(file) => {
-                let file = fs::canonicalize(file).await?;
-                let s = fs::read_to_string(&file).await?;
-                let s = if s.starts_with("#!") {
-                    if let Some(i) = s.find('\n') { &s[i..] } else { s.as_str() }
-                } else {
-                    s.as_str()
-                };
-                let ori = Origin {
-                    parent: None,
-                    source: Source::File(file.clone()),
-                    text: ArcStr::from(s),
-                };
-                let exprs = expr::parser::parse(ori.clone())?;
-                let exprs = if file.extension().and_then(|s| s.to_str()) == Some("gx") {
-                    let intf = file.with_extension("gxi");
-                    match read_to_arcstr(&intf).await {
-                        Ok(intf_text) => {
-                            let intf_ori = Origin {
-                                parent: None,
-                                source: Source::File(intf),
-                                text: ArcStr::from(intf_text),
-                            };
-                            let sig = expr::parser::parse_sig(intf_ori)?;
-                            expr::add_interface_modules(exprs, &sig)
-                        }
-                        Err(_) => exprs,
-                    }
-                } else {
-                    exprs
-                };
-                (ori, exprs)
+                let overrides = resolvers.iter().find_map(|r| r.overrides());
+                let root = RootFile::load(file, overrides.as_ref()).await?;
+                (root.ori, root.exprs)
             }
             source @ Source::Netidx(_) => {
                 // Non-file transports are fetched by whichever resolver claims
@@ -799,24 +775,34 @@ impl<X: GXExt> GX<X> {
         let go = async {
             let st = Instant::now();
             info!("parse time: {:?}", st.elapsed());
-            let scope = match &initial_scope {
-                None => Scope::root(),
-                Some(s) => {
+            // A package root is the body of `mod <package>`, recompiled
+            // over the copy registered at startup.
+            let (ori, exprs, modules_at) = match (&initial_scope, source) {
+                (Some(name), Source::File(file)) => {
                     let path =
-                        ModPath(netidx_core::path::Path::root().append(s.as_str()));
+                        ModPath(netidx_core::path::Path::root().append(name.as_str()));
                     self.ctx.env.unbind_scope_subtree(&path);
-                    Scope { lexical: path, ..Scope::root() }
+                    let overrides = resolvers_for_call.iter().find_map(|r| r.overrides());
+                    let root = RootFile::load(file, overrides.as_ref()).await?;
+                    let ori = root.ori.clone();
+                    (ori, Arc::from_iter([root.into_module(name.clone())]), path)
+                }
+                (Some(_), _) => bail!("only a file can be checked as a package root"),
+                (None, _) => {
+                    let (ori, exprs) =
+                        self.load_exprs(source, &resolvers_for_call).await?;
+                    (ori, exprs, ModPath::root())
                 }
             };
-            let (ori, exprs) = self.load_exprs(source).await?;
-            let exprs = try_join_all(exprs.iter().map(|e| {
-                e.resolve_modules_in_scope(&scope.lexical, &resolvers_for_call)
-            }))
-            .await?;
+            let exprs =
+                try_join_all(exprs.iter().map(|e| {
+                    e.resolve_modules_in_scope(&modules_at, &resolvers_for_call)
+                }))
+                .await?;
             info!("resolve time: {:?}", st.elapsed());
             self.prune_static_resolution();
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
-            let mut scope = scope;
+            let mut scope = Scope::root();
             for e in exprs.iter() {
                 let res = graphix_compiler::compile_stmt(
                     &mut self.ctx,
@@ -865,7 +851,7 @@ impl<X: GXExt> GX<X> {
     async fn load_program(&mut self, source: &Source) -> Result<ProgramRoot> {
         let scope = Scope::root();
         let st = Instant::now();
-        let (ori, exprs) = self.load_exprs(source).await?;
+        let (ori, exprs) = self.load_exprs(source, &self.resolvers).await?;
         info!("parse time: {:?}", st.elapsed());
         let st = Instant::now();
         let exprs =

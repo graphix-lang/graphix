@@ -9,7 +9,7 @@ use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
     env::{Env, ImportEntry},
-    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath, TypeDefBody},
+    expr::{At, Expr, ExprId, ExprKind, ModPath, TypeDefBody},
     fusion::{
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_const_node,
@@ -87,26 +87,17 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
 #[macro_export]
 macro_rules! wrap {
     ($n:expr, $e:expr) => {
-        match $e {
-            Ok(x) => Ok(x),
-            e => {
-                anyhow::Context::context(e, $crate::expr::ErrorContext($n.spec().clone()))
-            }
-        }
+        $crate::expr::At::at($e, $n.spec())
     };
 }
 
-/// Compile-time `bail!` that attaches an `ErrorContext` carrying the
-/// expression's `Origin` and `SourcePosition`, which the LSP downcasts
-/// out of the anyhow chain. Use it wherever the spec `Expr` is in scope.
+/// Compile-time `bail!` of an error that arose at the expression
+/// `$spec`.
 #[macro_export]
 macro_rules! bailat {
     ($spec:expr, $($arg:tt)*) => {
         return ::std::result::Result::Err(
-            <::anyhow::Error>::context(
-                ::anyhow::anyhow!($($arg)*),
-                $crate::expr::ErrorContext(::std::clone::Clone::clone(&$spec)),
-            )
+            $crate::expr::At::at(::anyhow::anyhow!($($arg)*), &$spec)
         )
     };
 }
@@ -625,7 +616,7 @@ pub(crate) fn compile_use<R: Rt, E: UserEvent>(
             replace,
             item,
         )
-        .with_context(|| ErrorContext(spec.clone()))?;
+        .at(&spec)?;
     }
     Ok(Nop::new(Type::Bottom))
 }
@@ -921,8 +912,7 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         if let ExprKind::Module { name, .. } = &e.kind {
             let p = ModPath(scope.lexical.append(name));
             if ctx.env.modules.contains(&p) {
-                return Err(anyhow::anyhow!("duplicate module definition {p}")
-                    .context(ErrorContext((*e).clone())));
+                return Err(anyhow::anyhow!("duplicate module definition {p}").at(&(*e)));
             }
             ctx.predeclared_mods.insert(p.clone());
             ctx.env.modules.insert_cow(p);
@@ -1355,14 +1345,11 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (id, def_pos, def_ori) = match ctx
-            .env
-            .lookup_bind(&scope.lexical, name)
-            .map_err(|e| e.context(ErrorContext(spec.clone())))?
-        {
-            None => bailat!(spec, "{name} is undefined"),
-            Some((_, b)) => (b.id, b.pos, b.ori.clone()),
-        };
+        let (id, def_pos, def_ori) =
+            match ctx.env.lookup_bind(&scope.lexical, name).map_err(|e| e.at(&spec))? {
+                None => bailat!(spec, "{name} is undefined"),
+                Some((_, b)) => (b.id, b.pos, b.ori.clone()),
+            };
         // a `<-` target is never a static call target
         ctx.mark_connect_target(id);
         if ctx.env.lsp_mode {
@@ -1546,15 +1533,11 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         name: &ModPath,
         value: &Expr,
     ) -> Result<Node<R, E>> {
-        let (src_id, def_pos, def_ori) = match ctx
-            .env
-            .lookup_bind(&scope.lexical, name)
-            .map_err(|e| {
-            e.context(ErrorContext(spec.clone()))
-        })? {
-            None => bailat!(spec, "{name} is undefined"),
-            Some((_, b)) => (b.id, b.pos, b.ori.clone()),
-        };
+        let (src_id, def_pos, def_ori) =
+            match ctx.env.lookup_bind(&scope.lexical, name).map_err(|e| e.at(&spec))? {
+                None => bailat!(spec, "{name} is undefined"),
+                Some((_, b)) => (b.id, b.pos, b.ori.clone()),
+            };
         if ctx.env.lsp_mode {
             ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,

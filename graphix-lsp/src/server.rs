@@ -1,39 +1,24 @@
-//! LSP server entrypoint built on top of `lsp_server::Connection`.
-//!
-//! Wraps the language intelligence in [`crate::ServerState`] with a
-//! stdio-based JSON-RPC loop and routes textDocument/* messages to the
-//! handlers in [`crate::handlers`].
+//! The JSON-RPC loop: routes messages to [`ServerState`] and checks
+//! what changed whenever the client has nothing more queued.
 
 use crate::{
     handlers,
-    state::{LspBackend, ServerState},
+    position::PositionEncoding,
+    state::{Diagnostics, LspBackend, ServerState},
+    uri::uri_to_path,
 };
 use anyhow::Result;
 use log::info;
-use lsp_server::{Connection, Message, Notification, Request, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
     CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, HoverProviderCapability,
-    InitializeParams, OneOf, PositionEncodingKind, PublishDiagnosticsParams,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DidOpenTextDocumentParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, OneOf, PositionEncodingKind, PublishDiagnosticsParams, SaveOptions,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions,
 };
+use serde::{Serialize, de::DeserializeOwned};
 use std::{path::PathBuf, sync::Arc};
-
-/// Run the LSP server, communicating over stdin/stdout. Blocks until
-/// the client requests shutdown.
-///
-/// `make_backend` is invoked once after the `initialize` handshake so
-/// it can use the client's `rootUri` / `workspaceFolders` to set up
-/// project-aware module resolution before the first document arrives.
-pub fn serve<F>(make_backend: F) -> Result<()>
-where
-    F: FnOnce(&InitializeParams) -> Result<Arc<dyn LspBackend>>,
-{
-    let (connection, io_threads) = Connection::stdio();
-    run_server(connection, make_backend)?;
-    io_threads.join()?;
-    Ok(())
-}
 
 /// Prefer UTF-32 when the client supports it: our cursor logic counts
 /// `char`s, and UTF-16 (the LSP default) diverges on non-BMP characters.
@@ -45,7 +30,6 @@ fn select_position_encoding(init: &InitializeParams) -> Option<PositionEncodingK
 fn server_capabilities(
     position_encoding: Option<PositionEncodingKind>,
 ) -> ServerCapabilities {
-    use lsp_types::{SaveOptions, TextDocumentSyncOptions};
     ServerCapabilities {
         position_encoding,
         text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -57,11 +41,7 @@ fn server_capabilities(
             },
         )),
         completion_provider: Some(CompletionOptions {
-            trigger_characters: Some(vec![
-                ".".to_string(),
-                ":".to_string(),
-                "#".to_string(),
-            ]),
+            trigger_characters: Some(vec![".".into(), ":".into(), "#".into()]),
             ..Default::default()
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -74,56 +54,77 @@ fn server_capabilities(
     }
 }
 
-fn run_server<F>(connection: Connection, make_backend: F) -> Result<()>
+/// The filesystem roots the editor named at `initialize`:
+/// `workspaceFolders`, else the deprecated `rootUri`, else `rootPath`.
+pub fn workspace_roots(init: &InitializeParams) -> Vec<PathBuf> {
+    let folders = init.workspace_folders.iter().flatten();
+    let roots: Vec<PathBuf> = folders.filter_map(|f| uri_to_path(&f.uri)).collect();
+    if !roots.is_empty() {
+        return roots;
+    }
+    #[allow(deprecated)]
+    let root = match (&init.root_uri, &init.root_path) {
+        (Some(uri), _) => uri_to_path(uri),
+        (None, path) => path.as_ref().map(PathBuf::from),
+    };
+    root.into_iter().collect()
+}
+
+/// Run the LSP server over `connection` until the client requests
+/// shutdown (`Connection::stdio()` in the shell, `Connection::memory()`
+/// in tests). `make_backend` runs once the `initialize` handshake has
+/// named the workspace.
+pub fn serve<F>(connection: Connection, make_backend: F) -> Result<()>
 where
     F: FnOnce(&InitializeParams) -> Result<Arc<dyn LspBackend>>,
 {
     // Two-phase init: read the client's `positionEncodings` before
     // committing to one in our capabilities.
     let (req_id, init_value) = connection.initialize_start()?;
-    let init_params: InitializeParams = serde_json::from_value(init_value)?;
-    let encoding = select_position_encoding(&init_params);
-    info!(
-        "negotiated position encoding: {}",
-        encoding.as_ref().map(|e| e.as_str()).unwrap_or("utf-16 (default)"),
-    );
+    let init: InitializeParams = serde_json::from_value(init_value)?;
+    let encoding = select_position_encoding(&init);
     connection.initialize_finish(
         req_id,
-        serde_json::to_value(lsp_types::InitializeResult {
+        serde_json::to_value(InitializeResult {
             capabilities: server_capabilities(encoding.clone()),
             server_info: None,
         })?,
     )?;
-    let backend = make_backend(&init_params)?;
+    let completion =
+        init.capabilities.text_document.as_ref().and_then(|td| {
+            td.completion.as_ref()?.completion_item.as_ref()?.snippet_support
+        });
+    let mut state = ServerState::new(
+        make_backend(&init)?,
+        workspace_roots(&init),
+        completion.unwrap_or(false),
+        PositionEncoding::from_kind(encoding.as_ref()),
+    );
     info!("graphix lsp server initialized");
-    let workspace_roots = workspace_roots_from(&init_params);
-    let snippet_support = init_params
-        .capabilities
-        .text_document
-        .as_ref()
-        .and_then(|td| td.completion.as_ref())
-        .and_then(|c| c.completion_item.as_ref())
-        .and_then(|ci| ci.snippet_support)
-        .unwrap_or(false);
-    let position_encoding =
-        crate::position::PositionEncoding::from_kind(encoding.as_ref());
-    let mut state = ServerState::new(backend, snippet_support, position_encoding);
-    let initial = state.set_workspace_roots(workspace_roots);
-    for (uri, diags) in initial {
-        // Project diagnostics for files the user may not have open have no
-        // editor-tracked version.
-        publish_diagnostics(&connection, uri, diags, None)?;
-    }
     for msg in &connection.receiver {
+        // Checking waits for a quiet moment, so a burst of edits costs
+        // one check; a request the client is waiting on alone sees the
+        // text as it stands.
+        let idle = connection.receiver.is_empty();
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
-                handle_request(&connection, &mut state, req)?;
+                if idle {
+                    let checked = state.flush();
+                    publish(&connection, &state, checked)?;
+                }
+                let response = handle_request(&state, req);
+                connection.sender.send(Message::Response(response))?;
             }
             Message::Notification(not) => {
-                handle_notification(&connection, &mut state, not)?;
+                let cleared = handle_notification(&mut state, not);
+                publish(&connection, &state, cleared)?;
+                if idle {
+                    let checked = state.flush();
+                    publish(&connection, &state, checked)?;
+                }
             }
             Message::Response(_) => {}
         }
@@ -131,175 +132,93 @@ where
     Ok(())
 }
 
-fn handle_request(
+fn publish(
     connection: &Connection,
-    state: &mut ServerState,
-    req: Request,
+    state: &ServerState,
+    diags: Diagnostics,
 ) -> Result<()> {
-    let req_id = req.id.clone();
-    let response = match req.method.as_str() {
-        "textDocument/completion" => {
-            let params: lsp_types::CompletionParams = serde_json::from_value(req.params)?;
-            Response::new_ok(req_id, handlers::completion::handle(state, params))
-        }
-        "textDocument/hover" => {
-            let params: lsp_types::HoverParams = serde_json::from_value(req.params)?;
-            Response::new_ok(req_id, handlers::hover::handle(state, params))
-        }
-        "textDocument/definition" => {
-            let params: lsp_types::GotoDefinitionParams =
-                serde_json::from_value(req.params)?;
-            Response::new_ok(req_id, handlers::definition::handle(state, params))
-        }
-        "textDocument/documentSymbol" => {
-            let params: lsp_types::DocumentSymbolParams =
-                serde_json::from_value(req.params)?;
-            Response::new_ok(req_id, handlers::document_symbol::handle(state, params))
-        }
-        "workspace/symbol" => {
-            let params: lsp_types::WorkspaceSymbolParams =
-                serde_json::from_value(req.params)?;
-            Response::new_ok(req_id, handlers::workspace_symbol::handle(state, params))
-        }
-        "textDocument/formatting" => {
-            let params: lsp_types::DocumentFormattingParams =
-                serde_json::from_value(req.params)?;
-            match handlers::formatting::handle(state, params) {
-                Ok(edits) => Response::new_ok(req_id, edits),
-                Err(e) => Response::new_err(
-                    req_id,
-                    lsp_server::ErrorCode::RequestFailed as i32,
-                    format!("{e:#}"),
-                ),
-            }
-        }
-        "textDocument/references" => {
-            let params: lsp_types::ReferenceParams = serde_json::from_value(req.params)?;
-            Response::new_ok(req_id, handlers::references::handle(state, params))
-        }
-        _ => {
-            info!("unhandled request: {}", req.method);
-            Response::new_err(
-                req_id,
-                lsp_server::ErrorCode::MethodNotFound as i32,
-                format!("Method not found: {}", req.method),
-            )
-        }
-    };
-    connection.sender.send(Message::Response(response))?;
+    for (uri, diagnostics) in diags {
+        let version = state.documents.get(&uri).map(|d| d.version);
+        let params = PublishDiagnosticsParams { uri, diagnostics, version };
+        let not = Notification::new("textDocument/publishDiagnostics".into(), params);
+        connection.sender.send(Message::Notification(not))?;
+    }
     Ok(())
 }
 
-fn handle_notification(
-    connection: &Connection,
-    state: &mut ServerState,
-    not: Notification,
-) -> Result<()> {
+/// Answer `req` with `f` over its params; params that do not parse and
+/// an `Err` are error responses, never the end of the server.
+fn respond<P: DeserializeOwned, R: Serialize>(
+    req: Request,
+    f: impl FnOnce(P) -> Result<R>,
+) -> Response {
+    match serde_json::from_value(req.params) {
+        Err(e) => {
+            Response::new_err(req.id, ErrorCode::InvalidParams as i32, e.to_string())
+        }
+        Ok(params) => match f(params) {
+            Ok(result) => Response::new_ok(req.id, result),
+            Err(e) => Response::new_err(
+                req.id,
+                ErrorCode::RequestFailed as i32,
+                format!("{e:#}"),
+            ),
+        },
+    }
+}
+
+fn handle_request(state: &ServerState, req: Request) -> Response {
+    use handlers::*;
+    match req.method.as_str() {
+        "textDocument/completion" => respond(req, |p| Ok(completion::handle(state, p))),
+        "textDocument/hover" => respond(req, |p| Ok(hover::handle(state, p))),
+        "textDocument/definition" => respond(req, |p| Ok(definition::handle(state, p))),
+        "textDocument/references" => respond(req, |p| Ok(references::handle(state, p))),
+        "textDocument/documentSymbol" => {
+            respond(req, |p| Ok(document_symbol::handle(state, p)))
+        }
+        "workspace/symbol" => respond(req, |p| Ok(workspace_symbol::handle(state, p))),
+        "textDocument/formatting" => respond(req, |p| formatting::handle(state, p)),
+        method => {
+            info!("unhandled request: {method}");
+            let msg = format!("Method not found: {method}");
+            Response::new_err(req.id, ErrorCode::MethodNotFound as i32, msg)
+        }
+    }
+}
+
+/// Apply a document notification; what it returns is cleared at once.
+fn handle_notification(state: &mut ServerState, not: Notification) -> Diagnostics {
+    fn params<P: DeserializeOwned>(not: Notification) -> Option<P> {
+        let method = not.method;
+        serde_json::from_value(not.params)
+            .inspect_err(|e| info!("ignoring malformed {method}: {e}"))
+            .ok()
+    }
     match not.method.as_str() {
         "textDocument/didOpen" => {
-            let params: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
-            let uri = params.text_document.uri.clone();
-            let version = params.text_document.version;
-            let updates = handlers::diagnostics::did_open(
-                state,
-                uri.clone(),
-                params.text_document.text,
-                version,
-            );
-            for (target_uri, diags) in updates {
-                let v = if target_uri == uri {
-                    Some(version)
-                } else {
-                    state.documents.get(&target_uri).map(|d| d.version)
-                };
-                publish_diagnostics(connection, target_uri, diags, v)?;
+            if let Some(DidOpenTextDocumentParams { text_document: d }) = params(not) {
+                state.set_document(d.uri, d.text, d.version);
             }
         }
         "textDocument/didChange" => {
-            let params: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
-            let uri = params.text_document.uri.clone();
-            let version = params.text_document.version;
-            if let Some(change) = params.content_changes.into_iter().next() {
-                let updates = handlers::diagnostics::did_change(
-                    state,
-                    uri.clone(),
+            if let Some(p) = params::<DidChangeTextDocumentParams>(not)
+                && let Some(change) = p.content_changes.into_iter().next_back()
+            {
+                state.set_document(
+                    p.text_document.uri,
                     change.text,
-                    version,
+                    p.text_document.version,
                 );
-                for (target_uri, diags) in updates {
-                    let v = if target_uri == uri {
-                        Some(version)
-                    } else {
-                        state.documents.get(&target_uri).map(|d| d.version)
-                    };
-                    publish_diagnostics(connection, target_uri, diags, v)?;
-                }
             }
         }
         "textDocument/didClose" => {
-            let params: DidCloseTextDocumentParams = serde_json::from_value(not.params)?;
-            handlers::diagnostics::did_close(state, params.text_document.uri);
-        }
-        "textDocument/didSave" => {
-            let _params: DidSaveTextDocumentParams = serde_json::from_value(not.params)?;
-            // Disk now reflects the user's intent: recompile every project.
-            let updates = state.recheck_workspace();
-            // Open files get the tracked document version; closed files are
-            // sent unversioned.
-            for (uri, diags) in updates {
-                let version = state.documents.get(&uri).map(|d| d.version);
-                publish_diagnostics(connection, uri, diags, version)?;
+            if let Some(p) = params::<DidCloseTextDocumentParams>(not) {
+                return state.close_document(&p.text_document.uri);
             }
         }
-        _ => {
-            info!("unhandled notification: {}", not.method);
-        }
+        "textDocument/didSave" => state.saved(),
+        method => info!("unhandled notification: {method}"),
     }
-    Ok(())
-}
-
-/// Filesystem roots from the editor's `initialize` params:
-/// `workspaceFolders`, else the deprecated `rootUri`/`rootPath`.
-fn workspace_roots_from(init: &InitializeParams) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(folders) = &init.workspace_folders {
-        for folder in folders {
-            if let Some(p) = file_uri_to_path(&folder.uri) {
-                out.push(p);
-            }
-        }
-    }
-    if out.is_empty() {
-        #[allow(deprecated)]
-        if let Some(uri) = &init.root_uri {
-            if let Some(p) = file_uri_to_path(uri) {
-                out.push(p);
-            }
-        }
-    }
-    if out.is_empty() {
-        #[allow(deprecated)]
-        if let Some(p) = init.root_path.as_ref() {
-            out.push(PathBuf::from(p));
-        }
-    }
-    out
-}
-
-fn file_uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    crate::uri::uri_to_path(uri)
-}
-
-fn publish_diagnostics(
-    connection: &Connection,
-    uri: Uri,
-    diagnostics: Vec<lsp_types::Diagnostic>,
-    version: Option<i32>,
-) -> Result<()> {
-    let notification = Notification::new(
-        "textDocument/publishDiagnostics".to_string(),
-        PublishDiagnosticsParams { uri, diagnostics, version },
-    );
-    connection.sender.send(Message::Notification(notification))?;
-    Ok(())
+    vec![]
 }

@@ -1,4 +1,4 @@
-use crate::ServerState;
+use crate::state::ServerState;
 use lsp_types::{SymbolInformation, WorkspaceSymbolParams};
 
 pub fn handle(

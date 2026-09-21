@@ -1,4 +1,4 @@
-use crate::ServerState;
+use crate::state::ServerState;
 use lsp_types::{Location, ReferenceParams};
 
 pub fn handle(state: &ServerState, params: ReferenceParams) -> Option<Vec<Location>> {

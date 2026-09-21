@@ -176,7 +176,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
 }
 
 fn assertion_error(spec: &crate::expr::Expr, msg: &str) -> anyhow::Error {
-    anyhow::anyhow!("{msg}").context(crate::expr::ErrorContext(spec.clone()))
+    crate::expr::At::at(anyhow::anyhow!("{msg}"), spec)
 }
 
 fn check_def_assertions<R: Rt, E: UserEvent>(

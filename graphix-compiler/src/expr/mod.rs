@@ -15,7 +15,8 @@ use poolshark::local::LPooled;
 use regex::Regex;
 pub use resolver::{
     BufferOverrides, FilesResolver, ModuleResolver, Resolution, ResolverFactory,
-    ResolverRef, Resolvers, VfsEntry, VfsResolver, add_interface_modules, parse_modpath,
+    ResolverRef, Resolvers, RootFile, VfsEntry, VfsResolver, add_interface_modules,
+    parse_modpath,
 };
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -1342,6 +1343,7 @@ impl Expr {
     }
 }
 
+/// An expression an error passed through on its way out.
 pub struct ErrorContext(pub Expr);
 
 impl fmt::Debug for ErrorContext {
@@ -1351,6 +1353,46 @@ impl fmt::Debug for ErrorContext {
 }
 
 impl std::error::Error for ErrorContext {}
+
+/// The first expression an error passed through: where it arose. An
+/// error chain holds one, under every [`ErrorContext`]; tooling
+/// downcasts to it for the error's position.
+pub struct ErrorSite(pub ErrorContext);
+
+impl fmt::Debug for ErrorSite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Display for ErrorSite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for ErrorSite {}
+
+/// Record that an error passed through the expression `spec`.
+pub trait At {
+    fn at(self, spec: &Expr) -> Self;
+}
+
+impl At for anyhow::Error {
+    fn at(self, spec: &Expr) -> Self {
+        let cx = ErrorContext(spec.clone());
+        match self.downcast_ref::<ErrorSite>() {
+            Some(_) => self.context(cx),
+            None => self.context(ErrorSite(cx)),
+        }
+    }
+}
+
+impl<T> At for Result<T> {
+    fn at(self, spec: &Expr) -> Self {
+        self.map_err(|e| e.at(spec))
+    }
+}
 
 pub struct ParserContext {
     pub ori: Arc<Origin>,

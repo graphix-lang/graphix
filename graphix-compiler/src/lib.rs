@@ -1946,11 +1946,10 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
 pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
 ) -> Result<()> {
-    use ::anyhow::Context as _;
+    use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
     for (ft, rtc, defaulted, spec) in pending.iter() {
-        ft.settle_terminal(&ctx.env, rtc.as_ref(), defaulted)
-            .with_context(|| expr::ErrorContext((**spec).clone()))?;
+        ft.settle_terminal(&ctx.env, rtc.as_ref(), defaulted).at(&(**spec))?;
     }
     Ok(())
 }
@@ -2062,8 +2061,8 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
                         "attribute in a position the fusion pass cannot check — \
                          put the decorated expression in its own statement \
                          (or a select arm)"
-                    )
-                    .context(expr::ErrorContext(spec.clone()));
+                    );
+                    let e = expr::At::at(e, spec);
                     drop(census);
                     drop(dispatched);
                     drop(absorbed);

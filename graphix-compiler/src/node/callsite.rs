@@ -12,7 +12,7 @@ use crate::{
     LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent, deref_typ,
     env::TraitMethodRef,
-    expr::{ErrorContext, Expr, ExprId, ExprKind, ModPath},
+    expr::{At, Expr, ExprId, ExprKind, ModPath},
     fusion::{
         self,
         emit::{BodyCx, CompiledExpr, emit_builtin_call_node, emit_lambda_call_node},
@@ -138,9 +138,7 @@ fn finalize_lambda<R: Rt, E: UserEvent>(
             *ldef.check.lock() = Some(f);
         }
         if let Some(apply) = &mut *ldef.check.lock() {
-            apply
-                .typecheck1(ctx, &mut [], resolved)
-                .with_context(|| ErrorContext((**spec).clone()))?;
+            apply.typecheck1(ctx, &mut [], resolved).at(&(**spec))?;
         }
     }
     Ok(())
@@ -1111,7 +1109,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 m.name,
                 self_t
             )
-            .context(ErrorContext((*self.spec).clone())));
+            .at(&(*self.spec)));
         }
         if let Some(core) = crate::node::coretraits::CoreTrait::of_id(def.id) {
             return self.lower_core_call(ctx, core);
@@ -1135,13 +1133,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         self_t,
                         def.name
                     )
-                    .context(ErrorContext((*self.spec).clone())));
+                    .at(&(*self.spec)));
                 }
             };
         }
         let Some(im) = ctx.env.find_impl(def.id, &self_t)? else {
             return Err(anyhow!("no implementation of {} for {}", def.name, self_t)
-                .context(ErrorContext((*self.spec).clone())));
+                .at(&(*self.spec)));
         };
         let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default) else {
             bail!(
@@ -1345,7 +1343,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     def.name,
                     Type::Set(TArc::from_iter(members.iter().cloned()))
                 )
-                .context(ErrorContext((*self.spec).clone())));
+                .at(&(*self.spec)));
             };
             let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default)
             else {
