@@ -63,7 +63,10 @@ fn elf_build_id(exe: &FsPath) -> Option<String> {
     fn u64_at(b: &[u8], i: usize) -> Option<u64> {
         Some(u64::from_le_bytes(b.get(i..i + 8)?.try_into().ok()?))
     }
-    let file = fs::read(exe).ok()?;
+    // Mapped, so only the pages the walk touches are read: the headers
+    // and the note, not the executable.
+    let file = fs::File::open(exe).ok()?;
+    let file = unsafe { memmap2::Mmap::map(&file) }.ok()?;
     if file.get(..4)? != b"\x7fELF" || file.get(4)? != &2 || file.get(5)? != &1 {
         return None;
     }
