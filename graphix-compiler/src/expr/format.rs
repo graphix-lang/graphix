@@ -491,6 +491,26 @@ mod tests {
     }
 
     #[test]
+    fn a_lone_bracketed_type_argument_hugs() {
+        let fields = "alpha: Array<string>, beta: Array<string>, gamma: Array<string>, \
+                      delta: Array<string>";
+        let body = "        alpha: Array<string>,\n        beta: Array<string>,\n        \
+                    gamma: Array<string>,\n        delta: Array<string>\n";
+        formats_to(
+            SourceKind::Interface,
+            &format!(
+                "type T = [`A({{ {fields} }}), `B(`C({{ {fields} }})), \
+                 `D(Array<{{ {fields} }}>), `E(i64, {{ {fields} }})]"
+            ),
+            &format!(
+                "type T = [\n    `A({{\n{body}    }}),\n    `B(`C({{\n{body}    }})),\n    \
+                 `D(Array<{{\n{body}    }}>),\n    `E(\n        i64,\n        {{\n{}        }}\n    )\n]\n",
+                body.replace("        ", "            ")
+            ),
+        );
+    }
+
+    #[test]
     fn struct_type_fields_keep_their_order() {
         use SourceKind::*;
         formats_to(

@@ -7,6 +7,7 @@ use crate::{
     print_as_written,
     typ::{Type, TypeRef},
 };
+use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use smallvec::SmallVec;
@@ -205,6 +206,52 @@ impl Type {
     }
 }
 
+/// Whether the type's text opens with a bracket that its last line
+/// closes: `{`, `(`, `[`, `` `Tag( ``, `Array<`, `fn(`. The expression
+/// printer's `opens_with_bracket`, for types.
+fn opens_with_bracket(t: &Type) -> bool {
+    match t {
+        Type::Struct(_)
+        | Type::Tuple(_)
+        | Type::Set(_)
+        | Type::Array(_)
+        | Type::List(_)
+        | Type::Error(_)
+        | Type::Map { .. }
+        | Type::Fn(_) => true,
+        Type::Variant(_, args, _) => !args.is_empty(),
+        Type::Ref(TypeRef { params, .. }) => !params.is_empty(),
+        Type::ByRef(t) => opens_with_bracket(t),
+        Type::Bottom
+        | Type::Any
+        | Type::Primitive(_)
+        | Type::TVar(_)
+        | Type::Abstract { .. }
+        | Type::App(..)
+        | Type::Hole => false,
+    }
+}
+
+/// A lone argument that opens with a bracket hugs the brackets it
+/// stands between, as a lone bracketed call argument does: `` `Tag({ ``,
+/// `` `Outer(`Inner([ ``, `Array<{`.
+fn pretty_lone_arg(
+    buf: &mut PrettyBuf,
+    open: &str,
+    t: &Type,
+    close: &str,
+) -> fmt::Result {
+    if opens_with_bracket(t) {
+        write!(buf, "{open}")?;
+        t.fmt_pretty(buf)?;
+        buf.kill_newline();
+        return writeln!(buf, "{close}");
+    }
+    writeln!(buf, "{open}")?;
+    buf.nested(|buf| t.fmt_pretty(buf))?;
+    writeln!(buf, "{close}")
+}
+
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         match self {
@@ -231,21 +278,9 @@ impl PrettyDisplay for Type {
             }
             Self::TVar(tv) => writeln!(buf, "{tv}"),
             Self::Fn(t) => t.fmt_pretty(buf),
-            Self::Error(t) => {
-                writeln!(buf, "Error<")?;
-                buf.nested(|buf| t.fmt_pretty(buf))?;
-                writeln!(buf, ">")
-            }
-            Self::Array(t) => {
-                writeln!(buf, "Array<")?;
-                buf.nested(|buf| t.fmt_pretty(buf))?;
-                writeln!(buf, ">")
-            }
-            Self::List(t) => {
-                writeln!(buf, "List<")?;
-                buf.nested(|buf| t.fmt_pretty(buf))?;
-                writeln!(buf, ">")
-            }
+            Self::Error(t) => pretty_lone_arg(buf, "Error<", t, ">"),
+            Self::Array(t) => pretty_lone_arg(buf, "Array<", t, ">"),
+            Self::List(t) => pretty_lone_arg(buf, "List<", t, ">"),
             Self::Map { key, value } => {
                 writeln!(buf, "Map<")?;
                 buf.nested(|buf| {
@@ -275,6 +310,9 @@ impl PrettyDisplay for Type {
                 writeln!(buf, ")")
             }
             Self::Variant(tag, ts, _) if ts.is_empty() => writeln!(buf, "`{tag}"),
+            Self::Variant(tag, ts, _) if ts.len() == 1 => {
+                pretty_lone_arg(buf, &format_compact!("`{tag}("), &ts[0], ")")
+            }
             Self::Variant(tag, ts, _) => {
                 writeln!(buf, "`{tag}(")?;
                 buf.nested(|buf| {

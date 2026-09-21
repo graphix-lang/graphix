@@ -208,7 +208,9 @@ print first, in canonical order. Layout: a value follows its head
 (`let x =`, `<-`, `name:`, `=>`) on the head's line when it fits or
 opens with a bracket whose first line fits, else it moves under the
 head; a lambda head that does not fit lists one argument to a line; a
-lone bracketed argument hugs its call (`f({`). After a printer change
+lone argument that opens with a bracket hugs the brackets around it, in
+expressions and in types alike (`f({`, `` `Tag({ ``, `` `A(`B([ ``,
+`Array<{`); two arguments list. After a printer change
 run the corpus harness over every `.gx`/`.gxi` here and in `../netidx`:
 `cargo run -p graphix-compiler --example gxfmt -- <files>` (many files:
 round trip + idempotence; one file: prints it; `GXFMT_UNCHECKED=1`
