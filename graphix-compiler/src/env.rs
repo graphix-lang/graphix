@@ -1512,6 +1512,18 @@ impl Env {
         self.by_id.get_mut_cow(id).unwrap()
     }
 
+    /// Give the binding `id` the type `typ`. Every reference compiled
+    /// afterwards reads it; the IDE mirror gets the binding again, and
+    /// its latest entry wins.
+    pub fn retype(&mut self, id: BindId, typ: Type) {
+        if let Some(b) = self.by_id.get_mut_cow(&id) {
+            b.typ = typ;
+            if let Some(ide) = &self.ide {
+                ide.lock().binds.push(b.clone());
+            }
+        }
+    }
+
     /// Record that `id` is bound by a select arm's pattern, over a
     /// scrutinee whose fires come from `inputs`.
     pub fn mark_pattern_bind(&mut self, id: BindId, inputs: Arc<[BindId]>) {

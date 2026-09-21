@@ -2372,3 +2372,59 @@ select 1 { 0 if true => 0, _ => dbg({ let r = &(1, 2); let t = *r; t.0 }) }
 run!(byref_born_in_fused_arm, BYREF_BORN_IN_FUSED_ARM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A `name@ pattern` capture has the type of what the arm matched in the
+// SCRUTINEE, never the type inferred from the pattern: a partial struct
+// pattern leaves the other fields readable, and a `_` slot is the
+// scrutinee's type, not Any.
+const CAPTURE_PARTIAL_STRUCT: &str = r#"
+{
+  type Pair = { left: i64, right: i64 };
+  let p: Pair = { left: 1, right: 2 };
+  select p { whole@ { left, .. } => left + whole.right }
+}
+"#;
+
+run!(capture_partial_struct, CAPTURE_PARTIAL_STRUCT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+});
+
+const CAPTURE_IGNORED_SLOT: &str = r#"
+{
+  let p = { left: 1, right: 2 };
+  let t = (3, 4);
+  select (p, t) {
+    (w@ { left, right: _ }, u@ (_, n)) => left + w.right + u.0 + n
+  }
+}
+"#;
+
+run!(capture_ignored_slot, CAPTURE_IGNORED_SLOT, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(10)))
+});
+
+const CAPTURE_UNION_MEMBER: &str = r#"
+{
+  type Pair = { left: i64, right: i64 };
+  let u: [Pair, null] = { left: 1, right: 2 };
+  select u { null as _ => 0, w@ { left, .. } => left + w.right }
+}
+"#;
+
+run!(capture_union_member, CAPTURE_UNION_MEMBER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+});
+
+const CAPTURE_OR_PATTERN: &str = r#"
+{
+  let v: [`A(i64, i64), `B(i64, i64), `C] = `B(1, 2);
+  select v {
+    w@ `A(n, _) | w@ `B(n, _) => select w { `A(_, m) => n + m, `B(_, m) => n * 10 + m },
+    `C => 0
+  }
+}
+"#;
+
+run!(capture_or_pattern, CAPTURE_OR_PATTERN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(12)))
+});

@@ -301,7 +301,7 @@ let (a, b) = (1, 2);
 let { left, right: r } = { left: a, right: b };
 let pick = |#scale: i64, p: Pair| select p {
     { left: 0, right } => right * scale,
-    whole@ { left, right: rr } => left + rr + whole.left
+    whole@ { left, .. } => left + whole.right
 };
 pick(#scale: r, { left, right: b }) + fold(map([a], |x| x), 0, |acc, x| acc + x)
 ";
@@ -324,7 +324,7 @@ pick(#scale: r, { left, right: b }) + fold(map([a], |x| x), 0, |acc, x| acc + x)
     is("right: |r }", "r: i64", &["#scale: |r,"]);
     is("|#^scale: i64", "scale: i64", &["right * |scale"]);
     is("{ left: 0, |right }", "right: i64", &["=> |right * scale"]);
-    is("|whole@", "whole: { left: i64, right: i64 }", &["rr + |whole"]);
+    is("|whole@", "whole: { left: i64, right: i64 }", &["left + |whole"]);
     is("|^acc, x| acc", "acc: i64", &["|acc + x"]);
     assert!(c.hover("a.gx", "    |map\n").unwrap().contains("map: fn("));
     assert!(c.hover("a.gx", "|array::{").unwrap().contains("mod array"));

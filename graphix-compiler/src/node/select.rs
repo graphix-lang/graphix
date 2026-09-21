@@ -1261,7 +1261,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // Alias the arm's binds against the scrutinee minus every
             // earlier unguarded irrefutable arm. The `any_as_tvar` view
             // keeps a `_` slot from short-circuiting the walk.
-            ntype.contains(&ctx.env, &pat.type_predicate.any_as_tvar())?;
+            let narrowed = pat.type_predicate.any_as_tvar();
+            ntype.contains(&ctx.env, &narrowed)?;
+            pat.bind_captures(&ctx.env, &narrowed)?;
             // The guard typechecks after the narrowing so it sees the
             // arm's binds at their settled type; it must be bool.
             if let Some(guard) = &mut pat.guard {

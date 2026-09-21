@@ -160,6 +160,84 @@ impl StructPatternNode {
     /// type predicate: a partial pattern compiles against the fields it
     /// names, so its indexes are wrong once the select typecheck
     /// completes the predicate from the scrutinee.
+    /// Every `name@` capture with the part of `typ` it stands over,
+    /// `typ` being a type of this pattern's shape. An or-pattern's
+    /// alternatives share their captures, so an id may come up once per
+    /// alternative.
+    pub(super) fn captures(
+        &self,
+        env: &Env,
+        typ: &Type,
+        out: &mut SmallVec<[(BindId, Type); 4]>,
+    ) {
+        let (all, subs): (&Option<BindId>, SmallVec<[(&Self, Type); 8]>) = match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) => return,
+            Self::Or { alts } => {
+                let ts = typ.with_deref(|t| match t {
+                    Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
+                    _ => None,
+                });
+                for (i, a) in alts.iter().enumerate() {
+                    a.captures(env, ts.as_ref().map_or(typ, |ts| &ts[i]), out)
+                }
+                return;
+            }
+            Self::Struct { all, binds } => {
+                let elts = typ.with_deref(|t| match t {
+                    Some(t @ Type::Ref(_)) => match t.lookup_ref(env) {
+                        Ok(Type::Struct(elts)) => Some(elts),
+                        Ok(_) | Err(_) => None,
+                    },
+                    Some(Type::Struct(elts)) => Some(elts.clone()),
+                    _ => None,
+                });
+                let field = |name: &ArcStr| {
+                    let elts = elts.as_ref()?;
+                    elts.iter().find(|(n, _, _)| n == name).map(|(_, t, _)| t.clone())
+                };
+                let subs = binds.iter().filter_map(|(n, _, sub)| Some((sub, field(n)?)));
+                (all, subs.collect())
+            }
+            Self::Variant { all, binds, tag: _ } => {
+                let ts = typ.with_deref(|t| match t {
+                    Some(Type::Variant(_, ts, _)) if ts.len() == binds.len() => {
+                        Some(ts.clone())
+                    }
+                    _ => None,
+                });
+                let subs = ts.iter().flat_map(|ts| binds.iter().zip(ts.iter().cloned()));
+                (all, subs.collect())
+            }
+            Self::Slice { kind: SliceKind::Tuple, all, binds } => {
+                let ts = typ.with_deref(|t| match t {
+                    Some(Type::Tuple(ts)) if ts.len() == binds.len() => Some(ts.clone()),
+                    _ => None,
+                });
+                let subs = ts.iter().flat_map(|ts| binds.iter().zip(ts.iter().cloned()));
+                (all, subs.collect())
+            }
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, all, binds }
+            | Self::SlicePrefix { prefix: binds, all, .. }
+            | Self::SliceSuffix { suffix: binds, all, .. } => {
+                let et = typ.with_deref(|t| match t {
+                    Some(Type::Array(et) | Type::List(et)) => Some((**et).clone()),
+                    _ => None,
+                });
+                let subs = et.iter().flat_map(|et| binds.iter().map(|b| (b, et.clone())));
+                (all, subs.collect())
+            }
+            Self::Abstract { all, bind, rep, .. } => {
+                (all, smallvec![(&**bind, rep.clone())])
+            }
+        };
+        if let Some(id) = all {
+            out.push((*id, typ.clone()));
+        }
+        for (sub, t) in subs {
+            sub.captures(env, &t, out)
+        }
+    }
+
     pub(super) fn realign(&mut self, env: &Env, typ: &Type) -> Result<()> {
         match self {
             Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
@@ -1437,6 +1515,30 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         })
     }
 
+    /// Type the arm's `name@` captures from `narrowed`: the arm's
+    /// predicate as the select narrowed it against the scrutinee, where
+    /// a `_` slot and a field a partial pattern leaves out have the
+    /// scrutinee's type. A capture shared by or-alternatives is their
+    /// union.
+    pub(super) fn bind_captures(&self, env: &Env, narrowed: &Type) -> Result<()> {
+        if self.explicit_type_predicate {
+            return Ok(());
+        }
+        let mut captures: SmallVec<[(BindId, Type); 4]> = SmallVec::new();
+        self.structure_predicate.captures(env, narrowed, &mut captures);
+        while let Some((id, _)) = captures.first().cloned() {
+            let (same, rest): (SmallVec<[_; 4]>, SmallVec<[_; 4]>) =
+                captures.drain(..).partition(|(i, _)| *i == id);
+            captures = rest;
+            let ts: SmallVec<[&Type; 4]> = same.iter().map(|(_, t)| t).collect();
+            let typ = Type::union(env, &ts)?;
+            if let Some(b) = env.by_id.get(&id) {
+                b.typ.check_contains(env, &typ)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -1485,6 +1587,17 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             pos,
             ori,
         )?;
+        // Under an inferred predicate a capture's type is unknown until
+        // the select narrows the arm against its scrutinee
+        // (`bind_captures`); the guard and the arm body compile over the
+        // cell.
+        if !explicit {
+            let mut captures = SmallVec::new();
+            structure_predicate.captures(&ctx.env, &type_predicate, &mut captures);
+            for (id, _) in captures {
+                ctx.env.retype(id, Type::empty_tvar());
+            }
+        }
         let guard = spec
             .guard
             .as_ref()
