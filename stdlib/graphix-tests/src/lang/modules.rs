@@ -451,3 +451,19 @@ let f = |x: i64| -> i64 {
 }
 "#
     ; graphix_package_core::testing::FuseExpect::Jit);
+
+// A `mod` declared inside a field access's source, a labeled default
+// and a map key resolves like one in a lambda body.
+run!(
+    mod_in_every_expression_position,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))),
+    "/test.gx" => r#"
+let a = ({mod helper; {x: helper::x}}).x;
+let f = |#x = {mod helper2; helper2::x}, y| x + y;
+let m = {{mod helper3; helper3::x} => 1};
+let result = a + f(1) + map::len(m) + map::get_or(m, 2, 3)
+"#,
+    "/test/helper.gx" => "let x = 2",
+    "/test/helper2.gx" => "let x = 2",
+    "/test/helper3.gx" => "let x = 2"
+    ; graphix_package_core::testing::FuseExpect::None);

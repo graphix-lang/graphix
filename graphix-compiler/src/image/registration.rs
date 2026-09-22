@@ -221,23 +221,24 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         enc.defer_instances = program.is_some();
         let measure = |enc: &mut ImageEncoder| {
             enc.deferred_len = 0;
-            let _s = EncodeImage::new(enc);
-            let env_len = self.env.encoded_len();
-            let tables_len = tables.len();
-            let nodes_len = varint_len(nodes.len() as u64)
-                + nodes
-                    .iter()
-                    .map(|(id, n)| id.encoded_len() + n.image_len())
-                    .sum::<usize>();
-            info!(
-                "registration image bounds: env {env_len} defs {tables_len} nodes {nodes_len} bytes"
-            );
-            env_len
-                + tables_len
-                + nodes_len
-                + scope_len(scope)
-                + 1
-                + program.map_or(0, |p| p.encoded_len())
+            EncodeImage::with(enc, || {
+                let env_len = self.env.encoded_len();
+                let tables_len = tables.len();
+                let nodes_len = varint_len(nodes.len() as u64)
+                    + nodes
+                        .iter()
+                        .map(|(id, n)| id.encoded_len() + n.image_len())
+                        .sum::<usize>();
+                info!(
+                    "registration image bounds: env {env_len} defs {tables_len} nodes {nodes_len} bytes"
+                );
+                env_len
+                    + tables_len
+                    + nodes_len
+                    + scope_len(scope)
+                    + 1
+                    + program.map_or(0, |p| p.encoded_len())
+            })
         };
         let p = profile::phase(Phase::ImageMeasure);
         let body_bound = measure(&mut enc) + enc.deferred_len;
@@ -256,62 +257,65 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         buf.put_u64(0);
         buf.put_u64(0);
         enc.written = buf.len() as u64;
-        {
-            let _s = EncodeImage::new(&mut enc);
-            let p = profile::phase(Phase::ImageEncode);
-            self.env.encode(&mut buf)?;
-            let env_bytes = buf.len();
-            tables.encode(&mut buf)?;
-            let defs_bytes = buf.len() - env_bytes;
-            encode_varint(nodes.len() as u64, &mut buf);
-            for (id, n) in nodes {
-                id.encode(&mut buf)?;
-                n.image_encode(&mut buf)?;
+        EncodeImage::with(&mut enc, || -> Result<(), PackError> {
+            {
+                let p = profile::phase(Phase::ImageEncode);
+                self.env.encode(&mut buf)?;
+                let env_bytes = buf.len();
+                tables.encode(&mut buf)?;
+                let defs_bytes = buf.len() - env_bytes;
+                encode_varint(nodes.len() as u64, &mut buf);
+                for (id, n) in nodes {
+                    id.encode(&mut buf)?;
+                    n.image_encode(&mut buf)?;
+                }
+                let nodes_bytes = buf.len() - env_bytes - defs_bytes;
+                scope_encode(scope, &mut buf)?;
+                program.is_some().encode(&mut buf)?;
+                if let Some(p) = program {
+                    p.encode(&mut buf)?;
+                }
+                let heap_at = buf.len();
+                drop(p);
+                let p = profile::phase(Phase::ImageHeap);
+                let eager = image::encoding(|e| e.object_counts()).unwrap_or_default();
+                loop {
+                    let Some((id, body)) =
+                        image::encoding(|e| e.deferred.pop()).flatten()
+                    else {
+                        break;
+                    };
+                    let at = buf.len() as u64;
+                    body(&mut buf)?;
+                    image::encoding(|e| e.instances.insert(id, at));
+                }
+                let table_at = buf.len();
+                drop(p);
+                let _p = profile::phase(Phase::ImageTrailer);
+                let instances = image::encoding(|e| std::mem::take(&mut e.instances))
+                    .unwrap_or_default();
+                encode_varint(instances.len() as u64, &mut buf);
+                for (id, at) in instances {
+                    id.encode(&mut buf)?;
+                    encode_varint(at, &mut buf);
+                }
+                eager.encode(&mut buf)?;
+                let offsets = image::encoding(|e| e.take_offsets()).unwrap_or_default();
+                encode_varint(offsets.len() as u64, &mut buf);
+                for at in offsets {
+                    encode_varint(at, &mut buf);
+                }
+                buf.patch_u64(trailer_at, heap_at as u64);
+                buf.patch_u64(trailer_at + 8, table_at as u64);
+                info!(
+                    "registration image: env {env_bytes} defs {defs_bytes} nodes {nodes_bytes} \
+                     heap {} total {} bytes",
+                    table_at - heap_at,
+                    buf.len()
+                );
+                Ok(())
             }
-            let nodes_bytes = buf.len() - env_bytes - defs_bytes;
-            scope_encode(scope, &mut buf)?;
-            program.is_some().encode(&mut buf)?;
-            if let Some(p) = program {
-                p.encode(&mut buf)?;
-            }
-            let heap_at = buf.len();
-            drop(p);
-            let p = profile::phase(Phase::ImageHeap);
-            let eager = image::encoding(|e| e.object_counts()).unwrap_or_default();
-            loop {
-                let Some((id, body)) = image::encoding(|e| e.deferred.pop()).flatten()
-                else {
-                    break;
-                };
-                let at = buf.len() as u64;
-                body(&mut buf)?;
-                image::encoding(|e| e.instances.insert(id, at));
-            }
-            let table_at = buf.len();
-            drop(p);
-            let _p = profile::phase(Phase::ImageTrailer);
-            let instances =
-                image::encoding(|e| std::mem::take(&mut e.instances)).unwrap_or_default();
-            encode_varint(instances.len() as u64, &mut buf);
-            for (id, at) in instances {
-                id.encode(&mut buf)?;
-                encode_varint(at, &mut buf);
-            }
-            eager.encode(&mut buf)?;
-            let offsets = image::encoding(|e| e.take_offsets()).unwrap_or_default();
-            encode_varint(offsets.len() as u64, &mut buf);
-            for at in offsets {
-                encode_varint(at, &mut buf);
-            }
-            buf.patch_u64(trailer_at, heap_at as u64);
-            buf.patch_u64(trailer_at + 8, table_at as u64);
-            info!(
-                "registration image: env {env_bytes} defs {defs_bytes} nodes {nodes_bytes} \
-                 heap {} total {} bytes",
-                table_at - heap_at,
-                buf.len()
-            );
-        }
+        })?;
         Ok(buf.freeze())
     }
 
@@ -353,50 +357,51 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 .filter_map(|(name, facts)| facts.fastcall.map(|f| (*name, f)))
                 .collect(),
         );
-        let restored = {
-            let _s = DecodeImage::new(&mut dec);
-            let mut table = &image[table_at..];
-            let n = decode_varint(&mut table)? as usize;
-            let mut instances = ahash::AHashMap::with_capacity(n);
-            for _ in 0..n {
-                let id = LambdaInstanceId::decode(&mut table)?;
-                instances.insert(id, decode_varint(&mut table)?);
+        let restored = DecodeImage::with(&mut dec, || -> Result<_, PackError> {
+            {
+                let mut table = &image[table_at..];
+                let n = decode_varint(&mut table)? as usize;
+                let mut instances = ahash::AHashMap::with_capacity(n);
+                for _ in 0..n {
+                    let id = LambdaInstanceId::decode(&mut table)?;
+                    instances.insert(id, decode_varint(&mut table)?);
+                }
+                let eager = image::ObjectCounts::decode(&mut table)?;
+                let n = decode_varint(&mut table)? as usize;
+                let mut offsets = Vec::with_capacity(n);
+                for _ in 0..n {
+                    offsets.push(decode_varint(&mut table)?);
+                }
+                if table.has_remaining() {
+                    return Err(PackError::InvalidFormat);
+                }
+                image::decoding(|d| {
+                    d.set_instances(instances);
+                    d.set_offsets(offsets);
+                    d.reserve(eager);
+                });
+                let p = profile::phase(Phase::ImageEnv);
+                self.env = Pack::decode(&mut bytes)?;
+                drop(p);
+                let p = profile::phase(Phase::ImageDefs);
+                restore_tables(self, &mut bytes)?;
+                drop(p);
+                let _p = profile::phase(Phase::ImageNodes);
+                let n = decode_varint(&mut bytes)? as usize;
+                let mut nodes = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let id = ExprId::decode(&mut bytes)?;
+                    let node = nodes::decode_node(self, &mut bytes)?;
+                    nodes.push((id, node));
+                }
+                let scope = scope_decode(&mut bytes)?;
+                let program = match bool::decode(&mut bytes)? {
+                    true => Some(ProgramRoot::decode(&mut bytes)?),
+                    false => None,
+                };
+                Ok(Registration { nodes, scope, program })
             }
-            let eager = image::ObjectCounts::decode(&mut table)?;
-            let n = decode_varint(&mut table)? as usize;
-            let mut offsets = Vec::with_capacity(n);
-            for _ in 0..n {
-                offsets.push(decode_varint(&mut table)?);
-            }
-            if table.has_remaining() {
-                return Err(PackError::InvalidFormat);
-            }
-            image::decoding(|d| {
-                d.set_instances(instances);
-                d.set_offsets(offsets);
-                d.reserve(eager);
-            });
-            let p = profile::phase(Phase::ImageEnv);
-            self.env = Pack::decode(&mut bytes)?;
-            drop(p);
-            let p = profile::phase(Phase::ImageDefs);
-            restore_tables(self, &mut bytes)?;
-            drop(p);
-            let _p = profile::phase(Phase::ImageNodes);
-            let n = decode_varint(&mut bytes)? as usize;
-            let mut nodes = Vec::with_capacity(n);
-            for _ in 0..n {
-                let id = ExprId::decode(&mut bytes)?;
-                let node = nodes::decode_node(self, &mut bytes)?;
-                nodes.push((id, node));
-            }
-            let scope = scope_decode(&mut bytes)?;
-            let program = match bool::decode(&mut bytes)? {
-                true => Some(ProgramRoot::decode(&mut bytes)?),
-                false => None,
-            };
-            Registration { nodes, scope, program }
-        };
+        })?;
         if image.len() - bytes.remaining() != heap_at {
             return Err(PackError::InvalidFormat);
         }

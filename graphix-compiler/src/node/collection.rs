@@ -63,16 +63,18 @@ pub mod list {
         is_nil(v) || split(v).is_some()
     }
 
+    /// The length of a well-formed list; `None` when the spine is not
+    /// one (a shape the outer pair alone cannot tell).
     pub fn len(v: &Value) -> Option<usize> {
         let mut n = 0;
-        let mut cur = v.clone();
+        let mut cur = v;
         loop {
-            if is_nil(&cur) {
+            if is_nil(cur) {
                 return Some(n);
             }
-            let (_, tail) = split(&cur)?;
+            let (_, tail) = split(cur)?;
             n += 1;
-            cur = tail.clone();
+            cur = tail;
         }
     }
 

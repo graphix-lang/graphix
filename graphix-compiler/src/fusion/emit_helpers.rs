@@ -190,15 +190,22 @@ pub(crate) fn all_helpers() -> Vec<HelperSpec> {
 // typed parameter. Owned bits drop exactly once; borrowed bits never do.
 
 /// Borrow ValArray bits for the duration of a call.
+///
+/// SAFETY: `bits` are the bits of a `ValArray` that is alive for the
+/// borrow.
+// XCR codex for eric: CR01 — done: every helper that reinterprets bits or
+// dereferences a raw pointer is `unsafe fn`, as are the block-tree frees.
 #[inline]
-fn va_ref(bits: &u64) -> &ValArray {
+unsafe fn va_ref(bits: &u64) -> &ValArray {
     assert!(*bits != 0, "graphix: zero ValArray bits — JIT codegen bug");
     unsafe { &*(bits as *const u64 as *const ValArray) }
 }
 
 /// Take ownership of ValArray bits.
+///
+/// SAFETY: `bits` are the bits of a `ValArray` the caller owns.
 #[inline]
-fn va_owned(bits: u64) -> ValArray {
+unsafe fn va_owned(bits: u64) -> ValArray {
     assert!(bits != 0, "graphix: zero ValArray bits — JIT codegen bug");
     unsafe { std::mem::transmute::<u64, ValArray>(bits) }
 }
@@ -221,7 +228,7 @@ fn va_borrowed_bits(a: &ValArray) -> u64 {
 
 jit_helpers! { registry = buf_helpers;
 
-safe fn graphix_value_buf_new(cap: usize) -> *mut LPooled<Vec<Value>> {
+unsafe fn graphix_value_buf_new(cap: usize) -> *mut LPooled<Vec<Value>> {
     let mut buf: LPooled<Vec<Value>> = LPooled::take();
     buf.reserve(cap);
     Box::into_raw(Box::new(buf))
@@ -291,7 +298,7 @@ unsafe fn graphix_value_buf_push_array_borrowed(buf: *mut LPooled<Vec<Value>>, s
 }
 
 /// Push a clone of a borrowed Value; the caller keeps its ref.
-safe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: TagValue) {
+unsafe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: TagValue) {
     let dup = v.with_value(|v| v.clone());
     std::mem::forget(v);
     unsafe { (*buf).push(dup) }
@@ -299,7 +306,7 @@ safe fn graphix_value_buf_push_value_borrowed(buf: *mut LPooled<Vec<Value>>, v: 
 
 /// Push an owned Value, consuming it. The buffer holds clean Values:
 /// the tag is stripped here.
-safe fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
+unsafe fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagValue) {
     unsafe { (*buf).push(tv.value()) }
 }
 
@@ -331,13 +338,13 @@ unsafe fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
 }
 
 /// Borrowed ValArray bits → owned bits (refcount bump).
-safe fn graphix_valarray_clone(bits: u64) -> u64 {
-    va_bits(va_ref(&bits).clone())
+unsafe fn graphix_valarray_clone(bits: u64) -> u64 {
+    va_bits(unsafe { va_ref(&bits) }.clone())
 }
 
 /// Drop owned ValArray bits.
-safe fn graphix_valarray_drop(bits: u64) {
-    drop(va_owned(bits))
+unsafe fn graphix_valarray_drop(bits: u64) {
+    drop(unsafe { va_owned(bits) })
 }
 
 /// Extend `buf` with a list value's elements, consuming it; a non-list
@@ -483,7 +490,7 @@ safe fn graphix_stack_check() -> i8 {
 /// Run a kernel's `__spill` thunk on a fresh stack segment: `args` is
 /// the caller's spilled parameter words in signature order, `out` two
 /// words the thunk fills with the (disc, payload) result.
-safe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
+unsafe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
     // SAFETY: `thunk` has the fixed spill signature this crate emits;
     // `args`/`out` are the calling kernel's stack slots, live for the call.
     let f: extern "C" fn(i64, i64) = unsafe { std::mem::transmute(thunk as usize) };
@@ -1021,7 +1028,7 @@ unsafe fn graphix_arcstr_clone_from_static(p: *const arcstr::ArcStr) -> arcstr::
 
 /// Drop an owned ArcStr. Takes raw bits so the zero pending sentinel is
 /// rejected before an invalid `ArcStr` (NonNull) materializes.
-safe fn graphix_arcstr_drop(s: u64) {
+unsafe fn graphix_arcstr_drop(s: u64) {
     assert!(
         s != 0,
         "graphix_arcstr_drop: null ArcStr — JIT codegen bug \
@@ -1051,7 +1058,7 @@ safe fn graphix_valarray_empty() -> u64 {
 
 /// Start an owned string buffer; pair with `graphix_string_buf_finalize`
 /// or `graphix_string_buf_drop`.
-safe fn graphix_string_buf_new() -> *mut String {
+unsafe fn graphix_string_buf_new() -> *mut String {
     Box::into_raw(Box::new(String::new()))
 }
 
@@ -1135,8 +1142,8 @@ safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
 }
 
 /// Consume finalized ValArray bits and build the List value.
-safe fn graphix_valarray_into_list(bits: u64) -> TagValue {
-    let arr = va_owned(bits);
+unsafe fn graphix_valarray_into_list(bits: u64) -> TagValue {
+    let arr = unsafe { va_owned(bits) };
     TagValue::clean(crate::node::collection::list::from_iter(arr.iter().cloned()))
 }
 
@@ -1155,8 +1162,8 @@ safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
 
 /// Consume finalized ValArray bits of `[k, v]` pairs and build a
 /// `Value::Map`; a malformed pair is logged and skipped.
-safe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
-    let arr = va_owned(bits);
+unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
+    let arr = unsafe { va_owned(bits) };
     let m = netidx_value::Map::from_iter(arr.iter().filter_map(|v| {
         let pair = crate::node::collection::split_pair(v);
         if pair.is_none() {
@@ -1219,24 +1226,27 @@ static EMPTY_ARR: std::sync::LazyLock<ValArray> =
 /// Free a slot-state chain: `word` is 0 or a `Box<Vec<u64>>`. With
 /// `own_levels > 0` each entry is a chain one level down; at 0 the Vec
 /// is plain words, or call-site blocks owning chains when `leaf` is given.
-pub fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
+///
+/// SAFETY: `word` is 0 or the sole owner of a chain the kernel's state
+/// words describe; it is not read again.
+pub unsafe fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf>) {
     if word == 0 {
         return;
     }
     let v = unsafe { Box::from_raw(word as *mut Vec<u64>) };
     if own_levels > 0 {
         for e in v.iter() {
-            free_slot_chain(*e, own_levels - 1, leaf);
+            unsafe { free_slot_chain(*e, own_levels - 1, leaf) };
         }
     } else if let Some(l) = leaf {
-        free_blocks(&v, l);
+        unsafe { free_blocks(&v, l) };
     }
 }
 
 /// Free a per-activation block tree rooted at `vecptr` (one
 /// `Box<Vec<u64>>` per activation, children at `slots`). Iterative:
 /// the tree is as deep as the recursion was. Returns the blocks freed.
-pub fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
+pub unsafe fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
     let mut freed = 0u64;
     let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
     work.push(vecptr);
@@ -1271,7 +1281,7 @@ thread_local! {
 /// `generation`, nulling each freed subtree's root word. `root` is the
 /// address of the tree's root word; the stamp lives at index `words`,
 /// one past the block's emitted layout. Returns the blocks freed.
-pub fn reclaim_self_block_tree(
+pub unsafe fn reclaim_self_block_tree(
     root: *mut u64,
     words: usize,
     slots: &[u32],
@@ -1292,7 +1302,7 @@ pub fn reclaim_self_block_tree(
         let stamp = v.get(words).copied().unwrap_or(generation);
         if stamp != generation {
             unsafe { *wp = 0 };
-            freed += free_self_block_tree(p, slots);
+            freed += unsafe { free_self_block_tree(p, slots) };
         } else {
             let base = v.as_mut_ptr();
             for s in slots.iter() {
@@ -1304,14 +1314,19 @@ pub fn reclaim_self_block_tree(
 }
 
 /// Free the anchor-owned chains inside a run of call-site blocks.
-fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
+///
+/// SAFETY: `words` are blocks laid out by `leaf`, whose anchors own
+/// their chains.
+unsafe fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     for block in words.chunks_exact(leaf.stride as usize) {
         for a in leaf.anchors.iter() {
-            free_slot_chain(
-                block[a.rel as usize],
-                a.own_levels as u64,
-                a.leaf.as_deref(),
-            );
+            unsafe {
+                free_slot_chain(
+                    block[a.rel as usize],
+                    a.own_levels as u64,
+                    a.leaf.as_deref(),
+                )
+            };
         }
     }
 }
@@ -1345,58 +1360,58 @@ fn slot_arcstr(v: Option<&Value>) -> arcstr::ArcStr {
 
 jit_helpers! { registry = elem_helpers;
 
-safe fn graphix_valarray_get_i64(bits: u64, idx: usize) -> i64 {
-    va_ref(&bits).get(idx).map(read_slot_i64).unwrap_or_default()
+unsafe fn graphix_valarray_get_i64(bits: u64, idx: usize) -> i64 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i64).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_f64(bits: u64, idx: usize) -> f64 {
-    va_ref(&bits).get(idx).map(read_slot_f64).unwrap_or_default()
+unsafe fn graphix_valarray_get_f64(bits: u64, idx: usize) -> f64 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_f64).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_i32(bits: u64, idx: usize) -> i32 {
-    va_ref(&bits).get(idx).map(read_slot_i32).unwrap_or_default()
+unsafe fn graphix_valarray_get_i32(bits: u64, idx: usize) -> i32 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i32).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_u32(bits: u64, idx: usize) -> u32 {
-    va_ref(&bits).get(idx).map(read_slot_u32).unwrap_or_default()
+unsafe fn graphix_valarray_get_u32(bits: u64, idx: usize) -> u32 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u32).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_f32(bits: u64, idx: usize) -> f32 {
-    va_ref(&bits).get(idx).map(read_slot_f32).unwrap_or_default()
+unsafe fn graphix_valarray_get_f32(bits: u64, idx: usize) -> f32 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_f32).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_bool(bits: u64, idx: usize) -> u8 {
-    va_ref(&bits).get(idx).map(read_slot_bool).unwrap_or_default()
+unsafe fn graphix_valarray_get_bool(bits: u64, idx: usize) -> u8 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_bool).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_i8(bits: u64, idx: usize) -> i8 {
-    va_ref(&bits).get(idx).map(read_slot_i8).unwrap_or_default()
+unsafe fn graphix_valarray_get_i8(bits: u64, idx: usize) -> i8 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i8).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_i16(bits: u64, idx: usize) -> i16 {
-    va_ref(&bits).get(idx).map(read_slot_i16).unwrap_or_default()
+unsafe fn graphix_valarray_get_i16(bits: u64, idx: usize) -> i16 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i16).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_u8(bits: u64, idx: usize) -> u8 {
-    va_ref(&bits).get(idx).map(read_slot_u8).unwrap_or_default()
+unsafe fn graphix_valarray_get_u8(bits: u64, idx: usize) -> u8 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u8).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_u16(bits: u64, idx: usize) -> u16 {
-    va_ref(&bits).get(idx).map(read_slot_u16).unwrap_or_default()
+unsafe fn graphix_valarray_get_u16(bits: u64, idx: usize) -> u16 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u16).unwrap_or_default()
 }
 
-safe fn graphix_valarray_get_u64(bits: u64, idx: usize) -> u64 {
-    va_ref(&bits).get(idx).map(read_slot_u64).unwrap_or_default()
+unsafe fn graphix_valarray_get_u64(bits: u64, idx: usize) -> u64 {
+    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u64).unwrap_or_default()
 }
 
-safe fn graphix_valarray_len(bits: u64) -> usize {
-    va_ref(&bits).len()
+unsafe fn graphix_valarray_len(bits: u64) -> usize {
+    unsafe { va_ref(&bits) }.len()
 }
 
 /// Source-level `arr[idx]` via the shared [`array_index`]: the element
 /// or the index error; negative `idx` counts from the end.
-safe fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
-    TagValue::clean(array_index(va_ref(&bits), idx))
+unsafe fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
+    TagValue::clean(array_index(unsafe { va_ref(&bits) }, idx))
 }
 
 /// Resize a scaffold loop's per-slot state table (a boxed `Vec<u64>`
@@ -1422,7 +1437,7 @@ unsafe fn graphix_slot_state_table(
     if source_present != 0 && len < v.len() {
         if own_levels > 0 {
             for e in v[len..].iter() {
-                free_slot_chain(*e, own_levels - 1, leaf);
+                unsafe { free_slot_chain(*e, own_levels - 1, leaf) };
             }
         }
         v.truncate(len)
@@ -1478,7 +1493,7 @@ unsafe fn graphix_slot_state_blocks(
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     let len = (slots as usize) * (leaf_ref.stride as usize);
     if source_present != 0 && len < v.len() {
-        free_blocks(&v[len..], leaf_ref);
+        unsafe { free_blocks(&v[len..], leaf_ref) };
         v.truncate(len)
     } else if len > v.len() {
         v.resize(len, 0)
@@ -1486,89 +1501,89 @@ unsafe fn graphix_slot_state_blocks(
     v.as_mut_ptr()
 }
 
-safe fn graphix_struct_get_i64(bits: u64, sorted_idx: usize) -> i64 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_i64).unwrap_or_default()
+unsafe fn graphix_struct_get_i64(bits: u64, sorted_idx: usize) -> i64 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i64).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_f64(bits: u64, sorted_idx: usize) -> f64 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_f64).unwrap_or_default()
+unsafe fn graphix_struct_get_f64(bits: u64, sorted_idx: usize) -> f64 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_f64).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_i32(bits: u64, sorted_idx: usize) -> i32 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_i32).unwrap_or_default()
+unsafe fn graphix_struct_get_i32(bits: u64, sorted_idx: usize) -> i32 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i32).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_u32(bits: u64, sorted_idx: usize) -> u32 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_u32).unwrap_or_default()
+unsafe fn graphix_struct_get_u32(bits: u64, sorted_idx: usize) -> u32 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u32).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_f32(bits: u64, sorted_idx: usize) -> f32 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_f32).unwrap_or_default()
+unsafe fn graphix_struct_get_f32(bits: u64, sorted_idx: usize) -> f32 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_f32).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_bool(bits: u64, sorted_idx: usize) -> u8 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_bool).unwrap_or_default()
+unsafe fn graphix_struct_get_bool(bits: u64, sorted_idx: usize) -> u8 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_bool).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_i8(bits: u64, sorted_idx: usize) -> i8 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_i8).unwrap_or_default()
+unsafe fn graphix_struct_get_i8(bits: u64, sorted_idx: usize) -> i8 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i8).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_i16(bits: u64, sorted_idx: usize) -> i16 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_i16).unwrap_or_default()
+unsafe fn graphix_struct_get_i16(bits: u64, sorted_idx: usize) -> i16 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i16).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_u8(bits: u64, sorted_idx: usize) -> u8 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_u8).unwrap_or_default()
+unsafe fn graphix_struct_get_u8(bits: u64, sorted_idx: usize) -> u8 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u8).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_u16(bits: u64, sorted_idx: usize) -> u16 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_u16).unwrap_or_default()
+unsafe fn graphix_struct_get_u16(bits: u64, sorted_idx: usize) -> u16 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u16).unwrap_or_default()
 }
 
-safe fn graphix_struct_get_u64(bits: u64, sorted_idx: usize) -> u64 {
-    struct_field(va_ref(&bits), sorted_idx).map(read_slot_u64).unwrap_or_default()
+unsafe fn graphix_struct_get_u64(bits: u64, sorted_idx: usize) -> u64 {
+    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u64).unwrap_or_default()
 }
 
 /// `arr[idx]` as owned ValArray bits.
-safe fn graphix_valarray_get_array(bits: u64, idx: usize) -> u64 {
-    va_bits(slot_array(va_ref(&bits).get(idx)).clone())
+unsafe fn graphix_valarray_get_array(bits: u64, idx: usize) -> u64 {
+    va_bits(slot_array(unsafe { va_ref(&bits) }.get(idx)).clone())
 }
 
 /// `arr[idx]` as borrowed ValArray bits: valid only while the parent
 /// array is alive, never passed to a consuming or dropping helper.
-safe fn graphix_valarray_get_array_borrowed(bits: u64, idx: usize) -> u64 {
-    va_borrowed_bits(slot_array(va_ref(&bits).get(idx)))
+unsafe fn graphix_valarray_get_array_borrowed(bits: u64, idx: usize) -> u64 {
+    va_borrowed_bits(slot_array(unsafe { va_ref(&bits) }.get(idx)))
 }
 
 /// A struct field as borrowed ValArray bits; same lifetime contract as
 /// [`graphix_valarray_get_array_borrowed`].
-safe fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64 {
-    va_borrowed_bits(slot_array(struct_field(va_ref(&bits), sorted_idx)))
+unsafe fn graphix_struct_get_array_borrowed(bits: u64, sorted_idx: usize) -> u64 {
+    va_borrowed_bits(slot_array(struct_field(unsafe { va_ref(&bits) }, sorted_idx)))
 }
 
 /// `arr[idx]` as an owned `ArcStr` (String elem).
-safe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> arcstr::ArcStr {
-    slot_arcstr(va_ref(&bits).get(idx))
+unsafe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> arcstr::ArcStr {
+    slot_arcstr(unsafe { va_ref(&bits) }.get(idx))
 }
 
 /// `arr[idx]` as an owned `Value`.
-safe fn graphix_valarray_get_value(bits: u64, idx: usize) -> TagValue {
-    TagValue::clean(va_ref(&bits).get(idx).cloned().unwrap_or(Value::Null))
+unsafe fn graphix_valarray_get_value(bits: u64, idx: usize) -> TagValue {
+    TagValue::clean(unsafe { va_ref(&bits) }.get(idx).cloned().unwrap_or(Value::Null))
 }
 
 /// A struct field as owned ValArray bits.
-safe fn graphix_struct_get_array(bits: u64, sorted_idx: usize) -> u64 {
-    va_bits(slot_array(struct_field(va_ref(&bits), sorted_idx)).clone())
+unsafe fn graphix_struct_get_array(bits: u64, sorted_idx: usize) -> u64 {
+    va_bits(slot_array(struct_field(unsafe { va_ref(&bits) }, sorted_idx)).clone())
 }
 
-safe fn graphix_struct_get_arcstr(bits: u64, sorted_idx: usize) -> arcstr::ArcStr {
-    slot_arcstr(struct_field(va_ref(&bits), sorted_idx))
+unsafe fn graphix_struct_get_arcstr(bits: u64, sorted_idx: usize) -> arcstr::ArcStr {
+    slot_arcstr(struct_field(unsafe { va_ref(&bits) }, sorted_idx))
 }
 
-safe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
+unsafe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
     TagValue::clean(
-        struct_field(va_ref(&bits), sorted_idx).cloned().unwrap_or(Value::Null),
+        struct_field(unsafe { va_ref(&bits) }, sorted_idx).cloned().unwrap_or(Value::Null),
     )
 }
 

@@ -1857,3 +1857,18 @@ run!(list_carried_fold, LIST_CARRIED_FOLD, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(6))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A dynamic callee that became null makes the call bottom; the bound
+// instance is not invoked in its place.
+const NULL_CALLEE_IS_BOTTOM: &str = r#"
+{
+  let f: [fn(x: i64) -> i64, null] = |x| x + 1;
+  f <- null;
+  let late = (f$)(sys::time::timer(duration:0.02s, false) ~ 10);
+  any(late, sys::time::timer(duration:0.1s, false) ~ -1)
+}
+"#;
+
+run!(null_callee_is_bottom, NULL_CALLEE_IS_BOTTOM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(-1)))
+}; graphix_package_core::testing::FuseExpect::None);

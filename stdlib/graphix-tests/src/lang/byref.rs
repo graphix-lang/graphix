@@ -191,3 +191,36 @@ run!(place_through_param, PLACE_THROUGH_PARAM, |v: Result<&Value>| {
     format!("{}", v.unwrap())
         == r#"[[["cursor", i64:1], ["value", "a"]], [["cursor", i64:2], ["value", "b!"]]]"#
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A reference that became null dereferences to bottom, never to the
+// old target: the late read finds nothing and the deadline wins.
+const DEREF_NULL_REF_IS_BOTTOM: &str = r#"
+{
+  let x = 10;
+  let r: [&i64, null] = &x;
+  r <- null;
+  let late = sys::time::timer(duration:0.02s, false) ~ *(r$);
+  any(late, sys::time::timer(duration:0.1s, false) ~ -1)
+}
+"#;
+
+run!(deref_null_ref_is_bottom, DEREF_NULL_REF_IS_BOTTOM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(-1)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A fired address fires the dereference even when the new target is
+// standing: switching from &x to &y delivers y.
+const DEREF_FIRES_ON_ADDRESS: &str = r#"
+{
+  let x = 10;
+  let y = 20;
+  let choose = false;
+  choose <- true;
+  let r = select choose { false => &x, true => &y };
+  array::group(*r, |n, _| n == 2)
+}
+"#;
+
+run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:10, i64:20]"
+}; graphix_package_core::testing::FuseExpect::Jit);

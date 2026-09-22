@@ -73,7 +73,10 @@ fn field_of(pairs: &ValArray, name: &str) -> Result<usize> {
         .ok_or_else(|| anyhow!("no field {name}"))
 }
 
-/// The value at `path` inside `root`.
+/// The value at `path` inside `root`. A map step compares keys, so the
+/// caller runs this under `coretraits::with_key_ord_hooks`.
+// XCR codex for eric: CR11 — done: the deref and the runtime's patch
+// delivery both run under the key-ordering loan.
 pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
     let mut cur = root;
     for step in path {

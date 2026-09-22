@@ -1,8 +1,8 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather};
-use crate::image::ImageBuf;
 use crate::image::nodes::{
     NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
 };
+use crate::image::{self, ImageBuf};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent, abstract_value, deref_typ,
@@ -89,10 +89,11 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     fn image_len(&self) -> usize {
+        // XCR codex for eric: CR22 — done: the borrowed-slice codec.
         tag_len()
             + self.spec.encoded_len()
             + self.typ.encoded_len()
-            + self.names.to_vec().encoded_len()
+            + image::slice_len(&self.names)
             + nodes_len(&self.n)
     }
 
@@ -100,7 +101,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         put_tag(NodeTag::Struct, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        self.names.to_vec().encode(buf)?;
+        image::slice_encode(&self.names, buf)?;
         encode_nodes(&self.n, buf)
     }
 

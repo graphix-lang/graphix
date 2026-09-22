@@ -779,3 +779,27 @@ const VARIANT_MAP_PAYLOAD: &str = r#"
     select v { `M(m) => map::len(m), `N => 0 }
 }"#;
 run!(variant_map_payload, VARIANT_MAP_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); graphix_package_core::testing::FuseExpect::Jit);
+
+// A cast into a recursive union that consumes nothing is refused, not
+// a stack overflow.
+const CAST_RECURSIVE_NO_PROGRESS: &str = r#"
+{
+  type Loop = [i64, Loop];
+  cast<Loop>("not-a-number")
+}
+"#;
+run!(cast_recursive_no_progress, CAST_RECURSIVE_NO_PROGRESS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Error(_)))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A two-element array is not a list: converting it keeps both items.
+const CAST_PAIR_TO_LIST: &str = r#"cast<List<i64>>([1, 2])$"#;
+run!(cast_pair_to_list, CAST_PAIR_TO_LIST, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:1, [i64:2, []]]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A struct cast converts each field; the names decide the match.
+const CAST_STRUCT_FIELDS: &str = r#"cast<{x: i64, y: i64}>({y: "2", x: "1"})$"#;
+run!(cast_struct_fields, CAST_STRUCT_FIELDS, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"[["x", i64:1], ["y", i64:2]]"#
+}; graphix_package_core::testing::FuseExpect::Jit);

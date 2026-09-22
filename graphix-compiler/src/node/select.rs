@@ -61,10 +61,10 @@ pub struct Select<R: Rt, E: UserEvent> {
     /// In a frame, a tail re-selection rides the arm's tag instead of
     /// firing.
     pub(crate) tail_dispatch_select: std::sync::atomic::AtomicBool,
-    /// Bit i = arm i's guard was consulted by the last re-match (arms
-    /// >= 64 are always consulted). Quiet cycles read it so a standing
-    /// bottom on a consulted guard keeps the select bottom.
-    consulted_guard_mask: u64,
+    /// Bit i = arm i's guard was consulted by the last re-match. Quiet
+    /// cycles read it so a standing bottom on a consulted guard keeps
+    /// the select bottom.
+    consulted_guard_mask: ArmMask,
     resident: TagValue,
     /// Set by `sleep()`; the next update re-matches against the present
     /// scrutinee, which may have moved while no reader was awake.
@@ -101,6 +101,25 @@ impl LazyArmFacts {
     }
 }
 
+/// One bit per arm; inline up to 64 arms.
+#[derive(Debug, Default)]
+struct ArmMask(smallvec::SmallVec<[u64; 1]>);
+
+impl ArmMask {
+    fn clear(&mut self, arms: usize) {
+        self.0.clear();
+        self.0.resize(arms.div_ceil(64), 0);
+    }
+
+    fn set(&mut self, i: usize) {
+        self.0[i / 64] |= 1 << (i % 64);
+    }
+
+    fn get(&self, i: usize) -> bool {
+        self.0.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
+    }
+}
+
 /// What a consulted-guard mask says about this cycle's emission.
 struct EmissionPlanes {
     /// A non-bottom fire was consumed.
@@ -115,13 +134,14 @@ fn emission_planes(
     guard_tags: &[Option<Tag>],
     arg_prod: Tag,
     bottomed: bool,
-    mask: u64,
+    mask: &ArmMask,
 ) -> EmissionPlanes {
     let mut sound = !bottomed && arg_prod.triggers();
     let mut anyfire = arg_prod.triggers();
     let mut consulted_bottom = false;
+    // XCR codex for eric: CR08 — done: `ArmMask` has a bit per arm.
     for (i, t) in guard_tags.iter().enumerate() {
-        if i < 64 && mask & (1 << i) == 0 {
+        if !mask.get(i) {
             continue;
         }
         if let Some(t) = t {
@@ -181,7 +201,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             tail_dispatch_select: std::sync::atomic::AtomicBool::new(
                 tail_dispatch_select,
             ),
-            consulted_guard_mask: 0,
+            consulted_guard_mask: ArmMask::default(),
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
             arm_facts: None,
@@ -204,7 +224,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms,
             selected: SelCell::new(),
             tail_dispatch_select: std::sync::atomic::AtomicBool::new(false),
-            consulted_guard_mask: 0,
+            consulted_guard_mask: ArmMask::default(),
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
             arm_facts: None,
@@ -251,7 +271,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms,
             selected: SelCell::new(),
             tail_dispatch_select: std::sync::atomic::AtomicBool::new(false),
-            consulted_guard_mask: 0,
+            consulted_guard_mask: ArmMask::default(),
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
             arm_facts: None,
@@ -802,42 +822,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             match arg.value.as_ref() {
                 None => ChainOut::Taken(None),
                 Some(v) => {
-                    let mut mask = 0u64;
+                    consulted_guard_mask.clear(arms.len());
                     let mut out = ChainOut::Taken(None);
                     for (i, (pat, _)) in arms.iter().enumerate() {
                         use super::pattern::ArmMatch;
                         match pat.arm_match(&ctx.env, v) {
                             ArmMatch::NoStruct => (),
-                            ArmMatch::GuardFalse => {
-                                if i < 64 {
-                                    mask |= 1 << i;
-                                }
-                            }
+                            ArmMatch::GuardFalse => consulted_guard_mask.set(i),
                             // Undecidable: the chain stops and the
                             // selection holds.
                             ArmMatch::GuardBottom => {
-                                if i < 64 {
-                                    mask |= 1 << i;
-                                }
+                                consulted_guard_mask.set(i);
                                 out = ChainOut::Undet;
                                 break;
                             }
                             ArmMatch::Matched => {
-                                if pat.guard.is_some() && i < 64 {
-                                    mask |= 1 << i;
+                                if pat.guard.is_some() {
+                                    consulted_guard_mask.set(i);
                                 }
                                 out = ChainOut::Taken(Some(i));
                                 break;
                             }
                         }
                     }
-                    *consulted_guard_mask = mask;
                     out
                 }
             }
         };
         let EmissionPlanes { sound: own_sound, anyfire: own_anyfire, consulted_bottom } =
-            emission_planes(&guard_tags, arg_prod, bottomed, *consulted_guard_mask);
+            emission_planes(&guard_tags, arg_prod, bottomed, consulted_guard_mask);
         // Sound only: a bottom must never upgrade a stale result to FIRED.
         if own_sound && tail_dispatch_select.load(Ordering::Relaxed) {
             ctx.tail_scrut_fired = true;

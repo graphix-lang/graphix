@@ -2,6 +2,7 @@ use crate::{
     AbstractTypeRegistry, CAST_ERR_TAG,
     env::Env,
     errf,
+    expr::ModPath,
     typ::{RefHist, Type, TypeRef},
 };
 use ahash::AHashSet;
@@ -12,6 +13,7 @@ use immutable_chunkmap::map::Map;
 use netidx_value::ValArray;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::iter;
 
 #[derive(Debug, Clone, Copy)]
@@ -88,14 +90,27 @@ impl Type {
         self.check_cast_int(env, &mut RefHist::new(LPooled::take()))
     }
 
+    // XCR codex for eric: CR05 — done: the value is borrowed, so a name
+    // re-entered on the current path over the same value (`hist`, as in
+    // `is_a_int`) is a cycle that consumes nothing and is refused; the
+    // walk runs under the stack guard.
     fn cast_value_int(
         &self,
         env: &Env,
         hist: &mut AHashSet<(usize, usize)>,
-        v: Value,
+        v: &Value,
     ) -> Result<Value> {
-        if self.is_a_int(env, hist, BitFlags::empty(), &v) {
-            return Ok(v);
+        crate::stack::ensure_sufficient(|| self.cast_value_inner(env, hist, v))
+    }
+
+    fn cast_value_inner(
+        &self,
+        env: &Env,
+        hist: &mut AHashSet<(usize, usize)>,
+        v: &Value,
+    ) -> Result<Value> {
+        if self.is_a_int(env, hist, BitFlags::empty(), v) {
+            return Ok(v.clone());
         }
         match self {
             Type::App(c, a) => match Type::app_filled(c, a) {
@@ -113,19 +128,19 @@ impl Type {
                 .iter()
                 .find_map(|t| v.clone().cast(t))
                 .ok_or_else(|| anyhow!("can't cast {v} to {self}")),
-            Type::Any => Ok(v),
+            Type::Any => Ok(v.clone()),
             Type::Error(e) => {
-                let v = match v {
-                    Value::Error(v) => (*v).clone(),
+                let inner = match v {
+                    Value::Error(v) => &**v,
                     v => v,
                 };
-                Ok(Value::Error(e.cast_value_int(env, hist, v)?.into()))
+                Ok(Value::Error(e.cast_value_int(env, hist, inner)?.into()))
             }
             Type::Array(et) => match v {
                 Value::Array(elts) => {
                     let mut va = elts
                         .iter()
-                        .map(|el| et.cast_value_int(env, hist, el.clone()))
+                        .map(|el| et.cast_value_int(env, hist, el))
                         .collect::<Result<LPooled<Vec<Value>>>>()?;
                     Ok(Value::Array(ValArray::from_iter_exact(va.drain(..))))
                 }
@@ -133,11 +148,13 @@ impl Type {
             },
             // A list casts element-wise, an array converts, anything
             // else becomes a singleton.
+            // XCR codex for eric: CR12 — done: the whole spine decides
+            // whether the value is a list.
             Type::List(et) => {
                 use crate::node::collection::list;
-                if list::is_list(&v) {
+                if list::len(v).is_some() {
                     let mut elems = list::Iter::new(v.clone())
-                        .map(|el| et.cast_value_int(env, hist, el))
+                        .map(|el| et.cast_value_int(env, hist, &el))
                         .collect::<Result<LPooled<Vec<Value>>>>()?;
                     Ok(list::from_iter(elems.drain(..)))
                 } else {
@@ -145,7 +162,7 @@ impl Type {
                         Value::Array(elts) => {
                             let mut elems = elts
                                 .iter()
-                                .map(|el| et.cast_value_int(env, hist, el.clone()))
+                                .map(|el| et.cast_value_int(env, hist, el))
                                 .collect::<Result<LPooled<Vec<Value>>>>()?;
                             Ok(list::from_iter(elems.drain(..)))
                         }
@@ -159,8 +176,8 @@ impl Type {
                         .into_iter()
                         .map(|(k, v)| {
                             Ok((
-                                key.cast_value_int(env, hist, k.clone())?,
-                                value.cast_value_int(env, hist, v.clone())?,
+                                key.cast_value_int(env, hist, k)?,
+                                value.cast_value_int(env, hist, v)?,
                             ))
                         })
                         .collect::<Result<LPooled<Vec<(Value, Value)>>>>()?;
@@ -171,8 +188,8 @@ impl Type {
                         .iter()
                         .map(|a| match a {
                             Value::Array(a) if a.len() == 2 => Ok((
-                                key.cast_value_int(env, hist, a[0].clone())?,
-                                value.cast_value_int(env, hist, a[1].clone())?,
+                                key.cast_value_int(env, hist, &a[0])?,
+                                value.cast_value_int(env, hist, &a[1])?,
                             )),
                             _ => bail!("expected an array of pairs"),
                         })
@@ -184,86 +201,57 @@ impl Type {
             Type::Tuple(ts) => match v {
                 Value::Array(elts) => {
                     if elts.len() != ts.len() {
-                        bail!("tuple size mismatch {self} with {}", Value::Array(elts))
+                        bail!("tuple size mismatch {self} with {v}")
                     }
                     let mut a = ts
                         .iter()
                         .zip(elts.iter())
-                        .map(|(t, el)| t.cast_value_int(env, hist, el.clone()))
+                        .map(|(t, el)| t.cast_value_int(env, hist, el))
                         .collect::<Result<LPooled<Vec<Value>>>>()?;
                     Ok(Value::Array(ValArray::from_iter_exact(a.drain(..))))
                 }
                 v => bail!("can't cast {v} to {self}"),
             },
+            // XCR codex for eric: CR13 — done: the names decide the match,
+            // each field's value converts recursively.
             Type::Struct(ts) => match v {
                 Value::Array(elts) => {
                     if elts.len() != ts.len() {
-                        bail!("struct size mismatch {self} with {}", Value::Array(elts))
+                        bail!("struct size mismatch {self} with {v}")
                     }
-                    let is_pairs = elts.iter().all(|v| match v {
-                        Value::Array(a) if a.len() == 2 => match &a[0] {
-                            Value::String(_) => true,
-                            _ => false,
-                        },
-                        _ => false,
-                    });
-                    if !is_pairs {
-                        bail!("expected array of pairs, got {}", Value::Array(elts))
+                    let mut fields: SmallVec<[(&ArcStr, &Value); 8]> = elts
+                        .iter()
+                        .map(struct_field)
+                        .collect::<Option<_>>()
+                        .ok_or_else(|| anyhow!("expected array of pairs, got {v}"))?;
+                    fields.sort_by_key(|(n, _)| *n);
+                    if ts
+                        .iter()
+                        .zip(fields.iter())
+                        .any(|((fname, _, _), (n, _))| n != &fname)
+                    {
+                        bail!("struct fields mismatch {self}, {v}")
                     }
-                    let mut elts_s: LPooled<Vec<&Value>> = elts.iter().collect();
-                    elts_s.sort_by_key(|v| match v {
-                        Value::Array(a) => match &a[0] {
-                            Value::String(s) => s,
-                            _ => unreachable!(),
-                        },
-                        _ => unreachable!(),
-                    });
-                    let keys_ok = ts.iter().zip(elts_s.iter()).fold(
-                        Ok(true),
-                        |acc: Result<_>, ((fname, t, _), v)| {
-                            let kok = acc?;
-                            let (name, v) = match v {
-                                Value::Array(a) => match (&a[0], &a[1]) {
-                                    (Value::String(n), v) => (n, v),
-                                    _ => unreachable!(),
-                                },
-                                _ => unreachable!(),
-                            };
-                            Ok(kok
-                                && name == fname
-                                && t.contains(env, &Type::Primitive(Typ::get(v).into()))?)
-                        },
-                    )?;
-                    if keys_ok {
-                        let mut elts = ts
-                            .iter()
-                            .zip(elts_s.iter())
-                            .map(|((n, t, _), v)| match v {
-                                Value::Array(a) => {
-                                    let a = [
-                                        Value::String(n.clone()),
-                                        t.cast_value_int(env, hist, a[1].clone())?,
-                                    ];
-                                    Ok(Value::Array(ValArray::from_iter_exact(
-                                        a.into_iter(),
-                                    )))
-                                }
-                                _ => unreachable!(),
-                            })
-                            .collect::<Result<LPooled<Vec<Value>>>>()?;
-                        Ok(Value::Array(ValArray::from_iter_exact(elts.drain(..))))
-                    } else {
-                        drop(elts_s);
-                        bail!("struct fields mismatch {self}, {}", Value::Array(elts))
-                    }
+                    let mut elts = ts
+                        .iter()
+                        .zip(fields.iter())
+                        .map(|((n, t, _), (_, fv))| {
+                            let a = [
+                                Value::String(n.clone()),
+                                t.cast_value_int(env, hist, fv)?,
+                            ];
+                            Ok(Value::Array(ValArray::from_iter_exact(a.into_iter())))
+                        })
+                        .collect::<Result<LPooled<Vec<Value>>>>()?;
+                    Ok(Value::Array(ValArray::from_iter_exact(elts.drain(..))))
                 }
                 v => bail!("can't cast {v} to {self}"),
             },
-            Type::Variant(tag, ts, _) if ts.len() == 0 => match &v {
-                Value::String(s) if s == tag => Ok(v),
+            Type::Variant(tag, ts, _) if ts.len() == 0 => match v {
+                Value::String(s) if s == tag => Ok(v.clone()),
                 _ => bail!("variant tag mismatch expected {tag} got {v}"),
             },
-            Type::Variant(tag, ts, _) => match &v {
+            Type::Variant(tag, ts, _) => match v {
                 Value::Array(elts) => {
                     if ts.len() + 1 == elts.len() {
                         match &elts[0] {
@@ -273,14 +261,14 @@ impl Type {
                         let mut a = iter::once(&Type::Primitive(Typ::String.into()))
                             .chain(ts.iter())
                             .zip(elts.iter())
-                            .map(|(t, v)| t.cast_value_int(env, hist, v.clone()))
+                            .map(|(t, v)| t.cast_value_int(env, hist, v))
                             .collect::<Result<LPooled<Vec<Value>>>>()?;
                         Ok(Value::Array(ValArray::from_iter_exact(a.drain(..))))
                     } else if ts.len() == elts.len() {
                         let mut a = ts
                             .iter()
                             .zip(elts.iter())
-                            .map(|(t, v)| t.cast_value_int(env, hist, v.clone()))
+                            .map(|(t, v)| t.cast_value_int(env, hist, v))
                             .collect::<Result<LPooled<Vec<Value>>>>()?;
                         a.insert(0, Value::String(tag.clone()));
                         Ok(Value::Array(ValArray::from_iter_exact(a.drain(..))))
@@ -290,23 +278,31 @@ impl Type {
                 }
                 v => bail!("can't cast {v} to {self}"),
             },
-            Type::Ref(TypeRef { .. }) => {
+            Type::Ref(TypeRef { scope, name, .. }) => {
                 let t = self.lookup_ref(env)?;
-                t.cast_value_int(env, hist, v)
+                let key = (ref_key(scope, name), (v as *const Value).addr());
+                if !hist.insert(key) {
+                    bail!(
+                        "can't cast {v} to {self}: the type recurses without consuming it"
+                    )
+                }
+                let r = t.cast_value_int(env, hist, v);
+                hist.remove(&key);
+                r
             }
             Type::Set(ts) => ts
                 .iter()
-                .find_map(|t| t.cast_value_int(env, hist, v.clone()).ok())
+                .find_map(|t| t.cast_value_int(env, hist, v).ok())
                 .ok_or_else(|| anyhow!("can't cast {v} to {self}")),
             Type::TVar(tv) => match &tv.read().typ.read().typ {
-                Some(t) => t.cast_value_int(env, hist, v.clone()),
-                None => Ok(v),
+                Some(t) => t.cast_value_int(env, hist, v),
+                None => Ok(v.clone()),
             },
         }
     }
 
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
-        match self.cast_value_int(env, &mut LPooled::take(), v) {
+        match self.cast_value_int(env, &mut LPooled::take(), &v) {
             Ok(v) => v,
             Err(e) => errf!(CAST_ERR_TAG, "{e:?}"),
         }
@@ -341,10 +337,7 @@ impl Type {
             Type::Ref(TypeRef { scope, name, .. }) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
-                    let t_addr = (scope.as_ref() as *const _ as *const u8).addr()
-                        ^ (name.as_ref() as *const _ as *const u8).addr();
-                    let v_addr = (v as *const Value).addr();
-                    let key = (t_addr, v_addr);
+                    let key = (ref_key(scope, name), (v as *const Value).addr());
                     hist.insert(key) && {
                         let r = t.is_a_int(env, hist, flags, v);
                         hist.remove(&key);
@@ -533,6 +526,23 @@ impl Type {
             Type::Set(triomphe::Arc::from(out.drain(..).collect::<Vec<_>>()))
         })
     }
+}
+
+/// A struct value's `[name, value]` pair.
+fn struct_field(v: &Value) -> Option<(&ArcStr, &Value)> {
+    match v {
+        Value::Array(a) if a.len() == 2 => match &a[0] {
+            Value::String(n) => Some((n, &a[1])),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The identity of a type name on the current walk's path.
+fn ref_key(scope: &ModPath, name: &ModPath) -> usize {
+    (scope.as_ref() as *const _ as *const u8).addr()
+        ^ (name.as_ref() as *const _ as *const u8).addr()
 }
 
 /// A flattened union member's runtime footprint. Variants, tuples,

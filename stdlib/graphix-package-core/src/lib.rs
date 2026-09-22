@@ -691,9 +691,11 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         let woke = std::mem::take(&mut self.woke_pending) && !ctx.in_frame();
         let (ev, cached, last_result) =
             (&mut self.t, &mut self.cached, &mut self.last_result);
-        coretraits::with_value_hooks(ctx, event, move |ctx, event| {
-            Self::update_inner(ev, cached, last_result, woke, ctx, from, event)
-        })
+        unsafe {
+            coretraits::with_value_hooks(ctx, event, move |ctx, event| {
+                Self::update_inner(ev, cached, last_result, woke, ctx, from, event)
+            })
+        }
     }
 
     fn typecheck0(
@@ -2424,21 +2426,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         event: &mut Event<E>,
     ) -> &TagValue {
         let (last, out) = (&mut self.0, &mut self.1);
-        coretraits::with_value_hooks(ctx, event, |ctx, event| {
-            let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
-                let v = tv.value_cloned();
-                if Some(&v) != last.as_ref() {
-                    *last = Some(v.clone());
-                    Some(v)
-                } else {
-                    None
+        unsafe {
+            coretraits::with_value_hooks(ctx, event, |ctx, event| {
+                let res = seam_tick(from[0].update(ctx, event)).and_then(|tv| {
+                    let v = tv.value_cloned();
+                    if Some(&v) != last.as_ref() {
+                        *last = Some(v.clone());
+                        Some(v)
+                    } else {
+                        None
+                    }
+                });
+                match res {
+                    Some(v) => out.set(TagValue::fired(v)),
+                    None => out.ride(),
                 }
-            });
-            match res {
-                Some(v) => out.set(TagValue::fired(v)),
-                None => out.ride(),
-            }
-        })
+            })
+        }
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
@@ -2587,9 +2591,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
         self.buf.clear();
         write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
         let (buf, typ) = (&mut self.buf, &self.typ);
-        coretraits::with_value_hooks(ctx, event, |ctx, _| {
-            write!(buf, "{}", TVal { env: &ctx.env, typ, v: &v }).unwrap()
-        });
+        unsafe {
+            coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                write!(buf, "{}", TVal { env: &ctx.env, typ, v: &v }).unwrap()
+            })
+        };
         emit_line(ctx, self.dest, &self.buf, "\n");
         self.out.set(TagValue::fired(v))
     }
@@ -2708,9 +2714,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
         write!(self.buf, "{}: ", self.scope.lexical).unwrap();
         let typ = from[1].typ().clone();
         let buf = &mut self.buf;
-        coretraits::with_value_hooks(ctx, event, |ctx, _| {
-            write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v: &v }).unwrap()
-        });
+        unsafe {
+            coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v: &v }).unwrap()
+            })
+        };
         emit_line(ctx, self.dest, &self.buf, "\n");
         self.out.set(TagValue::fired(Value::Null))
     }
@@ -2789,13 +2797,15 @@ macro_rules! printfn {
                 self.buf.clear();
                 let typ = from[1].typ().clone();
                 let buf = &mut self.buf;
-                coretraits::with_value_hooks(ctx, event, |ctx, _| {
-                    match &v {
-                        Value::String(s) => write!(buf, "{s}"),
-                        v => write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v }),
-                    }
-                    .unwrap()
-                });
+                unsafe {
+                    coretraits::with_value_hooks(ctx, event, |ctx, _| {
+                        match &v {
+                            Value::String(s) => write!(buf, "{s}"),
+                            v => write!(buf, "{}", TVal { env: &ctx.env, typ: &typ, v }),
+                        }
+                        .unwrap()
+                    })
+                };
                 emit_line(ctx, self.dest, &self.buf, $suffix);
                 self.out.set(TagValue::fired(Value::Null))
             }

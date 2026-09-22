@@ -83,32 +83,26 @@ impl Type {
     /// relative to a `Type::Set` of the input members in input order.
     /// Conservative: `true` may be reported for an identical result.
     fn flatten_set_tracked(set: impl IntoIterator<Item = Self>) -> (Self, bool) {
-        let init: Box<dyn Iterator<Item = Self>> = Box::new(set.into_iter());
-        let mut iters: LPooled<Vec<Box<dyn Iterator<Item = Self>>>> =
-            LPooled::from_iter([init]);
+        // XCR codex for eric: CR21 — done: the input iterates as itself and a
+        // nested set is a pooled (members, next index) frame.
+        let mut nested: LPooled<Vec<(Arc<[Self]>, usize)>> = LPooled::take();
         let mut acc: LPooled<Vec<Self>> = LPooled::take();
         let mut saw_bottom = false;
         let mut changed = false;
-        loop {
-            match iters.last_mut() {
-                None => break,
-                Some(iter) => match iter.next() {
-                    None => {
-                        iters.pop();
-                    }
-                    Some(Type::Set(s)) => {
+        let mut absorb =
+            |t: Self, nested: &mut Vec<(Arc<[Self]>, usize)>, acc: &mut Vec<Self>| {
+                match t {
+                    Type::Set(s) => {
                         changed = true;
-                        let v: SmallVec<[Self; 16]> =
-                            s.iter().map(|t| t.clone()).collect();
-                        iters.push(Box::new(v.into_iter()))
+                        nested.push((s, 0));
                     }
-                    Some(Type::Any) => return (Type::Any, true),
+                    Type::Any => return false,
                     // ⊥ ∪ X = X; an all-⊥ set is ⊥ (the exit match).
-                    Some(Type::Bottom) => {
+                    Type::Bottom => {
                         changed = true;
                         saw_bottom = true
                     }
-                    Some(t) => {
+                    t => {
                         // `acc` is merge-saturated, so only the incoming
                         // element (or its merge result) can enable a new
                         // merge.
@@ -126,7 +120,26 @@ impl Type {
                             break;
                         }
                     }
-                },
+                }
+                true
+            };
+        for t in set {
+            if !absorb(t, &mut nested, &mut acc) {
+                return (Type::Any, true);
+            }
+            while let Some((members, i)) = nested.last_mut() {
+                match members.get(*i) {
+                    None => {
+                        nested.pop();
+                    }
+                    Some(t) => {
+                        *i += 1;
+                        let t = t.clone();
+                        if !absorb(t, &mut nested, &mut acc) {
+                            return (Type::Any, true);
+                        }
+                    }
+                }
             }
         }
         if !acc.is_sorted() {

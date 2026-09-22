@@ -41,30 +41,22 @@ async fn environment_round_trips() -> Result<()> {
         .env;
     let mut enc = ImageEncoder::new();
     let mut buf = ImageBuf::with_capacity(0);
-    let measure = |enc: &mut ImageEncoder| {
-        let _s = EncodeImage::new(enc);
-        env.encoded_len()
-    };
-    let bound = measure(&mut enc);
+    let bound = EncodeImage::with(&mut enc, || env.encoded_len());
     enc.begin_encode();
-    {
-        let _s = EncodeImage::new(&mut enc);
-        env.encode(&mut buf)?;
-        assert_eq!(buf.len(), bound);
-    }
+    EncodeImage::with(&mut enc, || env.encode(&mut buf))?;
+    assert_eq!(buf.len(), bound);
     let counts = enc.counts();
     assert!(counts.bind.len() > 100 && counts.tvar.len() > 100, "{counts:?}");
     let image: Bytes = buf.freeze();
     let mut dec = ImageDecoder::new(counts);
     dec.set_image(image.clone());
     dec.set_offsets(enc.take_offsets());
-    let restored = {
-        let _s = DecodeImage::new(&mut dec);
+    let restored = DecodeImage::with(&mut dec, || {
         let mut b = &image[..];
         let env = Env::decode(&mut b)?;
         assert!(b.is_empty());
-        env
-    };
+        Ok::<_, anyhow::Error>(env)
+    })?;
     assert_eq!(env.by_id.len(), restored.by_id.len());
     assert_eq!(env.modules.len(), restored.modules.len());
     assert!(env.modules.into_iter().eq(restored.modules.into_iter()));

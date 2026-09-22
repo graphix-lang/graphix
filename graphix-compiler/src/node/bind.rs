@@ -1281,34 +1281,41 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.child.update(ctx, event);
-        if !tv.tag().is_bottom() {
-            let id = tv.with_value(|v| match v {
-                Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
-                _ => None,
-            });
-            // Resolve through the byref chain as the write path does:
-            // `&x`'s cell mirrors x a cycle late, the referent does not.
-            // A chainless reference's own cell is its only storage.
-            let id = id.map(|cell| match ctx.rt.ref_path(&cell) {
-                Some((root, path)) => {
-                    self.path = Some(path.clone());
-                    *root
+        let addr = tv.tag();
+        // XCR codex for eric: CR06 — done: a bottom address bottoms the
+        // production; the subscription to the last referent stays so a
+        // returning address needs no rebind.
+        if addr.is_bottom() {
+            return self.resident.set_bottom(addr.triggers());
+        }
+        let id = tv.with_value(|v| match v {
+            Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
+            _ => None,
+        });
+        // Resolve through the byref chain as the write path does:
+        // `&x`'s cell mirrors x a cycle late, the referent does not.
+        // A chainless reference's own cell is its only storage.
+        let id = id.map(|cell| match ctx.rt.ref_path(&cell) {
+            Some((root, path)) => {
+                self.path = Some(path.clone());
+                *root
+            }
+            None => {
+                self.path = None;
+                ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell)
+            }
+        });
+        if let Some(new_id) = id {
+            if self.id != Some(new_id) {
+                if let Some(old) = self.id {
+                    ctx.rt.unref_var(old, self.top_id);
                 }
-                None => {
-                    self.path = None;
-                    ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell)
-                }
-            });
-            if let Some(new_id) = id {
-                if self.id != Some(new_id) {
-                    if let Some(old) = self.id {
-                        ctx.rt.unref_var(old, self.top_id);
-                    }
-                    ctx.rt.ref_var(new_id, self.top_id);
-                    self.id = Some(new_id);
-                }
+                ctx.rt.ref_var(new_id, self.top_id);
+                self.id = Some(new_id);
             }
         }
+        // XCR codex for eric: CR07 — done: the address is a consumed input,
+        // so its fire joins the referent's tag (`Tag::join`).
         let res = self.id.and_then(|id| match super::read_var(ctx, event, &id) {
             Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
             Some(super::VarRead::Standing(tv)) => {
@@ -1327,7 +1334,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         });
         let res = match (res, &self.path) {
             (Some(tv), Some(path)) if !tv.tag().is_bottom() => {
-                match tv.with_value(|v| place::read_path(v, path)) {
+                let read = super::coretraits::with_key_ord_hooks(ctx, event, || {
+                    tv.with_value(|v| place::read_path(v, path))
+                });
+                match read {
                     Ok(v) => {
                         let mut c = TagValue::fired(v);
                         c.retag(tv.tag());
@@ -1342,7 +1352,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             (res, _) => res,
         };
         match res {
-            Some(tv) => self.resident.set(tv),
+            Some(mut tv) => {
+                let t = tv.tag().join(addr);
+                tv.retag(t);
+                self.resident.set(tv)
+            }
             None => self.resident.ride(),
         }
     }

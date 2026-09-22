@@ -1108,3 +1108,54 @@ run!(trait_result_is_filled, TRAIT_RESULT_IS_FILLED, |v: Result<&Value>| matches
     v,
     Ok(Value::I64(7))
 ); graphix_package_core::testing::FuseExpect::Jit);
+
+// A generic core implementation (`impl<'a> Eq for Box<'a>`) is the one
+// the value's operator consults.
+run!(
+    core_eq_generic_impl,
+    r#"
+{
+  type Box<'a> = Abstract<'a>;
+  impl<'a> Eq for Box<'a> { let eq = |a, b| true };
+  Box(1) == Box(2)
+}
+"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    FuseExpect::Jit
+);
+
+// A map ordered by a core `Ord` impl on its key type is searched by
+// that order through a place reference too.
+run!(
+    core_ord_map_place,
+    r#"
+{
+  type Rev = Abstract<i64>;
+  impl Ord for Rev {
+    let cmp = |a, b| select (a.0, b.0) {
+      (x, y) if x > y => `Less,
+      (x, y) if x < y => `Greater,
+      _ => `Equal
+    }
+  };
+  let m = {Rev(1) => 10, Rev(2) => 20, Rev(3) => 30};
+  *(&m{Rev(1)})
+}
+"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(10)));
+    FuseExpect::None
+);
+
+// A type variable in an impl head must be declared on the impl.
+run!(
+    impl_undeclared_tvar,
+    r#"
+{
+  trait Mark { val mark: fn(self) -> i64 };
+  impl Mark for Array<'a> { let mark = |x| 1 };
+  Mark::mark([1])
+}
+"#,
+    |v: Result<&Value>| matches!(&v, Err(e) if format!("{e:#}").contains("undeclared type variable"));
+    FuseExpect::None
+);

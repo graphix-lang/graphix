@@ -43,8 +43,8 @@ use parking_lot::{Mutex, RwLock};
 use std::{cell::Cell, marker::PhantomData, path::PathBuf, ptr::NonNull};
 use triomphe::Arc;
 
-const REF: u8 = 0;
-const DEF: u8 = 1;
+pub(crate) const REF: u8 = 0;
+pub(crate) const DEF: u8 = 1;
 
 /// The span of each relocated id domain an image holds; the decoder
 /// reserves a block of each.
@@ -145,7 +145,10 @@ unsafe impl BufMut for ImageBuf {
 }
 
 pub struct ImageEncoder {
-    pub(crate) maps: shared_map::EncodeTable,
+    /// Persistent map nodes by identity; `pinned_map_nodes` keeps every
+    /// one seen alive so an identity names one node for the session.
+    pub(crate) map_nodes: AHashMap<usize, Slot>,
+    pub(crate) pinned_map_nodes: Vec<Box<dyn std::any::Any + Send + Sync>>,
     /// Bytes written through the [`ImageBuf`] so far: the offset of
     /// the next byte.
     pub(crate) written: u64,
@@ -187,9 +190,11 @@ pub struct ImageEncoder {
     pub(crate) records: AHashMap<usize, Slot>,
     /// An expression's address, or the address of the first expression
     /// seen with its id and contents: a node's spec is a clone of the
-    /// tree it was compiled from.
+    /// tree it was compiled from. The first expression is kept (a
+    /// clone shares its children), so the comparison never reads
+    /// through an address.
     expr_alias: AHashMap<usize, usize>,
-    exprs_by_id: AHashMap<ExprId, usize>,
+    exprs_by_id: AHashMap<ExprId, (usize, Expr)>,
     /// Types and function types by their canonical bytes, every shared
     /// leaf (a variable, a resolution cell, an origin) by identity:
     /// equal types decode to one shared value.
@@ -221,7 +226,8 @@ impl Default for ImageEncoder {
 impl ImageEncoder {
     pub fn new() -> Self {
         ImageEncoder {
-            maps: shared_map::EncodeTable::default(),
+            map_nodes: AHashMap::new(),
+            pinned_map_nodes: Vec::new(),
             written: 0,
             ids: IdSpans::default(),
             next_ordinal: 0,
@@ -536,22 +542,28 @@ fn span(r: Option<IdRelocation>) -> IdSpan {
     }
 }
 
-/// Encodes under `encoder` on this thread until dropped. The id spans
-/// accumulate across every session over one encoder.
+/// An encode session: `encoder` is installed on this thread for the
+/// closure [`EncodeImage::with`] runs. The id spans accumulate across
+/// every session over one encoder. Sessions nest, innermost wins.
+// XCR codex for eric: CR02 — done: the guards are private to `with`, so a
+// session cannot be leaked or dropped out of order.
 pub struct EncodeImage<'a> {
     encoder: NonNull<ImageEncoder>,
     prev: Option<NonNull<ImageEncoder>>,
-    prev_maps: Option<NonNull<shared_map::EncodeTable>>,
     prev_ids: Relocations,
     _encoder: PhantomData<&'a mut ImageEncoder>,
 }
 
 impl<'a> EncodeImage<'a> {
-    pub fn new(encoder: &'a mut ImageEncoder) -> Self {
+    /// Run `f` with `encoder` installed.
+    pub fn with<T>(encoder: &'a mut ImageEncoder, f: impl FnOnce() -> T) -> T {
+        let _session = Self::new(encoder);
+        f()
+    }
+
+    fn new(encoder: &'a mut ImageEncoder) -> Self {
         let ids = std::mem::take(&mut encoder.ids);
         let enc = |span: IdSpan| Some(IdRelocation::Encode(span));
-        let prev_maps =
-            shared_map::install_encode(Some(NonNull::from(&mut encoder.maps)));
         let encoder = NonNull::from(encoder);
         let prev = ENCODER.replace(Some(encoder));
         let prev_ids = Relocations::install(
@@ -560,7 +572,7 @@ impl<'a> EncodeImage<'a> {
             enc(ids.expr),
             enc(ids.tvar),
         );
-        EncodeImage { encoder, prev, prev_maps, prev_ids, _encoder: PhantomData }
+        EncodeImage { encoder, prev, prev_ids, _encoder: PhantomData }
     }
 }
 
@@ -580,28 +592,31 @@ impl Drop for EncodeImage<'_> {
         // The guard holds the `&mut` this pointer came from.
         unsafe { (*self.encoder.as_ptr()).ids = ids };
         ENCODER.set(self.prev);
-        shared_map::install_encode(self.prev_maps);
     }
 }
 
-/// Decodes under `decoder` on this thread until dropped.
+/// A decode session: `decoder` is installed on this thread for the
+/// closure [`DecodeImage::with`] runs.
 pub struct DecodeImage<'a> {
     prev: Option<NonNull<ImageDecoder>>,
-    prev_maps: Option<NonNull<shared_map::DecodeTable>>,
     prev_ids: Relocations,
     _decoder: PhantomData<&'a mut ImageDecoder>,
 }
 
 impl<'a> DecodeImage<'a> {
-    pub fn new(decoder: &'a mut ImageDecoder) -> Self {
+    /// Run `f` with `decoder` installed.
+    pub fn with<T>(decoder: &'a mut ImageDecoder, f: impl FnOnce() -> T) -> T {
+        let _session = Self::new(decoder);
+        f()
+    }
+
+    fn new(decoder: &'a mut ImageDecoder) -> Self {
         let b = decoder.bases;
         let at = |base: u64| Some(IdRelocation::Decode { base });
-        let prev_maps =
-            shared_map::install_decode(Some(NonNull::from(&mut decoder.maps)));
         let prev = DECODER.replace(Some(NonNull::from(decoder)));
         let prev_ids =
             Relocations::install(at(b.bind), at(b.lambda), at(b.expr), at(b.tvar));
-        DecodeImage { prev, prev_maps, prev_ids, _decoder: PhantomData }
+        DecodeImage { prev, prev_ids, _decoder: PhantomData }
     }
 }
 
@@ -613,7 +628,6 @@ impl Drop for DecodeImage<'_> {
         );
         prev.restore();
         DECODER.set(self.prev);
-        shared_map::install_decode(self.prev_maps);
     }
 }
 
@@ -1445,6 +1459,8 @@ pub(crate) fn fntype_encode<B: BufMut>(
 
 /// The address an expression is keyed by: its own, or that of the
 /// first expression seen with its id and contents.
+// XCR codex for eric: CR03 — done: the session keeps a clone of the first
+// expression seen with each id; the address is only a key.
 pub(crate) fn expr_key(e: &Expr) -> usize {
     let addr = key(e);
     encoding(|enc| {
@@ -1452,12 +1468,10 @@ pub(crate) fn expr_key(e: &Expr) -> usize {
             return *canonical;
         }
         let canonical = match enc.exprs_by_id.get(&e.id) {
-            // Everything a session encodes stays borrowed for the
-            // session, so the first expression is still there.
-            Some(&first) if unsafe { &*(first as *const Expr) }.same_tree(e) => first,
+            Some((first, kept)) if kept.same_tree(e) => *first,
             Some(_) => addr,
             None => {
-                enc.exprs_by_id.insert(e.id, addr);
+                enc.exprs_by_id.insert(e.id, (addr, e.clone()));
                 addr
             }
         };
@@ -1592,19 +1606,19 @@ mod tests {
 
     fn pack_all<T: Pack>(items: &[T], enc: &mut ImageEncoder) -> Bytes {
         let measure = |enc: &mut ImageEncoder| -> Vec<usize> {
-            let _s = EncodeImage::new(enc);
-            items.iter().map(|i| i.encoded_len()).collect()
+            EncodeImage::with(enc, || items.iter().map(|i| i.encoded_len()).collect())
         };
         let bounds = measure(enc);
         enc.begin_encode();
-        let _s = EncodeImage::new(enc);
-        let mut buf = ImageBuf::with_capacity(0);
-        for (i, bound) in items.iter().zip(bounds) {
-            let before = buf.len();
-            i.encode(&mut buf).unwrap();
-            assert_eq!(buf.len() - before, bound);
-        }
-        buf.freeze()
+        EncodeImage::with(enc, || {
+            let mut buf = ImageBuf::with_capacity(0);
+            for (i, bound) in items.iter().zip(bounds) {
+                let before = buf.len();
+                i.encode(&mut buf).unwrap();
+                assert_eq!(buf.len() - before, bound);
+            }
+            buf.freeze()
+        })
     }
 
     fn decoder(enc: &mut ImageEncoder, image: &Bytes) -> ImageDecoder {
@@ -1634,22 +1648,23 @@ mod tests {
         let mut dec = decoder(&mut enc, &bytes);
         let base = dec.bases.expr;
         let after = ExprId::new();
-        let _s = DecodeImage::new(&mut dec);
-        let mut b = &bytes[..];
-        let (x, y, z) = (
-            ExprId::decode(&mut b).unwrap(),
-            ExprId::decode(&mut b).unwrap(),
-            ExprId::decode(&mut b).unwrap(),
-        );
-        assert_eq!(x, z);
-        assert_ne!(x, y);
-        assert_ne!(x, a);
-        assert!(x.inner() < after.inner() && y.inner() < after.inner());
-        // the block holds the span, floor first
-        assert_eq!(x.inner().min(y.inner()), base.wrapping_add(span.floor));
-        // a second decoder of the same image gets its own block
-        let dec2 = ImageDecoder::new(enc.counts());
-        assert!(dec2.bases.expr > base);
+        DecodeImage::with(&mut dec, || {
+            let mut b = &bytes[..];
+            let (x, y, z) = (
+                ExprId::decode(&mut b).unwrap(),
+                ExprId::decode(&mut b).unwrap(),
+                ExprId::decode(&mut b).unwrap(),
+            );
+            assert_eq!(x, z);
+            assert_ne!(x, y);
+            assert_ne!(x, a);
+            assert!(x.inner() < after.inner() && y.inner() < after.inner());
+            // the block holds the span, floor first
+            assert_eq!(x.inner().min(y.inner()), base.wrapping_add(span.floor));
+            // a second decoder of the same image gets its own block
+            let dec2 = ImageDecoder::new(enc.counts());
+            assert!(dec2.bases.expr > base);
+        });
     }
 
     #[test]
@@ -1671,33 +1686,38 @@ mod tests {
         let id = |tv: &TVar| tv.parts().0.inner();
         assert_eq!(enc.counts().tvar.extent, id(&a).max(id(&c)) + 1);
         let mut dec = decoder(&mut enc, &bytes);
-        let _s = DecodeImage::new(&mut dec);
-        let decoded = Type::decode(&mut &bytes[..]).unwrap();
-        let Type::Tuple(elems) = &decoded else { panic!("{decoded:?}") };
-        let tv = |i: usize| match &elems[i] {
-            Type::TVar(tv) => tv.clone(),
-            other => panic!("{other:?}"),
-        };
-        let (a2, b2, a3, c2) = (tv(0), tv(1), tv(2), tv(3));
-        assert_eq!(a2.wrapper_addr(), a3.wrapper_addr(), "one wrapper, two occurrences");
-        assert_ne!(a2.wrapper_addr(), b2.wrapper_addr());
-        assert!(a2.same_cell(&b2), "aliases share a cell");
-        assert!(!a2.same_cell(&c2));
-        // c is bound to a's wrapper, the same one the tuple holds
-        let Some(Type::TVar(inner)) = c2.read().typ.read().typ.clone() else {
-            panic!("c must stay bound to a tvar")
-        };
-        assert_eq!(inner.wrapper_addr(), a2.wrapper_addr());
-        // a constraint added through one alias shows through the other
-        a2.add_cell_constraint(Type::Primitive(netidx_value::Typ::I64.into()));
-        assert_eq!(b2.cell_constraints().len(), 1);
-        assert_eq!(b.cell_constraints().len(), 0, "the originals are untouched");
-        // ids and the frozen flag survive, relocated
-        assert_eq!(a2.parts().0, b2.parts().0);
-        assert_ne!(a2.parts().0, c2.parts().0);
-        assert_ne!(a2.parts().0, a.parts().0);
-        assert!(a2.parts().1, "the alias source is frozen");
-        assert!(!b2.parts().1);
+        DecodeImage::with(&mut dec, || {
+            let decoded = Type::decode(&mut &bytes[..]).unwrap();
+            let Type::Tuple(elems) = &decoded else { panic!("{decoded:?}") };
+            let tv = |i: usize| match &elems[i] {
+                Type::TVar(tv) => tv.clone(),
+                other => panic!("{other:?}"),
+            };
+            let (a2, b2, a3, c2) = (tv(0), tv(1), tv(2), tv(3));
+            assert_eq!(
+                a2.wrapper_addr(),
+                a3.wrapper_addr(),
+                "one wrapper, two occurrences"
+            );
+            assert_ne!(a2.wrapper_addr(), b2.wrapper_addr());
+            assert!(a2.same_cell(&b2), "aliases share a cell");
+            assert!(!a2.same_cell(&c2));
+            // c is bound to a's wrapper, the same one the tuple holds
+            let Some(Type::TVar(inner)) = c2.read().typ.read().typ.clone() else {
+                panic!("c must stay bound to a tvar")
+            };
+            assert_eq!(inner.wrapper_addr(), a2.wrapper_addr());
+            // a constraint added through one alias shows through the other
+            a2.add_cell_constraint(Type::Primitive(netidx_value::Typ::I64.into()));
+            assert_eq!(b2.cell_constraints().len(), 1);
+            assert_eq!(b.cell_constraints().len(), 0, "the originals are untouched");
+            // ids and the frozen flag survive, relocated
+            assert_eq!(a2.parts().0, b2.parts().0);
+            assert_ne!(a2.parts().0, c2.parts().0);
+            assert_ne!(a2.parts().0, a.parts().0);
+            assert!(a2.parts().1, "the alias source is frozen");
+            assert!(!b2.parts().1);
+        });
     }
 
     #[test]
@@ -1727,24 +1747,26 @@ mod tests {
         // the two tuples, the other tuple, the primitive and two variables
         assert_eq!(enc.types.len(), 5);
         let mut dec = decoder(&mut enc, &bytes);
-        let _s = DecodeImage::new(&mut dec);
-        let mut b = &bytes[..];
-        let d1 = Type::decode(&mut b).unwrap();
-        let d2 = Type::decode(&mut b).unwrap();
-        let d3 = Type::decode(&mut b).unwrap();
-        assert!(!b.has_remaining());
-        assert_eq!(d1, d2);
-        let (Type::Tuple(x1), Type::Tuple(x2), Type::Tuple(x3)) = (&d1, &d2, &d3) else {
-            panic!("{d1:?} {d2:?} {d3:?}")
-        };
-        assert!(Arc::ptr_eq(x1, x2), "equal types decode to one value");
-        assert!(!Arc::ptr_eq(x1, x3));
-        let (Type::TVar(v1), Type::TVar(v3)) = (&x1[1], &x3[1]) else { panic!() };
-        assert_ne!(
-            v1.wrapper_addr(),
-            v3.wrapper_addr(),
-            "a different variable is a different type"
-        );
+        DecodeImage::with(&mut dec, || {
+            let mut b = &bytes[..];
+            let d1 = Type::decode(&mut b).unwrap();
+            let d2 = Type::decode(&mut b).unwrap();
+            let d3 = Type::decode(&mut b).unwrap();
+            assert!(!b.has_remaining());
+            assert_eq!(d1, d2);
+            let (Type::Tuple(x1), Type::Tuple(x2), Type::Tuple(x3)) = (&d1, &d2, &d3)
+            else {
+                panic!("{d1:?} {d2:?} {d3:?}")
+            };
+            assert!(Arc::ptr_eq(x1, x2), "equal types decode to one value");
+            assert!(!Arc::ptr_eq(x1, x3));
+            let (Type::TVar(v1), Type::TVar(v3)) = (&x1[1], &x3[1]) else { panic!() };
+            assert_ne!(
+                v1.wrapper_addr(),
+                v3.wrapper_addr(),
+                "a different variable is a different type"
+            );
+        });
     }
 
     #[test]
@@ -1780,17 +1802,18 @@ mod tests {
         // the parent and its child are the only definitions
         assert_eq!(enc.exprs.len(), 2);
         let mut dec = decoder(&mut enc, &bytes);
-        let _s = DecodeImage::new(&mut dec);
-        let mut b = &bytes[..];
-        let d1 = Expr::decode(&mut b).unwrap();
-        let d2 = Expr::decode(&mut b).unwrap();
-        let d3 = Expr::decode(&mut b).unwrap();
-        assert!(!b.has_remaining());
-        assert_eq!(d1.id, d2.id);
-        assert_eq!(d1, d2);
-        let ExprKind::Array { args } = &d1.kind else { panic!("{d1:?}") };
-        assert_eq!(args[0].id, d3.id);
-        assert_eq!(args[0], d3);
+        DecodeImage::with(&mut dec, || {
+            let mut b = &bytes[..];
+            let d1 = Expr::decode(&mut b).unwrap();
+            let d2 = Expr::decode(&mut b).unwrap();
+            let d3 = Expr::decode(&mut b).unwrap();
+            assert!(!b.has_remaining());
+            assert_eq!(d1.id, d2.id);
+            assert_eq!(d1, d2);
+            let ExprKind::Array { args } = &d1.kind else { panic!("{d1:?}") };
+            assert_eq!(args[0].id, d3.id);
+            assert_eq!(args[0], d3);
+        });
     }
 
     #[test]
@@ -1818,17 +1841,18 @@ mod tests {
         );
         let mut dec = decoder(&mut enc, &bytes);
         let base = dec.bases.expr;
-        let _s = DecodeImage::new(&mut dec);
-        let mut b = &bytes[..];
-        let d1 = Expr::decode(&mut b).unwrap();
-        let d2 = Expr::decode(&mut b).unwrap();
-        assert!(b.is_empty());
-        assert!(Arc::ptr_eq(&d1.ori, &d2.ori), "one origin, two expressions");
-        assert!(!Arc::ptr_eq(&d1.ori, &ori));
-        assert_eq!(d1.ori.text, ori.text);
-        assert_ne!(d1.id, d2.id);
-        assert_eq!(d1.id.inner().wrapping_sub(base), e1.id.inner());
-        assert_eq!(d2.id.inner().wrapping_sub(base), e2.id.inner());
-        assert_eq!(d1.kind, ExprKind::Constant(Value::I64(1)));
+        DecodeImage::with(&mut dec, || {
+            let mut b = &bytes[..];
+            let d1 = Expr::decode(&mut b).unwrap();
+            let d2 = Expr::decode(&mut b).unwrap();
+            assert!(b.is_empty());
+            assert!(Arc::ptr_eq(&d1.ori, &d2.ori), "one origin, two expressions");
+            assert!(!Arc::ptr_eq(&d1.ori, &ori));
+            assert_eq!(d1.ori.text, ori.text);
+            assert_ne!(d1.id, d2.id);
+            assert_eq!(d1.id.inner().wrapping_sub(base), e1.id.inner());
+            assert_eq!(d2.id.inner().wrapping_sub(base), e2.id.inner());
+            assert_eq!(d1.kind, ExprKind::Constant(Value::I64(1)));
+        });
     }
 }

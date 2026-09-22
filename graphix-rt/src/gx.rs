@@ -11,8 +11,11 @@ use graphix_compiler::{
         Resolvers, RootFile, Source, parse_modpath,
     },
     image::ProgramRoot,
-    node::place::{self, VarUpdate},
-    node::{genn, lambda::LambdaDef},
+    node::{
+        coretraits, genn,
+        lambda::LambdaDef,
+        place::{self, VarUpdate},
+    },
     typ::Type,
 };
 use indexmap::IndexMap;
@@ -374,42 +377,42 @@ impl<X: GXExt> GX<X> {
         // order on each other's result.
         macro_rules! push_var_event {
             ($id:expr, $u:expr) => {
-                match self.event.variables.entry($id) {
-                    Entry::Vacant(e) => {
-                        let v = match $u {
-                            VarUpdate::Set(v) => Some(v),
-                            VarUpdate::Patch(path, v) => {
-                                match self.ctx.rt.store_value(&$id) {
-                                    Some(cur) => match place::write_path(&cur, &path, v) {
-                                        Ok(nv) => Some(nv),
-                                        Err(err) => {
-                                            error!("write through a reference into {:?}: {err}", $id);
-                                            None
-                                        }
-                                    },
-                                    None => {
-                                        error!("write through a reference into {:?}: no value to update", $id);
+                if self.event.variables.contains_key(&$id) {
+                    self.ctx.rt.var_updates.push_back(($id, $u));
+                } else {
+                    let v = match $u {
+                        VarUpdate::Set(v) => Some(v),
+                        VarUpdate::Patch(path, v) => match self.ctx.rt.store_value(&$id) {
+                            Some(cur) => {
+                                let (ctx, event) = (&mut self.ctx, &mut self.event);
+                                match coretraits::with_key_ord_hooks(ctx, event, || {
+                                    place::write_path(&cur, &path, v)
+                                }) {
+                                    Ok(nv) => Some(nv),
+                                    Err(err) => {
+                                        error!("write through a reference into {:?}: {err}", $id);
                                         None
                                     }
                                 }
                             }
-                        };
-                        if let Some(v) = v {
-                            self.ctx.rt.store_insert(
-                                $id,
-                                graphix_compiler::TagValue::fired(v.clone()),
-                            );
-                            // an ordinary runtime delivery is a FIRED event
-                            e.insert(graphix_compiler::TagValue::fired(v));
-                            if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
-                                for id in exps.keys() {
-                                    self.ctx.rt.updated.entry(*id).or_insert(false);
-                                }
+                            None => {
+                                error!("write through a reference into {:?}: no value to update", $id);
+                                None
+                            }
+                        },
+                    };
+                    if let Some(v) = v {
+                        self.ctx.rt.store_insert(
+                            $id,
+                            graphix_compiler::TagValue::fired(v.clone()),
+                        );
+                        // an ordinary runtime delivery is a FIRED event
+                        self.event.variables.insert($id, graphix_compiler::TagValue::fired(v));
+                        if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
+                            for id in exps.keys() {
+                                self.ctx.rt.updated.entry(*id).or_insert(false);
                             }
                         }
-                    }
-                    Entry::Occupied(_) => {
-                        self.ctx.rt.var_updates.push_back(($id, $u));
                     }
                 }
             };

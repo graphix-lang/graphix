@@ -1559,10 +1559,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
-        let fnode_value = {
+        let (fnode_tag, fnode_value) = {
             let tv = self.fnode.update(ctx, event);
-            if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
+            let tag = tv.tag();
+            (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
+        // XCR codex for eric: CR09 — done: a bottom callee is a consumed
+        // bottom input; the instance keeps its state and is not dispatched.
+        if fnode_tag.is_bottom() && !matches!(self.callee, Callee::Static { .. }) {
+            for id in set.drain(..) {
+                event.variables.remove(&id);
+            }
+            return self.resident.set_bottom(fnode_tag.triggers() || arg_fired);
+        }
         let bound = if let Callee::Static { first_update, .. } = &mut self.callee {
             let first = *first_update;
             *first_update = false;
@@ -1752,10 +1761,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             None => Err(anyhow!("instance {instance:?} is not in the image")),
             Some(at) => {
                 let image = dec.image().clone();
-                let _s = image::DecodeImage::new(&mut dec);
-                let mut sub = &image[at as usize..];
-                super::lambda::GXLambda::image_decode(ctx, &mut sub)
-                    .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
+                image::DecodeImage::with(&mut dec, || {
+                    let mut sub = &image[at as usize..];
+                    super::lambda::GXLambda::image_decode(ctx, &mut sub)
+                        .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
+                })
             }
         };
         ctx.image_decoder = Some(dec);

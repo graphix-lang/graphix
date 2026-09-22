@@ -304,28 +304,19 @@ fn refuse_catch(e: &Expr) -> Result<()> {
 }
 
 /// `Expr::fold` over every node that is not inside a lambda literal's
-/// body or defaults.
+/// body or defaults: the lambda itself is visited, its children are not.
+// XCR codex for eric: CR26 — done: the walk prunes at a lambda.
 fn fold_outside_lambdas<T>(e: &Expr, init: T, f: &mut impl FnMut(T, &Expr) -> T) -> T {
-    let in_lambda: LPooled<AHashSet<ExprId>> =
-        e.fold(LPooled::take(), &mut |mut set, x| {
-            if let ExprKind::Lambda(l) = &x.kind {
-                let mut mark = |sub: &Expr| {
-                    sub.fold((), &mut |(), y| {
-                        set.insert(y.id);
-                    })
-                };
-                if let Either::Left(body) = &l.body {
-                    mark(body);
-                }
-                for a in l.args.iter() {
-                    if let Some(Some(default)) = &a.labeled {
-                        mark(default);
-                    }
-                }
-            }
-            set
-        });
-    e.fold(init, &mut |acc, x| if in_lambda.contains(&x.id) { acc } else { f(acc, x) })
+    crate::stack::ensure_sufficient(|| {
+        let mut acc = Some(f(init, e));
+        if !matches!(e.kind, ExprKind::Lambda(_)) {
+            e.for_each_child(&mut |c| {
+                let v = acc.take().unwrap();
+                acc = Some(fold_outside_lambdas(c, v, f));
+            });
+        }
+        acc.unwrap()
+    })
 }
 
 /// The first node satisfying `pred` that is not inside a lambda literal's

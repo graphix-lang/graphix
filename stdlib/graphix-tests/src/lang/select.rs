@@ -2428,3 +2428,20 @@ const CAPTURE_OR_PATTERN: &str = r#"
 run!(capture_or_pattern, CAPTURE_OR_PATTERN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(12)))
 });
+
+// A guard past the 64th arm is consulted only when the chain reaches
+// it: a match at arm 0 is not bottomed by a never-produced guard at
+// arm 64.
+fn guard_beyond_sixty_four_arms() -> String {
+    let arms: Vec<String> = (0..64).map(|i| format!("{i} => {i}")).collect();
+    format!(
+        "{{ let x = 0; select x {{ {}, 64 if never<bool>() => 64, _ => -1 }} }}",
+        arms.join(", ")
+    )
+}
+
+run!(guard_beyond_sixty_four_arms, guard_beyond_sixty_four_arms(), |v: Result<
+    &Value,
+>| {
+    matches!(v, Ok(Value::I64(0)))
+});

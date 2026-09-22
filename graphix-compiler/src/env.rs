@@ -1476,6 +1476,9 @@ impl Env {
     /// Drop everything registered at `scope` or any descendant, so a
     /// package's source can re-register under the same scope. Returns
     /// the number of bind and typedef entries removed.
+    // XCR codex for eric: CR17 — done: the abstract reps of the removed
+    // typedefs and the removed binds' `poly_binds`/`byref_chain` entries go
+    // too.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
         let mut removed = 0;
         let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)
@@ -1491,6 +1494,8 @@ impl Env {
                 for id in &*ids {
                     self.by_id.remove_cow(id);
                     self.trait_methods.remove_cow(id);
+                    self.poly_binds.remove_cow(id);
+                    self.byref_chain.remove_cow(id);
                 }
             }
             self.binds.remove_cow(s);
@@ -1529,6 +1534,11 @@ impl Env {
         for s in &*type_scopes {
             if let Some(defs) = self.typedefs.get(s) {
                 removed += defs.len();
+                let ids: LPooled<Vec<AbstractId>> =
+                    defs.into_iter().map(|(name, _)| AbstractId::of(s, name)).collect();
+                for id in &*ids {
+                    self.abstract_reps.remove_cow(id);
+                }
             }
             self.typedefs.remove_cow(s);
         }
@@ -1673,6 +1683,35 @@ mod test {
         assert_eq!(env.package_root("/#fn7/m"), "/");
         env.package_roots.insert_cow(ArcStr::from("pkg"));
         assert_eq!(env.package_root("/pkg/#do1/sub"), "/pkg");
+    }
+
+    /// Removing a scope drops the abstract representation its typedef
+    /// minted, so a type re-registered at that path is a new one.
+    #[test]
+    fn unbind_scope_drops_abstract_reps() {
+        let mut env = Env::default();
+        let scope = ModPath::from(["pkg"]);
+        let ori = Arc::new(Origin::default());
+        let register = |env: &mut Env, body: &TypeDefBody| {
+            env.deftype(
+                &scope,
+                "Key",
+                Arc::from_iter([]),
+                body,
+                true,
+                None,
+                SourcePosition::default(),
+                ori.clone(),
+            )
+            .unwrap()
+        };
+        register(&mut env, &TypeDefBody::Abstract(Some(Type::Any)));
+        let id = AbstractId::of(&scope, "Key");
+        assert!(env.abstract_minted(id));
+        assert!(env.unbind_scope_subtree(&scope) > 0);
+        assert!(!env.abstract_minted(id));
+        register(&mut env, &TypeDefBody::Abstract(None));
+        assert!(!env.abstract_minted(id));
     }
 
     #[test]

@@ -55,32 +55,38 @@ impl Drop for Kernel {
     fn drop(&mut self) {
         // Only instance death frees the slot chains and activation trees;
         // neither `sleep` nor `reset_replay` touches them.
+        // SAFETY: the words are taken out of the state, so each chain and
+        // tree is freed once, by the layout the wrapper describes.
         for a in self.jit.slot_table_words.iter() {
             let p = std::mem::replace(&mut self.state[a.rel as usize], 0);
-            super::emit_helpers::free_slot_chain(
-                p,
-                a.own_levels as u64,
-                a.leaf.as_deref(),
-            );
+            unsafe {
+                super::emit_helpers::free_slot_chain(
+                    p,
+                    a.own_levels as u64,
+                    a.leaf.as_deref(),
+                )
+            };
         }
         for b in self.jit.state_self_blocks.iter() {
             let p = std::mem::replace(&mut self.state[b.rel as usize], 0);
-            super::emit_helpers::free_self_block_tree(p, &b.slots);
+            unsafe { super::emit_helpers::free_self_block_tree(p, &b.slots) };
         }
         if let Some(l) = self.jit.own_site.as_ref() {
             for b in l.self_blocks.iter() {
                 let p = std::mem::replace(&mut self.site[b.rel as usize], 0);
-                super::emit_helpers::free_self_block_tree(p, &b.slots);
+                unsafe { super::emit_helpers::free_self_block_tree(p, &b.slots) };
             }
         }
         if let Some(l) = self.jit.own_site.as_ref() {
             for a in l.anchors.iter() {
                 let p = std::mem::replace(&mut self.site[a.rel as usize], 0);
-                super::emit_helpers::free_slot_chain(
-                    p,
-                    a.own_levels as u64,
-                    a.leaf.as_deref(),
-                );
+                unsafe {
+                    super::emit_helpers::free_slot_chain(
+                        p,
+                        a.own_levels as u64,
+                        a.leaf.as_deref(),
+                    )
+                };
             }
         }
     }
@@ -188,6 +194,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut any_updated = false;
         let mut any_bottom = false;
+        // XCR codex for eric: CR20 — done: `polled` is the one per-param
+        // record, staged straight into the wire slots, which are sized for
+        // the same parameter count as it is.
         let mut polled: smallvec::SmallVec<[(Tag, Option<Value>); 16]> =
             smallvec::SmallVec::with_capacity(from.len());
         for src in from.iter_mut() {
@@ -231,15 +240,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         #[cfg(debug_assertions)]
         record_fusion_invocation();
         let k = &self.kernel;
-        let n_params = k.params.len();
-        let mut param_opts: smallvec::SmallVec<[Option<Value>; 16]> =
-            smallvec::smallvec![None; n_params];
-        let mut param_tags: smallvec::SmallVec<[Tag; 16]> =
-            smallvec::smallvec![Tag::STALE_BOTTOM; n_params];
-        for (i, (tag, v)) in polled.drain(..).enumerate() {
-            param_opts[i] = v;
-            param_tags[i] = tag;
-        }
+        debug_assert_eq!(polled.len(), k.params.len(), "one production per kernel param");
         let wrapped = &self.jit;
         let taint = TAINT as u64;
         let stale = STALE as u64;
@@ -255,9 +256,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         let staged: smallvec::SmallVec<[(u64, u64, Value); 16]> = k
             .params
             .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let ptag = param_tags[i];
+            .zip(polled.iter())
+            .map(|(p, (ptag, pv))| {
+                let ptag = *ptag;
                 let flag = if ptag.is_fired() { 0 } else { stale };
                 let bflag = taint | if ptag.triggers() { 0 } else { stale };
                 // The typechecker and the runtime disagree about this slot:
@@ -270,7 +271,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                         p.name, p.kind,
                     )
                 };
-                match (&p.kind, param_opts[i].as_ref()) {
+                match (&p.kind, pv.as_ref()) {
                     (ParamKind::Scalar(prim), Some(v)) => {
                         match pack_value_to_u64(v, *prim) {
                             Some(payload) => {
@@ -345,7 +346,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 }
             })
             .collect();
-        let mut slots: smallvec::SmallVec<[u64; 16]> =
+        let mut slots: smallvec::SmallVec<[u64; 35]> =
             smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
         // Slot 0: bit 0 init view, bit 1 quiet frame, bit 2 wake.
         let init = if ctx.frame_depth > 0 { ctx.dispatch_init } else { event.init };
@@ -383,28 +384,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         } else {
             (None, 0, 0)
         };
-        crate::node::coretraits::with_value_hooks(ctx, event, |ctx, event| {
-            let ((), raises) = super::emit_helpers::with_qop_raises(|| unsafe {
-                super::emit_helpers::with_kernel_env(&ctx.env, || {
-                    f(slots.as_ptr(), out.as_mut_ptr());
-                })
-            });
-            for (site, v) in raises {
-                // SAFETY: `site` is a `QopSite` constant of the kernel's
-                // record, which outlives its code.
-                let site = unsafe { &*site };
-                if let Value::Error(e) = v {
-                    crate::node::error::deliver_error(
-                        ctx,
-                        event,
-                        &site.handler,
-                        site.own_top,
-                        &site.spec,
-                        (*e).clone(),
-                    );
+        // SAFETY: the loan's hooks run only inside the kernel call, which
+        // holds `&ctx.env` alone, and `site` is a `QopSite` constant of the
+        // kernel's record, which outlives its code.
+        unsafe {
+            crate::node::coretraits::with_value_hooks(ctx, event, |ctx, event| {
+                let ((), raises) = super::emit_helpers::with_qop_raises(|| {
+                    super::emit_helpers::with_kernel_env(&ctx.env, || {
+                        f(slots.as_ptr(), out.as_mut_ptr());
+                    })
+                });
+                for (site, v) in raises {
+                    let site = &*site;
+                    if let Value::Error(e) = v {
+                        crate::node::error::deliver_error(
+                            ctx,
+                            event,
+                            &site.handler,
+                            site.own_top,
+                            &site.spec,
+                            (*e).clone(),
+                        );
+                    }
                 }
-            }
-        });
+            })
+        };
         let pending = KERNEL_ABORT.with(|c| c.replace(false));
         // Must run before the pending early return. An aborted run
         // reached only a prefix, so its reach count is not a shrink signal.
@@ -416,22 +420,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             if !pending {
                 if reached < self.tree_size {
                     let jit = self.jit.clone();
+                    // SAFETY: the root words are this kernel's own state,
+                    // laid out as the wrapper describes.
                     for b in jit.state_self_blocks.iter() {
-                        reclaim_self_block_tree(
-                            (&mut self.state[b.rel as usize]) as *mut u64,
-                            b.words as usize,
-                            &b.slots,
-                            generation,
-                        );
-                    }
-                    if let Some(l) = jit.own_site.as_ref() {
-                        for b in l.self_blocks.iter() {
+                        unsafe {
                             reclaim_self_block_tree(
-                                (&mut self.site[b.rel as usize]) as *mut u64,
+                                (&mut self.state[b.rel as usize]) as *mut u64,
                                 b.words as usize,
                                 &b.slots,
                                 generation,
-                            );
+                            )
+                        };
+                    }
+                    if let Some(l) = jit.own_site.as_ref() {
+                        for b in l.self_blocks.iter() {
+                            unsafe {
+                                reclaim_self_block_tree(
+                                    (&mut self.site[b.rel as usize]) as *mut u64,
+                                    b.words as usize,
+                                    &b.slots,
+                                    generation,
+                                )
+                            };
                         }
                     }
                 }

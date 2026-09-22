@@ -3,7 +3,7 @@ use crate::{
     expr::print::{PrettyBuf, PrettyDisplay},
     typ::{FnType, TVar, Type},
 };
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use arcstr::{ArcStr, literal};
 use combine::stream::position::SourcePosition;
 pub use modpath::ModPath;
@@ -76,12 +76,26 @@ pub(crate) fn swap_origin(ori: Option<Arc<Origin>>) -> Option<Arc<Origin>> {
 
 /// utility to read a file to an ArcStr with minimal allocation
 pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr> {
+    let path = path.as_ref();
+    read_optional(path)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{}: no such file", path.display()))
+}
+
+/// Read a file that may not exist: `None` when it does not, an error
+/// for any other failure (unreadable, not UTF-8).
+pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<ArcStr>> {
     use tokio::io::AsyncReadExt;
+    let path = path.as_ref();
+    let mut f = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(anyhow::Error::from(e).context(path.display().to_string())),
+    };
     let mut buf: LPooled<Vec<u8>> = LPooled::take();
-    let mut f = tokio::fs::File::open(path).await?;
-    f.read_to_end(&mut *buf).await?;
-    let s = str::from_utf8(&*buf)?;
-    Ok(ArcStr::from(s))
+    f.read_to_end(&mut *buf).await.with_context(|| path.display().to_string())?;
+    let s = str::from_utf8(&*buf).with_context(|| path.display().to_string())?;
+    Ok(Some(ArcStr::from(s)))
 }
 
 #[derive(Debug)]
@@ -1159,7 +1173,7 @@ impl Expr {
     /// Visit each direct sub-expression in the one canonical child order,
     /// shared by `fold` and `map_children`. A new `ExprKind` child is
     /// added here and nowhere else.
-    pub fn for_each_child(&self, f: &mut impl FnMut(&Expr)) {
+    pub fn for_each_child<'a>(&'a self, f: &mut impl FnMut(&'a Expr)) {
         use ExprKind::*;
         match &self.kind {
             NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) => (),

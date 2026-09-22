@@ -9,20 +9,12 @@
 use arcstr::ArcStr;
 use std::{
     collections::HashSet,
-    sync::{
-        LazyLock, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 
-/// New interns that must accumulate before the GC thread walks the table.
-const GC_THRESHOLD: usize = 1024;
-
-/// How often the GC thread checks the counter.
+/// How often the GC thread sweeps the table.
 const GC_INTERVAL: Duration = Duration::from_secs(5);
-
-static INTERN_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 static INTERNER: LazyLock<Mutex<HashSet<ArcStr>>> = LazyLock::new(|| {
     std::thread::Builder::new()
@@ -40,7 +32,6 @@ pub fn intern(s: &ArcStr) -> ArcStr {
     }
     let canonical = s.clone();
     table.insert(canonical.clone());
-    INTERN_COUNT.fetch_add(1, Ordering::Relaxed);
     canonical
 }
 
@@ -50,15 +41,11 @@ pub fn gc_now() {
     gc_pass();
 }
 
+// XCR codex for eric: CR23 — done: every interval sweeps a non-empty table;
+// a string's owners can drop without a new intern, so no counter decides.
 fn gc_loop() {
-    let mut last_seen = 0usize;
     loop {
         std::thread::sleep(GC_INTERVAL);
-        let now = INTERN_COUNT.load(Ordering::Relaxed);
-        if now.wrapping_sub(last_seen) < GC_THRESHOLD {
-            continue;
-        }
-        last_seen = now;
         gc_pass();
     }
 }
