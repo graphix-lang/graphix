@@ -354,11 +354,8 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
         let cv = arg.emit_clif(cx)?;
-        // A tainted new formal keeps the loop-carried previous value:
-        // bottom is "no event this cycle", not a poison.
-        let taint = is_tainted(cx.b, cv.disc);
         let source = node_composite_source(arg);
-        rebinds.push(TailRebind { slot, val: cv, source, taint });
+        rebinds.push(TailRebind { slot, val: cv, source });
     }
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, rebinds)
 }

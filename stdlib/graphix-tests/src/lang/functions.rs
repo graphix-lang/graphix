@@ -1872,3 +1872,29 @@ const NULL_CALLEE_IS_BOTTOM: &str = r#"
 run!(null_callee_is_bottom, NULL_CALLEE_IS_BOTTOM, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(-1)))
 }; graphix_package_core::testing::FuseExpect::None);
+
+// A bottom argument to a tail self-call bottoms the formal, as it does
+// for a non-tail call: the loop does not keep the previous value. `obs`
+// is written only by a value, so it stays null while the result is
+// bottom.
+const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
+{
+  let rec f = |n: i64, x: i64, k: i64| -> i64 select n {
+    0 => x,
+    _ => f(n - 1, select n { m if m == k => null$, _ => x }, k)
+  };
+  let k = 2;
+  let t1 = sys::time::timer(duration:0.03s, false);
+  k <- t1 ~ 9;
+  let r = f(3, 7, k);
+  let obs: [i64, null] = null;
+  obs <- r;
+  let t0 = sys::time::timer(duration:0.015s, false);
+  let t2 = sys::time::timer(duration:0.06s, false);
+  (t0 ~ obs, t2 ~ obs)
+}
+"#;
+
+run!(tail_rebind_carries_bottom, TAIL_REBIND_CARRIES_BOTTOM, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[null, i64:7]"
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -338,10 +338,19 @@ impl Type {
                 }
             },
             Type::Primitive(t) => t.contains(Typ::get(&v)),
-            Type::Abstract { id, .. } => match v {
+            // XCR codex for eric: [CR01, P1] done: the parameters the value was
+            // constructed at must fit the predicate's, probed without binding.
+            Type::Abstract { id, params } => match v {
                 Value::Abstract(a) => {
                     match a.downcast_ref::<crate::abstract_value::GxAbstract>() {
-                        Some(g) => g.id == *id,
+                        Some(g) => {
+                            g.id == *id
+                                && g.params.len() == params.len()
+                                && params.iter().zip(g.params.iter()).all(|(p, gp)| {
+                                    p.contains_with_flags(BitFlags::empty(), env, gp)
+                                        .unwrap_or(false)
+                                })
+                        }
                         None => {
                             a.id().as_u64_pair().1 == id.inner()
                                 || flags.contains(IsAFlags::MatchAbstract)

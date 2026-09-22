@@ -961,7 +961,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             + self.module.encoded_len()
             + self.spec.encoded_len()
             + nodes_len(&self.children)
-            + self.catches.to_vec().encoded_len()
+            // XCR codex for eric: [CR19, P2] done: borrowed slices here and in
+            // `CallSite`.
+            + crate::image::slice_len(&self.catches)
             + crate::image::scope_len(&self.scope)
     }
 
@@ -970,7 +972,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.module.encode(buf)?;
         self.spec.encode(buf)?;
         encode_nodes(&self.children, buf)?;
-        self.catches.to_vec().encode(buf)?;
+        crate::image::slice_encode(&self.catches, buf)?;
         crate::image::scope_encode(&self.scope, buf)
     }
 
@@ -1575,11 +1577,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         };
         let mut up = rhs_fired;
         if let Some(tv) = event.variables.get(&self.src_id) {
-            if let Some(t) = Self::resolve(ctx, tv) {
-                if self.target.as_ref() != Some(&t) {
-                    self.target = Some(t);
-                    up = true;
-                }
+            // a reference delivered without a target (a place whose
+            // address is undetermined) has nowhere to write
+            let t = Self::resolve(ctx, tv);
+            if self.target != t {
+                self.target = t;
+                up = true;
             }
         } else if self.target.is_none() {
             // an instance created after the reference value was delivered

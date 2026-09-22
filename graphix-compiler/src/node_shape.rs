@@ -321,7 +321,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
                 kids.extend(abort.manual.iter());
             }
         }
-        V::ByRef(n) => kids.push(&n.child),
+        V::ByRef(n) => n.for_each_child(&mut |c| kids.push(c)),
         V::Deref(n) => kids.push(&n.child),
         V::Struct(n) => kids.extend(n.n.iter()),
         V::Tuple(n) => kids.extend(n.n.iter()),

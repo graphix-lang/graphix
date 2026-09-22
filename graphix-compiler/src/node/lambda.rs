@@ -278,6 +278,12 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                 mem::replace(&mut frame, LPooled::take());
             for (v, pat) in p.args.iter().zip(self.args.iter()) {
                 match v {
+                    Some(tv) if tv.tag().is_bottom() => {
+                        let tag = tv.tag();
+                        pat.ids(&mut |id| {
+                            frame.insert(id, TagValue::tagged(Value::Null, tag));
+                        })
+                    }
                     Some(tv) => {
                         let (v, tag) = tv.clone().into_parts();
                         pat.bind(&v, &mut |id, v| {

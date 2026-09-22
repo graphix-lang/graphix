@@ -23,6 +23,7 @@ use crate::{
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
+use std::cell::RefCell;
 
 /// The Value ABI the helpers' two-`I64` signatures depend on: two
 /// 8-byte words, and every externally-defined payload fits the second.
@@ -224,12 +225,58 @@ fn va_borrowed_bits(a: &ValArray) -> u64 {
 // finalize it into a `ValArray`. Every buf pointer is owned and must be
 // finalized or dropped exactly once.
 
+type ValueBuf = LPooled<Vec<Value>>;
+
+/// Builders not in use, boxed once and reused, so a producer allocates
+/// nothing in the steady state.
+struct Spares<T>(RefCell<Vec<Box<T>>>);
+
+const SPARES_MAX: usize = 64;
+
+impl<T> Spares<T> {
+    const fn new() -> Self {
+        Self(RefCell::new(Vec::new()))
+    }
+
+    fn take(&self, fresh: impl FnOnce() -> T) -> *mut T {
+        let spare = self.0.borrow_mut().pop();
+        Box::into_raw(spare.unwrap_or_else(|| Box::new(fresh())))
+    }
+
+    /// `p` came from `take` and its contents are already cleared.
+    unsafe fn give(&self, p: *mut T) {
+        let b = unsafe { Box::from_raw(p) };
+        let mut s = self.0.borrow_mut();
+        if s.len() < SPARES_MAX {
+            s.push(b);
+        }
+    }
+}
+
+thread_local! {
+    static SPARE_BUFS: Spares<ValueBuf> = const { Spares::new() };
+    static SPARE_STRINGS: Spares<String> = const { Spares::new() };
+}
+
+// XCR codex for eric: [CR20, P2] done: the boxes are kept and reused, for
+// the value builders and the string builders alike.
+fn buf_take(cap: usize) -> *mut ValueBuf {
+    let buf = SPARE_BUFS.with(|s| s.take(LPooled::take));
+    unsafe { (*buf).reserve(cap) };
+    buf
+}
+
+unsafe fn buf_give(buf: *mut ValueBuf) {
+    unsafe {
+        (*buf).clear();
+        SPARE_BUFS.with(|s| s.give(buf))
+    }
+}
+
 jit_helpers! { registry = buf_helpers;
 
 unsafe fn graphix_value_buf_new(cap: usize) -> *mut LPooled<Vec<Value>> {
-    let mut buf: LPooled<Vec<Value>> = LPooled::take();
-    buf.reserve(cap);
-    Box::into_raw(Box::new(buf))
+    buf_take(cap)
 }
 
 unsafe fn graphix_value_buf_push_i64(buf: *mut LPooled<Vec<Value>>, v: i64) {
@@ -311,7 +358,7 @@ unsafe fn graphix_value_buf_push_value(buf: *mut LPooled<Vec<Value>>, tv: TagVal
 /// Drop a buf that never reached `finalize`.
 unsafe fn graphix_value_buf_drop(buf: *mut LPooled<Vec<Value>>) {
     assert!(!buf.is_null(), "graphix_value_buf_drop: null buf — JIT codegen bug");
-    unsafe { drop(Box::from_raw(buf)) }
+    unsafe { buf_give(buf) }
 }
 
 /// Push a `Value::String` cloned from a kernel strings-table slot.
@@ -330,8 +377,9 @@ unsafe fn graphix_value_buf_push_string(buf: *mut LPooled<Vec<Value>>, s: arcstr
 /// Finalize the buffer into owned `ValArray` bits, consuming the buf.
 unsafe fn graphix_valarray_finalize(buf: *mut LPooled<Vec<Value>>) -> u64 {
     unsafe {
-        let mut owned = *Box::from_raw(buf);
-        va_bits(ValArray::from_iter_exact(owned.drain(..)))
+        let bits = va_bits(ValArray::from_iter_exact((*buf).drain(..)));
+        buf_give(buf);
+        bits
     }
 }
 
@@ -1065,19 +1113,26 @@ safe fn graphix_valarray_empty() -> u64 {
 /// Start an owned string buffer; pair with `graphix_string_buf_finalize`
 /// or `graphix_string_buf_drop`.
 unsafe fn graphix_string_buf_new() -> *mut String {
-    Box::into_raw(Box::new(String::new()))
+    SPARE_STRINGS.with(|s| s.take(String::new))
 }
 
 /// Drop a string buf without finalizing.
 unsafe fn graphix_string_buf_drop(buf: *mut String) {
     assert!(!buf.is_null(), "graphix_string_buf_drop: null buf — JIT codegen bug");
-    drop(unsafe { Box::from_raw(buf) })
+    unsafe {
+        (*buf).clear();
+        SPARE_STRINGS.with(|s| s.give(buf))
+    }
 }
 
 /// Finalize a string buf into an owned ArcStr, consuming the buf.
 unsafe fn graphix_string_buf_finalize(buf: *mut String) -> arcstr::ArcStr {
-    let s = unsafe { *Box::from_raw(buf) };
-    arcstr::ArcStr::from(s.as_str())
+    unsafe {
+        let s = arcstr::ArcStr::from((*buf).as_str());
+        (*buf).clear();
+        SPARE_STRINGS.with(|st| st.give(buf));
+        s
+    }
 }
 
 /// Append an ArcStr's contents to the buf, consuming the ArcStr.

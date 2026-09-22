@@ -208,21 +208,14 @@ struct SiteEntry<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
-    /// The candidate for `v`, resolved at the first sight of the type
-    /// `v` was constructed at.
-    fn resolve(
-        &mut self,
-        env: &Env,
-        t: CoreTrait,
-        v: &Value,
-    ) -> Option<&mut Candidate<R, E>> {
-        let typ = abstract_value::get(v)?.typ();
-        let i = match self.by_type.iter().position(|(seen, _)| *seen == typ) {
+    /// The slot of the instantiation `typ`, resolved at its first sight.
+    fn slot(&mut self, env: &Env, t: CoreTrait, typ: &Type) -> usize {
+        match self.by_type.iter().position(|(seen, _)| seen == typ) {
             Some(i) => i,
             None => {
                 let candidate =
-                    impl_for(env, t, &typ).and_then(|(im, open)| {
-                        match hook_of(env, t, &im, &typ, &open) {
+                    impl_for(env, t, typ).and_then(|(im, open)| {
+                        match hook_of(env, t, &im, typ, &open) {
                             Ok(hook) => Some(Candidate { hook, pool: Vec::new() }),
                             Err(e) => {
                                 log::error!("core trait lookup for {typ}: {e:?}");
@@ -230,11 +223,17 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
                             }
                         }
                     });
-                self.by_type.push((typ, candidate));
+                self.by_type.push((typ.clone(), candidate));
                 self.by_type.len() - 1
             }
-        };
-        self.by_type[i].1.as_mut()
+        }
+    }
+
+    fn candidate(&mut self, i: usize, typ: &Type) -> Option<&mut Candidate<R, E>> {
+        match self.by_type.get_mut(i) {
+            Some((seen, c)) if seen == typ => c.as_mut(),
+            _ => None,
+        }
     }
 }
 
@@ -301,85 +300,139 @@ fn build_site<R: Rt, E: UserEvent>(
     Ok(HookSite { site, args, first: true })
 }
 
-/// Run the implementation of `t` for tag `id` on `args`.
-/// `None` = no implementation; `Some(None)` = it produced no value
-/// this cycle (the bottom the callers' rules resolve); `Some(Some(v))`
-/// = its result.
+/// Run the implementation of `t` on `args`, values of one abstract
+/// type. `None` = no implementation; `Some(None)` = it produced no
+/// value this cycle (the bottom the callers' rules resolve);
+/// `Some(Some(v))` = its result.
 fn call_hook<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     t: CoreTrait,
-    id: AbstractId,
-    args: &[&Value],
+    args: &[&GxAbstract],
 ) -> Option<Option<Value>> {
     let mut event = ctx.core_hook_sites.take_event()?;
-    let r = call_hook_over(ctx, &mut event, t, id, args);
+    let r = call_hook_over(ctx, &mut event, t, args);
     ctx.core_hook_sites.give_event(event);
     r
+}
+
+/// The site loaned out of the registry for one dispatch: its slot, so
+/// it returns to the pool it came from, or is deleted when the entry
+/// was rebuilt meanwhile.
+struct Loan<R: Rt, E: UserEvent> {
+    key: (u8, AbstractId),
+    version: Option<Arc<Vec<Arc<ImplDef>>>>,
+    slot: usize,
+    typ: Type,
+    site: HookSite<R, E>,
+}
+
+fn same_version(
+    a: &Option<Arc<Vec<Arc<ImplDef>>>>,
+    b: &Option<Arc<Vec<Arc<ImplDef>>>>,
+) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Take a site for `args` out of the registry, building one when the
+/// pool is empty. The entry stays in the registry, so a re-entrant
+/// dispatch for the same tag finds it; a nested call takes another site.
+// XCR codex for eric: [CR15, P2] done: the entry stays in the registry
+// and only the site is loaned; a site returns to its slot or is deleted
+// when the entry was rebuilt meanwhile.
+// XCR codex for eric: [CR02, P1] done: every operand must be constructed
+// at the instantiation the implementation was resolved for.
+fn take_site<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    t: CoreTrait,
+    args: &[&GxAbstract],
+) -> Option<Loan<R, E>> {
+    let typ = args[0].typ();
+    // an implementation is for one instantiation: a pair constructed at
+    // two takes the structural case
+    if args[1..].iter().any(|g| g.typ() != typ) {
+        return None;
+    }
+    let key = (t as u8, args[0].id);
+    let version = impls_version(&ctx.env, t);
+    let stale = ctx
+        .core_hook_sites
+        .sites
+        .get(&key)
+        .is_some_and(|e| !same_version(&e.version, &version));
+    if stale {
+        let mut e = ctx.core_hook_sites.sites.remove(&key).unwrap();
+        for (_, c) in e.by_type.iter_mut() {
+            for mut s in c.iter_mut().flat_map(|c| c.pool.drain(..)) {
+                s.site.delete(ctx);
+            }
+        }
+    }
+    let entry = ctx.core_hook_sites.sites.entry(key).or_insert_with(|| SiteEntry {
+        version: version.clone(),
+        by_type: SmallVec::new(),
+    });
+    let slot = entry.slot(&ctx.env, t, &typ);
+    let c = entry.candidate(slot, &typ)?;
+    let site = match c.pool.pop() {
+        Some(s) => s,
+        None => {
+            let hook = c.hook.clone();
+            match build_site(ctx, t, &hook) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("core trait site for {}: {e:?}", hook.typ);
+                    if let Some(e) = ctx.core_hook_sites.sites.get_mut(&key) {
+                        e.by_type[slot].1 = None;
+                    }
+                    return None;
+                }
+            }
+        }
+    };
+    Some(Loan { key, version, slot, typ, site })
+}
+
+fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, mut loan: Loan<R, E>) {
+    let pool = ctx
+        .core_hook_sites
+        .sites
+        .get_mut(&loan.key)
+        .filter(|e| same_version(&e.version, &loan.version))
+        .and_then(|e| e.candidate(loan.slot, &loan.typ));
+    match pool {
+        Some(c) => c.pool.push(loan.site),
+        None => loan.site.site.delete(ctx),
+    }
 }
 
 fn call_hook_over<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
     t: CoreTrait,
-    id: AbstractId,
-    args: &[&Value],
+    args: &[&GxAbstract],
 ) -> Option<Option<Value>> {
-    let key = (t as u8, id);
-    let version = impls_version(&ctx.env, t);
-    let same = |a: &Option<Arc<_>>, b: &Option<Arc<_>>| match (a, b) {
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-        (None, None) => true,
-        _ => false,
-    };
-    let mut entry = match ctx.core_hook_sites.sites.remove(&key) {
-        Some(e) if same(&e.version, &version) => e,
-        stale => {
-            if let Some(mut e) = stale {
-                for (_, c) in e.by_type.iter_mut() {
-                    for mut s in c.iter_mut().flat_map(|c| c.pool.drain(..)) {
-                        s.site.delete(ctx);
-                    }
-                }
-            }
-            SiteEntry { version, by_type: SmallVec::new() }
-        }
-    };
-    let r = match entry.resolve(&ctx.env, t, args[0]) {
-        None => None,
-        Some(c) => {
-            let site = match c.pool.pop() {
-                Some(s) => Ok(s),
-                None => build_site(ctx, t, &c.hook),
-            };
-            match site {
-                Err(e) => {
-                    log::error!("core trait site for {}: {e:?}", c.hook.typ);
-                    entry.by_type.clear();
-                    None
-                }
-                Ok(mut s) => {
-                    // every dispatch is a fresh invocation
-                    s.site.reset_replay(ctx);
-                    for (id, v) in s.args.iter().zip(args.iter()) {
-                        ctx.rt.store_insert(*id, TagValue::fired((*v).clone()));
-                        event.variables.insert(*id, TagValue::fired((*v).clone()));
-                    }
-                    if s.first {
-                        s.first = false;
-                        event.init = true;
-                    }
-                    let tv = s.site.update(ctx, event);
-                    let r =
-                        if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) };
-                    event.init = false;
-                    c.pool.push(s);
-                    Some(r)
-                }
-            }
-        }
-    };
-    ctx.core_hook_sites.sites.insert(key, entry);
-    r
+    let mut loan = take_site(ctx, t, args)?;
+    let s = &mut loan.site;
+    // every dispatch is a fresh invocation
+    s.site.reset_replay(ctx);
+    for (id, g) in s.args.iter().zip(args.iter()) {
+        let v = as_value(g);
+        ctx.rt.store_insert(*id, TagValue::fired(v.clone()));
+        event.variables.insert(*id, TagValue::fired(v));
+    }
+    if s.first {
+        s.first = false;
+        event.init = true;
+    }
+    let tv = s.site.update(ctx, event);
+    let r = if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) };
+    event.init = false;
+    return_site(ctx, loan);
+    Some(r)
 }
 
 struct HookState<R: Rt, E: UserEvent> {
@@ -388,6 +441,8 @@ struct HookState<R: Rt, E: UserEvent> {
 
 /// Re-wrap a `GxAbstract` (received by reference inside the vtable
 /// call) as the `Value` a hook site's argument binding carries.
+// XCR codex for eric: [CR16, P2] done: resolution reads the borrowed box;
+// only a dispatch that found an implementation wraps its arguments.
 fn as_value(g: &GxAbstract) -> Value {
     abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), g.payload.clone())
 }
@@ -406,13 +461,9 @@ fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
 fn key_bottoms<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     t: CoreTrait,
-    k: &Value,
+    k: &GxAbstract,
 ) -> bool {
-    let id = match abstract_value::get(k) {
-        Some(g) => g.id,
-        None => return false,
-    };
-    matches!(call_hook(ctx, t, id, &[k, k]), Some(None))
+    matches!(call_hook(ctx, t, &[k, k]), Some(None))
 }
 
 fn dispatch_eq<R: Rt, E: UserEvent>(
@@ -423,8 +474,7 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
     // SAFETY: `state` points into the live `eval_with_hooks` frame.
     let s = unsafe { &mut *(state as *mut HookState<R, E>) };
     let ctx = unsafe { &mut *s.ctx };
-    let (av, bv) = (as_value(a), as_value(b));
-    match call_hook(ctx, CoreTrait::Eq, a.id, &[&av, &bv])? {
+    match call_hook(ctx, CoreTrait::Eq, &[a, b])? {
         Some(Value::Bool(x)) => Some(x),
         Some(v) => {
             log::warn!("core Eq for {} returned a non-bool {v:?}", a.name);
@@ -432,8 +482,8 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
         }
         // bottom keys are equal to each other and to nothing real
         None => {
-            let ab = key_bottoms(ctx, CoreTrait::Eq, &av);
-            let bb = key_bottoms(ctx, CoreTrait::Eq, &bv);
+            let ab = key_bottoms(ctx, CoreTrait::Eq, a);
+            let bb = key_bottoms(ctx, CoreTrait::Eq, b);
             Some(match (ab, bb) {
                 (true, true) => true,
                 (true, false) | (false, true) => false,
@@ -463,8 +513,7 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
     // SAFETY: as in `dispatch_eq`.
     let s = unsafe { &mut *(state as *mut HookState<R, E>) };
     let ctx = unsafe { &mut *s.ctx };
-    let (av, bv) = (as_value(a), as_value(b));
-    match call_hook(ctx, CoreTrait::Ord, a.id, &[&av, &bv])? {
+    match call_hook(ctx, CoreTrait::Ord, &[a, b])? {
         Some(v) => match ordering_of(&v) {
             Some(o) => Some(o),
             None => {
@@ -476,8 +525,8 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
         // per key it stays total: bottom keys below every real key,
         // equal among themselves
         None => {
-            let ab = key_bottoms(ctx, CoreTrait::Ord, &av);
-            let bb = key_bottoms(ctx, CoreTrait::Ord, &bv);
+            let ab = key_bottoms(ctx, CoreTrait::Ord, a);
+            let bb = key_bottoms(ctx, CoreTrait::Ord, b);
             Some(match (ab, bb) {
                 (true, true) => Ordering::Equal,
                 (true, false) => Ordering::Less,
@@ -495,8 +544,7 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
     // SAFETY: as in `dispatch_eq`.
     let s = unsafe { &mut *(state as *mut HookState<R, E>) };
     let ctx = unsafe { &mut *s.ctx };
-    let av = as_value(a);
-    match call_hook(ctx, CoreTrait::Display, a.id, &[&av])? {
+    match call_hook(ctx, CoreTrait::Display, &[a])? {
         Some(Value::String(s)) => Some(s),
         Some(v) => {
             log::warn!("core Display for {} returned a non-string {v:?}", a.name);

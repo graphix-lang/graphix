@@ -122,3 +122,50 @@ const SYNC_ON_VALUE: &str = r#"
 "#;
 
 run!(sync_on_value, SYNC_ON_VALUE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
+// Effects are inferred per instance: a pure instance of `apply` does
+// not stand in for the async one `delayed` reaches.
+const SYNC_ON_ASYNC_INSTANCE: &str = r#"
+{
+  let apply = |f: fn(x: i64) -> i64, x: i64| f(x);
+  let p = apply(|x| x + 1, 1);
+  #[sync]
+  let delayed = |x: i64| apply(|x| sys::time::after_idle(duration:0.001s, x), x);
+  (p, delayed(3))
+}
+"#;
+
+run!(sync_on_async_instance, SYNC_ON_ASYNC_INSTANCE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
+// A definition's assertion sees every instance: the pure instance of
+// `loop` does not stand in for the one whose callback counts.
+const TAIL_RECURSIVE_STATEFUL_INSTANCE: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  let pure = loop(|x| x, 3, 0);
+  let counted = loop(|x| count(x), 3, 0);
+  (pure, counted)
+}
+"#;
+
+run!(
+    tail_recursive_stateful_instance,
+    TAIL_RECURSIVE_STATEFUL_INSTANCE,
+    |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
+// The same loop with pure callbacks only.
+const TAIL_RECURSIVE_PURE_INSTANCES: &str = r#"
+{
+  #[tail_recursive]
+  let rec loop = |f: fn(x: i64) -> i64, n: i64, acc: i64| -> i64
+    select n { 0 => acc, _ => loop(f, n - 1, acc + f(n)) };
+  (loop(|x| x, 3, 0), loop(|x| x * 2, 3, 0))
+}
+"#;
+
+run!(
+    tail_recursive_pure_instances,
+    TAIL_RECURSIVE_PURE_INSTANCES,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:6, i64:12]"; graphix_package_core::testing::FuseExpect::Jit);

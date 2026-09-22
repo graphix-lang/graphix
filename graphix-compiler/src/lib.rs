@@ -1290,10 +1290,10 @@ impl AbstractTypeRegistry {
 pub(crate) struct PendingTailCall {
     /// The recursive callee's `LambdaId`.
     pub(crate) lambda: LambdaId,
-    /// The self-call's argument productions in callee-formal order.
-    /// `None`: the arg produced nothing this jump and the formal rides
-    /// its previous value. Each present arg keeps its own tag, so
-    /// freshness rides the dataflow as the kernel's disc carry does.
+    /// The self-call's argument productions in callee-formal order,
+    /// each with its own tag (a bottom bottoms the formal), so freshness
+    /// rides the dataflow as the kernel's disc carry does. `None`: the
+    /// arg never produced and the formal rides its previous value.
     pub(crate) args: smallvec::SmallVec<[Option<TagValue>; 4]>,
 }
 

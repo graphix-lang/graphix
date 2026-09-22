@@ -224,3 +224,102 @@ const DEREF_FIRES_ON_ADDRESS: &str = r#"
 run!(deref_fires_on_address, DEREF_FIRES_ON_ADDRESS, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:10, i64:20]"
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A place's address is evaluated once: a key with an effect runs it
+// once per fire (`n` fires at its binding and once more, not twice
+// more), and the read sees that one evaluation.
+const PLACE_KEY_EVALUATED_ONCE: &str = r#"
+{
+  let a = [10, 20];
+  let n = 0;
+  let r = &a[{ n <- a ~ n + 1; 0 }];
+  let t = sys::time::timer(duration:0.02s, false);
+  (t ~ count(n), t ~ *r)
+}
+"#;
+
+run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:2, i64:10]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// An undetermined key is a bottom reference: a write through it lands
+// nowhere; when the key returns the reference retargets (and, as at
+// every retarget, the pending write lands there).
+const PLACE_BOTTOM_KEY: &str = r#"
+{
+  let a = [10, 20];
+  let k: [i64, null] = 0;
+  let r = &a[k$];
+  let t1 = sys::time::timer(duration:0.02s, false);
+  k <- t1 ~ null;
+  let t2 = sys::time::timer(duration:0.05s, false);
+  *r <- t2 ~ 99;
+  let t3 = sys::time::timer(duration:0.08s, false);
+  let t4 = sys::time::timer(duration:0.11s, false);
+  k <- t4 ~ 1;
+  let t5 = sys::time::timer(duration:0.16s, false);
+  let seen = array::group(*r, |n, _| n == 3);
+  (t3 ~ a, t5 ~ a, t5 ~ seen)
+}
+"#;
+
+run!(place_bottom_key, PLACE_BOTTOM_KEY, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[i64:10, i64:20], [i64:10, i64:99], [i64:10, i64:20, i64:99]]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A place the root no longer has is bottom, not its last value: a
+// connect sampling it then writes nothing.
+const PLACE_REMOVED_ELEMENT: &str = r#"
+{
+  let a = [10, 20];
+  let r = &a[1];
+  let t1 = sys::time::timer(duration:0.02s, false);
+  a <- t1 ~ [5];
+  let t2 = sys::time::timer(duration:0.05s, false);
+  let obs: [i64, null] = null;
+  obs <- t2 ~ *r;
+  let t3 = sys::time::timer(duration:0.08s, false);
+  a <- t3 ~ [6, 7];
+  let seen = array::group(*r, |n, _| n == 2);
+  let t4 = sys::time::timer(duration:0.11s, false);
+  (t4 ~ seen, t4 ~ obs)
+}
+"#;
+
+run!(place_removed_element, PLACE_REMOVED_ELEMENT, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[i64:20, i64:7], null]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// The referent type is the container's element type: an Error-valued
+// field is referenced as such.
+const PLACE_ERROR_FIELD: &str = r#"
+{
+  let a = {x: error(`E)};
+  let r = &a.x;
+  let expected: &Error<`E> = r;
+  select *expected { error as e => `Caught }
+}
+"#;
+
+run!(place_error_field, PLACE_ERROR_FIELD, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "\"Caught\""
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Parentheses are transparent in a place, and a place through a
+// dereferenced place reference composes the paths: the write reaches
+// the root.
+const PLACE_THROUGH_DEREF: &str = r#"
+{
+  let a = {p: {x: 10, y: 1}};
+  let r: &{x: i64, y: i64} = &a.p;
+  let s = &(*r).x;
+  let t1 = sys::time::timer(duration:0.02s, false);
+  *s <- t1 ~ 20;
+  let t2 = sys::time::timer(duration:0.05s, false);
+  (t2 ~ a.p.x, t2 ~ *s)
+}
+"#;
+
+run!(place_through_deref, PLACE_THROUGH_DEREF, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:20, i64:20]"
+}; graphix_package_core::testing::FuseExpect::Jit);

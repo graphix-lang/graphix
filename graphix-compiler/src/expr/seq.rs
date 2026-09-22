@@ -90,7 +90,8 @@ fn desugar_let(spec: &Expr, b: &BindExpr) -> Result<Expr> {
         StructurePattern::Bind(n) => n.name.clone(),
         _ => ArcStr::from(format_compact!("seqbind{}", spec.id.inner()).as_str()),
     };
-    let mut exprs = vec![let_bind(pos, &name, typ.clone(), value.clone())];
+    let mut exprs: SmallVec<[Expr; 3]> = SmallVec::new();
+    exprs.push(let_bind(pos, &name, typ.clone(), value.clone()));
     if !matches!(pattern, StructurePattern::Bind(_)) {
         exprs.push(
             ExprKind::Bind(Arc::new(BindExpr {
@@ -124,7 +125,9 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
     if body.is_empty() {
         return Err(anyhow!("a seq block must contain at least one step").at(&spec));
     }
-    let mut steps: Vec<&Expr> = Vec::new();
+    // XCR codex for eric: [CR18, P2] done: the scratch collections are
+    // pooled (or inline) and drained into the AST's shared slices.
+    let mut steps: SmallVec<[&Expr; 8]> = SmallVec::new();
     for e in body.iter() {
         refuse_catch(e)?;
         if !matches!(e.kind, ExprKind::NoOp) {
@@ -154,7 +157,7 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
     let t_name = format_compact!("seqgo{id}");
     let filter = apply_filter(pos, trig_expr, lambda_sampling(pos, idle.as_str()));
 
-    let mut visible: AHashMap<ArcStr, ArcStr> = AHashMap::new();
+    let mut visible: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
     if let Some((n, _)) = &trigger_bind {
         visible.insert(n.clone(), ArcStr::from(trig_cell.as_str()));
     }
@@ -162,7 +165,8 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
     let err_bind = ArcStr::from("e");
     let catch_node = {
         let reset = connect(pos, pc.as_str(), variant(pos, "Idle"));
-        let mut abort_body = vec![reset];
+        let mut abort_body: SmallVec<[Expr; 2]> = SmallVec::new();
+        abort_body.push(reset);
         if let Some(q) = queue {
             abort_body.push(connect(pos, q.clock, boolean(pos, true)));
         }
@@ -187,16 +191,16 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
         result: result.as_str(),
         vname: vname.as_str(),
         cells: &cells,
-        labels: Vec::new(),
-        arms: Vec::new(),
+        labels: LPooled::take(),
+        arms: LPooled::take(),
     };
     let entry = machine.fresh();
     let mut sink = Sink::new();
     sink.push(Write::Result);
     machine.lower_stmts(&steps, entry.clone(), ArcStr::from("Idle"), &sink, &visible)?;
-    let Machine { labels, arms: body_arms, .. } = machine;
+    let Machine { labels, arms: mut body_arms, .. } = machine;
 
-    let mut prelude: Vec<Expr> = Vec::new();
+    let mut prelude: LPooled<Vec<Expr>> = LPooled::take();
     prelude.push(let_bind(
         pos,
         pc.as_str(),
@@ -243,7 +247,7 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
         };
         prelude.push(let_bind(pos, aborted.as_str(), None, event));
     }
-    let mut start: Vec<Expr> = Vec::new();
+    let mut start: SmallVec<[Expr; 3]> = SmallVec::new();
     start.push(let_bind(pos, t_name.as_str(), None, filter));
     start.push(connect(
         pos,
@@ -254,9 +258,8 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
         start.push(connect(pos, trig_cell.as_str(), r#ref(pos, t_name.as_str())));
     }
 
-    let mut arms: Vec<(Pattern, Expr)> = Vec::with_capacity(body_arms.len() + 1);
-    arms.push((pat_variant("Idle"), never(pos)));
-    arms.extend(body_arms.into_iter().map(|(label, arm)| (pat_variant(&label), arm)));
+    let arms = std::iter::once((pat_variant("Idle"), never(pos)))
+        .chain(body_arms.drain(..).map(|(label, arm)| (pat_variant(&label), arm)));
     let select_pc = select(pos, r#ref(pos, pc.as_str()), arms);
     let mut body_exprs = prelude;
     body_exprs.push(catch_node);
@@ -268,7 +271,7 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
     body_exprs.extend(start);
     body_exprs.push(select_pc);
     body_exprs.push(r#ref(pos, result.as_str()));
-    Ok(block(pos, body_exprs))
+    Ok(block(pos, body_exprs.drain(..)))
 }
 
 /// An `abort(..)` or `flush(..)` event: `e` is an initial step, woken
@@ -280,7 +283,7 @@ fn run_event(e: &Expr, edge: &str, armed: &str) -> Expr {
     let live = select(
         pos,
         r#ref(pos, edge),
-        vec![
+        [
             (pat_lit(Value::Bool(true)), never(pos)),
             (pat_lit(Value::Bool(false)), e.clone()),
         ],
@@ -474,8 +477,8 @@ struct Machine<'a> {
     result: &'a str,
     vname: &'a str,
     cells: &'a CarriedBinds,
-    labels: Vec<ArcStr>,
-    arms: Vec<(ArcStr, Expr)>,
+    labels: LPooled<Vec<ArcStr>>,
+    arms: LPooled<Vec<(ArcStr, Expr)>>,
 }
 
 impl Machine<'_> {
@@ -594,9 +597,9 @@ impl Machine<'_> {
         visible: &AHashMap<ArcStr, ArcStr>,
     ) -> Result<()> {
         let pos = spec.pos;
-        let body: Vec<&Expr> =
+        let body: SmallVec<[&Expr; 8]> =
             t.body.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).collect();
-        let handler: Vec<&Expr> =
+        let handler: SmallVec<[&Expr; 8]> =
             t.handler.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).collect();
         let with_entry = self.fresh();
         let e_cell = self.cells[&(spec.id, t.bind.clone())].0.clone();
@@ -619,9 +622,10 @@ impl Machine<'_> {
             }))
             .to_expr(pos);
             let inner = std::mem::replace(arm, never(pos));
-            *arm = block(pos, vec![jump, inner]);
+            *arm = block(pos, [jump, inner]);
         }
-        let mut wvis = visible.clone();
+        let mut wvis: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
+        wvis.extend(visible.iter().map(|(k, v)| (k.clone(), v.clone())));
         wvis.insert(t.bind.clone(), e_cell);
         self.lower_stmts(&handler, with_entry, next, sink, &wvis)
     }
@@ -637,8 +641,8 @@ fn sink_writes(
     vname: &str,
     cells: &CarriedBinds,
     visible: &AHashMap<ArcStr, ArcStr>,
-) -> Vec<Expr> {
-    let mut out = Vec::new();
+) -> LPooled<Vec<Expr>> {
+    let mut out: LPooled<Vec<Expr>> = LPooled::take();
     for w in sink.iter() {
         match w {
             Write::Let { pattern, typ, id } => {
@@ -734,9 +738,10 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         }
         names
     });
-    let captures: Vec<_> =
+    let captures: LPooled<Vec<_>> =
         captures.into_iter().filter(|(_, (_, c, _))| used.contains(c)).collect();
-    let mut prelude = vec![
+    let mut prelude: LPooled<Vec<Expr>> = LPooled::take();
+    prelude.extend([
         let_bind(pos, clock.as_str(), None, never(pos)),
         let_bind(pos, activation.as_str(), None, boolean(pos, true)),
         let_bind(
@@ -745,12 +750,13 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
             None,
             trigger.as_ref().map_or_else(|| boolean(pos, true), |t| t.expr().clone()),
         ),
-    ];
+    ]);
     if flush.is_some() {
         prelude.push(let_bind(pos, flushed.as_str(), None, never(pos)));
     }
-    let mut args = vec![r#ref(pos, request.as_str())];
-    for (name, (expr, _, _)) in &captures {
+    let mut args: LPooled<Vec<Expr>> = LPooled::take();
+    args.push(r#ref(pos, request.as_str()));
+    for (name, (expr, _, _)) in captures.iter() {
         args.push(if trigger_name.as_ref() == Some(name) {
             r#ref(pos, request.as_str())
         } else {
@@ -774,7 +780,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         *arg = apply_core(
             pos,
             "hold",
-            vec![
+            [
                 (Some(ArcStr::from("clock")), r#ref(pos, name.as_str())),
                 (None, r#ref(pos, name.as_str())),
             ],
@@ -783,9 +789,10 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let payload = if captures.is_empty() {
         args.pop().unwrap()
     } else {
-        ExprKind::Tuple { args: Arc::from(args) }.to_expr(pos)
+        ExprKind::Tuple { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
     };
-    let mut queue_args = vec![(
+    let mut queue_args: SmallVec<[(Option<ArcStr>, Expr); 3]> = SmallVec::new();
+    queue_args.push((
         Some(ArcStr::from("clock")),
         ExprKind::Any {
             args: Arc::from_iter([
@@ -794,7 +801,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
             ]),
         }
         .to_expr(pos),
-    )];
+    ));
     if flush.is_some() {
         queue_args.push((Some(ArcStr::from("flush")), r#ref(pos, flushed.as_str())));
     }
@@ -854,7 +861,7 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         sample(pos, r#ref(pos, result.as_str()), boolean(pos, true)),
     ));
     prelude.push(r#ref(pos, result.as_str()));
-    Ok(block(pos, prelude))
+    Ok(block(pos, prelude.drain(..)))
 }
 
 fn boolean(pos: SourcePosition, value: bool) -> Expr {
@@ -896,10 +903,7 @@ fn until_arm(
     Ok(select(
         pos,
         e,
-        vec![
-            (pat_lit(Value::Bool(true)), trans),
-            (pat_lit(Value::Bool(false)), never(pos)),
-        ],
+        [(pat_lit(Value::Bool(true)), trans), (pat_lit(Value::Bool(false)), never(pos))],
     ))
 }
 
@@ -999,22 +1003,23 @@ fn lower_group_inner(
             lower_group(rest, pc, next, sink, result, vname, visible, cells)
         }
     };
-    let writes = |visible: &AHashMap<ArcStr, ArcStr>| -> Vec<Expr> {
+    let writes = |visible: &AHashMap<ArcStr, ArcStr>| -> LPooled<Vec<Expr>> {
         if rest_empty {
             sink_writes(sink, pos, pc, result, vname, cells, visible)
         } else {
-            Vec::new()
+            LPooled::take()
         }
     };
     match &head.kind {
         ExprKind::Bind(b) => {
             let value = stmt_value(&b.value, visible, pc)?;
-            let mut vis = visible.clone();
+            let mut vis: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
+            vis.extend(visible.iter().map(|(k, v)| (k.clone(), v.clone())));
             b.pattern.with_names(&mut |n| {
                 vis.remove(n);
             });
-            let mut body =
-                vec![let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname))];
+            let mut body: LPooled<Vec<Expr>> = LPooled::take();
+            body.push(let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, vname)));
             b.pattern.with_names(&mut |n| {
                 let (cell, _, _) = &cells[&(head.id, n.clone())];
                 body.push(connect(
@@ -1023,28 +1028,29 @@ fn lower_group_inner(
                     sample(pos, r#ref(pos, pc), r#ref(pos, n.as_str())),
                 ));
             });
-            body.extend(writes(&vis));
+            body.extend(writes(&vis).drain(..));
             body.push(tail(&vis)?);
-            Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
+            Ok(select(pos, value, [(pat_bind(vname), block(pos, body.drain(..)))]))
         }
         ExprKind::Connect { name, value, deref } => {
             let value = stmt_value(value, visible, pc)?;
             let target = rewrite_path(name, visible);
-            let mut body = vec![connect_path(
+            let mut body: LPooled<Vec<Expr>> = LPooled::take();
+            body.push(connect_path(
                 pos,
                 target,
                 *deref,
                 sample(pos, r#ref(pos, pc), r#ref(pos, vname)),
-            )];
-            body.extend(writes(visible));
+            ));
+            body.extend(writes(visible).drain(..));
             body.push(tail(visible)?);
-            Ok(select(pos, value, vec![(pat_bind(vname), block(pos, body))]))
+            Ok(select(pos, value, [(pat_bind(vname), block(pos, body.drain(..)))]))
         }
         _ => {
             let e = stmt_value(head, visible, pc)?;
             let mut body = writes(visible);
             body.push(tail(visible)?);
-            Ok(select(pos, e, vec![(pat_bind(vname), block(pos, body))]))
+            Ok(select(pos, e, [(pat_bind(vname), block(pos, body.drain(..)))]))
         }
     }
 }
@@ -1073,9 +1079,10 @@ fn lower_block(
         [body @ .., Expr { kind: ExprKind::NoOp, .. }] => body,
         _ => exprs,
     };
-    let mut vis = visible.clone();
-    let mut body = Vec::with_capacity(stmts.len() * 2 + 1);
-    let mut vals: Vec<Expr> = Vec::with_capacity(stmts.len());
+    let mut vis: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
+    vis.extend(visible.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut body: LPooled<Vec<Expr>> = LPooled::take();
+    let mut vals: LPooled<Vec<Expr>> = LPooled::take();
     for (i, s) in stmts.iter().enumerate() {
         if is_try(s) {
             return Err(
@@ -1117,13 +1124,13 @@ fn lower_block(
             let last = format_compact!("seqb{}", spec.id.inner());
             select(
                 pos,
-                ExprKind::Tuple { args: Arc::from(vals) }.to_expr(pos),
-                vec![(pat_last(n, &last), r#ref(pos, &last))],
+                ExprKind::Tuple { args: Arc::from_iter(vals.drain(..)) }.to_expr(pos),
+                [(pat_last(n, &last), r#ref(pos, &last))],
             )
         }
     };
     body.push(value);
-    Ok(block(pos, body))
+    Ok(block(pos, body.drain(..)))
 }
 
 fn pc_type(labels: &[ArcStr]) -> Type {
@@ -1147,7 +1154,7 @@ fn idle_of(pos: SourcePosition, pc: &str) -> Expr {
     select(
         pos,
         r#ref(pos, pc),
-        vec![
+        [
             (pat_variant("Idle"), ExprKind::Constant(Value::Bool(true)).to_expr(pos)),
             (pat_wild(), ExprKind::Constant(Value::Bool(false)).to_expr(pos)),
         ],
@@ -1157,7 +1164,7 @@ fn idle_of(pos: SourcePosition, pc: &str) -> Expr {
 fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
     let x = ArcStr::from("x");
     ExprKind::Lambda(Arc::new(LambdaExpr {
-        args: Arc::from(vec![Arg {
+        args: Arc::from_iter([Arg {
             labeled: None,
             pattern: StructurePattern::Bind(x.clone().into()),
             constraint: None,
@@ -1229,7 +1236,7 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
             let v = format_compact!("seqv{}", e.id.inner());
             block(
                 pos,
-                vec![
+                [
                     let_bind(pos, &v, None, e),
                     any(at_entry(r#ref(pos, &v)), r#ref(pos, &v)),
                 ],
@@ -1306,9 +1313,9 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     .to_expr(pos);
     block(
         pos,
-        vec![
+        [
             let_bind(pos, input.as_str(), None, input_tuple),
-            select(pos, snapshot, vec![(pat_bind(issued.as_str()), guard(expr))]),
+            select(pos, snapshot, [(pat_bind(issued.as_str()), guard(expr))]),
         ],
     )
 }
@@ -1562,16 +1569,21 @@ fn guard(e: Expr) -> Expr {
     ExprKind::SeqGuard(Arc::new(e)).to_expr(pos)
 }
 
-fn select(pos: SourcePosition, arg: Expr, arms: Vec<(Pattern, Expr)>) -> Expr {
-    ExprKind::Select(SelectExpr { arg: Arc::new(arg), arms: Arc::from(arms) })
+fn select(
+    pos: SourcePosition,
+    arg: Expr,
+    arms: impl IntoIterator<Item = (Pattern, Expr)>,
+) -> Expr {
+    ExprKind::Select(SelectExpr { arg: Arc::new(arg), arms: Arc::from_iter(arms) })
         .to_expr(pos)
 }
 
-fn block(pos: SourcePosition, mut exprs: Vec<Expr>) -> Expr {
+fn block(pos: SourcePosition, exprs: impl IntoIterator<Item = Expr>) -> Expr {
+    let mut exprs: LPooled<Vec<Expr>> = exprs.into_iter().collect();
     match exprs.len() {
         0 => never(pos),
         1 => exprs.pop().unwrap(),
-        _ => ExprKind::Do { exprs: Arc::from(exprs) }.to_expr(pos),
+        _ => ExprKind::Do { exprs: Arc::from_iter(exprs.drain(..)) }.to_expr(pos),
     }
 }
 

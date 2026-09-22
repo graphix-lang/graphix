@@ -724,7 +724,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             + crate::image::scope_len(&self.scope)
             + self.proxy.encoded_len()
             + nodes_len(&self.nodes)
-            + self.catches.to_vec().encoded_len()
+            + crate::image::slice_len(&self.catches)
             + self.top_id.encoded_len()
     }
 
@@ -745,7 +745,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         crate::image::scope_encode(&self.scope, buf)?;
         self.proxy.encode(buf)?;
         encode_nodes(&self.nodes, buf)?;
-        self.catches.to_vec().encode(buf)?;
+        crate::image::slice_encode(&self.catches, buf)?;
         self.top_id.encode(buf)
     }
 

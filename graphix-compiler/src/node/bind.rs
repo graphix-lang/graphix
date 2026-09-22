@@ -7,6 +7,7 @@ use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
+    deref_typ,
     expr::{self, At, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::{
@@ -23,7 +24,7 @@ use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_core::pack::{decode_varint, encode_varint, varint_len};
-use netidx_value::{Typ, Value};
+use netidx_value::Value;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -727,11 +728,12 @@ enum PlaceStep<R: Rt, E: UserEvent> {
 
 /// The place a `&root[i].f` reference stands for: the root node (a
 /// variable reference or a dereference) and the path's steps
-/// (design/place_references.md).
+/// (design/place_references.md). `path` is the path as last resolved.
 #[derive(Debug)]
 struct Place<R: Rt, E: UserEvent> {
     root: Node<R, E>,
     steps: Vec<PlaceStep<R, E>>,
+    path: place::Path,
 }
 
 impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
@@ -778,49 +780,6 @@ impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> Place<R, E> {
-    fn image_len(place: &Option<Self>) -> usize {
-        1 + place.as_ref().map_or(0, |p| {
-            p.root.image_len()
-                + varint_len(p.steps.len() as u64)
-                + p.steps.iter().map(|s| s.image_len()).sum::<usize>()
-        })
-    }
-
-    fn image_encode(place: &Option<Self>, buf: &mut ImageBuf) -> Result<(), PackError> {
-        let Some(p) = place else { return Ok(buf.put_u8(0)) };
-        buf.put_u8(1);
-        p.root.image_encode(buf)?;
-        encode_varint(p.steps.len() as u64, buf);
-        for s in &p.steps {
-            s.image_encode(buf)?;
-        }
-        Ok(())
-    }
-
-    fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Option<Self>, PackError> {
-        if !buf.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match buf.get_u8() {
-            0 => Ok(None),
-            1 => {
-                let root = decode_node(ctx, buf)?;
-                let n = decode_varint(buf)? as usize;
-                let mut steps = Vec::with_capacity(n);
-                for _ in 0..n {
-                    steps.push(PlaceStep::image_decode(ctx, buf)?);
-                }
-                Ok(Some(Place { root, steps }))
-            }
-            _ => Err(PackError::UnknownTag),
-        }
-    }
-}
-
 enum PlaceSpec {
     Index(Expr),
     Tuple(usize),
@@ -828,29 +787,88 @@ enum PlaceSpec {
     Key(Expr),
 }
 
+/// `e` without its grouping parentheses.
+fn unparen(mut e: &Expr) -> &Expr {
+    while let ExprKind::ExplicitParens(inner) = &e.kind {
+        e = inner;
+    }
+    e
+}
+
+/// What a place resolved to this cycle.
+struct Resolved<'a> {
+    /// The root binding and the path from it: `None` while a key is
+    /// undetermined.
+    address: Option<(BindId, &'a place::Path)>,
+    /// The root's production.
+    root: TagValue,
+    /// Did the root or a key fire?
+    moved: bool,
+}
+
+/// The binding a place's root stands for and the path already under
+/// it: a dereferenced place reference composes.
+fn root_place<R: Rt, E: UserEvent>(
+    root: &Node<R, E>,
+) -> Option<(BindId, &[place::Step])> {
+    let any = &**root as &dyn std::any::Any;
+    match any.downcast_ref::<Ref>() {
+        Some(r) => Some((r.id, &[])),
+        None => {
+            let d = any.downcast_ref::<Deref<R, E>>()?;
+            Some((d.id?, d.path.as_deref().unwrap_or(&[])))
+        }
+    }
+}
+
 impl<R: Rt, E: UserEvent> Place<R, E> {
+    fn image_len(&self) -> usize {
+        self.root.image_len()
+            + varint_len(self.steps.len() as u64)
+            + self.steps.iter().map(|s| s.image_len()).sum::<usize>()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        self.root.image_encode(buf)?;
+        encode_varint(self.steps.len() as u64, buf);
+        for s in &self.steps {
+            s.image_encode(buf)?;
+        }
+        Ok(())
+    }
+
+    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+        let root = decode_node(ctx, buf)?;
+        let n = decode_varint(buf)? as usize;
+        let mut steps = Vec::with_capacity(n);
+        for _ in 0..n {
+            steps.push(PlaceStep::image_decode(ctx, buf)?);
+        }
+        Ok(Place { root, steps, path: place::Path::new() })
+    }
+
     /// The accessor chain of `expr` down to a variable or a
     /// dereference, root first; `None` for anything else.
     fn of(expr: &Expr) -> Option<(Expr, Vec<PlaceSpec>)> {
         let mut steps = vec![];
-        let mut cur = expr;
+        let mut cur = unparen(expr);
         loop {
             match &cur.kind {
                 ExprKind::ArrayRef { source, i } => {
                     steps.push(PlaceSpec::Index((**i).clone()));
-                    cur = source;
+                    cur = unparen(source);
                 }
                 ExprKind::TupleRef { source, field } => {
                     steps.push(PlaceSpec::Tuple(*field));
-                    cur = source;
+                    cur = unparen(source);
                 }
                 ExprKind::StructRef { source, field } => {
                     steps.push(PlaceSpec::Field(field.name.clone()));
-                    cur = source;
+                    cur = unparen(source);
                 }
                 ExprKind::MapRef { source, key } => {
                     steps.push(PlaceSpec::Key((**key).clone()));
-                    cur = source;
+                    cur = unparen(source);
                 }
                 ExprKind::Ref { .. } | ExprKind::Deref(_) if !steps.is_empty() => {
                     steps.reverse();
@@ -861,56 +879,77 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         }
     }
 
-    fn root_id(&self) -> Option<BindId> {
-        let any = &*self.root as &dyn std::any::Any;
-        match any.downcast_ref::<Ref>() {
-            Some(r) => Some(r.id),
-            None => any.downcast_ref::<Deref<R, E>>().and_then(|d| d.id),
-        }
+    fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        scope: &Scope,
+        top_id: ExprId,
+        root: Expr,
+        specs: Vec<PlaceSpec>,
+    ) -> Result<Self> {
+        let root = compile(ctx, flags, root, scope, top_id)?;
+        let steps = specs
+            .into_iter()
+            .map(|s| {
+                Ok(match s {
+                    PlaceSpec::Index(e) => {
+                        PlaceStep::Index(compile(ctx, flags, e, scope, top_id)?)
+                    }
+                    PlaceSpec::Tuple(i) => PlaceStep::Tuple(i),
+                    PlaceSpec::Field(f) => PlaceStep::Field(f),
+                    PlaceSpec::Key(e) => {
+                        PlaceStep::Key(compile(ctx, flags, e, scope, top_id)?)
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Place { root, steps, path: place::Path::new() })
     }
 
-    /// Update the root and the keys: the current path (`None` while a
-    /// key is undetermined) and whether anything moved.
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> (Option<(BindId, place::Path)>, bool) {
-        let mut moved = self.root.update(ctx, event).is_fired();
-        let mut path = place::Path::new();
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Resolved<'_> {
+        let root = self.root.update(ctx, event).clone();
+        let mut moved = root.tag().triggers();
+        self.path.clear();
+        let id = root_place(&self.root).map(|(id, under)| {
+            self.path.extend(under.iter().cloned());
+            id
+        });
         let mut complete = true;
         for step in &mut self.steps {
             match step {
                 PlaceStep::Index(n) => {
                     let tv = n.update(ctx, event);
-                    moved |= tv.is_fired();
+                    moved |= tv.tag().triggers();
                     let i = if tv.tag().is_bottom() {
                         None
                     } else {
                         tv.with_value(|v| v.clone().cast_to::<i64>().ok())
                     };
                     match i {
-                        Some(i) => path.push(place::Step::Index(i)),
+                        Some(i) => self.path.push(place::Step::Index(i)),
                         None => complete = false,
                     }
                 }
-                PlaceStep::Tuple(i) => path.push(place::Step::Index(*i as i64)),
-                PlaceStep::Field(name) => path.push(place::Step::Field(name.clone())),
+                PlaceStep::Tuple(i) => self.path.push(place::Step::Index(*i as i64)),
+                PlaceStep::Field(name) => {
+                    self.path.push(place::Step::Field(name.clone()))
+                }
                 PlaceStep::Key(n) => {
                     let tv = n.update(ctx, event);
-                    moved |= tv.is_fired();
+                    moved |= tv.tag().triggers();
                     if tv.tag().is_bottom() {
                         complete = false
                     } else {
-                        path.push(place::Step::Key(tv.value_cloned()))
+                        self.path.push(place::Step::Key(tv.value_cloned()))
                     }
                 }
             }
         }
-        match (complete, self.root_id()) {
-            (true, Some(root)) => (Some((root, path)), moved),
-            _ => (None, moved),
-        }
+        let address = match (complete, id) {
+            (true, Some(id)) => Some((id, &self.path)),
+            _ => None,
+        };
+        Resolved { address, root, moved }
     }
 
     fn each(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
@@ -923,25 +962,107 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         }
     }
 
-    fn refs(&self, refs: &mut Refs) {
-        self.root.refs(refs);
+    fn each_ref<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        f(&self.root);
         for step in &self.steps {
             match step {
-                PlaceStep::Index(n) | PlaceStep::Key(n) => n.refs(refs),
+                PlaceStep::Index(n) | PlaceStep::Key(n) => f(n),
                 PlaceStep::Tuple(_) | PlaceStep::Field(_) => (),
             }
         }
     }
+
+    /// The element type: each step's container rule over the root's
+    /// type, the way the access nodes type themselves, without the
+    /// access's failure (a place handles that at runtime).
+    fn elem_type(&self, ctx: &mut ExecCtx<R, E>, spec: &Expr) -> Result<Type> {
+        let mut cur = self.root.typ().clone();
+        for step in &self.steps {
+            cur = match step {
+                PlaceStep::Index(_) => {
+                    let et = Type::empty_tvar();
+                    Type::Array(Arc::new(et.clone())).check_contains(&ctx.env, &cur)?;
+                    et
+                }
+                PlaceStep::Key(k) => {
+                    let vt = Type::empty_tvar();
+                    let mt = Type::Map {
+                        key: Arc::new(k.typ().clone()),
+                        value: Arc::new(vt.clone()),
+                    };
+                    mt.check_contains(&ctx.env, &cur)?;
+                    vt
+                }
+                PlaceStep::Tuple(i) => deref_typ!("tuple", ctx, &cur,
+                    Some(Type::Tuple(ts)) => match ts.get(*i) {
+                        Some(t) => Ok(t.clone()),
+                        None => bail!("tuple has no field {i}"),
+                    }
+                )?,
+                PlaceStep::Field(name) => {
+                    let t = deref_typ!("struct", ctx, &cur,
+                        Some(Type::Struct(flds)) => {
+                            match flds.iter().find(|(n, _, _)| n == name) {
+                                Some((_, t, _)) => Ok(t.clone()),
+                                None => bail!("in struct, unknown field {name}"),
+                            }
+                        }
+                    )?;
+                    if ctx.env.lsp_mode {
+                        ctx.env.push_field_ref(crate::ide::FieldRefSite {
+                            pos: spec.pos,
+                            ori: spec.ori.clone(),
+                            name: name.clone(),
+                            typ: t.clone(),
+                        });
+                    }
+                    t
+                }
+            };
+        }
+        Ok(cur)
+    }
 }
 
+/// What a reference stands for: a binding's value channel (`&x`, or a
+/// derived channel for any other expression), or a place.
+#[derive(Debug)]
+enum Referent<R: Rt, E: UserEvent> {
+    Channel(Node<R, E>),
+    Place(Place<R, E>),
+}
+
+impl<R: Rt, E: UserEvent> Referent<R, E> {
+    fn each(&mut self, f: &mut dyn FnMut(&mut Node<R, E>)) {
+        match self {
+            Referent::Channel(n) => f(n),
+            Referent::Place(p) => p.each(f),
+        }
+    }
+
+    fn each_ref<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        match self {
+            Referent::Channel(n) => f(n),
+            Referent::Place(p) => p.each_ref(f),
+        }
+    }
+}
+
+// XCR codex for eric: [CR08, P1] done: a place is compiled once; the
+// cell mirrors the element read through the same address.
+// XCR codex for eric: [CR09, P1] done: an undetermined address clears
+// the registered place and delivers bottom.
+// XCR codex for eric: [CR11, P2] done: the element type is derived from
+// the container, step by step (`Place::elem_type`).
+// XCR codex for eric: [CR12, P2] done: parentheses are transparent in
+// the chain and a dereferenced place's path is composed under the steps.
 #[derive(Debug)]
 pub struct ByRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
-    pub child: Node<R, E>,
+    referent: Referent<R, E>,
     pub id: BindId,
     resident: TagValue,
-    place: Option<Place<R, E>>,
     registered: Option<(BindId, place::Path)>,
 }
 
@@ -952,34 +1073,19 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
-        let child = decode_node(ctx, buf)?;
         let id = BindId::decode(buf)?;
-        let place = Place::image_decode(ctx, buf)?;
+        let referent = match bool::decode(buf)? {
+            false => Referent::Channel(decode_node(ctx, buf)?),
+            true => Referent::Place(Place::image_decode(ctx, buf)?),
+        };
         Ok(Node::new(Self {
             spec,
             typ,
-            child,
+            referent,
             id,
             resident: TagValue::phantom(),
-            place,
             registered: None,
         }))
-    }
-
-    /// Construct a `ByRef` from an already-compiled child. Does no
-    /// byref-chain plumbing: a caller wanting ref-to-ref chaining must
-    /// insert into `ctx.env.byref_chain` itself.
-    #[allow(dead_code)]
-    pub fn new(id: BindId, typ: Type, child: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Node::new(Self {
-            spec,
-            typ,
-            child,
-            id,
-            resident: TagValue::phantom(),
-            place: None,
-            registered: None,
-        })
     }
 
     pub(crate) fn compile(
@@ -990,49 +1096,59 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         top_id: ExprId,
         expr: &Expr,
     ) -> Result<Node<R, E>> {
-        let child = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let id = BindId::new();
         // A place reference types as a reference to the element and
         // still mints a cell so embedders keep reading the mirror.
-        let place = match Place::<R, E>::of(expr) {
-            None => None,
+        let (referent, typ) = match Place::<R, E>::of(expr) {
             Some((root, specs)) => {
-                let root = compile(ctx, flags, root, scope, top_id)?;
-                let steps = specs
-                    .into_iter()
-                    .map(|s| {
-                        Ok(match s {
-                            PlaceSpec::Index(e) => {
-                                PlaceStep::Index(compile(ctx, flags, e, scope, top_id)?)
-                            }
-                            PlaceSpec::Tuple(i) => PlaceStep::Tuple(i),
-                            PlaceSpec::Field(f) => PlaceStep::Field(f),
-                            PlaceSpec::Key(e) => {
-                                PlaceStep::Key(compile(ctx, flags, e, scope, top_id)?)
-                            }
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Some(Place { root, steps })
+                let place = Place::compile(ctx, flags, scope, top_id, root, specs)?;
+                (Referent::Place(place), Type::ByRef(Arc::new(Type::empty_tvar())))
             }
-        };
-        let typ = if place.is_some() {
-            Type::ByRef(Arc::new(Type::empty_tvar()))
-        } else {
-            if let Some(c) = (&*child as &dyn std::any::Any).downcast_ref::<Ref>() {
-                ctx.env.byref_chain.insert_cow(id, c.id);
+            None => {
+                let child = compile(ctx, flags, unparen(expr).clone(), scope, top_id)?;
+                if let Some(c) = (&*child as &dyn std::any::Any).downcast_ref::<Ref>() {
+                    ctx.env.byref_chain.insert_cow(id, c.id);
+                }
+                let typ = Type::ByRef(Arc::new(child.typ().clone()));
+                (Referent::Channel(child), typ)
             }
-            Type::ByRef(Arc::new(child.typ().clone()))
         };
         Ok(Node::new(Self {
             spec,
             typ,
-            child,
+            referent,
             id,
             resident: TagValue::phantom(),
-            place,
             registered: None,
         }))
+    }
+
+    /// Every node the reference evaluates.
+    pub(crate) fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R, E>)) {
+        self.referent.each_ref(f)
+    }
+
+    /// Write the cell: a fire is delivered (this cycle under init, so
+    /// `Deref` reads it under a wake view too; else queued), a stale
+    /// value under an init view still materializes the cell (embedders
+    /// read it directly and a chainless ref's cell is its only storage).
+    fn publish(&self, ctx: &mut ExecCtx<R, E>, event: &Event<E>, tv: TagValue) {
+        let (fired, bottom) = (tv.is_fired(), tv.tag().is_bottom());
+        if fired {
+            if event.init {
+                ctx.rt.store_insert(self.id, TagValue::fired(tv.value()));
+            } else {
+                ctx.rt.set_var(self.id, tv.value());
+            }
+        } else if event.init && !bottom {
+            ctx.rt.store_insert_standing(self.id, TagValue::stale(tv.value()));
+        }
+    }
+
+    fn unregister(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if self.registered.take().is_some() {
+            ctx.rt.clear_ref_path(&self.id);
+        }
     }
 }
 
@@ -1041,53 +1157,73 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         tag_len()
             + self.spec.encoded_len()
             + self.typ.encoded_len()
-            + self.child.image_len()
             + self.id.encoded_len()
-            + Place::image_len(&self.place)
+            + 1
+            + match &self.referent {
+                Referent::Channel(n) => n.image_len(),
+                Referent::Place(p) => p.image_len(),
+            }
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ByRef, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        self.child.image_encode(buf)?;
         self.id.encode(buf)?;
-        Place::image_encode(&self.place, buf)
+        match &self.referent {
+            Referent::Channel(n) => {
+                false.encode(buf)?;
+                n.image_encode(buf)
+            }
+            Referent::Place(p) => {
+                true.encode(buf)?;
+                p.image_encode(buf)
+            }
+        }
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // A moved key re-fires the reference so readers re-resolve.
-        let mut moved = false;
-        if let Some(place) = &mut self.place {
-            let (path, m) = place.update(ctx, event);
-            moved = m;
-            if let Some((root, path)) = path
-                && self.registered.as_ref() != Some(&(root, path.clone()))
-            {
-                ctx.rt.set_ref_path(self.id, root, path.clone());
-                self.registered = Some((root, path));
-                moved = true;
+        let moved = match &mut self.referent {
+            Referent::Channel(n) => {
+                let tv = n.update(ctx, event).clone();
+                self.publish(ctx, event, tv);
+                false
             }
-        }
-        // A stale refresh must not re-write the referent, and a taint
-        // placeholder must never enter the cross-cycle store.
-        let tv = self.child.update(ctx, event);
-        if tv.is_fired() {
-            let v = tv.value_cloned();
-            if event.init {
-                // Delivered this cycle, so `Deref` reads the fire under a
-                // wake view too; a queued write would arrive again next
-                // cycle.
-                ctx.rt.store_insert(self.id, TagValue::fired(v));
-            } else {
-                ctx.rt.set_var(self.id, v);
+            Referent::Place(place) => {
+                let Resolved { address, root, moved } = place.update(ctx, event);
+                let Some((root_id, path)) = address else {
+                    self.unregister(ctx);
+                    return self.resident.set_bottom(moved || event.init);
+                };
+                let same = self
+                    .registered
+                    .as_ref()
+                    .is_some_and(|(r, p)| *r == root_id && p == path);
+                let moved = moved || !same;
+                if !same {
+                    ctx.rt.set_ref_path(self.id, root_id, path.clone());
+                    self.registered = Some((root_id, path.clone()));
+                }
+                // the cell mirrors the element, read through the address
+                if (moved || event.init) && !root.tag().is_bottom() {
+                    let read = super::coretraits::with_hooks(ctx, event, || {
+                        root.with_value(|v| place::read_path(v, path))
+                    });
+                    match read {
+                        Ok(v) => {
+                            let tag = if moved { Tag::FIRED } else { root.tag() };
+                            self.publish(ctx, event, TagValue::tagged(v, tag))
+                        }
+                        Err(e) => {
+                            log::warn!("read through a reference: {e}");
+                            let bottom = TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM);
+                            ctx.rt.store_insert(self.id, bottom);
+                        }
+                    }
+                }
+                moved
             }
-        } else if event.init && !tv.tag().is_bottom() && !tv.tag().is_bottom() {
-            // A wake-forced init view reads stale, but the cell must
-            // still materialize: embedders read it directly and a
-            // chainless ref's cell is its only storage.
-            ctx.rt.store_insert_standing(self.id, TagValue::stale(tv.value_cloned()));
-        }
+        };
         if event.init || moved {
             self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
         } else {
@@ -1097,25 +1233,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.env.byref_chain.remove_cow(&self.id);
-        if let Some(place) = &mut self.place {
-            ctx.rt.clear_ref_path(&self.id);
-            place.each(&mut |n| n.delete(ctx));
-        }
-        self.child.delete(ctx)
+        self.unregister(ctx);
+        self.referent.each(&mut |n| n.delete(ctx));
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(place) = &mut self.place {
-            place.each(&mut |n| n.sleep(ctx));
-        }
-        self.child.sleep(ctx);
+        self.referent.each(&mut |n| n.sleep(ctx));
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(place) = &mut self.place {
-            place.each(&mut |n| n.reset_replay(ctx));
-        }
-        self.child.reset_replay(ctx);
+        self.referent.each(&mut |n| n.reset_replay(ctx));
     }
 
     fn spec(&self) -> &Expr {
@@ -1127,48 +1254,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        if let Some(place) = &self.place {
-            place.refs(refs);
-        }
-        self.child.refs(refs)
+        self.referent.each_ref(&mut |n| n.refs(refs));
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck0(ctx))?;
-        match &mut self.place {
-            Some(place) => {
-                let mut res = Ok(());
-                place.each(&mut |n| {
-                    if res.is_ok() {
-                        res = n.typecheck0(ctx);
-                    }
-                });
-                wrap!(self, res)
+        let mut res = Ok(());
+        self.referent.each(&mut |n| {
+            if res.is_ok() {
+                res = n.typecheck0(ctx).map_err(|e| e.at(n.spec()));
             }
-            None => {
-                let t = Type::ByRef(Arc::new(self.child.typ().clone()));
-                wrap!(self, self.typ.check_contains(&ctx.env, &t))
-            }
-        }
+        });
+        res?;
+        let t = match &self.referent {
+            Referent::Channel(n) => n.typ().clone(),
+            Referent::Place(p) => wrap!(self, p.elem_type(ctx, &self.spec))?,
+        };
+        wrap!(self, self.typ.check_contains(&ctx.env, &Type::ByRef(Arc::new(t))))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck1(ctx))?;
-        if let Some(place) = &mut self.place {
-            let mut res = Ok(());
-            place.each(&mut |n| {
-                if res.is_ok() {
-                    res = n.typecheck1(ctx);
-                }
-            });
-            wrap!(self, res)?;
-            // The element type is the access's type minus its failure;
-            // a place handles the failure at runtime.
-            let err = Type::Primitive(Typ::Error.into());
-            let elem = wrap!(self, self.child.typ().diff(&ctx.env, &err))?;
-            wrap!(self, self.typ.check_contains(&ctx.env, &Type::ByRef(Arc::new(elem))))?;
-        }
-        Ok(())
+        let mut res = Ok(());
+        self.referent.each(&mut |n| {
+            if res.is_ok() {
+                res = n.typecheck1(ctx).map_err(|e| e.at(n.spec()));
+            }
+        });
+        res
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -1338,9 +1449,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                         c.retag(tv.tag());
                         Some(c)
                     }
+                    // XCR codex for eric: [CR10, P1] done: a place that does not
+                    // exist is bottom, tagged by the delivery that found it so.
                     Err(e) => {
                         log::warn!("read through a reference: {e}");
-                        None
+                        return self.resident.set_bottom(tv.tag().join(addr).triggers());
                     }
                 }
             }

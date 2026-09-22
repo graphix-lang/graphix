@@ -1518,34 +1518,24 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     // would consume the callee's first-dispatch init view.
                     return self.resident.ride();
                 }
-                // Each arg carries its honest production tag; a bottomed
-                // arg is `None` and the formal rides its previous value.
+                // XCR codex for eric: [CR03, P1] done: a bottom arg is carried
+                // with its tag and bottoms the formal; `None` is only an arg
+                // that never produced.
                 let args: SmallVec<[Option<TagValue>; 4]> = order
                     .iter()
                     .map(|id| {
                         if let Some((_, tv)) = prods.iter().find(|(pid, _)| pid == id) {
-                            return if tv.tag().is_bottom() {
-                                None
-                            } else {
-                                Some(tv.clone())
-                            };
+                            return Some(tv.clone());
                         }
                         match super::read_var(ctx, event, id) {
-                            Some(super::VarRead::Delivered(tv))
-                                if !tv.tag().is_bottom() =>
-                            {
-                                Some(tv.clone())
-                            }
-                            Some(super::VarRead::Delivered(_)) => None,
-                            Some(super::VarRead::Standing(tv))
-                                if !tv.tag().is_bottom() =>
-                            {
+                            Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
+                            Some(super::VarRead::Standing(tv)) => {
                                 let mut c = tv.clone();
                                 let t = c.tag().quiet();
                                 c.retag(t);
                                 Some(c)
                             }
-                            Some(super::VarRead::Standing(_)) | None => None,
+                            None => None,
                         }
                     })
                     .collect();
@@ -1881,7 +1871,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let is_self_tail_call = bool::decode(buf)?;
-        let tail_arg_order = Option::<Vec<BindId>>::decode(buf)?.map(Box::from);
+        let tail_arg_order = match bool::decode(buf)? {
+            true => Some(Box::from(Vec::<BindId>::decode(buf)?)),
+            false => None,
+        };
         let callee_lambda_id = Option::<LambdaId>::decode(buf)?;
         let site = Self {
             slept: WakeBit::default(),
@@ -1956,7 +1949,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             + image::scope_len(&self.scope)
             + self.top_id.encoded_len()
             + 1
-            + self.tail_arg_order.lock().as_ref().map(|b| b.to_vec()).encoded_len()
+            + 1
+            + self.tail_arg_order.lock().as_ref().map_or(0, |b| image::slice_len(b))
             + self.callee_lambda_id.lock().encoded_len()
     }
 
@@ -2019,7 +2013,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         image::scope_encode(&self.scope, buf)?;
         self.top_id.encode(buf)?;
         self.is_self_tail_call.load(Ordering::Relaxed).encode(buf)?;
-        self.tail_arg_order.lock().as_ref().map(|b| b.to_vec()).encode(buf)?;
+        let order = self.tail_arg_order.lock();
+        order.is_some().encode(buf)?;
+        if let Some(order) = order.as_ref() {
+            image::slice_encode(order, buf)?;
+        }
+        drop(order);
         self.callee_lambda_id.lock().encode(buf)
     }
 

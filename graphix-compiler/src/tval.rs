@@ -2,8 +2,9 @@
 //! both engines. Bit-identical to `Value` except that the upper 8 bits
 //! of the discriminant word carry a tag of two orthogonal bits, STALE
 //! (not an event this cycle) and TAINT (no usable value), giving the
-//! four states of [`TagView`]. Both bits join by OR over consumed
-//! inputs ([`Tag::join`]). Consume through [`TagValue::view`]; the
+//! four states of [`TagView`]. Over consumed inputs TAINT joins by OR
+//! and STALE by AND: a bottom anywhere bottoms, a fire anywhere fires
+//! ([`Tag::join`]). Consume through [`TagValue::view`]; the
 //! only ways to recover a `Value` mask the tag first, so a tagged disc
 //! is never read as a `Value` discriminant.
 
@@ -67,10 +68,8 @@ impl Tag {
         Self::from_raw(taint | stale)
     }
 
-    /// OR `other`'s bottom into self, leaving self's firing alone.
-    pub fn with_taint_of(self, other: Tag) -> Tag {
-        if other.is_bottom() { Self::STALE_BOTTOM } else { self }
-    }
+    // XCR codex for eric: [CR21, P2] done: the unused helper is gone; the
+    // module and ABI docs describe the two independent bits.
 
     /// Set the STALE bit, keeping bottomness: the tag a resident
     /// re-surfaces under when nothing triggered this cycle.

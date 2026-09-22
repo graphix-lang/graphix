@@ -167,8 +167,8 @@ pub fn analyze<R: Rt, E: UserEvent>(
     let _profile = profile::phase(Phase::Analysis);
     let graph = collect_static_graph(root, None);
     let sites = collect_resolved_sites(root);
-    infer_effects(&sites, ctx);
-    mark_recursion(&graph, ctx);
+    let facts = infer_effects(&sites, ctx);
+    mark_recursion(&graph, &facts, ctx);
     // An assertion whose definition is not yet reached stays pending
     // for a later compile.
     check_def_assertions(&graph, &sites, ctx)?;
@@ -265,17 +265,17 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     if let Some(sb) = self_bind {
         sites.push((g, sb));
     }
-    infer_effects(&sites, ctx);
-    mark_recursion(&graph, ctx);
+    let facts = infer_effects(&sites, ctx);
+    mark_recursion(&graph, &facts, ctx);
 }
 
 /// Every reachable resolved-lambda call site, as `(callee, self_bind)`;
-/// callee bodies are walked once each.
+/// callee instance bodies are walked once each.
 fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
     root: &'a Node<R, E>,
 ) -> LPooled<Vec<(&'a GXLambda<R, E>, BindId)>> {
     let _profile = profile::phase(Phase::ResolvedSites);
-    let mut seen: LPooled<IntSet<LambdaId>> = LPooled::take();
+    let mut seen: LPooled<IntSet<LambdaInstanceId>> = LPooled::take();
     let mut sites: LPooled<Vec<(&'a GXLambda<R, E>, BindId)>> = LPooled::take();
     let mut stack: LPooled<Vec<&'a Node<R, E>>> = LPooled::take();
     stack.push(root);
@@ -287,7 +287,7 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
             if let NodeView::Ref(r) = cs.fnode().view() {
                 sites.push((g, r.id));
             }
-            if seen.insert(g.id()) {
+            if seen.insert(g.instance_id()) {
                 to_descend.push(g.body());
             }
         });
@@ -296,21 +296,31 @@ fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
     sites
 }
 
-/// Greatest-fixpoint effect inference. Every reachable lambda starts
-/// `Sync` and monotonically degrades to `Async` until stable.
+/// The facts inferred for the instances of this analysis, by instance.
+type InstanceFacts = LPooled<IntMap<LambdaInstanceId, LambdaFacts>>;
+
+/// Greatest-fixpoint effect inference over every reachable instance.
+/// An instance starts `Sync` and monotonically degrades to `Async`
+/// until stable; a definition's stored facts are the join over its
+/// instances and never improve (an instance analyzed later is one more
+/// instance, not a better view of the definition).
+// XCR codex for eric: [CR04, P1] done: facts are per instance; a
+// definition's are the join of every instance's, ever; the tail loop
+// is gated by the instance's own.
 fn infer_effects<R: Rt, E: UserEvent>(
     sites: &[(&GXLambda<R, E>, BindId)],
     ctx: &ExecCtx<R, E>,
-) {
+) -> InstanceFacts {
     let _profile = profile::phase(Phase::Effects);
     // The (callee, self_bind) pairs double as a back-edge table: a
     // dynamically-bound recursive callee can be analyzed before its
     // self-call is in `ctx.bind_to_lambda`.
-    let mut bodies: LPooled<IntMap<LambdaId, (&Node<R, E>, LPooled<IntSet<BindId>>)>> =
-        LPooled::take();
-    let mut self_ids: LPooled<IntMap<BindId, LambdaId>> = LPooled::take();
+    let mut bodies: LPooled<
+        IntMap<LambdaInstanceId, (LambdaId, &Node<R, E>, LPooled<IntSet<BindId>>)>,
+    > = LPooled::take();
+    let mut self_ids: LPooled<IntMap<BindId, LambdaInstanceId>> = LPooled::take();
     for (g, sb) in sites {
-        bodies.entry(g.id()).or_insert_with(|| {
+        bodies.entry(g.instance_id()).or_insert_with(|| {
             let _profile = profile::phase(Phase::EffectRefs);
             let body = g.body();
             let mut refs = crate::Refs::default();
@@ -319,19 +329,19 @@ fn infer_effects<R: Rt, E: UserEvent>(
             refs.with_bound(|id| {
                 local.insert(id);
             });
-            (body, local)
+            (g.id(), body, local)
         });
-        self_ids.entry(*sb).or_insert_with(|| g.id());
+        self_ids.entry(*sb).or_insert_with(|| g.instance_id());
     }
-    let mut eff: LPooled<IntMap<LambdaId, LambdaFacts>> =
+    let mut eff: InstanceFacts =
         bodies.keys().map(|id| (*id, LambdaFacts::PURE)).collect();
     loop {
         let _profile = profile::phase(Phase::EffectRound);
         let mut changed = false;
-        for (lid, (body, local)) in &*bodies {
+        for (iid, (_, body, local)) in &*bodies {
             let e = body_facts(body, local, &eff, &self_ids, ctx);
-            if eff.get(lid).copied() != Some(e) {
-                eff.insert(*lid, e);
+            if eff.get(iid).copied() != Some(e) {
+                eff.insert(*iid, e);
                 changed = true;
             }
         }
@@ -339,11 +349,20 @@ fn infer_effects<R: Rt, E: UserEvent>(
             break;
         }
     }
-    for (lid, e) in &*eff {
+    for (iid, (lid, _, _)) in &*bodies {
         if let Some(d) = lambda_def(ctx, *lid) {
+            let e = def_facts(d).join(eff[iid]);
             *d.intrinsic_effect.lock() = e.effect;
             d.stateless.store(e.stateless, Ordering::Relaxed);
         }
+    }
+    eff
+}
+
+fn def_facts<R: Rt, E: UserEvent>(d: &LambdaDef<R, E>) -> LambdaFacts {
+    LambdaFacts {
+        effect: *d.intrinsic_effect.lock(),
+        stateless: d.stateless.load(Ordering::Relaxed),
     }
 }
 
@@ -375,8 +394,8 @@ impl LambdaFacts {
 fn body_facts<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     local: &IntSet<BindId>,
-    eff: &IntMap<LambdaId, LambdaFacts>,
-    self_ids: &IntMap<BindId, LambdaId>,
+    eff: &IntMap<LambdaInstanceId, LambdaFacts>,
+    self_ids: &IntMap<BindId, LambdaInstanceId>,
     ctx: &ExecCtx<R, E>,
 ) -> LambdaFacts {
     let mut acc = LambdaFacts::PURE;
@@ -400,8 +419,8 @@ fn body_facts<R: Rt, E: UserEvent>(
 /// the read. Exhaustive on purpose: a new node variant must decide.
 fn node_facts<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
-    eff: &IntMap<LambdaId, LambdaFacts>,
-    self_ids: &IntMap<BindId, LambdaId>,
+    eff: &IntMap<LambdaInstanceId, LambdaFacts>,
+    self_ids: &IntMap<BindId, LambdaInstanceId>,
     local: &IntSet<BindId>,
     ctx: &ExecCtx<R, E>,
 ) -> LambdaFacts {
@@ -477,41 +496,38 @@ fn node_facts<R: Rt, E: UserEvent>(
     }
 }
 
-/// The facts a call contributes: a known user lambda's fixpoint facts,
-/// a builtin's declared `EFFECT`, otherwise `Async`.
+/// The facts a call contributes: the callee instance's fixpoint facts
+/// (its definition's stored facts when the instance is not in this
+/// analysis), a builtin's declared `EFFECT`, otherwise `Async`.
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
-    eff: &IntMap<LambdaId, LambdaFacts>,
-    self_ids: &IntMap<BindId, LambdaId>,
+    eff: &IntMap<LambdaInstanceId, LambdaFacts>,
+    self_ids: &IntMap<BindId, LambdaInstanceId>,
     ctx: &ExecCtx<R, E>,
 ) -> LambdaFacts {
-    // A lambda missing from the local map was analyzed by a prior pass:
-    // read its stored fact.
-    let known = |lid: LambdaId| -> LambdaFacts {
-        eff.get(&lid).copied().unwrap_or_else(|| {
-            lambda_def(ctx, lid)
-                .map(|d| LambdaFacts {
-                    effect: *d.intrinsic_effect.lock(),
-                    stateless: d.stateless.load(Ordering::Relaxed),
-                })
-                .unwrap_or(LambdaFacts::ASYNC)
-        })
+    let of_def = |lid: LambdaId| -> LambdaFacts {
+        lambda_def(ctx, lid).map(def_facts).unwrap_or(LambdaFacts::ASYNC)
+    };
+    let known = |iid: LambdaInstanceId, lid: LambdaId| -> LambdaFacts {
+        eff.get(&iid).copied().unwrap_or_else(|| of_def(lid))
     };
     if let Some(target) = cs.static_target() {
-        return known(target.definition);
+        return known(target.instance, target.definition);
     }
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
-        return known(g.id());
+        return known(g.instance_id(), g.id());
     }
     if let NodeView::Ref(r) = cs.fnode().view() {
         // The seeded back-edge table names the actual instance at the
         // analyzed site, so it is checked before `bind_to_lambda`.
-        if let Some(lid) = self_ids.get(&r.id) {
-            return known(*lid);
+        if let Some(iid) = self_ids.get(&r.id)
+            && let Some(f) = eff.get(iid)
+        {
+            return *f;
         }
         if let Some(v) = ctx.bind_to_lambda.get(&r.id) {
             if let Some(d) = v.downcast_ref::<LambdaDef<R, E>>() {
-                return known(d.id);
+                return of_def(d.id);
             }
         }
     }
@@ -536,6 +552,7 @@ fn callee_facts<R: Rt, E: UserEvent>(
 
 fn mark_recursion<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
+    facts: &InstanceFacts,
     ctx: &ExecCtx<R, E>,
 ) {
     let _profile = profile::phase(Phase::Recursion);
@@ -593,10 +610,11 @@ fn mark_recursion<R: Rt, E: UserEvent>(
         }
         let structural = self_bind
             .is_some_and(|self_bind| lowering::structural_tail_loop(g, self_bind, ctx));
-        if structural
-            && lambda_is_stateless(ctx, g.id())
-            && mark_tail_sites(g.body(), *instance, g.id())
-        {
+        let stateless = facts
+            .get(instance)
+            .map(|f| f.effect.is_sync() && f.stateless)
+            .unwrap_or_else(|| lambda_is_stateless(ctx, g.id()));
+        if structural && stateless && mark_tail_sites(g.body(), *instance, g.id()) {
             g.set_tail_loop(true);
         }
     }
@@ -738,8 +756,8 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
     node: &Node<R, E>,
 ) -> bool {
-    let eff: IntMap<LambdaId, LambdaFacts> = IntMap::default();
-    let self_ids: IntMap<BindId, LambdaId> = IntMap::default();
+    let eff: IntMap<LambdaInstanceId, LambdaFacts> = IntMap::default();
+    let self_ids: IntMap<BindId, LambdaInstanceId> = IntMap::default();
     let mut pure = true;
     let mut recurses = false;
     fusion::for_each_node(node, &mut |n| match n.view() {
@@ -771,7 +789,8 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
 fn lambda_is_stateless<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, lid: LambdaId) -> bool {
     lambda_def(ctx, lid)
         .map(|d| {
-            d.intrinsic_effect.lock().is_sync() && d.stateless.load(Ordering::Relaxed)
+            let f = def_facts(d);
+            f.effect.is_sync() && f.stateless
         })
         .unwrap_or(false)
 }

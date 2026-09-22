@@ -50,7 +50,6 @@ pub(super) struct TailRebind {
     pub(super) slot: usize,
     pub(super) val: CompiledExpr,
     pub(super) source: CompositeSource,
-    pub(super) taint: ClifValue,
 }
 
 /// Resolve a tail-rebind target slot's `ValueVar`, by BindId first:
@@ -79,18 +78,15 @@ pub(super) fn emit_tail_rebind_jump(
     let head = ctx.tail.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
-    // A tainted new value keeps the slot's previous value, as the
-    // node-walk backfills a bottomed arg from its cache.
+    // XCR codex for eric: [CR03, P1] done: the new value replaces the
+    // formal whatever its tag; a bottom's placeholder is an owned empty
+    // payload, so it is carried and dropped like a value.
     let TailSlots::Named(slots) = ctx.tail.call_slots else {
         debug_assert!(rebinds.len() <= ctx.tail.param_mark);
         for r in rebinds.iter() {
             let vv = env.locals[r.slot].words;
-            let old_p = b.use_var(vv.payload);
-            let old_d = b.use_var(vv.disc);
-            let p = b.ins().select(r.taint, old_p, r.val.payload);
-            let d = b.ins().select(r.taint, old_d, r.val.disc);
-            b.def_var(vv.payload, p);
-            b.def_var(vv.disc, d);
+            b.def_var(vv.payload, r.val.payload);
+            b.def_var(vv.disc, r.val.disc);
         }
         env.truncate(ctx.tail.param_mark);
         b.ins().jump(head, &[]);
@@ -100,84 +96,37 @@ pub(super) fn emit_tail_rebind_jump(
     // the loop-carried formals.
     debug_assert!(rebinds.len() <= slots.len());
     use kernel_abi::AbiParamKind;
-    let drop_helper = ctx
-        .helper_refs
-        .get("graphix_valarray_drop")
-        .ok_or_else(|| anyhow!("missing graphix_valarray_drop"))?;
-    let clone_helper = ctx
-        .helper_refs
-        .get("graphix_valarray_clone")
-        .ok_or_else(|| anyhow!("missing graphix_valarray_clone"))?;
+    let helper =
+        |name: &str| ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing {name}"));
     for r in rebinds.iter() {
         let slot = &slots[r.slot];
+        let vv = lookup_slot(env, slot)
+            .ok_or_else(|| anyhow!("TailCall: slot `{}` not in env", slot.name))?;
         match slot.kind.abi() {
             AbiParamKind::Scalar(_) => {
-                let vv = lookup_slot(env, slot).ok_or_else(|| {
-                    anyhow!("TailCall: scalar slot `{}` not in env", slot.name)
-                })?;
-                let old_p = b.use_var(vv.payload);
-                let old_d = b.use_var(vv.disc);
-                let p = b.ins().select(r.taint, old_p, r.val.payload);
-                let d = b.ins().select(r.taint, old_d, r.val.disc);
-                b.def_var(vv.payload, p);
-                b.def_var(vv.disc, d);
+                b.def_var(vv.payload, r.val.payload);
+                b.def_var(vv.disc, r.val.disc);
             }
+            // a Borrowed new value is cloned; the old slot value is dropped
             AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
-                // REPLACE clones a Borrowed new value and drops the old
-                // slot pointer; KEEP leaves the slot and drops an Owned
-                // new value.
-                let vv = lookup_slot(env, slot).ok_or_else(|| {
-                    anyhow!("TailCall: composite slot `{}` not in env", slot.name)
-                })?;
-                let keep_bl = b.create_block();
-                let replace_bl = b.create_block();
-                let cont_bl = b.create_block();
-                b.ins().brif(r.taint, keep_bl, &[], replace_bl, &[]);
-                b.seal_block(keep_bl);
-                b.seal_block(replace_bl);
-                b.switch_to_block(replace_bl);
                 let newp = if r.source == CompositeSource::Borrowed {
-                    let call = b.ins().call(clone_helper, &[r.val.payload]);
+                    let call =
+                        b.ins().call(helper("graphix_valarray_clone")?, &[r.val.payload]);
                     b.inst_results(call)[0]
                 } else {
                     r.val.payload
                 };
                 let old = b.use_var(vv.payload);
-                b.ins().call(drop_helper, &[old]);
+                b.ins().call(helper("graphix_valarray_drop")?, &[old]);
                 b.def_var(vv.payload, newp);
                 b.def_var(vv.disc, r.val.disc);
-                b.ins().jump(cont_bl, &[]);
-                b.switch_to_block(keep_bl);
-                if r.source == CompositeSource::Owned {
-                    b.ins().call(drop_helper, &[r.val.payload]);
-                }
-                b.ins().jump(cont_bl, &[]);
-                b.seal_block(cont_bl);
-                b.switch_to_block(cont_bl);
             }
             AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
-                // The composite protocol over the (disc, payload) pair
-                // helpers.
-                let vv = lookup_slot(env, slot).ok_or_else(|| {
-                    anyhow!("TailCall: value slot `{}` not in env", slot.name)
-                })?;
-                let vclone = ctx
-                    .helper_refs
-                    .get("graphix_value_clone")
-                    .ok_or_else(|| anyhow!("missing graphix_value_clone"))?;
-                let vdrop = ctx
-                    .helper_refs
-                    .get("graphix_value_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_value_drop"))?;
-                let keep_bl = b.create_block();
-                let replace_bl = b.create_block();
-                let cont_bl = b.create_block();
-                b.ins().brif(r.taint, keep_bl, &[], replace_bl, &[]);
-                b.seal_block(keep_bl);
-                b.seal_block(replace_bl);
-                b.switch_to_block(replace_bl);
                 let (newd, newp) = if r.source == CompositeSource::Borrowed {
-                    let call = b.ins().call(vclone, &[r.val.disc, r.val.payload]);
+                    let call = b.ins().call(
+                        helper("graphix_value_clone")?,
+                        &[r.val.disc, r.val.payload],
+                    );
                     let rs = b.inst_results(call);
                     (rs[0], rs[1])
                 } else {
@@ -185,45 +134,17 @@ pub(super) fn emit_tail_rebind_jump(
                 };
                 let old_d = b.use_var(vv.disc);
                 let old_p = b.use_var(vv.payload);
-                b.ins().call(vdrop, &[old_d, old_p]);
+                b.ins().call(helper("graphix_value_drop")?, &[old_d, old_p]);
                 b.def_var(vv.payload, newp);
                 b.def_var(vv.disc, newd);
-                b.ins().jump(cont_bl, &[]);
-                b.switch_to_block(keep_bl);
-                if r.source == CompositeSource::Owned {
-                    b.ins().call(vdrop, &[r.val.disc, r.val.payload]);
-                }
-                b.ins().jump(cont_bl, &[]);
-                b.seal_block(cont_bl);
-                b.switch_to_block(cont_bl);
             }
+            // a String production is always owned (a local read
+            // refcount-bumps)
             AbiParamKind::String => {
-                // A String production is always owned (a local read
-                // refcount-bumps), so there is no source branch.
-                let vv = lookup_slot(env, slot).ok_or_else(|| {
-                    anyhow!("TailCall: string slot `{}` not in env", slot.name)
-                })?;
-                let sdrop = ctx
-                    .helper_refs
-                    .get("graphix_arcstr_drop")
-                    .ok_or_else(|| anyhow!("missing graphix_arcstr_drop"))?;
-                let keep_bl = b.create_block();
-                let replace_bl = b.create_block();
-                let cont_bl = b.create_block();
-                b.ins().brif(r.taint, keep_bl, &[], replace_bl, &[]);
-                b.seal_block(keep_bl);
-                b.seal_block(replace_bl);
-                b.switch_to_block(replace_bl);
                 let old_p = b.use_var(vv.payload);
-                b.ins().call(sdrop, &[old_p]);
+                b.ins().call(helper("graphix_arcstr_drop")?, &[old_p]);
                 b.def_var(vv.payload, r.val.payload);
                 b.def_var(vv.disc, r.val.disc);
-                b.ins().jump(cont_bl, &[]);
-                b.switch_to_block(keep_bl);
-                b.ins().call(sdrop, &[r.val.payload]);
-                b.ins().jump(cont_bl, &[]);
-                b.seal_block(cont_bl);
-                b.switch_to_block(cont_bl);
             }
         }
     }

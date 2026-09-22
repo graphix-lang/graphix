@@ -475,7 +475,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             }
         }
         NodeView::MapRef(m) => rec!(&m.source, &m.key),
-        NodeView::ByRef(b) => rec!(&b.child),
+        NodeView::ByRef(b) => b.for_each_child(f),
         NodeView::Deref(d) => rec!(&d.child),
         NodeView::Add(o) => rec!(&o.lhs, &o.rhs),
         NodeView::Sub(o) => rec!(&o.lhs, &o.rhs),

@@ -71,13 +71,18 @@ pub struct CompiledExpr {
     pub payload: ClifValue,
 }
 
-/// Disc bit 62: this value may be a bottom. The runtime dispatch also
-/// sets it for a missing input.
+/// Disc bit 62: the value is a bottom; the payload under it is a
+/// placeholder (an owned empty one for a composite kind), never read.
+/// The runtime dispatch also sets it for a missing input. Independent
+/// of [`STALE`]: a fresh bottom is an event.
 pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 
-/// Disc bit 61: the value did not fire this cycle and carries a cached
-/// payload. Leaves set it, ops AND-reduce it ([`propagate_stale`]), and
-/// only the kernel output forces freshness. Invariant: `TAINT ⟹ STALE`.
+/// Disc bit 61: the value did not fire this cycle; when it is not
+/// tainted the payload is the standing value. Leaves set it, ops
+/// AND-reduce it ([`propagate_stale`]) while [`TAINT`] ORs, and only the
+/// kernel output forces freshness.
+// XCR codex for eric: [CR21, P2] done: the two bits are documented as
+// independent, as `Tag::join` treats them.
 pub(crate) const STALE: i64 = 0x2000_0000_0000_0000;
 
 impl CompiledExpr {

@@ -54,6 +54,14 @@ impl FormatConfig {
     /// under `graphix`, else the defaults. A file that is found and does
     /// not parse is an error, never the defaults.
     pub fn discover(dir: &Path) -> Result<Self> {
+        // CR codex for eric: [CR07, P2] ancestors() is lexical: for "." or a
+        // relative source directory it never reaches the cwd's parents. Thus a
+        // project configuration above the working directory is silently missed.
+        // Make the search root absolute before walking its ancestors.
+        // XCR codex for eric: [CR07, P2] done: the search starts from the
+        // absolute directory, so a relative one still climbs past the cwd.
+        let dir = std::path::absolute(dir)
+            .with_context(|| format_compact!("resolving {}", dir.display()))?;
         let project = dir.ancestors().map(|d| d.join(CONFIG_FILE)).find(|p| p.is_file());
         let user = || dirs::config_dir().map(|d| d.join("graphix").join(CONFIG_FILE));
         match project.or_else(|| user().filter(|p| p.is_file())) {
@@ -104,12 +112,39 @@ fn merge_uses<T: Clone>(
     fn root(n: &UseItem) -> (u8, &str) {
         use_seg_key(use_seg(n, 0))
     }
+    /// The name a use item binds; a glob binds any.
+    fn binds(n: &UseItem) -> Option<&str> {
+        n.rename.as_deref().or_else(|| netidx_core::path::Path::basename(&n.path.0))
+    }
+    // XCR codex for eric: [CR06, P1] done: a statement that reads a name
+    // an earlier statement of the run bound, or binds one again, closes
+    // the run; use statements are reordered only within a run.
+    /// Would `names` read or shadow what `run` binds, if merged after
+    /// it? A glob binds names unknown here, so it joins only items of
+    /// its own root.
+    fn depends(run: &[(bool, UseItem)], names: &[UseItem]) -> bool {
+        names.iter().any(|n| {
+            let reads =
+                use_seg(n, 0).filter(|r| !matches!(*r, "self" | "super" | "package"));
+            run.iter().any(|(_, m)| {
+                if m.is_glob() || n.is_glob() {
+                    return root(m) != root(n);
+                }
+                let b = binds(m);
+                let same = m.path == n.path && m.rename == n.rename;
+                b == reads || (b == binds(n) && !same)
+            })
+        })
+    }
     let mut merged: LPooled<Vec<T>> = LPooled::take();
     let mut run: LPooled<Vec<(bool, UseItem)>> = LPooled::take();
     let mut i = 0;
     while i < items.len() {
         let first = &items[i];
         while let Some((reexport, names)) = items.get(i).and_then(&as_use) {
+            if !run.is_empty() && depends(&run, names) {
+                break;
+            }
             run.extend(names.iter().map(|n| (reexport, n.clone())));
             i += 1;
         }
@@ -410,7 +445,7 @@ mod tests {
         formats_to(
             Program,
             "use b::y; use a::c::{e, d}; pub use a::p; use a::c; use a::*; use super::q; x",
-            "use super::q;\nuse a::{c::{self, d, e}, *};\npub use a::p;\nuse b::y;\nx\n",
+            "use a::c::{self, d, e};\npub use a::p;\nuse b::y;\nuse a::*;\nuse super::q;\nx\n",
         );
         formats_to(Program, "use a::x as y; use a::x::z", "use a::x::{self as y, z}\n");
         formats_to(
@@ -424,6 +459,18 @@ mod tests {
             "use b::x;\n\n// why\nuse a::x\n",
         );
         formats_to(Program, "{ use b::x; use a::y; y }", "{ use a::y; use b::x; y }\n");
+        // a statement reading or shadowing what an earlier one bound
+        // closes the run: those stay in order
+        formats_to(
+            Program,
+            "use z::x as a; use a::v; use b::c; use q::*; use r::s; use r::t; v",
+            "use z::x as a;\nuse a::v;\nuse b::c;\nuse q::*;\nuse r::{s, t};\nv\n",
+        );
+        formats_to(
+            Program,
+            "use b::v; use a::v; use c::w; v",
+            "use b::v;\nuse a::v;\nuse c::w;\nv\n",
+        );
         formats_to(
             Interface,
             "use b::x; use a::{z, y}; val v: i64",
@@ -581,6 +628,31 @@ mod tests {
         assert_eq!(FormatConfig::discover(&deep).unwrap(), nearest);
         fs::write(deep.join(CONFIG_FILE), "{ width: 100 }").unwrap();
         assert!(FormatConfig::discover(&deep).is_err());
+    }
+
+    /// A relative directory climbs past the working directory: run in a
+    /// child process, whose working directory is its own.
+    #[test]
+    fn a_relative_directory_finds_the_project_config() {
+        if std::env::var_os("GRAPHIX_FMT_DISCOVER_CHILD").is_some() {
+            let cfg = FormatConfig::discover(Path::new(".")).unwrap();
+            assert_eq!(cfg.width, 37);
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let deep = root.path().join("src/graphix");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(root.path().join(CONFIG_FILE), r#"{ "width": 37 }"#).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "expr::format::tests::a_relative_directory_finds_the_project_config",
+            ])
+            .env("GRAPHIX_FMT_DISCOVER_CHILD", "1")
+            .current_dir(&deep)
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     #[test]

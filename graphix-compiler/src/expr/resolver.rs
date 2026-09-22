@@ -742,15 +742,6 @@ async fn resolve(
 }
 
 impl Expr {
-    pub fn has_unresolved_modules(&self) -> bool {
-        self.fold(false, &mut |acc, e| {
-            acc || match &e.kind {
-                ExprKind::Module { value: ModuleKind::Unresolved { .. }, .. } => true,
-                _ => false,
-            }
-        })
-    }
-
     /// Resolve external modules referenced in the expression, trying each
     /// resolver in order until one succeeds.
     pub async fn resolve_modules<'a>(&'a self, resolvers: &'a Resolvers) -> Result<Expr> {
@@ -763,34 +754,24 @@ impl Expr {
         scope: &'a ModPath,
         resolvers: &'a Resolvers,
     ) -> Result<Expr> {
-        self.resolve_modules_int(scope, &None, resolvers).await
+        let e = self.resolve_modules_int(scope, &None, &None, resolvers).await?;
+        Ok(e.unwrap_or_else(|| self.clone()))
     }
 
-    async fn resolve_modules_int<'a>(
-        &'a self,
-        scope: &ModPath,
-        prepend: &'a Option<ResolverRef>,
-        resolvers: &'a Resolvers,
-    ) -> Result<Expr> {
-        if self.has_unresolved_modules() {
-            self.resolve_modules_inner(scope, prepend, resolvers).await
-        } else {
-            Ok(self.clone())
-        }
-    }
-
-    fn resolve_modules_inner<'a>(
+    /// `Some` iff a module under `self` was resolved: the tree with it
+    /// resolved; an unchanged subtree is neither rebuilt nor cloned.
+    // XCR codex for eric: [CR17, P2] done: one walk; a node learns whether
+    // anything under it changed from its children, no prescan.
+    fn resolve_modules_int<'a>(
         &'a self,
         scope: &'a ModPath,
         prepend: &'a Option<ResolverRef>,
+        chain: &'a Option<Arc<LoadChain>>,
         resolvers: &'a Resolvers,
-    ) -> Pin<Box<dyn Future<Output = Result<Expr>> + Send + Sync + 'a>> {
-        if !self.has_unresolved_modules() {
-            return Box::pin(async { Ok(self.clone()) });
-        }
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Expr>>> + Send + Sync + 'a>> {
         macro_rules! expr {
             ($kind:expr) => {
-                Ok(Expr {
+                Ok(Some(Expr {
                     id: self.id,
                     ori: self.ori.clone(),
                     pos: self.pos,
@@ -798,7 +779,7 @@ impl Expr {
                     dec: self.dec.clone(),
                     str_form: self.str_form,
                     end: self.end,
-                })
+                }))
             };
         }
         match &self.kind {
@@ -827,26 +808,39 @@ impl Expr {
                     .await
                     .with_context(|| CouldNotResolve(name.name.clone()))?;
                     let scope = ModPath(scope.append(&**name));
-                    e.resolve_modules_int(&scope, &prepend, &resolvers).await
+                    let r = e
+                        .resolve_modules_int(&scope, &prepend, chain, &resolvers)
+                        .await?;
+                    Ok(Some(r.unwrap_or(e)))
                 })
             }
             ExprKind::Module {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
             } => Box::pin(async move {
+                // XCR codex for eric: [CR05, P1] done: the chain of sources being
+                // loaded is carried down; a source already on it is a cycle.
+                let source = exprs.iter().find_map(|e| match &e.ori.source {
+                    Source::Unspecified => None,
+                    s => Some(s),
+                });
+                let chain = match source {
+                    Some(s) => Some(LoadChain::push(chain, s, name)?),
+                    None => chain.clone(),
+                };
+                let chain = &chain;
                 // Sub-modules resolve relative to the implementation file's
                 // directory (`<dir>/foo/` for `foo.gx`, `<dir>/` for
                 // `foo/mod.gx`); the body's exprs carry that file as their ori.
-                let impl_path: Option<&std::path::Path> =
-                    exprs.iter().find_map(|e| match &e.ori.source {
-                        Source::File(p) => Some(p.as_path()),
-                        _ => None,
-                    });
+                let impl_path: Option<&std::path::Path> = match source {
+                    Some(Source::File(p)) => Some(p.as_path()),
+                    _ => None,
+                };
                 let prepend = match impl_path {
                     Some(p) => {
                         let parent = match p.parent() {
                             Some(par) => par,
-                            None => return Ok(self.clone()),
+                            None => return Ok(None),
                         };
                         let dir = match p.file_stem().and_then(|s| s.to_str()) {
                             Some("mod") => parent.to_path_buf(),
@@ -869,13 +863,20 @@ impl Expr {
                         source => resolvers.iter().find_map(|m| m.for_source(source)),
                     },
                 };
-                let exprs = try_join_all(exprs.iter().map(|e| async {
-                    e.resolve_modules_int(&scope, &prepend, resolvers).await
+                let resolved = try_join_all(exprs.iter().map(|e| async {
+                    e.resolve_modules_int(&scope, &prepend, chain, resolvers).await
                 }))
                 .await?;
+                if resolved.iter().all(|r| r.is_none()) {
+                    return Ok(None);
+                }
+                let exprs = resolved
+                    .into_iter()
+                    .zip(exprs.iter())
+                    .map(|(r, e)| r.unwrap_or_else(|| e.clone()));
                 expr!(ExprKind::Module {
                     value: ModuleKind::Resolved {
-                        exprs: Arc::from(exprs),
+                        exprs: Arc::from_iter(exprs),
                         sig: sig.clone(),
                         from_interface: *from_interface,
                     },
@@ -885,19 +886,67 @@ impl Expr {
             _ => Box::pin(async move {
                 let mut children: SmallVec<[&Expr; 4]> = SmallVec::new();
                 self.for_each_child(&mut |c| children.push(c));
-                let resolved = try_join_all(
-                    children
-                        .iter()
-                        .map(|c| c.resolve_modules_int(scope, prepend, resolvers)),
-                )
-                .await?;
+                let resolved =
+                    try_join_all(children.iter().map(|c| {
+                        c.resolve_modules_int(scope, prepend, chain, resolvers)
+                    }))
+                    .await?;
+                if resolved.iter().all(|r| r.is_none()) {
+                    return Ok(None);
+                }
                 let mut resolved = resolved.into_iter();
-                let mut e = self.map_children(&mut |_| {
-                    resolved.next().expect("map_children follows for_each_child")
+                let mut e = self.map_children(&mut |c| {
+                    resolved
+                        .next()
+                        .expect("map_children follows for_each_child")
+                        .unwrap_or_else(|| c.clone())
                 });
                 e.id = self.id;
-                Ok(e)
+                Ok(Some(e))
             }),
         }
+    }
+}
+
+/// The sources on the path of module loads that led here, innermost
+/// first.
+struct LoadChain {
+    source: Source,
+    name: Name,
+    prev: Option<Arc<LoadChain>>,
+}
+
+impl LoadChain {
+    fn push(
+        chain: &Option<Arc<LoadChain>>,
+        source: &Source,
+        name: &Name,
+    ) -> Result<Arc<Self>> {
+        let mut cur = chain.as_ref();
+        while let Some(c) = cur {
+            if c.source == *source {
+                let mut names: SmallVec<[&ArcStr; 4]> = SmallVec::new();
+                let mut back = chain.as_ref();
+                while let Some(b) = back {
+                    names.push(&b.name.name);
+                    if b.source == *source {
+                        break;
+                    }
+                    back = b.prev.as_ref();
+                }
+                let mut msg = format_compact!("import cycle:");
+                use std::fmt::Write as _;
+                for n in names.iter().rev() {
+                    let _ = write!(&mut msg, " {n} ->");
+                }
+                bail!("{msg} {} ({source:?})", name.name);
+            }
+            cur = c.prev.as_ref();
+        }
+        Ok(Arc::new(LoadChain {
+            source: source.clone(),
+            name: name.clone(),
+            prev: chain.clone(),
+        }))
     }
 }

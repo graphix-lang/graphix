@@ -467,3 +467,29 @@ let result = a + f(1) + map::len(m) + map::get_or(m, 2, 3)
     "/test/helper2.gx" => "let x = 2",
     "/test/helper3.gx" => "let x = 2"
     ; graphix_package_core::testing::FuseExpect::None);
+
+// Two modules that import each other are an import cycle, reported,
+// not a stack overflow.
+run!(
+    import_cycle_is_an_error,
+    |v: Result<&Value>| format!("{:?}", v.unwrap_err()).contains("import cycle"),
+    "/test.gx" => "mod a;\nlet result = a::x",
+    "/test/a.gx" => "mod b;\nlet x = b::y",
+    "/test/a/b.gx" => "mod a;\nlet y = 1",
+    "/test/a/b/a.gx" => "mod b;\nlet x = 2"
+    ; graphix_package_core::testing::FuseExpect::None);
+
+// The same source imported on two branches is not a cycle.
+run!(
+    sibling_imports_of_one_source,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+mod x;
+mod y;
+let result = x::a + y::b
+"#,
+    "/test/x.gx" => "mod shared;\nlet a = shared::v",
+    "/test/y.gx" => "mod shared;\nlet b = shared::v",
+    "/test/x/shared.gx" => "let v = 1",
+    "/test/y/shared.gx" => "let v = 1"
+    ; graphix_package_core::testing::FuseExpect::Jit);

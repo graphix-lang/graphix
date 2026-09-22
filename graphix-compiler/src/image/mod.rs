@@ -132,7 +132,7 @@ unsafe impl BufMut for ImageBuf {
 
     unsafe fn advance_mut(&mut self, cnt: usize) {
         unsafe { self.0.advance_mut(cnt) };
-        encoding(|e| e.written += cnt as u64);
+        encoding(|e| e.wrote(cnt));
     }
 
     fn chunk_mut(&mut self) -> &mut bytes::buf::UninitSlice {
@@ -141,7 +141,7 @@ unsafe impl BufMut for ImageBuf {
 
     fn put_slice(&mut self, src: &[u8]) {
         self.0.put_slice(src);
-        encoding(|e| e.written += src.len() as u64);
+        encoding(|e| e.wrote(src.len()));
     }
 }
 
@@ -158,13 +158,16 @@ pub struct ImageEncoder {
     next_ordinal: u32,
     /// Whether the encode pass has begun (`begin_encode`): a length
     /// pass sees every later occurrence as a reference, the encode
-    /// pass sees an unwritten object's first occurrence within one
-    /// length query as its definition.
+    /// pass sees an unwritten object's first occurrence since the last
+    /// write as its definition.
     encode_pass: bool,
-    /// The objects a length query in the encode pass has met, cleared
-    /// when the outermost query returns.
+    /// The unwritten objects the length queries since the last write
+    /// have met: what a frame measured before writing itself is what
+    /// its writing will define, across every field it measured.
+    // XCR codex for eric: [CR13, P1] done: a query descends a
+    // definition's contents, so its descendants count as met, and what
+    // is met stays met until a write, across a frame's sibling fields.
     query_seen: AHashSet<u32>,
-    query_depth: u32,
     /// Every definition's offset by ordinal, filled as the encode pass
     /// writes; the trailer carries it and a reference names an ordinal.
     offsets: Vec<u64>,
@@ -232,7 +235,6 @@ impl ImageEncoder {
             next_ordinal: 0,
             encode_pass: false,
             query_seen: AHashSet::new(),
-            query_depth: 0,
             offsets: Vec::new(),
             handlers: AHashMap::new(),
             pinned_handlers: Vec::new(),
@@ -263,6 +265,11 @@ impl ImageEncoder {
     }
 
     /// Begin the encode pass.
+    fn wrote(&mut self, n: usize) {
+        self.written += n as u64;
+        self.query_seen.clear();
+    }
+
     pub fn begin_encode(&mut self) {
         self.encode_pass = true;
     }
@@ -1165,7 +1172,6 @@ pub(crate) fn decode_at<T>(
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
     ord: u32,
-    def_len: Option<usize>,
     at: Option<u64>,
     in_progress: bool,
     nested_ref: bool,
@@ -1177,20 +1183,19 @@ fn new_slot(e: &mut ImageEncoder, nested_ref: bool) -> Slot {
     let ord = e.next_ordinal;
     e.next_ordinal += 1;
     e.offsets.push(0);
-    Slot { ord, def_len: None, at: None, in_progress: true, nested_ref }
+    Slot { ord, at: None, in_progress: true, nested_ref }
 }
 
 enum Occurrence {
     Measure,
     Reference(u32),
     Contents,
-    Definition(usize),
 }
 
 /// What this occurrence of the object costs, exact in both passes: a
 /// reference once written or once measured in the length pass; the
-/// contents while the definition is in progress; in the encode pass
-/// the measured definition at the first sight within a length query.
+/// contents while the definition is in progress, and in the encode
+/// pass at the first sight since the last write.
 fn slot_len<K, Q>(
     key: &Q,
     owned: impl FnOnce(&Q) -> K,
@@ -1203,7 +1208,6 @@ where
     Q: std::hash::Hash + Eq + ?Sized,
 {
     let occurrence = encoding(|e| {
-        e.query_depth += 1;
         let encode_pass = e.encode_pass;
         match table(e).get(key).copied() {
             None => {
@@ -1219,35 +1223,23 @@ where
                     Occurrence::Contents
                 }
             }
-            Some(s) if encode_pass && e.query_seen.insert(s.ord) => {
-                Occurrence::Definition(s.def_len.unwrap_or(0))
-            }
+            Some(s) if encode_pass && e.query_seen.insert(s.ord) => Occurrence::Contents,
             Some(s) => Occurrence::Reference(s.ord),
         }
     });
-    let len = match occurrence {
-        None => 1 + contents(),
+    match occurrence {
+        None | Some(Occurrence::Contents) => 1 + contents(),
         Some(Occurrence::Reference(ord)) => 1 + varint_len(ord as u64),
-        Some(Occurrence::Contents) => 1 + contents(),
-        Some(Occurrence::Definition(len)) => len,
         Some(Occurrence::Measure) => {
             let len = 1 + contents();
             encoding(|e| {
                 if let Some(s) = table(e).get_mut(key) {
                     s.in_progress = false;
-                    s.def_len = Some(len);
                 }
             });
             len
         }
-    };
-    encoding(|e| {
-        e.query_depth -= 1;
-        if e.query_depth == 0 {
-            e.query_seen.clear();
-        }
-    });
-    len
+    }
 }
 
 fn slot_encode<K, Q, B: BufMut>(
@@ -1616,6 +1608,38 @@ mod tests {
         dec.set_image(image.clone());
         dec.set_offsets(enc.take_offsets());
         dec
+    }
+
+    /// A derived `Pack` frame measures every field before writing any:
+    /// its header is what the fields then write, sharing included.
+    #[test]
+    fn a_frame_measures_what_it_writes() {
+        use crate::{expr::parser::parse_type, typ::Type};
+        #[derive(Debug, netidx_derive::Pack)]
+        struct Pair {
+            a: Type,
+            b: Type,
+        }
+        let pair =
+            Pair { a: parse_type("Array<i64>").unwrap(), b: parse_type("i64").unwrap() };
+        let mut enc = ImageEncoder::new();
+        let measured = EncodeImage::with(&mut enc, || pair.encoded_len());
+        enc.begin_encode();
+        let bytes = EncodeImage::with(&mut enc, || {
+            let mut buf = ImageBuf::with_capacity(measured);
+            pair.encode(&mut buf).unwrap();
+            assert_eq!(buf.len(), measured);
+            12345_u64.encode(&mut buf).unwrap();
+            buf.freeze()
+        });
+        let mut dec = decoder(&mut enc, &bytes);
+        DecodeImage::with(&mut dec, || {
+            let mut input = &bytes[..];
+            let decoded = Pair::decode(&mut input).unwrap();
+            assert_eq!(decoded.a, pair.a);
+            assert_eq!(decoded.b, pair.b);
+            assert_eq!(u64::decode(&mut input).unwrap(), 12345);
+        });
     }
 
     /// An input address reused for a different expression within a

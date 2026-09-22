@@ -1221,3 +1221,59 @@ run!(
     |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, false, true, false, true]";
     FuseExpect::Jit
 );
+
+// A nominal type test is on the instantiation: `Box<i64> as b` does
+// not take a `Box<string>`.
+run!(
+    abstract_test_matches_parameters,
+    r#"
+{
+  type Box<'a> = Abstract<'a>;
+  let x: [Box<i64>, Box<string>] = Box("hi");
+  select x {
+    Box<i64> as b => `Number(b.0),
+    Box<string> as b => `Text(b.0)
+  }
+}
+"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"["Text", "hi"]"#;
+    FuseExpect::Jit
+);
+
+// A binary implementation is for one instantiation: a pair constructed
+// at two compares structurally, in both directions.
+run!(
+    core_eq_mixed_instantiations_are_structural,
+    r#"
+{
+  type Box<'a> = Abstract<'a>;
+  impl Eq for Box<i64> { let eq = |a, b| true };
+  let a: [Box<i64>, Box<string>] = Box(1);
+  let b: [Box<i64>, Box<string>] = Box("hi");
+  let c: [Box<i64>, Box<string>] = Box(2);
+  (a == b, b == a, a == c)
+}
+"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, false, true]";
+    FuseExpect::Jit
+);
+
+// A nested dispatch of the same trait (a Display impl printing its
+// payload, itself of the type) finds the registry and its own site.
+run!(
+    core_display_nested_same_tag,
+    r#"
+{
+  type Box<'a> = Abstract<'a>;
+  impl<'a> Display for Box<'a> { let fmt = |a| "<[a.0]>" };
+  let x = Box(Box(Box(1)));
+  let n = count(sys::time::timer(duration:0.001s, true));
+  select n {
+    3 => "[x]",
+    _ => never()
+  }
+}
+"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#""<<<1>>>""#;
+    FuseExpect::Jit
+);
