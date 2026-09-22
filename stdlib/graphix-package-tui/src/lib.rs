@@ -50,7 +50,7 @@ use ratatui::{
     layout::{Alignment, Direction, Flex, Rect},
     style::{Color, Modifier, Style},
     symbols,
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::TitlePosition,
 };
 use scrollbar::ScrollbarW;
@@ -252,7 +252,7 @@ struct LinesV(Vec<Line<'static>>);
 impl FromValue for LinesV {
     fn from_value(v: Value) -> Result<Self> {
         match v {
-            Value::String(s) => Ok(Self(vec![Line::raw(String::from(s.as_str()))])),
+            Value::String(s) => Ok(Self(Text::raw(String::from(s.as_str())).lines)),
             v => Ok(Self(v.cast_to::<Vec<LineV>>()?.into_iter().map(|l| l.0).collect())),
         }
     }
