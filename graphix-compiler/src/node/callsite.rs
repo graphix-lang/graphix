@@ -1564,8 +1564,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let tag = tv.tag();
             (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
-        // XCR codex for eric: CR09 — done: a bottom callee is a consumed
-        // bottom input; the instance keeps its state and is not dispatched.
         if fnode_tag.is_bottom() && !matches!(self.callee, Callee::Static { .. }) {
             for id in set.drain(..) {
                 event.variables.remove(&id);

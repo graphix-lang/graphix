@@ -193,8 +193,6 @@ pub(crate) fn all_helpers() -> Vec<HelperSpec> {
 ///
 /// SAFETY: `bits` are the bits of a `ValArray` that is alive for the
 /// borrow.
-// XCR codex for eric: CR01 — done: every helper that reinterprets bits or
-// dereferences a raw pointer is `unsafe fn`, as are the block-tree frees.
 #[inline]
 unsafe fn va_ref(bits: &u64) -> &ValArray {
     assert!(*bits != 0, "graphix: zero ValArray bits — JIT codegen bug");
@@ -683,12 +681,20 @@ unsafe fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
     TagValue::clean(unsafe { (*ptr).clone() })
 }
 
-/// The abstract constructor `T(v)`: box `tv` under abstract type `id`.
-/// Consumes `tv`.
-unsafe fn graphix_abstract_wrap(id: u64, name: *const arcstr::ArcStr, tv: TagValue) -> TagValue {
+/// The abstract constructor `T(v)`: box `tv` under the abstract type
+/// `typ` (a `Type::Abstract` constant of the kernel's record). Consumes
+/// `tv`.
+unsafe fn graphix_abstract_wrap(
+    typ: *const crate::typ::Type,
+    name: *const arcstr::ArcStr,
+    tv: TagValue,
+) -> TagValue {
     let name = unsafe { (*name).clone() };
-    let id = crate::typ::AbstractId::from_inner(id);
-    TagValue::clean(crate::abstract_value::wrap(id, name, tv.value()))
+    let (id, params) = match unsafe { &*typ } {
+        crate::typ::Type::Abstract { id, params } => (*id, params.clone()),
+        t => panic!("graphix_abstract_wrap: {t} is not an abstract type — JIT codegen bug"),
+    };
+    TagValue::clean(crate::abstract_value::wrap(id, name, params, tv.value()))
 }
 
 safe fn graphix_abstract_get_i64(tv: TagValue) -> i64 {
@@ -840,7 +846,8 @@ safe fn graphix_value_is_null(v: TagValue) -> u8 {
 /// in `StructurePattern::is_match`, arity selects the representation
 /// (`String(tag)` at 0, else an array of arity + 1 with the tag at
 /// slot 0); the tag alone does not discriminate `` [`A, `A(i64)] ``.
-safe fn graphix_variant_tag_eq(
+// XCR codex for eric: CR01 — done.
+unsafe fn graphix_variant_tag_eq(
     v: TagValue,
     expected: *const arcstr::ArcStr,
     arity: usize,

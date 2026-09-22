@@ -1159,3 +1159,38 @@ run!(
     |v: Result<&Value>| matches!(&v, Err(e) if format!("{e:#}").contains("undeclared type variable"));
     FuseExpect::None
 );
+
+// A core implementation for one instantiation is not consulted for
+// another: `Box<string>` falls back to structural equality.
+run!(
+    core_eq_other_instantiation_is_structural,
+    r#"
+{
+  type Box<'a> = Abstract<'a>;
+  impl Eq for Box<i64> { let eq = |a, b| true };
+  (Box(1) == Box(2), Box("a") == Box("b"))
+}
+"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[true, false]";
+    FuseExpect::Jit
+);
+
+// A phantom parameter still selects the implementation: the value
+// carries the type it was constructed at, not just its payload's.
+run!(
+    core_eq_phantom_parameter,
+    r#"
+{
+  type Marker<'a> = Abstract<i64>;
+  impl Eq for Marker<i64> { let eq = |a, b| true };
+  impl Eq for Marker<string> { let eq = |a, b| false };
+  let a: Marker<string> = Marker(1);
+  let b: Marker<string> = Marker(1);
+  let c: Marker<i64> = Marker(1);
+  let d: Marker<i64> = Marker(2);
+  (a == b, c == d)
+}
+"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, true]";
+    FuseExpect::Jit
+);

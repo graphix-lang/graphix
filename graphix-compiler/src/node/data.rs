@@ -89,7 +89,6 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     fn image_len(&self) -> usize {
-        // XCR codex for eric: CR22 — done: the borrowed-slice codec.
         tag_len()
             + self.spec.encoded_len()
             + self.typ.encoded_len()
@@ -950,6 +949,9 @@ pub struct Construct<R: Rt, E: UserEvent> {
     /// must be contained by.
     pub rep: Type,
     pub arg: Node<R, E>,
+    /// `typ`'s parameters as the checker left them, taken at the first
+    /// construction: what every value minted here carries.
+    params: Option<Arc<[Type]>>,
     resident: TagValue,
 }
 
@@ -971,6 +973,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
             name,
             rep,
             arg,
+            params: None,
             resident: TagValue::phantom(),
         }))
     }
@@ -1007,6 +1010,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
             name,
             rep,
             arg,
+            params: None,
             resident: TagValue::phantom(),
         }))
     }
@@ -1039,7 +1043,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         if tag.is_bottom() {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
-        let v = abstract_value::wrap(self.id, self.name.clone(), tv.value_cloned());
+        let params = self.params.get_or_insert_with(|| match self.typ.resolve_tvars() {
+            Type::Abstract { params, .. } => params,
+            _ => Arc::from_iter([]),
+        });
+        let v = abstract_value::wrap(
+            self.id,
+            self.name.clone(),
+            params.clone(),
+            tv.value_cloned(),
+        );
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -1081,7 +1094,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_construct_node(cx, self.id, &self.name, &self.arg)
+        emit_construct_node(cx, &self.typ, &self.name, &self.arg)
     }
 }
 

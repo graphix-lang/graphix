@@ -40,6 +40,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use parking_lot::{Mutex, RwLock};
+use smallvec::SmallVec;
 use std::{cell::Cell, marker::PhantomData, path::PathBuf, ptr::NonNull};
 use triomphe::Arc;
 
@@ -188,13 +189,11 @@ pub struct ImageEncoder {
     pub(crate) kernel_sigs: AHashMap<usize, Slot>,
     pub(crate) site_leaves: AHashMap<usize, Slot>,
     pub(crate) records: AHashMap<usize, Slot>,
-    /// An expression's address, or the address of the first expression
-    /// seen with its id and contents: a node's spec is a clone of the
-    /// tree it was compiled from. The first expression is kept (a
-    /// clone shares its children), so the comparison never reads
-    /// through an address.
-    expr_alias: AHashMap<usize, usize>,
-    exprs_by_id: AHashMap<ExprId, (usize, Expr)>,
+    /// The distinct trees seen with each id, as the session's own
+    /// clones (a clone shares its children): an expression is keyed by
+    /// the address of the clone it matches, so a caller's address is
+    /// never a key and a reused one names nothing.
+    exprs_by_id: AHashMap<ExprId, SmallVec<[Box<Expr>; 1]>>,
     /// Types and function types by their canonical bytes, every shared
     /// leaf (a variable, a resolution cell, an origin) by identity:
     /// equal types decode to one shared value.
@@ -250,7 +249,6 @@ impl ImageEncoder {
             kernel_sigs: AHashMap::new(),
             site_leaves: AHashMap::new(),
             records: AHashMap::new(),
-            expr_alias: AHashMap::new(),
             exprs_by_id: AHashMap::new(),
             types: AHashMap::new(),
             fntypes: AHashMap::new(),
@@ -545,8 +543,6 @@ fn span(r: Option<IdRelocation>) -> IdSpan {
 /// An encode session: `encoder` is installed on this thread for the
 /// closure [`EncodeImage::with`] runs. The id spans accumulate across
 /// every session over one encoder. Sessions nest, innermost wins.
-// XCR codex for eric: CR02 — done: the guards are private to `with`, so a
-// session cannot be leaked or dropped out of order.
 pub struct EncodeImage<'a> {
     encoder: NonNull<ImageEncoder>,
     prev: Option<NonNull<ImageEncoder>>,
@@ -1457,28 +1453,25 @@ pub(crate) fn fntype_encode<B: BufMut>(
     )
 }
 
-/// The address an expression is keyed by: its own, or that of the
-/// first expression seen with its id and contents.
-// XCR codex for eric: CR03 — done: the session keeps a clone of the first
-// expression seen with each id; the address is only a key.
+/// The address an expression is keyed by: that of the session's clone
+/// of the first expression seen with its id and contents (a node's
+/// spec is a clone of the tree it was compiled from). Outside a
+/// session, its own.
+// XCR codex for eric: CR03 — done: the key is the address of a clone the
+// session owns, found by id and contents; the caller's address is not
+// consulted.
 pub(crate) fn expr_key(e: &Expr) -> usize {
-    let addr = key(e);
     encoding(|enc| {
-        if let Some(canonical) = enc.expr_alias.get(&addr) {
-            return *canonical;
-        }
-        let canonical = match enc.exprs_by_id.get(&e.id) {
-            Some((first, kept)) if kept.same_tree(e) => *first,
-            Some(_) => addr,
+        let seen = enc.exprs_by_id.entry(e.id).or_default();
+        match seen.iter().find(|kept| kept.same_tree(e)) {
+            Some(kept) => key(&**kept),
             None => {
-                enc.exprs_by_id.insert(e.id, (addr, e.clone()));
-                addr
+                seen.push(Box::new(e.clone()));
+                key(&**seen.last().expect("just pushed"))
             }
-        };
-        enc.expr_alias.insert(addr, canonical);
-        canonical
+        }
     })
-    .unwrap_or(addr)
+    .unwrap_or_else(|| key(e))
 }
 
 pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -1626,6 +1619,30 @@ mod tests {
         dec.set_image(image.clone());
         dec.set_offsets(enc.take_offsets());
         dec
+    }
+
+    /// An input address reused for a different expression within a
+    /// session names the new expression, not the old one.
+    #[test]
+    fn reused_address_is_not_an_alias() {
+        use crate::expr::parser::parse_one;
+        let mut slot = Box::new(parse_one("1").unwrap());
+        let expected = parse_one("2").unwrap();
+        let mut enc = ImageEncoder::new();
+        let bytes = EncodeImage::with(&mut enc, || {
+            let mut bytes = ImageBuf::with_capacity(0);
+            slot.encode(&mut bytes).unwrap();
+            *slot = expected.clone();
+            slot.encode(&mut bytes).unwrap();
+            bytes.freeze()
+        });
+        let mut dec = decoder(&mut enc, &bytes);
+        let actual = DecodeImage::with(&mut dec, || {
+            let mut b = &bytes[..];
+            Expr::decode(&mut b).unwrap();
+            Expr::decode(&mut b).unwrap()
+        });
+        assert_eq!(actual, expected);
     }
 
     #[test]

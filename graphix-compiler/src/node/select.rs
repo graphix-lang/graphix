@@ -139,7 +139,6 @@ fn emission_planes(
     let mut sound = !bottomed && arg_prod.triggers();
     let mut anyfire = arg_prod.triggers();
     let mut consulted_bottom = false;
-    // XCR codex for eric: CR08 — done: `ArmMask` has a bit per arm.
     for (i, t) in guard_tags.iter().enumerate() {
         if !mask.get(i) {
             continue;

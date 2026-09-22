@@ -41,8 +41,6 @@ pub fn gc_now() {
     gc_pass();
 }
 
-// XCR codex for eric: CR23 — done: every interval sweeps a non-empty table;
-// a string's owners can drop without a new intern, so no counter decides.
 fn gc_loop() {
     loop {
         std::thread::sleep(GC_INTERVAL);

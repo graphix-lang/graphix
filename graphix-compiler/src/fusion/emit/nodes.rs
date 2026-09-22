@@ -10,7 +10,7 @@ use crate::{
         lowering::{self},
     },
     node::op::{BinOp, BoolOp, CmpOp},
-    typ::{AbstractId, Type},
+    typ::Type,
 };
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
@@ -988,15 +988,15 @@ fn emit_guarded_element_read(
 /// `T(v)`: box an owned Value operand with the abstract type's tag.
 pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    id: AbstractId,
+    typ: &Type,
     name: &ArcStr,
     arg: &Node<R, E>,
 ) -> Result<CompiledExpr> {
     let cv = emit_owned_value_operand_node(cx, arg)?;
     let wrap = cx.helper("graphix_abstract_wrap")?;
-    let id = cx.b.ins().iconst(types::I64, id.inner() as i64);
+    let typ_ptr = cx.interned_type(&resolve_node_typ(cx.ctx, typ))?;
     let name_ptr = cx.interned_str(name)?;
-    let call = cx.b.ins().call(wrap, &[id, name_ptr, cv.disc, cv.payload]);
+    let call = cx.b.ins().call(wrap, &[typ_ptr, name_ptr, cv.disc, cv.payload]);
     let (rdisc, rpay) = {
         let r = cx.b.inst_results(call);
         (r[0], r[1])

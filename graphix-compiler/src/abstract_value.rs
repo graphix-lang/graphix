@@ -2,7 +2,7 @@
 //! `type T = Abstract<rep>` is a `Value::Abstract` carrying the type's
 //! identity and its payload, minted only by the constructor `T(..)`.
 
-use crate::typ::AbstractId;
+use crate::typ::{AbstractId, Type};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError};
@@ -15,6 +15,7 @@ use std::{
     ptr,
     sync::LazyLock,
 };
+use triomphe::Arc;
 
 /// The seam through which user `Eq`/`Ord`/`Display` impls reach
 /// `Value`'s own comparison and printing. A frame holding `&mut
@@ -71,7 +72,17 @@ pub struct GxAbstract {
     pub id: AbstractId,
     /// The type's name, for rendering (`Counter(5)`); identity is `id`.
     pub name: ArcStr,
+    /// The type arguments the value was constructed at, so a core-trait
+    /// implementation for one instantiation is told from another's.
+    pub params: Arc<[Type]>,
     pub payload: Value,
+}
+
+impl GxAbstract {
+    /// The value's type.
+    pub fn typ(&self) -> Type {
+        Type::Abstract { id: self.id, params: self.params.clone() }
+    }
 }
 
 impl fmt::Debug for GxAbstract {
@@ -133,20 +144,23 @@ impl Pack for GxAbstract {
     fn encoded_len(&self) -> usize {
         Pack::encoded_len(&self.id)
             + Pack::encoded_len(&self.name)
+            + crate::image::slice_len(&self.params)
             + Pack::encoded_len(&self.payload)
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         Pack::encode(&self.id, buf)?;
         Pack::encode(&self.name, buf)?;
+        crate::image::slice_encode(&self.params, buf)?;
         Pack::encode(&self.payload, buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let id = Pack::decode(buf)?;
         let name = Pack::decode(buf)?;
+        let params = Arc::from(Vec::<Type>::decode(buf)?);
         let payload = Pack::decode(buf)?;
-        Ok(GxAbstract { id, name, payload })
+        Ok(GxAbstract { id, name, params, payload })
     }
 }
 
@@ -158,9 +172,9 @@ static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
     Abstract::register::<GxAbstract>(id).expect("failed to register GxAbstract")
 });
 
-/// Mint a value of the abstract type `id` around `payload`.
-pub fn wrap(id: AbstractId, name: ArcStr, payload: Value) -> Value {
-    WRAPPER.wrap(GxAbstract { id, name, payload })
+/// Mint a value of the abstract type `id<params>` around `payload`.
+pub fn wrap(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Value {
+    WRAPPER.wrap(GxAbstract { id, name, params, payload })
 }
 
 /// The box inside `v`, if `v` is a Graphix-minted abstract value.

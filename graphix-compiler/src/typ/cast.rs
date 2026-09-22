@@ -90,10 +90,6 @@ impl Type {
         self.check_cast_int(env, &mut RefHist::new(LPooled::take()))
     }
 
-    // XCR codex for eric: CR05 — done: the value is borrowed, so a name
-    // re-entered on the current path over the same value (`hist`, as in
-    // `is_a_int`) is a cycle that consumes nothing and is refused; the
-    // walk runs under the stack guard.
     fn cast_value_int(
         &self,
         env: &Env,
@@ -148,8 +144,6 @@ impl Type {
             },
             // A list casts element-wise, an array converts, anything
             // else becomes a singleton.
-            // XCR codex for eric: CR12 — done: the whole spine decides
-            // whether the value is a list.
             Type::List(et) => {
                 use crate::node::collection::list;
                 if list::len(v).is_some() {
@@ -212,8 +206,6 @@ impl Type {
                 }
                 v => bail!("can't cast {v} to {self}"),
             },
-            // XCR codex for eric: CR13 — done: the names decide the match,
-            // each field's value converts recursively.
             Type::Struct(ts) => match v {
                 Value::Array(elts) => {
                     if elts.len() != ts.len() {

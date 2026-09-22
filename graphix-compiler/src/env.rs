@@ -1476,9 +1476,6 @@ impl Env {
     /// Drop everything registered at `scope` or any descendant, so a
     /// package's source can re-register under the same scope. Returns
     /// the number of bind and typedef entries removed.
-    // XCR codex for eric: CR17 — done: the abstract reps of the removed
-    // typedefs and the removed binds' `poly_binds`/`byref_chain` entries go
-    // too.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
         let mut removed = 0;
         let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)

@@ -8,7 +8,7 @@
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::node::WakeBit;
 use crate::{
-    Apply, Event, ExecCtx, Node, Refs, Rt, Tag, UserEvent,
+    Apply, Event, ExecCtx, Node, Refs, Rt, UserEvent,
     fusion::{
         emit::{
             STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
@@ -21,6 +21,7 @@ use crate::{
 };
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{ValArray, Value};
+use poolshark::local::LPooled;
 use std::sync::Arc;
 
 /// Wraps a [`KernelSig`] as an [`Apply<R, E>`]: each `update` drives
@@ -194,11 +195,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut any_updated = false;
         let mut any_bottom = false;
-        // XCR codex for eric: CR20 — done: `polled` is the one per-param
-        // record, staged straight into the wire slots, which are sized for
-        // the same parameter count as it is.
-        let mut polled: smallvec::SmallVec<[(Tag, Option<Value>); 16]> =
-            smallvec::SmallVec::with_capacity(from.len());
+        // XCR codex for eric: CR20 — done: the productions are polled as
+        // `TagValue`s (presence is the tag) into pooled scratch, as are the
+        // staged words and the wire slots.
+        let mut polled: LPooled<Vec<TagValue>> = LPooled::take();
         for src in from.iter_mut() {
             let tv = src.update(ctx, event);
             let tag = tv.tag();
@@ -206,16 +206,15 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 any_updated = true;
             }
             any_bottom |= tag.is_bottom();
-            let v = if tag.is_bottom() { None } else { Some(tv.value_cloned()) };
-            polled.push((tag, v));
+            polled.push(tv.clone());
         }
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
                 "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?} fd={}",
                 self.kernel.fn_name,
                 event.init,
-                polled.iter().map(|(t, _)| t.bits()).collect::<Vec<_>>(),
-                polled.iter().map(|(_, v)| v.is_some()).collect::<Vec<_>>(),
+                polled.iter().map(|tv| tv.tag().bits()).collect::<Vec<_>>(),
+                polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>(),
                 ctx.frame_depth
             );
         }
@@ -233,8 +232,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 "KERNEL INVOKE {} init={} fired={:?} present={:?}",
                 self.kernel.fn_name,
                 event.init,
-                polled.iter().map(|(t, _)| t.is_fired()).collect::<Vec<_>>(),
-                polled.iter().map(|(_, v)| v.is_some()).collect::<Vec<_>>()
+                polled.iter().map(|tv| tv.is_fired()).collect::<Vec<_>>(),
+                polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>()
             );
         }
         #[cfg(debug_assertions)]
@@ -253,12 +252,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         // go through `pack_value_to_u64` because a narrow Value's upper
         // payload bytes are padding.
         use kernel_abi::ParamKind;
-        let staged: smallvec::SmallVec<[(u64, u64, Value); 16]> = k
+        let staged: LPooled<Vec<(u64, u64, Value)>> = k
             .params
             .iter()
             .zip(polled.iter())
-            .map(|(p, (ptag, pv))| {
-                let ptag = *ptag;
+            .map(|(p, tv)| {
+                let ptag = tv.tag();
+                let pv = if ptag.is_bottom() { None } else { Some(tv) };
                 let flag = if ptag.is_fired() { 0 } else { stale };
                 let bflag = taint | if ptag.triggers() { 0 } else { stale };
                 // The typechecker and the runtime disagree about this slot:
@@ -271,14 +271,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                         p.name, p.kind,
                     )
                 };
-                match (&p.kind, pv.as_ref()) {
-                    (ParamKind::Scalar(prim), Some(v)) => {
-                        match pack_value_to_u64(v, *prim) {
+                match (&p.kind, pv) {
+                    (ParamKind::Scalar(prim), Some(tv)) => {
+                        match tv.with_value(|v| pack_value_to_u64(v, *prim)) {
                             Some(payload) => {
                                 let disc = prim_to_value_disc(*prim) as u64 | flag;
                                 (disc, payload, Value::Null)
                             }
-                            None => mismatch(v),
+                            None => tv.with_value(|v| mismatch(v)),
                         }
                     }
                     (ParamKind::Scalar(prim), None) => {
@@ -291,11 +291,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                         | ParamKind::Struct { .. },
                         v,
                     ) => {
-                        let staged = match v {
-                            Some(v @ Value::Array(_)) => Some(v.clone()),
-                            Some(v) => mismatch(v),
-                            None => None,
-                        };
+                        let staged = v.map(|tv| {
+                            tv.with_value(|v| match v {
+                                Value::Array(_) => v.clone(),
+                                v => mismatch(v),
+                            })
+                        });
                         match staged {
                             Some(v) => {
                                 let (disc, payload) = bits(&v);
@@ -309,11 +310,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                         }
                     }
                     (ParamKind::String, v) => {
-                        let staged = match v {
-                            Some(v @ Value::String(_)) => Some(v.clone()),
-                            Some(v) => mismatch(v),
-                            None => None,
-                        };
+                        let staged = v.map(|tv| {
+                            tv.with_value(|v| match v {
+                                Value::String(_) => v.clone(),
+                                v => mismatch(v),
+                            })
+                        });
                         match staged {
                             Some(v) => {
                                 let (disc, payload) = bits(&v);
@@ -332,8 +334,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                         | ParamKind::Value { .. },
                         v,
                     ) => match v {
-                        Some(v) => {
-                            let v = v.clone();
+                        Some(tv) => {
+                            let v = tv.value_cloned();
                             let (disc, payload) = bits(&v);
                             (disc | flag, payload, v)
                         }
@@ -346,8 +348,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                 }
             })
             .collect();
-        let mut slots: smallvec::SmallVec<[u64; 35]> =
-            smallvec::SmallVec::with_capacity(self.kernel.abi_wire_slots_total());
+        let mut slots: LPooled<Vec<u64>> = LPooled::take();
         // Slot 0: bit 0 init view, bit 1 quiet frame, bit 2 wake.
         let init = if ctx.frame_depth > 0 { ctx.dispatch_init } else { event.init };
         let quiet = ctx.frame_depth > 0 && !ctx.dispatch_init;
@@ -384,15 +385,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         } else {
             (None, 0, 0)
         };
-        // SAFETY: the loan's hooks run only inside the kernel call, which
-        // holds `&ctx.env` alone, and `site` is a `QopSite` constant of the
-        // kernel's record, which outlives its code.
+        // The kernel reads its env loan while a hook may build or run a
+        // site through the context: when one can fire it reads a snapshot.
+        let env = crate::node::coretraits::hooks_live(&ctx.env).then(|| ctx.env.clone());
+        // SAFETY: nothing derived from `ctx` is held across the kernel call
+        // (its env loan is the snapshot when a hook can fire), and `site`
+        // is a `QopSite` constant of the kernel's record, which outlives
+        // its code.
         unsafe {
             crate::node::coretraits::with_value_hooks(ctx, event, |ctx, event| {
                 let ((), raises) = super::emit_helpers::with_qop_raises(|| {
-                    super::emit_helpers::with_kernel_env(&ctx.env, || {
-                        f(slots.as_ptr(), out.as_mut_ptr());
-                    })
+                    super::emit_helpers::with_kernel_env(
+                        env.as_ref().unwrap_or(&ctx.env),
+                        || {
+                            f(slots.as_ptr(), out.as_mut_ptr());
+                        },
+                    )
                 });
                 for (site, v) in raises {
                     let site = &*site;

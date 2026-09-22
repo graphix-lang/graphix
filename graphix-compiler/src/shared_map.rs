@@ -15,10 +15,6 @@
 //! later resolves references into nodes decoded earlier). Outside a
 //! session an encode writes every node as a definition and a decode
 //! fails with `InvalidFormat`.
-// XCR codex for eric: CR04, CR19, CR27 — done together: map nodes ride the
-// ordinal/offset object machinery, so the length pass plans them (exact
-// lengths), the second thread-local table and its session guards are gone,
-// and the session requirement is the documented contract.
 
 use crate::{
     env::{Map, Set},

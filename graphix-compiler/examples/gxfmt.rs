@@ -6,8 +6,6 @@ use std::{env, fs, path::Path, process::ExitCode};
 /// Round trip + idempotence over every file given (one file: print it).
 /// Exits non-zero when any file was unreadable or exposed a formatter
 /// bug; a file the formatter merely declines is not a failure.
-// XCR codex for eric: CR24 — done: exit status, read errors counted,
-// `Refused` matched by type.
 fn main() -> ExitCode {
     let cfg = FormatConfig::default();
     let mut bad = 0;

@@ -1282,9 +1282,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.child.update(ctx, event);
         let addr = tv.tag();
-        // XCR codex for eric: CR06 — done: a bottom address bottoms the
-        // production; the subscription to the last referent stays so a
-        // returning address needs no rebind.
         if addr.is_bottom() {
             return self.resident.set_bottom(addr.triggers());
         }
@@ -1314,8 +1311,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 self.id = Some(new_id);
             }
         }
-        // XCR codex for eric: CR07 — done: the address is a consumed input,
-        // so its fire joins the referent's tag (`Tag::join`).
         let res = self.id.and_then(|id| match super::read_var(ctx, event, &id) {
             Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
             Some(super::VarRead::Standing(tv)) => {

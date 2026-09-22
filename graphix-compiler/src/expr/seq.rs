@@ -305,7 +305,6 @@ fn refuse_catch(e: &Expr) -> Result<()> {
 
 /// `Expr::fold` over every node that is not inside a lambda literal's
 /// body or defaults: the lambda itself is visited, its children are not.
-// XCR codex for eric: CR26 — done: the walk prunes at a lambda.
 fn fold_outside_lambdas<T>(e: &Expr, init: T, f: &mut impl FnMut(T, &Expr) -> T) -> T {
     crate::stack::ensure_sufficient(|| {
         let mut acc = Some(f(init, e));

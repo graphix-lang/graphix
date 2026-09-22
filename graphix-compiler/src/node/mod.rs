@@ -1188,39 +1188,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         use std::fmt::Write;
         // rendered under the value-hook loan so a core `Display` impl on
-        // an abstract part applies (`coretraits::with_value_hooks`)
+        // an abstract part applies (`coretraits::with_display_hooks`)
         let woke = self.slept.take();
         let (args, typs, resident) = (&mut self.args, &self.typs, &mut self.resident);
-        unsafe {
-            coretraits::with_value_hooks(ctx, event, |ctx, event| {
-                let mut trig = false;
-                let mut fired = false;
-                let mut bottom = false;
-                let mut vals: LPooled<Vec<Value>> = LPooled::take();
-                for c in args.iter_mut() {
-                    let tv = c.update(ctx, event);
-                    let t = tv.tag();
-                    trig |= t.triggers();
-                    fired |= t.is_fired();
-                    if t.is_bottom() {
-                        bottom = true
-                    } else if !bottom {
-                        vals.push(tv.value_cloned())
-                    }
-                }
-                dense_gate!(resident, ctx, trig, bottom, woke);
-                let tag = if fired { Tag::FIRED } else { Tag::STALE };
-                let mut buf: LPooled<String> = LPooled::take();
-                for (typ, v) in typs.iter().zip(vals.iter()) {
-                    match v {
-                        Value::String(s) => write!(buf, "{s}"),
-                        v => write!(buf, "{}", TVal { env: &ctx.env, typ, v }),
-                    }
-                    .unwrap()
-                }
-                resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
-            })
+        let mut trig = false;
+        let mut fired = false;
+        let mut bottom = false;
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        for c in args.iter_mut() {
+            let tv = c.update(ctx, event);
+            let t = tv.tag();
+            trig |= t.triggers();
+            fired |= t.is_fired();
+            if t.is_bottom() {
+                bottom = true
+            } else if !bottom {
+                vals.push(tv.value_cloned())
+            }
         }
+        dense_gate!(resident, ctx, trig, bottom, woke);
+        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let mut buf: LPooled<String> = LPooled::take();
+        coretraits::with_display_hooks(ctx, event, |env| {
+            for (typ, v) in typs.iter().zip(vals.iter()) {
+                match v {
+                    Value::String(s) => write!(buf, "{s}"),
+                    v => write!(buf, "{}", TVal { env, typ, v }),
+                }
+                .unwrap()
+            }
+        });
+        resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
     }
 
     fn spec(&self) -> &Expr {

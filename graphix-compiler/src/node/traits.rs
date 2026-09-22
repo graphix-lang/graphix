@@ -413,8 +413,6 @@ pub(crate) fn impl_head(
         known.insert(tv.name.clone(), tv.clone());
         tv
     }));
-    // XCR codex for eric: CR16 — done: the names are checked against the
-    // declaration before aliasing adds them to `known`.
     let mut in_target: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
     target.collect_tvars(&mut in_target);
     for tv in params.iter() {

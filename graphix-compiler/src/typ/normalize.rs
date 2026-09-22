@@ -83,8 +83,6 @@ impl Type {
     /// relative to a `Type::Set` of the input members in input order.
     /// Conservative: `true` may be reported for an identical result.
     fn flatten_set_tracked(set: impl IntoIterator<Item = Self>) -> (Self, bool) {
-        // XCR codex for eric: CR21 — done: the input iterates as itself and a
-        // nested set is a pooled (members, next index) frame.
         let mut nested: LPooled<Vec<(Arc<[Self]>, usize)>> = LPooled::take();
         let mut acc: LPooled<Vec<Self>> = LPooled::take();
         let mut saw_bottom = false;

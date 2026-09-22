@@ -13,12 +13,14 @@ use crate::{
     abstract_value::{self, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
     expr::{ExprId, ModPath},
-    typ::{AbstractId, FnType, IsAFlags, TraitId, Type},
+    typ::{AbstractId, FnType, IsAFlags, TVar, TraitId, Type},
 };
+use ahash::AHashMap;
 use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use netidx_value::Value;
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{cmp::Ordering, sync::LazyLock};
 use triomphe::Arc;
@@ -68,8 +70,9 @@ struct Hook {
     typ: Type,
 }
 
-/// The hook of the implementation `im` of `t`.
-fn hook_of(env: &Env, t: CoreTrait, im: &ImplDef) -> Result<Hook> {
+/// The hook of the implementation `im` of `t`, whose sites bind their
+/// arguments at `target`.
+fn hook_of(env: &Env, t: CoreTrait, im: &ImplDef, target: &Type) -> Result<Hook> {
     let def = env
         .trait_def(t.id())
         .ok_or_else(|| anyhow!("core trait {:?} is not defined", t))?;
@@ -81,15 +84,17 @@ fn hook_of(env: &Env, t: CoreTrait, im: &ImplDef) -> Result<Hook> {
     let Some(bind) = im.methods.get(t.method()).copied().or(m.default) else {
         return Err(anyhow!("impl {} for {} has no {}", def.name, im.target, m.name));
     };
-    let typ =
-        if im.params.is_empty() { im.target.clone() } else { im.target.reset_tvars() };
-    Ok(Hook { bind, typ })
+    Ok(Hook { bind, typ: target.clone() })
 }
 
 /// The identity of the trait's implementation list: a registration or
 /// removal replaces it.
-fn impls_version(env: &Env, t: CoreTrait) -> usize {
-    env.impls.get(&t.id()).map_or(0, |l| Arc::as_ptr(l).addr())
+/// The trait's implementation list, whose identity is the version an
+/// entry was resolved against: a registration or removal replaces it.
+// XCR codex for eric: CR18 — done: the entry holds the list `Arc`, so its
+// allocation cannot be reused while the entry stands.
+fn impls_version(env: &Env, t: CoreTrait) -> Option<Arc<Vec<Arc<ImplDef>>>> {
+    env.impls.get(&t.id()).cloned()
 }
 
 /// Every implementation of `t` whose target is the abstract type `id`,
@@ -109,17 +114,26 @@ fn candidates_for<R: Rt, E: UserEvent>(
             },
             t => t.clone(),
         };
-        let Type::Abstract { id: target, params } = &canonical else { continue };
+        let Type::Abstract { id: target, .. } = &canonical else { continue };
         if *target != id {
             continue;
         }
-        let payload = env
-            .abstract_reps
-            .get(&id)
-            .filter(|_| !params.is_empty())
-            .map(|rep| rep.instantiate_with(params));
-        match hook_of(env, t, im) {
-            Ok(hook) => out.push(Candidate { payload, hook, pool: Vec::new() }),
+        // The declared variables are open here: a bound is checked at
+        // the definition, and the settled cell says nothing about a use.
+        let target = if im.params.is_empty() {
+            canonical
+        } else {
+            let open: LPooled<AHashMap<ArcStr, Type>> = im
+                .params
+                .iter()
+                .map(|tv| {
+                    (tv.name.clone(), Type::TVar(TVar::empty_named(tv.name.clone())))
+                })
+                .collect();
+            canonical.replace_tvars(&open)
+        };
+        match hook_of(env, t, im, &target) {
+            Ok(hook) => out.push(Candidate { target, hook, pool: Vec::new() }),
             Err(e) => log::error!("core trait lookup for {}: {e:?}", im.target),
         }
     }
@@ -157,12 +171,12 @@ struct HookSite<R: Rt, E: UserEvent> {
     first: bool,
 }
 
-/// One implementation for a `(trait, AbstractId)` pair: the payload
-/// type its target's parameters admit (`None` = every payload), the
-/// hook and a pool of built sites; a re-entrant dispatch uses a fresh
-/// site.
+/// One implementation for a `(trait, AbstractId)` pair: its target
+/// (the abstract type at the parameters it covers; a declared type
+/// variable is fresh, matching any), the hook and a pool of built
+/// sites; a re-entrant dispatch uses a fresh site.
 struct Candidate<R: Rt, E: UserEvent> {
-    payload: Option<Type>,
+    target: Type,
     hook: Hook,
     pool: Vec<HookSite<R, E>>,
 }
@@ -170,32 +184,28 @@ struct Candidate<R: Rt, E: UserEvent> {
 /// The state for one `(trait, AbstractId)` pair, valid while the
 /// trait's implementation list is the one it was resolved against.
 struct SiteEntry<R: Rt, E: UserEvent> {
-    version: usize,
+    version: Option<Arc<Vec<Arc<ImplDef>>>>,
     candidates: SmallVec<[Candidate<R, E>; 1]>,
 }
 
 impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
-    /// The candidate for `v`: the only one, else the first whose
-    /// payload type admits `v`'s payload.
+    /// The candidate for `v`: the first whose target covers the type
+    /// `v` was constructed at (`impl Eq for Box<i64>` is not consulted
+    /// for a `Box<string>`).
+    // XCR codex for eric: CR10 — done: a value carries the type arguments
+    // it was constructed at (`GxAbstract::params`) and a candidate is
+    // consulted only when its target covers them.
     fn choose(&mut self, env: &Env, v: &Value) -> Option<&mut Candidate<R, E>> {
-        if self.candidates.len() <= 1 {
-            return self.candidates.first_mut();
-        }
-        let payload = abstract_value::get(v).map(|g| &g.payload);
-        self.candidates.iter_mut().find(|c| match (&c.payload, payload) {
-            (Some(t), Some(p)) => t.is_a(env, p),
-            _ => true,
-        })
+        let typ = abstract_value::get(v)?.typ();
+        self.candidates
+            .iter_mut()
+            .find(|c| c.target.could_match(env, &typ).unwrap_or(false))
     }
 }
 
 /// The per-context registry, keyed `(trait, tag)`. An entry resolves on
 /// first use and is rebuilt when the trait's implementation list
 /// changes (`impls_version`).
-// XCR codex for eric: CR18 — done: an entry carries the identity of the
-// implementation list it was resolved against.
-// XCR codex for eric: CR10 — done: candidates are found by the abstract id
-// and a generic target's payload type is instantiated from its parameters.
 pub struct CoreHookSites<R: Rt, E: UserEvent>(
     ahash::AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
 );
@@ -257,8 +267,13 @@ fn call_hook<R: Rt, E: UserEvent>(
 ) -> Option<Option<Value>> {
     let key = (t as u8, id);
     let version = impls_version(&ctx.env, t);
+    let same = |a: &Option<Arc<_>>, b: &Option<Arc<_>>| match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    };
     let mut entry = match ctx.core_hook_sites.0.remove(&key) {
-        Some(e) if e.version == version => e,
+        Some(e) if same(&e.version, &version) => e,
         stale => {
             if let Some(mut e) = stale {
                 for c in e.candidates.iter_mut() {
@@ -317,7 +332,7 @@ struct HookState<R: Rt, E: UserEvent> {
 /// Re-wrap a `GxAbstract` (received by reference inside the vtable
 /// call) as the `Value` a hook site's argument binding carries.
 fn as_value(g: &GxAbstract) -> Value {
-    abstract_value::wrap(g.id, g.name.clone(), g.payload.clone())
+    abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), g.payload.clone())
 }
 
 fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
@@ -441,6 +456,13 @@ fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<A
     }
 }
 
+/// Can a core-trait hook fire: is any core trait implemented?
+pub fn hooks_live(env: &Env) -> bool {
+    [CoreTrait::Eq, CoreTrait::Ord, CoreTrait::Display]
+        .into_iter()
+        .any(|t| env.impls.get(&t.id()).is_some_and(|l| !l.is_empty()))
+}
+
 /// A map key comparison must honor a core `Ord` impl on the key type.
 /// `f` sees no context, so the loan is exclusive.
 pub fn with_key_ord_hooks<R: Rt, E: UserEvent, T>(
@@ -449,6 +471,29 @@ pub fn with_key_ord_hooks<R: Rt, E: UserEvent, T>(
     f: impl FnOnce() -> T,
 ) -> T {
     unsafe { with_value_hooks(ctx, event, |_, _| f()) }
+}
+
+/// Render under the value-hook loan: `f` prints through the `Env` it is
+/// given. When no hook can fire that is the context's own; else it is a
+/// snapshot (the maps are persistent, so a clone shares every node), so
+/// a `Display` hook that builds or runs its site through the context
+/// invalidates nothing the printer reads. `f` sees no context, so the
+/// loan is exclusive.
+// XCR codex for eric: CR25 — done for the printers: they read a snapshot
+// under an exclusive loan (this function); the kernel run reads one too.
+// `with_value_hooks` stays the unsafe seam for a caller that updates its
+// children under the loan and holds nothing from the context across the
+// operation.
+pub fn with_display_hooks<R: Rt, E: UserEvent, T>(
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+    f: impl FnOnce(&Env) -> T,
+) -> T {
+    if !hooks_live(&ctx.env) {
+        return f(&ctx.env);
+    }
+    let env = ctx.env.clone();
+    unsafe { with_value_hooks(ctx, event, |_, _| f(&env)) }
 }
 
 /// Loan `ctx`/`event` to the value seam for the duration of `f`. Call
@@ -463,19 +508,12 @@ pub fn with_key_ord_hooks<R: Rt, E: UserEvent, T>(
 /// or `event` live across any `Value` operation: read what you need
 /// before comparing or printing, and nothing after depends on a borrow
 /// taken before.
-// XCR codex for eric: CR25 — accepted as the seam's design: `Value`'s own
-// `Eq`/`Ord`/`Debug` have no context parameter, so the hook must re-enter
-// the context the caller is inside. The double loan is now an `unsafe`
-// contract at every call site instead of a safe API.
 pub unsafe fn with_value_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
     f: impl FnOnce(&mut ExecCtx<R, E>, &mut Event<E>) -> T,
 ) -> T {
-    let live = [CoreTrait::Eq, CoreTrait::Ord, CoreTrait::Display]
-        .into_iter()
-        .any(|t| ctx.env.impls.get(&t.id()).is_some_and(|l| !l.is_empty()));
-    if !live {
+    if !hooks_live(&ctx.env) {
         return f(ctx, event);
     }
     let mut state = HookState::<R, E> { ctx: ctx as *mut _, event: event as *mut _ };

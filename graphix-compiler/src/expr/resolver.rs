@@ -266,8 +266,6 @@ async fn resolve_from_files(
             }
         };
     }
-    // XCR codex for eric: CR15 — done: only a missing file is absent; any
-    // other failure to read the implementation or the interface is an error.
     async fn read(
         overrides: Option<&BufferOverrides>,
         path: &PathBuf,
@@ -803,9 +801,6 @@ impl Expr {
                 })
             };
         }
-        // XCR codex for eric: CR14 — done: only a module changes the scope or
-        // the resolver; every other node resolves its children through
-        // `for_each_child`/`map_children`.
         match &self.kind {
             ExprKind::Module {
                 value: ModuleKind::Unresolved { from_interface },
