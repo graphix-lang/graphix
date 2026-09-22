@@ -42,13 +42,38 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The GNU build id note of the running executable, which the linker
-/// stamps per link; a build without one falls back to the compiler
-/// version, which is not unique per build but still separates releases.
+/// stamps per link, or for a PE executable its link stamp and size; a
+/// build with neither falls back to the compiler version, which is not
+/// unique per build but still separates releases.
 fn build_id() -> String {
-    match std::env::current_exe().ok().and_then(|p| elf_build_id(&p)) {
+    match std::env::current_exe()
+        .ok()
+        .and_then(|p| elf_build_id(&p).or_else(|| pe_build_id(&p)))
+    {
         Some(id) => id,
         None => format!("v{}", env!("CARGO_PKG_VERSION")),
     }
+}
+
+/// A PE executable's COFF `TimeDateStamp` and its length: the stamp is
+/// the link time, or a hash of the contents under a reproducible link,
+/// and the length separates two builds that share one. Any malformed
+/// field is `None`, never a panic.
+fn pe_build_id(exe: &FsPath) -> Option<String> {
+    fn u32_at(b: &[u8], i: usize) -> Option<u32> {
+        Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?))
+    }
+    let file = fs::File::open(exe).ok()?;
+    let file = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+    if file.get(..2)? != b"MZ" {
+        return None;
+    }
+    let pe = u32_at(&file, 0x3c)? as usize;
+    if file.get(pe..pe + 4)? != b"PE\0\0" {
+        return None;
+    }
+    let stamp = u32_at(&file, pe + 8)?;
+    Some(format!("pe-{stamp:08x}-{:x}", file.len()))
 }
 
 /// Walk the ELF64 program headers for a `PT_NOTE` holding
