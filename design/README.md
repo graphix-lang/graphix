@@ -37,6 +37,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `jit_startup.md` | full compiler startup profiles, early rejection, and block liveness costs |
 | `strict_fusion.md` | fusion is pure computation + fast fns only; what was deleted and why |
 | `unified_value_abi.md` | the (disc, payload) Value ABI across the JIT boundary |
+| `helper_abi_portability.md` | the helper seam passes a pair as two words (System V only); fusion is off on Windows until it is two scalars in and an out-pointer back |
 
 ## Types
 
