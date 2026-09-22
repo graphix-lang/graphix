@@ -295,8 +295,14 @@ impl<X: GXExt> Shell<X> {
                     program_image = Some(tx);
                     pending_program = Some(rx);
                 }
+                // The registration entry serves a later run of a
+                // different program under these packages; a program
+                // built into the binary is the only one it runs, so
+                // its cold start skips the encode.
+                let embedded = matches!(self.mode, Mode::Script(Source::Internal(_)));
                 match loaded {
                     Some((bytes, _)) => Some(RegistrationImage::Load(bytes)),
+                    None if embedded => None,
                     None => {
                         let (tx, rx) = oneshot::channel();
                         pending_registration = Some(rx);
