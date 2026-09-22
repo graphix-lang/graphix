@@ -246,8 +246,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteStrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_str)));
     const NAME: &str = "json_write_str";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_write_str, cached)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_write_str, cached)
     }
 }
 
@@ -279,8 +279,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JsonWriteBytesEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
     const NAME: &str = "json_write_bytes";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_write_bytes, cached)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_write_bytes, cached)
     }
 }
 

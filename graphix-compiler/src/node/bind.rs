@@ -1329,7 +1329,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         });
         let res = match (res, &self.path) {
             (Some(tv), Some(path)) if !tv.tag().is_bottom() => {
-                let read = super::coretraits::with_key_ord_hooks(ctx, event, || {
+                let read = super::coretraits::with_hooks(ctx, event, || {
                     tv.with_value(|v| place::read_path(v, path))
                 });
                 match read {

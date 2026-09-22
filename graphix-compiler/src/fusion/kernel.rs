@@ -195,9 +195,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut any_updated = false;
         let mut any_bottom = false;
-        // XCR codex for eric: CR20 — done: the productions are polled as
-        // `TagValue`s (presence is the tag) into pooled scratch, as are the
-        // staged words and the wire slots.
         let mut polled: LPooled<Vec<TagValue>> = LPooled::take();
         for src in from.iter_mut() {
             let tv = src.update(ctx, event);
@@ -385,38 +382,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         } else {
             (None, 0, 0)
         };
-        // The kernel reads its env loan while a hook may build or run a
-        // site through the context: when one can fire it reads a snapshot.
-        let env = crate::node::coretraits::hooks_live(&ctx.env).then(|| ctx.env.clone());
-        // SAFETY: nothing derived from `ctx` is held across the kernel call
-        // (its env loan is the snapshot when a hook can fire), and `site`
-        // is a `QopSite` constant of the kernel's record, which outlives
-        // its code.
-        unsafe {
-            crate::node::coretraits::with_value_hooks(ctx, event, |ctx, event| {
-                let ((), raises) = super::emit_helpers::with_qop_raises(|| {
-                    super::emit_helpers::with_kernel_env(
-                        env.as_ref().unwrap_or(&ctx.env),
-                        || {
-                            f(slots.as_ptr(), out.as_mut_ptr());
-                        },
-                    )
-                });
-                for (site, v) in raises {
-                    let site = &*site;
-                    if let Value::Error(e) = v {
-                        crate::node::error::deliver_error(
-                            ctx,
-                            event,
-                            &site.handler,
-                            site.own_top,
-                            &site.spec,
-                            (*e).clone(),
-                        );
-                    }
-                }
-            })
-        };
+        // The run reads its env loan under the value-hook loan (a
+        // snapshot when a hook can fire) and delivers its raises after.
+        // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)
+        // and `out` is two words the wrapper fills.
+        let ((), raises) =
+            crate::node::coretraits::with_display_hooks(ctx, event, |env| {
+                super::emit_helpers::with_qop_raises(|| {
+                    super::emit_helpers::with_kernel_env(env, || unsafe {
+                        f(slots.as_ptr(), out.as_mut_ptr());
+                    })
+                })
+            });
+        for (site, v) in raises {
+            // SAFETY: `site` is a `QopSite` constant of the kernel's
+            // record, which outlives its code.
+            let site = unsafe { &*site };
+            if let Value::Error(e) = v {
+                crate::node::error::deliver_error(
+                    ctx,
+                    event,
+                    &site.handler,
+                    site.own_top,
+                    &site.spec,
+                    (*e).clone(),
+                );
+            }
+        }
         let pending = KERNEL_ABORT.with(|c| c.replace(false));
         // Must run before the pending early return. An aborted run
         // reached only a prefix, so its reach count is not a shrink signal.

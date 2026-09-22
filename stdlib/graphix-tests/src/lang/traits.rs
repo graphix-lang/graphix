@@ -1194,3 +1194,30 @@ run!(
     |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, true]";
     FuseExpect::Jit
 );
+
+// An implementation applies to the whole instantiation, not to one
+// that overlaps it; a repeated variable binds once; a bound is checked.
+run!(
+    core_eq_impl_must_apply,
+    r#"
+{
+  type Marker<'a> = Abstract<i64>;
+  type Pair<'a, 'b> = Abstract<('a, 'b)>;
+  type Bounded<'a> = Abstract<i64>;
+  trait Mark { val mark: fn(self) -> bool };
+  impl Mark for i64 { let mark = |x| true };
+  impl Eq for Marker<i64> { let eq = |a, b| true };
+  impl<'a> Eq for Pair<'a, 'a> { let eq = |a, b| true };
+  impl<'a: Mark> Eq for Bounded<'a> { let eq = |a, b| true };
+  let u: Marker<[i64, string]> = Marker(1);
+  let v: Marker<[i64, string]> = Marker(2);
+  let s: Bounded<string> = Bounded(1);
+  let t: Bounded<string> = Bounded(2);
+  let n: Bounded<i64> = Bounded(1);
+  let m: Bounded<i64> = Bounded(2);
+  (u == v, Pair((1, "a")) == Pair((2, "b")), Pair((1, 2)) == Pair((3, 4)), s == t, n == m)
+}
+"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[false, false, true, false, true]";
+    FuseExpect::Jit
+);

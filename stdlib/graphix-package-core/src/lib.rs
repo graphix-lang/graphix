@@ -9,7 +9,6 @@ use graphix_compiler::{
     Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, FastFn, Node, Refs, Rt, Scope, Tag,
     TagValue, TagView, TypedFastFn, UserEvent,
     effects::Effect,
-    env::Env,
     err, errf,
     expr::{Expr, ExprId},
     image::{self, ImageBuf},
@@ -552,19 +551,25 @@ fn fast_args(from: &CachedVals) -> Option<LPooled<Vec<Value>>> {
 /// Run a builtin's fast fn over the cached argument slots —
 /// the node-walk half of a fastcall builtin, so `eval` and the JIT share
 /// one implementation.
-pub fn fast_eval(f: FastFn, from: &CachedVals) -> Option<Value> {
-    f(&fast_args(from)?)
+pub fn fast_eval<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    f: FastFn,
+    from: &CachedVals,
+) -> Option<Value> {
+    let args = fast_args(from)?;
+    coretraits::eval_with_hooks(ctx, || f(&args))
 }
 
 /// [`fast_eval`] for a `FastCall::Typed` fn: `typ` is the call site's
 /// resolved return type (`resolved.rtype` from `typecheck1`).
-pub fn fast_eval_typed(
+pub fn fast_eval_typed<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
     f: TypedFastFn,
-    env: &Env,
     typ: &Type,
     from: &CachedVals,
 ) -> Option<Value> {
-    f(env, typ, &fast_args(from)?)
+    let args = fast_args(from)?;
+    coretraits::eval_with_display_hooks(ctx, |env| f(env, typ, &args))
 }
 
 /// The sort every collection's `sort(#dir, #numeric, c)` runs: `dir`
@@ -589,6 +594,12 @@ pub fn sort_values(
     Some(buf)
 }
 
+/// A builtin over cached arguments. `eval` runs unarmed: a fast fn is
+/// armed by [`fast_eval`] (it sees only its arguments), and an `eval`
+/// that compares or prints values itself takes the loan
+/// (`coretraits::eval_with_hooks`, `eval_with_display_hooks`) around
+/// that operation, with nothing of the context inside, so a core-trait
+/// implementation on an abstract value applies.
 pub trait EvalCached<R: Rt, E: UserEvent>:
     Debug + Default + Send + Sync + ImageState + 'static
 {
@@ -689,6 +700,8 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         event: &mut Event<E>,
     ) -> &TagValue {
         let woke = std::mem::take(&mut self.woke_pending) && !ctx.in_frame();
+        // A loan inside `eval` has no event; this one seeds the seam's.
+        coretraits::seed(ctx, event);
         let (ev, cached, last_result) =
             (&mut self.t, &mut self.cached, &mut self.last_result);
         Self::update_inner(ev, cached, last_result, woke, ctx, from, event)
@@ -779,16 +792,10 @@ impl<T> CachedArgs<T> {
     where
         T: EvalCached<R, E>,
     {
-        // `eval` runs under the value-hook loan so a core impl on an
-        // abstract value applies to what it compares or prints.
-        // SAFETY: an eval reads its arguments from `cached`, not from the
-        // context, and the context is not read after a `Value` operation.
         let eval = |ev: &mut T,
                     cached: &CachedVals,
                     ctx: &mut ExecCtx<R, E>,
-                    event: &mut Event<E>| unsafe {
-            coretraits::with_value_hooks(ctx, event, |ctx, _| ev.eval(ctx, cached))
-        };
+                    _event: &mut Event<E>| ev.eval(ctx, cached);
         match cached.update_full(ctx, from, event) {
             None => last_result.ride(),
             Some(t) if cached.any_bottom() => {
@@ -989,8 +996,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsErrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_err)));
     const NAME: &str = "core_is_err";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_is_err, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_is_err, from)
     }
 }
 
@@ -1070,8 +1077,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToErrorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_error)));
     const NAME: &str = "core_error";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_error, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_error, from)
     }
 }
 
@@ -1326,8 +1333,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_all)));
     const NAME: &str = "core_all";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_all, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_all, from)
     }
 }
 
@@ -1421,20 +1428,22 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
 
     // Each argument is compared as a whole value; no flattening, as
     // the declared type `fn(a: 'a, @args: 'a) -> 'a` promises.
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res: Option<&Value> = None;
-        for v in from.0.iter() {
-            match (res, v) {
-                (_, None) => return None,
-                (None, Some(v)) => res = Some(v),
-                (Some(v0), Some(v)) => {
-                    if v < v0 {
-                        res = Some(v)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        coretraits::eval_with_hooks(ctx, || {
+            let mut res: Option<&Value> = None;
+            for v in from.0.iter() {
+                match (res, v) {
+                    (_, None) => return None,
+                    (None, Some(v)) => res = Some(v),
+                    (Some(v0), Some(v)) => {
+                        if v < v0 {
+                            res = Some(v)
+                        }
                     }
                 }
             }
-        }
-        res.cloned()
+            res.cloned()
+        })
     }
 }
 
@@ -1449,20 +1458,22 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const NAME: &str = "core_max";
 
     // Whole-value comparison, no flattening — see `MinEv`.
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        let mut res: Option<&Value> = None;
-        for v in from.0.iter() {
-            match (res, v) {
-                (_, None) => return None,
-                (None, Some(v)) => res = Some(v),
-                (Some(v0), Some(v)) => {
-                    if v > v0 {
-                        res = Some(v)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        coretraits::eval_with_hooks(ctx, || {
+            let mut res: Option<&Value> = None;
+            for v in from.0.iter() {
+                match (res, v) {
+                    (_, None) => return None,
+                    (None, Some(v)) => res = Some(v),
+                    (Some(v0), Some(v)) => {
+                        if v > v0 {
+                            res = Some(v)
+                        }
                     }
                 }
             }
-        }
-        res.cloned()
+            res.cloned()
+        })
     }
 }
 
@@ -1586,8 +1597,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_and)));
     const NAME: &str = "core_bit_and";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bit_and, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bit_and, from)
     }
 }
 
@@ -1601,8 +1612,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_or)));
     const NAME: &str = "core_bit_or";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bit_or, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bit_or, from)
     }
 }
 
@@ -1616,8 +1627,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_xor)));
     const NAME: &str = "core_bit_xor";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bit_xor, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bit_xor, from)
     }
 }
 
@@ -1649,8 +1660,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_not)));
     const NAME: &str = "core_bit_not";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bit_not, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bit_not, from)
     }
 }
 
@@ -1664,8 +1675,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shl)));
     const NAME: &str = "core_shl";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_shl, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_shl, from)
     }
 }
 
@@ -1679,8 +1690,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shr)));
     const NAME: &str = "core_shr";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_shr, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_shr, from)
     }
 }
 
@@ -2436,8 +2447,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         else {
             return out.ride();
         };
-        let changed =
-            coretraits::with_key_ord_hooks(ctx, event, || Some(&v) != last.as_ref());
+        let changed = coretraits::with_hooks(ctx, event, || Some(&v) != last.as_ref());
         if changed {
             *last = Some(v.clone());
             out.set(TagValue::fired(v))
@@ -2825,8 +2835,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ArrayLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(array_len)));
     const NAME: &str = "core_array_len";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(array_len, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, array_len, from)
     }
 }
 
@@ -2849,8 +2859,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(map_len)));
     const NAME: &str = "core_map_len";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(map_len, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, map_len, from)
     }
 }
 
@@ -2882,8 +2892,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapUnionEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_map_union)));
     const NAME: &str = "core_map_union";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_map_union, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_map_union, from)
     }
 }
 

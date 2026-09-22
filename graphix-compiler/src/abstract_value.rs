@@ -21,7 +21,7 @@ use triomphe::Arc;
 /// `Value`'s own comparison and printing. A frame holding `&mut
 /// ExecCtx` loans a type-erased dispatch handle into a thread-local
 /// for the duration of an operation (`node::coretraits::
-/// with_value_hooks`); with no loan installed the structural case
+/// with_hooks`); with no loan installed the structural case
 /// applies.
 #[repr(C)]
 pub struct ValueHookDispatch {

@@ -426,8 +426,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_tempdir_path)));
     const NAME: &str = "sys_tempdir_path";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_tempdir_path, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_tempdir_path, from)
     }
 }
 
@@ -480,8 +480,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_join_path)));
     const NAME: &str = "sys_join_path";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_join_path, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_join_path, from)
     }
 }
 

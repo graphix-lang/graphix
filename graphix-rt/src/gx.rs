@@ -385,7 +385,7 @@ impl<X: GXExt> GX<X> {
                         VarUpdate::Patch(path, v) => match self.ctx.rt.store_value(&$id) {
                             Some(cur) => {
                                 let (ctx, event) = (&mut self.ctx, &mut self.event);
-                                match coretraits::with_key_ord_hooks(ctx, event, || {
+                                match coretraits::with_hooks(ctx, event, || {
                                     place::write_path(&cur, &path, v)
                                 }) {
                                     Ok(nv) => Some(nv),

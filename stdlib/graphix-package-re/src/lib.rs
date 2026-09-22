@@ -91,10 +91,10 @@ macro_rules! re_fn {
 
             fn eval(
                 &mut self,
-                _ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
-                fast_eval($fc, from)
+                fast_eval(ctx, $fc, from)
             }
         }
 

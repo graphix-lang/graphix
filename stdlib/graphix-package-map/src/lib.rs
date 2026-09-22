@@ -28,8 +28,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get)));
     const NAME: &str = "map_get";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_get, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_get, from)
     }
 }
 
@@ -51,8 +51,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get_or)));
     const NAME: &str = "map_get_or";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_get_or, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_get_or, from)
     }
 }
 
@@ -74,8 +74,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_insert)));
     const NAME: &str = "map_insert";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_insert, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_insert, from)
     }
 }
 
@@ -95,8 +95,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_remove)));
     const NAME: &str = "map_remove";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_remove, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_remove, from)
     }
 }
 

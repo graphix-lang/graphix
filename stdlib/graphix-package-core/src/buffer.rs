@@ -22,8 +22,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_string)));
     const NAME: &str = "core_bytes_to_string";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bytes_to_string, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bytes_to_string, from)
     }
 }
 
@@ -43,8 +43,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToStringLossyEv {
         Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_string_lossy)));
     const NAME: &str = "core_bytes_to_string_lossy";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bytes_to_string_lossy, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bytes_to_string_lossy, from)
     }
 }
 
@@ -63,8 +63,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromStringEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_string)));
     const NAME: &str = "core_bytes_from_string";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bytes_from_string, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bytes_from_string, from)
     }
 }
 
@@ -97,8 +97,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesConcatEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_concat)));
     const NAME: &str = "core_bytes_concat";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bytes_concat, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bytes_concat, from)
     }
 }
 
@@ -117,8 +117,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesToArrayEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_to_array)));
     const NAME: &str = "core_bytes_to_array";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bytes_to_array, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bytes_to_array, from)
     }
 }
 
@@ -147,8 +147,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesFromArrayEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_from_array)));
     const NAME: &str = "core_bytes_from_array";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bytes_from_array, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bytes_from_array, from)
     }
 }
 
@@ -167,8 +167,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BytesLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bytes_len)));
     const NAME: &str = "core_bytes_len";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_bytes_len, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_bytes_len, from)
     }
 }
 
@@ -254,8 +254,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EncodeEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_encode)));
     const NAME: &str = "core_buffer_encode";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_encode, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_encode, from)
     }
 }
 

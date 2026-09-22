@@ -148,8 +148,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
         Ok(())
     }
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_render, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_render, from)
     }
 }
 

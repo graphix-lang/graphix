@@ -846,7 +846,6 @@ safe fn graphix_value_is_null(v: TagValue) -> u8 {
 /// in `StructurePattern::is_match`, arity selects the representation
 /// (`String(tag)` at 0, else an array of arity + 1 with the tag at
 /// slot 0); the tag alone does not discriminate `` [`A, `A(i64)] ``.
-// XCR codex for eric: CR01 — done.
 unsafe fn graphix_variant_tag_eq(
     v: TagValue,
     expected: *const arcstr::ArcStr,

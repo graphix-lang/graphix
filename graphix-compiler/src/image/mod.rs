@@ -1457,9 +1457,6 @@ pub(crate) fn fntype_encode<B: BufMut>(
 /// of the first expression seen with its id and contents (a node's
 /// spec is a clone of the tree it was compiled from). Outside a
 /// session, its own.
-// XCR codex for eric: CR03 — done: the key is the address of a clone the
-// session owns, found by id and contents; the caller's address is not
-// consulted.
 pub(crate) fn expr_key(e: &Expr) -> usize {
     encoding(|enc| {
         let seen = enc.exprs_by_id.entry(e.id).or_default();

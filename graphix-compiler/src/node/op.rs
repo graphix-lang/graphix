@@ -129,19 +129,17 @@ macro_rules! compare_op {
                 let woke = self.slept.take();
                 let (lhs, rhs, resident) =
                     (&mut self.lhs, &mut self.rhs, &mut self.resident);
-                unsafe {
-                    coretraits::with_value_hooks(ctx, event, |ctx, event| {
-                        let l = lhs.update(ctx, event);
-                        let r = rhs.update(ctx, event);
-                        let (lt, rt) = (l.tag(), r.tag());
-                        let trig = lt.triggers() || rt.triggers();
-                        dense_gate!(resident, ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
-                        let fired = lt.is_fired() || rt.is_fired();
-                        let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                        let v = l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()));
-                        resident.set(TagValue::tagged(v, tag))
-                    })
-                }
+                let l = lhs.update(ctx, event);
+                let r = rhs.update(ctx, event);
+                let (lt, rt) = (l.tag(), r.tag());
+                let trig = lt.triggers() || rt.triggers();
+                dense_gate!(resident, ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
+                let fired = lt.is_fired() || rt.is_fired();
+                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
+                let v = coretraits::with_hooks(ctx, event, || {
+                    l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
+                });
+                resident.set(TagValue::tagged(v, tag))
             }
 
             fn spec(&self) -> &Expr {

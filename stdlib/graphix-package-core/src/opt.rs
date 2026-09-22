@@ -5,7 +5,7 @@ use graphix_compiler::{
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
-    node::genn,
+    node::{coretraits, genn},
     typ::{FnType, Type},
 };
 use netidx_core::pack::{Pack, PackError};
@@ -28,8 +28,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsSomeEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_some)));
     const NAME: &str = "core_opt_is_some";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        crate::fast_eval(fc_is_some, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        crate::fast_eval(ctx, fc_is_some, from)
     }
 }
 
@@ -50,8 +50,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsNoneEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_none)));
     const NAME: &str = "core_opt_is_none";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        crate::fast_eval(fc_is_none, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        crate::fast_eval(ctx, fc_is_none, from)
     }
 }
 
@@ -65,10 +65,12 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_contains";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), _) => Some(Value::Bool(false)),
-            (Some(v), Some(x)) => Some(Value::Bool(v == x)),
+            (Some(v), Some(x)) => {
+                Some(Value::Bool(coretraits::eval_with_hooks(ctx, || v == x)))
+            }
             _ => None,
         }
     }
@@ -154,8 +156,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_xor)));
     const NAME: &str = "core_opt_xor";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        crate::fast_eval(fc_xor, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        crate::fast_eval(ctx, fc_xor, from)
     }
 }
 
@@ -202,8 +204,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
     const NAME: &str = "core_opt_unzip";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        crate::fast_eval(fc_unzip, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        crate::fast_eval(ctx, fc_unzip, from)
     }
 }
 

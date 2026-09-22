@@ -42,8 +42,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_concat)));
     const NAME: &str = "array_concat";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_concat, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_concat, from)
     }
 }
 
@@ -68,8 +68,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_back)));
     const NAME: &str = "array_push_back";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_push_back, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_push_back, from)
     }
 }
 
@@ -94,8 +94,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_front)));
     const NAME: &str = "array_push_front";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_push_front, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_push_front, from)
     }
 }
 
@@ -164,8 +164,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_flatten)));
     const NAME: &str = "array_flatten";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_flatten, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_flatten, from)
     }
 }
 
@@ -188,8 +188,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sort)));
     const NAME: &str = "array_sort";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        fast_eval(fc_sort, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        fast_eval(ctx, fc_sort, from)
     }
 }
 
@@ -219,8 +219,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_dedup)));
     const NAME: &str = "array_dedup";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_dedup, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_dedup, from)
     }
 }
 
@@ -242,8 +242,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_enumerate)));
     const NAME: &str = "array_enumerate";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_enumerate, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_enumerate, from)
     }
 }
 
@@ -267,8 +267,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_zip)));
     const NAME: &str = "array_zip";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_zip, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_zip, from)
     }
 }
 
@@ -305,8 +305,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
     const NAME: &str = "array_unzip";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_unzip, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_unzip, from)
     }
 }
 
@@ -725,8 +725,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IotaEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_iota)));
     const NAME: &str = "array_iota";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_iota, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_iota, from)
     }
 }
 
@@ -755,8 +755,8 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for RotateEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_rotate)));
     const NAME: &str = "array_rotate";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
-        graphix_package_core::fast_eval(fc_rotate, from)
+    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        graphix_package_core::fast_eval(ctx, fc_rotate, from)
     }
 }
 

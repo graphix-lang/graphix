@@ -114,7 +114,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let (trig, fired, bottom) = (kt || vt, kf || vf, kb || vb);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let m = super::coretraits::with_key_ord_hooks(ctx, event, || {
+        let m = super::coretraits::with_hooks(ctx, event, || {
             let mut m = CMap::new();
             for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
                 m.insert_cow(k, v);
@@ -287,7 +287,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         let kval = read_prod!(self.key, ctx, event, trig, fired, bottom);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = super::coretraits::with_key_ord_hooks(ctx, event, || {
+        let v = super::coretraits::with_hooks(ctx, event, || {
             map_get(&sval.unwrap(), &kval.unwrap())
         });
         self.resident.set(TagValue::tagged(v, tag))

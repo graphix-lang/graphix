@@ -74,7 +74,7 @@ fn field_of(pairs: &ValArray, name: &str) -> Result<usize> {
 }
 
 /// The value at `path` inside `root`. A map step compares keys, so the
-/// caller runs this under `coretraits::with_key_ord_hooks`.
+/// caller runs this under `coretraits::with_hooks`.
 pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
     let mut cur = root;
     for step in path {
