@@ -264,7 +264,9 @@ fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
     macro_rules! mk {
         ($ctor:ident) => {{
             let (pos, end) = (lhs.pos, rhs.end.0);
-            ExprKind::$ctor { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }.to_expr(pos).ending(end)
+            ExprKind::$ctor { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }
+                .to_expr(pos)
+                .ending(end)
         }};
     }
     match op {

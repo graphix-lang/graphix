@@ -89,8 +89,11 @@ fn every_span_reads_back_as_its_node() {
     let mut checked = 0usize;
     for file in files {
         let text = ArcStr::from(fs::read_to_string(&file).unwrap());
-        let ori =
-            Origin { parent: None, source: Source::File(file.clone()), text: text.clone() };
+        let ori = Origin {
+            parent: None,
+            source: Source::File(file.clone()),
+            text: text.clone(),
+        };
         // examples may be snippets that do not parse on their own
         let Ok(exprs) = parser::parse(ori) else { continue };
         let mut found = vec![];

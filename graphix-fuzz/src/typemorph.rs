@@ -521,8 +521,7 @@ mod test {
             .collect();
         assert_eq!(inlined.len(), 1, "one inline of the guard use");
         assert!(
-            inlined[0].body.contains("1 == 0")
-                && !inlined[0].body.contains("let m"),
+            inlined[0].body.contains("1 == 0") && !inlined[0].body.contains("let m"),
             "the guard use takes the value: {}",
             inlined[0].body
         );

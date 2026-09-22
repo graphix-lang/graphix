@@ -102,21 +102,21 @@ where
         token('['),
         sptoken(']'),
         spaces().with(choice((
-                attempt(at(idx()).skip(look_ahead(sptoken(']')))).map(Either::Right),
-                attempt(
-                    (
-                        optional(at(idx())).skip(spstring("..")),
-                        spaces().with(optional(at(idx()))),
-                    )
-                        .skip(look_ahead(sptoken(']'))),
+            attempt(at(idx()).skip(look_ahead(sptoken(']')))).map(Either::Right),
+            attempt(
+                (
+                    optional(at(idx())).skip(spstring("..")),
+                    spaces().with(optional(at(idx()))),
                 )
-                .map(Either::Left),
-                attempt((
-                    optional(attempt(expr())).skip(spstring("..")),
-                    optional(attempt(expr())),
-                ))
-                .map(|(start, end)| Either::Left((start, end))),
-                attempt(expr()).map(|e| Either::Right(e)),
+                    .skip(look_ahead(sptoken(']'))),
+            )
+            .map(Either::Left),
+            attempt((
+                optional(attempt(expr())).skip(spstring("..")),
+                optional(attempt(expr())),
+            ))
+            .map(|(start, end)| Either::Left((start, end))),
+            attempt(expr()).map(|e| Either::Right(e)),
         ))),
     )
 }

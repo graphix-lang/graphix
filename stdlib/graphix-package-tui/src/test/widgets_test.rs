@@ -427,7 +427,8 @@ let result = input_handler(#handle: &handle, &paragraph(&"base"))
     h.watch("test::downs").await?;
     h.watch("test::calls").await?;
     h.render()?;
-    let key = |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
+    let key =
+        |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
     for e in [
         key(KeyCode::Down, KeyEventKind::Press),
         key(KeyCode::Down, KeyEventKind::Release),
@@ -471,7 +472,8 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
     h.watch("test::leaked").await?;
     h.watch("test::closed").await?;
     h.render()?;
-    let key = |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
+    let key =
+        |code, kind| Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind));
     for e in [
         key(KeyCode::Esc, KeyEventKind::Press),
         key(KeyCode::Esc, KeyEventKind::Release),
@@ -485,7 +487,11 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
         h.drain().await?;
     }
     assert_eq!(h.get_watched("test::closed"), Some(&Value::I64(2)), "two presses of Esc");
-    assert_eq!(h.get_watched("test::leaked"), Some(&Value::I64(0)), "the child saw an event");
+    assert_eq!(
+        h.get_watched("test::leaked"),
+        Some(&Value::I64(0)),
+        "the child saw an event"
+    );
     Ok(())
 }
 

@@ -1249,15 +1249,17 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let ori = Arc::new(ori);
     set_origin(ori.clone());
     let mut r: LPooled<Vec<Expr>> = grow::parsing(&ori.text, || {
-        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| ExprKind::NoOp.to_expr(pos).ending(pos))
-            .skip(spaces())
-            .skip(eof())
-            .easy_parse(position::Stream::new(&*ori.text))
-            .map(|(r, _)| r)
-            .map_err(|e| {
-                grow::note_error_pos(e.position);
-                e
-            })
+        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
+            ExprKind::NoOp.to_expr(pos).ending(pos)
+        })
+        .skip(spaces())
+        .skip(eof())
+        .easy_parse(position::Stream::new(&*ori.text))
+        .map(|(r, _)| r)
+        .map_err(|e| {
+            grow::note_error_pos(e.position);
+            e
+        })
     })
     .map_err(|e| {
         let pos = e.pos;
