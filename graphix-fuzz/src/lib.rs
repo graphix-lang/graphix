@@ -747,9 +747,13 @@ pub fn oracle_tier(code: &str) -> OracleTier {
         // FinalValues assumes the async values themselves settle
         // deterministically; a `<-` weaves arrival order into state, and
         // the fire-count/arrival-order-sensitive builtins leak it too.
+        // `iter(` is a self-clocked sequence: one element per cycle,
+        // so anything async landing beside it samples whichever element
+        // that cycle held.
         let fire_count_sensitive = [
             "count(", "sum(", "product(", "mean(", "min(", "max(", "all(", "and(", "or(",
-            "any(", "queue(", "take(", "skip(", "window(", "iterq", "hold(",
+            "any(", "queue(", "take(", "skip(", "window(", "iterq", "iter(", "group(",
+            "hold(",
         ];
         if code.contains("<-") || fire_count_sensitive.iter().any(|m| code.contains(m)) {
             return OracleTier::Excluded;
@@ -4574,6 +4578,28 @@ mod tests {
         );
         // the other fire-count-sensitive builtins stay Exact
         assert_eq!(oracle_tier("count(x)"), OracleTier::Exact);
+        assert_eq!(oracle_tier("array::iter([1, 2, 100]) > 3"), OracleTier::Exact);
+    }
+
+    #[test]
+    fn a_self_clocked_sequence_beside_an_async_value_is_excluded() {
+        // `iter` emits one element per cycle; the cycle an async
+        // handle lands in decides which element a group's predicate
+        // answers over: `[]` or `[Stdio]` by load
+        assert_eq!(
+            oracle_tier(
+                "array::group(sys::io::stderr(null), |n, _| array::iter([1, 2, 100]) > 3)"
+            ),
+            OracleTier::Excluded
+        );
+        assert_eq!(
+            oracle_tier("sys::io::stderr(null) ~ array::iter([1, 2, 3])"),
+            OracleTier::Excluded
+        );
+        assert_eq!(
+            oracle_tier("array::len(sys::fs::readdir(p))"),
+            OracleTier::FinalValues
+        );
         // a comment naming the builtin must not un-gate the program
         assert_eq!(
             oracle_tier("// a header naming throttle\ncount(x)"),

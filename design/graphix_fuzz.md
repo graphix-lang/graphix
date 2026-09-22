@@ -139,7 +139,9 @@ epoch's settled value is deterministic, so compare per-epoch finals);
 paths, child processes (a child's lifetime is program data, so the
 epoch its exit lands in is the wall clock's), an fs mutation racing
 an fs observation, and a `sys::`/`http::` program whose state is
-fire-count or arrival-order sensitive (`<-`, `count(`, `hold(`, …): no
+fire-count or arrival-order sensitive (`<-`, `count(`, `hold(`,
+`group(`, and `iter(`, one element per cycle, so an async value
+landing beside it samples whichever element that cycle held; …): no
 value comparison is sound at any strength, the shapes still run so
 crashes surface, and divergences never record. The Excluded list is empirical and
 `selfcheck` polices it: a missing marker shows up as a finals-strength
