@@ -544,9 +544,6 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
 
 /// [`with_hooks`] inside a builtin's `eval`, which has no event: armed
 /// when a loan with one came first, else `f` runs unarmed (structural).
-// XCR codex for eric: CR25 — done: `abstract_value::hooked` suspends the
-// installed handle while a dispatch runs, so the code an implementation
-// runs (a builtin's eval included) is armed only by a loan it takes.
 pub fn eval_with_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<R, E>,
     f: impl FnOnce() -> T,
