@@ -210,9 +210,6 @@ struct SiteEntry<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
     /// The candidate for `v`, resolved at the first sight of the type
     /// `v` was constructed at.
-    // XCR codex for eric: CR10 — done: `impl_for` matches a fresh head by
-    // containment both ways (one substitution, bounds on the cells), and
-    // the hook is cached per concrete instantiation.
     fn resolve(
         &mut self,
         env: &Env,
@@ -536,11 +533,6 @@ pub fn seed<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, event: &Event<E>) {
 /// implementation. `f` sees no context, so the loan is exclusive; a
 /// hook dispatches through the context over an event of the seam's
 /// own. Loans nest.
-// XCR codex for eric: CR25 — done: every loan is exclusive; the seam
-// owns the events its sites run over, so no caller lends a context or an
-// event it still holds. `CachedArgs::eval` runs unarmed: a fast fn is
-// armed by `fast_eval`, which hands it nothing but its arguments, and a
-// hand-written eval that compares takes `eval_with_hooks` itself.
 pub fn with_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<R, E>,
     event: &Event<E>,
@@ -552,6 +544,9 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
 
 /// [`with_hooks`] inside a builtin's `eval`, which has no event: armed
 /// when a loan with one came first, else `f` runs unarmed (structural).
+// XCR codex for eric: CR25 — done: `abstract_value::hooked` suspends the
+// installed handle while a dispatch runs, so the code an implementation
+// runs (a builtin's eval included) is armed only by a loan it takes.
 pub fn eval_with_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<R, E>,
     f: impl FnOnce() -> T,

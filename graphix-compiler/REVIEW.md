@@ -1,137 +1,138 @@
 # Compiler CR re-evaluation
 
-Rechecked the six remaining findings against `82be24f7`. **CR01, CR03, CR18,
-and CR20 are resolved and their comments have been removed. CR10 and CR25 remain
-open**, with updated `CR codex for eric` comments. Across the original review,
-25 of 27 findings are closed. This re-evaluation changes comments and this report
-only.
+Rechecked CR10 and CR25 against `8495b9e9`. **CR10 is resolved and its comment
+has been removed. CR25 remains open**, with a narrower updated CR and a failing
+regression probe. Across the original review, 26 of 27 findings are closed.
+This re-evaluation changes comments and this report only.
 
-## Open findings
+## Open: CR25 — nested dispatch still inherits the outer loan
 
-| CR | Location | Remaining problem | Evidence |
-|---|---|---|---|
-| 10 | [node/coretraits.rs:193](src/node/coretraits.rs#L193) | Implementation selection tests type overlap, ignores repeated-variable consistency, and discards declared bounds. | Three reproductions below return the wrong result in both engines. |
-| 25 | [node/coretraits.rs:510](src/node/coretraits.rs#L510) | `CachedArgs` invokes a public safe builtin implementation under an unsafe loan while giving it the same mutable context. | Source inspection of the safe trait and its caller; undefined behavior was not exercised. |
+Location: [node/coretraits.rs:547](src/node/coretraits.rs#L547).
 
-## CR10: implementation matching is still too permissive
+The outer API now lends the context exclusively: its closure receives no context,
+printers use an environment snapshot, and hook sites have their own events.
+Removing the blanket loan from `CachedArgs::update_inner` fixes the ordinary
+outermost invocation. Those changes are accepted.
 
-Carrying `GxAbstract::params` fixes the previous concrete and phantom-parameter
-cases. However, `SiteEntry::choose` uses `could_match`, which tests whether types
-overlap, rather than whether the implementation applies to the entire concrete
-type. It also treats repeated open variables independently. `candidates_for`
-replaces declared parameters with unconstrained variables, losing their bounds.
+However, `eval_with_hooks` leaves its guard installed until `f()` returns.
+`abstract_value::hooked` calls the selected dispatch function without suspending
+that handle. The dispatch then borrows `&mut ExecCtx` and calls
+[the trait's site](src/node/coretraits.rs#L371), which can run a public safe
+`EvalCached::eval`. That nested eval still sees the outer hook despite never
+installing a loan itself.
 
-Each program below passes `--check`. Run with the rebuilt shell:
+The same safety violation remains reachable: a nested safe eval can retain
+`&ctx.env` while formatting a `TVal`; the inherited hook can then reconstruct
+`&mut ExecCtx` and mutate that environment while the shared borrow is live.
+Neither owning a separate event nor removing the immediate wrapper masks an
+already installed outer handle.
+
+Suspend inherited dispatch while running code that receives the context, and let
+explicit inner comparison/formatting wrappers install fresh loans. Restore the
+outer handle on return and unwind. Include nested builtin calls in the regression
+coverage.
+
+## CR25 reproduction
+
+Save the following as `stdlib/graphix-tests/tests/cr25_recheck.rs`, then run:
 
 ```sh
-~/tmp/target/debug/graphix --no-netidx --no-init --no-cache case.gx
-~/tmp/target/debug/graphix --no-netidx --no-init --no-cache --no-fusion case.gx
+cargo test -p graphix-tests --test cr25_recheck
 ```
 
-Both configurations print **`true` for every case below; each should print
-`false`**, using structural equality because the declared implementation does not
-apply.
+The probe deliberately compares without an explicit loan to detect inherited
+hooks. It never reads the context or retains a context-derived reference. The
+first assertion passes: the ordinary call answers structural `false`. The second
+fails with `String("armed")`, expected `String("unarmed")`: the same builtin inside
+a Display implementation invokes the custom Eq through the outer handle.
 
-### Overlapping union parameter
+```rust
+use anyhow::Result;
+use graphix_compiler::{Effect, ExecCtx, Rt, UserEvent};
+use graphix_package_core::{CachedArgs, CachedVals, EvalCached, testing::eval_with_setup};
+use netidx_value::Value;
 
-`Marker<i64>` does not implement equality for `Marker<[i64, string]>`.
+#[derive(Debug, Default)]
+struct Probe;
 
-```graphix
-type Marker<'a> = Abstract<i64>;
-impl Eq for Marker<i64> { let eq = |a, b| true };
-let a: Marker<[i64, string]> = Marker(1);
-let b: Marker<[i64, string]> = Marker(2);
-println(a == b);
-sys::exit(sys::time::after_idle(duration:0.01s, 0))
+graphix_package_core::unit_image_state!(Probe);
+
+impl<R: Rt, E: UserEvent> EvalCached<R, E> for Probe {
+    const NAME: &str = "cr25_probe";
+    const EFFECT: Effect = Effect::Sync;
+
+    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+        Some(Value::Bool(from.0[0].as_ref()? == from.0[1].as_ref()?))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nested_builtin_runs_unarmed() -> Result<()> {
+    let packages: &[graphix_package_core::testing::PackageRef] =
+        graphix_package::package_refs!();
+    let (value, ctx) = eval_with_setup(
+        r#"{
+            type Key = Abstract<i64>;
+            impl Eq for Key { let eq = |a, b| true };
+            let probe = |a: Key, b: Key| -> bool 'cr25_probe;
+            type Outer = Abstract<i64>;
+            impl Display for Outer {
+                let fmt = |x| select probe(Key(1), Key(2)) {
+                    true => "armed",
+                    false => "unarmed"
+                }
+            };
+            (probe(Key(1), Key(2)), "[Outer(0)]")
+        }"#,
+        packages,
+        |ctx| ctx.register_builtin::<CachedArgs<Probe>>().unwrap(),
+    )
+    .await?;
+    ctx.shutdown().await;
+    let Value::Array(parts) = value else { panic!("expected tuple") };
+    assert_eq!(parts[0], Value::Bool(false));
+    assert_eq!(parts[1], Value::from("unarmed"));
+    Ok(())
+}
 ```
 
-The same failure occurs for `Box<'a> = Abstract<'a>` when its constructor receives
-an argument statically typed `[i64, string]`: the `Box<i64>` implementation runs
-even when the payload is a string.
+The temporary test was run and then removed after recording it here. It confirms
+the inherited active hook; the shared-borrow safety consequence above follows
+from the dispatch path, rather than a sanitizer or deliberate undefined-behavior
+probe.
 
-### Repeated parameter
+## Resolved: CR10 — concrete implementation matching
 
-The two occurrences of `'a` must agree; `Pair<i64, string>` does not match this
-implementation head.
+`impl_for` now matches a fresh implementation head in both directions, sharing one
+substitution across repeated variables and preserving their constraints. Hook
+sites and method signatures are instantiated and cached by the concrete carried
+type. The previous overlap-based selector is gone.
 
-```graphix
-type Pair<'a, 'b> = Abstract<('a, 'b)>;
-impl<'a> Eq for Pair<'a, 'a> { let eq = |a, b| true };
-println(Pair((1, "a")) == Pair((2, "b")));
-sys::exit(sys::time::after_idle(duration:0.01s, 0))
-```
+Verified with the committed `core_eq_impl_must_apply` test in both engines and
+with the rebuilt shell:
 
-### Unsatisfied bound
+- Union parameters, mismatched repeated parameters, and unsatisfied bounds now
+  correctly fall back to structural equality (`false` in the old reproductions).
+- Valid repeated-parameter and bounded implementations still run (`true` in the
+  committed test).
+- The prior sole-specialization and phantom-specialization cases remain correct.
+- A bound implemented generically for `Array<'a>` accepts `Marker<Array<i64>>`.
+- Generic equality works across integer and string instantiations; generic
+  Display prints `box:1`, `box:s`, `box:2` across repeated and different types.
 
-`string` has no `Mark` implementation, so the bounded implementation cannot apply
-to `Marker<string>`.
-
-```graphix
-trait Mark { val mark: fn(self) -> bool };
-impl Mark for i64 { let mark = |x| true };
-type Marker<'a> = Abstract<i64>;
-impl<'a: Mark> Eq for Marker<'a> { let eq = |a, b| true };
-let a: Marker<string> = Marker(1);
-let b: Marker<string> = Marker(2);
-println(a == b);
-sys::exit(sys::time::after_idle(duration:0.01s, 0))
-```
-
-Match a fresh implementation head against the concrete carried type, preserving
-consistent substitutions and checking bounds. Build and cache the hook for the
-resulting concrete instantiation. An overlap predicate is insufficient.
-
-## CR25: the unsafe loan still reaches an unrestricted safe callback
-
-The environment snapshots in interpolation, the core printers, and the kernel
-remove the previously identified direct shared borrow of `ctx.env` across hook
-dispatch. Those changes are accepted.
-
-The remaining problem is the call in
-[CachedArgs::update_inner](../stdlib/graphix-package-core/src/lib.rs#L790): it
-calls `ev.eval(ctx, cached)` inside `with_value_hooks` and asserts that every eval
-obeys the loan contract. But
-[EvalCached::eval](../stdlib/graphix-package-core/src/lib.rs#L610) is a public safe
-trait method receiving the entire `&mut ExecCtx`. A safe implementation can borrow
-`&ctx.env`, pass it to `TVal` while formatting an abstract argument, and read the
-environment again afterward. `dispatch_fmt` reconstructs `&mut ExecCtx`, and
-`build_site` inserts bindings into that same environment during the formatting.
-This violates the loan contract without any unsafe code in the implementation.
-
-The wrapper must separate mutable hook state from the context available to safe
-builtin code, or express the required invariant through an audited unsafe
-implementation boundary. Auditing today's builtin bodies alone cannot justify
-this unrestricted safe extension interface. This is a source-level safety
-finding, not a claimed observed crash or sanitizer result.
-
-## Resolved in this re-evaluation
-
-| CR removed | Verification |
-|---|---|
-| 01 | `graphix_variant_tag_eq` is now unsafe. No safe JIT helper signature takes a raw pointer. |
-| 03 | Image expression keys use stable session-owned clones matched by id and contents; the input-address alias table is gone. `image::tests::reused_address_is_not_an_alias` passes. |
-| 18 | Each cache entry retains the implementation-list Arc and compares with `Arc::ptr_eq`; removal or clearing invalidates it without allocation-address reuse. Registry mutation paths replace the list. |
-| 20 | `polled`, `staged`, and `slots` use pooled Vec storage. `polled` contains `TagValue`, removing the independent tag/optional-value representation. |
-
-Previously closed findings remain closed: 02, 04–09, 11–17, 19, 21–24, 26, 27.
+Previously closed findings remain closed: 01–09, 11–24, 26, 27.
 
 ## Validation
 
-- `cargo test -p graphix-compiler -p graphix-tests`: **2,977 passed, two ignored**
-  (208 compiler tests and 2,769 language/package tests).
-- Rebuilt `graphix-shell`; all eight CLI probes passed `--check` and were run with
-  fusion enabled and disabled. The previous sole-specialization case now prints
-  `true, false`, and the previous phantom-specialization case prints `false`.
-  Generic equality across integer and string instantiations also behaves correctly.
-  The four failing probes are the three cases above plus the union-argument Box case.
-- `cargo fmt -p graphix-compiler -p graphix-package-core --check` and
-  `git diff --check`: passed.
-- `cargo fmt --all --check` reports existing differences in sibling netidx files
-  `graphix-package-netidx-admin/src/lifecycle.rs` and `netidx-admin/src/lib.rs`.
+- `cargo test -p graphix-compiler -p graphix-tests`: **2,979 passed, two ignored**
+  (208 compiler tests and 2,771 language/package tests).
+- Rebuilt `graphix-shell`. All ten CLI probes passed `--check` and produced their
+  expected results with fusion enabled and disabled.
+- The separate nested-builtin probe above failed as described.
+- `cargo fmt --all --check` and `git diff --check`: passed.
 
-## Disposition of the third round
+## Disposition of the fourth round
 
 | CR | Resolution |
 |---|---|
-| 10 | `impl_for` matches a fresh head — the declared variables open, carrying their bounds — by containment both ways, so one substitution serves every occurrence (`Pair<'a, 'a>`), a bound is checked (`'a: Mark`) and an overlap is not a match (`Marker<i64>` against `Marker<[i64, string]>`). The hook is cached per concrete instantiation, and its site's signature is the method's instantiated through that substitution (a declared variable settles to ⊥ once the body is checked, which a plain reset carries as a solved fact). Pin: `traits::core_eq_impl_must_apply` (the review's three cases). |
-| 25 | The blanket loan is gone. Every loan is exclusive: `with_hooks`/`with_display_hooks` take a closure with no context, and the seam runs its sites over events of its own (`CoreHookSites::{template, spare}`, seeded from the first loan that has an event, `CachedArgs::update` included), so no caller lends a context or an event it still holds; the `unsafe fn` is deleted. `EvalCached::eval` runs unarmed: `fast_eval`/`fast_eval_typed` arm the loan around a fast fn, which sees only its arguments (100 builtins; a `Typed` fn reads an `Env` snapshot when a hook can fire), and the three hand-written evals that compare values (`min`, `max`, `opt::contains`) take `eval_with_hooks` around the comparison; the rule is stated at the trait. `traits::core_sort_min_max_by_ord` caught `min`/`max` during the conversion. |
+| 25 | `abstract_value::hooked` suspends the installed handle for a dispatch's duration (restored on return and unwind), so the code an implementation runs — a builtin's `eval` included — is armed only by a loan it takes itself. Pin: `graphix-tests/tests/hook_loan.rs` (the review's probe), which fails without the suspension. |

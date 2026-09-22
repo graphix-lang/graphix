@@ -56,15 +56,19 @@ impl Drop for ValueHookGuard {
     }
 }
 
+/// Dispatch through the installed handle, which is suspended for the
+/// dispatch's duration: the code an implementation runs sees no loan
+/// but one it arms itself, so nothing inherits a context it was not
+/// lent. The guard restores the handle on return and on unwind.
 fn hooked<T>(f: impl FnOnce(&ValueHookDispatch) -> Option<T>) -> Option<T> {
-    let p = VALUE_HOOKS.with(|c| c.get());
+    let p = VALUE_HOOKS.with(|c| c.replace(ptr::null()));
     if p.is_null() {
-        None
-    } else {
-        // SAFETY: the pointer was installed by `arm_value_hooks`, whose
-        // guard is alive in a caller frame that owns the handle.
-        f(unsafe { &*p })
+        return None;
     }
+    let _restore = ValueHookGuard { prev: p };
+    // SAFETY: the pointer was installed by `arm_value_hooks`, whose
+    // guard is alive in a caller frame that owns the handle.
+    f(unsafe { &*p })
 }
 
 #[derive(Clone)]
