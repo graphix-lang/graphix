@@ -79,9 +79,9 @@ cargo run --bin graphix -- fmt file.gx         # format in place (--check, --std
 ```
 
 Tests run in parallel by design (the compiler supports many instances
-per process); never rely on `--test-threads=1`. `rustfmt --edition 2024
-<files>` scoped to the files you edited (`cargo fmt` follows `mod`s into
-drifted files). Formatting: `rustfmt.toml`; `snake_case` / `CamelCase` /
+per process); never rely on `--test-threads=1`. The whole workspace is
+formatted: `cargo fmt --all` before a commit, stable toolchain.
+Formatting: `rustfmt.toml`; `snake_case` / `CamelCase` /
 `SCREAMING_SNAKE_CASE`; Rust edition 2024; `triomphe::Arc` unless a
 `Weak` or a cycle is needed.
 
