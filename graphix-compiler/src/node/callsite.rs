@@ -1708,15 +1708,36 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// The body's reference summary an imaged site answers `refs` with
-    /// before its instance is decoded.
-    fn refs_summary(apply: &dyn Apply<R, E>) -> (Vec<BindId>, Vec<BindId>) {
-        let mut refs = Refs::default();
-        apply.refs(&mut refs);
-        let mut refed: Vec<BindId> = refs.refed.iter().copied().collect();
-        let mut bound: Vec<BindId> = refs.bound.iter().copied().collect();
-        refed.sort();
-        bound.sort();
-        (refed, bound)
+    /// before its instance is decoded, as `f` sees it; walked once per
+    /// instance and kept by the encoder.
+    fn with_refs_summary<T>(
+        apply: &dyn Apply<R, E>,
+        f: impl FnOnce(&[BindId], &[BindId]) -> T,
+    ) -> Result<T, PackError> {
+        let ApplyView::Lambda(g) = apply.view() else {
+            return Err(PackError::Application(image::NOT_IMAGED));
+        };
+        let instance = g.instance_id();
+        let cached = image::encoding(|e| e.instance_refs.contains_key(&instance));
+        if cached != Some(true) {
+            let mut refs = Refs::default();
+            apply.refs(&mut refs);
+            let mut refed: Vec<BindId> = refs.refed.iter().copied().collect();
+            let mut bound: Vec<BindId> = refs.bound.iter().copied().collect();
+            refed.sort();
+            bound.sort();
+            return match image::encoding(|e| {
+                e.instance_refs.insert(instance, (refed, bound))
+            }) {
+                Some(_) => Ok(Self::with_refs_summary(apply, f)?),
+                None => Err(PackError::Application(image::NOT_IMAGED)),
+            };
+        }
+        image::encoding(|e| {
+            let (refed, bound) = &e.instance_refs[&instance];
+            f(refed, bound)
+        })
+        .ok_or(PackError::Application(image::NOT_IMAGED))
     }
 
     /// Decode the instance the image holds for this site and bind it.
@@ -1889,8 +1910,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 let body = apply.image_len();
                 let body = if deferred {
                     image::encoding(|e| e.deferred_len += body);
-                    let (refed, bound) = Self::refs_summary(&**apply);
-                    9 + refed.encoded_len() + bound.encoded_len()
+                    let summary = Self::with_refs_summary(&**apply, |refed, bound| {
+                        image::slice_len(refed) + image::slice_len(bound)
+                    });
+                    9 + summary.unwrap_or(0)
                 } else {
                     body
                 };
@@ -1954,9 +1977,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     instance.encode(buf)?;
                     resolved_ftype.encode(buf)?;
                     first_update.encode(buf)?;
-                    let (refed, bound) = Self::refs_summary(&**apply);
-                    refed.encode(buf)?;
-                    bound.encode(buf)?;
+                    Self::with_refs_summary(&**apply, |refed, bound| {
+                        image::slice_encode(refed, buf)?;
+                        image::slice_encode(bound, buf)
+                    })??;
                     // The session borrows every node it encodes for its
                     // whole length; the heap is written before it ends.
                     let body: &'static dyn Apply<R, E> =
