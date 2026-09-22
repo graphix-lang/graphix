@@ -45,8 +45,6 @@ async fn environment_round_trips() -> Result<()> {
         let _s = EncodeImage::new(enc);
         env.encoded_len()
     };
-    measure(&mut enc);
-    enc.sort_ids();
     let bound = measure(&mut enc);
     enc.begin_encode();
     {
@@ -55,7 +53,7 @@ async fn environment_round_trips() -> Result<()> {
         assert_eq!(buf.len(), bound);
     }
     let counts = enc.counts();
-    assert!(counts.bind > 100 && counts.tvar > 100, "{counts:?}");
+    assert!(counts.bind.len() > 100 && counts.tvar.len() > 100, "{counts:?}");
     let image: Bytes = buf.freeze();
     let mut dec = ImageDecoder::new(counts);
     dec.set_image(image.clone());

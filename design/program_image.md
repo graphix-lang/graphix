@@ -469,16 +469,22 @@ The syntax codec (`expr/serialize.rs`) deliberately does less: fresh
 suit syntax that will be compiled. The image codec never recovers
 correctness by recompiling.
 
-### IDs: dense renumbering and block relocation
+### IDs: written as minted, block relocation
 
-Encode renumbers every identity domain densely into `[0, N)`. Decode
-reserves one block of `N` per domain with a single fetch-add on that
-domain's allocator and adds the base to every ID as it is decoded. No
-floors: an allocator never moves backwards and never overlaps anything
-already handed out, and the same image loads into several runtimes in
-one process (the test suite, the GUI harness, the LSP), each with its
-own block. This is one add per ID during a pass that touches every ID
-anyway.
+Encode writes every ID as minted and records each domain's extent,
+one past the largest. Decode reserves one block of that extent per
+domain with a single fetch-add on that domain's allocator and adds the
+base to every ID as it is decoded. No floors: an allocator never moves
+backwards and never overlaps anything already handed out, and the same
+image loads into several runtimes in one process (the test suite, the
+GUI harness, the LSP), each with its own block. This is one add per ID
+during a pass that touches every ID anyway. (The first version
+renumbered IDs densely in first-seen order and then sorted them so
+maps keyed by IDs kept their order, which cost a second measure pass
+over the whole image so every ID was measured at its final width: 40%
+of the write. A process that writes an image minted its IDs from zero,
+so they are dense already; a process that loaded one first writes
+them above its block, wider by a byte at most.)
 
 `atomic_id!` (`../netidx/netidx-core/src/utils.rs:173`) needs a
 reserve-block API; `from_inner` does not reserve. Every persisted

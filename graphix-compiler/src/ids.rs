@@ -1,17 +1,38 @@
 //! The compiler's id types: `netidx-core`'s `atomic_id!` plus what an
 //! image needs, kept local so netidx's own ids and wire format are
-//! untouched. An image writes ids densely in first-seen order and reads
-//! them offset into a block reserved on the counter, so the same image
-//! loads into several runtimes in one process without touching anything
-//! already minted.
+//! untouched. An image writes ids as minted and records each domain's
+//! span; a reader reserves a block that size on the counter and offsets
+//! every id into it, so the same image loads into several runtimes in
+//! one process without touching anything already minted.
 
-use std::collections::HashMap;
+/// The ids of one domain an image holds: `floor` is the smallest,
+/// `extent` one past the largest; the reader reserves the difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdSpan {
+    pub floor: u64,
+    pub extent: u64,
+}
+
+impl Default for IdSpan {
+    fn default() -> Self {
+        IdSpan { floor: u64::MAX, extent: 0 }
+    }
+}
+
+impl IdSpan {
+    pub fn len(&self) -> u64 {
+        self.extent.saturating_sub(self.floor)
+    }
+}
 
 /// How an [`image_id!`] type is written while an image is encoded or
 /// decoded on this thread; `None` (the default) writes the raw id.
 #[derive(Debug, Clone)]
 pub enum IdRelocation {
-    Encode(HashMap<u64, u64>),
+    /// The span of the ids written so far.
+    Encode(IdSpan),
+    /// What a written id is offset by: the reserved block's base less
+    /// the span's floor.
     Decode { base: u64 },
 }
 
@@ -91,16 +112,16 @@ macro_rules! image_id {
                 Self::relocation_slot().with_borrow_mut(|slot| std::mem::replace(slot, r))
             }
 
-            /// The id as written: dense in first-seen order under an
-            /// encode relocation, raw otherwise.
+            /// The id as written, which is the id; an encode relocation
+            /// counts it toward the span.
             fn wire(&self) -> u64 {
-                Self::relocation_slot().with_borrow_mut(|slot| match slot {
-                    Some($crate::ids::IdRelocation::Encode(dense)) => {
-                        let next = dense.len() as u64;
-                        *dense.entry(self.0).or_insert(next)
+                Self::relocation_slot().with_borrow_mut(|slot| {
+                    if let Some($crate::ids::IdRelocation::Encode(span)) = slot {
+                        span.floor = span.floor.min(self.0);
+                        span.extent = span.extent.max(self.0 + 1);
                     }
-                    _ => self.0,
-                })
+                });
+                self.0
             }
         }
 
@@ -121,7 +142,9 @@ macro_rules! image_id {
             ) -> std::result::Result<Self, netidx_core::pack::PackError> {
                 let raw = netidx_core::pack::decode_varint(buf)?;
                 Ok(Self::relocation_slot().with_borrow(|slot| match slot {
-                    Some($crate::ids::IdRelocation::Decode { base }) => Self(base + raw),
+                    Some($crate::ids::IdRelocation::Decode { base }) => {
+                        Self(base.wrapping_add(raw))
+                    }
                     _ => Self(raw),
                 }))
             }

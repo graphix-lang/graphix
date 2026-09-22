@@ -27,7 +27,7 @@ use crate::{
         emit::BodyRecord,
         kernel_abi::{KernelSig, SiteLeaf},
     },
-    ids::IdRelocation,
+    ids::{IdRelocation, IdSpan},
     shared_map,
     typ::{
         FnType, ResolvedRef, TVar, Type,
@@ -40,56 +40,60 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use parking_lot::{Mutex, RwLock};
-use std::{
-    cell::Cell, collections::HashMap, marker::PhantomData, path::PathBuf, ptr::NonNull,
-};
+use std::{cell::Cell, marker::PhantomData, path::PathBuf, ptr::NonNull};
 use triomphe::Arc;
 
 const REF: u8 = 0;
 const DEF: u8 = 1;
 
-/// How many ids of each relocated domain an image holds; the decoder
+/// The span of each relocated id domain an image holds; the decoder
 /// reserves a block of each.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IdCounts {
-    pub bind: u64,
-    pub lambda: u64,
-    pub expr: u64,
-    pub tvar: u64,
+    pub bind: IdSpan,
+    pub lambda: IdSpan,
+    pub expr: IdSpan,
+    pub tvar: IdSpan,
+}
+
+impl IdCounts {
+    fn each(&self) -> [IdSpan; 4] {
+        let IdCounts { bind, lambda, expr, tvar } = *self;
+        [bind, lambda, expr, tvar]
+    }
 }
 
 impl Pack for IdCounts {
     fn encoded_len(&self) -> usize {
-        let IdCounts { bind, lambda, expr, tvar } = self;
-        varint_len(*bind) + varint_len(*lambda) + varint_len(*expr) + varint_len(*tvar)
+        self.each().iter().map(|s| varint_len(s.floor) + varint_len(s.extent)).sum()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let IdCounts { bind, lambda, expr, tvar } = self;
-        for n in [bind, lambda, expr, tvar] {
-            encode_varint(*n, buf);
+        for s in self.each() {
+            encode_varint(s.floor, buf);
+            encode_varint(s.extent, buf);
         }
         Ok(())
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        Ok(IdCounts {
-            bind: decode_varint(buf)?,
-            lambda: decode_varint(buf)?,
-            expr: decode_varint(buf)?,
-            tvar: decode_varint(buf)?,
-        })
+        let mut each = [IdSpan::default(); 4];
+        for s in each.iter_mut() {
+            *s = IdSpan { floor: decode_varint(buf)?, extent: decode_varint(buf)? };
+        }
+        let [bind, lambda, expr, tvar] = each;
+        Ok(IdCounts { bind, lambda, expr, tvar })
     }
 }
 
-/// The dense renumbering of each relocated id domain, kept between
-/// sessions so every session over one encoder continues the numbering.
+/// The span of each relocated id domain, kept between sessions so
+/// every session over one encoder counts toward one reservation.
 #[derive(Default)]
-struct IdMaps {
-    bind: HashMap<u64, u64>,
-    lambda: HashMap<u64, u64>,
-    expr: HashMap<u64, u64>,
-    tvar: HashMap<u64, u64>,
+struct IdSpans {
+    bind: IdSpan,
+    lambda: IdSpan,
+    expr: IdSpan,
+    tvar: IdSpan,
 }
 
 /// The image under construction: a byte buffer that tells the session
@@ -145,12 +149,9 @@ pub struct ImageEncoder {
     /// Bytes written through the [`ImageBuf`] so far: the offset of
     /// the next byte.
     pub(crate) written: u64,
-    ids: IdMaps,
+    ids: IdSpans,
     /// The next ordinal an object meets at its first sight.
     next_ordinal: u32,
-    /// The length pass in progress; `sort_ids` ends one and a slot met
-    /// again in the next is measured again, with the ids final.
-    pass: u32,
     /// Whether the encode pass has begun (`begin_encode`): a length
     /// pass sees every later occurrence as a reference, the encode
     /// pass sees an unwritten object's first occurrence within one
@@ -206,6 +207,9 @@ pub struct ImageEncoder {
     /// The measured size of every deferred body, for the length bound.
     pub(crate) deferred_len: usize,
     pub(crate) instances: AHashMap<LambdaInstanceId, u64>,
+    /// Every deferred instance's reference summary (`refed`, `bound`),
+    /// walked once: the measure passes and the encode all write it.
+    pub(crate) instance_refs: AHashMap<LambdaInstanceId, (Vec<BindId>, Vec<BindId>)>,
 }
 
 impl Default for ImageEncoder {
@@ -219,9 +223,8 @@ impl ImageEncoder {
         ImageEncoder {
             maps: shared_map::EncodeTable::default(),
             written: 0,
-            ids: IdMaps::default(),
+            ids: IdSpans::default(),
             next_ordinal: 0,
-            pass: 1,
             encode_pass: false,
             query_seen: AHashSet::new(),
             query_depth: 0,
@@ -251,29 +254,8 @@ impl ImageEncoder {
             deferred: Vec::new(),
             deferred_len: 0,
             instances: AHashMap::new(),
+            instance_refs: AHashMap::new(),
         }
-    }
-
-    /// Renumber every id seen so far by its original value, so a map
-    /// keyed by ids keeps its order once relocated. The image writer
-    /// measures the whole image, calls this, then encodes; an id first
-    /// met during the encode takes the next number, which is only
-    /// order-preserving if nothing orders it against the earlier ones.
-    /// End a length pass: the ids seen so far take their final dense
-    /// numbers, so the next length pass measures them exactly.
-    pub fn sort_ids(&mut self) {
-        self.pass += 1;
-        fn sort(m: &mut HashMap<u64, u64>) {
-            let mut seen: Vec<u64> = m.keys().copied().collect();
-            seen.sort_unstable();
-            for (rank, old) in seen.into_iter().enumerate() {
-                m.insert(old, rank as u64);
-            }
-        }
-        sort(&mut self.ids.bind);
-        sort(&mut self.ids.lambda);
-        sort(&mut self.ids.expr);
-        sort(&mut self.ids.tvar);
     }
 
     /// Begin the encode pass.
@@ -281,14 +263,14 @@ impl ImageEncoder {
         self.encode_pass = true;
     }
 
-    /// The ids written so far. The image writer stores these ahead of
-    /// the body; read between sessions.
+    /// The span of the ids written so far, per domain. The image
+    /// writer stores these ahead of the body; read between sessions.
     pub fn counts(&self) -> IdCounts {
         IdCounts {
-            bind: self.ids.bind.len() as u64,
-            lambda: self.ids.lambda.len() as u64,
-            expr: self.ids.expr.len() as u64,
-            tvar: self.ids.tvar.len() as u64,
+            bind: self.ids.bind,
+            lambda: self.ids.lambda,
+            expr: self.ids.expr,
+            tvar: self.ids.tvar,
         }
     }
 
@@ -381,6 +363,16 @@ impl Pack for ObjectCounts {
     }
 }
 
+/// What each domain's written ids are offset by: the reserved block's
+/// base less the image's floor, so `base + wire` lands in the block.
+#[derive(Clone, Copy)]
+struct Bases {
+    bind: u64,
+    lambda: u64,
+    expr: u64,
+    tvar: u64,
+}
+
 pub struct ImageDecoder {
     pub(crate) maps: shared_map::DecodeTable,
     image: Bytes,
@@ -401,7 +393,7 @@ pub struct ImageDecoder {
     /// The builtins' fast fns by name, for a kernel constant's recipe.
     fastcalls: AHashMap<&'static str, FastCall>,
     instances: AHashMap<LambdaInstanceId, u64>,
-    bases: IdCounts,
+    bases: Bases,
 }
 
 impl ImageDecoder {
@@ -425,11 +417,19 @@ impl ImageDecoder {
             records: AHashMap::new(),
             fastcalls: AHashMap::new(),
             instances: AHashMap::new(),
-            bases: IdCounts {
-                bind: BindId::reserve(counts.bind).inner(),
-                lambda: LambdaId::reserve(counts.lambda).inner(),
-                expr: ExprId::reserve(counts.expr).inner(),
-                tvar: TVarId::reserve(counts.tvar).inner(),
+            bases: Bases {
+                bind: BindId::reserve(counts.bind.len())
+                    .inner()
+                    .wrapping_sub(counts.bind.floor),
+                lambda: LambdaId::reserve(counts.lambda.len())
+                    .inner()
+                    .wrapping_sub(counts.lambda.floor),
+                expr: ExprId::reserve(counts.expr.len())
+                    .inner()
+                    .wrapping_sub(counts.expr.floor),
+                tvar: TVarId::reserve(counts.tvar.len())
+                    .inner()
+                    .wrapping_sub(counts.tvar.floor),
             },
         }
     }
@@ -529,15 +529,15 @@ impl Relocations {
     }
 }
 
-fn dense(r: Option<IdRelocation>) -> HashMap<u64, u64> {
+fn span(r: Option<IdRelocation>) -> IdSpan {
     match r {
-        Some(IdRelocation::Encode(dense)) => dense,
-        _ => HashMap::new(),
+        Some(IdRelocation::Encode(span)) => span,
+        _ => IdSpan::default(),
     }
 }
 
-/// Encodes under `encoder` on this thread until dropped. Ids are
-/// renumbered densely across every session over one encoder.
+/// Encodes under `encoder` on this thread until dropped. The id spans
+/// accumulate across every session over one encoder.
 pub struct EncodeImage<'a> {
     encoder: NonNull<ImageEncoder>,
     prev: Option<NonNull<ImageEncoder>>,
@@ -549,7 +549,7 @@ pub struct EncodeImage<'a> {
 impl<'a> EncodeImage<'a> {
     pub fn new(encoder: &'a mut ImageEncoder) -> Self {
         let ids = std::mem::take(&mut encoder.ids);
-        let enc = |m: HashMap<u64, u64>| Some(IdRelocation::Encode(m));
+        let enc = |span: IdSpan| Some(IdRelocation::Encode(span));
         let prev_maps =
             shared_map::install_encode(Some(NonNull::from(&mut encoder.maps)));
         let encoder = NonNull::from(encoder);
@@ -571,11 +571,11 @@ impl Drop for EncodeImage<'_> {
             Relocations { bind: None, lambda: None, expr: None, tvar: None },
         );
         let ours = prev.restore();
-        let ids = IdMaps {
-            bind: dense(ours.bind),
-            lambda: dense(ours.lambda),
-            expr: dense(ours.expr),
-            tvar: dense(ours.tvar),
+        let ids = IdSpans {
+            bind: span(ours.bind),
+            lambda: span(ours.lambda),
+            expr: span(ours.expr),
+            tvar: span(ours.tvar),
         };
         // The guard holds the `&mut` this pointer came from.
         unsafe { (*self.encoder.as_ptr()).ids = ids };
@@ -1155,7 +1155,6 @@ pub(crate) fn decode_at<T>(
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
     ord: u32,
-    seen_pass: u32,
     def_len: Option<usize>,
     at: Option<u64>,
     in_progress: bool,
@@ -1168,14 +1167,7 @@ fn new_slot(e: &mut ImageEncoder, nested_ref: bool) -> Slot {
     let ord = e.next_ordinal;
     e.next_ordinal += 1;
     e.offsets.push(0);
-    Slot {
-        ord,
-        seen_pass: e.pass,
-        def_len: None,
-        at: None,
-        in_progress: true,
-        nested_ref,
-    }
+    Slot { ord, def_len: None, at: None, in_progress: true, nested_ref }
 }
 
 enum Occurrence {
@@ -1202,7 +1194,7 @@ where
 {
     let occurrence = encoding(|e| {
         e.query_depth += 1;
-        let (pass, encode_pass) = (e.pass, e.encode_pass);
+        let encode_pass = e.encode_pass;
         match table(e).get(key).copied() {
             None => {
                 let slot = new_slot(e, nested_ref);
@@ -1219,13 +1211,6 @@ where
             }
             Some(s) if encode_pass && e.query_seen.insert(s.ord) => {
                 Occurrence::Definition(s.def_len.unwrap_or(0))
-            }
-            Some(s) if !encode_pass && s.seen_pass != pass => {
-                if let Some(s) = table(e).get_mut(key) {
-                    s.seen_pass = pass;
-                    s.in_progress = true;
-                }
-                Occurrence::Measure
             }
             Some(s) => Occurrence::Reference(s.ord),
         }
@@ -1610,8 +1595,6 @@ mod tests {
             let _s = EncodeImage::new(enc);
             items.iter().map(|i| i.encoded_len()).collect()
         };
-        measure(enc);
-        enc.sort_ids();
         let bounds = measure(enc);
         enc.begin_encode();
         let _s = EncodeImage::new(enc);
@@ -1637,9 +1620,17 @@ mod tests {
         let b = ExprId::new();
         let mut enc = ImageEncoder::new();
         let bytes = pack_all(&[a, b, a], &mut enc);
-        assert_eq!(enc.counts(), IdCounts { expr: 2, ..IdCounts::default() });
-        // dense: 0, 1, 0
-        assert_eq!(&bytes[..], &[0, 1, 0]);
+        // as minted; the span runs from the smallest to one past the largest
+        let span = IdSpan {
+            floor: a.inner().min(b.inner()),
+            extent: a.inner().max(b.inner()) + 1,
+        };
+        assert_eq!(enc.counts(), IdCounts { expr: span, ..IdCounts::default() });
+        let mut raw = ImageBuf::with_capacity(0);
+        for id in [a, b, a] {
+            encode_varint(id.inner(), &mut raw);
+        }
+        assert_eq!(&bytes[..], &raw.freeze()[..]);
         let mut dec = decoder(&mut enc, &bytes);
         let base = dec.bases.expr;
         let after = ExprId::new();
@@ -1654,6 +1645,8 @@ mod tests {
         assert_ne!(x, y);
         assert_ne!(x, a);
         assert!(x.inner() < after.inner() && y.inner() < after.inner());
+        // the block holds the span, floor first
+        assert_eq!(x.inner().min(y.inner()), base.wrapping_add(span.floor));
         // a second decoder of the same image gets its own block
         let dec2 = ImageDecoder::new(enc.counts());
         assert!(dec2.bases.expr > base);
@@ -1675,7 +1668,8 @@ mod tests {
         let mut enc = ImageEncoder::new();
         let bytes = pack_all(&[typ.clone()], &mut enc);
         // an alias takes the other's id, so a and b share one
-        assert_eq!(enc.counts().tvar, 2);
+        let id = |tv: &TVar| tv.parts().0.inner();
+        assert_eq!(enc.counts().tvar.extent, id(&a).max(id(&c)) + 1);
         let mut dec = decoder(&mut enc, &bytes);
         let _s = DecodeImage::new(&mut dec);
         let decoded = Type::decode(&mut &bytes[..]).unwrap();
@@ -1818,7 +1812,10 @@ mod tests {
         let (e1, e2) = (mk(1), mk(2));
         let mut enc = ImageEncoder::new();
         let bytes = pack_all(&[e1.clone(), e2.clone()], &mut enc);
-        assert_eq!(enc.counts().expr, 2);
+        assert_eq!(
+            enc.counts().expr,
+            IdSpan { floor: e1.id.inner(), extent: e2.id.inner() + 1 }
+        );
         let mut dec = decoder(&mut enc, &bytes);
         let base = dec.bases.expr;
         let _s = DecodeImage::new(&mut dec);
@@ -1830,8 +1827,8 @@ mod tests {
         assert!(!Arc::ptr_eq(&d1.ori, &ori));
         assert_eq!(d1.ori.text, ori.text);
         assert_ne!(d1.id, d2.id);
-        assert_eq!(d1.id.inner() - base, 0);
-        assert_eq!(d2.id.inner() - base, 1);
+        assert_eq!(d1.id.inner().wrapping_sub(base), e1.id.inner());
+        assert_eq!(d2.id.inner().wrapping_sub(base), e2.id.inner());
         assert_eq!(d1.kind, ExprKind::Constant(Value::I64(1)));
     }
 }

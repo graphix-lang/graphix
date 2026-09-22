@@ -3,8 +3,7 @@
 //! start restores it instead of compiling. Layout: magic, version, the
 //! id counts, then the environment, the definitions, the context's
 //! tables, the root nodes and the root scope, all under one image
-//! session. The writer measures everything first so relocated ids can
-//! be sorted, then encodes.
+//! session. The writer measures everything first, then encodes.
 
 use super::{
     DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder, defs,
@@ -28,7 +27,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 9;
+pub const REGISTRATION_FORMAT: u8 = 10;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -220,8 +219,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let tables = Tables::collect(self)?;
         let mut enc = ImageEncoder::new();
         enc.defer_instances = program.is_some();
-        // The first pass assigns the ids; sorted, the second measures
-        // them at their final numbers.
         let measure = |enc: &mut ImageEncoder| {
             enc.deferred_len = 0;
             let _s = EncodeImage::new(enc);
@@ -242,9 +239,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 + 1
                 + program.map_or(0, |p| p.encoded_len())
         };
-        measure(&mut enc);
-        enc.sort_ids();
+        let p = profile::phase(Phase::ImageMeasure);
         let body_bound = measure(&mut enc) + enc.deferred_len;
+        drop(p);
         enc.begin_encode();
         let counts = enc.counts();
         let isa = self.fusion.jit.lock().isa_description();
@@ -261,6 +258,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         enc.written = buf.len() as u64;
         {
             let _s = EncodeImage::new(&mut enc);
+            let p = profile::phase(Phase::ImageEncode);
             self.env.encode(&mut buf)?;
             let env_bytes = buf.len();
             tables.encode(&mut buf)?;
@@ -277,6 +275,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 p.encode(&mut buf)?;
             }
             let heap_at = buf.len();
+            drop(p);
+            let p = profile::phase(Phase::ImageHeap);
             let eager = image::encoding(|e| e.object_counts()).unwrap_or_default();
             loop {
                 let Some((id, body)) = image::encoding(|e| e.deferred.pop()).flatten()
@@ -288,6 +288,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 image::encoding(|e| e.instances.insert(id, at));
             }
             let table_at = buf.len();
+            drop(p);
+            let _p = profile::phase(Phase::ImageTrailer);
             let instances =
                 image::encoding(|e| std::mem::take(&mut e.instances)).unwrap_or_default();
             encode_varint(instances.len() as u64, &mut buf);
