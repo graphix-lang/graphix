@@ -623,8 +623,7 @@ pub fn eval_with_hooks<R: Rt, E: UserEvent, T>(
         cmp: dispatch_cmp::<R, E>,
         fmt: dispatch_fmt::<R, E>,
     };
-    let _guard = abstract_value::arm_value_hooks(&handle as *const _);
-    f()
+    abstract_value::with_value_hooks(&handle, f)
 }
 
 /// Render or convert under the loan: `f` reads through the `Env` it is
