@@ -795,19 +795,33 @@ fn unparen(mut e: &Expr) -> &Expr {
     e
 }
 
+/// Where a place resolved to this cycle.
+struct Address<'a> {
+    /// The binding at the bottom of the reference chain.
+    bind: BindId,
+    /// The path from `bind`'s value.
+    path: &'a place::Path,
+    /// The tail of `path` the place's own steps resolved: the path
+    /// from the root node's production.
+    steps: &'a [place::Step],
+}
+
 /// What a place resolved to this cycle.
 struct Resolved<'a> {
-    /// The root binding and the path from it: `None` while a key is
-    /// undetermined.
-    address: Option<(BindId, &'a place::Path)>,
+    /// `None` while the root's address or a key is undetermined.
+    address: Option<Address<'a>>,
     /// The root's production.
     root: TagValue,
     /// Did the root or a key fire?
     moved: bool,
 }
 
+// XCR codex for eric: [CR09, P1] done: a dereference holds its address
+// as one optional value, released while its reference is bottom, so the
+// place unregisters, its cell bottoms and a write through it goes nowhere.
 /// The binding a place's root stands for and the path already under
-/// it: a dereferenced place reference composes.
+/// it (a dereferenced place reference composes); `None` while a
+/// dereferenced reference is bottom.
 fn root_place<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
 ) -> Option<(BindId, &[place::Step])> {
@@ -815,8 +829,8 @@ fn root_place<R: Rt, E: UserEvent>(
     match any.downcast_ref::<Ref>() {
         Some(r) => Some((r.id, &[])),
         None => {
-            let d = any.downcast_ref::<Deref<R, E>>()?;
-            Some((d.id?, d.path.as_deref().unwrap_or(&[])))
+            let (id, path) = any.downcast_ref::<Deref<R, E>>()?.addr.as_ref()?;
+            Some((*id, path))
         }
     }
 }
@@ -914,6 +928,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
             self.path.extend(under.iter().cloned());
             id
         });
+        let under = self.path.len();
         let mut complete = true;
         for step in &mut self.steps {
             match step {
@@ -946,7 +961,9 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
             }
         }
         let address = match (complete, id) {
-            (true, Some(id)) => Some((id, &self.path)),
+            (true, Some(bind)) => {
+                Some(Address { bind, path: &self.path, steps: &self.path[under..] })
+            }
             _ => None,
         };
         Resolved { address, root, moved }
@@ -979,7 +996,10 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         let mut cur = self.root.typ().clone();
         for step in &self.steps {
             cur = match step {
-                PlaceStep::Index(_) => {
+                // XCR codex for eric: [CR11, P2] done: the index goes
+                // through `array::check_index`, the rule `a[i]` uses.
+                PlaceStep::Index(i) => {
+                    super::array::check_index(&ctx.env, i)?;
                     let et = Type::empty_tvar();
                     Type::Array(Arc::new(et.clone())).check_contains(&ctx.env, &cur)?;
                     et
@@ -1048,14 +1068,6 @@ impl<R: Rt, E: UserEvent> Referent<R, E> {
     }
 }
 
-// XCR codex for eric: [CR08, P1] done: a place is compiled once; the
-// cell mirrors the element read through the same address.
-// XCR codex for eric: [CR09, P1] done: an undetermined address clears
-// the registered place and delivers bottom.
-// XCR codex for eric: [CR11, P2] done: the element type is derived from
-// the container, step by step (`Place::elem_type`).
-// XCR codex for eric: [CR12, P2] done: parentheses are transparent in
-// the chain and a dereferenced place's path is composed under the steps.
 #[derive(Debug)]
 pub struct ByRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
@@ -1145,10 +1157,18 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         }
     }
 
-    fn unregister(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.registered.take().is_some() {
+    /// Drop the place registration; was there one?
+    fn unregister(&mut self, ctx: &mut ExecCtx<R, E>) -> bool {
+        let was = self.registered.take().is_some();
+        if was {
             ctx.rt.clear_ref_path(&self.id);
         }
+        was
+    }
+
+    /// The cell when the place has no element: bottom.
+    fn bottom_mirror(&self, ctx: &mut ExecCtx<R, E>) {
+        ctx.rt.store_insert(self.id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
     }
 }
 
@@ -1191,23 +1211,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
             }
             Referent::Place(place) => {
                 let Resolved { address, root, moved } = place.update(ctx, event);
-                let Some((root_id, path)) = address else {
-                    self.unregister(ctx);
+                let Some(Address { bind, path, steps }) = address else {
+                    if self.unregister(ctx) {
+                        self.bottom_mirror(ctx);
+                    }
                     return self.resident.set_bottom(moved || event.init);
                 };
                 let same = self
                     .registered
                     .as_ref()
-                    .is_some_and(|(r, p)| *r == root_id && p == path);
+                    .is_some_and(|(r, p)| *r == bind && p == path);
                 let moved = moved || !same;
                 if !same {
-                    ctx.rt.set_ref_path(self.id, root_id, path.clone());
-                    self.registered = Some((root_id, path.clone()));
+                    ctx.rt.set_ref_path(self.id, bind, path.clone());
+                    self.registered = Some((bind, path.clone()));
                 }
+                // XCR codex for eric: [CR12, P2] done: the mirror reads the
+                // place's own steps from the root's production; the
+                // registration keeps the full path.
                 // the cell mirrors the element, read through the address
                 if (moved || event.init) && !root.tag().is_bottom() {
                     let read = super::coretraits::with_hooks(ctx, event, || {
-                        root.with_value(|v| place::read_path(v, path))
+                        root.with_value(|v| place::read_path(v, steps))
                     });
                     match read {
                         Ok(v) => {
@@ -1216,8 +1241,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                         }
                         Err(e) => {
                             log::warn!("read through a reference: {e}");
-                            let bottom = TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM);
-                            ctx.rt.store_insert(self.id, bottom);
+                            self.bottom_mirror(ctx);
                         }
                     }
                 }
@@ -1292,11 +1316,12 @@ pub struct Deref<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub child: Node<R, E>,
-    pub id: Option<BindId>,
     pub(super) top_id: ExprId,
     resident: TagValue,
-    /// The path to apply to `id`'s value when the reference is a place.
-    path: Option<place::Path>,
+    /// The binding the reference's value resolves to and the path into
+    /// that binding's value (empty unless the reference is a place);
+    /// `None` while the reference is bottom.
+    addr: Option<(BindId, place::Path)>,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
@@ -1307,23 +1332,22 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
         let child = decode_node(ctx, buf)?;
-        let id = Option::<BindId>::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let path = match bool::decode(buf)? {
-            true => Some(place::path_decode(buf)?),
+        let addr = match bool::decode(buf)? {
             false => None,
+            true => {
+                let id = BindId::decode(buf)?;
+                ctx.rt.ref_var(id, top_id);
+                Some((id, place::path_decode(buf)?))
+            }
         };
-        if let Some(id) = id {
-            ctx.rt.ref_var(id, top_id);
-        }
         Ok(Node::new(Self {
             spec,
             typ,
             child,
-            id,
             top_id,
             resident: TagValue::phantom(),
-            path,
+            addr,
         }))
     }
 
@@ -1335,10 +1359,9 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
             spec,
             typ,
             child,
-            id: None,
             top_id,
             resident: TagValue::phantom(),
-            path: None,
+            addr: None,
         })
     }
 
@@ -1356,11 +1379,41 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
             spec,
             typ,
             child,
-            id: None,
             top_id,
             resident: TagValue::phantom(),
-            path: None,
+            addr: None,
         }))
+    }
+
+    /// Address `cell`'s referent: the place it stands for, else the
+    /// binding at the end of its byref chain (`&x`'s cell mirrors x a
+    /// cycle late, the referent does not; a chainless reference's own
+    /// cell is its only storage).
+    fn address(&mut self, ctx: &mut ExecCtx<R, E>, cell: BindId) -> BindId {
+        let (id, path) = match ctx.rt.ref_path(&cell) {
+            Some((root, path)) => (*root, &path[..]),
+            None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), &[][..]),
+        };
+        match &mut self.addr {
+            Some((cur, p)) if *cur == id => {
+                if &p[..] != path {
+                    *p = path.into();
+                }
+            }
+            _ => {
+                let path = path.into();
+                self.release(ctx);
+                ctx.rt.ref_var(id, self.top_id);
+                self.addr = Some((id, path));
+            }
+        }
+        id
+    }
+
+    fn release(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if let Some((id, _)) = self.addr.take() {
+            ctx.rt.unref_var(id, self.top_id);
+        }
     }
 }
 
@@ -1370,10 +1423,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             + self.spec.encoded_len()
             + self.typ.encoded_len()
             + self.child.image_len()
-            + self.id.encoded_len()
             + self.top_id.encoded_len()
             + 1
-            + self.path.as_ref().map_or(0, place::path_len)
+            + self
+                .addr
+                .as_ref()
+                .map_or(0, |(id, p)| id.encoded_len() + place::path_len(p))
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1381,11 +1436,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
         self.child.image_encode(buf)?;
-        self.id.encode(buf)?;
         self.top_id.encode(buf)?;
-        self.path.is_some().encode(buf)?;
-        match &self.path {
-            Some(p) => place::path_encode(p, buf),
+        self.addr.is_some().encode(buf)?;
+        match &self.addr {
+            Some((id, p)) => {
+                id.encode(buf)?;
+                place::path_encode(p, buf)
+            }
             None => Ok(()),
         }
     }
@@ -1393,36 +1450,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.child.update(ctx, event);
         let addr = tv.tag();
-        if addr.is_bottom() {
+        let cell = match addr.is_bottom() {
+            true => None,
+            false => tv.with_value(|v| match v {
+                Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
+                _ => None,
+            }),
+        };
+        let Some(cell) = cell else {
+            self.release(ctx);
             return self.resident.set_bottom(addr.triggers());
-        }
-        let id = tv.with_value(|v| match v {
-            Value::U64(i) | Value::V64(i) => Some(BindId::from(*i)),
-            _ => None,
-        });
-        // Resolve through the byref chain as the write path does:
-        // `&x`'s cell mirrors x a cycle late, the referent does not.
-        // A chainless reference's own cell is its only storage.
-        let id = id.map(|cell| match ctx.rt.ref_path(&cell) {
-            Some((root, path)) => {
-                self.path = Some(path.clone());
-                *root
-            }
-            None => {
-                self.path = None;
-                ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell)
-            }
-        });
-        if let Some(new_id) = id {
-            if self.id != Some(new_id) {
-                if let Some(old) = self.id {
-                    ctx.rt.unref_var(old, self.top_id);
-                }
-                ctx.rt.ref_var(new_id, self.top_id);
-                self.id = Some(new_id);
-            }
-        }
-        let res = self.id.and_then(|id| match super::read_var(ctx, event, &id) {
+        };
+        let id = self.address(ctx, cell);
+        let res = match super::read_var(ctx, event, &id) {
             Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
             Some(super::VarRead::Standing(tv)) => {
                 // Fresh under a genuine init view only (see Ref::update).
@@ -1437,9 +1477,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                 Some(c)
             }
             None => None,
-        });
-        let res = match (res, &self.path) {
-            (Some(tv), Some(path)) if !tv.tag().is_bottom() => {
+        };
+        let res = match (res, &self.addr) {
+            (Some(tv), Some((_, path))) if !path.is_empty() && !tv.tag().is_bottom() => {
                 let read = super::coretraits::with_hooks(ctx, event, || {
                     tv.with_value(|v| place::read_path(v, path))
                 });
@@ -1449,8 +1489,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
                         c.retag(tv.tag());
                         Some(c)
                     }
-                    // XCR codex for eric: [CR10, P1] done: a place that does not
-                    // exist is bottom, tagged by the delivery that found it so.
                     Err(e) => {
                         log::warn!("read through a reference: {e}");
                         return self.resident.set_bottom(tv.tag().join(addr).triggers());
@@ -1470,9 +1508,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(id) = self.id.take() {
-            ctx.rt.unref_var(id, self.top_id);
-        }
+        self.release(ctx);
         self.child.delete(ctx);
     }
 
@@ -1494,8 +1530,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn refs(&self, refs: &mut Refs) {
         self.child.refs(refs);
-        if let Some(id) = self.id {
-            refs.read(id);
+        if let Some((id, _)) = &self.addr {
+            refs.read(*id);
         }
     }
 

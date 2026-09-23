@@ -340,11 +340,6 @@ fn same_version(
 /// Take a site for `args` out of the registry, building one when the
 /// pool is empty. The entry stays in the registry, so a re-entrant
 /// dispatch for the same tag finds it; a nested call takes another site.
-// XCR codex for eric: [CR15, P2] done: the entry stays in the registry
-// and only the site is loaned; a site returns to its slot or is deleted
-// when the entry was rebuilt meanwhile.
-// XCR codex for eric: [CR02, P1] done: every operand must be constructed
-// at the instantiation the implementation was resolved for.
 fn take_site<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     t: CoreTrait,
@@ -441,8 +436,6 @@ struct HookState<R: Rt, E: UserEvent> {
 
 /// Re-wrap a `GxAbstract` (received by reference inside the vtable
 /// call) as the `Value` a hook site's argument binding carries.
-// XCR codex for eric: [CR16, P2] done: resolution reads the borrowed box;
-// only a dispatch that found an implementation wraps its arguments.
 fn as_value(g: &GxAbstract) -> Value {
     abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), g.payload.clone())
 }

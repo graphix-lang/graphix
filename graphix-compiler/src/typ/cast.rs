@@ -338,8 +338,6 @@ impl Type {
                 }
             },
             Type::Primitive(t) => t.contains(Typ::get(&v)),
-            // XCR codex for eric: [CR01, P1] done: the parameters the value was
-            // constructed at must fit the predicate's, probed without binding.
             Type::Abstract { id, params } => match v {
                 Value::Abstract(a) => {
                     match a.downcast_ref::<crate::abstract_value::GxAbstract>() {

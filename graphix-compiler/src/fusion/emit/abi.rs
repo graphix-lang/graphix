@@ -81,8 +81,6 @@ pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 /// tainted the payload is the standing value. Leaves set it, ops
 /// AND-reduce it ([`propagate_stale`]) while [`TAINT`] ORs, and only the
 /// kernel output forces freshness.
-// XCR codex for eric: [CR21, P2] done: the two bits are documented as
-// independent, as `Tag::join` treats them.
 pub(crate) const STALE: i64 = 0x2000_0000_0000_0000;
 
 impl CompiledExpr {

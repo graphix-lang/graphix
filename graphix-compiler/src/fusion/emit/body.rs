@@ -78,9 +78,6 @@ pub(super) fn emit_tail_rebind_jump(
     let head = ctx.tail.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
-    // XCR codex for eric: [CR03, P1] done: the new value replaces the
-    // formal whatever its tag; a bottom's placeholder is an owned empty
-    // payload, so it is carried and dropped like a value.
     let TailSlots::Named(slots) = ctx.tail.call_slots else {
         debug_assert!(rebinds.len() <= ctx.tail.param_mark);
         for r in rebinds.iter() {

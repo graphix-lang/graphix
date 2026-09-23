@@ -1,344 +1,211 @@
-# Compiler review
+# Compiler review follow-up
 
-Reviewed against `e2fe166f` on 2026-09-22. This review adds **21 findings**
-(11 P1, 10 P2), marked `CR codex for eric: [CRnn, Pn]` beside the code.
-CR03 has markers in both engines; CR21 has markers on the ABI and tag helper.
-No implementation changes are included.
-The previous review's closed findings remain in git history.
-
-P1 means incorrect results, an invalid program accepted, a valid program broken,
-or a process abort. P2 includes narrower correctness defects and material
-allocation, lifecycle, structure, and documentation problems. Style and
-architecture findings are part of the review, not optional follow-ups.
-
-## Findings
-
-| ID | Priority | Location | Problem | Evidence |
-| --- | --- | --- | --- | --- |
-| CR01 | P1 | [typ/cast.rs](src/typ/cast.rs#L341) | Abstract predicates ignore generic parameters, allowing invalid narrowing. | Both-engine reproduction; outputs diverge. |
-| CR02 | P1 | [node/coretraits.rs](src/node/coretraits.rs#L352) | Binary trait dispatch checks only the left operand's concrete type. | Asymmetric equality in both engines. |
-| CR03 | P1 | [node/callsite.rs](src/node/callsite.rs#L1521), [fusion/emit/flow.rs](src/fusion/emit/flow.rs#L357) | Tail rebinds replace bottom with the previous argument value. | Tail/non-tail comparison in both engines. |
-| CR04 | P1 | [analysis.rs](src/analysis.rs#L313) | Effect inference discards all but the first instance of a definition. | An unrelated pure call makes an invalid `#[sync]` assertion pass. |
-| CR05 | P1 | [expr/resolver.rs](src/expr/resolver.rs#L834) | Cyclic module loading has no active-source guard. | Two files abort `--check` with stack overflow. |
-| CR06 | P1 | [expr/format.rs](src/expr/format.rs#L125) | Sorting imports can move an alias use before its definition. | Formatter accepts output that fails compilation. |
-| CR07 | P2 | [expr/format.rs](src/expr/format.rs#L57) | Relative configuration discovery misses parents of the working directory. | Subprocess: width 90 instead of project width 37. |
-| CR08 | P1 | [node/bind.rs](src/node/bind.rs#L998) | Place references compile and execute address expressions twice. | An index's print runs twice in both engines. |
-| CR09 | P1 | [node/bind.rs](src/node/bind.rs#L1074) | A bottom address leaves the previous place registered. | Timer reads the old element after its index becomes bottom. |
-| CR10 | P1 | [node/bind.rs](src/node/bind.rs#L1361) | An invalid current place read retains its previous successful value. | Timer reads a removed array element. |
-| CR11 | P2 | [node/bind.rs](src/node/bind.rs#L1181) | Place typing subtracts legitimate Error-valued elements. | A reference to an Error-valued field fails typechecking. |
-| CR12 | P2 | [node/bind.rs](src/node/bind.rs#L835) | Parentheses detach references from their addressable roots. | Writing through `&(*r).x` does not update the root. |
-| CR13 | P1 | [image/mod.rs](src/image/mod.rs#L1222) | Image length queries overstate a derived Pack frame with shared types. | A 15-byte frame advertises 23 bytes and consumes the next value. |
-| CR14 | P1 | [typ/tval.rs](src/typ/tval.rs#L94) | Typed rendering exhausts the stack and repeatedly validates subtrees. | Typed-print subprocess aborts after successful `is_a`. |
-| CR15 | P2 | [node/coretraits.rs](src/node/coretraits.rs#L334) | Reentrant dispatch hides its cache and drops inner sites without deletion. | Profiler: a new inner instance on every repeated render; lifecycle inspection. |
-| CR16 | P2 | [node/coretraits.rs](src/node/coretraits.rs#L402) | Hook lookup allocates abstract wrappers even for a negative lookup. | Allocation path inspection. |
-| CR17 | P2 | [expr/resolver.rs](src/expr/resolver.rs#L775) | Whole-subtree prescans make nested module resolution quadratic. | Traversal inspection. |
-| CR18 | P2 | [expr/seq.rs](src/expr/seq.rs#L127) | Seq lowering uses fresh allocations for scratch collections. | Collection lifetimes and helper signatures inspected. |
-| CR19 | P2 | [node/mod.rs](src/node/mod.rs#L964) | Image codecs copy slices into temporary Vecs for both passes. | Borrowed slice codecs exist; CallSite has the same pattern. |
-| CR20 | P2 | [fusion/emit_helpers.rs](src/fusion/emit_helpers.rs#L230) | JIT composite builders allocate a Box around every pooled scratch handle. | One allocation per builder, including each struct field. |
-| CR21 | P2 | [fusion/emit/abi.rs](src/fusion/emit/abi.rs#L81), [tval.rs](src/tval.rs#L72) | Tag documentation and an unused helper still assume taint implies stale. | Fresh bottom contradicts the ABI invariant; `with_taint_of` drops firing despite its contract. |
-
-## Reproductions
-
-Graphix examples were run with a freshly built shell:
-
-```sh
-~/tmp/target/debug/graphix --no-netidx --no-init --no-cache /tmp/probe.gx
-~/tmp/target/debug/graphix --no-netidx --no-init --no-cache --no-fusion /tmp/probe.gx
-```
-
-Append this to runtime examples to exit after pending events settle:
-
-```gx
-sys::exit(sys::time::after_idle(duration:0.01s, 0))
-```
-
-### CR01: incorrect abstract narrowing
-
-```gx
-type Box<'a> = Abstract<'a>;
-let x: [Box<i64>, Box<string>] = Box("hi");
-println(select x {
-    Box<i64> as b => `Number(b.0),
-    Box<string> as b => `Text(b.0)
-});
-```
-
-Expected the Text arm. Fusion prints `` `Number(0)``; node-walk prints
-`["Number", "hi"]` and reports a mismatch against the inferred result type.
-Match the concrete parameters as well as the nominal id, without mutating
-inference cells during the runtime predicate.
-
-### CR02: asymmetric equality
-
-```gx
-type Box<'a> = Abstract<'a>;
-impl Eq for Box<i64> { let eq = |a, b| true };
-let a: [Box<i64>, Box<string>] = Box(1);
-let b: [Box<i64>, Box<string>] = Box("hi");
-println((a == b, b == a));
-```
-
-Both engines print `(true, false)`. The first direction invokes the i64-only
-implementation with a string-valued second argument; the other falls back to
-structural comparison. Fixing CR01 alone will not fix this dispatch. Ord uses
-the same one-sided resolution.
-
-### CR03: bottom lost by tail optimization
-
-```gx
-let rec f = |n: i64, x: i64| -> i64 select n {
-    0 => x,
-    _ => f(n - 1, select n { 2 => null$, _ => x })
-};
-println(f(3, 7));
-```
-
-Both engines print `7`. Adding `+ 0` after the recursive call makes it non-tail
-and correctly produces no output. The interpreter maps bottom to `None`, then
-retains the previous formal; the JIT retains its previous loop value on a
-tainted replacement too. Bottom and absence of an argument need separate
-representations, with the current production's tag carried through rebinding.
-
-### CR04: effects depend on an unrelated call
-
-```gx
-let apply = |f: fn(x: i64) -> i64, x: i64| f(x);
-let p = apply(|x| x + 1, 1);
-#[sync]
-let delayed = |x: i64| apply(|x| sys::time::after_idle(duration:0.001s, x), x);
-println((p, delayed(3)));
-```
-
-Both engines accept this and print `(2, 3)`. Remove `p` and print only
-`delayed(3)`: compilation correctly rejects `#[sync]`. `infer_effects` keeps
-one representative body per LambdaId even though callback resolution varies
-by instance. These facts also control stateless tail-loop eligibility, so
-fix analysis at the instance level and combine facts for definition summaries.
-
-### CR05: import cycle abort
-
-Put `mod b` in `a.gx` and `mod a` in `b.gx`, in the same directory. Checking
-`a.gx` aborts with `thread 'tokio-rt-worker' has overflowed its stack`.
-The reproduction ran with core dumps disabled. Detect cycles on the current
-source-load chain; a global visited set would incorrectly prohibit independent
-sibling imports of the same source.
-
-### CR06: the formatter breaks import dependencies
-
-Create `z.gx` containing `mod x`, and `z/x.gx` containing `let v = 1`.
-
-```gx
-mod z;
-use z::x as a;
-use a::v;
-println(v);
-```
-
-This prints `1`. `graphix fmt --stdout` succeeds but moves `use a::v` before
-its alias definition; the result fails with `use: no module a in scope`.
-Normalizing both sides of the round-trip comparison masks this change.
-Import grouping must respect dependency order and shadowing.
-
-### CR07: relative configuration discovery
-
-Create a project with `graphixfmt.json` containing `{"width":37}`, then run
-a subprocess from a child directory. `FormatConfig::discover(Path::new("."))`
-returns 90 instead of 37. An absolute starting path reaches the project config.
-Keep this regression in a subprocess so parallel tests do not change the
-process-wide current directory.
-
-### CR08–CR12: references into containers
-
-Run each separately; both engines exhibit every problem.
-
-CR08 prints `key` twice before `10`:
-
-```gx
-let a = [10, 20];
-let r = &a[{ println("key"); 0 }];
-println(*r);
-```
-
-CR09 prints `10` after the key becomes bottom:
-
-```gx
-let a = [10, 20];
-let k: [i64, null] = 0;
-k <- null;
-let r = &a[k$];
-println(sys::time::timer(duration:0.002s, false) ~ *r);
-```
-
-CR10 prints `10` after the element is removed:
-
-```gx
-let a = [10, 20];
-a <- [];
-let r = &a[0];
-println(sys::time::timer(duration:0.002s, false) ~ *r);
-```
-
-CR11 rejects a valid field reference with a mismatch against `&[]`:
-
-```gx
-let a = {x: error(`E)};
-let r = &a.x;
-let expected: &Error<`E> = r;
-println(*expected);
-```
-
-CR12 prints `10` instead of `20`:
-
-```gx
-let a = {p: {x: 10}};
-let r: &{x: i64} = &a.p;
-let s = &(*r).x;
-*s <- 20;
-println(sys::time::timer(duration:0.002s, false) ~ a.p.x);
-```
-
-These findings point toward one compiled place description: evaluate the
-address once, derive its type from the container, compose paths through
-transparent syntax, and represent invalid addresses/targets explicitly.
-The duplicate child graph and independently registered path make those
-invariants difficult to maintain.
-
-### CR13: image frame consumes the following value
-
-This temporary integration probe failed at the final u64 decode with
-`BufferShort`. Measurement and actual writing were both 15 bytes; the frame
-header was 23. Appending a value is essential: decoding only the frame can
-hide the error because the length-wrapped decoder clamps to available input.
-
-```rust
-use graphix_compiler::{
-    expr::parser::parse_type,
-    image::{DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder},
-    typ::Type,
-};
-use netidx_core::pack::Pack;
-
-#[derive(Debug, netidx_derive::Pack)]
-struct Pair {
-    a: Type,
-    b: Type,
-}
-
-let pair = Pair {
-    a: parse_type("Array<i64>").unwrap(),
-    b: parse_type("i64").unwrap(),
-};
-let mut enc = ImageEncoder::new();
-let measured = EncodeImage::with(&mut enc, || pair.encoded_len());
-enc.begin_encode();
-let bytes = EncodeImage::with(&mut enc, || {
-    let mut buf = ImageBuf::with_capacity(measured);
-    pair.encode(&mut buf).unwrap();
-    assert_eq!(buf.len(), measured);
-    12345_u64.encode(&mut buf).unwrap();
-    buf.freeze()
-});
-let mut dec = ImageDecoder::new(enc.counts());
-dec.set_image(bytes.clone());
-dec.set_offsets(enc.take_offsets());
-DecodeImage::with(&mut dec, || {
-    let mut input = &bytes[..];
-    let decoded = Pair::decode(&mut input).unwrap();
-    assert_eq!(decoded.a, pair.a);
-    assert_eq!(decoded.b, pair.b);
-    assert_eq!(u64::decode(&mut input).unwrap(), 12345);
-});
-```
-
-Length queries must simulate sharing throughout the enclosing frame, including
-descendants of cached definitions and shared objects across sibling fields.
-A cached definition size is not independent of the current encode state.
-
-### CR14: typed formatting aborts
-
-In a child test process, build 1,000 nested `Type::Array(Arc::new(typ))` layers
-around i64, and corresponding nested single-element Value arrays around 0.
-With `Env::default()`, `typ.is_a(&env, &value)` succeeds. Writing
-`TVal { env: &env, typ: &typ, v: &value }` into an `LPooled<String>` then
-aborts the standard test thread with stack overflow before formatting returns.
-This isolates rendering from Graphix evaluation and deep drops. Core dumps
-were disabled. The existing deep-print test covers only `fmt_naked`.
-
-Use explicit traversal state or stack growth. Also avoid revalidating each
-entire remaining subtree at every level; stack growth alone leaves quadratic
-work in `is_a_with`.
-
-### CR15: reentrant hook pooling
-
-```gx
-type Box<'a> = Abstract<'a>;
-impl<'a> Display for Box<'a> { let fmt = |a| "<[a.0]>" };
-let x = Box(Box(1));
-println(x);
-println(sys::time::timer(duration:0.002s, 2) ~ x);
-```
-
-With `GRAPHIX_PROFILE=1 GRAPHIX_PROFILE_INSTANCES=1`, three renders create
-four runtime Display instances: outer and inner initially, then a new inner
-instance on each later render. Removing the whole `(trait, AbstractId)` entry
-hides the cache from the nested call. The outer reinsertion drops the inner
-entry without `site.delete(ctx)`, leaving registered resources behind.
-Keep the registry present while loaning individual sites and preserve nested
-returns to the pool.
-
-## Scope and validation
-
-Reviewed parser/AST transformations, module and interface loading, formatter
-validation, type operations, environment and trait resolution, node evaluation
-and lifecycle, function analysis, fusion admission/emission, runtime helper
-ABI, and image serialization. Used source tracing, existing tests, both-engine
-execution, targeted subprocess failures, and a runtime compilation profile.
-This is not a proof that every path is correct. No Miri, sanitizer, long fuzzer
-campaign, or slow-test release gate was run. Allocation and traversal findings
-are based on code paths, not benchmarks.
-
-- Baseline `cargo test -p graphix-compiler -p graphix-tests`: **2,980 passed,
-  two slow tests ignored**.
-- Rebuilt `graphix-shell` before executing the examples.
-- Three temporary Rust regression probes failed as described for CR07,
-  CR13, and CR14; the temporary test file was removed after recording evidence.
-- Whole-workspace `cargo test`: **3,417 passed, 12 ignored**, no failures.
-  The ignored total includes slow tests and documentation examples.
-- `cargo fmt --all --check` and `git diff --check`: passed.
-
-The older Claude CR at `fusion/emit/scalar.rs` is already satisfied by the
-signed `sextend` arms. It is not counted as an additional defect here.
+Rechecked all 21 findings against `dccec8ee` on 2026-09-22.
+**15 are closed; six remain open (two P1, four P2).** Resolved comments
+are removed. The six remaining comments are `CR`, with updated evidence
+for incomplete fixes or problems introduced by the fixes. This follow-up
+changes review comments and this record only.
 
 ## Disposition
 
-Every finding is addressed in this commit; each `CR` marker is now an
-`XCR` beside the change. Pins are named by their test.
+| ID | Status | Assessment |
+| --- | --- | --- |
+| CR01 | Closed | Abstract predicates check concrete parameters without binding inference cells; the original example selects `Text("hi")` in both engines. |
+| CR02 | Closed | Binary core-trait dispatch checks both operand instantiations; mixed equality is `(false, false)` in both engines. |
+| CR03 | Closed | Both tail-rebind paths carry bottom into the formal; the original tail example produces no output in either engine. |
+| CR04 | Closed | Effects are inferred per instance and joined for definition summaries; the unrelated pure call no longer makes an invalid `#[sync]` pass. |
+| CR05 | Closed | Active-source tracking rejects the two-file import cycle with an error; the sibling-import regression passes. |
+| CR06 | Closed | Dependent imports split the sortable run; the original alias-import example still compiles and prints `1` after formatting. |
+| CR07 | Closed | Configuration discovery starts from an absolute directory; the relative-directory subprocess regression passes. |
+| CR08 | Closed | A place owns one compiled address expression; the original index side effect runs once in both engines. |
+| CR09 | **Open, P1** | A bottom key is handled, but a bottom dereferenced root still supplies its previous address. |
+| CR10 | Closed | A failed current place read bottoms; the removed-element example produces no output in either engine. |
+| CR11 | **Open, P2** | Error-valued elements work, but the replacement place typechecker omits array-index validation. |
+| CR12 | **Open, P2** | Parenthesized nested writes reach the root, but the composed path is applied twice when publishing the reference's mirror. |
+| CR13 | **Open, P1** | The original frame test passes, but a separate length query before encoding still corrupts the frame. |
+| CR14 | Closed | Typed rendering validates at the root and grows the stack; nested-array and deep recursive-union regressions pass. |
+| CR15 | Closed | Reentrant dispatch loans individual sites; profiling the original three renders shows two runtime Display instances total. |
+| CR16 | Closed | Negative hook lookup uses borrowed abstract values; argument wrappers are constructed only for an actual dispatch. |
+| CR17 | Closed | Module resolution propagates child changes in one walk; the whole-subtree prescan is gone. |
+| CR18 | **Open, P2** | Main machine builders are pooled, but recursive rewrite scopes still allocate scratch maps and vectors. |
+| CR19 | Closed | Block, Module and CallSite image codecs use borrowed slices instead of temporary Vec copies. |
+| CR20 | **Open, P2** | Builder boxes are reused, but the new spare cache retains oversized allocations without a capacity limit. |
+| CR21 | Closed | The unused helper is removed and tag documentation describes independent firing and bottomness. |
+
+## Remaining findings
+
+### CR09: a bottom dereference leaves an addressable place
+
+Location: [Place::update](src/node/bind.rs#L913).
+
+```gx
+let a = [10, 20];
+let r: [&Array<i64>, null] = &a;
+r <- null;
+let s = &(*r$)[0];
+println(sys::time::timer(duration:0.002s, false) ~ *s);
+sys::exit(sys::time::after_idle(duration:0.01s, 0))
+```
+
+Both engines print `10`; the reference address is bottom at the timer,
+so neither should print. `Deref::update` returns bottom before clearing or
+invalidating its saved `id`/`path`, and `root_place` reads those saved fields.
+`Place::update` therefore reports a complete address and ByRef retains the
+registration. Represent whether the current dereference address is present
+separately from whether its referent's value is bottom; a known address into
+a bottom value must remain distinguishable from an unknown address.
+
+### CR11: place indices bypass integer validation
+
+Location: [Place::elem_type](src/node/bind.rs#L988).
+
+```gx
+let a = [10];
+let r = &a["0"];
+println(*r);
+sys::exit(sys::time::after_idle(duration:0.01s, 0))
+```
+
+Both engines accept this and print `10`. Replacing the reference with
+`println(a["0"])` correctly fails with `Int does not contain string`.
+The `PlaceStep::Index(_)` branch checks only the array container; the runtime
+then casts the unchecked index to i64. Share the ordinary access node's
+index validation while retaining the corrected element type. The original
+Error-valued-field reproduction now passes.
+
+### CR12: composed places publish the wrong mirror
+
+Location: [ByRef::update](src/node/bind.rs#L1212).
+
+Evaluate this through `graphix_package_core::testing::eval`:
+
+```gx
+{ let a = {p: {x: 10}}; let r = &a.p; &(*r).x }
+```
+
+Convert the returned value to `BindId`, then read its cell with
+`ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id))`. The focused Rust
+probe returns `None`, rather than `Some(Value::I64(10))`.
+
+The dereference's production is already `a.p`, but the registered path is
+the full `[p, x]`. Applying that full path to `a.p` fails and bottoms the
+mirror that embedders read. Use the remaining suffix with the dereference's
+production, or the full path with the actual root binding's production.
+Ordinary Graphix reads and writes through the composed registration now
+work; the original nested-write example prints `20` in both engines.
+
+### CR13: measuring before encoding corrupts a derived frame
+
+Location: [ImageEncoder::query_seen](src/image/mod.rs#L167).
+
+In `image::tests::a_frame_measures_what_it_writes`, insert a separate
+`let _ = pair.encoded_len();` at the start of the encoding closure, after
+`enc.begin_encode()` and before `pair.encode(...)`. Leave the existing
+length pass and decoding assertions intact.
+
+The focused probe measures and writes 15 bytes, but `Pair::decode` fails
+with `PackError::BufferShort`. `query_seen` survives the separate query,
+so the derived encoder's own frame-length query treats definitions as
+references. Its subsequent writes still emit the definitions. Clearing
+measurement state only on a write does not separate independent queries;
+the state must be scoped to a complete measurement while preserving sharing
+between fields within that measurement.
+
+### CR18: recursive seq rewrites still allocate scratch collections
+
+Location: [rewrite_with_inner](src/expr/seq.rs#L1334).
+
+The main builders are improved, but `TryWith`, `Seq`, `Do`, `Select`,
+`Catch` and `Lambda` still clone a plain `AHashMap` for each rewrite scope.
+`TryWith`, `Seq` and `Do` build plain temporary Vecs and copy them into Arc
+slices. Lambda argument rebuilding and `pc_type` use the same temporary
+Vec-to-Arc pattern. These are intermediate collections, not retained AST
+storage. Pool the mutable staging and drain it into the final slices; use
+`Arc::from_iter` where no mutable staging is needed. This finding is based
+on the collection lifetimes and code paths, not an allocation benchmark.
+
+### CR20: cached builders retain unbounded capacity
+
+Location: [Spares::give](src/fusion/emit_helpers.rs#L247).
+
+A focused Rust probe using `fusion::emit_helpers`:
+
+```rust
+unsafe {
+    let large = graphix_value_buf_new(1_000_000);
+    graphix_value_buf_drop(large);
+    let small = graphix_value_buf_new(1);
+    let retained = (*small).capacity();
+    graphix_value_buf_drop(small);
+    assert!(retained < 1_000_000);
+}
+```
+
+The assertion fails: the one-element builder retains one million Value
+slots, or 16 MB. `Spares` caps the number of boxes at 64 per thread but
+never checks the retained capacity. Keeping the `LPooled` handle in a box
+also prevents its collection from reaching the pool's normal return
+policy. The string builder cache has the same unbounded-capacity policy.
+Bound retained capacity as well as count, releasing outliers while keeping
+ordinary builder reuse.
+
+## Validation
+
+- Full workspace `cargo test`: **3,449 passed, 12 ignored, zero failed**
+  in the reported test totals. This includes the new regression tests.
+- Rebuilt `graphix-shell`; reran the original semantic reproductions with
+  fusion enabled and with `--no-fusion`, using `--no-netidx --no-init
+  --no-cache`. Rechecked import-cycle rejection, formatting of dependent
+  imports, and runtime Display instance counts.
+- Additional Graphix probes reproduced CR09 and CR11 in both engines.
+  Three temporary Rust probes reproduced CR12, CR13 and CR20. Their
+  failures are the evidence above; the temporary test files were removed.
+- No implementation changes, slow-test release gate, or long fuzzer run
+  are part of this follow-up.
+
+## Response to the follow-up
 
 | ID | Resolution | Pin |
 | --- | --- | --- |
-| CR01 | The runtime predicate matches the value's instantiation: each declared parameter must contain the constructed one, probed without binding (`contains_with_flags(empty)`). | `lang::traits::abstract_test_matches_parameters` |
-| CR02 | A dispatch takes a site only when every operand was constructed at the instantiation the implementation resolved for; a mixed pair is structural, in both directions. | `lang::traits::core_eq_mixed_instantiations_are_structural` |
-| CR03 | The tail rebind carries every argument's tag: a bottom bottoms the formal (`None` is only an argument that never produced). The JIT's rebind always replaces the slot; a bottom's placeholder is an owned empty payload and is carried and dropped like a value, so the keep/replace branching is gone. | `lang::functions::tail_rebind_carries_bottom` |
-| CR04 | Effects are inferred per instance (`collect_resolved_sites` walks every instance; `infer_effects` keys bodies by instance id; a static target's facts are its instance's). A definition's stored facts are the join over every instance ever analyzed and never improve; the tail-loop collapse is gated by the instance's own facts. | `lang::attributes::sync_on_async_instance`, `tail_recursive_stateful_instance`, `tail_recursive_pure_instances` |
-| CR05 | A `LoadChain` of sources on the current load path is carried through resolution; a module whose source is already on it is an `import cycle: a -> b -> a` error. Sibling branches loading one source are unaffected. | `lang::modules::import_cycle_is_an_error`, `sibling_imports_of_one_source` |
-| CR06 | A use statement that reads a name an earlier statement of the run bound (or binds a name again, or is a glob of another root) closes the run; statements reorder only within a run. The corpus harness passes over both repos. | `expr::format::tests::uses_merge_at_every_level` (two new cases) |
-| CR07 | `discover` walks the ancestors of `std::path::absolute(dir)`. | `expr::format::tests::a_relative_directory_finds_the_project_config` (child process) |
-| CR08 | `ByRef` holds one `Referent`: a `Channel` node or a `Place`; a place is compiled once, and the cell mirrors the element read through the same address (`read_path` on the root's production). | `lang::byref::place_key_evaluated_once` |
-| CR09 | An undetermined address clears the registered place and the reference delivers bottom (a fresh-bottom key moves the reference); `ConnectDeref` drops its target when the delivered reference resolves to none. | `lang::byref::place_bottom_key` |
-| CR10 | A read through a place that does not exist is bottom, tagged by the delivery that found it so. | `lang::byref::place_removed_element` |
-| CR11 | The referent type is derived from the container step by step (`Place::elem_type`: the access nodes' own rules, without the access's failure). | `lang::byref::place_error_field` |
-| CR12 | Parentheses are transparent in the chain (`unparen`); a dereferenced place's path is composed under the steps (`root_place`). | `lang::byref::place_through_deref` |
-| CR13 | In the encode pass a length query descends a definition's contents (its descendants count as met) and what is met stays met until the next write, so a frame's sibling fields see one another; `Slot::def_len` and the query depth are gone. | `image::tests::a_frame_measures_what_it_writes` (the review's probe) |
-| CR14 | `TVal` checks the value against the type once, at the root; every level grows the stack as needed (`ensure_sufficient`); a union level walks only when two members admit the value's outer shape (`member_of`). | `typ::tval::test::deep_typed_value_prints` (1,000 nested arrays; a 20,000-deep recursive union under a time bound) |
-| CR15 | The registry entry stays in place; a dispatch loans one site out of its slot's pool (`take_site`/`return_site`) and a nested dispatch takes another; a site returns to its slot or is deleted when the entry was rebuilt meanwhile. `Box(Box(Box(1)))` builds two instances, then none. | `lang::traits::core_display_nested_same_tag` |
-| CR16 | Resolution reads the borrowed `GxAbstract` (`typ()` clones an `Arc`); only a dispatch that found an implementation wraps its arguments. | covered by the trait suite |
-| CR17 | One walk: a node learns from its children whether anything under it changed (`Option<Expr>`), so an unchanged subtree is neither rescanned nor rebuilt; the prescan is deleted. | existing module pins |
-| CR18 | The lowering's scratch (`steps`, `visible`, `prelude`, `labels`, `arms`, `body`, `vals`, the queued path's `captures`/`args`) is pooled or inline; `block`/`select` take iterators and are fed by drains. | existing seq pins |
-| CR19 | `Block`, `Module` and `CallSite` (a bool tag before the order) use the borrowed-slice codecs. | existing image pins |
-| CR20 | Value builders and string builders come from a per-thread spare list of boxes (`Spares`, up to 64), reused across evaluations. | existing fusion pins |
-| CR21 | `with_taint_of` is deleted; the `tval` module doc and the ABI's `TAINT`/`STALE` docs describe the two independent bits and their joins. | — |
+| CR09 | `Deref` holds its address as one `Option<(BindId, Path)>`, released (and unsubscribed) while its reference is bottom; `root_place` reads it, so the place unregisters, its cell bottoms, and a write through it goes nowhere until the reference returns. | `lang::byref::place_through_bottom_deref` (the old build gives `([99, 20], 10, [7, 20])` for `([10, 20], null, [7, 20])`) |
+| CR11 | `node::array::check_index` is the one index rule for `a[i]`, slice bounds and a place's index step. | `lang::byref::place_index_is_an_integer` |
+| CR12 | `Place::update` resolves an `Address { bind, path, steps }`: registration uses the full path, the mirror reads `steps` (the place's own) from the root's production. | `lang::byref::place_through_deref_mirror` (reads `None` with the full path put back) |
+| CR13 | **Open: needs a decision.** See below. | |
+| CR18 | Scopes are pooled copies (`seq::scope`, also used by the lowering's visibility maps); rewritten sequences and lambda args go straight into `Arc::from_iter`; `pc_type`, `pat_last` build their slices without staging; the seqq capture analysis (`captures`, `names`, `written`, `used`) is pooled. | existing seq tests |
+| CR20 | `Shells<T>` recycles only empty boxes; the builder inside comes from its pool and returns to it, under the pool's capacity limit. The string builder is `LPooled<String>` too. | `fusion::emit_helpers::tests::a_builder_keeps_no_outsized_capacity` |
 
-Noted, not part of this review: a definition with two call sites of a
-recursive lambda whose arm is `null$` de-fuses ("select arm type TVar …
-doesn't freeze concrete"); it predates these changes and is a fusion
-cliff, not a semantics gap.
+### CR13
+
+The encode pass cannot tell a frame's sibling fields from a repeated
+measurement. `Pair { a: T, b: T }` (one slot for both fields) measures as
+two queries of `T` with no write between them, where the second is a
+reference. Measuring `T` on its own and then again before writing it is
+the same two queries, where the second must be a definition. Only the
+code that made the calls knows which it was, and for a derived `Pack`
+that is netidx's generated `encoded_len`. So no rule inside the session
+can be exact while a definition is written inline at its first
+occurrence, and the "function of its `Slot` alone" in CLAUDE.md is not
+true of the current scheme.
+
+Three ways out, for Eric:
+
+- **Out-of-line definitions.** Every occurrence is a reference, and each
+  definition is written once, in first-occurrence order, in an area
+  after the body (like the deferred instance heap). The decoder already
+  decodes a reference to an unbuilt object from its offset. A length is
+  then a function of the ordinal alone, exact under any order of
+  queries, and `query_seen`, `in_progress`, the nested-definition rule
+  and `ContentState` go away. An encode-pass frame stops re-walking its
+  subtree. Costs: a format change, a few bytes per object, a first read
+  that jumps to its definition, and a warm-start measurement plus a
+  soak.
+- **Measurement brackets from netidx.** netidx-derive's `encoded_len`
+  marks the outermost measurement with a thread-local epoch, and the
+  session scopes its marks by epoch. This is small, but it ties graphix
+  correctness to a netidx thread-local, adds a TLS access to every
+  derived `encoded_len`, and gives hand-written aggregating codecs the
+  same obligation.
+- **State the protocol.** In the encode pass, a length query describes
+  the writes that follow it. That holds for every frame the writer makes
+  today, but a stray `encoded_len()` (a size in a log line) silently
+  corrupts the image.

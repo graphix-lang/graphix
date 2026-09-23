@@ -961,8 +961,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             + self.module.encoded_len()
             + self.spec.encoded_len()
             + nodes_len(&self.children)
-            // XCR codex for eric: [CR19, P2] done: borrowed slices here and in
-            // `CallSite`.
             + crate::image::slice_len(&self.catches)
             + crate::image::scope_len(&self.scope)
     }

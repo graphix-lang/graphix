@@ -323,3 +323,62 @@ const PLACE_THROUGH_DEREF: &str = r#"
 run!(place_through_deref, PLACE_THROUGH_DEREF, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[i64:20, i64:20]"
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A place through a dereference whose reference went bottom has no
+// address: it reads nothing and a write through it lands nowhere; when
+// the reference returns, the place does (and, as at every retarget,
+// the pending write lands there).
+const PLACE_THROUGH_BOTTOM_DEREF: &str = r#"
+{
+  let a = [10, 20];
+  let r: [&Array<i64>, null] = &a;
+  let s = &(*r$)[0];
+  let t1 = sys::time::timer(duration:0.02s, false);
+  r <- t1 ~ null;
+  let t2 = sys::time::timer(duration:0.05s, false);
+  *s <- t2 ~ 99;
+  let obs: [i64, null] = null;
+  obs <- t2 ~ *s;
+  let t3 = sys::time::timer(duration:0.08s, false);
+  r <- t3 ~ &a;
+  let t4 = sys::time::timer(duration:0.11s, false);
+  *s <- t4 ~ 7;
+  let t5 = sys::time::timer(duration:0.16s, false);
+  (t3 ~ a, t5 ~ obs, t5 ~ a)
+}
+"#;
+
+run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[i64:10, i64:20], null, [i64:7, i64:20]]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A place's index is an integer, as in an access.
+const PLACE_INDEX_IS_AN_INTEGER: &str = r#"
+{
+  let a = [10];
+  let r = &a["0"];
+  *r
+}
+"#;
+
+run!(place_index_is_an_integer, PLACE_INDEX_IS_AN_INTEGER, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("Int does not contain string"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+/// A composed place's cell, which an embedder reads, holds its element.
+#[tokio::test(flavor = "multi_thread")]
+async fn place_through_deref_mirror() -> Result<()> {
+    use graphix_compiler::Rt;
+    let (v, ctx) = graphix_package_core::testing::eval(
+        "{ let a = {p: {x: 10}}; let r = &a.p; &(*r).x }",
+        crate::TEST_REGISTER,
+    )
+    .await?;
+    let id = match v {
+        Value::U64(id) => graphix_compiler::BindId::from(id),
+        v => anyhow::bail!("expected a reference, got {v}"),
+    };
+    let mirror = ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id)).await?;
+    assert_eq!(mirror, Some(Value::I64(10)));
+    Ok(())
+}

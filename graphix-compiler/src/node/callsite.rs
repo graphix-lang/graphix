@@ -1518,9 +1518,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     // would consume the callee's first-dispatch init view.
                     return self.resident.ride();
                 }
-                // XCR codex for eric: [CR03, P1] done: a bottom arg is carried
-                // with its tag and bottoms the formal; `None` is only an arg
-                // that never produced.
                 let args: SmallVec<[Option<TagValue>; 4]> = order
                     .iter()
                     .map(|id| {

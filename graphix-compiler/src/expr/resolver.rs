@@ -760,8 +760,6 @@ impl Expr {
 
     /// `Some` iff a module under `self` was resolved: the tree with it
     /// resolved; an unchanged subtree is neither rebuilt nor cloned.
-    // XCR codex for eric: [CR17, P2] done: one walk; a node learns whether
-    // anything under it changed from its children, no prescan.
     fn resolve_modules_int<'a>(
         &'a self,
         scope: &'a ModPath,
@@ -818,8 +816,6 @@ impl Expr {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
             } => Box::pin(async move {
-                // XCR codex for eric: [CR05, P1] done: the chain of sources being
-                // loaded is carried down; a source already on it is a cycle.
                 let source = exprs.iter().find_map(|e| match &e.ori.source {
                     Source::Unspecified => None,
                     s => Some(s),

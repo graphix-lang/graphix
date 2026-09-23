@@ -304,9 +304,6 @@ type InstanceFacts = LPooled<IntMap<LambdaInstanceId, LambdaFacts>>;
 /// until stable; a definition's stored facts are the join over its
 /// instances and never improve (an instance analyzed later is one more
 /// instance, not a better view of the definition).
-// XCR codex for eric: [CR04, P1] done: facts are per instance; a
-// definition's are the join of every instance's, ever; the tail loop
-// is gated by the instance's own.
 fn infer_effects<R: Rt, E: UserEvent>(
     sites: &[(&GXLambda<R, E>, BindId)],
     ctx: &ExecCtx<R, E>,

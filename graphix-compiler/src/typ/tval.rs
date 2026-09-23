@@ -112,9 +112,6 @@ fn member_of(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
 }
 
 impl<'a> TVal<'a> {
-    // XCR codex for eric: [CR14, P1] done: the value is checked against the
-    // type once at the root, every level grows the stack as it needs, and
-    // a union level walks only when two members share the value's shape.
     fn fmt_int(
         &self,
         f: &mut fmt::Formatter<'_>,

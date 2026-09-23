@@ -23,7 +23,7 @@ use crate::{
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
-use std::cell::RefCell;
+use std::{cell::RefCell, mem::MaybeUninit};
 
 /// The Value ABI the helpers' two-`I64` signatures depend on: two
 /// 8-byte words, and every externally-defined payload fits the second.
@@ -226,51 +226,54 @@ fn va_borrowed_bits(a: &ValArray) -> u64 {
 // finalized or dropped exactly once.
 
 type ValueBuf = LPooled<Vec<Value>>;
+type StringBuf = LPooled<String>;
 
-/// Builders not in use, boxed once and reused, so a producer allocates
-/// nothing in the steady state.
-struct Spares<T>(RefCell<Vec<Box<T>>>);
+// XCR codex for eric: [CR20, P2] done: only the empty boxes are kept; the
+// builder comes from its pool and returns to it, under the pool's
+// capacity limit (the string builder is pooled too).
+/// The boxes a builder's pointer names, kept empty for reuse. The
+/// builder itself comes from its pool and goes back to it, under the
+/// pool's limits; only the box is recycled here.
+struct Shells<T>(RefCell<Vec<Box<MaybeUninit<T>>>>);
 
-const SPARES_MAX: usize = 64;
+const SHELLS_MAX: usize = 64;
 
-impl<T> Spares<T> {
+impl<T> Shells<T> {
     const fn new() -> Self {
         Self(RefCell::new(Vec::new()))
     }
 
-    fn take(&self, fresh: impl FnOnce() -> T) -> *mut T {
-        let spare = self.0.borrow_mut().pop();
-        Box::into_raw(spare.unwrap_or_else(|| Box::new(fresh())))
+    fn take(&self, builder: T) -> *mut T {
+        let shell = self.0.borrow_mut().pop();
+        let mut shell = shell.unwrap_or_else(Box::new_uninit);
+        shell.write(builder);
+        Box::into_raw(shell).cast()
     }
 
-    /// `p` came from `take` and its contents are already cleared.
+    /// Drop the builder at `p`, which came from `take`.
     unsafe fn give(&self, p: *mut T) {
-        let b = unsafe { Box::from_raw(p) };
+        let mut shell = unsafe { Box::from_raw(p.cast::<MaybeUninit<T>>()) };
+        unsafe { shell.assume_init_drop() };
         let mut s = self.0.borrow_mut();
-        if s.len() < SPARES_MAX {
-            s.push(b);
+        if s.len() < SHELLS_MAX {
+            s.push(shell);
         }
     }
 }
 
 thread_local! {
-    static SPARE_BUFS: Spares<ValueBuf> = const { Spares::new() };
-    static SPARE_STRINGS: Spares<String> = const { Spares::new() };
+    static VALUE_SHELLS: Shells<ValueBuf> = const { Shells::new() };
+    static STRING_SHELLS: Shells<StringBuf> = const { Shells::new() };
 }
 
-// XCR codex for eric: [CR20, P2] done: the boxes are kept and reused, for
-// the value builders and the string builders alike.
 fn buf_take(cap: usize) -> *mut ValueBuf {
-    let buf = SPARE_BUFS.with(|s| s.take(LPooled::take));
+    let buf = VALUE_SHELLS.with(|s| s.take(LPooled::take()));
     unsafe { (*buf).reserve(cap) };
     buf
 }
 
 unsafe fn buf_give(buf: *mut ValueBuf) {
-    unsafe {
-        (*buf).clear();
-        SPARE_BUFS.with(|s| s.give(buf))
-    }
+    VALUE_SHELLS.with(|s| unsafe { s.give(buf) })
 }
 
 jit_helpers! { registry = buf_helpers;
@@ -1068,9 +1071,9 @@ safe fn graphix_variant_payload_bool(v: TagValue, payload_idx: usize) -> u8 {
 // consumed by a helper or returned across the kernel boundary.
 
 /// Render a primitive as `Value::<T>(v).to_string()` does.
-fn push_display<T: std::fmt::Display>(buf: *mut String, v: T) {
+fn push_display<T: std::fmt::Display>(buf: *mut StringBuf, v: T) {
     use std::fmt::Write;
-    let _ = write!(unsafe { &mut *buf }, "{v}");
+    let _ = write!(unsafe { &mut **buf }, "{v}");
 }
 
 jit_helpers! { registry = string_helpers;
@@ -1112,75 +1115,69 @@ safe fn graphix_valarray_empty() -> u64 {
 
 /// Start an owned string buffer; pair with `graphix_string_buf_finalize`
 /// or `graphix_string_buf_drop`.
-unsafe fn graphix_string_buf_new() -> *mut String {
-    SPARE_STRINGS.with(|s| s.take(String::new))
+unsafe fn graphix_string_buf_new() -> *mut StringBuf {
+    STRING_SHELLS.with(|s| s.take(LPooled::take()))
 }
 
 /// Drop a string buf without finalizing.
-unsafe fn graphix_string_buf_drop(buf: *mut String) {
+unsafe fn graphix_string_buf_drop(buf: *mut StringBuf) {
     assert!(!buf.is_null(), "graphix_string_buf_drop: null buf — JIT codegen bug");
-    unsafe {
-        (*buf).clear();
-        SPARE_STRINGS.with(|s| s.give(buf))
-    }
+    STRING_SHELLS.with(|s| unsafe { s.give(buf) })
 }
 
 /// Finalize a string buf into an owned ArcStr, consuming the buf.
-unsafe fn graphix_string_buf_finalize(buf: *mut String) -> arcstr::ArcStr {
-    unsafe {
-        let s = arcstr::ArcStr::from((*buf).as_str());
-        (*buf).clear();
-        SPARE_STRINGS.with(|st| st.give(buf));
-        s
-    }
+unsafe fn graphix_string_buf_finalize(buf: *mut StringBuf) -> arcstr::ArcStr {
+    let s = arcstr::ArcStr::from(unsafe { (*buf).as_str() });
+    STRING_SHELLS.with(|st| unsafe { st.give(buf) });
+    s
 }
 
 /// Append an ArcStr's contents to the buf, consuming the ArcStr.
-unsafe fn graphix_string_buf_push_arcstr(buf: *mut String, s: arcstr::ArcStr) {
+unsafe fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: arcstr::ArcStr) {
     unsafe { &mut *buf }.push_str(&s);
 }
 
-unsafe fn graphix_string_buf_push_i64(buf: *mut String, v: i64) {
+unsafe fn graphix_string_buf_push_i64(buf: *mut StringBuf, v: i64) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_u64(buf: *mut String, v: u64) {
+unsafe fn graphix_string_buf_push_u64(buf: *mut StringBuf, v: u64) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_i32(buf: *mut String, v: i32) {
+unsafe fn graphix_string_buf_push_i32(buf: *mut StringBuf, v: i32) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_u32(buf: *mut String, v: u32) {
+unsafe fn graphix_string_buf_push_u32(buf: *mut StringBuf, v: u32) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_i16(buf: *mut String, v: i16) {
+unsafe fn graphix_string_buf_push_i16(buf: *mut StringBuf, v: i16) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_u16(buf: *mut String, v: u16) {
+unsafe fn graphix_string_buf_push_u16(buf: *mut StringBuf, v: u16) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_i8(buf: *mut String, v: i8) {
+unsafe fn graphix_string_buf_push_i8(buf: *mut StringBuf, v: i8) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_u8(buf: *mut String, v: u8) {
+unsafe fn graphix_string_buf_push_u8(buf: *mut StringBuf, v: u8) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_f64(buf: *mut String, v: f64) {
+unsafe fn graphix_string_buf_push_f64(buf: *mut StringBuf, v: f64) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_f32(buf: *mut String, v: f32) {
+unsafe fn graphix_string_buf_push_f32(buf: *mut StringBuf, v: f32) {
     push_display(buf, v)
 }
 
-unsafe fn graphix_string_buf_push_bool(buf: *mut String, v: u8) {
+unsafe fn graphix_string_buf_push_bool(buf: *mut StringBuf, v: u8) {
     push_display(buf, v != 0)
 }
 
@@ -1802,6 +1799,25 @@ mod tests {
         assert_eq!(graphix_abort_peek(), 1, "second peek still returns 1");
         assert!(KERNEL_ABORT.with(|c| c.get()), "flag remains set after multiple peeks");
         KERNEL_ABORT.with(|c| c.set(false));
+    }
+
+    /// A builder dropped with a large capacity leaves none of it behind
+    /// for the next builder.
+    #[test]
+    fn a_builder_keeps_no_outsized_capacity() {
+        unsafe {
+            let large = graphix_value_buf_new(1_000_000);
+            graphix_value_buf_drop(large);
+            let small = graphix_value_buf_new(1);
+            assert!((*small).capacity() < 1_000_000);
+            graphix_value_buf_drop(small);
+            let large = graphix_string_buf_new();
+            (*large).reserve(1_000_000);
+            graphix_string_buf_drop(large);
+            let small = graphix_string_buf_new();
+            assert!((*small).capacity() < 1_000_000);
+            graphix_string_buf_drop(small);
+        }
     }
 
     /// `graphix_fastcall`'s tag rules: the arg masks decide the tag,

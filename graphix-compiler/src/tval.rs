@@ -68,9 +68,6 @@ impl Tag {
         Self::from_raw(taint | stale)
     }
 
-    // XCR codex for eric: [CR21, P2] done: the unused helper is gone; the
-    // module and ABI docs describe the two independent bits.
-
     /// Set the STALE bit, keeping bottomness: the tag a resident
     /// re-surfaces under when nothing triggered this cycle.
     pub fn quiet(self) -> Tag {

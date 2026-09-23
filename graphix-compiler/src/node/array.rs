@@ -6,7 +6,9 @@ use crate::image::nodes::{
 };
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent, defetyp, err, errf,
+    UserEvent, defetyp,
+    env::Env,
+    err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
@@ -24,6 +26,11 @@ use poolshark::local::LPooled;
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
+
+/// An array index or slice bound: any integer.
+pub(super) fn check_index<R: Rt, E: UserEvent>(env: &Env, i: &Node<R, E>) -> Result<()> {
+    wrap!(i, Type::Primitive(Typ::integer()).check_contains(env, i.typ()))
+}
 
 #[derive(Debug)]
 pub struct ArrayRef<R: Rt, E: UserEvent> {
@@ -220,7 +227,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         wrap!(self.i, self.i.typecheck0(ctx))?;
-        let int = Type::Primitive(Typ::integer());
         let bytes_typ = Type::Primitive(Typ::Bytes.into());
         let source_typ = self.source.typ();
         if bytes_typ.contains_with_flags(BitFlags::empty(), &ctx.env, source_typ)? {
@@ -231,7 +237,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
             let at = Type::Array(Arc::new(self.etyp.clone()));
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
-        wrap!(self.i, int.check_contains(&ctx.env, self.i.typ()))
+        check_index(&ctx.env, &self.i)
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -412,7 +418,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
-        let it = Type::Primitive(Typ::integer());
         let bytes_typ = Type::Primitive(Typ::Bytes.into());
         let source_typ = self.source.typ();
         if !bytes_typ.contains_with_flags(BitFlags::empty(), &ctx.env, source_typ)? {
@@ -422,11 +427,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
         if let Some(start) = self.start.as_mut() {
             wrap!(start, start.typecheck0(ctx))?;
-            wrap!(start, it.check_contains(&ctx.env, &start.typ()))?;
+            check_index(&ctx.env, start)?;
         }
         if let Some(end) = self.end.as_mut() {
             wrap!(end, end.typecheck0(ctx))?;
-            wrap!(end, it.check_contains(&ctx.env, &end.typ()))?;
+            check_index(&ctx.env, end)?;
         }
         Ok(())
     }

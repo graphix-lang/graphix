@@ -54,12 +54,6 @@ impl FormatConfig {
     /// under `graphix`, else the defaults. A file that is found and does
     /// not parse is an error, never the defaults.
     pub fn discover(dir: &Path) -> Result<Self> {
-        // CR codex for eric: [CR07, P2] ancestors() is lexical: for "." or a
-        // relative source directory it never reaches the cwd's parents. Thus a
-        // project configuration above the working directory is silently missed.
-        // Make the search root absolute before walking its ancestors.
-        // XCR codex for eric: [CR07, P2] done: the search starts from the
-        // absolute directory, so a relative one still climbs past the cwd.
         let dir = std::path::absolute(dir)
             .with_context(|| format_compact!("resolving {}", dir.display()))?;
         let project = dir.ancestors().map(|d| d.join(CONFIG_FILE)).find(|p| p.is_file());
@@ -116,9 +110,6 @@ fn merge_uses<T: Clone>(
     fn binds(n: &UseItem) -> Option<&str> {
         n.rename.as_deref().or_else(|| netidx_core::path::Path::basename(&n.path.0))
     }
-    // XCR codex for eric: [CR06, P1] done: a statement that reads a name
-    // an earlier statement of the run bound, or binds one again, closes
-    // the run; use statements are reordered only within a run.
     /// Would `names` read or shadow what `run` binds, if merged after
     /// it? A glob binds names unknown here, so it joins only items of
     /// its own root.

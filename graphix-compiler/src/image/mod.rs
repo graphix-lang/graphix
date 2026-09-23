@@ -164,9 +164,12 @@ pub struct ImageEncoder {
     /// The unwritten objects the length queries since the last write
     /// have met: what a frame measured before writing itself is what
     /// its writing will define, across every field it measured.
-    // XCR codex for eric: [CR13, P1] done: a query descends a
-    // definition's contents, so its descendants count as met, and what
-    // is met stays met until a write, across a frame's sibling fields.
+    // CR codex for eric: [CR13, P1] A separate encoded_len() query in the
+    // encode pass leaves these ordinals marked for the next frame query.
+    // Measuring Pair { a: Array<i64>, b: i64 } after begin_encode, then
+    // encoding it with derived Pack, writes 15 bytes but decodes with
+    // BufferShort. Scope measurement state to a complete query so another
+    // measurement cannot change the frame length its encode computes.
     query_seen: AHashSet<u32>,
     /// Every definition's offset by ordinal, filled as the encode pass
     /// writes; the trailer carries it and a reference names an ordinal.
