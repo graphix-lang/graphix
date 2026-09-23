@@ -420,13 +420,11 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
         NodeView::ExplicitParens(ep) => node_const_value(&ep.n),
         NodeView::Array(a) => const_valarray(&a.n),
         NodeView::ListLit(l) => const_valarray(&l.n).map(|v| match v {
-            Value::Array(a) => {
-                crate::node::collection::list::from_iter(a.iter().cloned())
-            }
+            Value::Array(a) => crate::node::list::from_iter(a.iter().cloned()),
             v => v,
         }),
         NodeView::Tuple(t) => const_valarray(&t.n),
-        NodeView::Map(m) => const_map(&m.keys, &m.vals),
+        NodeView::Map(m) => const_map(&m.entries),
         _ => None,
     }
 }
@@ -445,14 +443,10 @@ fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
 /// Fold parallel key/value node slices into a constant `Value::Map`,
 /// or `None` if any entry isn't constant.
 pub(crate) fn const_map<R: Rt, E: UserEvent>(
-    keys: &[Node<R, E>],
-    vals: &[Node<R, E>],
+    entries: &[(Node<R, E>, Node<R, E>)],
 ) -> Option<Value> {
-    if keys.len() != vals.len() {
-        return None;
-    }
     let mut map = netidx_value::Map::new();
-    for (k, v) in keys.iter().zip(vals.iter()) {
+    for (k, v) in entries.iter() {
         map.insert_cow(node_const_value(k)?, node_const_value(v)?);
     }
     Some(Value::Map(map))

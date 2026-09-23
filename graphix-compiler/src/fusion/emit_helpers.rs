@@ -16,7 +16,7 @@
 use crate::{
     fusion::kernel_abi::SiteLeaf,
     node::{
-        array::{array_index, array_slice_i64, bytes_index},
+        array::{array_index, array_slice, bytes_index},
         map::map_get,
         op::wrap_arith_error,
     },
@@ -405,7 +405,7 @@ unsafe fn graphix_value_buf_extend_from_list(
     buf: *mut LPooled<Vec<Value>>,
     tv: TagValue,
 ) {
-    use crate::node::collection::list;
+    use crate::node::list;
     let v = tv.value();
     let buf = unsafe { &mut *buf };
     if list::is_list(&v) {
@@ -686,7 +686,7 @@ fn variant_payload_read<T: Default>(
 
 /// The j-th spine cell of a list value; `None` on a short or malformed chain.
 fn list_walk(v: &Value, j: usize) -> Option<&Value> {
-    use crate::node::collection::list;
+    use crate::node::list;
     let mut cur = v;
     for _ in 0..j {
         match list::split(cur) {
@@ -898,7 +898,7 @@ safe fn graphix_map_ref(map: TagValue, key: TagValue) -> TagValue {
 safe fn graphix_array_slice(src: TagValue, start: i64, end: i64, flags: i64) -> TagValue {
     let s = if flags & 1 != 0 { Some(start) } else { None };
     let e = if flags & 2 != 0 { Some(end) } else { None };
-    TagValue::clean(array_slice_i64(&src.value(), s, e))
+    TagValue::clean(array_slice(&src.value(), s, e))
 }
 
 /// Borrowed `Value::Null` test. Lowering inlines the disc compare; the
@@ -999,7 +999,7 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
 /// List-pattern structure test: `k` cells exist; `exact` also requires
 /// nil after them. A non-list fails the walk.
 safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
-    use crate::node::collection::list;
+    use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, k) {
         None => 0,
         Some(cur) => {
@@ -1016,7 +1016,7 @@ safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
 
 /// Owned clone of the j-th head of a list as a Value; `Null` on a short chain.
 safe fn graphix_list_get_value(v: TagValue, j: usize) -> TagValue {
-    use crate::node::collection::list;
+    use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((h, _)) => h.clone(),
         None => Value::Null,
@@ -1027,7 +1027,7 @@ safe fn graphix_list_get_value(v: TagValue, j: usize) -> TagValue {
 
 /// Owned `ValArray` bits of the j-th head; the empty array on mismatch.
 safe fn graphix_list_get_array(v: TagValue, j: usize) -> u64 {
-    use crate::node::collection::list;
+    use crate::node::list;
     let r = v.with_value(|v| match list_walk(v, j).and_then(|c| list::split(c)) {
         Some((Value::Array(a), _)) => a.clone(),
         _ => EMPTY_ARR.clone(),
@@ -1039,7 +1039,7 @@ safe fn graphix_list_get_array(v: TagValue, j: usize) -> u64 {
 /// Owned `ArcStr` of the j-th head; the empty string on mismatch.
 safe fn graphix_list_get_string(v: TagValue, j: usize) -> u64 {
     let r = v.with_value(|v| {
-        match list_walk(v, j).and_then(|c| crate::node::collection::list::split(c)) {
+        match list_walk(v, j).and_then(|c| crate::node::list::split(c)) {
             Some((Value::String(s), _)) => s.clone(),
             _ => arcstr::ArcStr::new(),
         }
@@ -1214,18 +1214,14 @@ jit_helpers! { registry = collection_helpers;
 /// source disc's taint rides the loop's SlotFlags.
 safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
     let v = tv.value();
-    let arr =
-        // CR claude for eric: [risk] `to_array` truncates a malformed list where
-        // `list::len` says None, so this flatten and the node-walk can disagree on the
-        // same value (CR at node/collection.rs `to_array`).
-        crate::node::collection::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
+    let arr = crate::node::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
     va_bits(arr)
 }
 
 /// Consume finalized ValArray bits and build the List value.
 unsafe fn graphix_valarray_into_list(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
-    TagValue::clean(crate::node::collection::list::from_iter(arr.iter().cloned()))
+    TagValue::clean(crate::node::list::from_iter(arr.iter().cloned()))
 }
 
 /// Flatten a Map value into owned ValArray bits of `[k, v]` pairs in
@@ -1241,18 +1237,11 @@ safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
     va_bits(arr)
 }
 
-/// Consume finalized ValArray bits of `[k, v]` pairs and build a
-/// `Value::Map`; a malformed pair is logged and skipped.
+/// Consume finalized ValArray bits of `[k, v]` pairs and build the
+/// `Value::Map` ([`crate::node::collection::pairs_to_map`]).
 unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
-    let m = netidx_value::Map::from_iter(arr.iter().filter_map(|v| {
-        let pair = crate::node::collection::split_pair(v);
-        if pair.is_none() {
-            log::error!("graphix_valarray_into_cmap: malformed pair {v:?}");
-        }
-        pair
-    }));
-    TagValue::clean(Value::Map(m))
+    TagValue::clean(crate::node::collection::pairs_to_map(arr.iter()))
 }
 
 }

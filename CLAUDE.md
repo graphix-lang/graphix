@@ -482,8 +482,11 @@ blocker profile, not a gap count.
   args stay live and are consumed. An unannotated `let` over a ⊥
   initializer takes its type from its writers.
 - **Sets and coverage**: select exhaustiveness is enforced; slice-pattern
-  length ladders count as coverage; bool literals pool per position
-  inside composite patterns; set coverage distributes over product
+  length ladders count as coverage, one ladder per array or list member;
+  bool literals and variant heads (payload irrefutable) pool per position
+  inside composite patterns; an or-arm narrows later arms per
+  alternative; a structure that matches anything is a wildcard only over
+  a scrutinee its shape covers; set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
   same scrutinee ref claims nothing on re-entry.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
@@ -500,7 +503,7 @@ blocker profile, not a gap count.
 - **Native List** (`design/list_native.md`): `List<'a>` is a compiler
   constructor like `Array`; `[<1, 2>]` literals and `[<h, rest..>]`
   patterns (rest is the O(1) tail; the suffix form is refused); the rep
-  is private to `node/collection.rs::list`.
+  is private to `node/list.rs`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere.

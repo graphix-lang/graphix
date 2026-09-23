@@ -165,7 +165,7 @@ impl Type {
             // `is_a` shortcut has the same confusion. The source's static type
             // (known at the cast site) has to pick the conversion, not its shape.
             Type::List(et) => {
-                use crate::node::collection::list;
+                use crate::node::list;
                 if list::len(v).is_some() {
                     let mut elems = list::Iter::new(v.clone())
                         .map(|el| et.cast_value_int(env, hist, &el))
@@ -397,7 +397,7 @@ impl Type {
             },
             // Walk the spine iteratively (heads recurse).
             Type::List(et) => {
-                use crate::node::collection::list;
+                use crate::node::list;
                 let mut cur = v;
                 loop {
                     if list::is_nil(cur) {

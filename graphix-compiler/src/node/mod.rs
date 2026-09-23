@@ -38,7 +38,7 @@ use std::sync::LazyLock;
 use triomphe::Arc;
 
 pub(crate) mod array;
-pub use array::MAX_ARRAY_INIT_LEN;
+pub use collection::MAX_ARRAY_INIT_LEN;
 pub(crate) mod bind;
 pub mod callsite;
 pub mod collection;
@@ -48,6 +48,7 @@ pub(crate) mod data;
 pub(crate) mod error;
 pub mod genn;
 pub mod lambda;
+pub mod list;
 pub(crate) mod map;
 pub(crate) mod module;
 pub(crate) mod op;
@@ -108,6 +109,10 @@ macro_rules! bailat {
     };
 }
 
+/// Type alias chains are followed this deep; a deeper chain is a cyclic
+/// typedef.
+pub const MAX_ALIAS_DEPTH: usize = 64;
+
 // CR claude for eric: [style] the exported macro names `PrintFlag::DerefTVars`
 // unqualified, so every caller must import `PrintFlag` for it to expand. Use
 // `$crate::PrintFlag`.
@@ -116,7 +121,6 @@ macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
         $typ.with_deref(|typ| {
             let mut typ = typ.cloned();
-            // an alias chain deeper than 64 is a cyclic typedef
             let mut depth = 0usize;
             loop {
                 #[allow(unreachable_patterns)]
@@ -124,7 +128,7 @@ macro_rules! deref_typ {
                     $($pat => break $body),+,
                     Some(rt @ $crate::typ::Type::Ref($crate::typ::TypeRef { .. })) => {
                         depth += 1;
-                        if depth > 64 {
+                        if depth > $crate::node::MAX_ALIAS_DEPTH {
                             $crate::format_with_flags(PrintFlag::DerefTVars, || {
                                 anyhow::bail!(
                                     "cyclic type alias while dereferencing {rt} \

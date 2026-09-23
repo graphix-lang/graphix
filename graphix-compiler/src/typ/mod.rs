@@ -653,7 +653,7 @@ pub enum Type {
     Error(Arc<Type>),
     Array(Arc<Type>),
     /// The native linked list. The runtime rep is private to
-    /// `node::collection::list`.
+    /// `node::list`.
     List(Arc<Type>),
     ByRef(Arc<Type>),
     Tuple(Arc<[Type]>),

@@ -56,11 +56,8 @@ pub enum VarUpdate {
 }
 
 fn index_of(len: usize, i: i64) -> Result<usize> {
-    let j = if i < 0 { len as i64 + i } else { i };
-    if j < 0 || j as usize >= len {
-        bail!("index {i} out of range for length {len}")
-    }
-    Ok(j as usize)
+    super::array::index(len, i)
+        .ok_or_else(|| anyhow!("index {i} out of range for length {len}"))
 }
 
 // CR claude for eric: [style] both callers re-match `pairs[j]` as a 2-array

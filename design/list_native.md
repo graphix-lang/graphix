@@ -14,7 +14,7 @@ both special-cased it, so the tag bought nothing.
 
 ## Representation
 
-The rep is PRIVATE to `node/collection.rs::list` (`nil`/`cons`/`split`/
+The rep is PRIVATE to `node/list.rs` (`nil`/`cons`/`split`/
 `is_nil`), the single seam that knows the layout:
 
 - **cons** = `Value::Array([head, tail])` — two slots, 32 bytes.
@@ -91,8 +91,8 @@ select l {
   `to_array_rev`).
 - Coverage is the array rule: unguarded all-bind arms whose lengths
   cover 0..∞ are exhaustive (`[<>]` + `[<h, t..>]` needs no wildcard);
-  shadowed arms are dead-arm errors; `array_members` collects List
-  members too.
+  shadowed arms are dead-arm errors; every List member of the
+  scrutinee has its own ladder, as every Array member does.
 
 ## Printing and the wire
 

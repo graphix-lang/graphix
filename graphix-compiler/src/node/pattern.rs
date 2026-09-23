@@ -4,7 +4,7 @@ use crate::{
     env::Env,
     expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt},
     format_with_flags,
-    node::{Held, compiler},
+    node::{Held, compiler, list},
     typ::{AbstractId, IsAFlags, Type, TypeRef},
 };
 use ahash::AHashMap;
@@ -12,7 +12,7 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
 use smallvec::{SmallVec, smallvec};
 use std::fmt::Debug;
@@ -99,28 +99,36 @@ impl BindMode<'_> {
     }
 }
 
+/// What stays fixed across one pattern's compile.
+#[derive(Clone, Copy)]
+struct PatCx<'a> {
+    scope: &'a Scope,
+    pos: SourcePosition,
+    ori: &'a Arc<Origin>,
+    /// The predicate was inferred from this pattern, so an or-pattern's
+    /// Set holds one member per alternative, in order.
+    inferred: bool,
+}
+
 fn leaf_bind<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
-    scope: &Scope,
+    cx: PatCx,
     name: &Name,
     typ: &Type,
-    pos: SourcePosition,
-    ori: &Arc<Origin>,
     mode: &mut BindMode,
     capture: bool,
 ) -> Result<BindId> {
-    let pos = name.pos_or(pos);
+    let pos = name.pos_or(cx.pos);
     let name = &name.name;
+    let fresh = |ctx: &mut ExecCtx<R, E>| {
+        ctx.env
+            .bind_variable(&cx.scope.lexical, name, typ.clone(), pos, cx.ori.clone())
+            .id
+    };
     match mode {
-        BindMode::Fresh => Ok(ctx
-            .env
-            .bind_variable(&scope.lexical, name, typ.clone(), pos, ori.clone())
-            .id),
+        BindMode::Fresh => Ok(fresh(ctx)),
         BindMode::Record(map) => {
-            let id = ctx
-                .env
-                .bind_variable(&scope.lexical, name, typ.clone(), pos, ori.clone())
-                .id;
+            let id = fresh(ctx);
             map.insert(name.clone(), (id, typ.clone()));
             Ok(id)
         }
@@ -136,17 +144,9 @@ fn leaf_bind<R: Rt, E: UserEvent>(
                             )
                         })?
                     }
-                    // widen both the recorded entry and the env binding
                     let u = Type::union(&ctx.env, &[t0, typ])?;
                     map.insert(name.clone(), (id, u.clone()));
-                    // CR claude for eric: [style] A hand copy of `Env::retype` that
-                    // skips its IDE sink push, so hover shows the pre-widening type
-                    // for such a capture. Call `ctx.env.retype(id, u)`.
-                    if let Some(b) = ctx.env.by_id.get(&id) {
-                        let mut b = b.clone();
-                        b.typ = u;
-                        ctx.env.by_id.insert_cow(id, b);
-                    }
+                    ctx.env.retype(id, u);
                 }
                 Ok(id)
             }
@@ -158,15 +158,37 @@ fn leaf_bind<R: Rt, E: UserEvent>(
     }
 }
 
+/// Bind a `name@` capture: the whole value at this position.
+fn bind_all<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    cx: PatCx,
+    all: &Option<Name>,
+    typ: &Type,
+    mode: &mut BindMode,
+) -> Result<Option<BindId>> {
+    all.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, mode, true)).transpose()
+}
+
+/// An inferred or-pattern predicate's members, one per alternative.
+pub(super) fn alt_types(typ: &Type, alts: usize) -> Option<Arc<[Type]>> {
+    typ.with_deref(|t| match t {
+        Some(Type::Set(ts)) if ts.len() == alts => Some(ts.clone()),
+        _ => None,
+    })
+}
+
+fn struct_fields(env: &Env, typ: &Type) -> Option<Arc<[(ArcStr, Type, WrittenAt)]>> {
+    typ.with_deref(|t| match t {
+        Some(t @ Type::Ref(_)) => match t.lookup_ref(env) {
+            Ok(Type::Struct(elts)) => Some(elts),
+            Ok(_) | Err(_) => None,
+        },
+        Some(Type::Struct(elts)) => Some(elts.clone()),
+        _ => None,
+    })
+}
+
 impl StructPatternNode {
-    // CR claude for eric: [readability] The first four doc lines below are
-    // `realign`'s: `captures` was inserted between them and `realign`, so rustdoc
-    // gives `captures` a doc that starts with the wrong function and `realign`
-    // none. Move them down to `realign`.
-    /// Re-derive the struct binders' field indexes from a completed
-    /// type predicate: a partial pattern compiles against the fields it
-    /// names, so its indexes are wrong once the select typecheck
-    /// completes the predicate from the scrutinee.
     /// Every `name@` capture with the part of `typ` it stands over,
     /// `typ` being a type of this pattern's shape. An or-pattern's
     /// alternatives share their captures, so an id may come up once per
@@ -177,27 +199,26 @@ impl StructPatternNode {
         typ: &Type,
         out: &mut SmallVec<[(BindId, Type); 4]>,
     ) {
+        crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, out))
+    }
+
+    fn captures_inner(
+        &self,
+        env: &Env,
+        typ: &Type,
+        out: &mut SmallVec<[(BindId, Type); 4]>,
+    ) {
         let (all, subs): (&Option<BindId>, SmallVec<[(&Self, Type); 8]>) = match self {
             Self::Ignore | Self::Literal(_) | Self::Bind(_) => return,
             Self::Or { alts } => {
-                let ts = typ.with_deref(|t| match t {
-                    Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
-                    _ => None,
-                });
+                let ts = alt_types(typ, alts.len());
                 for (i, a) in alts.iter().enumerate() {
                     a.captures(env, ts.as_ref().map_or(typ, |ts| &ts[i]), out)
                 }
                 return;
             }
             Self::Struct { all, binds } => {
-                let elts = typ.with_deref(|t| match t {
-                    Some(t @ Type::Ref(_)) => match t.lookup_ref(env) {
-                        Ok(Type::Struct(elts)) => Some(elts),
-                        Ok(_) | Err(_) => None,
-                    },
-                    Some(Type::Struct(elts)) => Some(elts.clone()),
-                    _ => None,
-                });
+                let elts = struct_fields(env, typ);
                 let field = |name: &ArcStr| {
                     let elts = elts.as_ref()?;
                     elts.iter().find(|(n, _, _)| n == name).map(|(_, t, _)| t.clone())
@@ -245,48 +266,26 @@ impl StructPatternNode {
         }
     }
 
-    // CR claude for eric: [risk] `realign`, `captures`, the `Pack` impl's
-    // `encoded_len`/`encode`/`decode` and select.rs's `composite_literal_vector::
-    // leaves` recurse over pattern depth without `stack::ensure_sufficient`, which
-    // CLAUDE.md's stack discipline requires of every program-driven pattern walk
-    // (the other walks in this impl have it).
+    /// Re-derive the struct binders' field indexes from a completed
+    /// type predicate: a partial pattern compiles against the fields it
+    /// names, so its indexes are wrong once the select typecheck
+    /// completes the predicate from the scrutinee.
     pub(super) fn realign(&mut self, env: &Env, typ: &Type) -> Result<()> {
+        crate::stack::ensure_sufficient(|| self.realign_inner(env, typ))
+    }
+
+    fn realign_inner(&mut self, env: &Env, typ: &Type) -> Result<()> {
         match self {
             Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
             Self::Or { alts } => {
-                let ts = typ.with_deref(|t| match t {
-                    Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
-                    _ => None,
-                });
-                match ts {
-                    Some(ts) => {
-                        for (a, t) in alts.iter_mut().zip(ts.iter()) {
-                            a.realign(env, t)?
-                        }
-                    }
-                    None => {
-                        for a in alts.iter_mut() {
-                            a.realign(env, typ)?
-                        }
-                    }
+                let ts = alt_types(typ, alts.len());
+                for (i, a) in alts.iter_mut().enumerate() {
+                    a.realign(env, ts.as_ref().map_or(typ, |ts| &ts[i]))?
                 }
                 Ok(())
             }
             Self::Struct { binds, all: _ } => {
-                let elts = typ.with_deref(|t| match t {
-                    Some(t @ Type::Ref(_)) => {
-                        t.lookup_ref(env).ok().and_then(|t| match t {
-                            Type::Struct(elts) => Some(elts.clone()),
-                            _ => None,
-                        })
-                    }
-                    Some(Type::Struct(elts)) => Some(elts.clone()),
-                    _ => None,
-                });
-                let elts = match elts {
-                    Some(elts) => elts,
-                    None => return Ok(()),
-                };
+                let Some(elts) = struct_fields(env, typ) else { return Ok(()) };
                 for (name, index, sub) in binds.iter_mut() {
                     match elts.iter().position(|(n, _, _)| n == name) {
                         Some(i) => {
@@ -300,15 +299,13 @@ impl StructPatternNode {
             }
             Self::Variant { binds, all: _, tag: _ } => {
                 let ts = typ.with_deref(|t| match t {
-                    Some(Type::Variant(_, ts, _)) => Some(ts.clone()),
+                    Some(Type::Variant(_, ts, _)) if ts.len() == binds.len() => {
+                        Some(ts.clone())
+                    }
                     _ => None,
                 });
-                if let Some(ts) = ts {
-                    if ts.len() == binds.len() {
-                        for (b, t) in binds.iter_mut().zip(ts.iter()) {
-                            b.realign(env, t)?
-                        }
-                    }
+                for (b, t) in binds.iter_mut().zip(ts.iter().flat_map(|ts| ts.iter())) {
+                    b.realign(env, t)?
                 }
                 Ok(())
             }
@@ -318,36 +315,19 @@ impl StructPatternNode {
             }
             Self::Slice { kind: SliceKind::Tuple, binds, all: _ } => {
                 let ts = typ.with_deref(|t| match t {
-                    Some(Type::Tuple(ts)) => Some(ts.clone()),
+                    Some(Type::Tuple(ts)) if ts.len() == binds.len() => Some(ts.clone()),
                     _ => None,
                 });
-                if let Some(ts) = ts {
-                    if ts.len() == binds.len() {
-                        for (b, t) in binds.iter_mut().zip(ts.iter()) {
-                            b.realign(env, t)?
-                        }
-                    }
+                for (b, t) in binds.iter_mut().zip(ts.iter().flat_map(|ts| ts.iter())) {
+                    b.realign(env, t)?
                 }
                 Ok(())
             }
-            Self::Slice { kind: SliceKind::Array, binds, all: _ }
-            | Self::SlicePrefix { list: false, prefix: binds, all: _, .. }
+            Self::Slice { kind: SliceKind::Array | SliceKind::List, binds, all: _ }
+            | Self::SlicePrefix { prefix: binds, all: _, .. }
             | Self::SliceSuffix { suffix: binds, all: _, .. } => {
                 let et = typ.with_deref(|t| match t {
-                    Some(Type::Array(et)) => Some(et.clone()),
-                    _ => None,
-                });
-                if let Some(et) = et {
-                    for b in binds.iter_mut() {
-                        b.realign(env, &et)?
-                    }
-                }
-                Ok(())
-            }
-            Self::Slice { kind: SliceKind::List, binds, all: _ }
-            | Self::SlicePrefix { list: true, prefix: binds, all: _, .. } => {
-                let et = typ.with_deref(|t| match t {
-                    Some(Type::List(et)) => Some(et.clone()),
+                    Some(Type::Array(et) | Type::List(et)) => Some(et.clone()),
                     _ => None,
                 });
                 if let Some(et) = et {
@@ -360,6 +340,8 @@ impl StructPatternNode {
         }
     }
 
+    /// Compile `spec` against the explicit type `type_predicate` (a
+    /// `let` or lambda parameter's type).
     pub fn compile<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
         type_predicate: &Type,
@@ -368,100 +350,79 @@ impl StructPatternNode {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<Self> {
+        let cx = PatCx { scope, pos, ori: &ori, inferred: false };
+        Self::compile_with(ctx, cx, type_predicate, spec)
+    }
+
+    fn compile_with<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        cx: PatCx,
+        type_predicate: &Type,
+        spec: &StructurePattern,
+    ) -> Result<Self> {
         if !spec.binds_uniq() {
             bail!("bound variables must have unique names")
         }
-        Self::compile_int(ctx, type_predicate, spec, scope, pos, ori, BindMode::Fresh)
+        Self::compile_int(ctx, cx, type_predicate, spec, BindMode::Fresh)
     }
 
     fn compile_int<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
+        cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
-        scope: &Scope,
-        pos: SourcePosition,
-        ori: Arc<Origin>,
         mode: BindMode,
     ) -> Result<Self> {
         crate::stack::ensure_sufficient(|| {
-            Self::compile_int_inner(ctx, type_predicate, spec, scope, pos, ori, mode)
+            Self::compile_int_inner(ctx, cx, type_predicate, spec, mode)
         })
+    }
+
+    /// A slice pattern's parts against an `Array`/`List` type: the
+    /// `all@` capture, the `rest..` bind (array-typed) and the elements.
+    fn compile_slice<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        cx: PatCx,
+        typ: &Type,
+        list: bool,
+        all: &Option<Name>,
+        rest: &Option<Name>,
+        elems: &[StructurePattern],
+        mut mode: BindMode,
+    ) -> Result<(Option<BindId>, Option<BindId>, Box<[Self]>)> {
+        let want = if list {
+            Type::List(Arc::new(Type::empty_tvar()))
+        } else {
+            Type::Array(Arc::new(Type::empty_tvar()))
+        };
+        typ.check_contains(&ctx.env, &want)?;
+        let et = typ.with_deref(|t| match t {
+            Some(Type::Array(et)) if !list => Some(et.clone()),
+            Some(Type::List(et)) if list => Some(et.clone()),
+            _ => None,
+        });
+        let Some(et) = et else {
+            return format_with_flags(PrintFlag::DerefTVars, || {
+                bail!("slice patterns can't match {typ}")
+            });
+        };
+        let all = bind_all(ctx, cx, all, typ, &mut mode)?;
+        let rest = rest.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, &mut mode, false));
+        let rest = rest.transpose()?;
+        let elems = elems
+            .iter()
+            .map(|p| Self::compile_int(ctx, cx, &et, p, mode.reborrow()))
+            .collect::<Result<Box<[Self]>>>()?;
+        Ok((all, rest, elems))
     }
 
     fn compile_int_inner<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
+        cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
-        scope: &Scope,
-        pos: SourcePosition,
-        ori: Arc<Origin>,
         mut mode: BindMode,
     ) -> Result<Self> {
-        macro_rules! with_pref_suf {
-            ($list:expr, $all:expr, $single:expr, $multi:expr) => {{
-                let want = if $list {
-                    Type::List(Arc::new(Type::empty_tvar()))
-                } else {
-                    Type::Array(Arc::new(Type::empty_tvar()))
-                };
-                type_predicate.check_contains(&ctx.env, &want)?;
-                match &type_predicate.with_deref(|t| match t {
-                    Some(Type::Array(et)) if !$list => Some(et.clone()),
-                    Some(Type::List(et)) if $list => Some(et.clone()),
-                    _ => None,
-                }) {
-                    Some(et) => {
-                        // CR claude for eric: [structure] This `all` capture block is
-                        // pasted six times (also the Slice, Tuple, Variant, Abstract and
-                        // Struct arms); one `bind_all(&mut mode, all)` closure or fn.
-                        let all = match $all.as_ref() {
-                            None => None,
-                            Some(n) => Some(leaf_bind(
-                                ctx,
-                                scope,
-                                n,
-                                type_predicate,
-                                pos,
-                                &ori,
-                                &mut mode,
-                                true,
-                            )?),
-                        };
-                        let single = match $single.as_ref() {
-                            None => None,
-                            Some(n) => Some(leaf_bind(
-                                ctx,
-                                scope,
-                                n,
-                                type_predicate,
-                                pos,
-                                &ori,
-                                &mut mode,
-                                false,
-                            )?),
-                        };
-                        let multi = $multi
-                            .iter()
-                            .map(|n| {
-                                Self::compile_int(
-                                    ctx,
-                                    et,
-                                    n,
-                                    scope,
-                                    pos,
-                                    ori.clone(),
-                                    mode.reborrow(),
-                                )
-                            })
-                            .collect::<Result<Box<[Self]>>>()?;
-                        (all, single, multi)
-                    }
-                    _ => format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!("slice patterns can't match {type_predicate}")
-                    })?,
-                }
-            }};
-        }
         let type_predicate = match type_predicate {
             Type::Ref(TypeRef { .. }) => type_predicate.lookup_ref(&ctx.env)?,
             t => t.clone(),
@@ -496,95 +457,33 @@ impl StructPatternNode {
                         )
                     }
                 }
-                // each alternative compiles against its own member of the
+                // Each alternative compiles against its own member of an
                 // inferred predicate; under an explicit `T as p1 | p2`
-                // every alternative checks against T
-                // CR claude for eric: [bug] The comment is false: an EXPLICIT union
-                // whose member count equals the alternative count is also zipped
-                // positionally, so `` [`A, `B] as `A | `B `` compiles but `` [`A, `B]
-                // as `B | `A `` is refused "type mismatch `A does not contain `B" (probe
-                // C/p5.gx); with another count every alternative gets the whole union
-                // and `` [`A, `B, `C] as `B | `A `` fails "variant patterns can't
-                // match". Pair only the inferred Set; the explicit case needs a rule.
-                let alt_types: Option<Arc<[Type]>> =
-                    type_predicate.with_deref(|t| match t {
-                        Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
-                        _ => None,
-                    });
-                let alt_type = |i: usize| {
-                    alt_types.as_ref().map(|ts| &ts[i]).unwrap_or(type_predicate)
+                // every alternative checks against T.
+                let alt_types = if cx.inferred {
+                    alt_types(type_predicate, alts.len())
+                } else {
+                    None
                 };
-                // CR claude for eric: [structure] Three copies of the alternative loop
-                // that differ only in which map and whether alternative 0 records:
-                // pick `(map, reuse_first)` from the mode (a local map for `Fresh`)
-                // and run one loop with `Record` for i == 0 && !reuse_first, else
-                // `Reuse`.
-                let compiled = match mode.reborrow() {
-                    BindMode::Reuse(m) => {
-                        let mut out = Vec::with_capacity(alts.len());
-                        for (i, alt) in alts.iter().enumerate() {
-                            out.push(Self::compile_int(
-                                ctx,
-                                alt_type(i),
-                                alt,
-                                scope,
-                                pos,
-                                ori.clone(),
-                                BindMode::Reuse(m),
-                            )?)
-                        }
-                        out.into_boxed_slice()
-                    }
-                    BindMode::Fresh => {
-                        let mut map = AHashMap::default();
-                        let mut out = Vec::with_capacity(alts.len());
-                        out.push(Self::compile_int(
-                            ctx,
-                            alt_type(0),
-                            &alts[0],
-                            scope,
-                            pos,
-                            ori.clone(),
-                            BindMode::Record(&mut map),
-                        )?);
-                        for (i, alt) in alts.iter().enumerate().skip(1) {
-                            out.push(Self::compile_int(
-                                ctx,
-                                alt_type(i),
-                                alt,
-                                scope,
-                                pos,
-                                ori.clone(),
-                                BindMode::Reuse(&mut map),
-                            )?)
-                        }
-                        out.into_boxed_slice()
-                    }
-                    BindMode::Record(map) => {
-                        let mut out = Vec::with_capacity(alts.len());
-                        out.push(Self::compile_int(
-                            ctx,
-                            alt_type(0),
-                            &alts[0],
-                            scope,
-                            pos,
-                            ori.clone(),
-                            BindMode::Record(&mut *map),
-                        )?);
-                        for (i, alt) in alts.iter().enumerate().skip(1) {
-                            out.push(Self::compile_int(
-                                ctx,
-                                alt_type(i),
-                                alt,
-                                scope,
-                                pos,
-                                ori.clone(),
-                                BindMode::Reuse(&mut *map),
-                            )?)
-                        }
-                        out.into_boxed_slice()
-                    }
+                let mut local = AHashMap::default();
+                let (map, reuse_first) = match &mut mode {
+                    BindMode::Fresh => (&mut local, false),
+                    BindMode::Record(m) => (&mut **m, false),
+                    BindMode::Reuse(m) => (&mut **m, true),
                 };
+                let compiled = alts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, alt)| {
+                        let typ = alt_types.as_ref().map_or(type_predicate, |ts| &ts[i]);
+                        let mode = if i == 0 && !reuse_first {
+                            BindMode::Record(&mut *map)
+                        } else {
+                            BindMode::Reuse(&mut *map)
+                        };
+                        Self::compile_int(ctx, cx, typ, alt, mode)
+                    })
+                    .collect::<Result<Box<[Self]>>>()?;
                 for i in 1..compiled.len() {
                     if compiled[..i].iter().any(|p| p.matches_anything()) {
                         bail!(
@@ -602,79 +501,47 @@ impl StructPatternNode {
                 Self::Literal(v.clone())
             }
             StructurePattern::Bind(name) => {
-                let id = leaf_bind(
-                    ctx,
-                    scope,
-                    name,
-                    type_predicate,
-                    pos,
-                    &ori,
-                    &mut mode,
-                    false,
-                )?;
-                Self::Bind(id)
+                Self::Bind(leaf_bind(ctx, cx, name, type_predicate, &mut mode, false)?)
             }
             StructurePattern::SlicePrefix { list, all, prefix, tail } => {
-                let (all, tail, prefix) = with_pref_suf!(*list, all, tail, prefix);
+                let (all, tail, prefix) = Self::compile_slice(
+                    ctx,
+                    cx,
+                    type_predicate,
+                    *list,
+                    all,
+                    tail,
+                    prefix,
+                    mode,
+                )?;
                 Self::SlicePrefix { list: *list, all, prefix, tail }
             }
             StructurePattern::SliceSuffix { all, head, suffix } => {
-                let (all, head, suffix) = with_pref_suf!(false, all, head, suffix);
+                let (all, head, suffix) = Self::compile_slice(
+                    ctx,
+                    cx,
+                    type_predicate,
+                    false,
+                    all,
+                    head,
+                    suffix,
+                    mode,
+                )?;
                 Self::SliceSuffix { all, head, suffix }
             }
-            // CR claude for eric: [structure] This arm is `with_pref_suf!` minus the
-            // single bind (the want/check/deref/`all`/element loop are identical);
-            // let the macro (better, a fn) take an optional single and use it here.
             StructurePattern::Slice { list, all, binds } => {
-                let want = if *list {
-                    Type::List(Arc::new(Type::empty_tvar()))
-                } else {
-                    Type::Array(Arc::new(Type::empty_tvar()))
-                };
-                type_predicate.check_contains(&ctx.env, &want)?;
-                match &type_predicate.with_deref(|t| match t {
-                    Some(Type::Array(et)) if !*list => Some(et.clone()),
-                    Some(Type::List(et)) if *list => Some(et.clone()),
-                    _ => None,
-                }) {
-                    Some(et) => {
-                        let all = match all.as_ref() {
-                            None => None,
-                            Some(n) => Some(leaf_bind(
-                                ctx,
-                                scope,
-                                n,
-                                type_predicate,
-                                pos,
-                                &ori,
-                                &mut mode,
-                                true,
-                            )?),
-                        };
-                        let binds = binds
-                            .iter()
-                            .map(|b| {
-                                Self::compile_int(
-                                    ctx,
-                                    et,
-                                    b,
-                                    scope,
-                                    pos,
-                                    ori.clone(),
-                                    mode.reborrow(),
-                                )
-                            })
-                            .collect::<Result<Box<[Self]>>>()?;
-                        Self::Slice {
-                            kind: if *list { SliceKind::List } else { SliceKind::Array },
-                            all,
-                            binds,
-                        }
-                    }
-                    _ => format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!("slice patterns can't match {type_predicate}")
-                    })?,
-                }
+                let (all, _, binds) = Self::compile_slice(
+                    ctx,
+                    cx,
+                    type_predicate,
+                    *list,
+                    all,
+                    &None,
+                    binds,
+                    mode,
+                )?;
+                let kind = if *list { SliceKind::List } else { SliceKind::Array };
+                Self::Slice { kind, all, binds }
             }
             StructurePattern::Tuple { all, binds } => {
                 type_predicate.check_contains(
@@ -683,45 +550,21 @@ impl StructPatternNode {
                         binds.iter().map(|_| Type::empty_tvar()),
                     )),
                 )?;
-                match &type_predicate.deref_cloned() {
-                    Some(Type::Tuple(elts)) => {
-                        if binds.len() != elts.len() {
-                            bail!("expected a tuple of length {}", elts.len())
-                        }
-                        let all = match all.as_ref() {
-                            None => None,
-                            Some(n) => Some(leaf_bind(
-                                ctx,
-                                scope,
-                                n,
-                                type_predicate,
-                                pos,
-                                &ori,
-                                &mut mode,
-                                true,
-                            )?),
-                        };
-                        let binds = elts
-                            .iter()
-                            .zip(binds.iter())
-                            .map(|(t, b)| {
-                                Self::compile_int(
-                                    ctx,
-                                    t,
-                                    b,
-                                    scope,
-                                    pos,
-                                    ori.clone(),
-                                    mode.reborrow(),
-                                )
-                            })
-                            .collect::<Result<Box<[Self]>>>()?;
-                        Self::Slice { kind: SliceKind::Tuple, all, binds }
-                    }
-                    _ => format_with_flags(PrintFlag::DerefTVars, || {
+                let Some(Type::Tuple(elts)) = type_predicate.deref_cloned() else {
+                    return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("tuple patterns can't match {type_predicate}")
-                    })?,
+                    });
+                };
+                if binds.len() != elts.len() {
+                    bail!("expected a tuple of length {}", elts.len())
                 }
+                let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
+                let binds = elts
+                    .iter()
+                    .zip(binds.iter())
+                    .map(|(t, b)| Self::compile_int(ctx, cx, t, b, mode.reborrow()))
+                    .collect::<Result<Box<[Self]>>>()?;
+                Self::Slice { kind: SliceKind::Tuple, all, binds }
             }
             StructurePattern::Variant { all, tag, binds } => {
                 type_predicate.check_contains(
@@ -732,61 +575,36 @@ impl StructPatternNode {
                         WrittenAt::NOWHERE,
                     ),
                 )?;
-                match &type_predicate.deref_cloned() {
-                    Some(Type::Variant(ttag, elts, _)) => {
-                        if ttag != tag {
-                            bail!(
-                                "pattern cannot match type, tag mismatch {ttag} vs {tag}"
-                            )
-                        }
-                        if binds.len() != elts.len() {
-                            bail!("expected a variant with {} args", elts.len())
-                        }
-                        let all = match all.as_ref() {
-                            None => None,
-                            Some(n) => Some(leaf_bind(
-                                ctx,
-                                scope,
-                                n,
-                                type_predicate,
-                                pos,
-                                &ori,
-                                &mut mode,
-                                true,
-                            )?),
-                        };
-                        let binds = elts
-                            .iter()
-                            .zip(binds.iter())
-                            .map(|(t, b)| {
-                                Self::compile_int(
-                                    ctx,
-                                    t,
-                                    b,
-                                    scope,
-                                    pos,
-                                    ori.clone(),
-                                    mode.reborrow(),
-                                )
-                            })
-                            .collect::<Result<Box<[Self]>>>()?;
-                        Self::Variant { tag: tag.clone(), all, binds }
-                    }
-                    _ => format_with_flags(PrintFlag::DerefTVars, || {
+                let Some(Type::Variant(ttag, elts, _)) = type_predicate.deref_cloned()
+                else {
+                    return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("variant patterns can't match {type_predicate}")
-                    })?,
+                    });
+                };
+                if ttag != *tag {
+                    bail!("pattern cannot match type, tag mismatch {ttag} vs {tag}")
                 }
+                if binds.len() != elts.len() {
+                    bail!("expected a variant with {} args", elts.len())
+                }
+                let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
+                let binds = elts
+                    .iter()
+                    .zip(binds.iter())
+                    .map(|(t, b)| Self::compile_int(ctx, cx, t, b, mode.reborrow()))
+                    .collect::<Result<Box<[Self]>>>()?;
+                Self::Variant { tag: tag.clone(), all, binds }
             }
             StructurePattern::Abstract { all, name, bind } => {
                 let td = ctx
                     .env
-                    .lookup_typedef(&scope.lexical, name)?
+                    .lookup_typedef(&cx.scope.lexical, name)?
                     .ok_or_else(|| anyhow!("unknown type {name}"))?;
                 let Type::Abstract { id, .. } = &td.typ else {
                     bail!("{name} is not an abstract type, so it has no constructor")
                 };
                 let id = *id;
-                let Some(r) = ctx.env.abstract_rep(id, &scope.lexical) else {
+                let Some(r) = ctx.env.abstract_rep(id, &cx.scope.lexical) else {
                     bail!(
                         "the definition of {name} is not visible here, so its values \
                          cannot be destructured"
@@ -794,37 +612,13 @@ impl StructPatternNode {
                 };
                 let (atyp, rep) = r.instantiate(id);
                 type_predicate.check_contains(&ctx.env, &atyp)?;
-                let all = match all.as_ref() {
-                    None => None,
-                    Some(n) => Some(leaf_bind(
-                        ctx,
-                        scope,
-                        n,
-                        type_predicate,
-                        pos,
-                        &ori,
-                        &mut mode,
-                        true,
-                    )?),
-                };
-                let bind = Box::new(Self::compile_int(
-                    ctx,
-                    &rep,
-                    bind,
-                    scope,
-                    pos,
-                    ori.clone(),
-                    mode.reborrow(),
-                )?);
+                let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
+                // the payload checks against the declared representation
+                let rep_cx = PatCx { inferred: false, ..cx };
+                let bind = Box::new(Self::compile_int(ctx, rep_cx, &rep, bind, mode)?);
                 Self::Abstract { id, all, rep, bind }
             }
             StructurePattern::Struct { exhaustive, all, binds } => {
-                struct Ifo {
-                    name: ArcStr,
-                    index: usize,
-                    pattern: StructurePattern,
-                    typ: Type,
-                }
                 match &type_predicate {
                     Type::Struct(_) => (),
                     _ if *exhaustive => type_predicate.check_contains(
@@ -837,68 +631,33 @@ impl StructPatternNode {
                     )?,
                     _ => bail!("non exhaustive struct matches require type annotations"),
                 }
-                match &type_predicate.deref_cloned() {
-                    Some(Type::Struct(elts)) => {
-                        let binds = binds
-                            .iter()
-                            .map(|(field, pat, _)| {
-                                let r = elts.iter().enumerate().find_map(
-                                    |(i, (name, typ, _))| {
-                                        if field == name {
-                                            Some(Ifo {
-                                                name: name.clone(),
-                                                index: i,
-                                                pattern: pat.clone(),
-                                                typ: typ.clone(),
-                                            })
-                                        } else {
-                                            None
-                                        }
-                                    },
-                                );
-                                r.ok_or_else(|| anyhow!("no such struct field {field}"))
-                            })
-                            .collect::<Result<SmallVec<[Ifo; 8]>>>()?;
-                        if *exhaustive && binds.len() < elts.len() {
-                            bail!("missing bindings for struct fields")
-                        }
-                        let all = match all.as_ref() {
-                            None => None,
-                            Some(n) => Some(leaf_bind(
-                                ctx,
-                                scope,
-                                n,
-                                type_predicate,
-                                pos,
-                                &ori,
-                                &mut mode,
-                                true,
-                            )?),
-                        };
-                        let binds = binds
-                            .into_iter()
-                            .map(|ifo| {
-                                Ok((
-                                    ifo.name,
-                                    ifo.index,
-                                    Self::compile_int(
-                                        ctx,
-                                        &ifo.typ,
-                                        &ifo.pattern,
-                                        scope,
-                                        pos,
-                                        ori.clone(),
-                                        mode.reborrow(),
-                                    )?,
-                                ))
-                            })
-                            .collect::<Result<Box<[(ArcStr, usize, Self)]>>>()?;
-                        Self::Struct { all, binds }
-                    }
-                    _ => format_with_flags(PrintFlag::DerefTVars, || {
+                let Some(Type::Struct(elts)) = type_predicate.deref_cloned() else {
+                    return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("struct patterns can't match {type_predicate}")
-                    })?,
+                    });
+                };
+                let fields = binds
+                    .iter()
+                    .map(|(field, pat, _)| {
+                        elts.iter()
+                            .position(|(name, _, _)| field == name)
+                            .map(|i| (i, pat))
+                            .ok_or_else(|| anyhow!("no such struct field {field}"))
+                    })
+                    .collect::<Result<SmallVec<[(usize, &StructurePattern); 8]>>>()?;
+                if *exhaustive && fields.len() < elts.len() {
+                    bail!("missing bindings for struct fields")
                 }
+                let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
+                let binds = fields
+                    .into_iter()
+                    .map(|(i, pat)| {
+                        let (name, typ, _) = &elts[i];
+                        let p = Self::compile_int(ctx, cx, typ, pat, mode.reborrow())?;
+                        Ok((name.clone(), i, p))
+                    })
+                    .collect::<Result<Box<[(ArcStr, usize, Self)]>>>()?;
+                Self::Struct { all, binds }
             }
         };
         Ok(t)
@@ -1036,27 +795,14 @@ impl StructPatternNode {
                     _ => (),
                 }
             }
-            // CR claude for eric: [structure] The list-spine walk (split, visit head,
-            // advance, stop at nil) is written four times: here, the list
-            // SlicePrefix bind, and both list arms of `is_match_inner`, each with a
-            // fn-local `use ..::collection::list`. One iterator over the first n
-            // cells (heads + remaining tail) serves all four.
             Self::Slice { kind: SliceKind::List, all, binds } => {
-                use crate::node::collection::list;
                 if let Some(id) = all {
                     f(*id, v.clone());
                 }
-                let mut cur = v.clone();
-                for n in binds.iter() {
-                    match list::split(&cur) {
-                        Some((h, t)) => {
-                            n.bind(h, f);
-                            let t = t.clone();
-                            cur = t;
-                        }
-                        None => break,
-                    }
-                }
+                list::zip_prefix(v, binds, |n, h| {
+                    n.bind(h, f);
+                    true
+                });
             }
             Self::Variant { tag: _, all, binds } => {
                 if let Some(id) = all {
@@ -1089,27 +835,15 @@ impl StructPatternNode {
             // heads bind by walking the spine; the tail bind is the k-th
             // tail itself
             Self::SlicePrefix { list: true, all, prefix, tail } => {
-                use crate::node::collection::list;
                 if let Some(id) = all {
                     f(*id, v.clone())
                 }
-                let mut cur = v.clone();
-                let mut ok = true;
-                for n in prefix.iter() {
-                    match list::split(&cur) {
-                        Some((h, t)) => {
-                            n.bind(h, f);
-                            let t = t.clone();
-                            cur = t;
-                        }
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if ok && let Some(id) = tail {
-                    f(*id, cur)
+                let rest = list::zip_prefix(v, prefix, |n, h| {
+                    n.bind(h, f);
+                    true
+                });
+                if let (Some(rest), Some(id)) = (rest, tail) {
+                    f(*id, rest.clone())
                 }
             }
             Self::SliceSuffix { all, head, suffix } => match v {
@@ -1149,67 +883,6 @@ impl StructPatternNode {
         }
     }
 
-    // CR claude for eric: [structure] `unbind` is `ids` (same ids, only the
-    // SlicePrefix order differs) and `delete` is `ids` plus `store_remove` +
-    // `unbind_variable` per id: three hand-kept copies of one walk over eight
-    // variants. Keep `ids`; express `unbind_event`/`delete` through it.
-    pub fn unbind<F: FnMut(BindId)>(&self, f: &mut F) {
-        crate::stack::ensure_sufficient(|| self.unbind_inner(f))
-    }
-
-    fn unbind_inner<F: FnMut(BindId)>(&self, f: &mut F) {
-        match &self {
-            Self::Abstract { all, bind, .. } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                bind.unbind(f)
-            }
-            Self::Or { alts } => alts[0].unbind(f),
-            Self::Ignore | Self::Literal(_) => (),
-            Self::Bind(id) => f(*id),
-            Self::Slice { kind: _, all, binds }
-            | Self::Variant { tag: _, all, binds } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for n in binds.iter() {
-                    n.unbind(f)
-                }
-            }
-            Self::SlicePrefix { list: _, all, prefix, tail } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                if let Some(id) = tail {
-                    f(*id)
-                }
-                for n in prefix.iter() {
-                    n.unbind(f)
-                }
-            }
-            Self::SliceSuffix { all, head, suffix } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                if let Some(id) = head {
-                    f(*id)
-                }
-                for n in suffix.iter() {
-                    n.unbind(f)
-                }
-            }
-            Self::Struct { all, binds } => {
-                if let Some(id) = all {
-                    f(*id)
-                }
-                for (_, _, n) in binds.iter() {
-                    n.unbind(f)
-                }
-            }
-        }
-    }
-
     pub fn is_match(&self, v: &Value) -> bool {
         crate::stack::ensure_sufficient(|| self.is_match_inner(v))
     }
@@ -1234,26 +907,7 @@ impl StructPatternNode {
             }
             // exactly `binds.len()` cells, each head matching, ending at nil
             Self::Slice { kind: SliceKind::List, all: _, binds } => {
-                use crate::node::collection::list;
-                let mut cur = v.clone();
-                let mut ok = true;
-                for b in binds.iter() {
-                    match list::split(&cur) {
-                        Some((h, t)) => {
-                            if !b.is_match(h) {
-                                ok = false;
-                                break;
-                            }
-                            let t = t.clone();
-                            cur = t;
-                        }
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                ok && list::is_nil(&cur)
+                list::zip_prefix(v, binds, |b, h| b.is_match(h)).is_some_and(list::is_nil)
             }
             Self::Variant { tag, all: _, binds } if binds.len() == 0 => match v {
                 Value::String(s) => tag == s,
@@ -1278,26 +932,7 @@ impl StructPatternNode {
                 _ => false,
             },
             Self::SlicePrefix { list: true, all: _, prefix, tail: _ } => {
-                use crate::node::collection::list;
-                let mut cur = v.clone();
-                let mut ok = true;
-                for b in prefix.iter() {
-                    match list::split(&cur) {
-                        Some((h, t)) => {
-                            if !b.is_match(h) {
-                                ok = false;
-                                break;
-                            }
-                            let t = t.clone();
-                            cur = t;
-                        }
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                ok
+                list::zip_prefix(v, prefix, |b, h| b.is_match(h)).is_some()
             }
             Self::SliceSuffix { all: _, head: _, suffix } => match v {
                 Value::Array(a) => {
@@ -1420,70 +1055,10 @@ impl StructPatternNode {
     }
 
     pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
-        crate::stack::ensure_sufficient(|| self.delete_inner(ctx))
-    }
-
-    fn delete_inner<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
-        match self {
-            Self::Abstract { all, bind, .. } => {
-                if let Some(id) = all {
-                    ctx.rt.store_remove(id);
-                    ctx.env.unbind_variable(*id);
-                }
-                bind.delete(ctx)
-            }
-            Self::Ignore | Self::Literal(_) => (),
-            Self::Bind(id) => {
-                ctx.rt.store_remove(&id);
-                ctx.env.unbind_variable(*id);
-            }
-            Self::Or { alts } => alts[0].delete(ctx),
-            Self::Struct { all, binds } => {
-                if let Some(id) = all {
-                    ctx.rt.store_remove(id);
-                    ctx.env.unbind_variable(*id);
-                }
-                for (_, _, n) in binds {
-                    n.delete(ctx)
-                }
-            }
-            Self::Slice { kind: _, all, binds }
-            | Self::Variant { tag: _, all, binds } => {
-                if let Some(id) = all {
-                    ctx.rt.store_remove(id);
-                    ctx.env.unbind_variable(*id);
-                }
-                for n in binds {
-                    n.delete(ctx)
-                }
-            }
-            Self::SlicePrefix { list: _, all, prefix, tail } => {
-                if let Some(id) = all {
-                    ctx.rt.store_remove(id);
-                    ctx.env.unbind_variable(*id);
-                }
-                if let Some(id) = tail {
-                    ctx.rt.store_remove(id);
-                    ctx.env.unbind_variable(*id);
-                }
-                for n in prefix {
-                    n.delete(ctx)
-                }
-            }
-            Self::SliceSuffix { all, head, suffix } => {
-                if let Some(id) = all {
-                    ctx.rt.store_remove(id);
-                    ctx.env.unbind_variable(*id);
-                }
-                if let Some(id) = head {
-                    ctx.rt.store_remove(id);
-                    ctx.env.unbind_variable(*id);
-                }
-                for n in suffix {
-                    n.delete(ctx);
-                }
-            }
-        }
+        self.ids(&mut |id| {
+            ctx.rt.store_remove(&id);
+            ctx.env.unbind_variable(id);
+        })
     }
 }
 
@@ -1503,15 +1078,6 @@ pub(super) enum ArmMatch {
 pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
-    // CR claude for eric: [structure] A lazily sealed cache on the pattern, read
-    // only in this file, yet imaged (always `None` before any cycle, and
-    // re-sealed after decode anyway) and representable with
-    // `explicit_type_predicate == true`, where it must be `None`. It belongs
-    // with the select's other first-update facts (`LazyArmFacts`), not here.
-    /// The O(1) shallow discriminator for an inferred predicate, sealed
-    /// at the select's first consult ([`Type::shallow_discriminant`]);
-    /// `None` = run the full `is_a` walk.
-    pub shallow_predicate: Option<Type>,
     pub structure_predicate: StructPatternNode,
     pub guard: Option<Held<R, E>>,
 }
@@ -1520,7 +1086,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     pub(crate) fn image_len(&self) -> usize {
         self.explicit_type_predicate.encoded_len()
             + self.type_predicate.encoded_len()
-            + self.shallow_predicate.encoded_len()
             + self.structure_predicate.encoded_len()
             + 1
             + self.guard.as_ref().map_or(0, |g| g.image_len())
@@ -1529,7 +1094,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.explicit_type_predicate.encode(buf)?;
         self.type_predicate.encode(buf)?;
-        self.shallow_predicate.encode(buf)?;
         self.structure_predicate.encode(buf)?;
         self.guard.is_some().encode(buf)?;
         match &self.guard {
@@ -1544,7 +1108,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) -> Result<Self, PackError> {
         let explicit_type_predicate = bool::decode(buf)?;
         let type_predicate = Type::decode(buf)?;
-        let shallow_predicate = Option::<Type>::decode(buf)?;
         let structure_predicate = StructPatternNode::decode(buf)?;
         let guard = match bool::decode(buf)? {
             true => Some(Held::image_decode(ctx, buf)?),
@@ -1553,10 +1116,38 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         Ok(PatternNode {
             explicit_type_predicate,
             type_predicate,
-            shallow_predicate,
             structure_predicate,
             guard,
         })
+    }
+
+    /// The arm's coverage atoms: each or-alternative paired with its
+    /// member of an inferred predicate (under an explicit `T as p1 |
+    /// p2`, with T); any other arm is one atom.
+    pub(super) fn atoms(&self) -> SmallVec<[(&StructPatternNode, Type); 4]> {
+        match &self.structure_predicate {
+            StructPatternNode::Or { alts } => {
+                let ts = match self.explicit_type_predicate {
+                    true => None,
+                    false => alt_types(&self.type_predicate, alts.len()),
+                };
+                let typ = |i: usize| match &ts {
+                    Some(ts) => ts[i].clone(),
+                    None => self.type_predicate.clone(),
+                };
+                alts.iter().enumerate().map(|(i, a)| (a, typ(i))).collect()
+            }
+            sp => smallvec![(sp, self.type_predicate.clone())],
+        }
+    }
+
+    /// Does the arm match every value of `scrut` by its structure alone?
+    /// Its predicate is inferred, its structure matches anything, and
+    /// the predicate's shape covers the scrutinee's.
+    pub(super) fn matches_every(&self, env: &Env, scrut: &Type) -> Result<bool> {
+        Ok(!self.explicit_type_predicate
+            && self.structure_predicate.matches_anything()
+            && self.type_predicate.contains_with_flags(BitFlags::empty(), env, scrut)?)
     }
 
     /// Type the arm's `name@` captures from `narrowed`: the arm's
@@ -1623,13 +1214,12 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
             | Type::Struct(_)
             | Type::Ref(TypeRef { .. }) => (),
         }
-        let structure_predicate = StructPatternNode::compile(
+        let cx = PatCx { scope, pos, ori: &ori, inferred: !explicit };
+        let structure_predicate = StructPatternNode::compile_with(
             ctx,
+            cx,
             &type_predicate,
             &spec.structure_predicate,
-            scope,
-            pos,
-            ori,
         )?;
         // Under an inferred predicate a capture's type is unknown until
         // the select narrows the arm against its scrutinee
@@ -1651,7 +1241,6 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         Ok(PatternNode {
             explicit_type_predicate: explicit,
             type_predicate,
-            shallow_predicate: None,
             structure_predicate,
             guard,
         })
@@ -1677,7 +1266,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     pub(super) fn unbind_event(&self, event: &mut Event<E>) {
-        self.structure_predicate.unbind(&mut |id| {
+        self.structure_predicate.ids(&mut |id| {
             event.variables.remove(&id);
         })
     }
@@ -1696,47 +1285,58 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    /// Seal the shallow discriminator for this arm's inferred predicate
-    /// against the select's scrutinee type. Called lazily at the
-    /// select's first consult, when every tvar in the predicate is
-    /// settled; a pure function of static types, never cleared.
-    pub(super) fn seal_shallow(&mut self, env: &Env, scrutinee: &Type) {
-        if !self.explicit_type_predicate {
-            self.shallow_predicate =
-                self.type_predicate.shallow_discriminant(env, scrutinee);
-            if crate::dbgenv::gxdbg_shallow() {
-                eprintln!(
-                    "SHALLOW {} => {}",
-                    self.type_predicate,
-                    match &self.shallow_predicate {
-                        Some(t) => format!("{t}"),
-                        None => "deep".into(),
-                    }
-                );
+    /// The O(1) shallow discriminator for this arm's inferred predicate
+    /// against the select's scrutinee type ([`Type::shallow_discriminant`]);
+    /// `None` = run the full `is_a` walk. Read once every tvar in the
+    /// predicate is settled, at the select's first consult.
+    pub(super) fn shallow_discriminant(
+        &self,
+        env: &Env,
+        scrutinee: &Type,
+    ) -> Option<Type> {
+        if self.explicit_type_predicate {
+            return None;
+        }
+        let shallow = self.type_predicate.shallow_discriminant(env, scrutinee);
+        if crate::dbgenv::gxdbg_shallow() {
+            match &shallow {
+                Some(t) => eprintln!("SHALLOW {} => {t}", self.type_predicate),
+                None => eprintln!("SHALLOW {} => deep", self.type_predicate),
             }
         }
+        shallow
     }
 
-    /// Whether the arm's type and structure predicates admit `v`. The
-    /// checker narrows the arm's binds by exactly this, so a value that
-    /// fails it is never delivered to them.
-    pub(super) fn shape_matches(&self, env: &Env, v: &Value) -> bool {
+    /// Whether the arm's type and structure predicates admit `v`, given
+    /// the arm's shallow discriminator. The checker narrows the arm's
+    /// binds by exactly this, so a value that fails it is never
+    /// delivered to them.
+    pub(super) fn shape_matches(
+        &self,
+        env: &Env,
+        shallow: Option<&Type>,
+        v: &Value,
+    ) -> bool {
         // the type predicate is checked whether written or inferred: a
         // tuple and an array are the same `Value::Array` at runtime. An
         // inferred predicate is checked permissively (an abstract's
         // hidden rep cannot be verified); an explicit one strictly.
         let typed = if self.explicit_type_predicate {
             self.type_predicate.is_a(env, v)
-        } else if let Some(shallow) = &self.shallow_predicate {
-            shallow.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         } else {
-            self.type_predicate.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
+            let t = shallow.unwrap_or(&self.type_predicate);
+            t.is_a_with(env, IsAFlags::MatchAbstract.into(), v)
         };
         typed && self.structure_predicate.is_match(v)
     }
 
-    pub(super) fn arm_match(&self, env: &Env, v: &Value) -> ArmMatch {
-        if !self.shape_matches(env, v) {
+    pub(super) fn arm_match(
+        &self,
+        env: &Env,
+        shallow: Option<&Type>,
+        v: &Value,
+    ) -> ArmMatch {
+        if !self.shape_matches(env, shallow, v) {
             return ArmMatch::NoStruct;
         }
         match &self.guard {
@@ -1762,44 +1362,56 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 }
 
-// CR claude for eric: [style] `Pack`, `PackError` are imported at the top, yet
-// the codec below spells `netidx_core::pack::{Pack, PackError, varint_len,
-// encode_varint, decode_varint}` in full at every use and re-imports them inside
-// `decode`; import the three varint fns once and drop the paths.
 fn boxed_len(items: &[StructPatternNode]) -> usize {
-    netidx_core::pack::varint_len(items.len() as u64)
-        + items.iter().map(|p| p.encoded_len()).sum::<usize>()
+    varint_len(items.len() as u64) + items.iter().map(|p| p.encoded_len()).sum::<usize>()
 }
 
 fn boxed_encode(
     items: &[StructPatternNode],
     buf: &mut impl bytes::BufMut,
-) -> Result<(), netidx_core::pack::PackError> {
-    netidx_core::pack::encode_varint(items.len() as u64, buf);
+) -> Result<(), PackError> {
+    encode_varint(items.len() as u64, buf);
     for p in items {
         p.encode(buf)?;
     }
     Ok(())
 }
 
+/// A decoded count, capped by the bytes left: every element takes at
+/// least one, so a corrupt count fails the decode instead of sizing an
+/// allocation.
+fn decode_count(buf: &mut impl bytes::Buf) -> Result<usize, PackError> {
+    let n = decode_varint(buf)? as usize;
+    if n > buf.remaining() {
+        return Err(PackError::TooBig);
+    }
+    Ok(n)
+}
+
 fn boxed_decode(
     buf: &mut impl bytes::Buf,
-) -> Result<Box<[StructPatternNode]>, netidx_core::pack::PackError> {
-    let n = netidx_core::pack::decode_varint(buf)? as usize;
-    // CR claude for eric: [risk] A count read from the image sizes the
-    // allocation; a corrupt cache file (no checksum) asks for 2^60 elements and
-    // aborts the shell instead of failing the decode and running cold. Cap by
-    // `buf.remaining()`; also the Struct arm below and select.rs `image_decode`.
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        out.push(StructPatternNode::decode(buf)?);
-    }
-    Ok(out.into_boxed_slice())
+) -> Result<Box<[StructPatternNode]>, PackError> {
+    let n = decode_count(buf)?;
+    (0..n).map(|_| StructPatternNode::decode(buf)).collect()
 }
 
 /// The compiled pattern is data: bind ids, literals and shapes.
-impl netidx_core::pack::Pack for StructPatternNode {
+impl Pack for StructPatternNode {
     fn encoded_len(&self) -> usize {
+        crate::stack::ensure_sufficient(|| self.encoded_len_inner())
+    }
+
+    fn encode(&self, buf: &mut impl bytes::BufMut) -> Result<(), PackError> {
+        crate::stack::ensure_sufficient(|| self.encode_inner(buf))
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> Result<Self, PackError> {
+        crate::stack::ensure_sufficient(|| Self::decode_inner(buf))
+    }
+}
+
+impl StructPatternNode {
+    fn encoded_len_inner(&self) -> usize {
         1 + match self {
             Self::Ignore => 0,
             Self::Literal(v) => v.encoded_len(),
@@ -1818,7 +1430,7 @@ impl netidx_core::pack::Pack for StructPatternNode {
             }
             Self::Struct { all, binds } => {
                 all.encoded_len()
-                    + netidx_core::pack::varint_len(binds.len() as u64)
+                    + varint_len(binds.len() as u64)
                     + binds
                         .iter()
                         .map(|(n, i, p)| {
@@ -1839,10 +1451,7 @@ impl netidx_core::pack::Pack for StructPatternNode {
         }
     }
 
-    fn encode(
-        &self,
-        buf: &mut impl bytes::BufMut,
-    ) -> Result<(), netidx_core::pack::PackError> {
+    fn encode_inner(&self, buf: &mut impl bytes::BufMut) -> Result<(), PackError> {
         match self {
             Self::Ignore => buf.put_u8(0),
             Self::Literal(v) => {
@@ -1875,7 +1484,7 @@ impl netidx_core::pack::Pack for StructPatternNode {
             Self::Struct { all, binds } => {
                 buf.put_u8(6);
                 all.encode(buf)?;
-                netidx_core::pack::encode_varint(binds.len() as u64, buf);
+                encode_varint(binds.len() as u64, buf);
                 for (n, i, p) in binds.iter() {
                     n.encode(buf)?;
                     i.encode(buf)?;
@@ -1903,8 +1512,7 @@ impl netidx_core::pack::Pack for StructPatternNode {
         Ok(())
     }
 
-    fn decode(buf: &mut impl bytes::Buf) -> Result<Self, netidx_core::pack::PackError> {
-        use netidx_core::pack::{Pack, PackError};
+    fn decode_inner(buf: &mut impl bytes::Buf) -> Result<Self, PackError> {
         if !buf.has_remaining() {
             return Err(PackError::BufferShort);
         }
@@ -1930,16 +1538,13 @@ impl netidx_core::pack::Pack for StructPatternNode {
             },
             6 => {
                 let all = Pack::decode(buf)?;
-                let n = netidx_core::pack::decode_varint(buf)? as usize;
-                let mut binds = Vec::with_capacity(n);
-                for _ in 0..n {
-                    binds.push((
-                        Pack::decode(buf)?,
-                        Pack::decode(buf)?,
-                        Pack::decode(buf)?,
-                    ));
-                }
-                Self::Struct { all, binds: binds.into_boxed_slice() }
+                let n = decode_count(buf)?;
+                let binds = (0..n)
+                    .map(|_| {
+                        Ok((Pack::decode(buf)?, Pack::decode(buf)?, Pack::decode(buf)?))
+                    })
+                    .collect::<Result<_, PackError>>()?;
+                Self::Struct { all, binds }
             }
             7 => Self::Variant {
                 tag: Pack::decode(buf)?,

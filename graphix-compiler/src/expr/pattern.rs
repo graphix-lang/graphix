@@ -1,5 +1,5 @@
 use super::{Expr, ModPath, Name, WrittenAt, parser, print::Literal};
-use crate::{env::Env, print_as_written, typ::Type};
+use crate::{env::Env, node::MAX_ALIAS_DEPTH, print_as_written, typ::Type};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use netidx_derive::Pack;
@@ -81,75 +81,42 @@ impl StructurePattern {
         crate::stack::ensure_sufficient(|| self.with_names_inner(f))
     }
 
-    // CR claude for eric: [structure] The `all@` capture is handled by hand in every
-    // arm here and again in Display. An `all(&self) -> Option<&Name>` and a
-    // sub-pattern iterator would shrink both to a few lines.
-    fn with_names_inner<'a>(&'a self, f: &mut impl FnMut(&'a ArcStr)) {
+    /// The `name@` capture of this pattern.
+    fn all(&self) -> Option<&Name> {
         match self {
-            Self::Bind(n) => f(n),
-            Self::Ignore | Self::Literal(_) => (),
-            Self::Slice { list: _, all, binds } => {
-                if let Some(n) = all {
-                    f(n)
-                }
-                for t in binds.iter() {
-                    t.with_names(f)
-                }
-            }
-            Self::SlicePrefix { list: _, all, prefix, tail } => {
-                if let Some(n) = all {
-                    f(n)
-                }
-                if let Some(n) = tail {
-                    f(n)
-                }
-                for t in prefix.iter() {
-                    t.with_names(f)
-                }
-            }
-            Self::SliceSuffix { all, head, suffix } => {
-                if let Some(n) = all {
-                    f(n)
-                }
-                if let Some(n) = head {
-                    f(n)
-                }
-                for t in suffix.iter() {
-                    t.with_names(f)
-                }
-            }
-            Self::Tuple { all, binds } => {
-                if let Some(n) = all {
-                    f(n)
-                }
-                for t in binds.iter() {
-                    t.with_names(f)
-                }
-            }
-            Self::Variant { all, tag: _, binds } => {
-                if let Some(n) = all {
-                    f(n)
-                }
-                for t in binds.iter() {
-                    t.with_names(f)
-                }
-            }
-            Self::Abstract { all, name: _, bind } => {
-                if let Some(n) = all {
-                    f(n)
-                }
-                bind.with_names(f)
-            }
-            Self::Struct { exhaustive: _, all, binds } => {
-                if let Some(n) = all {
-                    f(n)
-                }
-                for (_, t, _) in binds.iter() {
-                    t.with_names(f)
-                }
-            }
-            Self::Or(alts) => alts[0].with_names(f),
+            Self::Slice { all, .. }
+            | Self::SlicePrefix { all, .. }
+            | Self::SliceSuffix { all, .. }
+            | Self::Tuple { all, .. }
+            | Self::Variant { all, .. }
+            | Self::Abstract { all, .. }
+            | Self::Struct { all, .. } => all.as_ref(),
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Or(_) => None,
         }
+    }
+
+    fn with_names_inner<'a>(&'a self, f: &mut impl FnMut(&'a ArcStr)) {
+        if let Some(n) = self.all() {
+            f(n)
+        }
+        let (rest, subs): (Option<&Name>, &[Self]) = match self {
+            Self::Bind(n) => return f(n),
+            Self::Ignore | Self::Literal(_) => return,
+            Self::Abstract { bind, .. } => return bind.with_names(f),
+            Self::Or(alts) => return alts[0].with_names(f),
+            Self::Struct { binds, .. } => {
+                return binds.iter().for_each(|(_, t, _)| t.with_names(f));
+            }
+            Self::Slice { binds, .. }
+            | Self::Tuple { binds, .. }
+            | Self::Variant { binds, .. } => (None, binds),
+            Self::SlicePrefix { prefix, tail, .. } => (tail.as_ref(), prefix),
+            Self::SliceSuffix { head, suffix, .. } => (head.as_ref(), suffix),
+        };
+        if let Some(n) = rest {
+            f(n)
+        }
+        subs.iter().for_each(|t| t.with_names(f))
     }
 
     pub fn binds_uniq(&self) -> bool {
@@ -196,34 +163,12 @@ impl StructurePattern {
                 let params = Arc::from_iter(params.iter().map(|_| Type::empty_tvar()));
                 Ok(Type::Abstract { id: *id, params })
             }
-            // CR claude for eric: [structure] `SliceSuffix` below repeats this arm
-            // with `list: false`, and `complete_type_predicate_inner` repeats its
-            // List arm as its Array arm but for the constructor. Bind
-            // `(list, binds)` once per slice form and share one body.
             Self::Slice { list, all: _, binds }
             | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
-                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
-                for p in binds.iter() {
-                    ts.push(p.infer_type_predicate(env, scope)?);
-                }
-                let t = match Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())?
-                {
-                    Type::Bottom => Type::empty_tvar(),
-                    t => t,
-                };
-                Ok(if *list { Type::List(Arc::new(t)) } else { Type::Array(Arc::new(t)) })
+                Self::infer_slice(env, scope, *list, binds)
             }
-            Self::SliceSuffix { all: _, head: _, suffix: binds } => {
-                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
-                for p in binds.iter() {
-                    ts.push(p.infer_type_predicate(env, scope)?);
-                }
-                let t = match Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())?
-                {
-                    Type::Bottom => Type::empty_tvar(),
-                    t => t,
-                };
-                Ok(Type::Array(Arc::new(t)))
+            Self::SliceSuffix { all: _, head: _, suffix } => {
+                Self::infer_slice(env, scope, false, suffix)
             }
             Self::Struct { all: _, exhaustive: _, binds } => {
                 let mut typs = binds
@@ -233,9 +178,7 @@ impl StructurePattern {
                         Ok((n.clone(), t, WrittenAt::NOWHERE))
                     })
                     .collect::<Result<SmallVec<[(ArcStr, Type, WrittenAt); 8]>>>()?;
-                // CR claude for eric: [perf] `sort_by_key` clones an `ArcStr` per
-                // comparison: `sort_by(|a, b| a.0.cmp(&b.0))`.
-                typs.sort_by_key(|(n, _, _)| n.clone());
+                typs.sort_by(|a, b| a.0.cmp(&b.0));
                 Ok(Type::Struct(Arc::from_iter(typs.into_iter())))
             }
             Self::Or(alts) => {
@@ -250,10 +193,29 @@ impl StructurePattern {
         }
     }
 
+    /// The inferred type of a slice pattern over its element patterns.
+    fn infer_slice(
+        env: &Env,
+        scope: &ModPath,
+        list: bool,
+        elems: &[Self],
+    ) -> Result<Type> {
+        let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
+        for p in elems {
+            ts.push(p.infer_type_predicate(env, scope)?);
+        }
+        let t = match Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())? {
+            Type::Bottom => Type::empty_tvar(),
+            t => t,
+        };
+        Ok(slice_type(list, t))
+    }
+
     /// Complete a partial struct pattern's inferred type (`{x, ..}` infers
-    /// `{x: 'a}`) against the scrutinee: the union, over scrutinee members
-    /// carrying the named fields, of the member with those fields replaced
-    /// by the pattern's. Recurses through composites. `None` if unchanged.
+    /// `{x: 'a}`) against the scrutinee: the member the pattern can match,
+    /// with the named fields replaced by the pattern's. Recurses through
+    /// composites. `None` if unchanged; an error when the pattern can
+    /// match more than one member.
     pub fn complete_type_predicate(
         &self,
         env: &Env,
@@ -261,8 +223,62 @@ impl StructurePattern {
         scrutinee: &Type,
     ) -> Result<Option<Type>> {
         crate::stack::ensure_sufficient(|| {
-            self.complete_type_predicate_inner(env, ptype, scrutinee, 0)
+            self.complete_type_predicate_inner(env, ptype, scrutinee)
         })
+    }
+
+    /// `pt` completed against the scrutinee position `st`, and whether
+    /// that changed it.
+    fn complete_sub(&self, env: &Env, pt: &Type, st: &Type) -> Result<(bool, Type)> {
+        Ok(match self.complete_type_predicate(env, pt, st)? {
+            Some(t) => (true, t),
+            None => (false, pt.clone()),
+        })
+    }
+
+    /// Complete element patterns position by position.
+    fn complete_elems(
+        env: &Env,
+        elems: &[Self],
+        pts: &[Type],
+        sts: &[Type],
+    ) -> Result<Option<Arc<[Type]>>> {
+        let mut changed = false;
+        let mut out: SmallVec<[Type; 8]> = SmallVec::new();
+        for ((p, pt), st) in elems.iter().zip(pts).zip(sts) {
+            let (c, t) = p.complete_sub(env, pt, st)?;
+            changed |= c;
+            out.push(t)
+        }
+        Ok(changed.then(|| Arc::from_iter(out)))
+    }
+
+    /// The completion of the one scrutinee member `complete` answers
+    /// for and the pattern could match.
+    fn unique_completion(
+        &self,
+        env: &Env,
+        scrutinee: &Type,
+        mut complete: impl FnMut(&Type) -> Result<Option<Type>>,
+    ) -> Result<Option<Type>> {
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        union_members(env, scrutinee, &mut members)?;
+        let mut found: Option<Type> = None;
+        for m in members.iter() {
+            let Some(t) = complete(m)? else { continue };
+            if !t.could_match(env, m)? {
+                continue;
+            }
+            match &found {
+                None => found = Some(t),
+                Some(f) if *f == t => (),
+                Some(_) => bail!(
+                    "the pattern {self} matches more than one member of {scrutinee}; \
+                     annotate the member you mean, e.g. `T as {self}`"
+                ),
+            }
+        }
+        Ok(found)
     }
 
     fn complete_type_predicate_inner(
@@ -270,275 +286,171 @@ impl StructurePattern {
         env: &Env,
         ptype: &Type,
         scrutinee: &Type,
-        depth: usize,
     ) -> Result<Option<Type>> {
-        // CR claude for eric: [risk] 128 (here and in `members`) is an unnamed
-        // limit that silently stops the completion: a partial struct pattern
-        // nested deeper types differently from a shallow one, and the parser
-        // admits deeper patterns. The levels below are not stack-guarded either;
-        // recurse through the guarded `complete_type_predicate` and drop it.
-        if depth > 128 {
-            return Ok(None);
-        }
-        // The scrutinee members a pattern position could be matching:
-        // deref tvars, expand refs, flatten unions.
-        fn members(env: &Env, t: &Type, depth: usize, out: &mut SmallVec<[Type; 8]>) {
-            if depth > 128 {
-                return;
-            }
-            t.with_deref(|t| match t {
-                None => (),
-                Some(Type::Set(s)) => {
-                    for t in s.iter() {
-                        members(env, t, depth + 1, out)
-                    }
-                }
-                Some(t @ Type::Ref(_)) => match t.lookup_ref(env) {
-                    Ok(t) => members(env, &t, depth + 1, out),
-                    Err(_) => (),
-                },
-                Some(t) => out.push(t.clone()),
-            })
-        }
-        macro_rules! complete_elems {
-            ($binds:expr, $ptypes:expr, $stypes:expr) => {{
-                let mut changed = false;
-                let mut out: SmallVec<[Type; 8]> = SmallVec::new();
-                for ((p, pt), st) in $binds.iter().zip($ptypes.iter()).zip($stypes.iter())
-                {
-                    match p.complete_type_predicate_inner(env, pt, st, depth + 1)? {
-                        Some(t) => {
-                            changed = true;
-                            out.push(t)
-                        }
-                        None => out.push(pt.clone()),
-                    }
-                }
-                (changed, out)
-            }};
-        }
         match self {
-            Self::Struct { all: _, exhaustive: false, binds } => {
-                let pfields = match ptype {
-                    Type::Struct(f) => f,
-                    _ => return Ok(None),
-                };
-                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-                members(env, scrutinee, depth, &mut ms);
-                let matching: SmallVec<[&Type; 8]> = ms
-                    .iter()
-                    .filter(|m| match m {
-                        Type::Struct(sf) => binds
-                            .iter()
-                            .all(|(n, _, _)| sf.iter().any(|(sn, _, _)| sn == n)),
-                        _ => false,
-                    })
-                    .collect();
-                let sf = match &matching[..] {
-                    [] => return Ok(None),
-                    [Type::Struct(sf)] => sf,
-                    _ => bail!(
-                        "the partial pattern {self} matches more than one member \
-                         of {scrutinee}; annotate the member you mean, e.g. \
-                         `T as {self}`"
-                    ),
-                };
-                let fields = sf
-                    .iter()
-                    .map(|(sn, st, at)| match binds.iter().find(|(n, _, _)| n == sn) {
-                        Some((_, p, _)) => {
-                            let pt = &pfields
-                                .iter()
-                                .find(|(pn, _, _)| pn == sn)
-                                .expect("inferred field missing")
-                                .1;
-                            let t = p
-                                .complete_type_predicate_inner(env, pt, st, depth + 1)?
-                                .unwrap_or_else(|| (*pt).clone());
-                            Ok((sn.clone(), t, *at))
-                        }
-                        None => Ok((sn.clone(), st.clone(), *at)),
-                    })
-                    .collect::<Result<SmallVec<[(ArcStr, Type, WrittenAt); 8]>>>()?;
-                Ok(Some(Type::Struct(Arc::from_iter(fields.into_iter()))))
-            }
-            Self::Struct { all: _, exhaustive: true, binds } => {
-                let pfields = match ptype {
-                    Type::Struct(f) => f,
-                    _ => return Ok(None),
-                };
-                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-                members(env, scrutinee, depth, &mut ms);
-                // CR claude for eric: [bug] Completes against the FIRST struct
-                // member of the scrutinee, whatever its fields. probe: `select v
-                // { {x: {z, ..}} => .., _ => .. }` over `[{a: i64, x: {z: i64, w:
-                // i64}}, {x: {z: string, q: i64}}]` is refused ("pattern { x: { w:
-                // i64, z: _ } } will never match") though it matches the second
-                // member. The Tuple, Variant, List and Array arms below pick the
-                // first member of their shape too: `select v { (s, {a, ..}) => ..
-                // }` over `[(i64, {a: i64, b: i64}), (string, {a: string, c:
-                // i64})]` passes the exhaustiveness check, then is bottom for
-                // `("x", {a: "s", c: 1})` in both engines. Complete against the
-                // members the pattern can match; refuse two, as the partial arm does.
-                let sf = match ms.iter().find(|m| matches!(m, Type::Struct(_))) {
-                    Some(Type::Struct(sf)) => sf.clone(),
-                    _ => return Ok(None),
-                };
-                let mut changed = false;
-                let mut fields: SmallVec<[(ArcStr, Type, WrittenAt); 8]> =
-                    SmallVec::new();
-                for (n, pt, at) in pfields.iter() {
-                    let sub = binds.iter().find(|(bn, _, _)| bn == n);
-                    let st = sf.iter().find(|(sn, _, _)| sn == n);
-                    match (sub, st) {
-                        (Some((_, p, _)), Some((_, st, _))) => {
-                            match p.complete_type_predicate_inner(
-                                env,
-                                pt,
-                                st,
-                                depth + 1,
-                            )? {
-                                Some(t) => {
-                                    changed = true;
-                                    fields.push((n.clone(), t, *at))
-                                }
-                                None => fields.push((n.clone(), pt.clone(), *at)),
-                            }
-                        }
-                        _ => fields.push((n.clone(), pt.clone(), *at)),
+            Self::Struct { all: _, exhaustive, binds } => {
+                let Type::Struct(pfields) = ptype else { return Ok(None) };
+                self.unique_completion(env, scrutinee, |m| {
+                    let Type::Struct(sf) = m else { return Ok(None) };
+                    let named = |n: &ArcStr| binds.iter().find(|(bn, _, _)| bn == n);
+                    let fits = if *exhaustive {
+                        sf.len() == binds.len()
+                            && sf.iter().all(|(n, _, _)| named(n).is_some())
+                    } else {
+                        binds.iter().all(|(n, _, _)| sf.iter().any(|(sn, _, _)| sn == n))
+                    };
+                    if !fits {
+                        return Ok(None);
                     }
-                }
-                Ok(changed.then(|| Type::Struct(Arc::from_iter(fields.into_iter()))))
+                    let mut changed = !*exhaustive;
+                    let mut fields: SmallVec<[(ArcStr, Type, WrittenAt); 8]> =
+                        SmallVec::new();
+                    for (sn, st, at) in sf.iter() {
+                        let t = match named(sn) {
+                            None => st.clone(),
+                            Some((_, p, _)) => {
+                                let pt = pfields
+                                    .iter()
+                                    .find(|(pn, _, _)| pn == sn)
+                                    .map(|(_, pt, _)| pt)
+                                    .expect("inferred field missing");
+                                let (c, t) = p.complete_sub(env, pt, st)?;
+                                changed |= c;
+                                t
+                            }
+                        };
+                        fields.push((sn.clone(), t, *at))
+                    }
+                    Ok(changed.then(|| Type::Struct(Arc::from_iter(fields))))
+                })
             }
             Self::Tuple { all: _, binds } => {
-                let pts = match ptype {
-                    Type::Tuple(pts) if pts.len() == binds.len() => pts,
-                    _ => return Ok(None),
-                };
-                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-                members(env, scrutinee, depth, &mut ms);
-                let sts = match ms
-                    .iter()
-                    .find(|m| matches!(m, Type::Tuple(s) if s.len() == binds.len()))
-                {
-                    Some(Type::Tuple(sts)) => sts.clone(),
-                    _ => return Ok(None),
-                };
-                let (changed, out) = complete_elems!(binds, pts, sts);
-                Ok(changed.then(|| Type::Tuple(Arc::from_iter(out.into_iter()))))
+                let Type::Tuple(pts) = ptype else { return Ok(None) };
+                self.unique_completion(env, scrutinee, |m| match m {
+                    Type::Tuple(sts) if sts.len() == binds.len() => {
+                        Ok(Self::complete_elems(env, binds, pts, sts)?.map(Type::Tuple))
+                    }
+                    _ => Ok(None),
+                })
             }
-            Self::Abstract { .. } => Ok(None),
             Self::Variant { all: _, tag, binds } => {
-                let (pts, at) = match ptype {
-                    Type::Variant(_, pts, at) if pts.len() == binds.len() => (pts, *at),
-                    _ => return Ok(None),
-                };
-                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-                members(env, scrutinee, depth, &mut ms);
-                let sts = match ms.iter().find(
-                    |m| matches!(m, Type::Variant(t, s, _) if t == tag && s.len() == binds.len()),
-                ) {
-                    Some(Type::Variant(_, sts, _)) => sts.clone(),
-                    _ => return Ok(None),
-                };
-                let (changed, out) = complete_elems!(binds, pts, sts);
-                Ok(changed.then(|| {
-                    Type::Variant(tag.clone(), Arc::from_iter(out.into_iter()), at)
-                }))
+                let Type::Variant(_, pts, at) = ptype else { return Ok(None) };
+                self.unique_completion(env, scrutinee, |m| match m {
+                    Type::Variant(t, sts, _) if t == tag && sts.len() == binds.len() => {
+                        let ts = Self::complete_elems(env, binds, pts, sts)?;
+                        Ok(ts.map(|ts| Type::Variant(tag.clone(), ts, *at)))
+                    }
+                    _ => Ok(None),
+                })
             }
-            Self::Slice { list: true, all: _, binds }
-            | Self::SlicePrefix { list: true, all: _, prefix: binds, tail: _ } => {
-                let pt = match ptype {
-                    Type::List(t) => t,
-                    _ => return Ok(None),
-                };
-                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-                members(env, scrutinee, depth, &mut ms);
-                let st = match ms.iter().find(|m| matches!(m, Type::List(_))) {
-                    Some(Type::List(st)) => st.clone(),
-                    _ => return Ok(None),
-                };
-                let mut changed = false;
-                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
-                for p in binds.iter() {
-                    let sub = p
-                        .complete_type_predicate_inner(env, pt, &st, depth + 1)?
-                        .inspect(|_| changed = true)
-                        .unwrap_or_else(|| (**pt).clone());
-                    ts.push(sub);
-                }
-                if !changed {
-                    return Ok(None);
-                }
-                return Ok(Some(Type::List(Arc::new(Type::union(
-                    env,
-                    &ts.iter().collect::<SmallVec<[_; 8]>>(),
-                )?))));
+            Self::Slice { list, all: _, binds }
+            | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
+                self.complete_slice(env, ptype, scrutinee, *list, binds)
             }
-            Self::Slice { list: false, all: _, binds }
-            | Self::SlicePrefix { list: false, all: _, prefix: binds, tail: _ }
-            | Self::SliceSuffix { all: _, head: _, suffix: binds } => {
-                let pt = match ptype {
-                    Type::Array(t) => t,
-                    _ => return Ok(None),
-                };
-                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
-                members(env, scrutinee, depth, &mut ms);
-                let st = match ms.iter().find(|m| matches!(m, Type::Array(_))) {
-                    Some(Type::Array(st)) => st.clone(),
-                    _ => return Ok(None),
-                };
-                let mut changed = false;
-                let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
-                for p in binds.iter() {
-                    let sub = p
-                        .complete_type_predicate_inner(env, pt, &st, depth + 1)?
-                        .inspect(|_| changed = true)
-                        .unwrap_or_else(|| (**pt).clone());
-                    ts.push(sub);
-                }
-                if !changed {
-                    return Ok(None);
-                }
-                Ok(Some(Type::Array(Arc::new(Type::union(
-                    env,
-                    &ts.iter().collect::<SmallVec<[_; 8]>>(),
-                )?))))
+            Self::SliceSuffix { all: _, head: _, suffix } => {
+                self.complete_slice(env, ptype, scrutinee, false, suffix)
             }
             Self::Or(alts) => {
-                let pts = match ptype {
-                    Type::Set(pts) if pts.len() == alts.len() => pts,
-                    _ => return Ok(None),
-                };
+                let Type::Set(pts) = ptype else { return Ok(None) };
+                if pts.len() != alts.len() {
+                    return Ok(None);
+                }
                 let mut changed = false;
                 let mut out: SmallVec<[Type; 8]> = SmallVec::new();
                 for (p, pt) in alts.iter().zip(pts.iter()) {
-                    match p.complete_type_predicate_inner(
-                        env,
-                        pt,
-                        scrutinee,
-                        depth + 1,
-                    )? {
-                        Some(t) => {
-                            changed = true;
-                            out.push(t)
-                        }
-                        None => out.push(pt.clone()),
-                    }
+                    let (c, t) = p.complete_sub(env, pt, scrutinee)?;
+                    changed |= c;
+                    out.push(t)
                 }
-                Ok(changed.then(|| Type::Set(Arc::from_iter(out.into_iter()))))
+                Ok(changed.then(|| Type::Set(Arc::from_iter(out))))
             }
-            Self::Ignore | Self::Bind(_) | Self::Literal(_) => Ok(None),
+            Self::Abstract { .. } | Self::Ignore | Self::Bind(_) | Self::Literal(_) => {
+                Ok(None)
+            }
         }
+    }
+
+    /// A slice pattern's completion: the element type is the union of
+    /// the element patterns' completions.
+    fn complete_slice(
+        &self,
+        env: &Env,
+        ptype: &Type,
+        scrutinee: &Type,
+        list: bool,
+        elems: &[Self],
+    ) -> Result<Option<Type>> {
+        let elem = |t: &Type| match (list, t) {
+            (true, Type::List(t)) | (false, Type::Array(t)) => Some(t.clone()),
+            _ => None,
+        };
+        let Some(pt) = elem(ptype) else { return Ok(None) };
+        self.unique_completion(env, scrutinee, |m| {
+            let Some(st) = elem(m) else { return Ok(None) };
+            let mut changed = false;
+            let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
+            for p in elems {
+                let (c, t) = p.complete_sub(env, &pt, &st)?;
+                changed |= c;
+                ts.push(t)
+            }
+            if !changed {
+                return Ok(None);
+            }
+            let t = Type::union(env, &ts.iter().collect::<SmallVec<[_; 8]>>())?;
+            Ok(Some(slice_type(list, t)))
+        })
     }
 }
 
-// CR claude for eric: [structure] Patterns have no `PrettyDisplay`, so a long
-// destructuring or type predicate never breaks and pushes its value under the
-// head. probe: a seven-field `let { alpha_field, .. } = s` prints a 97-column
-// line, then `s;` on its own.
+fn slice_type(list: bool, elem: Type) -> Type {
+    if list { Type::List(Arc::new(elem)) } else { Type::Array(Arc::new(elem)) }
+}
+
+/// The concrete members of `t`: bound tvars dereferenced, aliases
+/// expanded, unions flattened. An unbound tvar contributes none, and so
+/// does an alias chain deeper than [`MAX_ALIAS_DEPTH`] (a cyclic typedef).
+pub(crate) fn union_members(
+    env: &Env,
+    t: &Type,
+    out: &mut SmallVec<[Type; 8]>,
+) -> Result<()> {
+    fn walk(
+        env: &Env,
+        t: &Type,
+        depth: usize,
+        out: &mut SmallVec<[Type; 8]>,
+    ) -> Result<()> {
+        if depth > MAX_ALIAS_DEPTH {
+            return Ok(());
+        }
+        match t.deref_cloned() {
+            None => Ok(()),
+            Some(Type::Set(ts)) => {
+                ts.iter().try_for_each(|t| walk(env, t, depth + 1, out))
+            }
+            Some(t @ Type::Ref(_)) => walk(env, &t.lookup_ref(env)?, depth + 1, out),
+            Some(t) => {
+                out.push(t);
+                Ok(())
+            }
+        }
+    }
+    walk(env, t, 0, out)
+}
+
+// XCR claude for eric: a pattern PrettyDisplay is a printer feature (expr/print.rs,
+// parse-print's), with layout rules to rule on: where a struct pattern breaks,
+// whether a type predicate breaks with it. Recommend: struct/tuple/slice patterns
+// break one field per line like their literals; left to the printer's owner.
 impl fmt::Display for StructurePattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        crate::stack::ensure_sufficient(|| self.fmt_inner(f))
+    }
+}
+
+impl StructurePattern {
+    fn fmt_inner(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         macro_rules! with_sep {
             ($binds:expr) => {
                 for (i, b) in $binds.iter().enumerate() {
@@ -549,22 +461,19 @@ impl fmt::Display for StructurePattern {
                 }
             };
         }
+        if let Some(all) = self.all() {
+            write!(f, "{all}@ ")?
+        }
         match self {
             StructurePattern::Ignore => write!(f, "_"),
             StructurePattern::Literal(v) => write!(f, "{}", Literal(v)),
             StructurePattern::Bind(n) => write!(f, "{n}"),
-            StructurePattern::Slice { list, all, binds } => {
-                if let Some(all) = all {
-                    write!(f, "{all}@ ")?
-                }
+            StructurePattern::Slice { list, all: _, binds } => {
                 write!(f, "{}", if *list { "[<" } else { "[" })?;
                 with_sep!(binds);
                 write!(f, "{}", if *list { ">]" } else { "]" })
             }
-            StructurePattern::SlicePrefix { list, all, prefix, tail } => {
-                if let Some(all) = all {
-                    write!(f, "{all}@ ")?
-                }
+            StructurePattern::SlicePrefix { list, all: _, prefix, tail } => {
                 write!(f, "{}", if *list { "[<" } else { "[" })?;
                 for b in prefix.iter() {
                     write!(f, "{b}, ")?
@@ -575,10 +484,7 @@ impl fmt::Display for StructurePattern {
                     Some(name) => write!(f, "{name}..{close}"),
                 }
             }
-            StructurePattern::SliceSuffix { all, head, suffix } => {
-                if let Some(all) = all {
-                    write!(f, "{all}@ ")?
-                }
+            StructurePattern::SliceSuffix { all: _, head, suffix } => {
                 write!(f, "[")?;
                 match head {
                     None => write!(f, ".., ")?,
@@ -587,35 +493,20 @@ impl fmt::Display for StructurePattern {
                 with_sep!(suffix);
                 write!(f, "]")
             }
-            StructurePattern::Tuple { all, binds } => {
-                if let Some(all) = all {
-                    write!(f, "{all}@ ")?
-                }
+            StructurePattern::Tuple { all: _, binds } => {
                 write!(f, "(")?;
                 with_sep!(binds);
                 write!(f, ")")
             }
-            // CR claude for eric: [style] `x@` takes a space before a slice, tuple
-            // or struct pattern but not before a variant or abstract one: `kk@ `Up`
-            // (the book's spelling) formats to `kk@`Up`, `c@ T(x)` to `c@T(x)`.
-            StructurePattern::Variant { all, tag, binds } if binds.len() == 0 => {
-                if let Some(all) = all {
-                    write!(f, "{all}@")?
-                }
+            StructurePattern::Variant { all: _, tag, binds } if binds.is_empty() => {
                 write!(f, "`{tag}")
             }
-            StructurePattern::Variant { all, tag, binds } => {
-                if let Some(all) = all {
-                    write!(f, "{all}@")?
-                }
+            StructurePattern::Variant { all: _, tag, binds } => {
                 write!(f, "`{tag}(")?;
                 with_sep!(binds);
                 write!(f, ")")
             }
-            StructurePattern::Abstract { all, name, bind } => {
-                if let Some(all) = all {
-                    write!(f, "{all}@")?
-                }
+            StructurePattern::Abstract { all: _, name, bind } => {
                 write!(f, "{name}({bind})")
             }
             StructurePattern::Or(alts) => {
@@ -627,10 +518,7 @@ impl fmt::Display for StructurePattern {
                 }
                 Ok(())
             }
-            StructurePattern::Struct { exhaustive, all, binds } => {
-                if let Some(all) = all {
-                    write!(f, "{all}@ ")?
-                }
+            StructurePattern::Struct { exhaustive, all: _, binds } => {
                 let mut written: SmallVec<[_; 16]> = binds.iter().collect();
                 if print_as_written() {
                     written.sort_by_key(|(_, _, at)| at.order());

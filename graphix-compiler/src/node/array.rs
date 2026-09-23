@@ -1,11 +1,5 @@
-// CR claude for eric: [style] `crate::image` is split over two statements
-// beside the `crate::{..}` group, and `super::produce_constant` is spelled out
-// twice; one grouped `use crate::{..}` and import it.
-use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
-use crate::image::ImageBuf;
-use crate::image::nodes::{
-    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, opt_node_decode,
-    opt_node_encode, opt_node_len, put_tag, tag_len,
+use super::{
+    WakeBit, compiler::compile, dense_gate, gather, list, produce_constant, read_prod,
 };
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
@@ -17,6 +11,13 @@ use crate::{
         BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
         emit_list_new_node, emit_tuple_new_node,
     },
+    image::{
+        ImageBuf,
+        nodes::{
+            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, opt_node_decode,
+            opt_node_encode, opt_node_len, put_tag, tag_len,
+        },
+    },
     typ::Type,
     wrap,
 };
@@ -26,6 +27,11 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
 use poolshark::local::LPooled;
+use std::{
+    fmt::Debug,
+    marker::PhantomData,
+    ops::Bound::{Excluded, Included, Unbounded},
+};
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
@@ -97,98 +103,69 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 }
 
-// CR claude for eric: [readability] stale: the fused init loop taints without
-// logging, the node-walk logs every cycle (collection.rs IndexRange::select),
-// and `list::init` shares the limit. Only collection init and the init
-// scaffold read it; it belongs beside IndexRange, not in array.rs.
-/// The largest `n` `array::init(n, f)` will build; beyond it both
-/// evaluators log and produce bottom.
-pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
+/// An integer index or slice bound as an `i64`, the form both engines
+/// index with. An unsigned value above `i64::MAX` saturates: it is out
+/// of bounds for any length and never counts from the end.
+pub(crate) fn index_i64(v: &Value) -> Option<i64> {
+    match v {
+        Value::I64(i) | Value::Z64(i) => Some(*i),
+        Value::U64(u) | Value::V64(u) => Some(i64::try_from(*u).unwrap_or(i64::MAX)),
+        v => v.clone().cast_to::<i64>().ok(),
+    }
+}
 
-// CR claude for eric: [structure] "negative counts from the end" is written
-// three times, here, in bytes_index and in place::index_of, with three
-// different out-of-bounds messages. One `fn index(len, i) -> Option<usize>`
-// here, used by all three (and so by the JIT helpers).
-/// `array[i]`, shared by the node-walk and the JIT. Returns the bare
-/// element, or the `ArrayIndexError` value when out of bounds. Negative
-/// indices count from the end.
+/// The position index `i` names in a sequence of `len` elements:
+/// non-negative counts from the start, negative from the end.
+pub(crate) fn index(len: usize, i: i64) -> Option<usize> {
+    let j = if i < 0 { len as i64 + i } else { i };
+    usize::try_from(j).ok().filter(|j| *j < len)
+}
+
+/// `array[i]`, shared by the node-walk and the JIT: the bare element,
+/// or the `ArrayIndexError` value when out of bounds.
 pub(crate) fn array_index(elts: &ValArray, i: i64) -> Value {
-    if i >= 0 {
-        let i = i as usize;
-        if i < elts.len() {
-            elts[i].clone()
-        } else {
-            err!(ERR_TAG, "array index out of bounds")
-        }
-    } else {
-        let i = elts.len() as i64 + i;
-        if i >= 0 {
-            elts[i as usize].clone()
-        } else {
-            err!(ERR_TAG, "array index out of bounds")
-        }
+    match index(elts.len(), i) {
+        Some(i) => elts[i].clone(),
+        None => err!(ERR_TAG, "array index out of bounds"),
     }
 }
 
-/// `bytes[i]`, with the same rules as [`array_index`]; returns
-/// `Value::U8` or the out-of-bounds error.
+/// `bytes[i]`, with the rules of [`array_index`]: the `Value::U8` or
+/// the out-of-bounds error.
 pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
-    let idx = if i >= 0 { i } else { b.len() as i64 + i };
-    if idx >= 0 && (idx as usize) < b.len() {
-        Value::U8(b[idx as usize])
-    } else {
-        err!(ERR_TAG, "index out of bounds")
+    match index(b.len(), i) {
+        Some(i) => Value::U8(b[i]),
+        None => err!(ERR_TAG, "array index out of bounds"),
     }
 }
 
-/// `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` for arrays and bytes, given
-/// `usize` bounds. Returns the sub-array / sub-bytes or an error.
-pub(crate) fn array_slice(
-    src: &Value,
-    start: Option<usize>,
-    end: Option<usize>,
-) -> Value {
-    // CR claude for eric: [style] the three subslice arms differ only in the
-    // range; build one `(Bound, Bound)` and call subslice once. `{e:?}` renders
-    // the error with Debug where Display is the message.
+/// `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` over an array or bytes,
+/// shared by the node-walk and the JIT: the sub-array / sub-bytes, or
+/// the `ArrayIndexError` value for a negative or out-of-range bound.
+pub(crate) fn array_slice(src: &Value, start: Option<i64>, end: Option<i64>) -> Value {
+    let bound = |b: Option<i64>| b.map(usize::try_from).transpose();
+    let (Ok(start), Ok(end)) = (bound(start), bound(end)) else {
+        return err!(ERR_TAG, "a slice bound must not be negative");
+    };
     match src {
-        Value::Array(elts) => match (start, end) {
-            (None, None) => Value::Array(elts.clone()),
-            (Some(i), Some(j)) => match elts.subslice(i..j) {
+        Value::Array(elts) => {
+            let range =
+                (start.map_or(Unbounded, Included), end.map_or(Unbounded, Excluded));
+            match elts.subslice(range) {
                 Ok(a) => Value::Array(a),
-                Err(e) => errf!(ERR_TAG, "{e:?}"),
-            },
-            (Some(i), None) => match elts.subslice(i..) {
-                Ok(a) => Value::Array(a),
-                Err(e) => errf!(ERR_TAG, "{e:?}"),
-            },
-            (None, Some(j)) => match elts.subslice(..j) {
-                Ok(a) => Value::Array(a),
-                Err(e) => errf!(ERR_TAG, "{e:?}"),
-            },
-        },
-        Value::Bytes(b) => match (start, end) {
-            (None, None) => Value::Bytes(b.clone()),
-            (Some(i), Some(j)) if i <= j && j <= b.len() => {
-                Value::Bytes(PBytes::new(b.slice(i..j)))
+                Err(e) => errf!(ERR_TAG, "{e}"),
             }
-            (Some(i), None) if i <= b.len() => Value::Bytes(PBytes::new(b.slice(i..))),
-            (None, Some(j)) if j <= b.len() => Value::Bytes(PBytes::new(b.slice(..j))),
-            _ => err!(ERR_TAG, "slice out of bounds"),
-        },
+        }
+        Value::Bytes(b) => {
+            let (i, j) = (start.unwrap_or(0), end.unwrap_or(b.len()));
+            if i <= j && j <= b.len() {
+                Value::Bytes(PBytes::new(b.slice(i..j)))
+            } else {
+                err!(ERR_TAG, "slice out of bounds")
+            }
+        }
         _ => err!(ERR_TAG, "expected array"),
     }
-}
-
-/// [`array_slice`] with `i64` bounds, for the JIT. A negative bound
-/// wraps via `as usize`, matching the node-walk's `cast_to::<usize>()`,
-/// so it surfaces the same out-of-bounds error.
-pub(crate) fn array_slice_i64(
-    src: &Value,
-    start: Option<i64>,
-    end: Option<i64>,
-) -> Value {
-    array_slice(src, start.map(|i| i as usize), end.map(|i| i as usize))
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
@@ -218,27 +195,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         let ival = read_prod!(self.i, ctx, event, trig, fired, bottom);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        // CR claude for eric: [bug] `cast_to::<i64>` wraps an unsigned index, so a
-        // u64 above i64::MAX reads from the end: `a[u64:18446744073709551615]`
-        // on [1, 2, 3] is 3 in both engines (the JIT's widen_to_i64 and the
-        // place step in bind.rs wrap too) where it is out of bounds. An
-        // unsigned index needs its range check before the negative rule.
-        let i = match ival.unwrap() {
-            Value::I64(i) => i,
-            v => match v.cast_to::<i64>() {
-                Ok(i) => i,
-                Err(_) => {
-                    return self.resident.set(TagValue::tagged(
-                        err!(ERR_TAG, "expected an integer"),
-                        tag,
-                    ));
-                }
-            },
-        };
-        let v = match sval.unwrap() {
-            Value::Array(elts) => array_index(&elts, i),
-            Value::Bytes(b) => bytes_index(&b, i),
-            _ => err!(ERR_TAG, "expected an array"),
+        let v = match (sval.unwrap(), ival.as_ref().and_then(index_i64)) {
+            (_, None) => err!(ERR_TAG, "expected an integer"),
+            (Value::Array(elts), Some(i)) => array_index(&elts, i),
+            (Value::Bytes(b), Some(i)) => bytes_index(&b, i),
+            (_, Some(_)) => err!(ERR_TAG, "expected an array"),
         };
         self.resident.set(TagValue::tagged(v, tag))
     }
@@ -402,43 +363,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         };
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        // CR claude for eric: [bug] a negative bound wraps through
-        // `cast_to::<usize>`: `a[-1..]` on [1, 2, 3] is the error "start index
-        // 18446744073709551615 out of bounds 3" in both engines (array_slice_i64
-        // copies the wrap), and the "expected a non negative number" arm is
-        // unreachable for the integer bounds typecheck admits. Refuse a
-        // negative bound by name, or honor it as `a[-1]` does; a fn, not two
-        // macros with hidden returns.
-        macro_rules! number {
-            ($e:expr) => {
-                match $e.clone().cast_to::<usize>() {
-                    Ok(i) => i,
-                    Err(_) => {
-                        return self.resident.set(TagValue::tagged(
-                            err!(ERR_TAG, "expected a non negative number"),
-                            tag,
-                        ));
-                    }
-                }
-            };
-        }
-        macro_rules! bound {
-            ($bound:expr) => {{
-                match $bound {
-                    Value::U64(i) | Value::V64(i) => Some(*i as usize),
-                    v => Some(number!(v)),
-                }
-            }};
-        }
-        let start = match &stval {
-            None => None,
-            Some(v) => bound!(v),
+        let bound =
+            |b: &Option<Value>| b.as_ref().map(|v| index_i64(v).ok_or(())).transpose();
+        let v = match (bound(&stval), bound(&etval)) {
+            (Ok(start), Ok(end)) => array_slice(&sval.unwrap(), start, end),
+            _ => err!(ERR_TAG, "expected an integer"),
         };
-        let end = match &etval {
-            None => None,
-            Some(v) => bound!(v),
-        };
-        let v = array_slice(&sval.unwrap(), start, end);
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -531,275 +461,219 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     }
 }
 
+/// What a [`SeqLit`] builds: an array or a native list.
+pub trait SeqKind: Debug + Send + Sync + 'static {
+    /// A native list, else an array.
+    const LIST: bool;
+
+    /// The literal's type over its element type.
+    fn typ(elem: Type) -> Type;
+
+    /// The literal's value over its elements, in order.
+    fn build(elems: impl ExactSizeIterator<Item = Value>) -> Value;
+
+    fn empty() -> Value;
+
+    fn view<R: Rt, E: UserEvent>(n: &SeqLit<R, E, Self>) -> NodeView<'_, R, E>
+    where
+        Self: Sized;
+
+    fn emit<R: Rt, E: UserEvent>(
+        cx: &mut BodyCx,
+        n: &[Node<R, E>],
+    ) -> Result<CompiledExpr>;
+}
+
 #[derive(Debug)]
-pub struct Array<R: Rt, E: UserEvent> {
-    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: WakeBit,
-    pub(crate) spec: Expr,
-    pub typ: Type,
-    pub n: Box<[Node<R, E>]>,
-    resident: TagValue,
-}
+pub struct ArrayKind;
 
-impl<R: Rt, E: UserEvent> Array<R, E> {
-    pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        spec: Expr,
-        scope: &Scope,
-        top_id: ExprId,
-        args: &Arc<[Expr]>,
-    ) -> Result<Node<R, E>> {
-        let n = args
-            .iter()
-            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
-            .collect::<Result<_>>()?;
-        let typ = Type::Array(Arc::new(Type::empty_tvar()));
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
-    }
-}
+impl SeqKind for ArrayKind {
+    const LIST: bool = false;
 
-// CR claude for eric: [structure] ListLit is Array with `Type::List` and
-// `list::from_iter` in place of `Type::Array` and a ValArray: the struct,
-// compile, image codec, delete/sleep/refs/typecheck are copies. One node with
-// a kind (collection.rs has `Flavor`). Both impls are also split into two
-// interleaved blocks each (Array's compile at the top, its codec at the end).
-#[derive(Debug)]
-pub struct ListLit<R: Rt, E: UserEvent> {
-    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
-    slept: WakeBit,
-    pub(crate) spec: Expr,
-    pub typ: Type,
-    pub n: Box<[Node<R, E>]>,
-    resident: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> ListLit<R, E> {
-    pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        spec: Expr,
-        scope: &Scope,
-        top_id: ExprId,
-        args: &Arc<[Expr]>,
-    ) -> Result<Node<R, E>> {
-        let n = args
-            .iter()
-            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
-            .collect::<Result<_>>()?;
-        let typ = Type::List(Arc::new(Type::empty_tvar()));
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> ListLit<R, E> {
-    pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
-        let typ = Type::decode(buf)?;
-        let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
+    fn typ(elem: Type) -> Type {
+        Type::Array(Arc::new(elem))
     }
 
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        put_tag(NodeTag::ListLit, buf);
-        self.spec.encode(buf)?;
-        self.typ.encode(buf)?;
-        encode_nodes(&self.n, buf)
-    }
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        use crate::node::collection::list;
-        if self.n.is_empty() {
-            return super::produce_constant(ctx, event, &mut self.resident, list::nil);
-        }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = list::from_iter(vals.drain(..));
-        self.resident.set(TagValue::tagged(v, tag))
+    fn build(elems: impl ExactSizeIterator<Item = Value>) -> Value {
+        Value::Array(ValArray::from_iter_exact(elems))
     }
 
-    fn spec(&self) -> &Expr {
-        &self.spec
+    fn empty() -> Value {
+        Value::Array(ValArray::from([]))
     }
 
-    fn typ(&self) -> &Type {
-        &self.typ
+    fn view<R: Rt, E: UserEvent>(n: &Array<R, E>) -> NodeView<'_, R, E> {
+        NodeView::Array(n)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept.set();
-        self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
-    }
-
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in &mut self.n {
-            wrap!(n, n.typecheck0(ctx))?
-        }
-        let bottom = Type::Bottom;
-        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
-        ts.push(&bottom);
-        ts.extend(self.n.iter().map(|n| n.typ()));
-        let rtype = wrap!(self, Type::union(&ctx.env, &ts))?;
-        let rtype = match rtype {
-            Type::Bottom => Type::List(Arc::new(Type::empty_tvar())),
-            t => Type::List(Arc::new(t)),
-        };
-        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in &mut self.n {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::ListLit(self)
-    }
-
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_list_new_node(cx, &self.n)
-    }
-}
-
-impl<R: Rt, E: UserEvent> Array<R, E> {
-    pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
-        let typ = Type::decode(buf)?;
-        let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            n,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
-    }
-
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        put_tag(NodeTag::Array, buf);
-        self.spec.encode(buf)?;
-        self.typ.encode(buf)?;
-        encode_nodes(&self.n, buf)
-    }
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if self.n.is_empty() {
-            return super::produce_constant(ctx, event, &mut self.resident, || {
-                Value::Array(ValArray::from([]))
-            });
-        }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = Value::Array(ValArray::from_iter_exact(vals.drain(..)));
-        self.resident.set(TagValue::tagged(v, tag))
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept.set();
-        self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
-    }
-
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in &mut self.n {
-            wrap!(n, n.typecheck0(ctx))?
-        }
-        let bottom = Type::Bottom;
-        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
-        ts.push(&bottom);
-        ts.extend(self.n.iter().map(|n| n.typ()));
-        let rtype = wrap!(self, Type::union(&ctx.env, &ts))?;
-        let rtype = match rtype {
-            Type::Bottom => Type::Array(Arc::new(Type::empty_tvar())),
-            t => Type::Array(Arc::new(t)),
-        };
-        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in &mut self.n {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Array(self)
-    }
-
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+    fn emit<R: Rt, E: UserEvent>(
+        cx: &mut BodyCx,
+        n: &[Node<R, E>],
+    ) -> Result<CompiledExpr> {
         // the runtime shape is a tuple literal's
-        emit_tuple_new_node(cx, &self.n)
+        emit_tuple_new_node(cx, n)
+    }
+}
+
+#[derive(Debug)]
+pub struct ListKind;
+
+impl SeqKind for ListKind {
+    const LIST: bool = true;
+
+    fn typ(elem: Type) -> Type {
+        Type::List(Arc::new(elem))
+    }
+
+    fn build(elems: impl ExactSizeIterator<Item = Value>) -> Value {
+        list::from_iter(elems)
+    }
+
+    fn empty() -> Value {
+        list::nil()
+    }
+
+    fn view<R: Rt, E: UserEvent>(n: &ListLit<R, E>) -> NodeView<'_, R, E> {
+        NodeView::ListLit(n)
+    }
+
+    fn emit<R: Rt, E: UserEvent>(
+        cx: &mut BodyCx,
+        n: &[Node<R, E>],
+    ) -> Result<CompiledExpr> {
+        emit_list_new_node(cx, n)
+    }
+}
+
+pub type Array<R, E> = SeqLit<R, E, ArrayKind>;
+pub type ListLit<R, E> = SeqLit<R, E, ListKind>;
+
+/// An array or list literal, `[a, b]` or `[<a, b>]`.
+#[derive(Debug)]
+pub struct SeqLit<R: Rt, E: UserEvent, K: SeqKind> {
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: WakeBit,
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Box<[Node<R, E>]>,
+    resident: TagValue,
+    kind: PhantomData<K>,
+}
+
+impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
+    fn with(spec: Expr, typ: Type, n: Box<[Node<R, E>]>) -> Node<R, E> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            kind: PhantomData,
+        })
+    }
+
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        args: &Arc<[Expr]>,
+    ) -> Result<Node<R, E>> {
+        let n = args
+            .iter()
+            .map(|e| compile(ctx, flags, e.clone(), scope, top_id))
+            .collect::<Result<_>>()?;
+        Ok(Self::with(spec, K::typ(Type::empty_tvar()), n))
+    }
+
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_nodes(ctx, buf)?.into_boxed_slice();
+        Ok(Self::with(spec, typ, n))
+    }
+}
+
+impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        put_tag(if K::LIST { NodeTag::ListLit } else { NodeTag::Array }, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        encode_nodes(&self.n, buf)
+    }
+
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        if self.n.is_empty() {
+            return produce_constant(ctx, event, &mut self.resident, K::empty);
+        }
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
+        dense_gate!(self, ctx, trig, bottom);
+        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let v = K::build(vals.drain(..));
+        self.resident.set(TagValue::tagged(v, tag))
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.delete(ctx))
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept.set();
+        self.n.iter_mut().for_each(|n| n.sleep(ctx))
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.iter().for_each(|n| n.refs(refs))
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in &mut self.n {
+            wrap!(n, n.typecheck0(ctx))?
+        }
+        let bottom = Type::Bottom;
+        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
+        ts.push(&bottom);
+        ts.extend(self.n.iter().map(|n| n.typ()));
+        let rtype = match wrap!(self, Type::union(&ctx.env, &ts))? {
+            Type::Bottom => K::typ(Type::empty_tvar()),
+            t => K::typ(t),
+        };
+        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        for n in &mut self.n {
+            wrap!(n, n.typecheck1(ctx))?
+        }
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        K::view(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        K::emit(cx, &self.n)
     }
 }

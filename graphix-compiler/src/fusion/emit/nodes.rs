@@ -103,11 +103,10 @@ pub(crate) fn emit_const_node(
 /// an interned Value constant. A dynamic entry de-fuses.
 pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
-    keys: &[Node<R, E>],
-    vals: &[Node<R, E>],
+    entries: &[(Node<R, E>, Node<R, E>)],
     typ: &Type,
 ) -> Result<CompiledExpr> {
-    let v = lowering::const_map(keys, vals).ok_or_else(|| {
+    let v = lowering::const_map(entries).ok_or_else(|| {
         anyhow!(
             "emit_clif: map literal with non-constant entries — \
              subtree node-walks"
@@ -1149,9 +1148,6 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
-        // CR claude for eric: [bug] `widen_to_i64` reinterprets a u64 index above
-        // i64::MAX as negative, so the helper reads from the end; the node-walk has
-        // the same wrap (CR at array.rs `array_index`). Fix both together.
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;
         let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);

@@ -58,7 +58,7 @@ select x {
   rule applied within the arm): `` `A | `A ``, `_ | p`, and
   `[x, r..] | [a, b, c]` are errors — the arm-level dead walk's
   subtraction run over the alternative list.
-- **Coverage is per coverage atom** (`arm_atoms`, `node/select.rs`):
+- **Coverage is per coverage atom** (`PatternNode::atoms`, `node/pattern.rs`):
   an or-arm claims once per alternative against its own member of the
   raw inferred Set, so `true | false` completes bool and `[] | [_, ..]`
   feeds the slice length ladder (the bound spelling `[] | [x, rest..]`
@@ -104,7 +104,7 @@ alternative reuses.
 ## Engines
 
 - **Interp**: `PatternNode::arm_match` consults `is_match` and `bind`
-  as for any pattern. The shallow-discriminant seal (`seal_shallow`)
+  as for any pattern. The shallow discriminator (`PatternNode::shallow_discriminant`)
   treats an Or arm as deep; a per-alternative shallow set is a possible
   later optimization.
 - **JIT**: or-arms emit natively via `emit_or_chain`

@@ -57,6 +57,38 @@ run!(array_index_neg_underflow, r#"{ let a = [10, 20, 30]; a[-10] }"#, |v: Resul
     Ok(Value::Error(_))
 ));
 
+// An unsigned index above i64::MAX is past the end, never from the end.
+run!(
+    array_index_u64_above_i64_max,
+    r#"{ let a = [10, 20, 30]; a[u64:18446744073709551615] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+);
+
+run!(
+    bytes_index_u64_above_i64_max,
+    r#"{ let b = bytes:AQID; b[u64:18446744073709551615] }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+);
+
+// A negative slice bound is refused by name, on either side.
+run!(
+    array_slice_negative_bound,
+    r#"{ let a = [1, 2, 3]; (a[-1..], a[..-1]) }"#,
+    |v: Result<&Value>| {
+        let s = format!("{}", v.unwrap());
+        s.matches("a slice bound must not be negative").count() == 2
+    }
+);
+
+// An unsigned bound above i64::MAX is out of range, not negative.
+run!(
+    array_slice_u64_above_i64_max,
+    r#"{ let a = [1, 2, 3]; a[u64:18446744073709551615..] }"#,
+    |v: Result<&Value>| {
+        matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("out of bounds"))
+    }
+);
+
 // `is_err` over the index observes the error directly.
 run!(array_index_is_err, r#"{ let a = [10, 20, 30]; is_err(a[10]) }"#, |v: Result<
     &Value,

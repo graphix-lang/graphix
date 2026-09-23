@@ -10,6 +10,7 @@ pub use modpath::ModPath;
 use netidx_core::{pack::PackError, path::Path, utils::Either};
 use netidx_derive::Pack;
 use netidx_value::Value;
+pub(crate) use pattern::union_members;
 pub use pattern::{Pattern, StructurePattern};
 use poolshark::local::LPooled;
 use regex::Regex;

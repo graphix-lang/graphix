@@ -352,6 +352,24 @@ run!(place_through_bottom_deref, PLACE_THROUGH_BOTTOM_DEREF, |v: Result<&Value>|
     format!("{}", v.unwrap()) == "[[i64:10, i64:20], null, [i64:7, i64:20]]"
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A place indexed past i64::MAX addresses nothing, never from the end:
+// its read is bottom and the sample banks.
+const PLACE_INDEX_U64_ABOVE_I64_MAX: &str = r#"
+{
+  let a = [10, 20, 30];
+  let r = &a[u64:18446744073709551615];
+  let t1 = sys::time::timer(duration:0.02s, false);
+  let obs: [i64, null] = null;
+  obs <- t1 ~ *r;
+  let t2 = sys::time::timer(duration:0.05s, false);
+  t2 ~ obs
+}
+"#;
+
+run!(place_index_u64_above_i64_max, PLACE_INDEX_U64_ABOVE_I64_MAX, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Null))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // A place's index is an integer, as in an access.
 const PLACE_INDEX_IS_AN_INTEGER: &str = r#"
 {

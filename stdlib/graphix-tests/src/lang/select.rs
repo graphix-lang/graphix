@@ -2445,3 +2445,194 @@ run!(guard_beyond_sixty_four_arms, guard_beyond_sixty_four_arms(), |v: Result<
 >| {
     matches!(v, Ok(Value::I64(0)))
 });
+
+// An arm input that went bottom while its arm slept is bottom at the
+// wake: the inner select sets its resident bottom instead of riding 7.
+const SELECT_ARM_STALE_BOTTOM_AT_WAKE: &str = r#"
+{
+  let clock = sys::time::timer(duration:0.01s, true);
+  let n = 0;
+  n <- clock ~ n + 1;
+  let x = select uniq(n < 2) { true => 7, false => never() };
+  let m = 1;
+  let d = 0;
+  let outer = select n {
+    k if (k < 1) || (k > 3) => { let r = select m { _ => x }; d <- r; r },
+    _ => 0
+  };
+  let seen = [];
+  seen <- outer ~ array::push(seen, outer);
+  select n { 7 => seen, _ => never() }
+}
+"#;
+
+run!(select_arm_stale_bottom_at_wake, SELECT_ARM_STALE_BOTTOM_AT_WAKE, |v: Result<
+    &Value,
+>| {
+    format!("{}", v.unwrap()) == "[i64:7, i64:0, i64:0, i64:0]"
+});
+
+// While a consulted guard stands bottom the selection is undecidable on
+// every cycle, quiet ones included: the held arm does not run.
+const SELECT_UNDECIDABLE_QUIET: &str = r#"
+{
+  let clock = sys::time::timer(duration:0.01s, true);
+  let n = 0;
+  n <- clock ~ n + 1;
+  let g = select uniq((n >= 3) && (n <= 5)) { true => never(), false => false };
+  let seen = [];
+  let s = 1;
+  select s { _ if g => null, _ => seen <- n ~ array::push(seen, n) };
+  select n { 8 => seen, _ => never() }
+}
+"#;
+
+run!(select_undecidable_quiet, SELECT_UNDECIDABLE_QUIET, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:0, i64:1, i64:2, i64:6, i64:7]"
+});
+
+// A nested variant head is a pooled position: two arms that miss
+// `(true, `B)` do not cover the tuple.
+const POOL_NESTED_VARIANT_PARTIAL: &str = r#"
+{
+  let v: (bool, [`A, `B]) = (true, `B);
+  select v { (true, `A) => 1, (false, `B) => 2 }
+}
+"#;
+
+run!(pool_nested_variant_partial, POOL_NESTED_VARIANT_PARTIAL, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const POOL_NESTED_VARIANT_COMPLETE: &str = r#"
+{
+  let v: (bool, [`A, `B]) = (true, `B);
+  select v { (true, `A) => 1, (false, `B) => 2, (true, `B) => 3, (false, `A) => 4 }
+}
+"#;
+
+run!(pool_nested_variant_complete, POOL_NESTED_VARIANT_COMPLETE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+});
+
+// A bool literal pools only over a position of type bool.
+const POOL_BOOL_IN_UNION: &str = r#"
+{
+  let v: ([bool, i64], i64) = (5, 1);
+  select v { (true, x) => x, (false, x) => x }
+}
+"#;
+
+run!(pool_bool_in_union, POOL_BOOL_IN_UNION, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A tuple pattern of binds is a wildcard only over a tuple scrutinee.
+const TUPLE_ARM_OVER_UNION: &str = r#"
+{
+  let v: [(i64, i64), string] = "x";
+  select v { (a, b) => a + b }
+}
+"#;
+
+run!(tuple_arm_over_union, TUPLE_ARM_OVER_UNION, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("missing match cases"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// Completion picks the member the pattern can match, not the first
+// struct: `{x: ..}` is exhaustive, so it cannot be the member with `a`.
+const COMPLETE_MATCHING_MEMBER: &str = r#"
+{
+  let v: [{a: i64, x: {z: i64, w: i64}}, {x: {z: string, q: i64}}] = {x: {z: "s", q: 1}};
+  select v { {x: {z, ..}} => z, _ => "two" }
+}
+"#;
+
+run!(complete_matching_member, COMPLETE_MATCHING_MEMBER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "s")
+});
+
+// A tuple over a partial struct matching two members is ambiguous.
+const COMPLETE_TUPLE_AMBIGUOUS: &str = r#"
+{
+  let v: [(i64, {a: i64, b: i64}), (string, {a: string, c: i64})] = ("x", {a: "s", c: 1});
+  select v { (s, {a, ..}) => 1 }
+}
+"#;
+
+run!(complete_tuple_ambiguous, COMPLETE_TUPLE_AMBIGUOUS, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("matches more than one member"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// Slice arms cover a union of arrays whichever member a type test names.
+const ARRAY_UNION_TYPE_TEST: &str = r#"
+{
+  let v: [Array<i64>, Array<string>] = ["a"];
+  select v { Array<i64> as _ => "i", [] => "empty", [x, rest..] => x }
+}
+"#;
+
+run!(array_union_type_test, ARRAY_UNION_TYPE_TEST, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "a")
+});
+
+// Each array or list member of a scrutinee has its own length ladder.
+const ARRAY_LIST_LADDERS: &str = r#"
+{
+  let v: [Array<i64>, List<i64>] = [<4, 5>];
+  select v { [] => 0, [x, rest..] => x, [<>] => 1, [<h, t..>] => h }
+}
+"#;
+
+run!(array_list_ladders, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(4)))
+});
+
+// An or-arm narrows what the later arms see, per alternative.
+const OR_ARM_NARROWS: &str = r#"
+{
+  let v: [`A, `B, `C] = `C;
+  select v { `A | `B => 1, x => select x { `C => 2 } }
+}
+"#;
+
+run!(or_arm_narrows, OR_ARM_NARROWS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(2)))
+});
+
+// Under an explicit type every alternative checks against the whole
+// type, whatever order the alternatives are written in.
+const OR_EXPLICIT_TYPE: &str = r#"
+{
+  let v = (0, 5);
+  select v { (i64, i64) as (0, y) | (y, 0) => y, _ => 0 - 1 }
+}
+"#;
+
+run!(or_explicit_type, OR_EXPLICIT_TYPE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(5)))
+});
+
+const OR_EXPLICIT_UNION_ORDER: &str = r#"
+{
+  let v: [`A, `B] = `B;
+  select v { [`A, `B] as `B | `A => 1 }
+}
+"#;
+
+run!(or_explicit_union_order, OR_EXPLICIT_UNION_ORDER, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("variant patterns can't match"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A pattern error is sited at its arm.
+const PATTERN_ERROR_SITE: &str = r#"select 1 {
+  (a, a) => 0,
+  _ => 1
+}"#;
+
+run!(pattern_error_site, PATTERN_ERROR_SITE, |v: Result<&Value>| match v {
+    Err(e) => e
+        .downcast_ref::<graphix_compiler::expr::ErrorSite>()
+        .is_some_and(|site| (site.0.0.pos.line, site.0.0.pos.column) == (2, 13)),
+    Ok(_) => false,
+}; graphix_package_core::testing::FuseExpect::None);

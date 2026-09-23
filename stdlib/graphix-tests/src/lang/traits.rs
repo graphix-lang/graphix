@@ -527,6 +527,27 @@ run!(
     ; FuseExpect::None
 );
 
+// A map HOF builds its result under the user's Ord too.
+run!(
+    core_map_hof_keyed_by_ord,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "{T(2) => 2, T(1) => 1, T(0) => 0}|0|{T(2) => 3, T(1) => 2, T(0) => 1}|{T(2) => 2}"),
+    "/test.gx" => r##"
+        type T = Abstract<i64>;
+        impl Ord for T {
+            let cmp = |x, y| select (x.0, y.0) {
+                (a, b) if a < b => `Greater,
+                (a, b) if a > b => `Less,
+                _ => `Equal
+            }
+        };
+        let m = {T(0) => 0, T(1) => 1, T(2) => 2};
+        let filtered = map::filter(m, |_| true);
+        let mapped = map::map(m, |(k, v)| (k, v + 1));
+        let fm = map::filter_map(m, |(k, v)| select v { 2 => (k, v), _ => null });
+        let result = "[filtered]|[filtered{T(0)}$]|[mapped]|[fm]"
+    "##
+);
+
 // An Ord that calls distinct payloads equal UNIFIES map keys: the
 // second insert replaces the first, and either spelling looks it up.
 run!(

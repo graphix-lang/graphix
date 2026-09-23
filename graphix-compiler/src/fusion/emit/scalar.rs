@@ -204,14 +204,19 @@ pub(super) fn kind_disc(b: &mut FunctionBuilder, t: &Type) -> ClifValue {
     }
 }
 
-/// Widen an integer CLIF value to the i64 index the helpers expect.
+/// Widen an integer CLIF value to the i64 index the helpers expect, as
+/// `node::array::index_i64` does: a u64 above `i64::MAX` saturates.
 pub(super) fn widen_to_i64(
     b: &mut FunctionBuilder,
     v: ClifValue,
     p: PrimType,
 ) -> Result<ClifValue> {
     Ok(match p {
-        PrimType::I64 | PrimType::U64 => v,
+        PrimType::I64 => v,
+        PrimType::U64 => {
+            let max = b.ins().iconst(types::I64, i64::MAX);
+            b.ins().umin(v, max)
+        }
         PrimType::I8 | PrimType::I16 | PrimType::I32 => b.ins().sextend(types::I64, v),
         PrimType::U8 | PrimType::U16 | PrimType::U32 | PrimType::Bool => {
             b.ins().uextend(types::I64, v)

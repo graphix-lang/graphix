@@ -1,17 +1,13 @@
-// CR claude for eric: [style] `crate::image` is split over two statements
-// beside the `crate::{..}` group, and `super::coretraits::with_hooks` is
-// spelled out twice; group and import.
-use super::WakeBit;
-use crate::image::ImageBuf;
-use crate::image::nodes::{
-    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-};
+use super::{WakeBit, compiler::compile, coretraits::with_hooks, dense_gate, read_prod};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
-    node::{compiler::compile, dense_gate, gather, read_prod},
+    image::{
+        ImageBuf,
+        nodes::{NodeTag, decode_node, put_tag, tag_len},
+    },
     typ::Type,
     wrap,
 };
@@ -19,7 +15,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -32,31 +28,40 @@ pub struct Map<R: Rt, E: UserEvent> {
     slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
-    // CR claude for eric: [structure] `keys` and `vals` must be the same length
-    // (update zips them, the codec writes them apart and would decode a
-    // mismatch); one `Box<[(Node, Node)]>` makes a mismatch unrepresentable.
-    pub keys: Box<[Node<R, E>]>,
-    pub vals: Box<[Node<R, E>]>,
+    /// The `key => value` entries, in written order.
+    pub entries: Box<[(Node<R, E>, Node<R, E>)]>,
     resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Map<R, E> {
+    fn with(
+        spec: Expr,
+        typ: Type,
+        entries: Box<[(Node<R, E>, Node<R, E>)]>,
+    ) -> Node<R, E> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            entries,
+            resident: TagValue::phantom(),
+        })
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
-        let keys = decode_nodes(ctx, buf)?.into_boxed_slice();
-        let vals = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            spec,
-            typ,
-            keys,
-            vals,
-            resident: TagValue::phantom(),
-        }))
+        let n = decode_varint(buf)? as usize;
+        if n > buf.len() {
+            return Err(PackError::TooBig);
+        }
+        let entries = (0..n)
+            .map(|_| Ok((decode_node(ctx, buf)?, decode_node(ctx, buf)?)))
+            .collect::<Result<_, PackError>>()?;
+        Ok(Self::with(spec, typ, entries))
     }
 
     pub(crate) fn compile(
@@ -67,62 +72,77 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         top_id: ExprId,
         args: &Arc<[(Expr, Expr)]>,
     ) -> Result<Node<R, E>> {
-        let keys = args
+        let entries = args
             .iter()
-            .map(|(k, _)| compile(ctx, flags, k.clone(), scope, top_id))
-            .collect::<Result<_>>()?;
-        let vals = args
-            .iter()
-            .map(|(_, v)| compile(ctx, flags, v.clone(), scope, top_id))
+            .map(|(k, v)| {
+                let k = compile(ctx, flags, k.clone(), scope, top_id)?;
+                Ok((k, compile(ctx, flags, v.clone(), scope, top_id)?))
+            })
             .collect::<Result<_>>()?;
         let typ = Type::Map {
             key: Arc::new(Type::empty_tvar()),
             value: Arc::new(Type::empty_tvar()),
         };
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            keys,
-            vals,
-            resident: TagValue::phantom(),
-            slept: WakeBit::default(),
-        }))
+        Ok(Self::with(spec, typ, entries))
+    }
+
+    /// Every key, then every value: the order the entries update in.
+    fn each(&mut self, mut f: impl FnMut(&mut Node<R, E>) -> Result<()>) -> Result<()> {
+        for (k, _) in self.entries.iter_mut() {
+            f(k)?
+        }
+        for (_, v) in self.entries.iter_mut() {
+            f(v)?
+        }
+        Ok(())
     }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     fn image_len(&self) -> usize {
+        let entries = self.entries.iter().map(|(k, v)| k.image_len() + v.image_len());
         tag_len()
             + self.spec.encoded_len()
             + self.typ.encoded_len()
-            + nodes_len(&self.keys)
-            + nodes_len(&self.vals)
+            + varint_len(self.entries.len() as u64)
+            + entries.sum::<usize>()
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Map, buf);
         self.spec.encode(buf)?;
         self.typ.encode(buf)?;
-        encode_nodes(&self.keys, buf)?;
-        encode_nodes(&self.vals, buf)
+        encode_varint(self.entries.len() as u64, buf);
+        for (k, v) in self.entries.iter() {
+            k.image_encode(buf)?;
+            v.image_encode(buf)?;
+        }
+        Ok(())
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if self.keys.is_empty() {
+        if self.entries.is_empty() {
             return super::produce_constant(ctx, event, &mut self.resident, || {
                 Value::Map(CMap::new())
             });
         }
-        let mut kvals: LPooled<Vec<Value>> = LPooled::take();
-        let mut vvals: LPooled<Vec<Value>> = LPooled::take();
-        let (kt, kf, kb) = gather(ctx, event, &mut self.keys, &mut kvals);
-        let (vt, vf, vb) = gather(ctx, event, &mut self.vals, &mut vvals);
-        let (trig, fired, bottom) = (kt || vt, kf || vf, kb || vb);
+        let (mut trig, mut fired, mut bottom) = (false, false, false);
+        let mut keys: LPooled<Vec<Option<Value>>> = LPooled::take();
+        for (k, _) in self.entries.iter_mut() {
+            keys.push(read_prod!(k, ctx, event, trig, fired, bottom));
+        }
+        let mut kvs: LPooled<Vec<(Value, Value)>> = LPooled::take();
+        for ((_, v), k) in self.entries.iter_mut().zip(keys.drain(..)) {
+            let v = read_prod!(v, ctx, event, trig, fired, bottom);
+            if let (Some(k), Some(v)) = (k, v) {
+                kvs.push((k, v))
+            }
+        }
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let m = super::coretraits::with_hooks(ctx, event, || {
+        let m = with_hooks(ctx, event, || {
             let mut m = CMap::new();
-            for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
+            for (k, v) in kvs.drain(..) {
                 m.insert_cow(k, v);
             }
             m
@@ -139,48 +159,42 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.keys.iter_mut().for_each(|n| n.delete(ctx));
-        self.vals.iter_mut().for_each(|n| n.delete(ctx))
+        let _ = self.each(|n| Ok(n.delete(ctx)));
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
-        self.keys.iter_mut().for_each(|n| n.sleep(ctx));
-        self.vals.iter_mut().for_each(|n| n.sleep(ctx))
+        let _ = self.each(|n| Ok(n.sleep(ctx)));
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.keys.iter_mut().for_each(|n| n.reset_replay(ctx));
-        self.vals.iter_mut().for_each(|n| n.reset_replay(ctx))
+        let _ = self.each(|n| Ok(n.reset_replay(ctx)));
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.keys.iter().for_each(|n| n.refs(refs));
-        self.vals.iter().for_each(|n| n.refs(refs))
+        self.entries.iter().for_each(|(k, _)| k.refs(refs));
+        self.entries.iter().for_each(|(_, v)| v.refs(refs))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
-            wrap!(n, n.typecheck0(ctx))?
-        }
+        self.each(|n| wrap!(n, n.typecheck0(ctx)))?;
         let bottom = Type::Bottom;
         let mut kts: LPooled<Vec<&Type>> = LPooled::take();
-        kts.push(&bottom);
-        kts.extend(self.keys.iter().map(|n| n.typ()));
-        let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         let mut vts: LPooled<Vec<&Type>> = LPooled::take();
+        kts.push(&bottom);
         vts.push(&bottom);
-        vts.extend(self.vals.iter().map(|n| n.typ()));
+        for (k, v) in self.entries.iter() {
+            kts.push(k.typ());
+            vts.push(v.typ());
+        }
+        let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in self.keys.iter_mut().chain(self.vals.iter_mut()) {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
+        self.each(|n| wrap!(n, n.typecheck1(ctx)))
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -188,7 +202,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_map_new_node(cx, &self.keys, &self.vals, &self.typ)
+        emit_map_new_node(cx, &self.entries, &self.typ)
     }
 }
 
@@ -293,9 +307,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         let kval = read_prod!(self.key, ctx, event, trig, fired, bottom);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = super::coretraits::with_hooks(ctx, event, || {
-            map_get(&sval.unwrap(), &kval.unwrap())
-        });
+        let v = with_hooks(ctx, event, || map_get(&sval.unwrap(), &kval.unwrap()));
         self.resident.set(TagValue::tagged(v, tag))
     }
 

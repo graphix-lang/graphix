@@ -989,13 +989,10 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                 PlaceStep::Index(n) => {
                     let tv = n.update(ctx, event);
                     moved |= tv.tag().triggers();
-                    // CR claude for eric: [bug] a u64 index above i64::MAX wraps
-                    // negative here and addresses from the end; same fix as the
-                    // CR at array.rs `array_index` (one shared index conversion).
                     let i = if tv.tag().is_bottom() {
                         None
                     } else {
-                        tv.with_value(|v| v.clone().cast_to::<i64>().ok())
+                        tv.with_value(super::array::index_i64)
                     };
                     match i {
                         Some(i) => self.path.push(place::Step::Index(i)),

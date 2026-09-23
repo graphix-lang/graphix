@@ -50,7 +50,7 @@ retention and deletion; firing, taint, sleep and interruption; and
 result construction. The packages own only their non-HOF value
 operations. The canonical List representation (cons = a two-element
 `ValArray`, nil = the static empty array) and iterator live in
-`node::collection::list`, private to the compiler.
+`node::list`, private to the compiler.
 
 Effect inference needs no HOF special case: the node's prototype
 CallSite is a normal call site, so an async callback flips the
@@ -59,13 +59,15 @@ collection lambda Async through the ordinary fixpoint.
 ## Interpreted semantics
 
 `MapQ` is the shared map-shaped Node for init, map, filter, filter_map,
-flat_map, find and find_map. It keeps one prototype CallSite (for
-typecheck, analysis and emission) plus one live CallSite and last value
-per ordinal; collection adapters supply iteration and result
-construction for Array, List, Map and integer index ranges. `FoldQ`
-keeps one CallSite per ordinal plus the accumulator input, cycle output
-and held output; source changes resize the chain without recreating its
-retained prefix; an empty fold returns the current initializer.
+flat_map, find and find_map, one `(MapOp, Flavor)` pair per intrinsic.
+It keeps one prototype CallSite (for typecheck, analysis and emission)
+plus one live CallSite and last production per ordinal; collection
+adapters supply iteration over Array, List, Map and integer index
+ranges, and the flavor builds the result. `FoldQ` keeps one CallSite
+per ordinal plus the accumulator input and the slot's last production,
+which also travels the accumulator chain, a bottom included; source
+changes resize the chain without recreating its retained prefix; an
+empty fold returns the current initializer.
 `find`/`find_map` scan every slot (a bottom predicate after the match
 bottoms the find). A callback with labeled parameters interprets; a
 callback with only labeled parameters is a type error.

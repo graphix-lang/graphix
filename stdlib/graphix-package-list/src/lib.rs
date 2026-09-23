@@ -9,7 +9,7 @@ use graphix_compiler::{
     effects::Effect,
     expr::ExprId,
     image::ImageBuf,
-    node::collection::list::{
+    node::list::{
         Iter as ListIter, cons as make_cons, from_iter as from_iter_back, is_list,
         is_nil, len as count_list, nil as make_nil, split as get_cons, to_array,
     },

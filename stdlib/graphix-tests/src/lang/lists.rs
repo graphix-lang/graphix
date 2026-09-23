@@ -129,3 +129,20 @@ const LIST_PAT_SUFFIX_REFUSED: &str = r#"
 
 run!(list_pat_suffix_refused, LIST_PAT_SUFFIX_REFUSED, |v: Result<&Value>| v.is_err();
     graphix_package_core::testing::FuseExpect::None);
+
+// `list::flat_map` fuses: its callback's List return is an opaque value
+// the extend helper walks.
+const LIST_FLAT_MAP_NATIVE: &str = r#"
+{
+  let l = [<1, 2>];
+  let r = #[native] list::flat_map(l, |x| [<x, x + 1>]);
+  list::to_array(r)
+}
+"#;
+
+run!(list_flat_map_native, LIST_FLAT_MAP_NATIVE, |v: Result<&Value>| {
+    match v {
+        Ok(v) => matches!(v.clone().cast_to::<[i64; 4]>(), Ok([1, 2, 2, 3])),
+        _ => false,
+    }
+}; graphix_package_core::testing::FuseExpect::Jit);

@@ -1,190 +1,120 @@
-// CR claude for eric: [style] `crate::image` and `netidx_value` are each
-// imported in two statements; `anyhow::anyhow!` is spelled out 7 times,
-// `super::lambda::GXLambda` 4, `crate::dbgenv::gxdbg_slot`,
-// `crate::fusion::check_attributes_subtree` and `std::sync::LazyLock` twice
-// each, and `netidx_value::Typ` in frozen_may_be_null though `Typ` is imported.
 use super::{
-    MAX_ARRAY_INIT_LEN, NOP, WakeBit, callsite::CallSite, genn,
-    pattern::StructPatternNode,
-};
-use crate::image::ImageBuf;
-use crate::image::{
-    nodes::{NodeTag, decode_node, put_tag, tag_len},
-    scope_decode, scope_encode, scope_len,
+    NOP, WakeBit, callsite::CallSite, coretraits::with_hooks, genn, lambda::GXLambda,
+    list, pattern::StructPatternNode,
 };
 use crate::{
     ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
+    dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
+        check_attributes_subtree,
         emit::{self, BodyCx, CompiledExpr, CompositeSource, scaffold},
-        kernel_abi::{self, PrimType},
+        kernel_abi::{self, AbiKind, PrimType},
+    },
+    image::{
+        self, ImageBuf,
+        nodes::{NodeTag, decode_node, put_tag, tag_len},
+        scope_decode, scope_encode, scope_len,
     },
     typ::{FnArgKind, FnType, Type},
     wrap,
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use cranelift_codegen::ir::{InstBuilder, Value as ClifValue};
 use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError};
-use netidx_value::ValArray;
-use netidx_value::{Typ, Value};
+use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 use std::{fmt::Debug, marker::PhantomData};
 use triomphe::Arc;
 
-// CR claude for eric: [structure] the list rep is used by tval, cast, pattern,
-// array, lowering, emit_helpers and the list package, none of them about
-// collection HOFs; it is its own module (node/list.rs), not the head of this
-// 2.8k-line file. It also glob-imports `super::*` for three names.
-pub mod list {
-    use super::*;
+/// A traversal that calls its callback once per element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
+pub(crate) enum MapOp {
+    Init,
+    Map,
+    Filter,
+    FilterMap,
+    FlatMap,
+    Find,
+    FindMap,
+}
 
-    /// The list rep: cons = a 2-slot array `[head, tail]`, nil = a
-    /// clone of this static (not `Null`: `[List, null]` must not
-    /// collapse). The discriminant is the length; only this module
-    /// knows the layout.
-    static EMPTY: std::sync::LazyLock<ValArray> =
-        std::sync::LazyLock::new(|| ValArray::from_iter_exact(std::iter::empty()));
-
-    pub fn nil() -> Value {
-        Value::Array(EMPTY.clone())
-    }
-
-    pub fn cons(head: Value, tail: Value) -> Value {
-        Value::Array(ValArray::from_iter_exact([head, tail].into_iter()))
-    }
-
-    pub fn split(v: &Value) -> Option<(&Value, &Value)> {
-        match v {
-            Value::Array(a) if a.len() == 2 => Some((&a[0], &a[1])),
-            _ => None,
-        }
-    }
-
-    pub fn is_nil(v: &Value) -> bool {
-        matches!(v, Value::Array(a) if a.is_empty())
-    }
-
-    pub fn is_list(v: &Value) -> bool {
-        is_nil(v) || split(v).is_some()
-    }
-
-    /// The length of a well-formed list; `None` when the spine is not
-    /// one (a shape the outer pair alone cannot tell).
-    pub fn len(v: &Value) -> Option<usize> {
-        let mut n = 0;
-        let mut cur = v;
-        loop {
-            if is_nil(cur) {
-                return Some(n);
-            }
-            let (_, tail) = split(cur)?;
-            n += 1;
-            cur = tail;
-        }
-    }
-
-    pub fn from_iter(iter: impl IntoIterator<Item = Value>) -> Value {
-        let mut values: LPooled<Vec<Value>> = iter.into_iter().collect();
-        let mut result = nil();
-        while let Some(value) = values.pop() {
-            result = cons(value, result);
-        }
-        result
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct Iter {
-        cur: Value,
-    }
-
-    impl Iter {
-        pub fn new(value: Value) -> Self {
-            Self { cur: value }
-        }
-    }
-
-    impl Iterator for Iter {
-        type Item = Value;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            let cur = self.cur.clone();
-            let (head, tail) = split(&cur)?;
-            let head = head.clone();
-            self.cur = tail.clone();
-            Some(head)
-        }
-    }
-
-    // CR claude for eric: [risk] `to_array` checks only the outer cell, so a
-    // malformed spine flattens to a truncated array, while `len` (hence
-    // `ListCollection::select`) answers None and MapQ bottoms: the JIT
-    // flatten (`graphix_list_to_valarray`) and the node-walk disagree on one
-    // value. Gate on `len(value)` so both share one notion of a list.
-    pub fn to_array(value: &Value) -> Option<ValArray> {
-        is_list(value).then(|| ValArray::from_iter(Iter::new(value.clone())))
+impl MapOp {
+    /// The result reads the source's elements, so a moved source changes
+    /// it even when no callback slot fires.
+    fn reads_elements(self) -> bool {
+        matches!(self, Self::Filter | Self::Find)
     }
 }
 
-// CR claude for eric: [structure] 20 variants are 8 ops x 3 flavors spelled
-// out in from_name, build, image_decode and 20 marker structs whose emit_clif
-// only forwards (op, Flavor) and whose finish bodies repeat per flavor
-// (Array/ListFindMap are identical; the Init/Map/Filter/FilterMap trios differ
-// in the result builder). An `{ op, flavor }` pair retires MapQ's `intrinsic`
-// field (read only by image_encode, able to disagree with `T`), the ZST
-// `operation: T` with its unused `&mut self`, and the `emit_call` pointers.
+/// The collection a HOF traverses and builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
+pub(crate) enum Flavor {
+    Array,
+    List,
+    CMap,
+}
+
+/// A collection HOF: its traversal and its collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub(crate) enum CollectionIntrinsic {
-    ArrayInit,
-    ArrayMap,
-    ArrayFilter,
-    ArrayFilterMap,
-    ArrayFlatMap,
-    ArrayFind,
-    ArrayFindMap,
-    ArrayFold,
-    ListInit,
-    ListMap,
-    ListFilter,
-    ListFilterMap,
-    ListFlatMap,
-    ListFind,
-    ListFindMap,
-    ListFold,
-    MapMap,
-    MapFilter,
-    MapFilterMap,
-    MapFold,
+    Map(MapOp, Flavor),
+    Fold(Flavor),
+}
+
+/// The intrinsic's node over its collection type.
+macro_rules! by_collection {
+    ($intrinsic:expr, $f:ident($($arg:expr),*)) => {
+        match $intrinsic {
+            CollectionIntrinsic::Map(MapOp::Init, _) => MapQ::<R, E, IndexRange>::$f($($arg),*),
+            CollectionIntrinsic::Map(_, Flavor::Array) => MapQ::<R, E, ValArray>::$f($($arg),*),
+            CollectionIntrinsic::Map(_, Flavor::List) => {
+                MapQ::<R, E, ListCollection>::$f($($arg),*)
+            }
+            CollectionIntrinsic::Map(_, Flavor::CMap) => MapQ::<R, E, ValueMap>::$f($($arg),*),
+            CollectionIntrinsic::Fold(Flavor::Array) => FoldQ::<R, E, ValArray>::$f($($arg),*),
+            CollectionIntrinsic::Fold(Flavor::List) => {
+                FoldQ::<R, E, ListCollection>::$f($($arg),*)
+            }
+            CollectionIntrinsic::Fold(Flavor::CMap) => FoldQ::<R, E, ValueMap>::$f($($arg),*),
+        }
+    };
 }
 
 impl CollectionIntrinsic {
+    /// The intrinsic a reserved marker name (`'array_map`, …) names.
     pub(crate) fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "array_init" => Self::ArrayInit,
-            "array_map" => Self::ArrayMap,
-            "array_filter" => Self::ArrayFilter,
-            "array_filter_map" => Self::ArrayFilterMap,
-            "array_flat_map" => Self::ArrayFlatMap,
-            "array_find" => Self::ArrayFind,
-            "array_find_map" => Self::ArrayFindMap,
-            "array_fold" => Self::ArrayFold,
-            "list_init" => Self::ListInit,
-            "list_map" => Self::ListMap,
-            "list_filter" => Self::ListFilter,
-            "list_filter_map" => Self::ListFilterMap,
-            "list_flat_map" => Self::ListFlatMap,
-            "list_find" => Self::ListFind,
-            "list_find_map" => Self::ListFindMap,
-            "list_fold" => Self::ListFold,
-            "map_map" => Self::MapMap,
-            "map_filter" => Self::MapFilter,
-            "map_filter_map" => Self::MapFilterMap,
-            "map_fold" => Self::MapFold,
+        let (flavor, op) = if let Some(op) = name.strip_prefix("array_") {
+            (Flavor::Array, op)
+        } else if let Some(op) = name.strip_prefix("list_") {
+            (Flavor::List, op)
+        } else if let Some(op) = name.strip_prefix("map_") {
+            (Flavor::CMap, op)
+        } else {
+            return None;
+        };
+        let op = match op {
+            "fold" => return Some(Self::Fold(flavor)),
+            "init" => MapOp::Init,
+            "map" => MapOp::Map,
+            "filter" => MapOp::Filter,
+            "filter_map" => MapOp::FilterMap,
+            "flat_map" => MapOp::FlatMap,
+            "find" => MapOp::Find,
+            "find_map" => MapOp::FindMap,
             _ => return None,
-        })
+        };
+        match (op, flavor) {
+            (
+                MapOp::Init | MapOp::FlatMap | MapOp::Find | MapOp::FindMap,
+                Flavor::CMap,
+            ) => None,
+            (op, flavor) => Some(Self::Map(op, flavor)),
+        }
     }
 
     pub(crate) fn build<R: Rt, E: UserEvent>(
@@ -196,68 +126,7 @@ impl CollectionIntrinsic {
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
     ) -> Result<Node<R, E>> {
-        match self {
-            Self::ArrayInit => {
-                MapQ::<R, E, ArrayInit>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ArrayMap => {
-                MapQ::<R, E, ArrayMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ArrayFilter => {
-                MapQ::<R, E, ArrayFilter>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ArrayFilterMap => MapQ::<R, E, ArrayFilterMap>::new(
-                self, ctx, spec, scope, top_id, typ, args,
-            ),
-            Self::ArrayFlatMap => {
-                MapQ::<R, E, ArrayFlatMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ArrayFind => {
-                MapQ::<R, E, ArrayFind>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ArrayFindMap => {
-                MapQ::<R, E, ArrayFindMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ArrayFold => {
-                FoldQ::<R, E, ArrayFold>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ListInit => {
-                MapQ::<R, E, ListInit>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ListMap => {
-                MapQ::<R, E, ListMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ListFilter => {
-                MapQ::<R, E, ListFilter>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ListFilterMap => MapQ::<R, E, ListFilterMap>::new(
-                self, ctx, spec, scope, top_id, typ, args,
-            ),
-            Self::ListFlatMap => {
-                MapQ::<R, E, ListFlatMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ListFind => {
-                MapQ::<R, E, ListFind>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ListFindMap => {
-                MapQ::<R, E, ListFindMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::ListFold => {
-                FoldQ::<R, E, ListFold>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::MapMap => {
-                MapQ::<R, E, MapMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::MapFilter => {
-                MapQ::<R, E, MapFilter>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::MapFilterMap => {
-                MapQ::<R, E, MapFilterMap>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-            Self::MapFold => {
-                FoldQ::<R, E, MapFold>::new(self, ctx, spec, scope, top_id, typ, args)
-            }
-        }
+        by_collection!(self, new(self, ctx, spec, scope, top_id, typ, args))
     }
 
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
@@ -265,56 +134,24 @@ impl CollectionIntrinsic {
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let intrinsic = Self::decode(buf)?;
-        match intrinsic {
-            Self::ArrayInit => MapQ::<R, E, ArrayInit>::image_decode(intrinsic, ctx, buf),
-            Self::ArrayMap => MapQ::<R, E, ArrayMap>::image_decode(intrinsic, ctx, buf),
-            Self::ArrayFilter => {
-                MapQ::<R, E, ArrayFilter>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ArrayFilterMap => {
-                MapQ::<R, E, ArrayFilterMap>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ArrayFlatMap => {
-                MapQ::<R, E, ArrayFlatMap>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ArrayFind => MapQ::<R, E, ArrayFind>::image_decode(intrinsic, ctx, buf),
-            Self::ArrayFindMap => {
-                MapQ::<R, E, ArrayFindMap>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ArrayFold => {
-                FoldQ::<R, E, ArrayFold>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ListInit => MapQ::<R, E, ListInit>::image_decode(intrinsic, ctx, buf),
-            Self::ListMap => MapQ::<R, E, ListMap>::image_decode(intrinsic, ctx, buf),
-            Self::ListFilter => {
-                MapQ::<R, E, ListFilter>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ListFilterMap => {
-                MapQ::<R, E, ListFilterMap>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ListFlatMap => {
-                MapQ::<R, E, ListFlatMap>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ListFind => MapQ::<R, E, ListFind>::image_decode(intrinsic, ctx, buf),
-            Self::ListFindMap => {
-                MapQ::<R, E, ListFindMap>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::ListFold => FoldQ::<R, E, ListFold>::image_decode(intrinsic, ctx, buf),
-            Self::MapMap => MapQ::<R, E, MapMap>::image_decode(intrinsic, ctx, buf),
-            Self::MapFilter => MapQ::<R, E, MapFilter>::image_decode(intrinsic, ctx, buf),
-            Self::MapFilterMap => {
-                MapQ::<R, E, MapFilterMap>::image_decode(intrinsic, ctx, buf)
-            }
-            Self::MapFold => FoldQ::<R, E, MapFold>::image_decode(intrinsic, ctx, buf),
-        }
+        by_collection!(intrinsic, image_decode(intrinsic, ctx, buf))
     }
 }
 
 trait MapCollection: Debug + Clone + Default + Send + Sync + 'static {
     fn len(&self) -> usize;
     fn values(&self) -> impl Iterator<Item = Value>;
-    fn select(value: Value) -> Option<Self>;
+    /// The collection a source value holds; `fired` = the value was
+    /// just produced, so a refusal is news worth logging.
+    fn select(value: Value, fired: bool) -> Option<Self>;
+    /// The element type the callback takes, from the intrinsic's
+    /// signature.
     fn element_type(ft: &FnType) -> Result<Type>;
+}
+
+/// The intrinsic's source argument type, dereferenced.
+fn source_type(ft: &FnType) -> Option<Type> {
+    ft.args[0].typ.deref_cloned()
 }
 
 impl MapCollection for ValArray {
@@ -326,7 +163,7 @@ impl MapCollection for ValArray {
         self.iter().cloned()
     }
 
-    fn select(value: Value) -> Option<Self> {
+    fn select(value: Value, _: bool) -> Option<Self> {
         match value {
             Value::Array(a) => Some(a),
             _ => None,
@@ -334,9 +171,9 @@ impl MapCollection for ValArray {
     }
 
     fn element_type(ft: &FnType) -> Result<Type> {
-        match &ft.args[0].typ {
-            Type::Array(t) => Ok((**t).clone()),
-            t => bail!("expected Array, got {t}"),
+        match source_type(ft) {
+            Some(Type::Array(t)) => Ok((*t).clone()),
+            _ => bail!("expected Array, got {}", ft.args[0].typ),
         }
     }
 }
@@ -360,6 +197,19 @@ pub(crate) fn split_pair(value: &Value) -> Option<(Value, Value)> {
     }
 }
 
+/// The map a Map HOF builds from its `[k, v]` pairs, both engines; a
+/// malformed pair is logged and skipped. Key order reads the core-trait
+/// hooks, so the caller runs this under them.
+pub(crate) fn pairs_to_map<'a>(pairs: impl IntoIterator<Item = &'a Value>) -> Value {
+    Value::Map(CMap::from_iter(pairs.into_iter().filter_map(|v| {
+        let pair = split_pair(v);
+        if pair.is_none() {
+            log::error!("map result: malformed pair {v:?}");
+        }
+        pair
+    })))
+}
+
 impl MapCollection for ValueMap {
     fn len(&self) -> usize {
         CMap::len(self)
@@ -369,7 +219,7 @@ impl MapCollection for ValueMap {
         self.into_iter().map(|(k, v)| make_pair(k, v))
     }
 
-    fn select(value: Value) -> Option<Self> {
+    fn select(value: Value, _: bool) -> Option<Self> {
         match value {
             Value::Map(m) => Some(m),
             _ => None,
@@ -377,11 +227,11 @@ impl MapCollection for ValueMap {
     }
 
     fn element_type(ft: &FnType) -> Result<Type> {
-        match &ft.args[0].typ {
-            Type::Map { key, value } => {
-                Ok(Type::Tuple(Arc::from_iter([(**key).clone(), (**value).clone()])))
+        match source_type(ft) {
+            Some(Type::Map { key, value }) => {
+                Ok(Type::Tuple(Arc::from_iter([(*key).clone(), (*value).clone()])))
             }
-            t => bail!("expected Map, got {t}"),
+            _ => bail!("expected Map, got {}", ft.args[0].typ),
         }
     }
 }
@@ -407,35 +257,22 @@ impl MapCollection for ListCollection {
         list::Iter::new(self.value.clone())
     }
 
-    fn select(value: Value) -> Option<Self> {
+    fn select(value: Value, _: bool) -> Option<Self> {
         let len = list::len(&value)?;
         Some(Self { value, len })
     }
 
-    // CR claude for eric: [structure] suspected leftover: only the List impl
-    // accepts Abstract/Ref forms and then scans every fn-typed argument for
-    // its last parameter; the Array and Map impls accept only their own
-    // constructor. Either the fallbacks predate native List or Array/Map lack
-    // them; one rule (deref, then the constructor) for all three.
     fn element_type(ft: &FnType) -> Result<Type> {
-        match &ft.args[0].typ {
-            Type::List(t) => return Ok((**t).clone()),
-            Type::Abstract { params, .. } if !params.is_empty() => {
-                return Ok(params[0].clone());
-            }
-            Type::Ref(tr) if !tr.params.is_empty() => return Ok(tr.params[0].clone()),
-            _ => (),
+        match source_type(ft) {
+            Some(Type::List(t)) => Ok((*t).clone()),
+            _ => bail!("expected List, got {}", ft.args[0].typ),
         }
-        for arg in ft.args.iter() {
-            if let Type::Fn(inner) = &arg.typ
-                && let Some(arg) = inner.args.last()
-            {
-                return Ok(arg.typ.clone());
-            }
-        }
-        bail!("cannot extract List element type from {}", ft.args[0].typ)
     }
 }
+
+/// The largest count `array::init`/`list::init` build; a larger one is
+/// bottom on both engines, and the node-walk logs it once per fired count.
+pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 struct IndexRange(usize);
@@ -452,16 +289,14 @@ impl MapCollection for IndexRange {
         (0..self.0).map(value)
     }
 
-    fn select(value: Value) -> Option<Self> {
+    fn select(value: Value, fired: bool) -> Option<Self> {
         let Value::I64(n) = value else { return None };
-        // CR claude for eric: [bug] logs on every cycle the source is read, not
-        // once per count: `array::init(20000000, f)` beside a 10ms timer logged
-        // 7 errors in 3 ticks (--no-fusion), while the fused loop never logs
-        // (scaffold.rs emit_init_loop). Log only when the count fired.
         if n > MAX_ARRAY_INIT_LEN {
-            log::error!(
-                "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
-            );
+            if fired {
+                log::error!(
+                    "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
+                );
+            }
             return None;
         }
         Some(Self(n.max(0) as usize))
@@ -472,89 +307,179 @@ impl MapCollection for IndexRange {
     }
 }
 
-// CR claude for eric: [structure] `tag` is only ever STALE or STALE_BOTTOM, a
-// `poisoned` bool in a Tag's clothing, and with `value` it spells 3 states in
-// 4. FoldSlot repeats the pair (`this_cycle`/`tag`, where None already means
-// bottom) under another rule: a stale production keeps a MapQ slot's poison
-// but clears a FoldQ slot's. One slot-state enum and one rule for both.
+/// A slot's last production.
+#[derive(Debug, Default)]
+enum SlotState {
+    /// Never produced.
+    #[default]
+    Empty,
+    Value(Value),
+    Bottom,
+}
+
+impl SlotState {
+    /// Every production, fired or standing, replaces the state: a bottom
+    /// is never answered from an earlier value.
+    fn set(&mut self, tv: &TagValue) {
+        *self = if tv.tag().is_bottom() {
+            Self::Bottom
+        } else {
+            Self::Value(tv.value_cloned())
+        }
+    }
+
+    fn value(&self) -> Option<&Value> {
+        match self {
+            Self::Value(v) => Some(v),
+            Self::Empty | Self::Bottom => None,
+        }
+    }
+
+    fn is_bottom(&self) -> bool {
+        matches!(self, Self::Bottom)
+    }
+}
+
+/// The callback a collection intrinsic calls, and where it calls it.
+#[derive(Debug)]
+struct Callback {
+    scope: Scope,
+    id: BindId,
+    typ: Arc<FnType>,
+    top_id: ExprId,
+}
+
+impl Callback {
+    fn image_len(&self) -> usize {
+        scope_len(&self.scope)
+            + self.id.encoded_len()
+            + self.typ.encoded_len()
+            + self.top_id.encoded_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        scope_encode(&self.scope, buf)?;
+        self.id.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.top_id.encode(buf)
+    }
+
+    fn image_decode(buf: &mut &[u8]) -> Result<Self, PackError> {
+        Ok(Self {
+            scope: scope_decode(buf)?,
+            id: BindId::decode(buf)?,
+            typ: Pack::decode(buf)?,
+            top_id: ExprId::decode(buf)?,
+        })
+    }
+
+    /// A fresh bind for one callback argument.
+    fn arg<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        name: &str,
+        typ: &Type,
+    ) -> (BindId, Node<R, E>) {
+        genn::bind(ctx, &self.scope.lexical, name, typ.clone(), self.top_id)
+    }
+
+    /// A call of the callback over `args`: the prototype, whose dispatch
+    /// the typecheck resolves, or a slot, which calls the definition the
+    /// prototype resolved to when it resolved one.
+    fn call<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut ExecCtx<R, E>,
+        args: SmallVec<[Node<R, E>; 2]>,
+        kind: CallKind,
+    ) -> Node<R, E> {
+        let (Self { scope, id, typ, top_id }, fty) = (self, Type::Fn(self.typ.clone()));
+        match kind {
+            CallKind::Prototype => {
+                let function = genn::reference(ctx, *id, fty, *top_id);
+                genn::apply_prototype(function, scope.clone(), args, typ, *top_id)
+            }
+            CallKind::Slot(Some(def)) => {
+                let function = super::Constant::new(def, fty, Expr::clone(&NOP));
+                genn::apply(function, scope.clone(), args, typ, *top_id)
+            }
+            CallKind::Slot(None) => {
+                let function = genn::reference(ctx, *id, fty, *top_id);
+                genn::apply(function, scope.clone(), args, typ, *top_id)
+            }
+        }
+    }
+}
+
+/// Which call of its callback a collection builds.
+#[derive(Clone)]
+enum CallKind {
+    Prototype,
+    /// A slot; the definition value when the prototype call resolved
+    /// statically (a trait method dispatcher requires it: the parameter
+    /// carries no value).
+    Slot(Option<Value>),
+}
+
+impl CallKind {
+    /// The slot call a prototype settled on.
+    fn slot<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, prototype: &Node<R, E>) -> Self {
+        let NodeView::CallSite(site) = prototype.view() else { return Self::Slot(None) };
+        let def = site
+            .static_target
+            .as_ref()
+            .and_then(|target| ctx.lambda_defs.get(&target.definition).cloned());
+        Self::Slot(def)
+    }
+}
+
+/// Resize `slots` to `n`, deleting the excess and adding with `add`:
+/// true when the length changed.
+fn resize<R: Rt, E: UserEvent, S>(
+    ctx: &mut ExecCtx<R, E>,
+    slots: &mut Vec<S>,
+    n: usize,
+    delete: fn(&mut S, &mut ExecCtx<R, E>),
+    mut add: impl FnMut(&mut ExecCtx<R, E>) -> S,
+) -> bool {
+    let old = slots.len();
+    for mut s in slots.drain(n.min(old)..) {
+        delete(&mut s, ctx)
+    }
+    while slots.len() < n {
+        let s = add(ctx);
+        slots.push(s)
+    }
+    old != n
+}
+
 #[derive(Debug)]
 struct Slot<R: Rt, E: UserEvent> {
     id: BindId,
     call: Node<R, E>,
-    value: Option<Value>,
-    tag: Tag,
+    state: SlotState,
 }
 
 impl<R: Rt, E: UserEvent> Slot<R, E> {
-    // CR claude for eric: [structure] `Slot::new` and `FoldSlot::new` repeat
-    // callback_fnode plus `if prototype { apply_prototype } else { apply }`
-    // behind a bool flag; one helper taking the argument nodes serves both.
     fn new(
         ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        top_id: ExprId,
-        callback: BindId,
-        callback_type: &Arc<FnType>,
+        callback: &Callback,
         element_type: &Type,
-        prototype: bool,
-        resolved: Option<Value>,
+        kind: CallKind,
     ) -> Self {
-        let (id, element) = genn::bind(
-            ctx,
-            &scope.lexical,
-            "collection_element",
-            element_type.clone(),
-            top_id,
-        );
-        let function = callback_fnode(ctx, callback, callback_type, top_id, resolved);
-        let call = if prototype {
-            genn::apply_prototype(
-                function,
-                scope.clone(),
-                smallvec![element],
-                callback_type,
-                top_id,
-            )
-        } else {
-            genn::apply(
-                function,
-                scope.clone(),
-                smallvec![element],
-                callback_type,
-                top_id,
-            )
-        };
-        Self { id, call, value: None, tag: Tag::STALE }
+        let (id, element) = callback.arg(ctx, "collection_element", element_type);
+        let call = callback.call(ctx, smallvec![element], kind);
+        Self { id, call, state: SlotState::Empty }
+    }
+
+    /// The slot's value; `finish` runs only once every slot holds one.
+    fn value(&self) -> &Value {
+        self.state.value().expect("finish runs once every slot holds a value")
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.call.delete(ctx);
         ctx.rt.store_remove(&self.id);
         ctx.env.unbind_variable(self.id);
-    }
-}
-
-trait MapFn<R: Rt, E: UserEvent>: Debug + Default + Send + Sync + 'static {
-    type Collection: MapCollection;
-
-    /// A same-length source refresh with quiet callback slots must then
-    /// still fire the production.
-    const RESULT_READS_ELEMENTS: bool = false;
-
-    fn finish(
-        &mut self,
-        slots: &[Slot<R, E>],
-        source: &Self::Collection,
-    ) -> Option<Value>;
-
-    fn emit_clif(
-        _cx: &mut BodyCx,
-        _source: &Node<R, E>,
-        _body: &Node<R, E>,
-        _param: &CallbackParam,
-        _element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        Ok(None)
     }
 }
 
@@ -565,10 +490,21 @@ struct CallbackParam {
     binds: Vec<(BindId, usize)>,
 }
 
+impl CallbackParam {
+    /// The loop's element bind for this parameter.
+    fn elem<'a>(
+        &'a self,
+        typ: &'a Type,
+        leaves: &'a [(BindId, usize, scaffold::LeafShape)],
+    ) -> scaffold::HofElem<'a> {
+        scaffold::HofElem { name: &self.name, id: self.id, typ, leaves }
+    }
+}
+
 /// The callback's `index`-th positional parameter; `None` for a
 /// callback with labeled parameters, which the collection interprets.
 fn callback_param<R: Rt, E: UserEvent>(
-    callback: &super::lambda::GXLambda<R, E>,
+    callback: &GXLambda<R, E>,
     index: usize,
     fallback: ArcStr,
 ) -> Option<CallbackParam> {
@@ -596,8 +532,6 @@ fn bindable_array_element(
     typ: &Type,
     binds: &[(BindId, usize)],
 ) -> Option<(Type, Vec<(BindId, usize, scaffold::LeafShape)>)> {
-    use kernel_abi::AbiKind;
-
     let typ = kernel_abi::freeze_for_abi_normalized(typ)?;
     let leaves = scaffold::elem_leaves(&typ, binds)?;
     match kernel_abi::abi_kind(&typ) {
@@ -616,8 +550,6 @@ fn bindable_array_element(
 }
 
 fn is_unit_or_null(typ: &Type) -> bool {
-    use kernel_abi::AbiKind;
-
     matches!(kernel_abi::abi_kind(typ), Some(AbiKind::Unit | AbiKind::Null))
 }
 
@@ -625,7 +557,7 @@ fn is_unit_or_null(typ: &Type) -> bool {
 /// An unknown shape answers true, so the caller keeps interpreting.
 fn frozen_may_be_null(t: &Type) -> bool {
     t.with_deref(|t| match t {
-        Some(Type::Primitive(p)) => p.contains(netidx_value::Typ::Null),
+        Some(Type::Primitive(p)) => p.contains(Typ::Null),
         Some(Type::Set(ms)) => ms.iter().any(frozen_may_be_null),
         Some(
             Type::Array(_)
@@ -696,44 +628,116 @@ fn convert_collection_result(
 pub struct MapQBase<R: Rt, E: UserEvent> {
     pub(crate) source: Node<R, E>,
     pub(crate) prototype: Node<R, E>,
+    op: MapOp,
+    flavor: Flavor,
     element_type: Type,
-    emit_call:
-        fn(&MapQBase<R, E>, &CallSite<R, E>, &mut BodyCx) -> Result<Option<CompiledExpr>>,
     prototype_id: BindId,
     spec: Expr,
     typ: Type,
 }
 
 impl<R: Rt, E: UserEvent> MapQBase<R, E> {
+    /// The fused loop for a call site's intrinsic call.
     pub(crate) fn emit_clif_call(
         &self,
         callsite: &CallSite<R, E>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
-        (self.emit_call)(self, callsite, cx)
+        let Some(source) = callsite.arg_positional(0) else {
+            return Ok(None);
+        };
+        let prev = cx.swap_collection_site(Some(callsite.spec.id));
+        let r = self.emit(source, cx);
+        cx.swap_collection_site(prev);
+        r
+    }
+
+    fn emit(&self, source: &Node<R, E>, cx: &mut BodyCx) -> Result<Option<CompiledExpr>> {
+        if emit::node_is_bottom(source) {
+            return Ok(None);
+        }
+        let Some(callback) = callback(&self.prototype) else { return Ok(None) };
+        let Some(param) = callback_param(callback, 0, literal!("__elem")) else {
+            return Ok(None);
+        };
+        let (body, et, flavor) = (callback.body(), &self.element_type, self.flavor);
+        match self.op {
+            MapOp::Init => emit_init_kind(cx, source, body, &param, flavor),
+            MapOp::Map => emit_map_kind(cx, source, body, &param, et, flavor),
+            MapOp::Filter => emit_filter_kind(cx, source, body, &param, et, flavor),
+            MapOp::FilterMap => {
+                emit_filter_map_kind(cx, source, body, &param, et, flavor)
+            }
+            MapOp::FlatMap => emit_flat_map_kind(cx, source, body, &param, et, flavor),
+            MapOp::Find => emit_find_kind(cx, source, body, &param, et, flavor),
+            MapOp::FindMap => emit_find_map_kind(cx, source, body, &param, et, flavor),
+        }
     }
 
     pub(crate) fn callback_body(&self) -> Option<&Node<R, E>> {
-        callback(&self.prototype).map(super::lambda::GXLambda::body)
+        callback(&self.prototype).map(GXLambda::body)
+    }
+
+    /// The traversal's result once every slot holds a value.
+    fn finish<C: MapCollection>(&self, slots: &[Slot<R, E>], source: &C) -> Value {
+        let taken = |slot: &Slot<R, E>| matches!(slot.value(), Value::Bool(true));
+        let kept = |v: &&Value| !matches!(v, Value::Null);
+        let mut elems: LPooled<Vec<Value>> = match self.op {
+            MapOp::Init | MapOp::Map => slots.iter().map(|s| s.value().clone()).collect(),
+            MapOp::Filter => slots
+                .iter()
+                .zip(source.values())
+                .filter_map(|(s, v)| taken(s).then_some(v))
+                .collect(),
+            MapOp::FilterMap => {
+                slots.iter().map(Slot::value).filter(kept).cloned().collect()
+            }
+            MapOp::FlatMap => {
+                let mut elems = LPooled::take();
+                for s in slots {
+                    self.flavor.extend(&mut elems, s.value())
+                }
+                elems
+            }
+            MapOp::Find => {
+                let found = slots.iter().zip(source.values()).find(|(s, _)| taken(s));
+                return found.map_or(Value::Null, |(_, v)| v);
+            }
+            MapOp::FindMap => {
+                let found = slots.iter().map(Slot::value).find(kept);
+                return found.cloned().unwrap_or(Value::Null);
+            }
+        };
+        self.flavor.build(&mut elems)
     }
 }
 
 #[derive(Debug)]
-struct MapQ<R: Rt, E: UserEvent, T: MapFn<R, E>> {
+struct MapQ<R: Rt, E: UserEvent, C: MapCollection> {
     slept: WakeBit,
-    intrinsic: CollectionIntrinsic,
     base: MapQBase<R, E>,
-    scope: Scope,
-    callback: BindId,
-    callback_type: Arc<FnType>,
-    top_id: ExprId,
+    callback: Callback,
     slots: LPooled<Vec<Slot<R, E>>>,
-    current: T::Collection,
-    operation: T,
+    current: C,
+    /// The source was bottom (or never read): its length is forgotten,
+    /// so its return changes the result.
+    src_bottom: bool,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
+impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
+    fn with(base: MapQBase<R, E>, callback: Callback) -> Node<R, E> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            base,
+            callback,
+            slots: LPooled::take(),
+            current: C::default(),
+            src_bottom: true,
+            resident: TagValue::phantom(),
+        })
+    }
+
     fn new(
         intrinsic: CollectionIntrinsic,
         ctx: &mut ExecCtx<R, E>,
@@ -743,52 +747,37 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
     ) -> Result<Node<R, E>> {
+        let CollectionIntrinsic::Map(op, flavor) = intrinsic else {
+            bail!("{intrinsic:?} is not a map intrinsic")
+        };
         if typ.args.len() != 2 || args.len() != 2 {
             bail!("collection map intrinsic requires two arguments")
         }
-        let source_id = args[0].single_bind_id().ok_or_else(|| {
-            anyhow::anyhow!("collection source argument must be a name")
-        })?;
-        let callback = args[1].single_bind_id().ok_or_else(|| {
-            anyhow::anyhow!("collection callback argument must be a name")
-        })?;
+        let source_id = args[0]
+            .single_bind_id()
+            .ok_or_else(|| anyhow!("collection source argument must be a name"))?;
+        let id = args[1]
+            .single_bind_id()
+            .ok_or_else(|| anyhow!("collection callback argument must be a name"))?;
         let callback_type = match &typ.args[1].typ {
             Type::Fn(ft) => ft.clone(),
             t => bail!("collection callback must be a function, got {t}"),
         };
-        let element_type = T::Collection::element_type(typ)?;
+        let callback = Callback { scope: scope.clone(), id, typ: callback_type, top_id };
+        let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
-        let prototype = Slot::new(
-            ctx,
-            scope,
-            top_id,
-            callback,
-            &callback_type,
-            &element_type,
-            true,
-            None,
-        );
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            intrinsic,
-            base: MapQBase {
-                source,
-                prototype: prototype.call,
-                element_type,
-                emit_call: emit_map_call::<R, E, T>,
-                prototype_id: prototype.id,
-                spec,
-                typ: typ.rtype.clone(),
-            },
-            scope: scope.clone(),
-            callback,
-            callback_type,
-            top_id,
-            slots: LPooled::take(),
-            current: T::Collection::default(),
-            operation: T::default(),
-            resident: TagValue::phantom(),
-        }))
+        let prototype = Slot::new(ctx, &callback, &element_type, CallKind::Prototype);
+        let base = MapQBase {
+            source,
+            prototype: prototype.call,
+            op,
+            flavor,
+            element_type,
+            prototype_id: prototype.id,
+            spec,
+            typ: typ.rtype.clone(),
+        };
+        Ok(Self::with(base, callback))
     }
 
     fn image_decode(
@@ -796,55 +785,24 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
         ctx: &mut ExecCtx<R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let source = decode_node(ctx, buf)?;
-        let prototype = decode_node(ctx, buf)?;
-        let element_type = Type::decode(buf)?;
-        let prototype_id = BindId::decode(buf)?;
-        let spec = Expr::decode(buf)?;
-        let typ = Type::decode(buf)?;
-        let scope = scope_decode(buf)?;
-        let callback = BindId::decode(buf)?;
-        let callback_type: Arc<FnType> = Pack::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        Ok(Node::new(Self {
-            slept: WakeBit::default(),
-            intrinsic,
-            base: MapQBase {
-                source,
-                prototype,
-                element_type,
-                emit_call: emit_map_call::<R, E, T>,
-                prototype_id,
-                spec,
-                typ,
-            },
-            scope,
-            callback,
-            callback_type,
-            top_id,
-            slots: LPooled::take(),
-            current: T::Collection::default(),
-            operation: T::default(),
-            resident: TagValue::phantom(),
-        }))
+        let CollectionIntrinsic::Map(op, flavor) = intrinsic else {
+            return Err(PackError::InvalidFormat);
+        };
+        let base = MapQBase {
+            source: decode_node(ctx, buf)?,
+            prototype: decode_node(ctx, buf)?,
+            op,
+            flavor,
+            element_type: Type::decode(buf)?,
+            prototype_id: BindId::decode(buf)?,
+            spec: Expr::decode(buf)?,
+            typ: Type::decode(buf)?,
+        };
+        Ok(Self::with(base, Callback::image_decode(buf)?))
     }
 
-    // CR claude for eric: [perf] `prototype_def` (a lambda_defs lookup and a
-    // Value clone) runs once per added slot inside the grow loop, though the
-    // prototype cannot change between iterations; resolve once per resize
-    // (also FoldQ::add_slot).
-    fn add_slot(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let resolved = prototype_def(ctx, &self.base.prototype);
-        self.slots.push(Slot::new(
-            ctx,
-            &self.scope,
-            self.top_id,
-            self.callback,
-            &self.callback_type,
-            &self.base.element_type,
-            false,
-            resolved,
-        ));
+    fn finish(&self, ctx: &mut ExecCtx<R, E>, event: &Event<E>) -> Value {
+        with_hooks(ctx, event, || self.base.finish(&self.slots, &self.current))
     }
 }
 
@@ -856,135 +814,93 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
     })
 }
 
-impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
+impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
     fn image_len(&self) -> usize {
+        let intrinsic = CollectionIntrinsic::Map(self.base.op, self.base.flavor);
         tag_len()
-            + self.intrinsic.encoded_len()
+            + intrinsic.encoded_len()
             + self.base.source.image_len()
             + self.base.prototype.image_len()
             + self.base.element_type.encoded_len()
             + self.base.prototype_id.encoded_len()
             + self.base.spec.encoded_len()
             + self.base.typ.encoded_len()
-            + scope_len(&self.scope)
-            + self.callback.encoded_len()
-            + self.callback_type.encoded_len()
-            + self.top_id.encoded_len()
+            + self.callback.image_len()
     }
 
-    // CR claude for eric: [risk] live slots, `current` (and FoldQ's `init`)
-    // are dropped silently: an image written after a cycle decodes as a
-    // collection that never ran. CallSite refuses a bound dynamic callee with
-    // NOT_QUIESCENT; refuse here too when `!self.slots.is_empty()` (FoldQ too).
+    /// The slots and the current collection exist only once a cycle has
+    /// run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.slots.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         put_tag(NodeTag::Collection, buf);
-        self.intrinsic.encode(buf)?;
+        CollectionIntrinsic::Map(self.base.op, self.base.flavor).encode(buf)?;
         self.base.source.image_encode(buf)?;
         self.base.prototype.image_encode(buf)?;
         self.base.element_type.encode(buf)?;
         self.base.prototype_id.encode(buf)?;
         self.base.spec.encode(buf)?;
         self.base.typ.encode(buf)?;
-        scope_encode(&self.scope, buf)?;
-        self.callback.encode(buf)?;
-        self.callback_type.encode(buf)?;
-        self.top_id.encode(buf)
+        self.callback.image_encode(buf)
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // The fuse driver never descends a collection callback, so the
-        // prototype body's attributes dispatch here.
-        if !ctx.attr_census.lock().is_empty() {
-            if let Some(body) = self.base.callback_body() {
-                crate::fusion::check_attributes_subtree(body, ctx)?;
-            }
-        }
-        Ok(None)
+        fuse_callback(ctx, &self.base.prototype)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let old_len = self.slots.len();
         let mut production = None;
-        let mut resized = false;
-        let mut forced_taint = false;
-        let src_trig;
-        {
-            let (tag, sval) = {
-                let tv = self.base.source.update(ctx, event);
-                let tag = tv.tag();
-                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
-            };
-            src_trig = tag.triggers();
-            // A tainted or unselectable source is bottom; the slot walk
-            // still runs so slot-internal state sees this cycle's events.
-            if tag.is_bottom() {
-                forced_taint = true;
-            } else if let Some(source) =
-                sval.and_then(|value| T::Collection::select(value))
-            {
-                // CR claude for eric: [structure] this read / select / shrink /
-                // grow / deliver block is repeated in FoldQ::update, as are
-                // `fuse`, `callback_body` and `emit_clif_call` across the two
-                // nodes and bases; and the `None => ride()` arm is unreachable
-                // (len > n >= 0). One shared resize, with
-                // `for mut s in slots.drain(n..) { s.delete(ctx) }`.
-                while self.slots.len() > source.len() {
-                    match self.slots.last_mut() {
-                        Some(slot) => slot.delete(ctx),
-                        None => return self.resident.ride(),
-                    }
-                    self.slots.pop();
-                    resized = true;
-                }
-                while self.slots.len() < source.len() {
-                    self.add_slot(ctx);
-                    resized = true;
-                }
-                // CR claude for eric: [perf] every element is re-delivered (event
-                // and store inserts, plus a fresh [k, v] array per entry for a
-                // Map source) on every cycle the source is not bottom, quiet ones
-                // included: GXDBG_SLOT=1 on a constant 3-array map beside a
-                // timer shows every slot re-dispatched twice per tick. Deliver
-                // on a trigger, a resize or to fresh slots. The store copy is
-                // stamped FIRED whatever `tag` is (also FoldQ's deliveries).
-                for (slot, value) in self.slots.iter().zip(source.values()) {
-                    ctx.rt.store_insert(slot.id, TagValue::fired(value.clone()));
-                    event.variables.insert(slot.id, TagValue::tagged(value, tag));
+        let (tag, sval) = {
+            let tv = self.base.source.update(ctx, event);
+            let tag = tv.tag();
+            (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+        };
+        let src_trig = tag.triggers();
+        // A tainted or unselectable source is bottom and forgets the length;
+        // the slots stay retained (bottom is not a reset) and still run, so
+        // their internal state sees this cycle's events.
+        let source = sval.and_then(|value| C::select(value, src_trig));
+        let source_ok = source.is_some();
+        match source {
+            None => self.src_bottom = true,
+            Some(source) => {
+                let kind = CallKind::slot(ctx, &self.base.prototype);
+                let resized =
+                    resize(ctx, &mut self.slots, source.len(), Slot::delete, |ctx| {
+                        Slot::new(
+                            ctx,
+                            &self.callback,
+                            &self.base.element_type,
+                            kind.clone(),
+                        )
+                    });
+                // Elements move only on a fire, in a frame (a rebound loop
+                // variable arrives stale) or past a sleep; a fresh slot
+                // always takes its element.
+                let moved = src_trig || ctx.frame_depth > 0 || woke;
+                let from = if moved { 0 } else { old_len.min(self.slots.len()) };
+                for (slot, value) in
+                    self.slots[from..].iter().zip(source.values().skip(from))
+                {
+                    deliver(ctx, event, slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
-                // CR claude for eric: [perf] filter/find merge the source tag even
-                // when it is STALE, so every quiet cycle rebuilds (allocates) the
-                // result: GXDBG_SLOT on `array::filter([1, 2, 3], ..)` beside a
-                // timer prints prod=Some(32) each cycle. Only a trigger changes
-                // the elements.
-                // CR claude for eric: [risk] "resident is bottom" stands in for
-                // "the source was bottom", but a poisoned or still-empty slot also
-                // bottoms it, and then a fired same-length source no slot reads
-                // re-fires the standing bottom as FreshBottom (suspected; the
-                // loop rule gives StaleBottom, not value-visible). Record the
-                // source's bottomness (forget the length); same in FoldQ's
-                // `recovered`.
-                // A source back from bottom changes the result whether
-                // or not a slot fires.
-                if resized || T::RESULT_READS_ELEMENTS || self.resident.tag().is_bottom()
-                {
+                // A resize or a source back from bottom changes the result
+                // whether or not a slot fires, and so do moved elements
+                // under a result that reads them.
+                let back = std::mem::take(&mut self.src_bottom);
+                if resized || back || (self.base.op.reads_elements() && moved) {
                     production = merge_tag(production, tag);
                 }
                 if self.slots.is_empty() {
-                    match self.operation.finish(&self.slots, &self.current) {
-                        Some(value) => {
-                            return self.resident.set(TagValue::tagged(value, tag));
-                        }
-                        None => return self.resident.ride(),
-                    }
+                    let v = self.finish(ctx, event);
+                    return self.resident.set(TagValue::tagged(v, tag));
                 }
-            } else {
-                // Slots stay retained: bottom is not a reset.
-                forced_taint = true;
             }
         }
-
         let saved_init = event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
@@ -995,68 +911,43 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             if i >= old_len {
                 event.init = true;
             }
-            let tv = self.slots[i].call.update(ctx, event).clone();
+            let slot = &mut self.slots[i];
+            let tv = slot.call.update(ctx, event);
             let tag = tv.tag();
-            if crate::dbgenv::gxdbg_slot() {
+            if gxdbg_slot() {
                 eprintln!(
                     "SLOT call[{i}] produced tag={} fresh={}",
                     tag.bits(),
                     i >= old_len
                 );
             }
-            // Only triggering productions fold into the firing decision;
-            // any triggering bottom taints its slot and poisons the
-            // collection. `value` is sleep/frame memory only.
+            // Only triggering productions fold into the firing decision.
             if tag.triggers() {
-                if tag.is_bottom() {
-                    production = merge_tag(production, tag);
-                    self.slots[i].tag = Tag::STALE_BOTTOM;
-                } else {
-                    production = merge_tag(production, tag);
-                    self.slots[i].value = Some(tv.value());
-                    self.slots[i].tag = Tag::STALE;
-                }
-            } else if !tag.is_bottom() {
-                // A stale production must still fill the slot, or the
-                // collection can never build.
-                self.slots[i].value = Some(tv.value());
+                production = merge_tag(production, tag);
             }
+            slot.state.set(tv);
         }
         event.init = saved_init;
-
-        if forced_taint {
+        if !source_ok {
             return self.resident.set_bottom(src_trig);
         }
-        // A slot's taint is persistent until a clean production, so
-        // bottomness is a question about the slots now; the production
-        // tag decides only the fired bit. The resident never substitutes
-        // for a poisoned production.
-        let poisoned = self.slots.iter().any(|slot| slot.tag.is_bottom());
-        if crate::dbgenv::gxdbg_slot() {
+        // Bottomness is a question about the slots now; the production
+        // tag decides only the fired bit.
+        let poisoned = self.slots.iter().any(|slot| slot.state.is_bottom());
+        if gxdbg_slot() {
             eprintln!(
-                "SLOT map prod={:?} resized={resized} forced={forced_taint} poisoned={poisoned} slots={:?}",
+                "SLOT map prod={:?} poisoned={poisoned} slots={:?}",
                 production.map(|t| t.bits()),
-                self.slots
-                    .iter()
-                    .map(|s| (s.tag.bits(), s.value.is_some()))
-                    .collect::<Vec<_>>(),
+                self.slots.iter().map(|s| &s.state).collect::<LPooled<Vec<_>>>(),
             );
         }
         let tag = match production {
             Some(tag) => tag,
-            // CR claude for eric: [style] this is `self.resident.set_bottom(false)`
-            // spelled out (FoldQ's `tagged(Null, FRESH_BOTTOM)` resident is
-            // `set_bottom(true)`).
-            None if poisoned => {
-                return self
-                    .resident
-                    .set(TagValue::tagged(Value::Null, Tag::STALE_BOTTOM));
-            }
+            None if poisoned => return self.resident.set_bottom(false),
             // After a sleep the resident may lag the stale-refreshed
             // slots; rebuild quietly (design/wake_catchup.md).
             None if woke
-                && !self.slots.is_empty()
-                && self.slots.iter().all(|slot| slot.value.is_some()) =>
+                && self.slots.iter().all(|slot| slot.state.value().is_some()) =>
             {
                 Tag::STALE
             }
@@ -1065,17 +956,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         if tag.is_bottom() || poisoned {
             return self.resident.set_bottom(tag.triggers());
         }
-        // CR claude for eric: [bug] `finish` builds map::map/filter/filter_map
-        // results in structural key order: it runs outside
-        // `coretraits::with_hooks`, the fused loop under the kernel's loan.
-        // Probe: keys Rev(1..5) with a reversed `impl Ord`, `m2 =
-        // map::filter(m, |_| true)`: fused, m2 iterates 5..1 and `m2{Rev(1)}`
-        // is 1; --no-fusion, 1..5 and MapKeyError. Also the empty-source call.
-        if self.slots.iter().all(|slot| slot.value.is_some()) {
-            match self.operation.finish(&self.slots, &self.current) {
-                Some(value) => self.resident.set(TagValue::tagged(value, tag)),
-                None => self.resident.ride(),
-            }
+        if self.slots.iter().all(|slot| slot.state.value().is_some()) {
+            let v = self.finish(ctx, event);
+            self.resident.set(TagValue::tagged(v, tag))
         } else {
             self.resident.set_bottom(tag.triggers())
         }
@@ -1127,10 +1010,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.base.source.reset_replay(ctx);
-        self.current = T::Collection::default();
+        self.current = C::default();
         for slot in self.slots.iter_mut() {
-            slot.value = None;
-            slot.tag = Tag::STALE;
+            slot.state = SlotState::Empty;
             slot.call.reset_replay(ctx);
         }
     }
@@ -1140,54 +1022,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_map::<R, E, T>(&self.base, &self.base.source, cx)?
-            .ok_or_else(|| anyhow::anyhow!("collection operation does not emit CLIF"))
-    }
-}
-
-fn emit_map<R: Rt, E: UserEvent, T: MapFn<R, E>>(
-    base: &MapQBase<R, E>,
-    source: &Node<R, E>,
-    cx: &mut BodyCx,
-) -> Result<Option<CompiledExpr>> {
-    if emit::node_is_bottom(source) {
-        return Ok(None);
-    }
-    let Some(callback) = callback(&base.prototype) else { return Ok(None) };
-    let Some(param) = callback_param(callback, 0, literal!("__elem")) else {
-        return Ok(None);
-    };
-    T::emit_clif(cx, source, callback.body(), &param, &base.element_type)
-}
-
-fn emit_map_call<R: Rt, E: UserEvent, T: MapFn<R, E>>(
-    base: &MapQBase<R, E>,
-    callsite: &CallSite<R, E>,
-    cx: &mut BodyCx,
-) -> Result<Option<CompiledExpr>> {
-    let Some(source) = callsite.arg_positional(0) else {
-        return Ok(None);
-    };
-    let prev = cx.swap_collection_site(Some(callsite.spec.id));
-    let r = emit_map::<R, E, T>(base, source, cx);
-    cx.swap_collection_site(prev);
-    r
-}
-
-trait FoldFn<R: Rt, E: UserEvent>: Debug + Send + Sync + 'static {
-    type Collection: MapCollection;
-
-    fn emit_clif(
-        _cx: &mut BodyCx,
-        _source: &Node<R, E>,
-        _init: &Node<R, E>,
-        _body: &Node<R, E>,
-        _acc: &CallbackParam,
-        _element: &CallbackParam,
-        _acc_type: &Type,
-        _element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        Ok(None)
+        self.base
+            .emit(&self.base.source, cx)?
+            .ok_or_else(|| anyhow!("collection operation does not emit CLIF"))
     }
 }
 
@@ -1196,63 +1033,21 @@ struct FoldSlot<R: Rt, E: UserEvent> {
     acc_id: BindId,
     element_id: BindId,
     call: Node<R, E>,
-    this_cycle: Option<Value>,
-    // CR claude for eric: [dead] `last_good` never differs from `this_cycle`
-    // where it is read: a fresh slot's seed reads slot i-1 after it ran this
-    // cycle and only when it was not bottom, and the `resized && last_good`
-    // fallback needs `this_cycle == None` with a non-bottom tag, which no path
-    // makes. The comments calling it sleep/frame memory describe no reader.
-    last_good: Option<Value>,
-    tag: Tag,
+    state: SlotState,
 }
 
 impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
     fn new(
         ctx: &mut ExecCtx<R, E>,
-        scope: &Scope,
-        top_id: ExprId,
-        callback: BindId,
-        callback_type: &Arc<FnType>,
+        callback: &Callback,
         acc_type: &Type,
         element_type: &Type,
-        prototype: bool,
-        resolved: Option<Value>,
+        kind: CallKind,
     ) -> Self {
-        let (acc_id, acc) =
-            genn::bind(ctx, &scope.lexical, "collection_acc", acc_type.clone(), top_id);
-        let (element_id, element) = genn::bind(
-            ctx,
-            &scope.lexical,
-            "collection_element",
-            element_type.clone(),
-            top_id,
-        );
-        let function = callback_fnode(ctx, callback, callback_type, top_id, resolved);
-        let call = if prototype {
-            genn::apply_prototype(
-                function,
-                scope.clone(),
-                smallvec![acc, element],
-                callback_type,
-                top_id,
-            )
-        } else {
-            genn::apply(
-                function,
-                scope.clone(),
-                smallvec![acc, element],
-                callback_type,
-                top_id,
-            )
-        };
-        Self {
-            acc_id,
-            element_id,
-            call,
-            this_cycle: None,
-            last_good: None,
-            tag: Tag::STALE,
-        }
+        let (acc_id, acc) = callback.arg(ctx, "collection_acc", acc_type);
+        let (element_id, element) = callback.arg(ctx, "collection_element", element_type);
+        let call = callback.call(ctx, smallvec![acc, element], kind);
+        Self { acc_id, element_id, call, state: SlotState::Empty }
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1269,51 +1064,92 @@ pub struct FoldQBase<R: Rt, E: UserEvent> {
     pub(crate) source: Node<R, E>,
     pub(crate) init: Node<R, E>,
     pub(crate) prototype: Node<R, E>,
+    flavor: Flavor,
     element_type: Type,
-    emit_call: fn(
-        &FoldQBase<R, E>,
-        &CallSite<R, E>,
-        &mut BodyCx,
-    ) -> Result<Option<CompiledExpr>>,
     prototype_ids: [BindId; 2],
     spec: Expr,
     typ: Type,
 }
 
 impl<R: Rt, E: UserEvent> FoldQBase<R, E> {
+    /// The fused loop for a call site's intrinsic call.
     pub(crate) fn emit_clif_call(
         &self,
         callsite: &CallSite<R, E>,
         cx: &mut BodyCx,
     ) -> Result<Option<CompiledExpr>> {
-        (self.emit_call)(self, callsite, cx)
+        let (Some(source), Some(init)) =
+            (callsite.arg_positional(0), callsite.arg_positional(1))
+        else {
+            return Ok(None);
+        };
+        let prev = cx.swap_collection_site(Some(callsite.spec.id));
+        let r = self.emit(source, init, cx);
+        cx.swap_collection_site(prev);
+        r
+    }
+
+    fn emit(
+        &self,
+        source: &Node<R, E>,
+        init: &Node<R, E>,
+        cx: &mut BodyCx,
+    ) -> Result<Option<CompiledExpr>> {
+        if emit::node_is_bottom(source) || emit::node_is_bottom(init) {
+            return Ok(None);
+        }
+        let Some(callback) = callback(&self.prototype) else { return Ok(None) };
+        let Some(acc) = callback_param(callback, 0, literal!("__acc")) else {
+            return Ok(None);
+        };
+        let Some(element) = callback_param(callback, 1, literal!("__elem")) else {
+            return Ok(None);
+        };
+        let fold =
+            FoldParts { init, body: callback.body(), acc: &acc, element: &element };
+        emit_fold_kind(
+            cx,
+            source,
+            fold,
+            &callback.typ().rtype,
+            &self.element_type,
+            self.flavor,
+        )
     }
 
     pub(crate) fn callback_body(&self) -> Option<&Node<R, E>> {
-        callback(&self.prototype).map(super::lambda::GXLambda::body)
+        callback(&self.prototype).map(GXLambda::body)
     }
 }
 
 #[derive(Debug)]
-struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
-    intrinsic: CollectionIntrinsic,
+struct FoldQ<R: Rt, E: UserEvent, C: MapCollection> {
+    slept: WakeBit,
     base: FoldQBase<R, E>,
-    scope: Scope,
-    callback: BindId,
-    callback_type: Arc<FnType>,
+    callback: Callback,
     acc_type: Type,
-    top_id: ExprId,
     slots: LPooled<Vec<FoldSlot<R, E>>>,
-    init: Option<Value>,
-    // CR claude for eric: [dead] `source_present` is always true where it is
-    // read: `!forced_taint` in the empty-fold test already means the source
-    // selected this cycle, which is what sets it.
-    source_present: bool,
-    operation: PhantomData<T>,
+    /// The source was bottom (or never read): its length is forgotten,
+    /// so its return changes the result.
+    src_bottom: bool,
+    collection: PhantomData<C>,
     resident: TagValue,
 }
 
-impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
+impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
+    fn with(base: FoldQBase<R, E>, callback: Callback, acc_type: Type) -> Node<R, E> {
+        Node::new(Self {
+            slept: WakeBit::default(),
+            base,
+            callback,
+            acc_type,
+            slots: LPooled::take(),
+            src_bottom: true,
+            collection: PhantomData,
+            resident: TagValue::phantom(),
+        })
+    }
+
     fn new(
         intrinsic: CollectionIntrinsic,
         ctx: &mut ExecCtx<R, E>,
@@ -1323,60 +1159,43 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
         typ: &Arc<FnType>,
         args: &[StructPatternNode],
     ) -> Result<Node<R, E>> {
+        let CollectionIntrinsic::Fold(flavor) = intrinsic else {
+            bail!("{intrinsic:?} is not a fold intrinsic")
+        };
         if typ.args.len() != 3 || args.len() != 3 {
             bail!("collection fold intrinsic requires three arguments")
         }
-        let source_id = args[0].single_bind_id().ok_or_else(|| {
-            anyhow::anyhow!("collection source argument must be a name")
-        })?;
+        let source_id = args[0]
+            .single_bind_id()
+            .ok_or_else(|| anyhow!("collection source argument must be a name"))?;
         let init_id = args[1]
             .single_bind_id()
-            .ok_or_else(|| anyhow::anyhow!("collection init argument must be a name"))?;
-        let callback = args[2].single_bind_id().ok_or_else(|| {
-            anyhow::anyhow!("collection callback argument must be a name")
-        })?;
+            .ok_or_else(|| anyhow!("collection init argument must be a name"))?;
+        let id = args[2]
+            .single_bind_id()
+            .ok_or_else(|| anyhow!("collection callback argument must be a name"))?;
         let callback_type = match &typ.args[2].typ {
             Type::Fn(ft) => ft.clone(),
             t => bail!("collection callback must be a function, got {t}"),
         };
+        let callback = Callback { scope: scope.clone(), id, typ: callback_type, top_id };
         let acc_type = typ.args[1].typ.clone();
-        let element_type = T::Collection::element_type(typ)?;
+        let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let init = genn::reference(ctx, init_id, acc_type.clone(), top_id);
-        let prototype = FoldSlot::new(
-            ctx,
-            scope,
-            top_id,
-            callback,
-            &callback_type,
-            &acc_type,
-            &element_type,
-            true,
-            None,
-        );
-        Ok(Node::new(Self {
-            intrinsic,
-            base: FoldQBase {
-                source,
-                init,
-                prototype: prototype.call,
-                element_type,
-                emit_call: emit_fold_call::<R, E, T>,
-                prototype_ids: [prototype.acc_id, prototype.element_id],
-                spec,
-                typ: typ.rtype.clone(),
-            },
-            scope: scope.clone(),
-            callback,
-            callback_type,
-            acc_type,
-            top_id,
-            slots: LPooled::take(),
-            init: None,
-            source_present: false,
-            operation: PhantomData,
-            resident: TagValue::phantom(),
-        }))
+        let prototype =
+            FoldSlot::new(ctx, &callback, &acc_type, &element_type, CallKind::Prototype);
+        let base = FoldQBase {
+            source,
+            init,
+            prototype: prototype.call,
+            flavor,
+            element_type,
+            prototype_ids: [prototype.acc_id, prototype.element_id],
+            spec,
+            typ: typ.rtype.clone(),
+        };
+        Ok(Self::with(base, callback, acc_type))
     }
 
     fn image_decode(
@@ -1384,63 +1203,46 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> FoldQ<R, E, T> {
         ctx: &mut ExecCtx<R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
-        let source = decode_node(ctx, buf)?;
-        let init = decode_node(ctx, buf)?;
-        let prototype = decode_node(ctx, buf)?;
-        let element_type = Type::decode(buf)?;
-        let prototype_ids = [BindId::decode(buf)?, BindId::decode(buf)?];
-        let spec = Expr::decode(buf)?;
-        let typ = Type::decode(buf)?;
-        let scope = scope_decode(buf)?;
-        let callback = BindId::decode(buf)?;
-        let callback_type: Arc<FnType> = Pack::decode(buf)?;
+        let CollectionIntrinsic::Fold(flavor) = intrinsic else {
+            return Err(PackError::InvalidFormat);
+        };
+        let base = FoldQBase {
+            source: decode_node(ctx, buf)?,
+            init: decode_node(ctx, buf)?,
+            prototype: decode_node(ctx, buf)?,
+            flavor,
+            element_type: Type::decode(buf)?,
+            prototype_ids: [BindId::decode(buf)?, BindId::decode(buf)?],
+            spec: Expr::decode(buf)?,
+            typ: Type::decode(buf)?,
+        };
+        let callback = Callback::image_decode(buf)?;
         let acc_type = Type::decode(buf)?;
-        let top_id = ExprId::decode(buf)?;
-        Ok(Node::new(Self {
-            intrinsic,
-            base: FoldQBase {
-                source,
-                init,
-                prototype,
-                element_type,
-                emit_call: emit_fold_call::<R, E, T>,
-                prototype_ids,
-                spec,
-                typ,
-            },
-            scope,
-            callback,
-            callback_type,
-            acc_type,
-            top_id,
-            slots: LPooled::take(),
-            init: None,
-            source_present: false,
-            operation: PhantomData,
-            resident: TagValue::phantom(),
-        }))
-    }
-
-    fn add_slot(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let resolved = prototype_def(ctx, &self.base.prototype);
-        self.slots.push(FoldSlot::new(
-            ctx,
-            &self.scope,
-            self.top_id,
-            self.callback,
-            &self.callback_type,
-            &self.acc_type,
-            &self.base.element_type,
-            false,
-            resolved,
-        ));
+        Ok(Self::with(base, callback, acc_type))
     }
 }
 
-impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
+/// Deliver `tv` to a callback argument this cycle and stand it in the
+/// store, a bottom as a stale bottom.
+fn deliver<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    event: &mut Event<E>,
+    id: BindId,
+    tv: TagValue,
+) {
+    let standing = if tv.tag().is_bottom() {
+        TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
+    } else {
+        tv.clone()
+    };
+    ctx.rt.store_insert(id, standing);
+    event.variables.insert(id, tv);
+}
+
+impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     fn image_len(&self) -> usize {
         tag_len()
-            + self.intrinsic.encoded_len()
+            + CollectionIntrinsic::Fold(self.base.flavor).encoded_len()
             + self.base.source.image_len()
             + self.base.init.image_len()
             + self.base.prototype.image_len()
@@ -1449,16 +1251,17 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
             + self.base.prototype_ids[1].encoded_len()
             + self.base.spec.encoded_len()
             + self.base.typ.encoded_len()
-            + scope_len(&self.scope)
-            + self.callback.encoded_len()
-            + self.callback_type.encoded_len()
+            + self.callback.image_len()
             + self.acc_type.encoded_len()
-            + self.top_id.encoded_len()
     }
 
+    /// The slots exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.slots.is_empty() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         put_tag(NodeTag::Collection, buf);
-        self.intrinsic.encode(buf)?;
+        CollectionIntrinsic::Fold(self.base.flavor).encode(buf)?;
         self.base.source.image_encode(buf)?;
         self.base.init.image_encode(buf)?;
         self.base.prototype.image_encode(buf)?;
@@ -1467,245 +1270,120 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
         self.base.prototype_ids[1].encode(buf)?;
         self.base.spec.encode(buf)?;
         self.base.typ.encode(buf)?;
-        scope_encode(&self.scope, buf)?;
-        self.callback.encode(buf)?;
-        self.callback_type.encode(buf)?;
-        self.acc_type.encode(buf)?;
-        self.top_id.encode(buf)
+        self.callback.image_encode(buf)?;
+        self.acc_type.encode(buf)
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // The fuse driver never descends a collection callback, so the
-        // prototype body's attributes dispatch here.
-        if !ctx.attr_census.lock().is_empty() {
-            if let Some(body) = self.base.callback_body() {
-                crate::fusion::check_attributes_subtree(body, ctx)?;
-            }
-        }
-        Ok(None)
+        fuse_callback(ctx, &self.base.prototype)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let woke = self.slept.take() && ctx.frame_depth == 0;
         let old_len = self.slots.len();
-        let mut resized = false;
-        let mut forced_taint = false;
-        let mut source_tag = None;
-        let src_trig;
-        {
-            let (tag, sval) = {
-                let tv = self.base.source.update(ctx, event);
-                let tag = tv.tag();
-                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
-            };
-            src_trig = tag.triggers();
-            // A tainted or unselectable source is bottom; the slot walk
-            // still runs so slot-internal state sees this cycle's events.
-            // A tainted init is a poisoned delivery instead, see below.
-            if tag.is_bottom() {
-                forced_taint = true;
-            } else if let Some(source) =
-                sval.and_then(|value| T::Collection::select(value))
-            {
-                self.source_present = true;
-                source_tag = Some(tag);
-                while self.slots.len() > source.len() {
-                    match self.slots.last_mut() {
-                        Some(slot) => slot.delete(ctx),
-                        None => return self.resident.ride(),
-                    }
-                    self.slots.pop();
-                    resized = true;
-                }
-                while self.slots.len() < source.len() {
-                    self.add_slot(ctx);
-                    resized = true;
-                }
-                for (slot, value) in self.slots.iter().zip(source.values()) {
-                    ctx.rt.store_insert(slot.element_id, TagValue::fired(value.clone()));
-                    event.variables.insert(slot.element_id, TagValue::tagged(value, tag));
-                }
-            } else {
-                // Slots stay retained: bottom is not a reset.
-                forced_taint = true;
-            }
-        }
-
-        let init_tag;
-        {
-            let (tag, ival) = {
-                let tv = self.base.init.update(ctx, event);
-                let tag = tv.tag();
-                (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
-            };
-            init_tag = Some(tag);
-            if tag.is_bottom() {
-                // A tainted init is a poisoned delivery to slot 0's acc,
-                // not a whole-fold abort: a callback that never consumes
-                // the acc recovers. The delivery mirrors the init's tag.
-                if let Some(slot) = self.slots.first() {
-                    let poison = if tag.triggers() {
-                        Tag::FRESH_BOTTOM
-                    } else {
-                        Tag::STALE_BOTTOM
-                    };
-                    event
-                        .variables
-                        .insert(slot.acc_id, TagValue::tagged(Value::Null, poison));
-                }
-            } else {
-                self.init = ival;
-                if let (Some(slot), Some(value)) = (self.slots.first(), self.init.clone())
+        let (tag, sval) = {
+            let tv = self.base.source.update(ctx, event);
+            let tag = tv.tag();
+            (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
+        };
+        let src_trig = tag.triggers();
+        // A tainted or unselectable source is bottom and forgets the
+        // length; the slots stay retained and the slot walk still runs.
+        let source = sval.and_then(|value| C::select(value, src_trig));
+        let source_ok = source.is_some();
+        let (mut resized, mut back) = (false, false);
+        match source {
+            None => self.src_bottom = true,
+            Some(source) => {
+                back = std::mem::take(&mut self.src_bottom);
+                let kind = CallKind::slot(ctx, &self.base.prototype);
+                resized =
+                    resize(ctx, &mut self.slots, source.len(), FoldSlot::delete, |ctx| {
+                        let (acc, elt) = (&self.acc_type, &self.base.element_type);
+                        FoldSlot::new(ctx, &self.callback, acc, elt, kind.clone())
+                    });
+                // Elements move only on a fire, in a frame or past a sleep; a
+                // fresh slot always takes its element.
+                let moved = src_trig || ctx.frame_depth > 0 || woke;
+                let from = if moved { 0 } else { old_len.min(self.slots.len()) };
+                for (slot, value) in
+                    self.slots[from..].iter().zip(source.values().skip(from))
                 {
-                    ctx.rt.store_insert(slot.acc_id, TagValue::fired(value.clone()));
-                    event.variables.insert(slot.acc_id, TagValue::tagged(value, tag));
+                    deliver(ctx, event, slot.element_id, TagValue::tagged(value, tag));
                 }
             }
         }
-
-        if self.slots.is_empty() && self.source_present && !forced_taint {
-            // A bottomed init delivery poisons the empty fold this cycle;
-            // the retained init serves only quiet cycles.
-            if let Some(t) = init_tag {
-                if t.is_bottom() {
-                    return self.resident.set_bottom(t.triggers());
+        // A bottom init is a poisoned delivery to slot 0's acc, not a
+        // whole-fold abort: a callback that never consumes the acc
+        // recovers.
+        let init = self.base.init.update(ctx, event).clone();
+        if let Some(slot) = self.slots.first() {
+            deliver(ctx, event, slot.acc_id, init.clone());
+        }
+        if self.slots.is_empty() && source_ok {
+            return match init.tag() {
+                t if t.is_bottom() => self.resident.set_bottom(t.triggers()),
+                t => {
+                    self.resident.set(TagValue::tagged(init.value_cloned(), tag.join(t)))
                 }
-            }
-            // CR claude for eric: [dead] `init_tag` is always Some; here
-            // `source_tag` is Some too (the source selected) and `self.init` is
-            // Some (a bottom init returned above), so the `None` arms of both
-            // matches and merge_tag's are unreachable: the branch is
-            // `set(tagged(init, source_tag.join(init_tag)))`.
-            let tag = match (source_tag, init_tag) {
-                (None, None) => return self.resident.ride(),
-                (Some(a), Some(b)) => match merge_tag(Some(a), b) {
-                    Some(tag) => tag,
-                    None => return self.resident.ride(),
-                },
-                (Some(tag), None) | (None, Some(tag)) => tag,
-            };
-            return match self.init.clone() {
-                Some(value) => self.resident.set(TagValue::tagged(value, tag)),
-                None if tag.triggers() => {
-                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                }
-                None => self.resident.ride(),
             };
         }
-
         // Only slot productions seed the firing decision: a source or
         // init delivery reaches the result only through a slot that
         // consumes it. A triggering taint still counts, for the bottom arm.
-        let mut any_trig = forced_taint && src_trig;
-        // A resize must propagate the chain's current poison to a fresh
-        // slot's seed, not resurrect `last_good`.
-        let mut prev_slot_bottom = false;
+        let mut any_trig = !source_ok && src_trig;
         let saved_init = event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
                 event.init = saved_init;
                 return self.resident.ride();
             }
-            // A fresh slot's first dispatch runs under a forced init view.
+            // A fresh slot's first dispatch runs under a forced init view,
+            // its acc seeded with the chain's state as it stands.
             if i >= old_len {
                 event.init = true;
-                let acc_id = self.slots[i].acc_id;
-                // The seed is the chain's current state, never a
-                // last-good substitute for a bottomed chain.
-                let incoming_bottom = if i == 0 {
-                    init_tag.is_some_and(|t| t.is_bottom())
-                } else {
-                    prev_slot_bottom
-                };
-                if incoming_bottom {
-                    event
-                        .variables
-                        .insert(acc_id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-                } else {
-                    let seed = if i == 0 {
-                        self.init.clone()
-                    } else {
-                        self.slots[i - 1].last_good.clone()
-                    };
-                    if let Some(value) = seed {
-                        ctx.rt.store_insert(acc_id, TagValue::fired(value.clone()));
-                        event.variables.insert(acc_id, TagValue::fired(value));
+                let seed = match i {
+                    0 if init.tag().is_bottom() => {
+                        Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                     }
+                    0 => Some(TagValue::fired(init.value_cloned())),
+                    _ => match &self.slots[i - 1].state {
+                        SlotState::Bottom => {
+                            Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+                        }
+                        SlotState::Value(v) => Some(TagValue::fired(v.clone())),
+                        SlotState::Empty => None,
+                    },
+                };
+                if let Some(seed) = seed {
+                    deliver(ctx, event, self.slots[i].acc_id, seed);
                 }
             }
-            let tv = self.slots[i].call.update(ctx, event).clone();
-            let tag = tv.tag();
-            prev_slot_bottom = tag.is_bottom();
-            // Only triggering productions advance the fold; a bottomed
-            // slot delivers a poisoned acc rather than withdrawing it.
-            if tag.triggers() {
-                any_trig = true;
-                if tag.is_bottom() {
-                    // The bottom travels the acc chain; `last_good` is
-                    // sleep/frame memory and never substitutes for it.
-                    self.slots[i].tag = tag;
-                    self.slots[i].this_cycle = None;
-                    if i + 1 < self.slots.len() {
-                        let next = self.slots[i + 1].acc_id;
-                        event.variables.insert(
-                            next,
-                            TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
-                        );
-                    }
-                } else {
-                    self.slots[i].tag = tag;
-                    let value = tv.value();
-                    self.slots[i].this_cycle = Some(value.clone());
-                    self.slots[i].last_good = Some(value.clone());
-                    if i + 1 < self.slots.len() {
-                        let next = self.slots[i + 1].acc_id;
-                        ctx.rt.store_insert(next, TagValue::fired(value.clone()));
-                        event.variables.insert(next, TagValue::tagged(value, tag));
-                    }
-                }
-            } else if !tag.is_bottom() {
-                // A stale production advances the acc chain silently.
-                self.slots[i].tag = Tag::STALE;
-                let value = tv.value();
-                self.slots[i].this_cycle = Some(value.clone());
-                self.slots[i].last_good = Some(value.clone());
-                if i + 1 < self.slots.len() {
-                    let next = self.slots[i + 1].acc_id;
-                    ctx.rt.store_insert(next, TagValue::fired(value.clone()));
-                    event.variables.insert(next, TagValue::stale(value));
-                }
-            } else {
-                // A standing bottom still poisons the chain; record it
-                // so the last-slot check sees a chain born bottom.
-                self.slots[i].tag = tag;
-                self.slots[i].this_cycle = None;
+            let slot = &mut self.slots[i];
+            let tv = slot.call.update(ctx, event).clone();
+            any_trig |= tv.tag().triggers();
+            slot.state.set(&tv);
+            // The production, a bottom included, travels the acc chain.
+            if let Some(next) = self.slots.get(i + 1) {
+                deliver(ctx, event, next.acc_id, tv);
             }
         }
         event.init = saved_init;
-
         // An interior slot's poison bottoms the fold only if a downstream
         // callback consumes it; only the last slot's state is the result.
-        if forced_taint || self.slots.last().is_some_and(|s| s.tag.is_bottom()) {
-            // A resize is an event even when the chain is poisoned.
-            return self.resident.set_bottom(any_trig || resized);
-        }
-        if let Some(last) = self.slots.last() {
-            if let Some(value) = last.this_cycle.clone() {
-                // A fold fires iff it resized, a slot fired, the source
-                // fired empty, or the source fired back from bottom.
-                let recovered = src_trig && self.resident.tag().is_bottom();
-                let tag = if resized || any_trig || recovered {
-                    Tag::FIRED
-                } else {
-                    Tag::STALE
-                };
-                return self.resident.set(TagValue::tagged(value, tag));
+        match self.slots.last().map(|s| &s.state) {
+            _ if !source_ok => self.resident.set_bottom(any_trig),
+            Some(SlotState::Bottom) => self.resident.set_bottom(any_trig || resized),
+            // A fold fires iff it resized, a slot fired, or the source
+            // fired back from bottom.
+            Some(SlotState::Value(v)) => {
+                let fired = resized || any_trig || (src_trig && back);
+                let tag = if fired { Tag::FIRED } else { Tag::STALE };
+                let v = v.clone();
+                self.resident.set(TagValue::tagged(v, tag))
             }
-            if resized && let Some(value) = last.last_good.clone() {
-                let tag = source_tag.unwrap_or(Tag::FIRED);
-                return self.resident.set(TagValue::tagged(value, tag));
-            }
+            Some(SlotState::Empty) | None => self.resident.ride(),
         }
-        self.resident.ride()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1750,7 +1428,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The seed, `last_good` and slot tags survive sleep: sleep is pause.
+        // The slot states survive sleep: sleep is pause.
+        self.slept.set();
         self.base.source.sleep(ctx);
         self.base.init.sleep(ctx);
         for slot in self.slots.iter_mut() {
@@ -1761,12 +1440,8 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.base.source.reset_replay(ctx);
         self.base.init.reset_replay(ctx);
-        self.init = None;
-        self.source_present = false;
         for slot in self.slots.iter_mut() {
-            slot.this_cycle = None;
-            slot.last_good = None;
-            slot.tag = Tag::STALE;
+            slot.state = SlotState::Empty;
             slot.call.reset_replay(ctx);
         }
     }
@@ -1776,101 +1451,54 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_fold::<R, E, T>(&self.base, &self.base.source, &self.base.init, cx)?
-            .ok_or_else(|| anyhow::anyhow!("collection fold does not emit CLIF"))
+        self.base
+            .emit(&self.base.source, &self.base.init, cx)?
+            .ok_or_else(|| anyhow!("collection fold does not emit CLIF"))
     }
 }
 
-fn emit_fold<R: Rt, E: UserEvent, T: FoldFn<R, E>>(
-    base: &FoldQBase<R, E>,
-    source: &Node<R, E>,
-    init: &Node<R, E>,
-    cx: &mut BodyCx,
-) -> Result<Option<CompiledExpr>> {
-    if emit::node_is_bottom(source) || emit::node_is_bottom(init) {
-        return Ok(None);
-    }
-    let Some(callback) = callback(&base.prototype) else { return Ok(None) };
-    let Some(acc) = callback_param(callback, 0, literal!("__acc")) else {
-        return Ok(None);
-    };
-    let Some(element) = callback_param(callback, 1, literal!("__elem")) else {
-        return Ok(None);
-    };
-    T::emit_clif(
-        cx,
-        source,
-        init,
-        callback.body(),
-        &acc,
-        &element,
-        &callback.typ().rtype,
-        &base.element_type,
-    )
-}
-
-fn emit_fold_call<R: Rt, E: UserEvent, T: FoldFn<R, E>>(
-    base: &FoldQBase<R, E>,
-    callsite: &CallSite<R, E>,
-    cx: &mut BodyCx,
-) -> Result<Option<CompiledExpr>> {
-    let (Some(source), Some(init)) =
-        (callsite.arg_positional(0), callsite.arg_positional(1))
-    else {
-        return Ok(None);
-    };
-    let prev = cx.swap_collection_site(Some(callsite.spec.id));
-    let r = emit_fold::<R, E, T>(base, source, init, cx);
-    cx.swap_collection_site(prev);
-    r
-}
-
-/// The callback's definition value when the prototype call resolved
-/// statically; a slot then calls that lambda directly, which a trait
-/// method dispatcher requires (the parameter carries no value).
-fn prototype_def<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    prototype: &Node<R, E>,
-) -> Option<Value> {
-    let NodeView::CallSite(site) = prototype.view() else { return None };
-    let target = site.static_target.as_ref()?;
-    ctx.lambda_defs.get(&target.definition).cloned()
-}
-
-/// A slot's function node: the resolved definition as a constant when
-/// the prototype settled one, else a reference to the callback
-/// parameter (bound at runtime by the value it carries).
-fn callback_fnode<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    callback: BindId,
-    callback_type: &Arc<FnType>,
-    top_id: ExprId,
-    resolved: Option<Value>,
-) -> Node<R, E> {
-    match resolved {
-        Some(v) => {
-            super::Constant::new(v, Type::Fn(callback_type.clone()), Expr::clone(&NOP))
-        }
-        None => genn::reference(ctx, callback, Type::Fn(callback_type.clone()), top_id),
-    }
-}
-
-fn callback<R: Rt, E: UserEvent>(
-    prototype: &Node<R, E>,
-) -> Option<&super::lambda::GXLambda<R, E>> {
+fn callback<R: Rt, E: UserEvent>(prototype: &Node<R, E>) -> Option<&GXLambda<R, E>> {
     let NodeView::CallSite(site) = prototype.view() else { return None };
     let ApplyView::Lambda(callback) = site.resolved_apply()? else { return None };
     Some(callback)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Flavor {
-    Array,
-    List,
-    CMap,
+/// The fuse driver never descends a collection callback, so the
+/// prototype body's attributes dispatch here.
+fn fuse_callback<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    prototype: &Node<R, E>,
+) -> Result<Option<Node<R, E>>> {
+    if !ctx.attr_census.lock().is_empty()
+        && let Some(callback) = callback(prototype)
+    {
+        check_attributes_subtree(callback.body(), ctx)?;
+    }
+    Ok(None)
 }
 
 impl Flavor {
+    /// This flavor's collection over `elems`, which it drains.
+    fn build(self, elems: &mut LPooled<Vec<Value>>) -> Value {
+        match self {
+            Self::Array => Value::Array(ValArray::from_iter_exact(elems.drain(..))),
+            Self::List => list::from_iter(elems.drain(..)),
+            Self::CMap => pairs_to_map(elems.iter()),
+        }
+    }
+
+    /// Append a flat_map callback's result: its elements when it is this
+    /// flavor's collection, else itself.
+    fn extend(self, elems: &mut LPooled<Vec<Value>>, v: &Value) {
+        match (self, v) {
+            (Self::Array, Value::Array(a)) => elems.extend(a.iter().cloned()),
+            (Self::List, v) if list::is_list(v) => {
+                elems.extend(list::Iter::new(v.clone()))
+            }
+            (_, v) => elems.push(v.clone()),
+        }
+    }
+
     /// Emit the loop source as the scaffold's ValArray. Returns the
     /// source's (disc, payload), whose disc drives the firing wrap,
     /// plus the loop's [`scaffold::ArraySrc`].
@@ -1918,6 +1546,23 @@ fn predicate_is_bool<R: Rt, E: UserEvent>(body: &Node<R, E>) -> bool {
         == Some(PrimType::Bool)
 }
 
+/// Emit a loop over `source` built by `emit`, which gets the flattened
+/// source; the source's firing folds into the loop's result.
+fn emit_loop<'a, 'f, 'c, R: Rt, E: UserEvent>(
+    cx: &mut BodyCx<'a, 'f, 'c>,
+    source: &Node<R, E>,
+    flavor: Flavor,
+    emit: impl FnOnce(
+        &mut BodyCx<'a, 'f, 'c>,
+        scaffold::ArraySrc,
+    ) -> Result<(CompiledExpr, scaffold::SlotFlags)>,
+) -> Result<Option<CompiledExpr>> {
+    let (value, src) = flavor.emit_source(cx, source)?;
+    let source_invariant = emit::node_loop_invariant_ref(cx, source);
+    let (result, flags) = emit(cx, src)?;
+    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+}
+
 fn emit_init_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1962,11 +1607,6 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
     Ok(Some(finish_loop_result(cx, result, flags, &count, source_invariant)))
 }
 
-// CR claude for eric: [structure] every emit_*_kind repeats one frame:
-// bindable_array_element, `flavor.emit_source` + `node_loop_invariant_ref`, a
-// HofElem literal copied field by field from the CallbackParam (7 copies),
-// then `flavor.emit_result` + `finish_loop_result`. A `CallbackParam::elem`
-// and one wrapper around the loop-specific call would halve these.
 fn emit_map_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1985,25 +1625,19 @@ fn emit_map_kind<R: Rt, E: UserEvent>(
     if is_unit_or_null(&output_type) {
         return Ok(None);
     }
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let output_source = emit::node_composite_source(body);
-    let (ptr, flags) = scaffold::emit_map_loop(
-        cx,
-        src,
-        &scaffold::HofElem {
-            name: &param.name,
-            id: param.id,
-            typ: &element_type,
-            leaves: &leaves,
-        },
-        &output_type,
-        output_source,
-        &emit::slot_state_sites(body),
-        |cx| body.emit_clif(cx),
-    )?;
-    let result = flavor.emit_result(cx, ptr)?;
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+    emit_loop(cx, source, flavor, |cx, src| {
+        let output_source = emit::node_composite_source(body);
+        let (ptr, flags) = scaffold::emit_map_loop(
+            cx,
+            src,
+            &param.elem(&element_type, &leaves),
+            &output_type,
+            output_source,
+            &emit::slot_state_sites(body),
+            |cx| body.emit_clif(cx),
+        )?;
+        Ok((flavor.emit_result(cx, ptr)?, flags))
+    })
 }
 
 fn emit_filter_kind<R: Rt, E: UserEvent>(
@@ -2021,22 +1655,16 @@ fn emit_filter_kind<R: Rt, E: UserEvent>(
     if !predicate_is_bool(body) {
         return Ok(None);
     }
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let (ptr, flags) = scaffold::emit_filter_loop(
-        cx,
-        src,
-        &scaffold::HofElem {
-            name: &param.name,
-            id: param.id,
-            typ: &element_type,
-            leaves: &leaves,
-        },
-        &emit::slot_state_sites(body),
-        |cx| body.emit_clif(cx),
-    )?;
-    let result = flavor.emit_result(cx, ptr)?;
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+    emit_loop(cx, source, flavor, |cx, src| {
+        let (ptr, flags) = scaffold::emit_filter_loop(
+            cx,
+            src,
+            &param.elem(&element_type, &leaves),
+            &emit::slot_state_sites(body),
+            |cx| body.emit_clif(cx),
+        )?;
+        Ok((flavor.emit_result(cx, ptr)?, flags))
+    })
 }
 
 fn emit_filter_map_kind<R: Rt, E: UserEvent>(
@@ -2064,25 +1692,19 @@ fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     if is_unit_or_null(&output_element) {
         return Ok(None);
     }
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let output_source = emit::node_composite_source(body);
-    let (ptr, flags) = scaffold::emit_filter_map_loop(
-        cx,
-        src,
-        &scaffold::HofElem {
-            name: &param.name,
-            id: param.id,
-            typ: &element_type,
-            leaves: &leaves,
-        },
-        &output_element,
-        output_source,
-        &emit::slot_state_sites(body),
-        |cx| body.emit_clif(cx),
-    )?;
-    let result = flavor.emit_result(cx, ptr)?;
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+    emit_loop(cx, source, flavor, |cx, src| {
+        let output_source = emit::node_composite_source(body);
+        let (ptr, flags) = scaffold::emit_filter_map_loop(
+            cx,
+            src,
+            &param.elem(&element_type, &leaves),
+            &output_element,
+            output_source,
+            &emit::slot_state_sites(body),
+            |cx| body.emit_clif(cx),
+        )?;
+        Ok((flavor.emit_result(cx, ptr)?, flags))
+    })
 }
 
 fn emit_flat_map_kind<R: Rt, E: UserEvent>(
@@ -2093,64 +1715,53 @@ fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    use kernel_abi::AbiKind;
-
     let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
     };
-    // CR claude for eric: [bug] `list::flat_map` never fuses: a List return is
-    // `AbiKind::Value` (kernel_abi.rs abi_kind), never `Variant`, so the List
-    // arm below is dead and the comment above it is stale. Probe:
-    // `#[native] list::flat_map([<1, 2>], |x| [<x, x + 1>])` is refused ("not
-    // discovered") while the same body under `#[native] list::map` fuses. The
-    // closure's CMap arm is unreachable through the same gate.
-    // A List callback's return freezes to a 2-word opaque Variant; the
-    // extend helper walks it. No CMap flat_map intrinsic exists.
+    // A List callback's return is an opaque Value; the extend helper walks
+    // it. No Map flat_map intrinsic exists.
     let output_kind = kernel_abi::freeze_for_abi_normalized(body.typ())
         .as_ref()
         .and_then(|typ| kernel_abi::abi_kind(typ));
     let extend = match (flavor, output_kind) {
         (Flavor::Array, Some(AbiKind::Array)) => scaffold::FlatMapExtend::Array,
-        (Flavor::List, Some(AbiKind::Variant)) => scaffold::FlatMapExtend::List,
+        (Flavor::List, Some(AbiKind::Value)) => scaffold::FlatMapExtend::List,
         _ => return Ok(None),
     };
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let body_source = emit::node_composite_source(body);
-    let (ptr, flags) = scaffold::emit_flat_map_loop(
-        cx,
-        src,
-        &scaffold::HofElem {
-            name: &param.name,
-            id: param.id,
-            typ: &element_type,
-            leaves: &leaves,
-        },
-        extend,
-        &emit::slot_state_sites(body),
-        |cx| {
-            let value = body.emit_clif(cx)?;
-            match flavor {
-                Flavor::Array => {
-                    let payload =
-                        emit::ensure_owned_composite_src(cx, body_source, value.payload)?;
-                    Ok(CompiledExpr::new(value.disc, payload))
+    emit_loop(cx, source, flavor, |cx, src| {
+        let body_source = emit::node_composite_source(body);
+        let (ptr, flags) = scaffold::emit_flat_map_loop(
+            cx,
+            src,
+            &param.elem(&element_type, &leaves),
+            extend,
+            &emit::slot_state_sites(body),
+            |cx| {
+                let value = body.emit_clif(cx)?;
+                match extend {
+                    scaffold::FlatMapExtend::Array => {
+                        let payload = emit::ensure_owned_composite_src(
+                            cx,
+                            body_source,
+                            value.payload,
+                        )?;
+                        Ok(CompiledExpr::new(value.disc, payload))
+                    }
+                    scaffold::FlatMapExtend::List => {
+                        let (disc, payload) = emit::ensure_owned_value_src(
+                            cx,
+                            body_source,
+                            value.disc,
+                            value.payload,
+                        )?;
+                        Ok(CompiledExpr::new(disc, payload))
+                    }
                 }
-                Flavor::List | Flavor::CMap => {
-                    let (disc, payload) = emit::ensure_owned_value_src(
-                        cx,
-                        body_source,
-                        value.disc,
-                        value.payload,
-                    )?;
-                    Ok(CompiledExpr::new(disc, payload))
-                }
-            }
-        },
-    )?;
-    let result = flavor.emit_result(cx, ptr)?;
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+            },
+        )?;
+        Ok((flavor.emit_result(cx, ptr)?, flags))
+    })
 }
 
 fn emit_find_kind<R: Rt, E: UserEvent>(
@@ -2168,22 +1779,16 @@ fn emit_find_kind<R: Rt, E: UserEvent>(
     if !predicate_is_bool(body) {
         return Ok(None);
     }
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let ((disc, payload), flags) = scaffold::emit_find_loop(
-        cx,
-        src,
-        &scaffold::HofElem {
-            name: &param.name,
-            id: param.id,
-            typ: &element_type,
-            leaves: &leaves,
-        },
-        &emit::slot_state_sites(body),
-        |cx| body.emit_clif(cx),
-    )?;
-    let result = CompiledExpr::new(disc, payload);
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+    emit_loop(cx, source, flavor, |cx, src| {
+        let ((disc, payload), flags) = scaffold::emit_find_loop(
+            cx,
+            src,
+            &param.elem(&element_type, &leaves),
+            &emit::slot_state_sites(body),
+            |cx| body.emit_clif(cx),
+        )?;
+        Ok((CompiledExpr::new(disc, payload), flags))
+    })
 }
 
 fn emit_find_map_kind<R: Rt, E: UserEvent>(
@@ -2194,8 +1799,6 @@ fn emit_find_map_kind<R: Rt, E: UserEvent>(
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    use kernel_abi::AbiKind;
-
     let Some((element_type, leaves)) = bindable_array_element(element_type, &param.binds)
     else {
         return Ok(None);
@@ -2209,26 +1812,28 @@ fn emit_find_map_kind<R: Rt, E: UserEvent>(
     if !output_is_nullable {
         return Ok(None);
     }
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let body_source = emit::node_composite_source(body);
-    let ((disc, payload), flags) = scaffold::emit_find_map_loop(
-        cx,
-        src,
-        &scaffold::HofElem {
-            name: &param.name,
-            id: param.id,
-            typ: &element_type,
-            leaves: &leaves,
-        },
-        &emit::slot_state_sites(body),
-        |cx| {
-            let value = body.emit_clif(cx)?;
-            emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
-        },
-    )?;
-    let result = CompiledExpr::new(disc, payload);
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+    emit_loop(cx, source, flavor, |cx, src| {
+        let body_source = emit::node_composite_source(body);
+        let ((disc, payload), flags) = scaffold::emit_find_map_loop(
+            cx,
+            src,
+            &param.elem(&element_type, &leaves),
+            &emit::slot_state_sites(body),
+            |cx| {
+                let value = body.emit_clif(cx)?;
+                emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
+            },
+        )?;
+        Ok((CompiledExpr::new(disc, payload), flags))
+    })
+}
+
+/// A fold's callback parts: its init, body and parameters.
+struct FoldParts<'a, R: Rt, E: UserEvent> {
+    init: &'a Node<R, E>,
+    body: &'a Node<R, E>,
+    acc: &'a CallbackParam,
+    element: &'a CallbackParam,
 }
 
 /// The fold kind. A List- or Map-valued accumulator has no `FoldAcc`
@@ -2236,16 +1841,12 @@ fn emit_find_map_kind<R: Rt, E: UserEvent>(
 fn emit_fold_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
-    init: &Node<R, E>,
-    body: &Node<R, E>,
-    acc: &CallbackParam,
-    element: &CallbackParam,
+    fold: FoldParts<R, E>,
     acc_type: &Type,
     element_type: &Type,
     flavor: Flavor,
 ) -> Result<Option<CompiledExpr>> {
-    use kernel_abi::AbiKind;
-
+    let FoldParts { init, body, acc, element } = fold;
     let Some((element_type, element_leaves)) =
         bindable_array_element(element_type, &element.binds)
     else {
@@ -2254,32 +1855,25 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
     let Some(acc_type) = kernel_abi::freeze_for_abi_normalized(acc_type) else {
         return Ok(None);
     };
-    // CR claude for eric: [readability] `acc_leaves` comes from one match over
-    // `abi_kind(&acc_type)` and is unwrapped in a second match over the same
-    // kind below; compute the leaves inside the Composite arm.
-    let acc_leaves = match kernel_abi::abi_kind(&acc_type) {
-        Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let Some(leaves) = scaffold::elem_leaves(&acc_type, &acc.binds) else {
-                return Ok(None);
-            };
-            Some(leaves)
-        }
-        _ => None,
-    };
     // A Bottom-typed body unifies with any acc type but emits a
     // shapeless placeholder that violates the owned-acc discipline.
     if emit::node_is_bottom(body) {
         return Ok(None);
     }
+    let acc_leaves;
     let acc_shape = match kernel_abi::abi_kind(&acc_type) {
         Some(AbiKind::Scalar(prim)) if acc.binds.is_empty() => {
             scaffold::FoldAcc::Scalar(prim)
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
+            let Some(leaves) = scaffold::elem_leaves(&acc_type, &acc.binds) else {
+                return Ok(None);
+            };
+            acc_leaves = leaves;
             scaffold::FoldAcc::Composite {
                 init_src: emit::node_composite_source(init),
                 body_src: emit::node_composite_source(body),
-                leaves: acc_leaves.as_deref().unwrap(),
+                leaves: &acc_leaves,
             }
         }
         Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
@@ -2307,580 +1901,24 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
         _ => return Ok(None),
     };
     let value_acc = matches!(acc_shape, scaffold::FoldAcc::Value { .. });
-    let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
-    let (result, flags) = scaffold::emit_fold_loop(
-        cx,
-        src,
-        acc_shape,
-        &acc.name,
-        acc.id,
-        &scaffold::HofElem {
-            name: &element.name,
-            id: element.id,
-            typ: &element_type,
-            leaves: &element_leaves,
-        },
-        &emit::slot_state_sites(body),
-        |cx| {
-            if value_acc {
-                emit::emit_owned_value_operand_node(cx, init)
-            } else {
-                init.emit_clif(cx)
-            }
-        },
-        |cx| {
-            if value_acc {
-                emit::emit_owned_value_operand_node(cx, body)
-            } else {
-                body.emit_clif(cx)
-            }
-        },
-    )?;
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
-}
-
-#[derive(Debug, Default)]
-struct ArrayInit;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayInit {
-    type Collection = IndexRange;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &IndexRange) -> Option<Value> {
-        Some(Value::Array(ValArray::from_iter_exact(
-            slots.iter().map(|slot| slot.value.clone().unwrap()),
-        )))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        _: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_init_kind(cx, source, body, param, Flavor::Array)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ArrayMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayMap {
-    type Collection = ValArray;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
-        Some(Value::Array(ValArray::from_iter_exact(
-            slots.iter().map(|slot| slot.value.clone().unwrap()),
-        )))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_map_kind(cx, source, body, param, element_type, Flavor::Array)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ArrayFilter;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilter {
-    type Collection = ValArray;
-
-    const RESULT_READS_ELEMENTS: bool = true;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], source: &ValArray) -> Option<Value> {
-        Some(Value::Array(ValArray::from_iter(
-            slots.iter().zip(source.iter()).filter_map(|(slot, value)| {
-                matches!(slot.value, Some(Value::Bool(true))).then(|| value.clone())
-            }),
-        )))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_filter_kind(cx, source, body, param, element_type, Flavor::Array)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ArrayFilterMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFilterMap {
-    type Collection = ValArray;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
-        Some(Value::Array(ValArray::from_iter(slots.iter().filter_map(|slot| {
-            match slot.value.as_ref().unwrap() {
-                Value::Null => None,
-                value => Some(value.clone()),
-            }
-        }))))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_filter_map_kind(cx, source, body, param, element_type, Flavor::Array)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ArrayFlatMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFlatMap {
-    type Collection = ValArray;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
-        let mut values: LPooled<Vec<Value>> = LPooled::take();
-        for slot in slots {
-            match slot.value.as_ref().unwrap() {
-                Value::Array(array) => values.extend(array.iter().cloned()),
-                value => values.push(value.clone()),
-            }
+    let operand = move |cx: &mut BodyCx, n: &Node<R, E>| {
+        if value_acc {
+            emit::emit_owned_value_operand_node(cx, n)
+        } else {
+            n.emit_clif(cx)
         }
-        Some(Value::Array(ValArray::from_iter_exact(values.drain(..))))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_flat_map_kind(cx, source, body, param, element_type, Flavor::Array)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ArrayFind;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFind {
-    type Collection = ValArray;
-
-    const RESULT_READS_ELEMENTS: bool = true;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], source: &ValArray) -> Option<Value> {
-        Some(
-            slots
-                .iter()
-                .position(|slot| matches!(slot.value, Some(Value::Bool(true))))
-                .map(|i| source[i].clone())
-                .unwrap_or(Value::Null),
-        )
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_find_kind(cx, source, body, param, element_type, Flavor::Array)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ArrayFindMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ArrayFindMap {
-    type Collection = ValArray;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ValArray) -> Option<Value> {
-        Some(
-            slots
-                .iter()
-                .find_map(|slot| match slot.value.as_ref().unwrap() {
-                    Value::Null => None,
-                    value => Some(value.clone()),
-                })
-                .unwrap_or(Value::Null),
-        )
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_find_map_kind(cx, source, body, param, element_type, Flavor::Array)
-    }
-}
-
-#[derive(Debug)]
-struct ArrayFold;
-
-impl<R: Rt, E: UserEvent> FoldFn<R, E> for ArrayFold {
-    type Collection = ValArray;
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        init: &Node<R, E>,
-        body: &Node<R, E>,
-        acc: &CallbackParam,
-        element: &CallbackParam,
-        acc_type: &Type,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_fold_kind(
+    };
+    emit_loop(cx, source, flavor, |cx, src| {
+        scaffold::emit_fold_loop(
             cx,
-            source,
-            init,
-            body,
-            acc,
-            element,
-            acc_type,
-            element_type,
-            Flavor::Array,
+            src,
+            acc_shape,
+            &acc.name,
+            acc.id,
+            &element.elem(&element_type, &element_leaves),
+            &emit::slot_state_sites(body),
+            |cx| operand(cx, init),
+            |cx| operand(cx, body),
         )
-    }
-}
-
-#[derive(Debug, Default)]
-struct ListInit;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListInit {
-    type Collection = IndexRange;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &IndexRange) -> Option<Value> {
-        Some(list::from_iter(slots.iter().map(|slot| slot.value.clone().unwrap())))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        _: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_init_kind(cx, source, body, param, Flavor::List)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ListMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListMap {
-    type Collection = ListCollection;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListCollection) -> Option<Value> {
-        Some(list::from_iter(slots.iter().map(|slot| slot.value.clone().unwrap())))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_map_kind(cx, source, body, param, element_type, Flavor::List)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ListFilter;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilter {
-    type Collection = ListCollection;
-
-    const RESULT_READS_ELEMENTS: bool = true;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], source: &ListCollection) -> Option<Value> {
-        Some(list::from_iter(slots.iter().zip(source.values()).filter_map(
-            |(slot, value)| {
-                matches!(slot.value, Some(Value::Bool(true))).then_some(value)
-            },
-        )))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_filter_kind(cx, source, body, param, element_type, Flavor::List)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ListFilterMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFilterMap {
-    type Collection = ListCollection;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListCollection) -> Option<Value> {
-        Some(list::from_iter(slots.iter().filter_map(|slot| {
-            match slot.value.as_ref().unwrap() {
-                Value::Null => None,
-                value => Some(value.clone()),
-            }
-        })))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_filter_map_kind(cx, source, body, param, element_type, Flavor::List)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ListFlatMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFlatMap {
-    type Collection = ListCollection;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListCollection) -> Option<Value> {
-        let mut values: LPooled<Vec<Value>> = LPooled::take();
-        for slot in slots {
-            let value = slot.value.as_ref().unwrap();
-            if list::is_list(value) {
-                values.extend(list::Iter::new(value.clone()));
-            } else {
-                values.push(value.clone());
-            }
-        }
-        Some(list::from_iter(values.drain(..)))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_flat_map_kind(cx, source, body, param, element_type, Flavor::List)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ListFind;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFind {
-    type Collection = ListCollection;
-
-    const RESULT_READS_ELEMENTS: bool = true;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], source: &ListCollection) -> Option<Value> {
-        Some(
-            slots
-                .iter()
-                .zip(source.values())
-                .find_map(|(slot, value)| {
-                    matches!(slot.value, Some(Value::Bool(true))).then_some(value)
-                })
-                .unwrap_or(Value::Null),
-        )
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_find_kind(cx, source, body, param, element_type, Flavor::List)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ListFindMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for ListFindMap {
-    type Collection = ListCollection;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ListCollection) -> Option<Value> {
-        Some(
-            slots
-                .iter()
-                .find_map(|slot| match slot.value.as_ref().unwrap() {
-                    Value::Null => None,
-                    value => Some(value.clone()),
-                })
-                .unwrap_or(Value::Null),
-        )
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_find_map_kind(cx, source, body, param, element_type, Flavor::List)
-    }
-}
-
-#[derive(Debug)]
-struct ListFold;
-
-impl<R: Rt, E: UserEvent> FoldFn<R, E> for ListFold {
-    type Collection = ListCollection;
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        init: &Node<R, E>,
-        body: &Node<R, E>,
-        acc: &CallbackParam,
-        element: &CallbackParam,
-        acc_type: &Type,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_fold_kind(
-            cx,
-            source,
-            init,
-            body,
-            acc,
-            element,
-            acc_type,
-            element_type,
-            Flavor::List,
-        )
-    }
-}
-
-#[derive(Debug, Default)]
-struct MapMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for MapMap {
-    type Collection = ValueMap;
-
-    // CR claude for eric: [risk] a malformed pair makes this finish (and
-    // MapFilterMap's) return None, so the node rides its previous map, while
-    // `graphix_valarray_into_cmap` logs and skips the pair: the engines build
-    // map results by two rules. One pairs-to-map function for both.
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ValueMap) -> Option<Value> {
-        let mut values = slots
-            .iter()
-            .map(|slot| split_pair(slot.value.as_ref().unwrap()))
-            .collect::<Option<LPooled<Vec<_>>>>()?;
-        Some(Value::Map(CMap::from_iter(values.drain(..))))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_map_kind(cx, source, body, param, element_type, Flavor::CMap)
-    }
-}
-
-#[derive(Debug, Default)]
-struct MapFilter;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilter {
-    type Collection = ValueMap;
-
-    const RESULT_READS_ELEMENTS: bool = true;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], source: &ValueMap) -> Option<Value> {
-        Some(Value::Map(CMap::from_iter(
-            slots.iter().zip(source.into_iter()).filter_map(|(slot, (key, value))| {
-                matches!(slot.value, Some(Value::Bool(true)))
-                    .then(|| (key.clone(), value.clone()))
-            }),
-        )))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_filter_kind(cx, source, body, param, element_type, Flavor::CMap)
-    }
-}
-
-#[derive(Debug, Default)]
-struct MapFilterMap;
-
-impl<R: Rt, E: UserEvent> MapFn<R, E> for MapFilterMap {
-    type Collection = ValueMap;
-
-    fn finish(&mut self, slots: &[Slot<R, E>], _: &ValueMap) -> Option<Value> {
-        let mut values: LPooled<Vec<(Value, Value)>> = LPooled::take();
-        for slot in slots {
-            match slot.value.as_ref().unwrap() {
-                Value::Null => {}
-                value => values.push(split_pair(value)?),
-            }
-        }
-        Some(Value::Map(CMap::from_iter(values.drain(..))))
-    }
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        body: &Node<R, E>,
-        param: &CallbackParam,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_filter_map_kind(cx, source, body, param, element_type, Flavor::CMap)
-    }
-}
-
-#[derive(Debug)]
-struct MapFold;
-
-impl<R: Rt, E: UserEvent> FoldFn<R, E> for MapFold {
-    type Collection = ValueMap;
-
-    fn emit_clif(
-        cx: &mut BodyCx,
-        source: &Node<R, E>,
-        init: &Node<R, E>,
-        body: &Node<R, E>,
-        acc: &CallbackParam,
-        element: &CallbackParam,
-        acc_type: &Type,
-        element_type: &Type,
-    ) -> Result<Option<CompiledExpr>> {
-        emit_fold_kind(
-            cx,
-            source,
-            init,
-            body,
-            acc,
-            element,
-            acc_type,
-            element_type,
-            Flavor::CMap,
-        )
-    }
+    })
 }

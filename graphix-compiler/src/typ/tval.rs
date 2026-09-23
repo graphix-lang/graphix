@@ -191,7 +191,7 @@ impl<'a> TVal<'a> {
             // Prints `[<a, b, c>]`; a non-list-shaped value falls
             // back to the naked print.
             (Type::List(et), v) => {
-                use crate::node::collection::list;
+                use crate::node::list;
                 if !list::is_list(v) {
                     return fmt_naked(f, v);
                 }
