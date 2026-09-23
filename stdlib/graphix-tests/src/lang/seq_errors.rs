@@ -417,6 +417,55 @@ async fn nested_handler_choices(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+// A callee's own catch consumes both of its errors; the second arrives
+// a cycle late, and the call's value, fired while it was in flight,
+// still completes the step.
+async fn nested_catch_drains(fusion_disabled: bool) -> Result<()> {
+    for form in ["seq", "seqq"] {
+        let code = format!(
+            r#"{{
+                let f = |k: i64| {{
+                    catch(e) println("caught [(e.0).error]");
+                    let a = error(`A(k))?;
+                    let b = error(`B(k))?;
+                    k ~ k + 1
+                }};
+                {form} let k = 1 {{ f(k) }}
+            }}"#
+        );
+        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), [2], "{form}\n{out}");
+        assert_eq!(out.trim(), "caught `A(1)\ncaught `B(1)", "{form}");
+    }
+    Ok(())
+}
+
+// An error still in flight when its catch sleeps is given up, so the
+// step waiting on the callee is not held by it.
+async fn slept_catch_in_flight(fusion_disabled: bool) -> Result<()> {
+    for form in ["seq", "seqq"] {
+        let code = format!(
+            r#"{{
+                let x = 0;
+                let f = |k: i64| select x {{
+                    0 => {{
+                        catch(e) println("caught [(e.0).error]");
+                        let a = error(`A(k))?;
+                        let b = error(`B(k))?;
+                        x <- 1;
+                        never()
+                    }},
+                    _ => x ~ k + 100
+                }};
+                {form} {{ f(1) }}
+            }}"#
+        );
+        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), [101], "{form}\n{out}");
+    }
+    Ok(())
+}
+
 macro_rules! modes {
     ($($test:ident),+ $(,)?) => {$ (
         mod $test {
@@ -469,5 +518,7 @@ modes!(
     recursive_multiple_errors,
     multiple_errors_after_sleep,
     error_payloads,
-    nested_handler_choices
+    nested_handler_choices,
+    nested_catch_drains,
+    slept_catch_in_flight
 );

@@ -118,6 +118,25 @@ async fn native_call(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+// A call handed a reference may write through it: the statement after
+// it that reads the variable starts the next cycle and sees the write.
+async fn reference_argument_writes(fusion_disabled: bool) -> Result<()> {
+    for form in ["seq", "seqq"] {
+        for body in ["set(&b, 5); let s = b; s", "let r = &b; set(r, 5); b"] {
+            let code = format!(
+                r#"{{
+                    let set = |r: &i64, v: i64| {{ *r <- v; null }};
+                    let b = 0;
+                    {form} {{ {body} }}
+                }}"#
+            );
+            let (values, _) = run_delta(&code, fusion_disabled).await?;
+            assert_eq!(as_i64s(&values), [5], "{form}: {body}");
+        }
+    }
+    Ok(())
+}
+
 macro_rules! modes {
     ($($test:ident),+ $(,)?) => {$ (
         mod $test {
@@ -139,4 +158,5 @@ modes!(
     until_stays_live,
     pending_call_keeps_inputs,
     native_call,
+    reference_argument_writes,
 );

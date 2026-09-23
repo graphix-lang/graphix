@@ -194,6 +194,19 @@ async fn flush_needs_a_queue() -> Result<()> {
     Ok(())
 }
 
+// A nested seq's abort is its own machine's step: a call in it reads
+// its inputs live, not a snapshot the outer step took at its entry.
+async fn nested_abort_reads_live(fusion_disabled: bool) -> Result<()> {
+    let body = r#"
+        let stop = |c: bool| select c { true => c, false => never() };
+        let ran = 0;
+        let r = seq go { seq abort(stop(step > 8)) { until step > go + 15; ran <- ran + 1; go } };
+        select step { 60 => ran, _ => never() }
+    "#;
+    assert_eq!(values(body, fusion_disabled).await?, [0]);
+    Ok(())
+}
+
 macro_rules! modes {
     ($test:ident, $interp:ident, $jit:ident) => {
         #[tokio::test(flavor = "current_thread")]
@@ -240,4 +253,9 @@ modes!(
     nested_machine_restarts,
     nested_machine_restarts_interp,
     nested_machine_restarts_jit
+);
+modes!(
+    nested_abort_reads_live,
+    nested_abort_reads_live_interp,
+    nested_abort_reads_live_jit
 );

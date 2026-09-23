@@ -57,3 +57,62 @@ async fn seq_let_binds_the_trigger() -> Result<()> {
     }
     Ok(())
 }
+
+// A destructured trigger is the run's snapshot, like a named one: the
+// body reads the value the run started with, not a busy-dropped one.
+async fn destructured_snapshot(fusion_disabled: bool) -> Result<()> {
+    for (trigger, body) in [("let (a, b) = t", "a + b"), ("let p = t", "p.0 + p.1")] {
+        let code = format!(
+            r#"{{
+                let t = (0, 0);
+                t <- sys::time::after_idle(duration:50.ms, (1, 1));
+                seq {trigger} {{
+                    sys::time::after_idle(duration:120.ms, 0);
+                    {body}
+                }}
+            }}"#
+        );
+        let (values, _) = super::dense_deltas::run_delta(&code, fusion_disabled).await?;
+        assert_eq!(super::dense_deltas::as_i64s(&values), [0], "{trigger}");
+    }
+    Ok(())
+}
+
+// The trigger's name reads the snapshot; a write or a reference reaches
+// the variable itself.
+async fn trigger_writes_reach_the_variable(fusion_disabled: bool) -> Result<()> {
+    for body in ["t <- 10; t", "let q = &t; *q <- 10; 1"] {
+        let code = format!(
+            r#"{{
+                let t = 0;
+                let r = seq t {{ {body} }};
+                select t {{ 0 => never(), n => n }}
+            }}"#
+        );
+        let (values, _) = super::dense_deltas::run_delta(&code, fusion_disabled).await?;
+        assert_eq!(super::dense_deltas::as_i64s(&values), [10], "{body}");
+    }
+    let code = r#"{
+        let t = 0;
+        seq t { t <- 10; t + 1 }
+    }"#;
+    let (values, _) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), [1], "the body reads the snapshot");
+    Ok(())
+}
+
+macro_rules! modes {
+    ($($test:ident),+ $(,)?) => {$ (
+        mod $test {
+            use super::*;
+
+            #[tokio::test(flavor = "current_thread")]
+            async fn interp() -> Result<()> { super::$test(true).await }
+
+            #[tokio::test(flavor = "current_thread")]
+            async fn jit() -> Result<()> { super::$test(false).await }
+        }
+    )+};
+}
+
+modes!(destructured_snapshot, trigger_writes_reach_the_variable);

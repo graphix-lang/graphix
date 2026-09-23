@@ -525,7 +525,8 @@ blocker profile, not a gap count.
   in the first cycle its predecessor's effect can be seen: statements
   share a select arm until one reads or rewrites a variable an earlier
   one wrote (a call, a deref or a nested seq counts as reading
-  everything pending), and the next arm is the next cycle. A `{ .. }`
+  everything pending and writing what the arm took `&` of), and the
+  next arm is the next cycle. A `{ .. }`
   statement issues its statements together with local lets. `until`,
   `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
   in a seq body outside lambda literals). A step completes on a FIRED

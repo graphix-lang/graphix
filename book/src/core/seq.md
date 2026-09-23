@@ -32,9 +32,9 @@ step, produced once per completed run, so you can bind it, connect it
 to a variable, or feed it to another expression.
 
 `seq let name = expr { ... }` names the trigger's value for the body,
-and nothing outside the block sees the name. It is
-`{ let name = expr; seq name { ... } }` written once, and the pattern
-may destructure (`seq let {x, y} = point { ... }`):
+and nothing outside the block sees the name. Like `seq name { ... }`
+over a variable, the name is the value the run started with, and the
+pattern may destructure (`seq let {x, y} = point { ... }`):
 
 ```graphix
 seq let session = (*connected)$ {
