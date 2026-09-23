@@ -234,9 +234,10 @@ So the encoder dropped nodes it had keyed, and a later, different node at
 the same address took the stale key. Under inline definitions this
 silently decoded one type as another. The memo now holds each node it
 keys (`image::KeyedNode`). Pin: `image::tests::a_dropped_type_frees_no_key`
-(fails with the memo not holding its nodes). That the image write
-normalizes cells in place, and so changes what the typechecker sees, is
-left for Eric.
+(fails with the memo not holding its nodes). Normalizing cells in place
+is what every `normalize` in the typechecker does (`contains`, the set
+operations, select narrowing). It changes a binding's form, not its
+meaning, so what a later compile in the same session sees is unchanged.
 
 Measured on quick builds of this commit and the one before, over 60
 interleaved warm starts of a small stdlib script on cores 0–3 in bench
