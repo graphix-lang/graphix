@@ -1,26 +1,27 @@
-// CR claude for eric: [style] `crate::image::ImageBuf` and `crate::image::nodes`
-// sit outside the `crate::{..}` group; merge them.
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
-use crate::image::ImageBuf;
-use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     defetyp,
+    env::Env,
     expr::{Expr, ExprId},
-    fusion::emit::{BodyCx, CompiledExpr, emit_neg_node, emit_not_node},
-    typ::Type,
+    fusion::emit::{
+        BodyCx, CompiledExpr, emit_arith_node, emit_bool_node, emit_checked_arith_node,
+        emit_cmp_node, emit_neg_node, emit_not_node,
+    },
+    image::{
+        ImageBuf,
+        nodes::{NodeTag, decode_node, put_tag, tag_len},
+    },
+    node::error::{diagnostic_site, report_failure},
+    typ::{ContainsFlags, Type},
     wrap,
 };
 use anyhow::{Result, bail};
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
-use std::{
-    fmt,
-    ops::{Add as _, Div as _, Mul as _, Rem as _, Sub as _},
-};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,6 +31,18 @@ pub enum BinOp {
     Mul,
     Div,
     Mod,
+}
+
+impl BinOp {
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Mod => "%",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,16 +61,12 @@ pub enum BoolOp {
     Or,
 }
 
-// CR claude for eric: [structure] `compare_op!`, `bool_op!` and `arith_op!` each
-// re-spell the whole binary-node shell: struct, `new`, `compile`, image codec,
-// `refs`/`delete`/`sleep`/`reset_replay`/`typecheck1`/`spec`/`typ`. Only the value
-// function, typecheck0 and `emit_clif` differ. One `Binary<R, E, K>` node over a
-// small `OpKind` trait (eval, check, emit, NodeTag) would remove ~500 lines of
-// macro and the 17 near-identical types. The `self.typ.check_contains(&ctx.env,
-// &Type::boolean())` in compare/bool/Not typecheck0 checks a type set to bool at
-// construction.
-macro_rules! compare_op {
-    ($name:ident, $op:tt) => {
+/// The node of a binary operator: its operands, resident and wake bit,
+/// their codec and plumbing. `$typ` is the result type at construction;
+/// the operator supplies `update`, `typecheck0`, `typecheck1` and
+/// `emit_clif`.
+macro_rules! binary_node {
+    ($name:ident, $typ:expr, { $($methods:tt)* }) => {
         #[derive(Debug)]
         pub struct $name<R: Rt, E: UserEvent> {
             pub(crate) spec: Expr,
@@ -70,786 +79,6 @@ macro_rules! compare_op {
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
-            // CR claude for eric: [dead] there is no AOT codegen: this `new`, the
-            // bool/arith/Not/Neg `new`s (all `#[allow(dead_code)]`) have no caller
-            // and their doc comments describe a consumer that does not exist.
-            /// Build the comparison node from already-compiled children.
-            /// Used by AOT-generated code.
-            #[allow(dead_code)]
-            pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
-                let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() })
-            }
-
-            pub(crate) fn compile(
-                ctx: &mut ExecCtx<R, E>,
-                flags: BitFlags<CFlag>,
-                spec: Expr,
-                scope: &Scope,
-                top_id: ExprId,
-                lhs: &Expr,
-                rhs: &Expr
-            ) -> Result<Node<R, E>> {
-                let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
-                let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
-                let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() }))
-            }
-        }
-
-
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            pub(crate) fn image_decode(
-                ctx: &mut ExecCtx<R, E>,
-                buf: &mut &[u8],
-            ) -> Result<Node<R, E>, PackError> {
-                let spec = Expr::decode(buf)?;
-                let typ = Type::decode(buf)?;
-                let lhs = decode_node(ctx, buf)?;
-                let rhs = decode_node(ctx, buf)?;
-                Ok(Node::new(Self {
-                    spec,
-                    typ,
-                    lhs,
-                    rhs,
-                    resident: TagValue::phantom(),
-                    slept: WakeBit::default(),
-                }))
-            }
-        }
-
-        impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
-            fn image_len(&self) -> usize {
-                tag_len()
-                    + self.spec.encoded_len()
-                    + self.typ.encoded_len()
-                    + self.lhs.image_len()
-                    + self.rhs.image_len()
-            }
-
-            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-                put_tag(NodeTag::$name, buf);
-                self.spec.encode(buf)?;
-                self.typ.encode(buf)?;
-                self.lhs.image_encode(buf)?;
-                self.rhs.image_encode(buf)
-            }
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                event: &mut Event<E>,
-            ) -> &TagValue {
-                let woke = self.slept.take();
-                let (lhs, rhs, resident) =
-                    (&mut self.lhs, &mut self.rhs, &mut self.resident);
-                let l = lhs.update(ctx, event);
-                let r = rhs.update(ctx, event);
-                let (lt, rt) = (l.tag(), r.tag());
-                let trig = lt.triggers() || rt.triggers();
-                dense_gate!(resident, ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
-                let fired = lt.is_fired() || rt.is_fired();
-                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                // CR claude for eric: [bug] over a numeric union the operands can
-                // be different variants and `Value`'s order ranks the variant
-                // before the number: probe `let x: [i64, f64] = t ~ 5; let y:
-                // [i64, f64] = t ~ 2.5;` prints `x < y` true and `x - y` 2.5,
-                // both engines. Arithmetic promotes, comparison does not. Decide:
-                // refuse multi-numeric unions for `'a` here, or compare numerically.
-                let v = coretraits::with_hooks(ctx, event, || {
-                    l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
-                });
-                resident.set(TagValue::tagged(v, tag))
-            }
-
-            fn spec(&self) -> &Expr {
-                &self.spec
-            }
-
-            fn typ(&self) -> &Type {
-                &self.typ
-            }
-
-            fn refs(&self, refs: &mut Refs) {
-                self.lhs.refs(refs);
-                self.rhs.refs(refs);
-            }
-
-            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.delete(ctx);
-                self.rhs.delete(ctx)
-            }
-
-            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.slept.set();
-                self.lhs.sleep(ctx);
-                self.rhs.sleep(ctx)
-            }
-
-            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.reset_replay(ctx);
-                self.rhs.reset_replay(ctx)
-            }
-
-            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                // CR claude for eric: [structure] this probe-both-directions-then-
-                // commit unification is duplicated verbatim in `arith_op!`'s
-                // `typecheck_tail`, and the "known operand: check, open cell:
-                // constrain" loop there is repeated in `Neg::typecheck0`. One
-                // `unify_operands(ctx, lt, rt, msg) -> Result<Type>` helper.
-                // Both operands share one type. Probe both directions
-                // without binding (a failed binding walk cannot be undone),
-                // then commit the widening direction.
-                let lt = self.lhs.typ().clone();
-                let rt = self.rhs.typ().clone();
-                use $crate::typ::ContainsFlags as CF;
-                let rc = CF::RigidCheck.into();
-                let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
-                if lt.contains_with_flags(rc, &ctx.env, &rt)? {
-                    if !lt.contains_with_flags(commit, &ctx.env, &rt)? {
-                        wrap!(self, lt.check_contains(&ctx.env, &rt))?;
-                    }
-                } else if rt.contains_with_flags(rc, &ctx.env, &lt)? {
-                    if !rt.contains_with_flags(commit, &ctx.env, &lt)? {
-                        wrap!(self, rt.check_contains(&ctx.env, &lt))?;
-                    }
-                } else {
-                    wrap!(
-                        self,
-                        $crate::format_with_flags(
-                            $crate::PrintFlag::DerefTVars,
-                            || -> Result<()> {
-                                bail!(
-                                    "cannot compare {lt} with {rt}: comparison \
-                                     is fn('a, 'a) -> bool — both operands must \
-                                     be one type (cast one side explicitly)"
-                                )
-                            }
-                        )
-                    )?;
-                }
-                wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
-            }
-
-            fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
-            }
-
-            fn view(&self) -> $crate::NodeView<'_, R, E> {
-                $crate::NodeView::$name(self)
-            }
-
-            fn emit_clif(
-                &self,
-                cx: &mut $crate::fusion::emit::BodyCx,
-            ) -> Result<$crate::fusion::emit::CompiledExpr> {
-                $crate::fusion::emit::emit_cmp_node(
-                    cx,
-                    $crate::node::op::CmpOp::$name,
-                    &self.lhs,
-                    &self.rhs,
-                )
-            }
-
-        }
-    };
-}
-
-compare_op!(Eq, ==);
-compare_op!(Ne, !=);
-compare_op!(Lt, <);
-compare_op!(Gt, >);
-compare_op!(Lte, <=);
-compare_op!(Gte, >=);
-
-macro_rules! bool_op {
-    ($name:ident, $op:tt) => {
-        #[derive(Debug)]
-        pub struct $name<R: Rt, E: UserEvent> {
-            pub(crate) spec: Expr,
-            pub typ: Type,
-            pub lhs: Node<R, E>,
-            pub rhs: Node<R, E>,
-            resident: TagValue,
-            /// wake catch-up: set by `sleep()`, taken by the next update
-            slept: WakeBit,
-        }
-
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            #[allow(dead_code)]
-            pub fn new(lhs: Node<R, E>, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
-                let typ = Type::Primitive(Typ::Bool.into());
-                Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() })
-            }
-
-            pub(crate) fn compile(
-                ctx: &mut ExecCtx<R, E>,
-                flags: BitFlags<CFlag>,
-                spec: Expr,
-                scope: &Scope,
-                top_id: ExprId,
-                lhs: &Expr,
-                rhs: &Expr
-            ) -> Result<Node<R, E>> {
-                let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
-                let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
-                let typ = Type::Primitive(Typ::Bool.into());
-                Ok(Node::new(Self { spec, typ, lhs, rhs, resident: TagValue::phantom(), slept: WakeBit::default() }))
-            }
-        }
-
-
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            pub(crate) fn image_decode(
-                ctx: &mut ExecCtx<R, E>,
-                buf: &mut &[u8],
-            ) -> Result<Node<R, E>, PackError> {
-                let spec = Expr::decode(buf)?;
-                let typ = Type::decode(buf)?;
-                let lhs = decode_node(ctx, buf)?;
-                let rhs = decode_node(ctx, buf)?;
-                Ok(Node::new(Self {
-                    spec,
-                    typ,
-                    lhs,
-                    rhs,
-                    resident: TagValue::phantom(),
-                    slept: WakeBit::default(),
-                }))
-            }
-        }
-
-        impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
-            fn image_len(&self) -> usize {
-                tag_len()
-                    + self.spec.encoded_len()
-                    + self.typ.encoded_len()
-                    + self.lhs.image_len()
-                    + self.rhs.image_len()
-            }
-
-            fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-                put_tag(NodeTag::$name, buf);
-                self.spec.encode(buf)?;
-                self.typ.encode(buf)?;
-                self.lhs.image_encode(buf)?;
-                self.rhs.image_encode(buf)
-            }
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                event: &mut Event<E>,
-            ) -> &TagValue {
-                // Strict, not short-circuit: `false && ⊥ = ⊥`.
-                let woke = self.slept.take();
-                let l = self.lhs.update(ctx, event);
-                let r = self.rhs.update(ctx, event);
-                let (lt, rt) = (l.tag(), r.tag());
-                let trig = lt.triggers() || rt.triggers();
-                dense_gate!(self.resident, ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
-                let fired = lt.is_fired() || rt.is_fired();
-                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                let v = l.with_value(|lv| {
-                    r.with_value(|rv| match (lv, rv) {
-                        (Value::Bool(b0), Value::Bool(b1)) => {
-                            Some(Value::Bool(*b0 $op *b1))
-                        }
-                        _ => None,
-                    })
-                });
-                match v {
-                    Some(v) => self.resident.set(TagValue::tagged(v, tag)),
-                    None => self.resident.ride(),
-                }
-            }
-
-            fn spec(&self) -> &Expr {
-                &self.spec
-            }
-
-            fn typ(&self) -> &Type {
-                &self.typ
-            }
-
-            fn refs(&self, refs: &mut Refs) {
-                self.lhs.refs(refs);
-                self.rhs.refs(refs);
-            }
-
-            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.delete(ctx);
-                self.rhs.delete(ctx)
-            }
-
-            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.slept.set();
-                self.lhs.sleep(ctx);
-                self.rhs.sleep(ctx)
-            }
-
-            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.reset_replay(ctx);
-                self.rhs.reset_replay(ctx)
-            }
-
-            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                let bt = Type::Primitive(Typ::Bool.into());
-                wrap!(self.lhs, bt.check_contains(&ctx.env, self.lhs.typ()))?;
-                wrap!(self.rhs, bt.check_contains(&ctx.env, self.rhs.typ()))?;
-                wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
-            }
-
-            fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
-            }
-
-            fn view(&self) -> $crate::NodeView<'_, R, E> {
-                $crate::NodeView::$name(self)
-            }
-
-            fn emit_clif(
-                &self,
-                cx: &mut $crate::fusion::emit::BodyCx,
-            ) -> Result<$crate::fusion::emit::CompiledExpr> {
-                $crate::fusion::emit::emit_bool_node(
-                    cx,
-                    $crate::node::op::BoolOp::$name,
-                    &self.lhs,
-                    &self.rhs,
-                )
-            }
-
-        }
-    };
-}
-
-bool_op!(And, &&);
-bool_op!(Or, ||);
-
-#[derive(Debug)]
-pub struct Not<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
-    pub typ: Type,
-    pub n: Node<R, E>,
-    resident: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> Not<R, E> {
-    #[allow(dead_code)]
-    pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
-        let typ = Type::Primitive(Typ::Bool.into());
-        Node::new(Self { spec, typ, n, resident: TagValue::phantom() })
-    }
-
-    pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        spec: Expr,
-        scope: &Scope,
-        top_id: ExprId,
-        n: &Expr,
-    ) -> Result<Node<R, E>> {
-        let n = compile(ctx, flags, n.clone(), scope, top_id)?;
-        let typ = Type::Primitive(Typ::Bool.into());
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Not<R, E> {
-    pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
-        let typ = Type::decode(buf)?;
-        let n = decode_node(ctx, buf)?;
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
-    }
-
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        put_tag(NodeTag::Not, buf);
-        self.spec.encode(buf)?;
-        self.typ.encode(buf)?;
-        self.n.image_encode(buf)
-    }
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.n.update(ctx, event);
-        let tag = tv.tag();
-        if tag.is_bottom() {
-            return self.resident.set(TagValue::tagged(Value::Null, tag));
-        }
-        match tv.with_value(|v| match v {
-            Value::Bool(b) => Some(!*b),
-            _ => None,
-        }) {
-            Some(b) => self.resident.set(TagValue::tagged(Value::Bool(b), tag)),
-            None => self.resident.ride(),
-        }
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs);
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.delete(ctx);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
-    }
-
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0(ctx))?;
-        let bt = Type::Primitive(Typ::Bool.into());
-        wrap!(self.n, bt.check_contains(&ctx.env, self.n.typ()))?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &Type::boolean()))
-    }
-
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Not(self)
-    }
-
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_not_node(cx, &self.n)
-    }
-}
-
-#[derive(Debug)]
-pub struct Neg<R: Rt, E: UserEvent> {
-    pub(crate) spec: Expr,
-    pub typ: Type,
-    pub n: Node<R, E>,
-    resident: TagValue,
-}
-
-impl<R: Rt, E: UserEvent> Neg<R, E> {
-    #[allow(dead_code)]
-    pub fn new(n: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Node::new(Self {
-            spec,
-            typ: Type::empty_tvar(),
-            n,
-            resident: TagValue::phantom(),
-        })
-    }
-
-    pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
-        flags: BitFlags<CFlag>,
-        spec: Expr,
-        scope: &Scope,
-        top_id: ExprId,
-        n: &Expr,
-    ) -> Result<Node<R, E>> {
-        let n = compile(ctx, flags, n.clone(), scope, top_id)?;
-        Ok(Node::new(Self {
-            spec,
-            typ: Type::empty_tvar(),
-            n,
-            resident: TagValue::phantom(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Neg<R, E> {
-    pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
-        buf: &mut &[u8],
-    ) -> Result<Node<R, E>, PackError> {
-        let spec = Expr::decode(buf)?;
-        let typ = Type::decode(buf)?;
-        let n = decode_node(ctx, buf)?;
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
-    }
-
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        put_tag(NodeTag::Neg, buf);
-        self.spec.encode(buf)?;
-        self.typ.encode(buf)?;
-        self.n.image_encode(buf)
-    }
-    // CR claude for eric: [perf] Not and Neg have no `dense_gate!`, so they
-    // recompute on every quiet cycle; for a `decimal` that is an `Arc` allocation
-    // per cycle. `resident.set(TagValue::tagged(Value::Null, tag))` for a bottom
-    // is `set_bottom(tag.triggers())` (also Not, and arith's div0 path).
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // Integers wrap, matching the JIT's `ineg`.
-        let tv = self.n.update(ctx, event);
-        let tag = tv.tag();
-        if tag.is_bottom() {
-            return self.resident.set(TagValue::tagged(Value::Null, tag));
-        }
-        let neg = tv.with_value(|v| match v {
-            Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
-            Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
-            Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
-            Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
-            Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
-            Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
-            Value::F32(x) => Some(Value::F32(-*x)),
-            Value::F64(x) => Some(Value::F64(-*x)),
-            Value::Decimal(x) => Some(Value::Decimal(triomphe::Arc::new(-**x))),
-            _ => None,
-        });
-        match neg {
-            Some(v) => self.resident.set(TagValue::tagged(v, tag)),
-            None => self.resident.ride(),
-        }
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.refs(refs);
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.delete(ctx);
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
-    }
-
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0(ctx))?;
-        let negatable =
-            Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal);
-        if self.n.typ().with_deref(|t| t.is_some()) {
-            wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))?;
-        } else if let Type::TVar(tv) = self.n.typ() {
-            tv.add_cell_constraint(negatable);
-        }
-        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
-    }
-
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))?;
-        if let Type::TVar(tv) = self.n.typ() {
-            wrap!(self.n, tv.settle(&ctx.env))?;
-        }
-        let negatable =
-            Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal);
-        wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Neg(self)
-    }
-
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_neg_node(cx, &self.n)
-    }
-}
-
-// CR claude for eric: [structure] `Op` exists only to print the operator in one
-// type error, and it re-encodes what `arith_op!` already gets as `$base` (a
-// `BinOp`) plus `$checked`. Pass the operator's text, or print `BinOp` + `?`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Op {
-    Add,
-    CheckedAdd,
-    Sub,
-    CheckedSub,
-    Mul,
-    CheckedMul,
-    Div,
-    CheckedDiv,
-    Mod,
-    CheckedMod,
-}
-
-impl fmt::Display for Op {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Op::Add => write!(f, "+"),
-            Op::CheckedAdd => write!(f, "+?"),
-            Op::Sub => write!(f, "-"),
-            Op::CheckedSub => write!(f, "-?"),
-            Op::Mul => write!(f, "*"),
-            Op::CheckedMul => write!(f, "*?"),
-            Op::Div => write!(f, "/"),
-            Op::CheckedDiv => write!(f, "/?"),
-            Op::Mod => write!(f, "%"),
-            Op::CheckedMod => write!(f, "%?"),
-        }
-    }
-}
-
-defetyp!(ARITH_ERR, ARITH_ERR_TAG, "ArithError", "Error<`{}(string)>");
-
-/// Convert a raw `Value::Error` from netidx's `checked_*` ops into the
-/// catchable `ArithError` value; success passes through. Shared by the
-/// node-walk and the JIT's `graphix_value_checked_*` helpers.
-pub(crate) fn wrap_arith_error(result: Value) -> Value {
-    match result {
-        Value::Error(e) => {
-            let tag = Value::String(ARITH_ERR_TAG.clone());
-            // CR claude for eric: [bug] `e` is a `Value::String`, whose Display
-            // quotes it, so the payload string contains the quotes: probe `(t ~ 1)
-            // +? 9223372036854775807` prints `error:["ArithError", "\"arithmetic
-            // error\""]` in both engines. Take the string itself when it is one.
-            let err = Value::from(format_compact!("{e}"));
-            let var = Value::Array(ValArray::from_iter([tag, err]));
-            Value::Error(var.into())
-        }
-        v => v,
-    }
-}
-
-// CR claude for eric: [bug] only unchecked `+ - *` keep the operand's variant;
-// `/`, `%` and every checked op fall through to netidx, whose integer arms fold
-// V32->U32, Z32->I32, V64->U64, Z64->I64. So `v32 / v32` is a `u32` value under
-// the static type `v32`: probe `let s: v32 = a / b; select s { v32 as n => n }`
-// (a, b v32) logs "type v32 does not match value 3" and bottoms, both engines;
-// `a +? b` is `u32` too. Cover div/mod (div0 -> bottom) and the checked ops here,
-// or fix netidx's `int_op` to keep the variant.
-/// Unchecked integer `+`/`-`/`*` wrap on overflow, matching the JIT.
-/// Same-variant integer pairs only; every other shape returns `None`
-/// and falls through to the netidx operator.
-fn wrapping_int_arith(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
-    macro_rules! w {
-        ($va:ident, $a:expr, $b:expr) => {
-            match op {
-                BinOp::Add => Some(Value::$va($a.wrapping_add($b))),
-                BinOp::Sub => Some(Value::$va($a.wrapping_sub($b))),
-                BinOp::Mul => Some(Value::$va($a.wrapping_mul($b))),
-                BinOp::Div | BinOp::Mod => None,
-            }
-        };
-    }
-    match (l, r) {
-        (Value::I8(a), Value::I8(b)) => w!(I8, *a, *b),
-        (Value::I16(a), Value::I16(b)) => w!(I16, *a, *b),
-        (Value::I32(a), Value::I32(b)) => w!(I32, *a, *b),
-        (Value::I64(a), Value::I64(b)) => w!(I64, *a, *b),
-        (Value::U8(a), Value::U8(b)) => w!(U8, *a, *b),
-        (Value::U16(a), Value::U16(b)) => w!(U16, *a, *b),
-        (Value::U32(a), Value::U32(b)) => w!(U32, *a, *b),
-        (Value::U64(a), Value::U64(b)) => w!(U64, *a, *b),
-        (Value::V32(a), Value::V32(b)) => w!(V32, *a, *b),
-        (Value::V64(a), Value::V64(b)) => w!(V64, *a, *b),
-        (Value::Z32(a), Value::Z32(b)) => w!(Z32, *a, *b),
-        (Value::Z64(a), Value::Z64(b)) => w!(Z64, *a, *b),
-        _ => None,
-    }
-}
-
-/// Generate the `Update::emit_clif` override for an [`arith_op!`] type.
-/// `$base` is the unchecked [`BinOp`] (`Add` for both `+`
-/// and `+?`). Unchecked ops emit through the shared arith relay;
-/// checked ops route to the checked relay (Value-shape result — the
-/// success value or the `ArithError` error value).
-macro_rules! arith_emit_clif {
-    (false, $base:ident) => {
-        fn emit_clif(
-            &self,
-            cx: &mut $crate::fusion::emit::BodyCx,
-        ) -> Result<$crate::fusion::emit::CompiledExpr> {
-            $crate::fusion::emit::emit_arith_node(
-                cx,
-                $crate::node::op::BinOp::$base,
-                &self.typ,
-                &self.lhs,
-                &self.rhs,
-            )
-        }
-    };
-    (true, $base:ident) => {
-        fn emit_clif(
-            &self,
-            cx: &mut $crate::fusion::emit::BodyCx,
-        ) -> Result<$crate::fusion::emit::CompiledExpr> {
-            $crate::fusion::emit::emit_checked_arith_node(
-                cx,
-                $crate::node::op::BinOp::$base,
-                &self.lhs,
-                &self.rhs,
-            )
-        }
-    };
-}
-
-macro_rules! arith_op {
-    ($name:ident, $opn:expr, $checked:tt, $method:ident, $base:ident) => {
-        #[derive(Debug)]
-        pub struct $name<R: Rt, E: UserEvent> {
-            pub(crate) spec: Expr,
-            pub typ: Type,
-            pub lhs: Node<R, E>,
-            pub rhs: Node<R, E>,
-            resident: TagValue,
-            /// wake catch-up: set by `sleep()`, taken by the next update
-            slept: WakeBit,
-        }
-
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            /// Build the arithmetic op from already-compiled children,
-            /// with the resolved `typ` supplied by the caller. AOT
-            /// codegen uses this to skip the interpreter's late type
-            /// unification — the type is already known after
-            /// typecheck.
-            #[allow(dead_code)]
-            pub fn new(
-                lhs: Node<R, E>,
-                rhs: Node<R, E>,
-                typ: Type,
-                spec: Expr,
-            ) -> Node<R, E> {
-                Node::new(Self {
-                    spec,
-                    typ,
-                    lhs,
-                    rhs,
-                    resident: TagValue::phantom(),
-                    slept: WakeBit::default(),
-                })
-            }
-
             pub(crate) fn compile(
                 ctx: &mut ExecCtx<R, E>,
                 flags: BitFlags<CFlag>,
@@ -861,79 +90,9 @@ macro_rules! arith_op {
             ) -> Result<Node<R, E>> {
                 let lhs = compile(ctx, flags, lhs.clone(), scope, top_id)?;
                 let rhs = compile(ctx, flags, rhs.clone(), scope, top_id)?;
-                let typ = Type::empty_tvar();
-                Ok(Node::new(Self {
-                    spec,
-                    typ,
-                    lhs,
-                    rhs,
-                    resident: TagValue::phantom(),
-                    slept: WakeBit::default(),
-                }))
+                Ok(Self::node(spec, $typ, lhs, rhs))
             }
 
-            /// `fn('a: Number, 'a) -> 'a`: both operands and the result
-            /// are one numeric type. Idempotent; runs at typecheck0 and
-            /// again at typecheck1 after the operand cells settle.
-            fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                let num = Type::Primitive(Typ::number());
-                let lt = self.lhs.typ().clone();
-                let rt = self.rhs.typ().clone();
-                // A known operand must be numeric at typecheck0; the
-                // def-time acceptance gate for a lambda body runs only there.
-                for (known, t) in [
-                    (lt.with_deref(|t| t.is_some()), &lt),
-                    (rt.with_deref(|t| t.is_some()), &rt),
-                ] {
-                    if known {
-                        wrap!(self, num.check_contains(&ctx.env, t))?;
-                    } else if let Type::TVar(tv) = t {
-                        tv.add_cell_constraint(num.clone());
-                    }
-                }
-                // A declared `'a: Number` formal is rigid while its def
-                // gate is open: `x + f64:0.` must reject, not bind 'a.
-                use $crate::typ::ContainsFlags as CF;
-                let rc = CF::RigidCheck.into();
-                let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
-                let out = if lt.contains_with_flags(rc, &ctx.env, &rt)? {
-                    if !lt.contains_with_flags(commit, &ctx.env, &rt)? {
-                        wrap!(self, lt.check_contains(&ctx.env, &rt))?;
-                    }
-                    lt
-                } else if rt.contains_with_flags(rc, &ctx.env, &lt)? {
-                    if !rt.contains_with_flags(commit, &ctx.env, &lt)? {
-                        wrap!(self, rt.check_contains(&ctx.env, &lt))?;
-                    }
-                    rt
-                } else {
-                    wrap!(
-                        self,
-                        $crate::format_with_flags(
-                            $crate::PrintFlag::DerefTVars,
-                            || -> Result<Type> {
-                                bail!(
-                                    "cannot compute {lt} {} {rt}: arithmetic \
-                                     is fn('a: Number, 'a) -> 'a — both \
-                                     operands must be one numeric type (cast \
-                                     one side explicitly)",
-                                    $opn
-                                )
-                            }
-                        )
-                    )?
-                };
-                let ut = if $checked {
-                    Type::Set(Arc::from_iter([out, ARITH_ERR.clone()]))
-                } else {
-                    out
-                };
-                wrap!(self, self.typ.check_contains(&ctx.env, &ut))?;
-                Ok(())
-            }
-        }
-
-        impl<R: Rt, E: UserEvent> $name<R, E> {
             pub(crate) fn image_decode(
                 ctx: &mut ExecCtx<R, E>,
                 buf: &mut &[u8],
@@ -942,14 +101,18 @@ macro_rules! arith_op {
                 let typ = Type::decode(buf)?;
                 let lhs = decode_node(ctx, buf)?;
                 let rhs = decode_node(ctx, buf)?;
-                Ok(Node::new(Self {
+                Ok(Self::node(spec, typ, lhs, rhs))
+            }
+
+            fn node(spec: Expr, typ: Type, lhs: Node<R, E>, rhs: Node<R, E>) -> Node<R, E> {
+                Node::new(Self {
                     spec,
                     typ,
                     lhs,
                     rhs,
                     resident: TagValue::phantom(),
                     slept: WakeBit::default(),
-                }))
+                })
             }
         }
 
@@ -968,71 +131,6 @@ macro_rules! arith_op {
                 self.typ.encode(buf)?;
                 self.lhs.image_encode(buf)?;
                 self.rhs.image_encode(buf)
-            }
-            arith_emit_clif!($checked, $base);
-
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                event: &mut Event<E>,
-            ) -> &TagValue {
-                let woke = self.slept.take();
-                let l = self.lhs.update(ctx, event);
-                let r = self.rhs.update(ctx, event);
-                let (lt, rt) = (l.tag(), r.tag());
-                let trig = lt.triggers() || rt.triggers();
-                dense_gate!(
-                    self.resident,
-                    ctx,
-                    trig,
-                    lt.is_bottom() || rt.is_bottom(),
-                    woke
-                );
-                let fired = lt.is_fired() || rt.is_fired();
-                let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
-                if !$checked {
-                    let v = l.with_value(|lv| {
-                        r.with_value(|rv| wrapping_int_arith(BinOp::$base, lv, rv))
-                    });
-                    if let Some(v) = v {
-                        return self.resident.set(TagValue::tagged(v, tag));
-                    }
-                }
-                let result =
-                    l.with_value(|lv| r.with_value(|rv| lv.clone().$method(rv.clone())));
-                if $checked {
-                    self.resident.set(TagValue::tagged(wrap_arith_error(result), tag))
-                } else {
-                    match result {
-                        Value::Error(e) => {
-                            // CR claude for eric: [readability] `self.spec.ori`
-                            // already renders as "in file ...", so this prints
-                            // "arith error in in file ..." (probed); and each
-                            // failure is written twice, `log::error!` plus
-                            // `eprintln!`. Same "in in" in error.rs
-                            // `unhandled_msg`, `OrNever`'s warn and the JIT helper.
-                            // only a fresh failure logs
-                            if trig {
-                                log::error!(
-                                    "arith error in {} at {} {e}",
-                                    self.spec.ori,
-                                    self.spec.pos
-                                );
-                                eprintln!(
-                                    "arith error in {} at {} {e}",
-                                    self.spec.ori, self.spec.pos
-                                );
-                            }
-                            let btag = if trig {
-                                $crate::Tag::FRESH_BOTTOM
-                            } else {
-                                $crate::Tag::STALE_BOTTOM
-                            };
-                            self.resident.set(TagValue::tagged(Value::Null, btag))
-                        }
-                        v => self.resident.set(TagValue::tagged(v, tag)),
-                    }
-                }
             }
 
             fn spec(&self) -> &Expr {
@@ -1064,6 +162,566 @@ macro_rules! arith_op {
                 self.rhs.reset_replay(ctx);
             }
 
+            fn view(&self) -> NodeView<'_, R, E> {
+                NodeView::$name(self)
+            }
+
+            $($methods)*
+        }
+    };
+}
+
+/// Update both operands of a `binary_node!` and gate on them: a bottom
+/// operand bottoms and a quiet cycle rides the resident, both returning
+/// from the caller; otherwise the operands, whether they triggered and
+/// the result's tag.
+macro_rules! gated_operands {
+    ($self:ident, $ctx:ident, $event:ident) => {{
+        let woke = $self.slept.take();
+        let l = $self.lhs.update($ctx, $event);
+        let r = $self.rhs.update($ctx, $event);
+        let (lt, rt) = (l.tag(), r.tag());
+        let trig = lt.triggers() || rt.triggers();
+        dense_gate!($self.resident, $ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
+        let tag = if lt.is_fired() || rt.is_fired() { Tag::FIRED } else { Tag::STALE };
+        (l, r, trig, tag)
+    }};
+}
+
+/// Both operands of a binary operator are one type: probe each
+/// direction without binding (a failed binding walk cannot be undone),
+/// then commit the one that holds. The committed type, or `None` when
+/// neither operand's type contains the other's.
+fn unify_operands(env: &Env, lt: &Type, rt: &Type) -> Result<Option<Type>> {
+    let probe = ContainsFlags::RigidCheck.into();
+    let commit =
+        ContainsFlags::AliasTVars | ContainsFlags::InitTVars | ContainsFlags::RigidCheck;
+    let (wide, narrow) = if lt.contains_with_flags(probe, env, rt)? {
+        (lt, rt)
+    } else if rt.contains_with_flags(probe, env, lt)? {
+        (rt, lt)
+    } else {
+        return Ok(None);
+    };
+    if !wide.contains_with_flags(commit, env, narrow)? {
+        wide.check_contains(env, narrow)?;
+    }
+    Ok(Some(wide.clone()))
+}
+
+/// An operand whose type is known must be in `bound` now; an open cell
+/// carries `bound` as a constraint for later.
+fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
+    if t.with_deref(|t| t.is_some()) {
+        bound.check_contains(env, t)
+    } else {
+        if let Type::TVar(tv) = t {
+            tv.add_cell_constraint(bound.clone());
+        }
+        Ok(())
+    }
+}
+
+macro_rules! compare_op {
+    ($name:ident, $op:tt) => {
+        binary_node!($name, Type::boolean(), {
+            fn update(
+                &mut self,
+                ctx: &mut ExecCtx<R, E>,
+                event: &mut Event<E>,
+            ) -> &TagValue {
+                let (l, r, _, tag) = gated_operands!(self, ctx, event);
+                // XCR claude for eric: undecided by the docs, so not changed: `[i64, f64]`
+                // operands of two variants order by `Value` (variant first) while arith
+                // promotes. Recommend refusing `<`..`>=` over a union of 2+ numeric types
+                // at typecheck: a numeric `<` would disagree with `==`, map keys and sort.
+                let v = coretraits::with_hooks(ctx, event, || {
+                    l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
+                });
+                self.resident.set(TagValue::tagged(v, tag))
+            }
+
+            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
+                let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
+                if wrap!(self, unify_operands(&ctx.env, lt, rt))?.is_none() {
+                    return wrap!(
+                        self,
+                        $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
+                            bail!(
+                                "cannot compare {lt} with {rt}: comparison is \
+                                 fn('a, 'a) -> bool — both operands must be one type \
+                                 (cast one side explicitly)"
+                            )
+                        })
+                    );
+                }
+                Ok(())
+            }
+
+            fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
+            }
+
+            fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+                emit_cmp_node(cx, CmpOp::$name, &self.lhs, &self.rhs)
+            }
+        });
+    };
+}
+
+compare_op!(Eq, ==);
+compare_op!(Ne, !=);
+compare_op!(Lt, <);
+compare_op!(Gt, >);
+compare_op!(Lte, <=);
+compare_op!(Gte, >=);
+
+macro_rules! bool_op {
+    ($name:ident, $op:tt) => {
+        binary_node!($name, Type::boolean(), {
+            // Strict, not short-circuit: `false && ⊥ = ⊥`.
+            fn update(
+                &mut self,
+                ctx: &mut ExecCtx<R, E>,
+                event: &mut Event<E>,
+            ) -> &TagValue {
+                let (l, r, _, tag) = gated_operands!(self, ctx, event);
+                let v = l.with_value(|lv| {
+                    r.with_value(|rv| match (lv, rv) {
+                        (Value::Bool(b0), Value::Bool(b1)) => Some(Value::Bool(*b0 $op *b1)),
+                        _ => None,
+                    })
+                });
+                match v {
+                    Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+                    None => self.resident.ride(),
+                }
+            }
+
+            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
+                let bt = Type::boolean();
+                wrap!(self.lhs, bt.check_contains(&ctx.env, self.lhs.typ()))?;
+                wrap!(self.rhs, bt.check_contains(&ctx.env, self.rhs.typ()))
+            }
+
+            fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
+            }
+
+            fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+                emit_bool_node(cx, BoolOp::$name, &self.lhs, &self.rhs)
+            }
+        });
+    };
+}
+
+bool_op!(And, &&);
+bool_op!(Or, ||);
+
+#[derive(Debug)]
+pub struct Not<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Node<R, E>,
+    resident: TagValue,
+    /// wake catch-up: set by `sleep()`, taken by the next update
+    slept: WakeBit,
+}
+
+impl<R: Rt, E: UserEvent> Not<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        n: &Expr,
+    ) -> Result<Node<R, E>> {
+        let n = compile(ctx, flags, n.clone(), scope, top_id)?;
+        Ok(Self::node(spec, Type::boolean(), n))
+    }
+
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Self::node(spec, typ, n))
+    }
+
+    fn node(spec: Expr, typ: Type, n: Node<R, E>) -> Node<R, E> {
+        Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        })
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        put_tag(NodeTag::Not, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.n.image_encode(buf)
+    }
+
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        let tv = self.n.update(ctx, event);
+        let tag = tv.tag();
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        match tv.with_value(|v| match v {
+            Value::Bool(b) => Some(!*b),
+            _ => None,
+        }) {
+            Some(b) => self.resident.set(TagValue::tagged(Value::Bool(b), tag)),
+            None => self.resident.ride(),
+        }
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.refs(refs);
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept.set();
+        self.n.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck0(ctx))?;
+        wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck1(ctx))
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Not(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_not_node(cx, &self.n)
+    }
+}
+
+#[derive(Debug)]
+pub struct Neg<R: Rt, E: UserEvent> {
+    pub(crate) spec: Expr,
+    pub typ: Type,
+    pub n: Node<R, E>,
+    resident: TagValue,
+    /// wake catch-up: set by `sleep()`, taken by the next update
+    slept: WakeBit,
+}
+
+impl<R: Rt, E: UserEvent> Neg<R, E> {
+    pub(crate) fn compile(
+        ctx: &mut ExecCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        spec: Expr,
+        scope: &Scope,
+        top_id: ExprId,
+        n: &Expr,
+    ) -> Result<Node<R, E>> {
+        let n = compile(ctx, flags, n.clone(), scope, top_id)?;
+        Ok(Self::node(spec, Type::empty_tvar(), n))
+    }
+
+    pub(crate) fn image_decode(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let n = decode_node(ctx, buf)?;
+        Ok(Self::node(spec, typ, n))
+    }
+
+    fn node(spec: Expr, typ: Type, n: Node<R, E>) -> Node<R, E> {
+        Node::new(Self {
+            spec,
+            typ,
+            n,
+            resident: TagValue::phantom(),
+            slept: WakeBit::default(),
+        })
+    }
+
+    fn negatable() -> Type {
+        Type::Primitive(Typ::signed_integer() | Typ::float() | Typ::Decimal)
+    }
+}
+
+impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
+    fn image_len(&self) -> usize {
+        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
+    }
+
+    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        put_tag(NodeTag::Neg, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        self.n.image_encode(buf)
+    }
+
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        // Integers wrap, matching the JIT's `ineg`.
+        let tv = self.n.update(ctx, event);
+        let tag = tv.tag();
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let neg = tv.with_value(|v| match v {
+            Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
+            Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
+            Value::I32(x) => Some(Value::I32(x.wrapping_neg())),
+            Value::Z32(x) => Some(Value::Z32(x.wrapping_neg())),
+            Value::I64(x) => Some(Value::I64(x.wrapping_neg())),
+            Value::Z64(x) => Some(Value::Z64(x.wrapping_neg())),
+            Value::F32(x) => Some(Value::F32(-*x)),
+            Value::F64(x) => Some(Value::F64(-*x)),
+            Value::Decimal(x) => Some(Value::Decimal(Arc::new(-**x))),
+            _ => None,
+        });
+        match neg {
+            Some(v) => self.resident.set(TagValue::tagged(v, tag)),
+            None => self.resident.ride(),
+        }
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        self.n.refs(refs);
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.delete(ctx);
+    }
+
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept.set();
+        self.n.sleep(ctx);
+    }
+
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.n.reset_replay(ctx);
+    }
+
+    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck0(ctx))?;
+        wrap!(self.n, constrain_operand(&ctx.env, &Self::negatable(), self.n.typ()))?;
+        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck1(ctx))?;
+        if let Type::TVar(tv) = self.n.typ() {
+            wrap!(self.n, tv.settle(&ctx.env))?;
+        }
+        wrap!(self.n, Self::negatable().check_contains(&ctx.env, self.n.typ()))
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Neg(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_neg_node(cx, &self.n)
+    }
+}
+
+defetyp!(ARITH_ERR, ARITH_ERR_TAG, "ArithError", "Error<`{}(string)>");
+
+/// A checked op's raw failure as the catchable `ArithError`; success
+/// passes through.
+fn wrap_arith_error(result: Value) -> Value {
+    match result {
+        Value::Error(e) => {
+            let msg = match &*e {
+                Value::String(s) => Value::String(s.clone()),
+                e => Value::from(format_compact!("{e}")),
+            };
+            let tag = Value::String(ARITH_ERR_TAG.clone());
+            Value::Error(Value::Array(ValArray::from_iter([tag, msg])).into())
+        }
+        v => v,
+    }
+}
+
+/// `l op r` for a same-variant integer pair, in that variant (netidx's
+/// operators fold `v32`/`z32`/`v64`/`z64` into their fixed-width twins).
+/// Unchecked `+ - *` wrap, matching the JIT; any other overflow and a
+/// zero divisor are an error value. `None` for every other shape.
+fn int_arith(op: BinOp, checked: bool, l: &Value, r: &Value) -> Option<Value> {
+    macro_rules! int {
+        ($va:ident, $a:expr, $b:expr) => {{
+            let (a, b) = ($a, $b);
+            let v = match (op, checked) {
+                (BinOp::Add, false) => Some(a.wrapping_add(b)),
+                (BinOp::Sub, false) => Some(a.wrapping_sub(b)),
+                (BinOp::Mul, false) => Some(a.wrapping_mul(b)),
+                (BinOp::Add, true) => a.checked_add(b),
+                (BinOp::Sub, true) => a.checked_sub(b),
+                (BinOp::Mul, true) => a.checked_mul(b),
+                (BinOp::Div, _) => a.checked_div(b),
+                (BinOp::Mod, _) => a.checked_rem(b),
+            };
+            Some(match v {
+                Some(v) => Value::$va(v),
+                None => Value::error(literal!("arithmetic error")),
+            })
+        }};
+    }
+    match (l, r) {
+        (Value::I8(a), Value::I8(b)) => int!(I8, *a, *b),
+        (Value::I16(a), Value::I16(b)) => int!(I16, *a, *b),
+        (Value::I32(a), Value::I32(b)) => int!(I32, *a, *b),
+        (Value::I64(a), Value::I64(b)) => int!(I64, *a, *b),
+        (Value::U8(a), Value::U8(b)) => int!(U8, *a, *b),
+        (Value::U16(a), Value::U16(b)) => int!(U16, *a, *b),
+        (Value::U32(a), Value::U32(b)) => int!(U32, *a, *b),
+        (Value::U64(a), Value::U64(b)) => int!(U64, *a, *b),
+        (Value::V32(a), Value::V32(b)) => int!(V32, *a, *b),
+        (Value::V64(a), Value::V64(b)) => int!(V64, *a, *b),
+        (Value::Z32(a), Value::Z32(b)) => int!(Z32, *a, *b),
+        (Value::Z64(a), Value::Z64(b)) => int!(Z64, *a, *b),
+        _ => None,
+    }
+}
+
+/// `l op r` as both engines compute it. A failure is an error value, a
+/// checked op's the catchable `ArithError`.
+pub(crate) fn arith(op: BinOp, checked: bool, l: Value, r: Value) -> Value {
+    let v = match int_arith(op, checked, &l, &r) {
+        Some(v) => v,
+        None => match (op, checked) {
+            (BinOp::Add, false) => l + r,
+            (BinOp::Sub, false) => l - r,
+            (BinOp::Mul, false) => l * r,
+            (BinOp::Div, false) => l / r,
+            (BinOp::Mod, false) => l % r,
+            (BinOp::Add, true) => l.checked_add(r),
+            (BinOp::Sub, true) => l.checked_sub(r),
+            (BinOp::Mul, true) => l.checked_mul(r),
+            (BinOp::Div, true) => l.checked_div(r),
+            (BinOp::Mod, true) => l.checked_rem(r),
+        },
+    };
+    if checked { wrap_arith_error(v) } else { v }
+}
+
+macro_rules! arith_emit_clif {
+    (false, $base:ident) => {
+        fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+            emit_arith_node(cx, BinOp::$base, &self.typ, &self.lhs, &self.rhs)
+        }
+    };
+    (true, $base:ident) => {
+        fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+            emit_checked_arith_node(cx, BinOp::$base, &self.lhs, &self.rhs)
+        }
+    };
+}
+
+macro_rules! arith_op {
+    ($name:ident, $checked:tt, $base:ident) => {
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            /// `fn('a: Number, 'a) -> 'a`: both operands and the result
+            /// are one numeric type. Idempotent; runs at typecheck0 and
+            /// again at typecheck1 after the operand cells settle.
+            fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+                let num = Type::number();
+                let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
+                // A known operand must be numeric at typecheck0; the
+                // def-time acceptance gate for a lambda body runs only there.
+                wrap!(self, constrain_operand(&ctx.env, &num, lt))?;
+                wrap!(self, constrain_operand(&ctx.env, &num, rt))?;
+                // A declared `'a: Number` formal is rigid while its def
+                // gate is open: `x + f64:0.` must reject, not bind 'a.
+                let Some(out) = wrap!(self, unify_operands(&ctx.env, lt, rt))? else {
+                    return wrap!(
+                        self,
+                        $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
+                            bail!(
+                                "cannot compute {lt} {}{} {rt}: arithmetic is \
+                                 fn('a: Number, 'a) -> 'a — both operands must be \
+                                 one numeric type (cast one side explicitly)",
+                                BinOp::$base.symbol(),
+                                if $checked { "?" } else { "" }
+                            )
+                        })
+                    );
+                };
+                let ut = if $checked {
+                    Type::Set(Arc::from_iter([out, ARITH_ERR.clone()]))
+                } else {
+                    out
+                };
+                wrap!(self, self.typ.check_contains(&ctx.env, &ut))
+            }
+        }
+
+        binary_node!($name, Type::empty_tvar(), {
+            arith_emit_clif!($checked, $base);
+
+            fn update(
+                &mut self,
+                ctx: &mut ExecCtx<R, E>,
+                event: &mut Event<E>,
+            ) -> &TagValue {
+                let (l, r, trig, tag) = gated_operands!(self, ctx, event);
+                let v = l.with_value(|lv| {
+                    r.with_value(|rv| arith(BinOp::$base, $checked, lv.clone(), rv.clone()))
+                });
+                match v {
+                    Value::Error(e) if !$checked => {
+                        if trig {
+                            let site = diagnostic_site(&self.spec);
+                            report_failure(&format_compact!("arith error {site} {e}"));
+                        }
+                        self.resident.set_bottom(trig)
+                    }
+                    v => self.resident.set(TagValue::tagged(v, tag)),
+                }
+            }
+
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
@@ -1081,22 +739,17 @@ macro_rules! arith_op {
                 }
                 self.typecheck_tail(ctx)
             }
-
-            fn view(&self) -> $crate::NodeView<'_, R, E> {
-                $crate::NodeView::$name(self)
-            }
-        }
+        });
     };
 }
 
-arith_op!(Add, Op::Add, false, add, Add);
-arith_op!(Sub, Op::Sub, false, sub, Sub);
-arith_op!(Mul, Op::Mul, false, mul, Mul);
-arith_op!(Div, Op::Div, false, div, Div);
-arith_op!(Mod, Op::Mod, false, rem, Mod);
-
-arith_op!(CheckedAdd, Op::CheckedAdd, true, checked_add, Add);
-arith_op!(CheckedSub, Op::CheckedSub, true, checked_sub, Sub);
-arith_op!(CheckedMul, Op::CheckedMul, true, checked_mul, Mul);
-arith_op!(CheckedDiv, Op::CheckedDiv, true, checked_div, Div);
-arith_op!(CheckedMod, Op::CheckedMod, true, checked_rem, Mod);
+arith_op!(Add, false, Add);
+arith_op!(Sub, false, Sub);
+arith_op!(Mul, false, Mul);
+arith_op!(Div, false, Div);
+arith_op!(Mod, false, Mod);
+arith_op!(CheckedAdd, true, Add);
+arith_op!(CheckedSub, true, Sub);
+arith_op!(CheckedMul, true, Mul);
+arith_op!(CheckedDiv, true, Div);
+arith_op!(CheckedMod, true, Mod);

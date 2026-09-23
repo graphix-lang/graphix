@@ -17,8 +17,9 @@ use crate::{
     fusion::kernel_abi::SiteLeaf,
     node::{
         array::{array_index, array_slice_i64, bytes_index},
+        error::{report_failure, report_ignored, unhandled_msg},
         map::map_get,
-        op::wrap_arith_error,
+        op::{BinOp, arith},
     },
 };
 use netidx_value::{ValArray, Value};
@@ -458,12 +459,9 @@ unsafe fn graphix_swallowed_error(
     tv.with_value(|v| {
         if let Value::Error(e) = v {
             if unhandled == 0 {
-                log::warn!("ignored error in {site} {e}")
+                report_ignored(site, e)
             } else {
-                // CR claude for eric: [structure] a third spelling of the swallowed-error
-                // report (see the CR at node/error.rs on "in in"); one shared formatter.
-                log::error!("unhandled error in {site} {e}");
-                eprintln!("unhandled error in {site} {e}");
+                report_failure(&unhandled_msg(site, e))
             }
         }
     });
@@ -498,9 +496,7 @@ unsafe fn graphix_qop_raise_null(site: u64) {
 /// the node-walk emits, interned whole as `msg`.
 unsafe fn graphix_unhandled_null(msg: *const arcstr::ArcStr) {
     // SAFETY: the kernel's interned string outlives this invocation.
-    let msg = unsafe { &*msg };
-    log::error!("{msg}");
-    eprintln!("{msg}");
+    report_failure(unsafe { &*msg });
 }
 
 /// 1 if the active runtime has an `interrupt()`/`abort()` pending, else
@@ -831,46 +827,46 @@ safe fn graphix_abstract_get_value(tv: TagValue) -> TagValue {
 // Value arithmetic consumes both operands; codegen passes them owned.
 
 safe fn graphix_value_add(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| a + b)
+    value_arith_op(l, r, |a, b| arith(BinOp::Add, false, a, b))
 }
 
 safe fn graphix_value_sub(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| a - b)
+    value_arith_op(l, r, |a, b| arith(BinOp::Sub, false, a, b))
 }
 
 safe fn graphix_value_mul(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| a * b)
+    value_arith_op(l, r, |a, b| arith(BinOp::Mul, false, a, b))
 }
 
 safe fn graphix_value_div(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| a / b)
+    value_arith_op(l, r, |a, b| arith(BinOp::Div, false, a, b))
 }
 
 safe fn graphix_value_rem(l: TagValue, r: TagValue) -> TagValue {
-    value_arith_op(l, r, |a, b| a % b)
+    value_arith_op(l, r, |a, b| arith(BinOp::Mod, false, a, b))
 }
 
 // Checked arithmetic yields the catchable `ArithError` value, never
 // bottom; consumes both operands.
 
 safe fn graphix_value_checked_add(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(wrap_arith_error(l.value().checked_add(r.value())))
+    TagValue::clean(arith(BinOp::Add, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_sub(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(wrap_arith_error(l.value().checked_sub(r.value())))
+    TagValue::clean(arith(BinOp::Sub, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_mul(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(wrap_arith_error(l.value().checked_mul(r.value())))
+    TagValue::clean(arith(BinOp::Mul, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_div(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(wrap_arith_error(l.value().checked_div(r.value())))
+    TagValue::clean(arith(BinOp::Div, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_rem(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(wrap_arith_error(l.value().checked_rem(r.value())))
+    TagValue::clean(arith(BinOp::Mod, true, l.value(), r.value()))
 }
 
 /// Value equality; consumes both operands.
