@@ -99,7 +99,7 @@ impl Pack for Expr {
         if image::is_encoding() {
             image::object_len(
                 &image::expr_key(self),
-                |k| *k,
+                |k| (*k, ()),
                 |e| &mut e.exprs,
                 || {
                     self.id.encoded_len()
@@ -116,7 +116,7 @@ impl Pack for Expr {
         if image::is_encoding() {
             image::object_encode(
                 &image::expr_key(self),
-                |k| *k,
+                |k| (*k, ()),
                 |e| &mut e.exprs,
                 buf,
                 |buf| {

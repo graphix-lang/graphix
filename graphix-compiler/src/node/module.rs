@@ -1,25 +1,22 @@
-// CR claude for eric: [style] use grouping: `crate::env::Map` and two
-// `crate::image` statements sit outside the `crate::{..}` group (which already has
-// `env::{Env, ImplDef}`); error contexts below build `String`s with `format!`
-// (`format_compact!`); `std::collections::hash_map::Entry` is spelled inline.
-use crate::env::Map;
-use crate::image::ImageBuf;
-use crate::image::nodes::{
-    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-};
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent,
+    BindId, CFlag, Event, ExecCtx, Node, PendingImport, Refs, Rt, Scope, Tag, TagValue,
+    Update, UserEvent,
     compiler::compile,
-    env::{Env, ImplDef},
+    env::{Env, ImplDef, Map, scope_params},
     errf,
     expr::{
-        BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, Sandbox, Sig, SigKind,
-        Source, StructurePattern, TypeDefBody, TypeDefExpr, WrittenAt,
+        BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext, Sandbox,
+        Sig, SigItem, SigKind, Source, TypeDefBody, TypeDefExpr, WrittenAt,
         add_interface_modules, parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
-    node::{Nop, bind::Bind, traits},
+    image::{
+        self, ImageBuf,
+        nodes::{
+            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+        },
+    },
+    node::{bind::Bind, traits},
     profile::{self, Phase},
     typ::{AbstractId, Type},
     wrap,
@@ -32,12 +29,12 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
-use std::{any::Any, mem, sync::LazyLock};
+use std::{any::Any, collections::hash_map::Entry, fmt::Write, mem, sync::LazyLock};
 use triomphe::Arc;
 
 fn bind_sig(
     env: &mut Env,
-    pending: &mut Vec<crate::PendingImport>,
+    pending: &mut Vec<PendingImport>,
     scope: &Scope,
     sig: &Sig,
 ) -> Result<()> {
@@ -48,168 +45,162 @@ fn bind_sig(
             env.modules.insert_cow(scope.append(name).lexical);
         }
     }
-    // CR claude for eric: [bug] errors here put the position in the TEXT ("at
-    // {si.pos}") and lose the origin, so they are framed by the declaring file.
-    // Probe: `impl Nope for i64;` in m.gxi reports "in file main.gx .. no trait
-    // `Nope` in scope at line: 2, column: 1". Attach `expr::ParserContext { ori:
-    // si_ori, pos }` as compile_stmt does for pending imports.
     for si in sig.items.iter() {
-        let si_ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
-        match &si.kind {
-            SigKind::Module(name) => {
-                let scope = scope.append(name);
-                env.modules.insert_cow(scope.lexical.clone());
-                if env.lsp_mode {
-                    env.push_module_reference(ModuleRefSite {
-                        pos: name.pos_or(si.pos),
-                        ori: si_ori.clone(),
-                        name: ModPath::from_iter([name.name.clone()]),
-                        canonical: scope.lexical.clone(),
-                        def_ori: None,
-                        segments: None,
-                    });
-                }
+        let ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
+        bind_sig_item(env, pending, scope, si, &ori)
+            .map_err(|e| e.context(ParserContext { ori, pos: si.pos }))?;
+    }
+    Ok(())
+}
+
+fn bind_sig_item(
+    env: &mut Env,
+    pending: &mut Vec<PendingImport>,
+    scope: &Scope,
+    si: &SigItem,
+    si_ori: &Arc<Origin>,
+) -> Result<()> {
+    match &si.kind {
+        SigKind::Module(name) => {
+            let scope = scope.append(name);
+            env.modules.insert_cow(scope.lexical.clone());
+            if env.lsp_mode {
+                env.push_module_reference(ModuleRefSite {
+                    pos: name.pos_or(si.pos),
+                    ori: si_ori.clone(),
+                    name: ModPath::from_iter([name.name.clone()]),
+                    canonical: scope.lexical.clone(),
+                    def_ori: None,
+                    segments: None,
+                });
             }
-            SigKind::Use { reexport, names } => {
-                if *reexport {
-                    bail!("re-exports (`pub use`) are not yet supported")
-                }
-                // `names` is a global registry keyed by scope path, so
-                // registering in the outer env covers the impl compile too
-                for item in names.iter() {
-                    super::compile_use_item(
-                        env, pending, si.pos, &si_ori, scope, false, item,
-                    )?;
-                }
+        }
+        SigKind::Use { reexport, names } => {
+            if *reexport {
+                bail!("re-exports (`pub use`) are not yet supported")
             }
-            SigKind::Bind(BindSig { name, typ }) => {
-                let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
-                typ.alias_tvars(&mut LPooled::take());
-                if env.lsp_mode {
-                    typ.record_ide_refs(env, &scope.lexical);
-                }
-                let poly = matches!(typ, Type::Fn(_));
+            // `names` is a global registry keyed by scope path, so
+            // registering in the outer env covers the impl compile too
+            for item in names.iter() {
+                super::compile_use_item(
+                    env, pending, si.pos, si_ori, scope, false, item,
+                )?;
+            }
+        }
+        SigKind::Bind(BindSig { name, typ }) => {
+            let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
+            typ.alias_tvars(&mut LPooled::take());
+            if env.lsp_mode {
+                typ.record_ide_refs(env, &scope.lexical);
+            }
+            let poly = matches!(typ, Type::Fn(_));
+            let bind = env.bind_variable(
+                &scope.lexical,
+                name,
+                typ,
+                name.pos_or(si.pos),
+                si_ori.clone(),
+            );
+            if let Doc(Some(s)) = &si.doc {
+                bind.doc = Some(s.clone());
+            }
+            if poly {
+                let id = bind.id;
+                env.poly_binds.insert_cow(id);
+            }
+        }
+        SigKind::TypeDef(td) => {
+            env.deftype(
+                &scope.lexical,
+                &td.name,
+                td.params.clone(),
+                &td.body,
+                true,
+                si.doc.0.clone(),
+                td.name.pos_or(si.pos),
+                si_ori.clone(),
+            )?;
+        }
+        SigKind::Trait(t) => {
+            let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, si_ori);
+            let sigs = t.methods.iter().map(|m| {
+                let ft = traits::method_sig(&m.typ, &tref, &scope.lexical);
+                (m.name.name.clone(), Arc::new(ft), m.self_index, m.default.is_some())
+            });
+            env.deftrait(
+                &scope.lexical,
+                &t.name,
+                sigs,
+                si.doc.0.clone(),
+                t.name.pos_or(si.pos),
+                si_ori.clone(),
+            )?;
+        }
+        SigKind::Impl(im) => {
+            // the implementation's own registration of the same
+            // (trait, target) replaces these bindings
+            let Some(trait_id) = env.lookup_trait(&scope.lexical, &im.trait_name)? else {
+                bail!("no trait `{}` in scope", im.trait_name)
+            };
+            let trait_def = env.trait_def(trait_id).cloned().expect("trait def");
+            let (target, params) =
+                traits::impl_head(env, &scope.lexical, &trait_def, im, true)?;
+            if !im.methods.is_empty() {
+                bail!(
+                    "an interface declares `impl {} for {target};` without a body",
+                    im.trait_name
+                )
+            }
+            let bscope = scope.append_block("impl", ExprId::new().inner());
+            let mut methods: Map<CompactString, BindId> = Map::new();
+            for d in trait_def.methods.iter() {
+                let typ = Type::Fn(Arc::new(traits::method_sig_at(
+                    &d.typ.reset_tvars(),
+                    &target,
+                )));
                 let bind = env.bind_variable(
-                    &scope.lexical,
-                    name,
+                    &bscope.lexical,
+                    &d.name,
                     typ,
-                    name.pos_or(si.pos),
+                    si.pos,
                     si_ori.clone(),
                 );
-                if let Doc(Some(s)) = &si.doc {
-                    bind.doc = Some(s.clone());
-                }
-                if poly {
-                    let id = bind.id;
-                    env.poly_binds.insert_cow(id);
-                }
+                methods.insert_cow(d.name.as_str().into(), bind.id);
             }
-            SigKind::TypeDef(td) => {
-                env.deftype(
-                    &scope.lexical,
-                    &td.name,
-                    td.params.clone(),
-                    &td.body,
-                    true,
-                    si.doc.0.clone(),
-                    td.name.pos_or(si.pos),
-                    si_ori,
-                )?;
-            }
-            SigKind::Trait(t) => {
-                let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, &si_ori);
-                let sigs = t.methods.iter().map(|m| {
-                    let ft = traits::method_sig(&m.typ, &tref, &scope.lexical);
-                    (m.name.name.clone(), Arc::new(ft), m.self_index, m.default.is_some())
-                });
-                env.deftrait(
-                    &scope.lexical,
-                    &t.name,
-                    sigs,
-                    si.doc.0.clone(),
-                    t.name.pos_or(si.pos),
-                    si_ori,
-                )?;
-            }
-            SigKind::Impl(im) => {
-                // the implementation's own registration of the same
-                // (trait, target) replaces these bindings
-                let Some(trait_id) = env.lookup_trait(&scope.lexical, &im.trait_name)?
-                else {
-                    bail!("no trait `{}` in scope at {}", im.trait_name, si.pos)
-                };
-                let trait_def = env.trait_def(trait_id).cloned().expect("trait def");
-                let (target, params) =
-                    traits::impl_head(env, &scope.lexical, &trait_def, im, true)
-                        .with_context(|| format!("at {}", si.pos))?;
-                if !im.methods.is_empty() {
-                    bail!(
-                        "an interface declares `impl {} for {target};` without a body",
-                        im.trait_name
-                    )
-                }
-                let bscope = scope.append_block("impl", ExprId::new().inner());
-                let mut methods: Map<CompactString, BindId> = Map::new();
-                for d in trait_def.methods.iter() {
-                    let typ = Type::Fn(Arc::new(traits::method_sig_at(
-                        &d.typ.reset_tvars(),
-                        &target,
-                    )));
-                    let bind = env.bind_variable(
-                        &bscope.lexical,
-                        &d.name,
-                        typ,
-                        si.pos,
-                        si_ori.clone(),
-                    );
-                    methods.insert_cow(d.name.as_str().into(), bind.id);
-                }
-                env.register_impl(Arc::new(ImplDef {
-                    trait_id,
-                    target,
-                    params,
-                    scope: bscope.lexical,
-                    methods,
-                    declared: true,
-                    pos: si.pos,
-                    ori: si_ori,
-                }))
-                .with_context(|| format!("at {}", si.pos))?;
-            }
+            env.register_impl(Arc::new(ImplDef {
+                trait_id,
+                target,
+                params,
+                scope: bscope.lexical,
+                methods,
+                declared: true,
+                pos: si.pos,
+                ori: si_ori.clone(),
+            }))?;
         }
     }
     Ok(())
 }
 
 fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
-    let mut buf: LPooled<String> = LPooled::take();
+    let mut sub: LPooled<String> = LPooled::take();
     for si in sig.items.iter() {
         if let SigKind::Module(name) = &si.kind {
-            use std::fmt::Write;
             let scope = scope.append(name);
-            env.modules.insert_cow(scope.lexical.clone());
-            buf.clear();
-            write!(buf, "{}/", scope.lexical.0).unwrap();
-            for m in inner_env.modules.range::<ModPath, _>(&scope.lexical..) {
-                if m == &scope.lexical || m.starts_with(&*buf) {
-                    env.modules.insert_cow(m.clone());
-                } else {
-                    break;
-                }
+            let at = &scope.lexical;
+            sub.clear();
+            write!(sub, "{}/", at.0).unwrap();
+            let under = |path: &ModPath| path == at || path.starts_with(sub.as_str());
+            env.modules.insert_cow(at.clone());
+            for m in inner_env.modules.range::<ModPath, _>(at..).take_while(|m| under(m))
+            {
+                env.modules.insert_cow(m.clone());
             }
-            // CR claude for eric: [perf] each `copy_sig!` range runs to the END of
-            // the map (the modules loop above breaks at the first path outside the
-            // prefix), and the prefix string is rebuilt on every iteration, in
-            // three places. Build it once per submodule and break.
             macro_rules! copy_sig {
                 ($kind:ident) => {
-                    let iter = inner_env.$kind.range::<ModPath, _>(&scope.lexical..);
-                    for (path, inner) in iter {
-                        buf.clear();
-                        write!(buf, "{}/", scope.lexical.0).unwrap();
-                        if path == &scope.lexical || path.starts_with(&*buf) {
-                            env.$kind.insert_cow(path.clone(), inner.clone());
-                        }
+                    let iter = inner_env.$kind.range::<ModPath, _>(at..);
+                    for (path, inner) in iter.take_while(|(path, _)| under(path)) {
+                        env.$kind.insert_cow(path.clone(), inner.clone());
                     }
                 };
             }
@@ -218,12 +209,8 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(traits);
             let exported: LPooled<Vec<AbstractId>> = inner_env
                 .typedefs
-                .range::<ModPath, _>(&scope.lexical..)
-                .filter(|(path, _)| {
-                    buf.clear();
-                    write!(buf, "{}/", scope.lexical.0).unwrap();
-                    *path == &scope.lexical || path.starts_with(&*buf)
-                })
+                .range::<ModPath, _>(at..)
+                .take_while(|(path, _)| under(path))
                 .flat_map(|(_, defs)| defs.into_iter())
                 .filter_map(|(_, td)| match (&td.typ, &td.rep) {
                     (Type::Abstract { id, .. }, Some(_)) => Some(*id),
@@ -257,41 +244,44 @@ fn check_sig<R: Rt, E: UserEvent>(
     nodes: &[Node<R, E>],
 ) -> Result<()> {
     let _profile = profile::phase(Phase::ModuleSignature);
-    let mut has_bind: LPooled<AHashSet<ArcStr>> = LPooled::take();
+    let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
-        // CR claude for eric: [bug] only a single-name `let` can satisfy a `val`.
-        // Probe: m.gx `let (a, b) = (1, 2)` with m.gxi `val a: i64; val b: i64;`
-        // fails "sig item val a: i64 is missing an implementation". Walk the
-        // pattern's names and ids instead of requiring `StructurePattern::Bind`.
         if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
             && let Some(binds) = ctx.env.binds.get(&scope.lexical)
-            && let Expr { kind: ExprKind::Bind(bexp), .. } = bind.spec()
-            && let StructurePattern::Bind(name) = &bexp.pattern
-            && let Some(id) = bind.single_id()
-            && let Some(proxy_id) = binds.get(&CompactString::from(name.as_str()))
-            && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {
-            proxy_bind.typ.unbind_tvars();
-            proxy_bind.typ.sig_matches(&ctx.env, bind.typ()).with_context(|| {
-                format!(
-                    "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
-                    proxy_bind.typ,
-                    bind.typ()
-                )
-            })?;
-            proxy.push(Proxy { inner: id, outer: *proxy_id, private_inner: true });
-            ctx.rt.ref_var(id, top_id);
-            ctx.rt.ref_var(*proxy_id, top_id);
-            if ctx.env.lsp_mode {
-                ctx.env.push_sig_link(SigImplLink {
-                    scope: scope.lexical.clone(),
-                    name: CompactString::from(name.as_str()),
-                    sig_id: *proxy_id,
-                    impl_id: id,
-                });
+            // every name the `let` binds, each with its own binding; a
+            // single name's type is the whole pattern's
+            let single = bind.single_id();
+            let mut ids: LPooled<Vec<BindId>> = LPooled::take();
+            bind.pattern.ids(&mut |id| ids.push(id));
+            for id in ids.drain(..) {
+                let Some(inner) = ctx.env.by_id.get(&id) else { continue };
+                let name = inner.name.clone();
+                let Some(proxy_id) = binds.get(&name) else { continue };
+                let Some(proxy_bind) = ctx.env.by_id.get(proxy_id) else { continue };
+                let typ = if single.is_some() { bind.typ() } else { &inner.typ };
+                proxy_bind.typ.unbind_tvars();
+                proxy_bind.typ.sig_matches(&ctx.env, typ).with_context(|| {
+                    format_compact!(
+                        "signature mismatch \"val {name}: ...\", signature has type {}, implementation has type {}",
+                        proxy_bind.typ,
+                        typ
+                    )
+                })?;
+                proxy.push(Proxy { inner: id, outer: *proxy_id, private_inner: true });
+                ctx.rt.ref_var(id, top_id);
+                ctx.rt.ref_var(*proxy_id, top_id);
+                if ctx.env.lsp_mode {
+                    ctx.env.push_sig_link(SigImplLink {
+                        scope: scope.lexical.clone(),
+                        name: name.clone(),
+                        sig_id: *proxy_id,
+                        impl_id: id,
+                    });
+                }
+                has_bind.insert(name);
             }
-            has_bind.insert(name.name.clone());
         }
         if let Expr { kind: ExprKind::TypeDef(td), .. } = n.spec()
             && let Some(defs) = ctx.env.typedefs.get(&scope.lexical)
@@ -305,9 +295,10 @@ fn check_sig<R: Rt, E: UserEvent>(
                     (typ, _) => TypeDefBody::Alias(typ.clone()),
                 },
             };
+            let impl_params = scope_params(&td.params, &scope.lexical);
             match &sig_td.body {
                 TypeDefBody::Abstract(None) => {
-                    for (tv0, con0) in td.params.iter() {
+                    for (tv0, con0) in impl_params.iter() {
                         match sig_td.params.iter().find(|(tv1, _)| tv0.name == tv1.name) {
                             Some((_, con1)) if con0 != con1 => {
                                 let con0 = match con0 {
@@ -354,7 +345,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                         ),
                     };
                     if sig_td.name != td.name
-                        || sig_td.params != td.params
+                        || sig_td.params != impl_params
                         || sig_td.body != impl_body
                     {
                         bail!(
@@ -370,7 +361,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     }
     for si in sig.items.iter() {
         let missing = match &si.kind {
-            SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(&name.name),
+            SigKind::Bind(BindSig { name, .. }) => !has_bind.contains(name.name.as_str()),
             SigKind::Impl(im) => {
                 let trait_id = ctx
                     .env
@@ -424,27 +415,31 @@ fn check_sig<R: Rt, E: UserEvent>(
                 }
             }
             SigKind::Trait(t) => {
-                // CR claude for eric: [risk] method types are compared as printed
-                // strings: two spellings of one type (a scoped vs unscoped ref, a
-                // renamed type variable) mismatch, and self_index/defaults are not
-                // compared at all. Compare the types (the sig_matches used for vals).
                 // an implementation's own re-declaration must agree
                 // with the interface
+                let ori = si.ori.clone().unwrap_or_default();
+                let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, &ori);
+                let method = |m: &crate::expr::TraitMethod| {
+                    traits::method_sig(&m.typ, &tref, &scope.lexical)
+                };
                 for n in nodes {
                     if let Expr { kind: ExprKind::Trait(t2), .. } = n.spec()
                         && t2.name == t.name
-                        && (t2.methods.len() != t.methods.len()
-                            || t2.methods.iter().zip(t.methods.iter()).any(|(a, b)| {
-                                a.name != b.name
-                                    || format_compact!("{}", a.typ)
-                                        != format_compact!("{}", b.typ)
-                            }))
                     {
-                        bail!(
-                            "trait {} is declared by the interface as {t}; the \
-                             implementation's {t2} does not match",
-                            t.name
-                        )
+                        let agree = t2.methods.len() == t.methods.len()
+                            && t2.methods.iter().zip(t.methods.iter()).all(|(a, b)| {
+                                a.name == b.name
+                                    && a.self_index == b.self_index
+                                    && a.default.is_some() == b.default.is_some()
+                                    && method(b).sig_matches(&ctx.env, &method(a)).is_ok()
+                            });
+                        if !agree {
+                            bail!(
+                                "trait {} is declared by the interface as {t}; the \
+                                 implementation's {t2} does not match",
+                                t.name
+                            )
+                        }
                     }
                 }
                 false
@@ -472,26 +467,31 @@ fn check_sig<R: Rt, E: UserEvent>(
 }
 
 static ERR_TAG: ArcStr = literal!("DynamicLoadError");
-static TYP: LazyLock<Type> = LazyLock::new(|| {
+/// A dynamic module's value: `null` once its text loaded, else the
+/// load's error.
+static DYNAMIC_TYP: LazyLock<Type> = LazyLock::new(|| {
     let t = Arc::from_iter([Type::Primitive(Typ::String.into())]);
     let err =
         Type::Error(Arc::new(Type::Variant(ERR_TAG.clone(), t, WrittenAt::NOWHERE)));
     Type::Set(Arc::from_iter([err, Type::Primitive(Typ::Null.into())]))
 });
 
-// CR claude for eric: [structure] `runtime_sig_check_env.is_some()` doubles as
-// "this is a dynamic module" (update, delete, sleep, reset_replay, typ,
-// compile_inner), and a static module carries a dummy Nop `source`. An enum
-// `Static | Dynamic { source, sig_env }` makes the mixed states unrepresentable
-// and names the branch. `TYP` is also too generic a name for the dynamic result.
+/// Where a module's body comes from.
+#[derive(Debug)]
+enum Body<R: Rt, E: UserEvent> {
+    /// Compiled with the program.
+    Static,
+    /// Loaded at run time from the text `source` produces. The load's
+    /// signature check runs in `sig_env`: a dynamic module not exported
+    /// from its parent would otherwise lose its bound signature.
+    Dynamic { source: Node<R, E>, sig_env: Env },
+}
+
 #[derive(Debug)]
 pub struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
     flags: BitFlags<CFlag>,
-    source: Node<R, E>,
-    // kept for the run-time sig check: a dynamic module not exported
-    // from its parent would otherwise lose its bound signature
-    runtime_sig_check_env: Option<Env>,
+    body: Body<R, E>,
     env: Env,
     sig: Sig,
     pub(crate) scope: Scope,
@@ -503,10 +503,27 @@ pub struct Module<R: Rt, E: UserEvent> {
     resident: TagValue,
 }
 
+/// Store a production for `id` as the binding that made it does, a
+/// bottom included.
+fn store_production<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    id: BindId,
+    tv: &TagValue,
+) {
+    let stored = match tv.is_bottom() {
+        true => TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
+        false => TagValue::fired(tv.value_cloned()),
+    };
+    ctx.rt.store_insert(id, stored);
+}
+
 impl<R: Rt, E: UserEvent> Module<R, E> {
-    /// The module's body node.
-    pub(crate) fn source(&self) -> &Node<R, E> {
-        &self.source
+    /// A dynamic module's loader expression.
+    pub(crate) fn source(&self) -> Option<&Node<R, E>> {
+        match &self.body {
+            Body::Static => None,
+            Body::Dynamic { source, .. } => Some(source),
+        }
     }
 
     pub(crate) fn image_decode(
@@ -514,31 +531,31 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
-        let flags = crate::image::flags_decode(buf)?;
-        let source = decode_node(ctx, buf)?;
-        let runtime_sig_check_env = match u8::decode(buf)? {
-            0 => None,
-            1 => Some(Env::decode(buf)?),
+        let flags = image::flags_decode(buf)?;
+        let body = match u8::decode(buf)? {
+            0 => Body::Static,
+            1 => Body::Dynamic {
+                source: decode_node(ctx, buf)?,
+                sig_env: Env::decode(buf)?,
+            },
             _ => return Err(PackError::UnknownTag),
         };
-        let env = crate::image::lexical_decode(buf)?;
+        let env = image::lexical_decode(buf)?;
         let sig = Sig::decode(buf)?;
-        let scope = crate::image::scope_decode(buf)?;
-        // CR claude for eric: [bug] check_sig `ref_var`s every proxy's inner and
-        // outer id under `top_id`; decode does not replay it (CLAUDE.md: a ref_var
-        // id is re-registered at decode), so a warm start never schedules the
-        // module when its interface ids are written. Probe: main.gx `m::x <- n ~ n
-        // * 10` into m.gx `let x = 0; println("inner [x]")` (m.gxi `val x: i64`)
-        // prints inner 0,0,10,20,30 cold and only "inner 0" on the warm run.
+        let scope = image::scope_decode(buf)?;
         let proxy = Vec::<Proxy>::decode(buf)?;
         let nodes = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
         let top_id = ExprId::decode(buf)?;
+        // the registrations check_sig made
+        for Proxy { inner, outer, .. } in proxy.iter() {
+            ctx.rt.ref_var(*inner, top_id);
+            ctx.rt.ref_var(*outer, top_id);
+        }
         Ok(Node::new(Self {
             spec,
             flags,
-            source,
-            runtime_sig_check_env,
+            body,
             env,
             sig,
             scope,
@@ -573,8 +590,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             flags,
             env,
             sig,
-            source,
-            runtime_sig_check_env: Some(ctx.env.clone()),
+            body: Body::Dynamic { source, sig_env: ctx.env.clone() },
             scope: scope.clone(),
             proxy: Vec::new(),
             nodes: Box::new([]),
@@ -593,19 +609,18 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         exprs: Arc<[Expr]>,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        let source = Nop::new(Type::Primitive(Typ::String | Typ::Error));
         let mut env = ctx.env.clone();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
-        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
-            .with_context(|| format!("binding signature for module {}", scope.lexical))?;
+        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig).with_context(
+            || format_compact!("binding signature for module {}", scope.lexical),
+        )?;
         let mut t = Self {
             spec,
             flags,
             env,
             sig,
-            source,
-            runtime_sig_check_env: None,
+            body: Body::Static,
             scope: scope.clone(),
             proxy: Vec::new(),
             nodes: Box::new([]),
@@ -614,7 +629,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             resident: TagValue::phantom(),
         };
         t.compile_inner(ctx, &exprs)
-            .with_context(|| format!("compiling module {}", scope.lexical))?;
+            .with_context(|| format_compact!("compiling module {}", scope.lexical))?;
         if ctx.env.lsp_mode {
             ctx.env.push_module_internal_view(ModuleInternalView {
                 scope: t.scope.lexical.clone(),
@@ -624,12 +639,11 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         Ok(Node::new(t))
     }
 
-    // CR claude for eric: [bug] a runtime (re)compile bypasses compile_stmt's
-    // end-of-statement work: `pending_imports` are never re-checked, and the
-    // attribute census / def assertions are never reconciled. Probe: source
-    // "use core::no_such_thing; let x = 42" loads and serves x = 42, while the
-    // same text as a file is refused "use: no `no_such_thing` in `core`". Share
-    // one post-compile step with compile_stmt.
+    /// Compile loaded text as the module's body, with the end of a
+    /// program statement's checks: a deferred import must name
+    /// something, and analysis checks the definition assertions it
+    /// reaches. A loaded body is never fused, so no fusion pass
+    /// reconciles its registry attributes.
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
         let exprs =
@@ -637,17 +651,23 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);
-        self.compile_inner(ctx, &exprs)
+        let pending = mem::take(&mut ctx.pending_imports);
+        let census = ctx.attr_census.lock().len();
+        let res = self.compile_inner(ctx, &exprs).and_then(|()| {
+            crate::check_pending_imports(ctx)?;
+            self.nodes.iter().try_for_each(|n| crate::analysis::analyze(n, ctx))
+        });
+        ctx.attr_census.lock().truncate(census);
+        ctx.pending_imports = pending;
+        res
     }
 
-    // CR claude for eric: [risk] `builtins_allowed` is reset to `true`, not to the
-    // value it had: any nesting of this under a sandboxed compile re-enables
-    // builtins for the rest of it. Save and restore (or make it a compile param).
     // CR claude for eric: [structure] the "covered children, then catches in
     // reverse" walk appears three times in this file (here, typecheck1_nodes,
     // update) and three more in Block; one iterator helper for all six.
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
-        ctx.builtins_allowed = self.runtime_sig_check_env.is_none();
+        let builtins_allowed =
+            mem::replace(&mut ctx.builtins_allowed, matches!(self.body, Body::Static));
         let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
             let (mut nodes, catches) = crate::node::compile_block_children(
                 ctx,
@@ -673,12 +693,12 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             }
             Ok((nodes, catches))
         });
-        ctx.builtins_allowed = true;
+        ctx.builtins_allowed = builtins_allowed;
         let (nodes, catches) = nodes?;
         self.catches = catches;
         self.nodes = nodes.into_boxed_slice();
-        match &mut self.runtime_sig_check_env {
-            None => check_sig(
+        match &mut self.body {
+            Body::Static => check_sig(
                 ctx,
                 self.top_id,
                 &mut self.proxy,
@@ -686,8 +706,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 &self.sig,
                 &self.nodes,
             )?,
-            Some(env) => {
-                ctx.with_restored_mut(env, |ctx| {
+            Body::Dynamic { sig_env, .. } => {
+                ctx.with_restored_mut(sig_env, |ctx| {
                     check_sig(
                         ctx,
                         self.top_id,
@@ -753,65 +773,77 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             }
         })
     }
+
+    fn sleep_nodes(&mut self, ctx: &mut ExecCtx<R, E>) {
+        ctx.with_restored_mut(&mut self.env, |ctx| {
+            for n in &mut self.nodes {
+                n.sleep(ctx);
+            }
+        });
+    }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     fn image_len(&self) -> usize {
-        let sig_env =
-            1 + self.runtime_sig_check_env.as_ref().map_or(0, |e| e.encoded_len());
+        let body = 1 + match &self.body {
+            Body::Static => 0,
+            Body::Dynamic { source, sig_env } => {
+                source.image_len() + sig_env.encoded_len()
+            }
+        };
         tag_len()
             + self.spec.encoded_len()
-            + crate::image::flags_len(self.flags)
-            + self.source.image_len()
-            + sig_env
-            + crate::image::lexical_len(&self.env)
+            + image::flags_len(self.flags)
+            + body
+            + image::lexical_len(&self.env)
             + self.sig.encoded_len()
-            + crate::image::scope_len(&self.scope)
+            + image::scope_len(&self.scope)
             + self.proxy.encoded_len()
             + nodes_len(&self.nodes)
-            + crate::image::slice_len(&self.catches)
+            + image::slice_len(&self.catches)
             + self.top_id.encoded_len()
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Module, buf);
         self.spec.encode(buf)?;
-        crate::image::flags_encode(self.flags, buf)?;
-        self.source.image_encode(buf)?;
-        match &self.runtime_sig_check_env {
-            None => 0u8.encode(buf)?,
-            Some(env) => {
+        image::flags_encode(self.flags, buf)?;
+        match &self.body {
+            Body::Static => 0u8.encode(buf)?,
+            Body::Dynamic { source, sig_env } => {
                 1u8.encode(buf)?;
-                env.encode(buf)?;
+                source.image_encode(buf)?;
+                sig_env.encode(buf)?;
             }
         }
-        crate::image::lexical_encode(&self.env, buf)?;
+        image::lexical_encode(&self.env, buf)?;
         self.sig.encode(buf)?;
-        crate::image::scope_encode(&self.scope, buf)?;
+        image::scope_encode(&self.scope, buf)?;
         self.proxy.encode(buf)?;
         encode_nodes(&self.nodes, buf)?;
-        crate::image::slice_encode(&self.catches, buf)?;
+        image::slice_encode(&self.catches, buf)?;
         self.top_id.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut compiled = false;
         let mut src_tag = Tag::FIRED;
-        let src = if self.runtime_sig_check_env.is_some() {
-            let tv = self.source.update(ctx, event);
-            let tag = tv.tag();
-            if !tag.triggers() {
-                None
-            } else if tag.is_bottom() {
-                // a taint placeholder never compiles or tears down
-                return self
-                    .resident
-                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-            } else {
-                Some((tv.value_cloned(), tag))
+        let src = match &mut self.body {
+            Body::Static => None,
+            Body::Dynamic { source, .. } => {
+                let tv = source.update(ctx, event);
+                let tag = tv.tag();
+                if !tag.triggers() {
+                    None
+                } else if tag.is_bottom() {
+                    // a taint placeholder never compiles or tears down
+                    return self
+                        .resident
+                        .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+                } else {
+                    Some((tv.value_cloned(), tag))
+                }
             }
-        } else {
-            None
         };
         if let Some((v, tag)) = src {
             src_tag = tag;
@@ -839,12 +871,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 n.refs(&mut refs);
             }
             refs.with_external_refs(|id| {
-                if let Some(v) = ctx.rt.store_value(&id) {
-                    if let std::collections::hash_map::Entry::Vacant(e) =
-                        event.variables.entry(id)
-                    {
-                        e.insert(TagValue::fired(v.clone()));
-                    }
+                if let Some(v) = ctx.rt.store_value(&id)
+                    && let Entry::Vacant(e) = event.variables.entry(id)
+                {
+                    e.insert(TagValue::fired(v.clone()));
                 }
             });
         }
@@ -852,20 +882,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         if compiled {
             event.init = true;
         }
-        // CR claude for eric: [bug] "the store never holds a taint placeholder" is
-        // false (Bind::update stores FRESH_BOTTOM), and skipping bottoms here and in
-        // the outbound loop below leaves the OUTER id's store on the last value
-        // while the inner binding is bottom. Probe: m.gx `let x = select k { 0 => 1,
-        // _ => never() }` (k ticking), m.gxi `val x: i64`, main reads `m::x` in an
-        // arm selected at n = 3: prints "3 1"; without the .gxi it reads bottom.
-        // Mirror the production, bottom included.
         for Proxy { inner, outer, private_inner } in &self.proxy {
             if *private_inner && let Some(tv) = event.variables.get(outer) {
                 let tv = tv.clone();
-                // the store never holds a taint placeholder
-                if !tv.is_bottom() {
-                    ctx.rt.store_insert(*inner, TagValue::fired(tv.value_cloned()));
-                }
+                store_production(ctx, *inner, &tv);
                 event.variables.insert(*inner, tv);
             }
         }
@@ -900,9 +920,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 },
                 None => continue,
             };
-            if !tv.is_bottom() {
-                ctx.rt.store_insert(*outer, TagValue::fired(tv.value_cloned()));
-            }
+            store_production(ctx, *outer, &tv);
             event.variables.insert(*outer, tv);
         }
         if compiled {
@@ -912,52 +930,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    // CR claude for eric: [bug] the static branch deletes the nodes but never
-    // `unref_var`s the proxies check_sig ref'd, so every deleted static module
-    // leaves its interface ids in the runtime's `by_ref`. `clear_compiled` does
-    // both; call it on both branches.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.runtime_sig_check_env.is_none() {
-            ctx.with_restored_mut(&mut self.env, |ctx| {
-                for n in &mut self.nodes {
-                    n.delete(ctx);
-                }
-            });
-        } else {
-            self.source.delete(ctx);
-            self.clear_compiled(ctx);
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            source.delete(ctx);
         }
+        self.clear_compiled(ctx);
     }
 
     fn refs(&self, refs: &mut Refs) {
-        self.source.refs(refs);
+        if let Body::Dynamic { source, .. } = &self.body {
+            source.refs(refs);
+        }
         for n in &self.nodes {
             n.refs(refs)
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.runtime_sig_check_env.is_none() {
-            ctx.with_restored_mut(&mut self.env, |ctx| {
-                for n in &mut self.nodes {
-                    n.sleep(ctx);
-                }
-            });
-        } else {
-            // CR claude for eric: [bug] sleep is pause, not reset (CLAUDE.md), but
-            // this deletes the loaded graph, and a source that does not re-fire
-            // at the wake never reloads it. Probe: a dynamic module whose source
-            // (an outer `let src`) counts on a 50 ms timer, in an arm asleep on odd
-            // n: `foo::x` reads 0..3 at n = 0, then 3 at n = 2, 4, .. forever.
-            // Sleep the loaded nodes like the static branch does.
-            self.source.sleep(ctx);
-            self.clear_compiled(ctx);
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            source.sleep(ctx);
         }
+        self.sleep_nodes(ctx);
     }
 
     fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if self.runtime_sig_check_env.is_some() {
-            self.source.reset_replay(ctx);
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            source.reset_replay(ctx);
         }
         ctx.with_restored_mut(&mut self.env, |ctx| {
             for n in &mut self.nodes {
@@ -971,23 +969,26 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        if self.runtime_sig_check_env.is_none() {
-            self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
-        } else {
-            &TYP
+        match &self.body {
+            Body::Static => self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom),
+            Body::Dynamic { .. } => &DYNAMIC_TYP,
         }
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck0(ctx))?;
-        let t = Type::Primitive(Typ::String | Typ::Error);
-        wrap!(self.source, t.check_contains(&self.env, self.source.typ()))?;
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            wrap!(source, source.typecheck0(ctx))?;
+            let t = Type::Primitive(Typ::String | Typ::Error);
+            wrap!(source, t.check_contains(&self.env, source.typ()))?;
+        }
         self.proxy_lambda_defs(ctx);
         Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck1(ctx))?;
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            wrap!(source, source.typecheck1(ctx))?;
+        }
         self.typecheck1_nodes(ctx)
     }
 
@@ -996,11 +997,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        // CR claude for eric: [readability] stale: `compile_source` runs no fusion
-        // pass, so a loaded graph is never fused, and `source` (the loader
-        // expression) is not the loaded graph. State what is true.
-        // `source` is not fused here: a dynamic module's loaded graph
-        // gets its own pass inside `compile_source`
+        // A dynamic module's body compiles at run time (`compile_source`),
+        // after fusion, and is never fused; its loader is not fused here.
         for child in self.nodes.iter_mut() {
             crate::fusion::fuse(child, ctx)?;
         }

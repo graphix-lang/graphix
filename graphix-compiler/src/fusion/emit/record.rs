@@ -405,7 +405,7 @@ fn kind_tag(k: RecordKind) -> u8 {
 pub(crate) fn record_len(r: &Arc<BodyRecord>) -> usize {
     image::object_len(
         &(Arc::as_ptr(r) as usize),
-        |k| *k,
+        |k| (*k, r.clone()),
         |e| &mut e.records,
         || {
             let BodyRecord {
@@ -440,7 +440,7 @@ pub(crate) fn record_encode(
 ) -> Result<(), PackError> {
     image::object_encode(
         &(Arc::as_ptr(r) as usize),
-        |k| *k,
+        |k| (*k, r.clone()),
         |e| &mut e.records,
         buf,
         |buf| {

@@ -900,3 +900,134 @@ run!(
         let show = || -> string "[T(5) == T(5)] [T(5) == T(6)] [T(5)]"
     "#
 ; graphix_package_core::testing::FuseExpect::None);
+
+// A destructuring `let` implements every `val` it binds.
+run!(
+    interface_val_by_destructuring,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::a + inner::b
+    "#,
+    "/test/inner.gxi" => r#"
+        val a: i64;
+        val b: i64
+    "#,
+    "/test/inner.gx" => r#"
+        let (a, b) = (1, 2)
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
+// An interface-only type declared after a `val` the implementation binds
+// by destructuring lands after that `let`, where the body can name it.
+run!(
+    interface_type_anchored_after_destructuring,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::a + inner::c + inner::b
+    "#,
+    "/test/inner.gxi" => r#"
+        val a: i64;
+        type T = i64;
+        val b: T;
+        val c: i64
+    "#,
+    "/test/inner.gx" => r#"
+        let (a, c) = (1, 1);
+        let b: T = 1
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
+// A binding behind an interface goes bottom through it: a reader that
+// arrives after it went bottom sees bottom, not the value before.
+run!(
+    interface_val_carries_bottom,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "bottom"),
+    "/test.gx" => r#"
+        mod inner;
+        let step = 0;
+        select step { n if n < 5 => step <- n + 1, _ => never() };
+        inner::k <- step ~ step;
+        let seen = select step { 3 => inner::x, _ => never() };
+        let result = any(seen ~ "stale", select step { 4 => "bottom", _ => never() })
+    "#,
+    "/test/inner.gxi" => r#"
+        val k: i64;
+        val x: i64
+    "#,
+    "/test/inner.gx" => r#"
+        let k = 0;
+        let x = select k { 0 => 1, _ => never() }
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
+// An error in an interface item carries the item's position and file.
+#[tokio::test(flavor = "current_thread")]
+async fn interface_error_is_placed() -> Result<()> {
+    use graphix_compiler::expr::{ParserContext, Source};
+    let tbl = ahash::AHashMap::from_iter(
+        [
+            ("/test.gx", "mod inner;\nlet result = 0"),
+            ("/test/inner.gxi", "val x: i64;\nimpl Nope for i64"),
+            ("/test/inner.gx", "let x = 1"),
+        ]
+        .map(|(p, t)| {
+            (
+                netidx_core::path::Path::from(p),
+                graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(t)),
+            )
+        }),
+    );
+    let (tx, _rx) = tokio::sync::mpsc::channel(10);
+    let resolver = graphix_compiler::expr::VfsResolver::new(tbl);
+    let ctx = graphix_package_core::testing::init_with_setup(
+        tx,
+        &crate::TEST_REGISTER,
+        vec![resolver],
+        |_| {},
+    )
+    .await?;
+    let e =
+        ctx.rt.compile(arcstr::literal!("{ mod test; test::result }")).await.unwrap_err();
+    let pc = e.downcast_ref::<ParserContext>().expect("a placed error");
+    assert_eq!(pc.pos.line, 2, "{e:#}");
+    assert!(matches!(&pc.ori.source, Source::Internal(n) if n == "inner"), "{e:#}");
+    ctx.shutdown().await;
+    Ok(())
+}
+
+// An implementation's re-declaration of an interface trait agrees with
+// it by meaning, not by spelling.
+run!(
+    interface_trait_redeclared_with_renamed_tvar,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::Pick::pick(1, 7)
+    "#,
+    "/test/inner.gxi" => r#"
+        trait Pick { val pick: fn(self, x: 'a) -> 'a };
+        impl Pick for i64
+    "#,
+    "/test/inner.gx" => r#"
+        trait Pick { val pick: fn(self, y: 'b) -> 'b };
+        impl Pick for i64 { let pick = |s, y| y }
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
+// ... and a re-declaration that means something else is refused.
+run!(
+    interface_trait_redeclared_differently,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not match")),
+    "/test.gx" => r#"
+        mod inner;
+        let result = 0
+    "#,
+    "/test/inner.gxi" => r#"
+        trait Show { val show: fn(self) -> string }
+    "#,
+    "/test/inner.gx" => r#"
+        trait Show { val show: fn(self) -> i64 }
+    "#
+; graphix_package_core::testing::FuseExpect::None);

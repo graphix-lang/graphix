@@ -99,19 +99,25 @@ pub fn decode_nodes<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     buf: &mut &[u8],
 ) -> Result<Vec<Node<R, E>>, PackError> {
+    // every node is one tag byte at least
     let n = decode_varint(buf)? as usize;
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::with_capacity(n.min(buf.len()));
     for _ in 0..n {
         out.push(decode_node(ctx, buf)?);
     }
     Ok(out)
 }
 
-// CR claude for eric: [risk] recurses once per node level with no
-// stack::ensure_sufficient, where every other Node walk is guarded (lib.rs Node
-// impl); a program the guarded compile builds can overflow here on a warm start.
-// Wrap the dispatch below in the guard.
+/// Decode one node: its tag, then its kind's codec. Recurses once per
+/// node level, under the stack guard like every other node walk.
 pub fn decode_node<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    buf: &mut &[u8],
+) -> Result<Node<R, E>, PackError> {
+    crate::stack::ensure_sufficient(|| decode_tagged(ctx, buf))
+}
+
+fn decode_tagged<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     buf: &mut &[u8],
 ) -> Result<Node<R, E>, PackError> {

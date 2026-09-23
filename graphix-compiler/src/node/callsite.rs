@@ -2427,28 +2427,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
                 None if t == Type::Bottom => (), // it doesn't throw any errors
                 None => {
-                    if self
-                        .flags
-                        .contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors)
-                    {
-                        bail!(
-                            "ERROR: {} at {} error {} raised from function call {} will not be caught",
-                            self.spec.ori,
-                            self.spec.pos,
-                            t,
-                            self.fnode.spec()
-                        )
-                    }
                     if self.flags.contains(CFlag::WarnUnhandled) {
                         ctx.env.warn(
-                            &self.spec.ori,
+                            self.flags,
+                            &self.spec,
                             self.spec.pos,
                             self.spec.end.0,
                             format_args!(
                                 "error {t} raised from function call {} will not be caught",
                                 self.fnode.spec()
                             ),
-                        )
+                        )?
                     }
                 }
             }

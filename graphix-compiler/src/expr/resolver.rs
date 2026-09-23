@@ -1,13 +1,9 @@
-// CR claude for eric: [style] `std::sync::Arc` is spelled out seven times,
-// `use std::fmt::Write as _` is fn-local twice (resolve, LoadChain::push), and
-// `expr::TraitExpr` sits in its own group beside the other `expr::` imports.
 use crate::{
     PrintFlag,
-    expr::TraitExpr,
     expr::{
         CouldNotResolve, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, Sig,
-        SigItem, SigKind, Source, StructurePattern, TypeDefExpr, UseItem, parser,
-        read_optional, read_to_arcstr, serialize,
+        SigItem, SigKind, Source, UseItem, parser, read_optional, read_to_arcstr,
+        serialize,
     },
     format_with_flags,
 };
@@ -18,13 +14,13 @@ use bytes::Bytes;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use futures::future::try_join_all;
-use indexmap::IndexSet;
+use indexmap::IndexMap;
 use log::info;
 use netidx_core::path::Path;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{hash::Hash, path::PathBuf, pin::Pin, str::FromStr};
+use std::{fmt::Write as _, path::PathBuf, pin::Pin, str::FromStr, sync::Arc as SArc};
 use tokio::{task, time::Instant};
 use triomphe::Arc;
 
@@ -86,18 +82,17 @@ pub trait ModuleResolver: std::fmt::Debug + Send + Sync {
 
 /// A shared resolver handle (`std::sync::Arc`: triomphe cannot unsize to
 /// trait objects).
-pub type ResolverRef = std::sync::Arc<dyn ModuleResolver>;
+pub type ResolverRef = SArc<dyn ModuleResolver>;
 
 /// Resolvers threaded through module resolution, tried in order.
-pub type Resolvers = std::sync::Arc<[ResolverRef]>;
+pub type Resolvers = SArc<[ResolverRef]>;
 
 /// Constructs a resolver from the payload of a `scheme:` entry in
 /// GRAPHIX_MODPATH. Registered by the embedder per scheme; `file` is built
 /// in. Receives the context's [`LibState`] so a package resolver can share
 /// state with its package's builtins.
-pub type ResolverFactory = std::sync::Arc<
-    dyn Fn(&mut crate::LibState, &str) -> Result<ResolverRef> + Send + Sync,
->;
+pub type ResolverFactory =
+    SArc<dyn Fn(&mut crate::LibState, &str) -> Result<ResolverRef> + Send + Sync>;
 
 /// In-memory module store — the stdlib packages and test sources.
 #[derive(Debug, Clone)]
@@ -105,7 +100,7 @@ pub struct VfsResolver(pub AHashMap<Path, VfsEntry>);
 
 impl VfsResolver {
     pub fn new(vfs: AHashMap<Path, VfsEntry>) -> ResolverRef {
-        std::sync::Arc::new(VfsResolver(vfs))
+        SArc::new(VfsResolver(vfs))
     }
 }
 
@@ -131,7 +126,7 @@ pub struct FilesResolver {
 
 impl FilesResolver {
     pub fn new(base: PathBuf, overrides: Option<BufferOverrides>) -> ResolverRef {
-        std::sync::Arc::new(FilesResolver { base, overrides })
+        SArc::new(FilesResolver { base, overrides })
     }
 }
 
@@ -162,15 +157,11 @@ pub fn parse_modpath(
     s: &str,
 ) -> Result<Vec<ResolverRef>> {
     let mut res: Vec<ResolverRef> = vec![];
-    // CR claude for eric: [bug] `escaping::split` does not unescape, so the book's
-    // `file:/path/with\,comma` becomes the path `with\,comma` (probe: resolution
-    // tries `…/with\,comma/libmod/mod.gx`). Unescape each entry. The `file:` arm
-    // also spells out FilesResolver::new.
     for l in escaping::split(s, '\\', ',') {
-        let l = l.trim();
+        // only the separator is escaped: a Windows path keeps its `\`
+        let l = l.trim().replace("\\,", ",");
         if let Some(s) = l.strip_prefix("file:") {
-            let base = PathBuf::from_str(s)?;
-            res.push(std::sync::Arc::new(FilesResolver { base, overrides: None }));
+            res.push(FilesResolver::new(PathBuf::from_str(s)?, None));
         } else {
             match l.split_once(':').and_then(|(scheme, rest)| {
                 factories.get(scheme).map(|f| f(libstate, rest))
@@ -194,31 +185,39 @@ fn packed_ast_disabled() -> bool {
     *DISABLED
 }
 
-// CR claude for eric: [structure] `intf_packed` without `interface` is
-// representable; pair each Origin with its packed blob (a small Unit struct).
-// parse_module would then take `Option<&Unit>`, not `&Option<Origin>`.
+/// One source file of a resolved module, with the packed pre-parsed AST
+/// (see [`super::serialize`]) when the VFS entry carried one.
+pub struct Unit {
+    pub ori: Origin,
+    pub packed: Option<Bytes>,
+}
+
+impl Unit {
+    fn parsed(ori: Origin) -> Self {
+        Unit { ori, packed: None }
+    }
+}
+
 /// The result of one resolver's attempt — the [`ModuleResolver`]
 /// trait's currency.
 pub enum Resolution {
     Resolved {
-        interface: Option<Origin>,
-        implementation: Origin,
-        // Packed pre-parsed AST for impl/interface, when the VFS entry
-        // carried one.
-        impl_packed: Option<Bytes>,
-        intf_packed: Option<Bytes>,
+        interface: Option<Unit>,
+        implementation: Unit,
     },
+    /// Not this resolver's module; the next one tries.
     TryNextMethod,
+    /// The module is here but cannot be read: no later resolver's
+    /// module of the same name stands in for it.
+    Broken(anyhow::Error),
 }
 
 impl Resolution {
     /// A parse-always resolution (no packed AST).
     pub fn parsed(interface: Option<Origin>, implementation: Origin) -> Self {
         Resolution::Resolved {
-            interface,
-            implementation,
-            impl_packed: None,
-            intf_packed: None,
+            interface: interface.map(Unit::parsed),
+            implementation: Unit::parsed(implementation),
         }
     }
 }
@@ -229,39 +228,23 @@ fn resolve_from_vfs(
     name: &Path,
     vfs: &AHashMap<Path, VfsEntry>,
 ) -> Resolution {
-    macro_rules! ori {
-        ($e:expr) => {
-            Origin {
-                parent: Some(parent.clone()),
-                source: Source::Internal(name.clone().into()),
-                text: $e.source.clone(),
-            }
-        };
-    }
-    let scoped_intf = scope.append(&format_compact!("{name}.gxi"));
-    let scoped_impl = scope.append(&format_compact!("{name}.gx"));
-    let (implementation, impl_packed) = match vfs.get(&scoped_impl) {
-        Some(e) => (ori!(e), e.packed.clone()),
-        None => {
-            let mod_impl = scope.append(&format_compact!("{name}/mod.gx"));
-            match vfs.get(&mod_impl) {
-                Some(e) => (ori!(e), e.packed.clone()),
-                None => return Resolution::TryNextMethod,
-            }
+    let unit = |e: &VfsEntry| Unit {
+        ori: Origin {
+            parent: Some(parent.clone()),
+            source: Source::Internal(name.clone().into()),
+            text: e.source.clone(),
+        },
+        packed: e.packed.clone(),
+    };
+    let at = |file: &str| vfs.get(&scope.append(&format_compact!("{name}{file}")));
+    // an interface pairs with the implementation beside it, as on disk
+    for (imp, intf) in [(".gx", ".gxi"), ("/mod.gx", "/mod.gxi")] {
+        if let Some(e) = at(imp) {
+            let interface = at(intf).map(unit);
+            return Resolution::Resolved { interface, implementation: unit(e) };
         }
-    };
-    // CR claude for eric: [risk] This pairs `name.gxi` or `name/mod.gxi` with
-    // whichever implementation was found, while FilesResolver only pairs the one
-    // beside it: a package with `foo/mod.gx` and `foo.gxi` has an interface when
-    // built into the binary and none when checked from its files.
-    let (interface, intf_packed) = match vfs.get(&scoped_intf).or_else(|| {
-        let mod_intf = scope.append(&format_compact!("{name}/mod.gxi"));
-        vfs.get(&mod_intf)
-    }) {
-        Some(e) => (Some(ori!(e)), e.packed.clone()),
-        None => (None, None),
-    };
-    Resolution::Resolved { interface, implementation, impl_packed, intf_packed }
+    }
+    Resolution::TryNextMethod
 }
 
 async fn resolve_from_files(
@@ -271,15 +254,6 @@ async fn resolve_from_files(
     overrides: Option<&BufferOverrides>,
     errors: &mut Vec<anyhow::Error>,
 ) -> Resolution {
-    macro_rules! ori {
-        ($s:expr, $path:expr) => {
-            Origin {
-                parent: Some(parent.clone()),
-                source: Source::File($path),
-                text: ArcStr::from($s),
-            }
-        };
-    }
     async fn read(
         overrides: Option<&BufferOverrides>,
         path: &PathBuf,
@@ -289,54 +263,116 @@ async fn resolve_from_files(
             None => read_optional(path).await,
         }
     }
-    let mut impl_path = base.clone();
+    let unit = |text: ArcStr, path: PathBuf| {
+        Unit::parsed(Origin {
+            parent: Some(parent.clone()),
+            source: Source::File(path),
+            text,
+        })
+    };
+    let mut file = base.clone();
     for part in Path::parts(&name) {
-        impl_path.push(part);
+        file.push(part);
     }
-    impl_path.set_extension("gx");
-    let mut intf_path = impl_path.with_extension("gxi");
-    // CR claude for eric: [risk] A module file that exists but cannot be read
-    // (not UTF-8, EACCES), or an unreadable .gxi beside a good .gx, becomes
-    // TryNextMethod, so a later resolver's module of the same name wins silently;
-    // a found but broken module should fail. The "no such file" error also names
-    // only the mod.gx candidate.
-    let implementation = match read(overrides, &impl_path).await {
-        Ok(Some(s)) => ori!(s, impl_path),
-        Ok(None) => {
-            impl_path.set_extension("");
-            impl_path.push("mod.gx");
-            intf_path.set_extension("");
-            intf_path.push("mod.gxi");
-            match read(overrides, &impl_path).await {
-                Ok(Some(s)) => ori!(s, impl_path.clone()),
-                Ok(None) => {
-                    errors.push(anyhow::anyhow!("{}: no such file", impl_path.display()));
-                    return Resolution::TryNextMethod;
-                }
-                Err(e) => {
-                    errors.push(e);
-                    return Resolution::TryNextMethod;
-                }
+    let dir = file.clone();
+    file.set_extension("gx");
+    let mod_file = dir.join("mod.gx");
+    for imp in [file, mod_file] {
+        let intf = imp.with_extension("gxi");
+        match read(overrides, &imp).await {
+            Ok(None) => continue,
+            Err(e) => return Resolution::Broken(e),
+            Ok(Some(text)) => {
+                let interface = match read(overrides, &intf).await {
+                    Ok(i) => i.map(|text| unit(text, intf)),
+                    Err(e) => return Resolution::Broken(e),
+                };
+                return Resolution::Resolved {
+                    interface,
+                    implementation: unit(text, imp),
+                };
             }
         }
-        Err(e) => {
-            errors.push(e);
-            return Resolution::TryNextMethod;
+    }
+    let (file, mod_file) = (dir.with_extension("gx"), dir.join("mod.gx"));
+    errors.push(anyhow::anyhow!(
+        "{} or {}: no such file",
+        file.display(),
+        mod_file.display()
+    ));
+    Resolution::TryNextMethod
+}
+
+/// A spliceable declaration's identity: a module, a type or a trait by
+/// name, a `use` by its names.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum SpliceKey {
+    Module(ArcStr),
+    TypeDef(ArcStr),
+    Trait(ArcStr),
+    Use(bool, Arc<[UseItem]>),
+}
+
+/// What an interface item is placed after: a name the item before it
+/// in the interface declares.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Anchor {
+    Bind(ArcStr),
+    Module(ArcStr),
+    TypeDef(ArcStr),
+    Trait(ArcStr),
+    Use(UseItem),
+}
+
+impl SpliceKey {
+    fn of_sig(kind: &SigKind) -> Option<Self> {
+        match kind {
+            SigKind::Module(name) => Some(Self::Module(name.name.clone())),
+            SigKind::TypeDef(td) => Some(Self::TypeDef(td.name.name.clone())),
+            SigKind::Trait(t) => Some(Self::Trait(t.name.name.clone())),
+            SigKind::Use { reexport, names } => Some(Self::Use(*reexport, names.clone())),
+            SigKind::Bind(_) | SigKind::Impl(_) => None,
         }
-    };
-    let interface = match read(overrides, &intf_path).await {
-        Ok(Some(s)) => Some(ori!(s, intf_path)),
-        Ok(None) => None,
-        Err(e) => {
-            errors.push(e);
-            return Resolution::TryNextMethod;
+    }
+
+    fn of_expr(kind: &ExprKind) -> Option<Self> {
+        match kind {
+            ExprKind::Module { name, .. } => Some(Self::Module(name.name.clone())),
+            ExprKind::TypeDef(td) => Some(Self::TypeDef(td.name.name.clone())),
+            ExprKind::Trait(t) => Some(Self::Trait(t.name.name.clone())),
+            ExprKind::Use { reexport, names } => {
+                Some(Self::Use(*reexport, names.clone()))
+            }
+            _ => None,
         }
-    };
-    Resolution::Resolved {
-        interface,
-        implementation,
-        impl_packed: None,
-        intf_packed: None,
+    }
+}
+
+impl Anchor {
+    fn of_sig(kind: &SigKind) -> SmallVec<[Self; 1]> {
+        match kind {
+            SigKind::Bind(v) => [Self::Bind(v.name.name.clone())].into(),
+            SigKind::Module(m) => [Self::Module(m.name.clone())].into(),
+            SigKind::TypeDef(td) => [Self::TypeDef(td.name.name.clone())].into(),
+            SigKind::Trait(t) => [Self::Trait(t.name.name.clone())].into(),
+            SigKind::Use { names, .. } => names.iter().cloned().map(Self::Use).collect(),
+            SigKind::Impl(_) => SmallVec::new(),
+        }
+    }
+
+    fn of_expr(kind: &ExprKind) -> SmallVec<[Self; 1]> {
+        match kind {
+            ExprKind::Bind(b) => {
+                let mut names = SmallVec::new();
+                b.pattern.with_names(&mut |n| names.push(Self::Bind(n.clone())));
+                names
+            }
+            ExprKind::Module { name, .. } => [Self::Module(name.name.clone())].into(),
+            ExprKind::TypeDef(td) => [Self::TypeDef(td.name.name.clone())].into(),
+            ExprKind::Trait(t) => [Self::Trait(t.name.name.clone())].into(),
+            ExprKind::Use { names, .. } => names.iter().cloned().map(Self::Use).collect(),
+            _ => SmallVec::new(),
+        }
     }
 }
 
@@ -349,285 +385,99 @@ pub fn add_interface_modules(
     sig: &Sig,
     ori: &Arc<Origin>,
 ) -> Arc<[Expr]> {
-    #[derive(Clone, Copy)]
-    struct Item<'a> {
-        kind: ItemKind<'a>,
-        pos: SourcePosition,
-        ori: Option<&'a Arc<Origin>>,
-    }
-    #[derive(Clone, Copy)]
-    enum ItemKind<'a> {
-        Module(&'a Name),
-        TypeDef(&'a TypeDefExpr),
-        Trait(&'a Arc<TraitExpr>),
-        Use(bool, &'a Arc<[UseItem]>),
-    }
-    impl<'a> PartialEq for Item<'a> {
-        fn eq(&self, other: &Self) -> bool {
-            match (&self.kind, &other.kind) {
-                (ItemKind::Module(a), ItemKind::Module(b)) => a == b,
-                (ItemKind::TypeDef(a), ItemKind::TypeDef(b)) => a.name == b.name,
-                (ItemKind::Trait(a), ItemKind::Trait(b)) => a.name == b.name,
-                (ItemKind::Use(ra, a), ItemKind::Use(rb, b)) => ra == rb && a == b,
-                (_, _) => false,
-            }
-        }
-    }
-    impl<'a> Eq for Item<'a> {}
-    impl<'a> Hash for Item<'a> {
-        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-            match &self.kind {
-                ItemKind::Module(m) => {
-                    0u8.hash(state);
-                    m.hash(state);
-                }
-                ItemKind::TypeDef(td) => {
-                    1u8.hash(state);
-                    td.name.hash(state);
-                }
-                ItemKind::Trait(t) => {
-                    3u8.hash(state);
-                    t.name.hash(state);
-                }
-                ItemKind::Use(r, m) => {
-                    2u8.hash(state);
-                    r.hash(state);
-                    m.hash(state);
-                }
-            }
-        }
-    }
-    impl<'a> Item<'a> {
-        fn synth(self, ori: &Arc<Origin>) -> Expr {
-            let kind = match self.kind {
-                ItemKind::Module(name) => ExprKind::Module {
-                    name: name.clone(),
-                    value: ModuleKind::Unresolved { from_interface: true },
-                },
-                ItemKind::TypeDef(td) => ExprKind::TypeDef(td.clone()),
-                ItemKind::Trait(t) => ExprKind::Trait(Arc::clone(t)),
-                ItemKind::Use(reexport, m) => {
-                    ExprKind::Use { reexport, names: Arc::clone(m) }
-                }
-            };
-            let ori = self.ori.unwrap_or(ori).clone();
-            Expr {
-                id: ExprId::new(),
-                ori,
-                pos: self.pos,
-                kind,
-                dec: None,
-                str_form: Default::default(),
-                end: Default::default(),
-            }
-        }
-    }
-    let mut in_sig: LPooled<IndexSet<Item>> = LPooled::take();
-    let mut after_bind: LPooled<AHashMap<&str, Item>> = LPooled::take();
-    let mut after_td: LPooled<AHashMap<&str, Item>> = LPooled::take();
-    let mut after_trait: LPooled<AHashMap<&str, Item>> = LPooled::take();
-    let mut after_mod: LPooled<AHashMap<&str, Item>> = LPooled::take();
-    let mut after_use: LPooled<AHashMap<&UseItem, Item>> = LPooled::take();
-    let mut first: Option<Item> = None;
-    let mut last: Option<&SigItem> = None;
-    // CR claude for eric: [structure] The Use arm below repeats this macro's body
-    // by hand, the four `if let` probes over `exprs` differ only in the ItemKind,
-    // and `.map(|p| ..insert..).last().flatten()` runs a loop for its side effect.
-    // The six explicit drops exist because the probes tie `in_sig`'s lifetime to
-    // `exprs`; keying the set by name would lift that.
-    macro_rules! push {
-        ($kind:ident, $name:expr, $si:expr) => {{
-            let name = Item {
-                kind: ItemKind::$kind($name),
-                pos: $si.pos,
-                ori: $si.ori.as_ref(),
-            };
-            in_sig.insert(name);
-            match last {
-                None => first = Some(name),
-                Some(si) => {
-                    match &si.kind {
-                        SigKind::Bind(v) => after_bind.insert(v.name.as_str(), name),
-                        SigKind::Module(m) => after_mod.insert(m.as_str(), name),
-                        SigKind::TypeDef(td) => after_td.insert(td.name.as_str(), name),
-                        SigKind::Trait(t) => after_trait.insert(t.name.as_str(), name),
-                        SigKind::Impl(_) => None,
-                        SigKind::Use { names: n, .. } => {
-                            n.iter().map(|p| after_use.insert(p, name)).last().flatten()
-                        }
-                    };
-                }
-            }
-        }};
-    }
-    for si in &*sig.items {
-        match &si.kind {
-            SigKind::Module(name) => push!(Module, name, si),
-            SigKind::TypeDef(td) => push!(TypeDef, td, si),
-            SigKind::Trait(t) => push!(Trait, t, si),
+    let synth = |si: &SigItem| {
+        let kind = match &si.kind {
+            SigKind::Module(name) => ExprKind::Module {
+                name: name.clone(),
+                value: ModuleKind::Unresolved { from_interface: true },
+            },
+            SigKind::TypeDef(td) => ExprKind::TypeDef(td.clone()),
+            SigKind::Trait(t) => ExprKind::Trait(t.clone()),
             SigKind::Use { reexport, names } => {
-                let name = Item {
-                    kind: ItemKind::Use(*reexport, names),
-                    pos: si.pos,
-                    ori: si.ori.as_ref(),
-                };
-                in_sig.insert(name);
-                match last {
-                    None => first = Some(name),
-                    Some(psi) => {
-                        match &psi.kind {
-                            SigKind::Bind(v) => after_bind.insert(v.name.as_str(), name),
-                            SigKind::Module(m) => after_mod.insert(m.as_str(), name),
-                            SigKind::TypeDef(td) => {
-                                after_td.insert(td.name.as_str(), name)
-                            }
-                            SigKind::Trait(t) => {
-                                after_trait.insert(t.name.as_str(), name)
-                            }
-                            SigKind::Impl(_) => None,
-                            SigKind::Use { names: n, .. } => n
-                                .iter()
-                                .map(|p| after_use.insert(p, name))
-                                .last()
-                                .flatten(),
-                        };
+                ExprKind::Use { reexport: *reexport, names: names.clone() }
+            }
+            SigKind::Bind(_) | SigKind::Impl(_) => return None,
+        };
+        Some(Expr {
+            id: ExprId::new(),
+            ori: si.ori.as_ref().unwrap_or(ori).clone(),
+            pos: si.pos,
+            kind,
+            dec: None,
+            str_form: Default::default(),
+            end: Default::default(),
+        })
+    };
+    // the interface-only declarations in interface order, each keyed
+    // after the declaration before it
+    let mut pending: LPooled<IndexMap<SpliceKey, &SigItem>> = LPooled::take();
+    let mut after: LPooled<AHashMap<Anchor, SpliceKey>> = LPooled::take();
+    let mut first: Option<SpliceKey> = None;
+    let mut last: Option<&SigItem> = None;
+    for si in sig.items.iter() {
+        if let Some(key) = SpliceKey::of_sig(&si.kind) {
+            match last {
+                None => first = Some(key.clone()),
+                Some(prev) => {
+                    for a in Anchor::of_sig(&prev.kind) {
+                        after.insert(a, key.clone());
                     }
                 }
             }
-            SigKind::Bind(_) | SigKind::Impl(_) => (),
+            pending.insert(key, si);
         }
-        // An `impl` declaration is never spliced, so it anchors nothing;
-        // the next interface-only item keeps the last spliceable anchor.
+        // an `impl` declaration is never spliced, so it anchors nothing
         if !matches!(si.kind, SigKind::Impl(_)) {
             last = Some(si);
         }
     }
-    for e in &*exprs {
-        if let ExprKind::Module { name, .. } = &e.kind {
-            let probe = Item {
-                kind: ItemKind::Module(name),
-                pos: SourcePosition::default(),
-                ori: None,
-            };
-            in_sig.shift_remove(&probe);
-        }
-        if let ExprKind::TypeDef(td) = &e.kind {
-            let probe = Item {
-                kind: ItemKind::TypeDef(td),
-                pos: SourcePosition::default(),
-                ori: None,
-            };
-            in_sig.shift_remove(&probe);
-        }
-        if let ExprKind::Trait(t) = &e.kind {
-            let probe = Item {
-                kind: ItemKind::Trait(t),
-                pos: SourcePosition::default(),
-                ori: None,
-            };
-            in_sig.shift_remove(&probe);
-        }
-        if let ExprKind::Use { reexport, names } = &e.kind {
-            let probe = Item {
-                kind: ItemKind::Use(*reexport, names),
-                pos: SourcePosition::default(),
-                ori: None,
-            };
-            in_sig.shift_remove(&probe);
+    for e in exprs.iter() {
+        if let Some(key) = SpliceKey::of_expr(&e.kind) {
+            pending.shift_remove(&key);
         }
     }
-    if in_sig.is_empty() {
-        drop(in_sig);
-        drop(after_bind);
-        drop(after_td);
-        drop(after_trait);
-        drop(after_mod);
-        drop(after_use);
+    if pending.is_empty() {
         return exprs;
     }
     let mut res: LPooled<Vec<Expr>> = LPooled::take();
-    if let Some(name) = first.take() {
-        if in_sig.shift_remove(&name) {
-            res.push(name.synth(ori));
+    // the item keyed at `next`, then each one keyed after it in turn
+    let mut splice = |mut next: Option<SpliceKey>,
+                      after: &mut AHashMap<Anchor, SpliceKey>,
+                      res: &mut Vec<Expr>| {
+        while let Some(si) = next.take().and_then(|k| pending.shift_remove(&k)) {
+            res.extend(synth(si));
+            next = Anchor::of_sig(&si.kind).iter().find_map(|a| after.remove(a));
+        }
+    };
+    splice(first, &mut after, &mut res);
+    for e in exprs.iter() {
+        res.push(e.clone());
+        for a in Anchor::of_expr(&e.kind) {
+            let next = after.remove(&a);
+            splice(next, &mut after, &mut res);
         }
     }
-    let mut iter = exprs.iter();
-    loop {
-        match res.last().map(|e| &e.kind) {
-            // CR claude for eric: [bug] Only a `let name` anchors: when the item
-            // before `type T` in the .gxi is `val a` and the .gx binds `a` by
-            // destructuring (`let (a, c) = ..`), T is appended after the body and
-            // `let b: T` fails with "undefined type T" (probe). Anchor on every
-            // name the pattern binds.
-            Some(ExprKind::Bind(v)) => match &v.pattern {
-                StructurePattern::Bind(n) => {
-                    if let Some(name) = after_bind.remove(n.as_str())
-                        && in_sig.shift_remove(&name)
-                    {
-                        res.push(name.synth(ori));
-                        continue;
-                    }
-                }
-                _ => (),
-            },
-            Some(ExprKind::TypeDef(td)) => {
-                if let Some(name) = after_td.remove(td.name.as_str())
-                    && in_sig.shift_remove(&name)
-                {
-                    res.push(name.synth(ori));
-                    continue;
-                }
-            }
-            Some(ExprKind::Trait(t)) => {
-                if let Some(name) = after_trait.remove(t.name.as_str())
-                    && in_sig.shift_remove(&name)
-                {
-                    res.push(name.synth(ori));
-                    continue;
-                }
-            }
-            Some(ExprKind::Module { name, .. }) => {
-                if let Some(name) = after_mod.remove(name.as_str())
-                    && in_sig.shift_remove(&name)
-                {
-                    res.push(name.synth(ori));
-                    continue;
-                }
-            }
-            Some(ExprKind::Use { names, .. }) => {
-                if let Some(name) = names.iter().find_map(|n| after_use.remove(n))
-                    && in_sig.shift_remove(&name)
-                {
-                    res.push(name.synth(ori));
-                    continue;
-                }
-            }
-            _ => (),
-        };
-        match iter.next() {
-            None => break,
-            Some(e) => res.push(e.clone()),
-        }
-    }
-    for name in in_sig.drain(..) {
-        res.push(name.synth(ori));
-    }
+    drop(splice);
+    res.extend(pending.drain(..).filter_map(|(_, si)| synth(si)));
     Arc::from_iter(res.drain(..))
 }
 
 /// Parse (or unpack) a module's implementation and interface, with the
 /// interface's modules, types, traits and uses spliced into the body.
 async fn parse_module(
-    interface: &Option<Origin>,
-    implementation: &Origin,
-    impl_packed: Option<Bytes>,
-    intf_packed: Option<Bytes>,
+    interface: Option<&Unit>,
+    implementation: &Unit,
 ) -> Result<(Arc<[Expr]>, Option<Sig>)> {
+    let naming = |ori: &Origin| {
+        format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
+            format!("parsing {ori}")
+        })
+    };
     // Decode and parse both run on a blocking thread; `unpack_module`
     // sets its per-module thread-locals on the thread that decodes.
     let exprs = {
-        let ori = implementation.clone();
-        match impl_packed.filter(|_| !packed_ast_disabled()) {
+        let ori = implementation.ori.clone();
+        match implementation.packed.clone().filter(|_| !packed_ast_disabled()) {
             Some(bytes) => task::spawn_blocking(move || {
                 serialize::unpack_module(&bytes, Arc::new(ori))
             }),
@@ -636,27 +486,23 @@ async fn parse_module(
     };
     let sig = match interface {
         None => None,
-        Some(ori) => {
-            let ori = Arc::new(ori.clone());
-            let unit = ori.clone();
-            let sig = match intf_packed.filter(|_| !packed_ast_disabled()) {
+        Some(unit) => {
+            let ori = Arc::new(unit.ori.clone());
+            let sig_ori = ori.clone();
+            let sig = match unit.packed.clone().filter(|_| !packed_ast_disabled()) {
                 Some(bytes) => {
-                    task::spawn_blocking(move || serialize::unpack_sig(&bytes, unit))
+                    task::spawn_blocking(move || serialize::unpack_sig(&bytes, sig_ori))
                 }
-                None => task::spawn_blocking(move || parser::parse_sig((*unit).clone())),
+                None => {
+                    task::spawn_blocking(move || parser::parse_sig((*sig_ori).clone()))
+                }
             }
             .await?
-            // CR claude for eric: [bug] `{interface:?}` is Origin's derived Debug:
-            // the error carries the full text of the file and of every parent
-            // (probe: a bad .gxi prints `parsing file Some(Origin { parent:
-            // Some(Origin { .. text: "<all of main.gx>" ..`). Name the path; the
-            // implementation context below has the same problem.
-            .with_context(|| format!("parsing file {interface:?}"))?;
+            .with_context(|| naming(&unit.ori))?;
             Some((sig, ori))
         }
     };
-    let exprs =
-        exprs.await?.with_context(|| format!("parsing file {implementation:?}"))?;
+    let exprs = exprs.await?.with_context(|| naming(&implementation.ori))?;
     let exprs = match &sig {
         Some((sig, ori)) => add_interface_modules(exprs, sig, ori),
         None => exprs,
@@ -706,9 +552,11 @@ impl RootFile {
             source: Source::File(intf),
             text,
         });
-        let ori = Origin { parent: None, source: Source::File(file), text };
-        let (exprs, sig) = parse_module(&interface, &ori, None, None).await?;
-        Ok(Self { ori, exprs, sig })
+        let implementation =
+            Unit::parsed(Origin { parent: None, source: Source::File(file), text });
+        let interface = interface.map(Unit::parsed);
+        let (exprs, sig) = parse_module(interface.as_ref(), &implementation).await?;
+        Ok(Self { ori: implementation.ori, exprs, sig })
     }
 
     /// The file as the body of module `name`: what a package's root is.
@@ -722,74 +570,55 @@ impl RootFile {
     }
 }
 
-// CR claude for eric: [bug] The rebuilt Module keeps the `mod` statement's id,
-// pos and ori but drops its `dec` (comments, attributes) and its `end`, so a
-// resolved `mod foo;` has no end. Four of the eight parameters are fields of
-// that one Expr: take `&Expr` and replace only the kind, as `expr!` does below.
+/// `e` with `kind` in place of its own.
+fn rekind(e: &Expr, kind: ExprKind) -> Expr {
+    Expr {
+        id: e.id,
+        ori: e.ori.clone(),
+        pos: e.pos,
+        kind,
+        dec: e.dec.clone(),
+        str_form: e.str_form,
+        end: e.end,
+    }
+}
+
+/// Resolve the unresolved `mod` statement `stmt` in `scope`: the
+/// statement with its body, from the first resolver that has it.
 async fn resolve(
     scope: ModPath,
     prepend: Option<ResolverRef>,
     resolvers: Resolvers,
-    id: ExprId,
-    parent: Arc<Origin>,
-    pos: SourcePosition,
-    module: Name,
+    stmt: &Expr,
+    module: &Name,
     from_interface: bool,
 ) -> Result<Expr> {
-    // CR claude for eric: [readability] A macro used once to destructure a
-    // Resolution; `let Resolution::Resolved { .. } = .. else { continue }`
-    // reads in place.
-    macro_rules! check {
-        ($res:expr) => {
-            match $res {
-                Resolution::TryNextMethod => continue,
-                Resolution::Resolved {
-                    interface,
-                    implementation,
-                    impl_packed,
-                    intf_packed,
-                } => (interface, implementation, impl_packed, intf_packed),
-            }
-        };
-    }
     let ts = Instant::now();
     let name = Path::from(module.name.clone());
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
-    for r in prepend.iter().map(|r| &**r).chain(resolvers.iter().map(|r| &**r)) {
-        let (interface, implementation, impl_packed, intf_packed) =
-            check!(r.resolve(&scope, &parent, &name, &mut errors).await);
-        let (exprs, sig) =
-            parse_module(&interface, &implementation, impl_packed, intf_packed).await?;
+    for r in prepend.iter().chain(resolvers.iter()) {
+        let (interface, implementation) =
+            match r.resolve(&scope, &stmt.ori, &name, &mut errors).await {
+                Resolution::TryNextMethod => continue,
+                Resolution::Broken(e) => return Err(e),
+                Resolution::Resolved { interface, implementation } => {
+                    (interface, implementation)
+                }
+            };
+        let (exprs, sig) = parse_module(interface.as_ref(), &implementation).await?;
+        info!(
+            "load and parse {:?} and {:?} {:?}",
+            implementation.ori.source,
+            interface.as_ref().map(|i| &i.ori.source),
+            ts.elapsed()
+        );
         let value = ModuleKind::Resolved { exprs, sig, from_interface };
-        let kind = ExprKind::Module { name: module, value };
-        // CR claude for eric: [bug] Debug ignores PRINT_FLAGS, so format_with_flags
-        // does nothing here and every module load logs its full source and every
-        // parent's at info (probe: the log holds core's whole text). Log the
-        // sources, not the Origins.
-        format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
-            info!(
-                "load and parse {implementation:?} and {interface:?} {:?}",
-                ts.elapsed()
-            )
-        });
-        // CR claude for eric: [dead] A no-op statement with a comment narrating it.
-        let _ = implementation; // implementation lives on the inner exprs
-        return Ok(Expr {
-            id,
-            ori: parent,
-            pos,
-            kind,
-            dec: None,
-            str_form: Default::default(),
-            end: Default::default(),
-        });
+        let kind = ExprKind::Module { name: module.clone(), value };
+        return Ok(rekind(stmt, kind));
     }
     let mut msg = format_compact!("module {name} could not be found");
-    use std::fmt::Write as _;
-    let mut first = true;
-    for e in errors.iter() {
-        let _ = write!(&mut msg, "{}{e}", if first { ": " } else { "; " });
-        first = false;
+    for (i, e) in errors.iter().enumerate() {
+        let _ = write!(&mut msg, "{}{e}", if i == 0 { ": " } else { "; " });
     }
     bail!("{msg}")
 }
@@ -807,8 +636,45 @@ impl Expr {
         scope: &'a ModPath,
         resolvers: &'a Resolvers,
     ) -> Result<Expr> {
+        if !self.holds_unresolved() {
+            return Ok(self.clone());
+        }
         let e = self.resolve_modules_int(scope, &None, &None, resolvers).await?;
         Ok(e.unwrap_or_else(|| self.clone()))
+    }
+
+    /// Whether an unresolved `mod` sits at or beneath this expression.
+    fn holds_unresolved(&self) -> bool {
+        crate::stack::ensure_sufficient(|| match &self.kind {
+            ExprKind::Module { value: ModuleKind::Unresolved { .. }, .. } => true,
+            ExprKind::Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
+                exprs.iter().any(|e| e.holds_unresolved())
+            }
+            _ => {
+                let mut found = false;
+                self.for_each_child(&mut |c| found = found || c.holds_unresolved());
+                found
+            }
+        })
+    }
+
+    /// Each of `exprs` with its modules resolved, or `None` when none
+    /// was; only a child holding an unresolved module is walked.
+    async fn resolve_children<'a>(
+        exprs: impl IntoIterator<Item = &'a Expr>,
+        scope: &'a ModPath,
+        prepend: &'a Option<ResolverRef>,
+        chain: &'a Option<Arc<LoadChain>>,
+        resolvers: &'a Resolvers,
+    ) -> Result<Option<SmallVec<[Option<Expr>; 4]>>> {
+        let resolved = try_join_all(exprs.into_iter().map(|e| async move {
+            match e.holds_unresolved() {
+                true => e.resolve_modules_int(scope, prepend, chain, resolvers).await,
+                false => Ok(None),
+            }
+        }))
+        .await?;
+        Ok(resolved.iter().any(|r| r.is_some()).then(|| resolved.into_iter().collect()))
     }
 
     /// `Some` iff a module under `self` was resolved: the tree with it
@@ -820,51 +686,25 @@ impl Expr {
         chain: &'a Option<Arc<LoadChain>>,
         resolvers: &'a Resolvers,
     ) -> Pin<Box<dyn Future<Output = Result<Option<Expr>>> + Send + Sync + 'a>> {
-        macro_rules! expr {
-            ($kind:expr) => {
-                Ok(Some(Expr {
-                    id: self.id,
-                    ori: self.ori.clone(),
-                    pos: self.pos,
-                    kind: $kind,
-                    dec: self.dec.clone(),
-                    str_form: self.str_form,
-                    end: self.end,
-                }))
-            };
-        }
         match &self.kind {
             ExprKind::Module {
                 value: ModuleKind::Unresolved { from_interface },
                 name,
-            } => {
-                let (id, pos, prepend, resolvers, from_interface) = (
-                    self.id,
-                    self.pos,
+            } => Box::pin(async move {
+                let e = resolve(
+                    scope.clone(),
                     prepend.clone(),
-                    std::sync::Arc::clone(resolvers),
+                    resolvers.clone(),
+                    self,
+                    name,
                     *from_interface,
-                );
-                Box::pin(async move {
-                    let e = resolve(
-                        scope.clone(),
-                        prepend.clone(),
-                        resolvers.clone(),
-                        id,
-                        self.ori.clone(),
-                        pos,
-                        name.clone(),
-                        from_interface,
-                    )
-                    .await
-                    .with_context(|| CouldNotResolve(name.name.clone()))?;
-                    let scope = ModPath(scope.append(&**name));
-                    let r = e
-                        .resolve_modules_int(&scope, &prepend, chain, &resolvers)
-                        .await?;
-                    Ok(Some(r.unwrap_or(e)))
-                })
-            }
+                )
+                .await
+                .with_context(|| CouldNotResolve(name.name.clone()))?;
+                let scope = ModPath(scope.append(&**name));
+                let r = e.resolve_modules_int(&scope, prepend, chain, resolvers).await?;
+                Ok(Some(r.unwrap_or(e)))
+            }),
             ExprKind::Module {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
@@ -882,82 +722,61 @@ impl Expr {
                     }
                     _ => chain.clone(),
                 };
-                let chain = &chain;
-                // Sub-modules resolve relative to the implementation file's
-                // directory (`<dir>/foo/` for `foo.gx`, `<dir>/` for
-                // `foo/mod.gx`); the body's exprs carry that file as their ori.
-                let impl_path: Option<&std::path::Path> = match source {
-                    Some(Source::File(p)) => Some(p.as_path()),
-                    _ => None,
+                let files = |base: PathBuf| {
+                    let overrides = resolvers.iter().find_map(|m| m.overrides());
+                    SArc::new(FilesResolver { base, overrides }) as ResolverRef
                 };
-                let prepend = match impl_path {
-                    Some(p) => {
-                        let parent = match p.parent() {
-                            Some(par) => par,
-                            None => return Ok(None),
-                        };
-                        let dir = match p.file_stem().and_then(|s| s.to_str()) {
-                            Some("mod") => parent.to_path_buf(),
+                // Sub-modules resolve beside the body's own source: relative
+                // to the implementation file's directory (`<dir>/foo/` for
+                // `foo.gx`, `<dir>/` for `foo/mod.gx`), by the module path
+                // for a VFS body, through the transport for a netidx one.
+                let prepend = match source {
+                    Some(Source::File(p)) => {
+                        let Some(parent) = p.parent() else { return Ok(None) };
+                        Some(files(match p.file_stem().and_then(|s| s.to_str()) {
+                            Some("mod") | None => parent.to_path_buf(),
                             Some(stem) => parent.join(stem),
-                            None => parent.to_path_buf(),
-                        };
-                        let overrides = resolvers.iter().find_map(|m| m.overrides());
-                        Some(std::sync::Arc::new(FilesResolver { base: dir, overrides })
-                            as ResolverRef)
+                        }))
                     }
-                    // CR claude for eric: [bug] For a module whose body is not from a
-                    // file, the base comes from `self.ori`, the file that wrote `mod
-                    // foo;`, not from `source`, the module's own: a VFS module
-                    // included from a script resolves its `mod x;` beside the script
-                    // first (probe: `mod core;` in a script next to an opt.gx makes
-                    // core::opt that file), and for_source gets the includer's
-                    // netidx path (suspected). The FilesResolver is built twice.
+                    Some(Source::Internal(_) | Source::Unspecified) => None,
+                    Some(s) => resolvers.iter().find_map(|m| m.for_source(s)),
                     None => match &self.ori.source {
                         Source::Unspecified | Source::Internal(_) => None,
-                        Source::File(p) => p.parent().map(|p| {
-                            let overrides = resolvers.iter().find_map(|m| m.overrides());
-                            std::sync::Arc::new(FilesResolver {
-                                base: p.into(),
-                                overrides,
-                            }) as ResolverRef
-                        }),
-                        source => resolvers.iter().find_map(|m| m.for_source(source)),
+                        Source::File(p) => p.parent().map(|p| files(p.into())),
+                        s => resolvers.iter().find_map(|m| m.for_source(s)),
                     },
                 };
-                let resolved = try_join_all(exprs.iter().map(|e| async {
-                    e.resolve_modules_int(&scope, &prepend, chain, resolvers).await
-                }))
-                .await?;
-                if resolved.iter().all(|r| r.is_none()) {
+                let Some(resolved) = Self::resolve_children(
+                    exprs.iter(),
+                    scope,
+                    &prepend,
+                    &chain,
+                    resolvers,
+                )
+                .await?
+                else {
                     return Ok(None);
-                }
+                };
                 let exprs = resolved
                     .into_iter()
                     .zip(exprs.iter())
                     .map(|(r, e)| r.unwrap_or_else(|| e.clone()));
-                expr!(ExprKind::Module {
-                    value: ModuleKind::Resolved {
-                        exprs: Arc::from_iter(exprs),
-                        sig: sig.clone(),
-                        from_interface: *from_interface,
-                    },
-                    name: name.clone(),
-                })
+                let value = ModuleKind::Resolved {
+                    exprs: Arc::from_iter(exprs),
+                    sig: sig.clone(),
+                    from_interface: *from_interface,
+                };
+                Ok(Some(rekind(self, ExprKind::Module { value, name: name.clone() })))
             }),
-            // CR claude for eric: [perf] Every node of every module gets a boxed
-            // future and a SmallVec only to look for `mod`; a sync "holds an
-            // unresolved module" scan before boxing would skip the rest.
             _ => Box::pin(async move {
                 let mut children: SmallVec<[&Expr; 4]> = SmallVec::new();
                 self.for_each_child(&mut |c| children.push(c));
-                let resolved =
-                    try_join_all(children.iter().map(|c| {
-                        c.resolve_modules_int(scope, prepend, chain, resolvers)
-                    }))
-                    .await?;
-                if resolved.iter().all(|r| r.is_none()) {
+                let Some(resolved) =
+                    Self::resolve_children(children, scope, prepend, chain, resolvers)
+                        .await?
+                else {
                     return Ok(None);
-                }
+                };
                 let mut resolved = resolved.into_iter();
                 let mut e = self.map_children(&mut |c| {
                     resolved
@@ -999,7 +818,6 @@ impl LoadChain {
                     back = b.prev.as_ref();
                 }
                 let mut msg = format_compact!("import cycle:");
-                use std::fmt::Write as _;
                 for n in names.iter().rev() {
                     let _ = write!(&mut msg, " {n} ->");
                 }
@@ -1012,5 +830,95 @@ impl LoadChain {
             name: name.clone(),
             prev: chain.clone(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::expr::WrittenAt;
+    use arcstr::literal;
+
+    fn vfs(files: &[(&str, &str)]) -> ResolverRef {
+        VfsResolver::new(AHashMap::from_iter(files.iter().map(|(p, t)| {
+            (Path::from(ArcStr::from(*p)), VfsEntry::from(ArcStr::from(*t)))
+        })))
+    }
+
+    fn file(path: PathBuf, text: &str) -> Origin {
+        Origin { parent: None, source: Source::File(path), text: ArcStr::from(text) }
+    }
+
+    async fn resolve_first(ori: Origin, resolvers: &[ResolverRef]) -> Result<Expr> {
+        let resolvers: Resolvers = SArc::from(resolvers);
+        parser::parse(ori)?[0].resolve_modules(&resolvers).await
+    }
+
+    fn body(e: &Expr) -> (&Arc<[Expr]>, &Option<Sig>) {
+        match &e.kind {
+            ExprKind::Module {
+                value: ModuleKind::Resolved { exprs, sig, .. }, ..
+            } => (exprs, sig),
+            k => panic!("not a resolved module: {k:?}"),
+        }
+    }
+
+    /// Only the separator is escaped in a module path list.
+    #[test]
+    fn modpath_unescapes_the_separator() {
+        let factories = AHashMap::default();
+        let mut libstate = crate::LibState::default();
+        let r = parse_modpath(&factories, &mut libstate, r"file:/a\,b,file:C:\gx\lib")
+            .unwrap();
+        assert_eq!(r.len(), 2);
+        assert!(format!("{:?}", r[0]).contains(r#""/a,b""#), "{:?}", r[0]);
+        assert!(format!("{:?}", r[1]).contains(r#"C:\\gx\\lib"#), "{:?}", r[1]);
+    }
+
+    /// A VFS module's submodules resolve by its module path, never
+    /// beside the file that declared it; the statement keeps its end.
+    #[tokio::test]
+    async fn a_vfs_body_resolves_its_submodules_in_the_vfs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("x.gx"), "let k = 2").unwrap();
+        let lib = vfs(&[("/m.gx", "mod x; let v = x::k"), ("/m/x.gx", "let k = 1")]);
+        let main = file(dir.path().join("main.gx"), "mod m;");
+        let files = FilesResolver::new(dir.path().to_path_buf(), None);
+        let e = resolve_first(main, &[lib, files]).await.unwrap();
+        assert_ne!(e.end.0, WrittenAt::NOWHERE.0);
+        let (m, _) = body(&e);
+        let (x, _) = body(&m[0]);
+        assert!(matches!(x[0].ori.source, Source::Internal(_)), "{:?}", x[0].ori.source);
+    }
+
+    /// An interface pairs with the implementation beside it only.
+    #[tokio::test]
+    async fn a_vfs_interface_pairs_beside_its_implementation() {
+        let lib = vfs(&[("/m/mod.gx", "let x = 1"), ("/m.gxi", "val y: i64")]);
+        let main = Origin { text: literal!("mod m;"), ..Origin::default() };
+        let e = resolve_first(main, &[lib]).await.unwrap();
+        assert!(body(&e).1.is_none());
+    }
+
+    /// A module file that is there but cannot be read fails the load;
+    /// a later resolver's module of the same name does not stand in.
+    #[tokio::test]
+    async fn an_unreadable_module_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("m.gx")).unwrap();
+        let files = FilesResolver::new(dir.path().to_path_buf(), None);
+        let lib = vfs(&[("/m.gx", "let x = 1")]);
+        let main = Origin { text: literal!("mod m;"), ..Origin::default() };
+        assert!(resolve_first(main, &[files, lib]).await.is_err());
+    }
+
+    /// A parse error names the file, not the text of every file above.
+    #[tokio::test]
+    async fn a_bad_interface_names_its_file() {
+        let lib = vfs(&[("/m.gx", "let x = 1"), ("/m.gxi", "val x i64")]);
+        let main = Origin { text: literal!("mod m;"), ..Origin::default() };
+        let e = resolve_first(main, &[lib]).await.unwrap_err();
+        let msg = format!("{e:#}");
+        assert!(!msg.contains("Origin {"), "{msg}");
     }
 }

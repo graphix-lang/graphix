@@ -12,33 +12,30 @@ use super::{
     select::Select,
 };
 use crate::{
-    CFlag, ExecCtx, Node, Rt, Scope, UserEvent,
+    CFlag, DefAssertion, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope, UserEvent,
+    bailat,
     expr::{
-        ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, SelectExpr, StructExpr,
+        ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, Name, SelectExpr, StructExpr,
         StructWithExpr, print::PrettyDisplay,
     },
+    ide::{ModuleRefSite, ScopeMapEntry},
     node::{
         ExplicitParens, Nop,
         error::OrNever,
         map::{Map, MapRef},
         op::{CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub},
     },
+    stack::ensure_sufficient,
     typ::Type,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use enumflags2::BitFlags;
+use smallvec::SmallVec;
 
-// CR claude for eric: [style] `crate::DefAssertionKind` (5 uses), `crate::NodeView`
-// (3), `crate::bailat!` (3) and `smallvec::SmallVec` are spelled in full below;
-// import them with the `crate::{..}` group above.
-// CR claude for eric: [risk] "the one place graph construction descends" is not
-// true for modules: compile_module -> Block::compile / Module::compile_static ->
-// compile_block_children -> compile_module never passes through `compile`, so a
-// deep module tree (a resolver can serve one) recurses without
-// `ensure_sufficient` (CLAUDE.md "Stack discipline"). Guard compile_module too.
-/// Every per-kind `compile` recurses back through here, so this is the
-/// one place graph construction descends the program tree — and the one
-/// place it needs stack headroom for however deeply the program nests.
+/// Every per-kind `compile` recurses back through here or through
+/// [`compile_module`], so these two are where graph construction
+/// descends the program tree, and where it takes stack headroom for
+/// however deeply the program nests.
 pub(crate) fn compile<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -46,7 +43,21 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
-    crate::stack::ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id))
+    ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id))
+}
+
+/// The lambda a definition-asserting attribute annotates: the node's
+/// own, or its `let`'s value, seen through parentheses.
+fn annotated_lambda<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<crate::LambdaId> {
+    let mut view = node.view();
+    loop {
+        view = match view {
+            NodeView::Bind(b) => b.node.view(),
+            NodeView::ExplicitParens(p) => p.n.view(),
+            NodeView::Lambda(l) => return l.lambda_id::<R, E>(),
+            _ => return None,
+        }
+    }
 }
 
 fn compile_inner<R: Rt, E: UserEvent>(
@@ -57,7 +68,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
     if ctx.env.lsp_mode {
-        ctx.env.push_scope_map_entry(crate::ide::ScopeMapEntry {
+        ctx.env.push_scope_map_entry(ScopeMapEntry {
             pos: spec.pos,
             end: spec.end.0,
             ori: spec.ori.clone(),
@@ -66,15 +77,14 @@ fn compile_inner<R: Rt, E: UserEvent>(
     }
     // Definition-asserting attribute names are compiler-reserved; any other
     // attribute must be registered or it is an error.
-    let mut def_asserts: smallvec::SmallVec<[crate::DefAssertionKind; 2]> =
-        smallvec::SmallVec::new();
+    let mut def_asserts: SmallVec<[DefAssertionKind; 2]> = SmallVec::new();
     if let Some(dec) = &spec.dec {
         for attr in dec.attrs.iter() {
-            match crate::DefAssertionKind::from_name(&attr.name) {
+            match DefAssertionKind::from_name(&attr.name) {
                 Some(k) => def_asserts.push(k),
                 None => {
                     if ctx.lookup_attribute(&attr.name).is_none() {
-                        crate::bailat!(spec, "unknown attribute #[{}]", attr.name);
+                        bailat!(spec, "unknown attribute #[{}]", attr.name);
                     }
                     // Every registry attribute must be dispatched or absorbed
                     // by the fusion walk (`compile_stmt` reconciles).
@@ -88,36 +98,13 @@ fn compile_inner<R: Rt, E: UserEvent>(
     }
     if !def_asserts.is_empty() {
         let node = compile_kind(ctx, flags, &spec, scope, top_id)?;
-        // CR claude for eric: [bug] the lambda is found only as `Bind(Lambda)` or a
-        // bare `Lambda`; parentheses hide it. Probe: `#[sync] let f = (|x| x + 1);`
-        // is refused "#[sync] annotates a function definition" (without parens it
-        // checks). See through ExplicitParens as Bind::compile's rec check does.
-        let lid = match node.view() {
-            crate::NodeView::Bind(b) => match b.node.view() {
-                crate::NodeView::Lambda(l) => l.lambda_id::<R, E>(),
-                _ => None,
-            },
-            crate::NodeView::Lambda(l) => l.lambda_id::<R, E>(),
-            _ => None,
-        };
-        let Some(id) = lid else {
-            // CR claude for eric: [style] this match is the inverse of
-            // `DefAssertionKind::from_name`; give the enum a `name()` beside it so
-            // the spelling lives in one place.
-            crate::bailat!(
-                spec,
-                "#[{}] annotates a function definition",
-                match def_asserts[0] {
-                    crate::DefAssertionKind::Sync => "sync",
-                    crate::DefAssertionKind::Async => "async",
-                    crate::DefAssertionKind::TailRecursive => "tail_recursive",
-                }
-            );
+        let Some(id) = annotated_lambda(&node) else {
+            bailat!(spec, "#[{}] annotates a function definition", def_asserts[0].name());
         };
         let mut pending = ctx.def_assertions.lock();
         for kind in def_asserts.drain(..) {
             if !pending.iter().any(|a| a.id == id && a.kind == kind) {
-                pending.push(crate::DefAssertion { id, kind, spec: spec.clone() });
+                pending.push(DefAssertion { id, kind, spec: spec.clone() });
             }
         }
         return Ok(node);
@@ -125,63 +112,66 @@ fn compile_inner<R: Rt, E: UserEvent>(
     compile_kind(ctx, flags, &spec, scope, top_id)
 }
 
-// CR claude for eric: [readability] stale doc: `compile_stmt` (lib.rs) calls this
-// directly, and `compile_kind` calls it for a dynamic module in value position.
-/// Compile a `mod` declaration. Only reachable from
-/// [`super::compile_block_children`] in statement position — the general
-/// `compile_kind` arm errors, since a module is not a value.
+/// Compile a `mod` declaration, from statement position (a block or
+/// module body, [`crate::compile_stmt`]) or a dynamic module in value
+/// position. `predeclared`: the enclosing block registered the module's
+/// path already, so it is not a duplicate.
 pub(crate) fn compile_module<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
     top_id: ExprId,
-    name: &crate::expr::Name,
+    name: &Name,
     value: &ModuleKind,
+    predeclared: bool,
+) -> Result<Node<R, E>> {
+    ensure_sufficient(|| {
+        compile_module_inner(ctx, flags, spec, scope, top_id, name, value, predeclared)
+    })
+}
+
+fn compile_module_inner<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: Expr,
+    scope: &Scope,
+    top_id: ExprId,
+    name: &Name,
+    value: &ModuleKind,
+    predeclared: bool,
 ) -> Result<Node<R, E>> {
     let enclosing = scope;
     let scope = scope.append(name);
-    // CR claude for eric: [structure] `predeclared_mods` is an ExecCtx global that
-    // only carries "my caller pre-registered this path" from compile_block_children
-    // to here (memory: no new ctx globals). Pass it as an argument; the value-
-    // position dynamic case then needs compile_block_children to call this itself.
-    // CR claude for eric: [bug] this `bail!` and the Unresolved one below carry no
-    // ErrorSite. Probe: a file with `mod m;` twice reports "duplicate module
-    // definition m" with no position (the LSP cannot place it). Use `bailat!`.
-    if !ctx.predeclared_mods.remove(&scope.lexical)
-        && ctx.env.modules.contains(&scope.lexical)
-    {
-        bail!("duplicate module definition {}", scope.lexical)
+    if !predeclared && ctx.env.modules.contains(&scope.lexical) {
+        bailat!(spec, "duplicate module definition {}", scope.lexical)
     }
+    // the module's own file, where its body's errors are
+    let body_ori = match value {
+        ModuleKind::Resolved { exprs, .. } => exprs.first().map(|e| e.ori.clone()),
+        _ => None,
+    };
     if ctx.env.lsp_mode {
-        let def_ori = match value {
-            ModuleKind::Resolved { exprs, .. } => exprs.first().map(|e| e.ori.clone()),
-            _ => None,
-        };
-        ctx.env.push_module_reference(crate::ide::ModuleRefSite {
+        ctx.env.push_module_reference(ModuleRefSite {
             pos: name.pos_or(spec.pos),
             ori: spec.ori.clone(),
             name: crate::expr::ModPath::from([name.as_str()]),
             canonical: scope.lexical.clone(),
-            def_ori,
+            def_ori: body_ori.clone(),
             segments: None,
         });
     }
     match value {
         ModuleKind::Unresolved { .. } => {
-            bail!("external modules are not allowed in this context")
+            bailat!(spec, "external modules are not allowed in this context")
         }
         ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
             ctx.env.modules.insert_cow(scope.lexical.clone());
-            // CR claude for eric: [bug] `spec.ori` is the DECLARING file, so an error
-            // in the module body is framed "in file main.gx" above its real "at: ..
-            // m.gx" site (probe: a bad typedef in m.gx). The module's own origin is
-            // `exprs.first().ori`, as `def_ori` above uses. Block::typecheck0/1 do
-            // the same with their spec (node/mod.rs).
-            let res =
-                Block::compile(ctx, flags, spec.clone(), &scope, top_id, true, exprs)
-                    .with_context(|| spec.ori.clone())?;
-            Ok(res)
+            let res = Block::compile(ctx, flags, spec, &scope, top_id, true, exprs);
+            match body_ori {
+                Some(ori) => res.with_context(|| ori),
+                None => res,
+            }
         }
         ModuleKind::Resolved { exprs, sig: Some(sig), from_interface: _ } => {
             Module::compile_static(
@@ -208,6 +198,15 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
     }
 }
 
+/// The refusal of a declaration where a value is expected.
+fn not_an_expression<R: Rt, E: UserEvent>(spec: &Expr, what: &str) -> Result<Node<R, E>> {
+    bailat!(
+        spec,
+        "{what} is not an expression — it may only appear as a statement in a \
+         block or module body, not where a value is expected"
+    )
+}
+
 fn compile_kind<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -215,6 +214,11 @@ fn compile_kind<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
+    macro_rules! binop {
+        ($op:ident, $lhs:expr, $rhs:expr) => {
+            $op::compile(ctx, flags, spec.clone(), scope, top_id, $lhs, $rhs)
+        };
+    }
     match &spec.kind {
         ExprKind::NoOp => Ok(Nop::new(Type::Bottom)),
         ExprKind::ExplicitParens(s) => ExplicitParens::compile(
@@ -264,31 +268,23 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Struct(StructExpr { args }) => {
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        // CR claude for eric: [bug] these refusals (and Catch below) `bail!` with no
-        // ErrorSite. Probe: `let x = (use array::map);` reports "a use declaration
-        // is not an expression" with no position at all. Use `bailat!(spec, ..)`,
-        // and one helper for the five copies of the message (Catch puts `spec.pos`
-        // in its text instead).
         // Declarations (`use`, static `mod`, `type`, `trait`, `impl`) carry
         // no value and are compiled in statement position only; a dynamic
         // module produces a real `[error, null]` value, so it is an expression.
         ExprKind::Module { name, value } => match value {
-            ModuleKind::Dynamic { .. } => {
-                compile_module(ctx, flags, spec.clone(), scope, top_id, name, value)
-            }
-            _ => bail!(
-                "a module definition is not an expression — it may only \
-                 appear as a statement in a block or module body, not \
-                 where a value is expected"
+            ModuleKind::Dynamic { .. } => compile_module(
+                ctx,
+                flags,
+                spec.clone(),
+                scope,
+                top_id,
+                name,
+                value,
+                false,
             ),
+            _ => not_an_expression(spec, "a module definition"),
         },
-        ExprKind::Use { .. } => {
-            bail!(
-                "a use declaration is not an expression — it may only \
-                 appear as a statement in a block or module body, not \
-                 where a value is expected"
-            )
-        }
+        ExprKind::Use { .. } => not_an_expression(spec, "a use declaration"),
         ExprKind::Connect { name, value, deref: true } => {
             ConnectDeref::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }
@@ -318,10 +314,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
             OrNever::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
         ExprKind::Catch(_) => {
-            bail!(
+            bailat!(
+                spec,
                 "catch is only valid in statement position (a direct child of \
-                 a block or module body) at {}",
-                spec.pos
+                 a block or module body)"
             )
         }
         ExprKind::ByRef(e) => ByRef::compile(ctx, flags, spec.clone(), scope, top_id, e),
@@ -339,19 +335,20 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Seq { .. } => {
             let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
-            // CR claude for eric: [structure] the compiler library prints to stdout,
-            // which is the language server's transport; hand the lowered text to
-            // the embedder (a sink on ExecCtx or the Ide) and let the CLI print it.
+            // XCR claude for eric: only the CLI's `--expand` sets ExpandSeq (the
+            // server never does), so stdout is its terminal. A sink would be a new
+            // ExecCtx field or CheckResult channel for one debug print; recommend
+            // it with the warning sink (env.rs `warn`), when both have a consumer.
             if flags.contains(CFlag::ExpandSeq) {
                 println!("// seq at {}\n{}\n", spec.pos, lowered.to_string_pretty(80));
             }
             compile(ctx, flags, lowered, scope, top_id)
         }
         ExprKind::Until(_) => {
-            crate::bailat!(spec, "`until` is only legal in a seq block")
+            bailat!(spec, "`until` is only legal in a seq block")
         }
         ExprKind::TryWith(_) => {
-            crate::bailat!(spec, "`try … with` is only legal as a seq statement")
+            bailat!(spec, "`try … with` is only legal as a seq statement")
         }
         ExprKind::Select(SelectExpr { arg, arms }) => {
             Select::compile(ctx, flags, spec.clone(), scope, top_id, arg, arms)
@@ -362,27 +359,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Never { typ, args } => {
             Never::compile(ctx, flags, spec.clone(), scope, top_id, typ, args)
         }
-        ExprKind::TypeDef(_) => {
-            bail!(
-                "a type definition is not an expression — it may only \
-                 appear as a statement in a block or module body, not \
-                 where a value is expected"
-            )
-        }
-        ExprKind::Trait(_) => {
-            bail!(
-                "a trait definition is not an expression — it may only \
-                 appear as a statement in a block or module body, not \
-                 where a value is expected"
-            )
-        }
-        ExprKind::Impl(_) => {
-            bail!(
-                "an impl is not an expression — it may only appear as a \
-                 statement in a block or module body, not where a value \
-                 is expected"
-            )
-        }
+        ExprKind::TypeDef(_) => not_an_expression(spec, "a type definition"),
+        ExprKind::Trait(_) => not_an_expression(spec, "a trait definition"),
+        ExprKind::Impl(_) => not_an_expression(spec, "an impl"),
         ExprKind::Map { args } => {
             Map::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
@@ -392,64 +371,24 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Not { expr } => {
             Not::compile(ctx, flags, spec.clone(), scope, top_id, expr)
         }
-        // CR claude for eric: [structure] the next 16 arms (Eq..CheckedMod) are one
-        // line of one shape: `$Op::compile(ctx, flags, spec.clone(), scope, top_id,
-        // lhs, rhs)`. A local macro_rules! listing (ExprKind variant, node type)
-        // pairs would make a new operator one entry instead of four lines.
-        ExprKind::Eq { lhs, rhs } => {
-            Eq::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Ne { lhs, rhs } => {
-            Ne::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Lt { lhs, rhs } => {
-            Lt::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Gt { lhs, rhs } => {
-            Gt::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Lte { lhs, rhs } => {
-            Lte::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Gte { lhs, rhs } => {
-            Gte::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::And { lhs, rhs } => {
-            And::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Or { lhs, rhs } => {
-            Or::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Add { lhs, rhs } => {
-            Add::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::CheckedAdd { lhs, rhs } => {
-            CheckedAdd::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Sub { lhs, rhs } => {
-            Sub::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::CheckedSub { lhs, rhs } => {
-            CheckedSub::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Mul { lhs, rhs } => {
-            Mul::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::CheckedMul { lhs, rhs } => {
-            CheckedMul::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Div { lhs, rhs } => {
-            Div::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::CheckedDiv { lhs, rhs } => {
-            CheckedDiv::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::Mod { lhs, rhs } => {
-            Mod::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
-        ExprKind::CheckedMod { lhs, rhs } => {
-            CheckedMod::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
-        }
+        ExprKind::Eq { lhs, rhs } => binop!(Eq, lhs, rhs),
+        ExprKind::Ne { lhs, rhs } => binop!(Ne, lhs, rhs),
+        ExprKind::Lt { lhs, rhs } => binop!(Lt, lhs, rhs),
+        ExprKind::Gt { lhs, rhs } => binop!(Gt, lhs, rhs),
+        ExprKind::Lte { lhs, rhs } => binop!(Lte, lhs, rhs),
+        ExprKind::Gte { lhs, rhs } => binop!(Gte, lhs, rhs),
+        ExprKind::And { lhs, rhs } => binop!(And, lhs, rhs),
+        ExprKind::Or { lhs, rhs } => binop!(Or, lhs, rhs),
+        ExprKind::Add { lhs, rhs } => binop!(Add, lhs, rhs),
+        ExprKind::CheckedAdd { lhs, rhs } => binop!(CheckedAdd, lhs, rhs),
+        ExprKind::Sub { lhs, rhs } => binop!(Sub, lhs, rhs),
+        ExprKind::CheckedSub { lhs, rhs } => binop!(CheckedSub, lhs, rhs),
+        ExprKind::Mul { lhs, rhs } => binop!(Mul, lhs, rhs),
+        ExprKind::CheckedMul { lhs, rhs } => binop!(CheckedMul, lhs, rhs),
+        ExprKind::Div { lhs, rhs } => binop!(Div, lhs, rhs),
+        ExprKind::CheckedDiv { lhs, rhs } => binop!(CheckedDiv, lhs, rhs),
+        ExprKind::Mod { lhs, rhs } => binop!(Mod, lhs, rhs),
+        ExprKind::CheckedMod { lhs, rhs } => binop!(CheckedMod, lhs, rhs),
         ExprKind::Sample { lhs, rhs } => {
             Sample::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs, false)
         }

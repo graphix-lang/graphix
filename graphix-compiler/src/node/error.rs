@@ -659,21 +659,10 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }))
     }
 
-    // CR claude for eric: [readability] the error is a string with the origin
-    // and position printed into it (and an "ERROR:" prefix) rather than a
-    // `bailat!(spec, ..)`, so it carries no `ErrorSite` and the LSP cannot place
-    // it on the `?`.
     fn check_unhandled(env: &Env, flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
-        if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
-            bail!(
-                "ERROR: {} at {} error raised by ? will not be caught",
-                spec.ori,
-                spec.pos
-            )
-        }
         if flags.contains(CFlag::WarnUnhandled) {
             let msg = "error raised by ? will not be caught";
-            env.warn(&spec.ori, spec.pos, spec.end.0, msg);
+            env.warn(flags, spec, spec.pos, spec.end.0, msg)?;
         }
         Ok(())
     }

@@ -211,6 +211,28 @@ where
     .await
 }
 
+/// [`init_with_registration`] for an **lsp_mode** runtime.
+pub async fn init_lsp_with_registration(
+    sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
+    register: &[PackageRef],
+    registration: RegistrationImage,
+) -> Result<TestCtx> {
+    let setup = |_: &mut _| {};
+    init_inner(
+        sub,
+        register,
+        vec![],
+        BitFlags::empty(),
+        true,
+        Some(registration),
+        None,
+        None,
+        None,
+        setup,
+    )
+    .await
+}
+
 /// Like [`init_with_flags_and_setup`] but builds an **lsp_mode** runtime —
 /// the `check` path, which compiles to verify types and then deletes the
 /// nodes without ever executing them.

@@ -803,3 +803,40 @@ const CAST_STRUCT_FIELDS: &str = r#"cast<{x: i64, y: i64}>({y: "2", x: "1"})$"#;
 run!(cast_struct_fields, CAST_STRUCT_FIELDS, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == r#"[["x", i64:1], ["y", i64:2]]"#
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A type may not take a trait's name in one scope, in either order.
+run!(
+    type_after_trait_of_one_name,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("already defined")),
+    "/test.gx" => r#"
+        trait Foo { val show: fn(self) -> string };
+        type Foo = i64;
+        let result: Foo = 1
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+// A typedef's parameter constraint names types where the typedef is.
+run!(
+    typedef_constraint_resolves_in_its_module,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::first
+    "#,
+    "/test/inner.gx" => r#"
+        type N = i64;
+        type T<'a: N> = Array<'a>;
+        let x: T<i64> = [1];
+        let first = x[0]$
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
+// A type parameter the definition never uses is refused.
+run!(
+    typedef_unused_parameter,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("unused type parameter")),
+    "/test.gx" => r#"
+        type T<'a> = i64;
+        let result: T<string> = 1
+    "#
+; graphix_package_core::testing::FuseExpect::None);

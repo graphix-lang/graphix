@@ -300,7 +300,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
             kids.push(&m.init);
             kids.push(&m.prototype);
         }
-        V::Module(m) => kids.push(m.source()),
+        V::Module(m) => kids.extend(m.source()),
         V::CallSite(cs) => {
             kids.push(cs.fnode());
             // Sorted by key for a stable child order.

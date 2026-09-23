@@ -19,7 +19,7 @@ use graphix_compiler::{
     typ::Type,
 };
 use indexmap::IndexMap;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use netidx_value::{ValArray, Value};
 use nohash::{BuildNoHashHasher, IntMap};
 use poolshark::{
@@ -283,17 +283,29 @@ impl<X: GXExt> GX<X> {
             .trace
             .map(|(max_events, max_cycles)| TraceState::new(max_events, max_cycles));
         let st = Instant::now();
-        match cfg.registration {
-            Some(RegistrationImage::Load(bytes)) => t.restore_registration(bytes)?,
-            other => {
-                if let Some(root) = cfg.root {
-                    // The root declares packages; fusing their constants
-                    // buys nothing and would put kernels in the image.
-                    t.compile_root(cfg.flags | CFlag::FusionDisabled, root).await?;
+        let (image, save) = match cfg.registration {
+            Some(RegistrationImage::Load(bytes)) => (Some(bytes), None),
+            Some(RegistrationImage::Save(tx)) => (None, Some(tx)),
+            None => (None, None),
+        };
+        let restored = match image {
+            None => false,
+            Some(bytes) => match t.restore_registration(bytes) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!("{e}; compiling cold");
+                    false
                 }
-                if let Some(RegistrationImage::Save(tx)) = other {
-                    let _ = tx.send(t.registration_image());
-                }
+            },
+        };
+        if !restored {
+            if let Some(root) = cfg.root {
+                // The root declares packages; fusing their constants
+                // buys nothing and would put kernels in the image.
+                t.compile_root(cfg.flags | CFlag::FusionDisabled, root).await?;
+            }
+            if let Some(tx) = save {
+                let _ = tx.send(t.registration_image());
             }
         }
         info!("root init time: {:?}", st.elapsed());
