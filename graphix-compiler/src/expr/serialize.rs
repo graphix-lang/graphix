@@ -12,8 +12,8 @@
 use crate::{
     LambdaId, SourcePosition,
     expr::{
-        Decorations, Expr, ExprId, ExprKind, Origin, Sig, VfsEntry, get_origin,
-        swap_origin,
+        Decorations, Expr, ExprId, ExprKind, Origin, OriginScope, Sig, VfsEntry,
+        get_origin,
     },
     image,
     profile::{self, Phase},
@@ -31,25 +31,6 @@ use triomphe::Arc;
 
 /// Magic header on every packed blob.
 const MAGIC: &[u8; 4] = b"GXAS";
-
-/// Brackets a decode unit: installs the module's `Origin` for decoded
-/// `Expr`s and restores the previous one on `Drop`.
-struct DecodeUnit {
-    prev_origin: Option<Arc<Origin>>,
-}
-
-impl DecodeUnit {
-    fn new(ori: Arc<Origin>) -> Self {
-        let prev_origin = swap_origin(Some(ori));
-        DecodeUnit { prev_origin }
-    }
-}
-
-impl Drop for DecodeUnit {
-    fn drop(&mut self) {
-        swap_origin(self.prev_origin.take());
-    }
-}
 
 impl Pack for AbstractId {
     fn encoded_len(&self) -> usize {
@@ -364,7 +345,7 @@ pub fn pack_module(exprs: &[Expr]) -> Result<Bytes> {
 pub fn unpack_module(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Arc<[Expr]>> {
     let _profile = profile::phase(Phase::Decode);
     check_magic(&mut bytes)?;
-    let _unit = DecodeUnit::new(ori);
+    let _unit = OriginScope::enter(ori);
     let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
     let mut v: LPooled<Vec<Expr>> = LPooled::take();
     for _ in 0..n {
@@ -385,7 +366,7 @@ pub fn pack_sig(sig: &Sig) -> Result<Bytes> {
 pub fn unpack_sig(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Sig> {
     let _profile = profile::phase(Phase::Decode);
     check_magic(&mut bytes)?;
-    let _unit = DecodeUnit::new(ori);
+    let _unit = OriginScope::enter(ori);
     Sig::decode(&mut bytes).map_err(map_err)
 }
 

@@ -593,8 +593,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
-        let ori = Origin { parent: None, source: Source::Unspecified, text };
-        let exprs = add_interface_modules(parser::parse(ori)?, &self.sig);
+        let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
+        let exprs =
+            add_interface_modules(parser::parse((*ori).clone())?, &self.sig, &ori);
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);

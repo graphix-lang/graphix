@@ -3,6 +3,7 @@ use crate::{
     env::{Env, TypeDef},
     expr::{ModPath, WrittenAt},
     format_with_flags,
+    image::KeyedNode,
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -662,7 +663,8 @@ fn key_text(s: &str, out: &mut Vec<u8>) {
 }
 
 fn key_list(ts: &Arc<[Type]>, out: &mut Vec<u8>) {
-    crate::image::shared_key(<[Type]>::as_ptr(ts) as usize, out, |out| {
+    let keep = || KeyedNode::Types(ts.clone());
+    crate::image::shared_key(<[Type]>::as_ptr(ts) as usize, keep, out, |out| {
         encode_varint(ts.len() as u64, out);
         for t in ts.iter() {
             t.content_key(out);
@@ -671,7 +673,8 @@ fn key_list(ts: &Arc<[Type]>, out: &mut Vec<u8>) {
 }
 
 fn key_one(t: &Arc<Type>, out: &mut Vec<u8>) {
-    crate::image::shared_key(Arc::as_ptr(t) as usize, out, |out| t.content_key(out))
+    let keep = || KeyedNode::Type(t.clone());
+    crate::image::shared_key(Arc::as_ptr(t) as usize, keep, out, |out| t.content_key(out))
 }
 
 impl TypeRef {
@@ -712,7 +715,8 @@ impl Type {
             }
             Type::Fn(f) => {
                 out.put_u8(tag::FN);
-                crate::image::shared_key(Arc::as_ptr(f) as usize, out, |out| {
+                let keep = || KeyedNode::Fn(f.clone());
+                crate::image::shared_key(Arc::as_ptr(f) as usize, keep, out, |out| {
                     f.content_key(out)
                 });
             }
@@ -748,6 +752,7 @@ impl Type {
                 out.put_u8(tag::STRUCT);
                 crate::image::shared_key(
                     <[(ArcStr, Type, WrittenAt)]>::as_ptr(fs) as usize,
+                    || KeyedNode::Fields(fs.clone()),
                     out,
                     |out| {
                         encode_varint(fs.len() as u64, out);

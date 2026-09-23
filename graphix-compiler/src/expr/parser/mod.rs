@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Name,
-        Origin, ParserContext, Pattern, SelectExpr, SeqTrigger, Sig, SigItem, StrForm,
-        StructExpr, StructWithExpr, TryWithExpr, set_origin,
+        Origin, OriginScope, ParserContext, Pattern, SelectExpr, SeqTrigger, Sig,
+        SigItem, StrForm, StructExpr, StructWithExpr, TryWithExpr,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -1247,7 +1247,7 @@ parser! {
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let _profile = profile::phase(Phase::Parse);
     let ori = Arc::new(ori);
-    set_origin(ori.clone());
+    let _scope = OriginScope::enter(ori.clone());
     let mut r: LPooled<Vec<Expr>> = grow::parsing(&ori.text, || {
         sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
             ExprKind::NoOp.to_expr(pos).ending(pos)
@@ -1272,7 +1272,7 @@ pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
 pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     let _profile = profile::phase(Phase::Parse);
     let ori = Arc::new(ori);
-    set_origin(ori.clone());
+    let _scope = OriginScope::enter(ori.clone());
     let mut r: LPooled<Vec<SigItem>> = grow::parsing(&ori.text, || {
         sep_by1_tok(sig_item(), semisep(), eof())
             .skip(spaces())

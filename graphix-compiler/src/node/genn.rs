@@ -114,7 +114,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
     rtype: Type,
     top_id: ExprId,
 ) -> Node<R, E> {
-    let spec = ExprKind::Apply(ApplyExpr {
+    let mut spec = ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter(
             args.iter()
                 .zip(typ.args.iter())
@@ -123,6 +123,7 @@ fn apply_inner<R: Rt, E: UserEvent>(
         function: Arc::new(fnode.spec().clone()),
     })
     .to_expr_nopos();
+    spec.ori = fnode.spec().ori.clone();
     let mut positional = 0;
     let args: crate::node::callsite::ArgMap<R, E> = args
         .into_iter()

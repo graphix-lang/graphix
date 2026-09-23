@@ -2592,3 +2592,42 @@ fn ts_list_closer_parses() {
         }
     }
 }
+
+/// A parse and a decode leave the thread's origin as they found it, so
+/// an expression built next on a shared thread, for another context,
+/// never takes their source.
+#[test]
+fn a_unit_leaves_no_origin_behind() {
+    let unit = |name: &str, text: &str| Origin {
+        parent: None,
+        source: Source::Internal(ArcStr::from(name)),
+        text: ArcStr::from(text),
+    };
+    let unscoped = || ExprKind::NoOp.to_expr_nopos().ori.source.clone();
+    let exprs = parser::parse(unit("parsed", "1; 2")).unwrap();
+    assert_eq!(exprs[0].ori.source, Source::Internal(ArcStr::from("parsed")));
+    assert_eq!(unscoped(), Source::Unspecified);
+    parser::parse_sig(unit("sig", "val x: i64")).unwrap();
+    assert_eq!(unscoped(), Source::Unspecified);
+    let packed = serialize::pack_module(&exprs).unwrap();
+    serialize::unpack_module(&packed, Arc::new(unit("unpacked", "1; 2"))).unwrap();
+    assert_eq!(unscoped(), Source::Unspecified);
+}
+
+/// A module a packed interface declares, and the implementation lacks,
+/// comes from the interface.
+#[test]
+fn an_interface_module_has_the_interface_origin() {
+    let intf = |text: &str| Origin {
+        parent: None,
+        source: Source::Internal(ArcStr::from("m.gxi")),
+        text: ArcStr::from(text),
+    };
+    let sig = parser::parse_sig(intf("mod sub")).unwrap();
+    let ori = Arc::new(intf("mod sub"));
+    let sig =
+        serialize::unpack_sig(&serialize::pack_sig(&sig).unwrap(), ori.clone()).unwrap();
+    let exprs = resolver::add_interface_modules(Arc::from_iter([]), &sig, &ori);
+    assert!(matches!(exprs[0].kind, ExprKind::Module { .. }), "{exprs:?}");
+    assert!(Arc::ptr_eq(&exprs[0].ori, &ori));
+}

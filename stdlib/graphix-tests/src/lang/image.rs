@@ -42,17 +42,17 @@ async fn environment_round_trips() -> Result<()> {
     let mut enc = ImageEncoder::new();
     let mut buf = ImageBuf::with_capacity(0);
     let bound = EncodeImage::with(&mut enc, || env.encoded_len());
-    enc.begin_encode();
     EncodeImage::with(&mut enc, || env.encode(&mut buf))?;
     assert_eq!(buf.len(), bound);
     let counts = enc.counts();
     assert!(counts.bind.len() > 100 && counts.tvar.len() > 100, "{counts:?}");
+    let offsets = enc.finish(&mut buf);
     let image: Bytes = buf.freeze();
     let mut dec = ImageDecoder::new(counts);
     dec.set_image(image.clone());
-    dec.set_offsets(enc.take_offsets());
+    dec.set_offsets(offsets);
     let restored = DecodeImage::with(&mut dec, || {
-        let mut b = &image[..];
+        let mut b = &image[..bound];
         let env = Env::decode(&mut b)?;
         assert!(b.is_empty());
         Ok::<_, anyhow::Error>(env)

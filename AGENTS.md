@@ -345,22 +345,21 @@ imaged node kind owns an `Update::image_encode` / `image_decode` pair
 in its own file; a kind without one fails the write (`image::NOT_IMAGED`,
 logged) and the shell runs cold, never a partial image. Every shared
 object (expressions, types, function types, origins, paths, handlers,
-resolution cells, type variables, map nodes) is written once and
-referenced by the ordinal the length pass assigned it; the trailer maps
-ordinals to definition offsets, and a reference to an object not built
-yet decodes it from its offset, so any part of the image decodes in any
-order. Every `encoded_len` under a session is EXACT (an occurrence's
-cost is a function of its `image::Slot` alone), so a derived `Pack`
-may frame an image object.
+resolution cells, type variables, map nodes) is written once, in the
+definitions area after the body and the heap (`ImageEncoder::finish`),
+and every occurrence of it, the first included, is a reference to the
+ordinal its first sight assigned; the trailer maps ordinals to
+definition offsets, and a reference to an object not built yet decodes
+it from its offset, so any part of the image decodes in any order. An
+occurrence costs its reference whatever was measured or written
+before it, so every `encoded_len` under a session is exact and a
+derived `Pack` may frame an image object.
 Types and function types are keyed by their canonical bytes with every
 shared leaf by identity (`Type::content_key`), so equal types decode to
-one value; an object whose definition is in progress writes a nested
-occurrence of itself as a definition (`image::ContentState`). An
-expression is keyed by the first expression seen with its id and
-contents (`image::expr_key`), so a node's spec shares its def body's
-definition.
-The writer's `ImageBuf` reports every byte to the session, and
-everything a session encodes must be borrowed from the context and
+one value. An expression is keyed by the first expression seen with its
+id and contents (`image::expr_key`), so a node's spec shares its def
+body's definition.
+Everything a session encodes must be borrowed from the context and
 root nodes for the whole session. A program image writes instance
 bodies to a heap after the eager part with an instance table; a call
 site keeps `Callee::Imaged` (id, resolved type, reference summary) and

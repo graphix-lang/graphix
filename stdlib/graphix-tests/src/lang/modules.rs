@@ -468,16 +468,16 @@ let result = a + f(1) + map::len(m) + map::get_or(m, 2, 3)
     "/test/helper3.gx" => "let x = 2"
     ; graphix_package_core::testing::FuseExpect::None);
 
-// Two modules that import each other are an import cycle, reported,
-// not a stack overflow.
+// A module inside a module of its own name is another module, not an
+// import cycle (a real cycle: graphix-shell/tests/import_cycle.rs).
 run!(
-    import_cycle_is_an_error,
-    |v: Result<&Value>| format!("{:?}", v.unwrap_err()).contains("import cycle"),
+    nested_module_of_its_own_name,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
     "/test.gx" => "mod a;\nlet result = a::x",
     "/test/a.gx" => "mod b;\nlet x = b::y",
-    "/test/a/b.gx" => "mod a;\nlet y = 1",
-    "/test/a/b/a.gx" => "mod b;\nlet x = 2"
-    ; graphix_package_core::testing::FuseExpect::None);
+    "/test/a/b.gx" => "mod a;\nlet y = a::z",
+    "/test/a/b/a.gx" => "let z = 3"
+    ; graphix_package_core::testing::FuseExpect::Jit);
 
 // The same source imported on two branches is not a cycle.
 run!(

@@ -3,7 +3,8 @@
 //! start restores it instead of compiling. Layout: magic, version, the
 //! id counts, then the environment, the definitions, the context's
 //! tables, the root nodes and the root scope, all under one image
-//! session. The writer measures everything first, then encodes.
+//! session, then the instance heap, the shared objects' definitions and
+//! the trailer. The writer measures everything first, then encodes.
 
 use super::{
     DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder, defs,
@@ -27,7 +28,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 10;
+pub const REGISTRATION_FORMAT: u8 = 11;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -241,9 +242,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             })
         };
         let p = profile::phase(Phase::ImageMeasure);
-        let body_bound = measure(&mut enc) + enc.deferred_len;
+        let body_bound = measure(&mut enc) + enc.deferred_len + enc.defs_len;
         drop(p);
-        enc.begin_encode();
         let counts = enc.counts();
         let isa = self.fusion.jit.lock().isa_description();
         let mut buf = ImageBuf::with_capacity(
@@ -256,7 +256,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let trailer_at = buf.len();
         buf.put_u64(0);
         buf.put_u64(0);
-        enc.written = buf.len() as u64;
         EncodeImage::with(&mut enc, || -> Result<(), PackError> {
             {
                 let p = profile::phase(Phase::ImageEncode);
@@ -289,6 +288,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                     body(&mut buf)?;
                     image::encoding(|e| e.instances.insert(id, at));
                 }
+                let defs_at = buf.len();
+                let offsets = image::encoding(|e| e.finish(&mut buf))
+                    .ok_or(PackError::InvalidFormat)?;
                 let table_at = buf.len();
                 drop(p);
                 let _p = profile::phase(Phase::ImageTrailer);
@@ -300,7 +302,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                     encode_varint(at, &mut buf);
                 }
                 eager.encode(&mut buf)?;
-                let offsets = image::encoding(|e| e.take_offsets()).unwrap_or_default();
                 encode_varint(offsets.len() as u64, &mut buf);
                 for at in offsets {
                     encode_varint(at, &mut buf);
@@ -309,8 +310,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 buf.patch_u64(trailer_at + 8, table_at as u64);
                 info!(
                     "registration image: env {env_bytes} defs {defs_bytes} nodes {nodes_bytes} \
-                     heap {} total {} bytes",
-                    table_at - heap_at,
+                     heap {} objects {} total {} bytes",
+                    defs_at - heap_at,
+                    table_at - defs_at,
                     buf.len()
                 );
                 Ok(())

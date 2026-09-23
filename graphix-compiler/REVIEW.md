@@ -170,9 +170,45 @@ ordinary builder reuse.
 | CR09 | `Deref` holds its address as one `Option<(BindId, Path)>`, released (and unsubscribed) while its reference is bottom; `root_place` reads it, so the place unregisters, its cell bottoms, and a write through it goes nowhere until the reference returns. | `lang::byref::place_through_bottom_deref` (the old build gives `([99, 20], 10, [7, 20])` for `([10, 20], null, [7, 20])`) |
 | CR11 | `node::array::check_index` is the one index rule for `a[i]`, slice bounds and a place's index step. | `lang::byref::place_index_is_an_integer` |
 | CR12 | `Place::update` resolves an `Address { bind, path, steps }`: registration uses the full path, the mirror reads `steps` (the place's own) from the root's production. | `lang::byref::place_through_deref_mirror` (reads `None` with the full path put back) |
-| CR13 | **Open: needs a decision.** See below. | |
+| CR13 | Eric chose out-of-line definitions (below). Every occurrence is a reference to its ordinal. A definition is written once, at the first write, through a scratch buffer into a definitions area that `ImageEncoder::finish` appends after the body and heap. A length is a function of the ordinal alone, so `query_seen`, `begin_encode`, `Slot::{at, in_progress, nested_ref}` and the writer's byte reporting are gone. The decoders are unchanged. `REGISTRATION_FORMAT` is 11. | `image::tests::a_frame_measures_what_it_writes` (the reviewer's probe: the frame measured on its own and its fields out of order before the write) |
 | CR18 | Scopes are pooled copies (`seq::scope`, also used by the lowering's visibility maps); rewritten sequences and lambda args go straight into `Arc::from_iter`; `pc_type`, `pat_last` build their slices without staging; the seqq capture analysis (`captures`, `names`, `written`, `used`) is pooled. | existing seq tests |
 | CR20 | `Shells<T>` recycles only empty boxes; the builder inside comes from its pool and returns to it, under the pool's capacity limit. The string builder is `LPooled<String>` too. | `fusion::emit_helpers::tests::a_builder_keeps_no_outsized_capacity` |
+
+### CR05, found again by the gate
+
+The import-cycle check from the second round was wrong in two ways. The
+gate caught it: `graphix-fuzz`'s `trace_runaway_cap_determinism` failed
+with `import cycle: db -> cursor (Internal("test"))`, but only beside
+other tests in one process.
+
+- A module's source was taken from its first expression's origin, and the
+  modules a packed interface declares (every stdlib package's) were given
+  the thread-local origin. `parser::parse` set that origin and never
+  restored it, so on a thread shared by several `ExecCtx`s (tokio workers,
+  the blocking pool, libtest threads) it was whatever another context last
+  parsed.
+- `Internal(<bare name>)` does not identify a module. The old VFS pin
+  "detected" a cycle through four distinct files, which was really a
+  missing module.
+
+The fix has four parts:
+
+- The origin is an `OriginScope` guard: parse, decode and the seq lowering
+  each enter it and restore the outer one. Outside every scope an
+  expression takes the default origin.
+- Interface-declared modules take the interface's origin (a new argument
+  to `add_interface_modules`).
+- `NOP` and `Expr::default` take the default origin explicitly.
+- The chain keys only on file and netidx sources. A VFS lookup is scoped
+  by module path, so it cannot come round again.
+
+Pins: `expr::test::a_unit_leaves_no_origin_behind`,
+`expr::test::an_interface_module_has_the_interface_origin` and
+`expr::seq::test::a_machine_has_the_seq_origin` (the first and last fail
+with their scope removed). `lang::modules::nested_module_of_its_own_name`
+replaces the VFS pin. `graphix-shell/tests/import_cycle.rs` is the
+reviewer's original two files through a file resolver: `import cycle: b
+-> a -> b`.
 
 ### CR13
 
@@ -187,7 +223,34 @@ can be exact while a definition is written inline at its first
 occurrence, and the "function of its `Slot` alone" in CLAUDE.md is not
 true of the current scheme.
 
-Three ways out, for Eric:
+Out-of-line definitions exposed a bug that inline ones hid. The fuzz
+corpus overflowed the stack decoding
+`settle-order-jul2026/01_firstclass_hof_occurs_flap`: a function type
+referenced itself through its own argument. The content-key memo
+(`image::shared_key`) keyed nodes by `Arc` address without holding
+them. `FnType::cell_constraint_pairs` normalizes on the fly, and
+`TVar::normalize_int` writes the normalized binding back into the cell.
+So the encoder dropped nodes it had keyed, and a later, different node at
+the same address took the stale key. Under inline definitions this
+silently decoded one type as another. The memo now holds each node it
+keys (`image::KeyedNode`). Pin: `image::tests::a_dropped_type_frees_no_key`
+(fails with the memo not holding its nodes). That the image write
+normalizes cells in place, and so changes what the typechecker sees, is
+left for Eric.
+
+Measured on quick builds of this commit and the one before, over 60
+interleaved warm starts of a small stdlib script on cores 0–3 in bench
+mode:
+
+- Each image file (registration and program): 1.31 → 1.56 MB (+19%).
+- Warm start, median: 22.5 → 23.1 ms.
+- Warm start, p90: 24.1 → 24.8 ms.
+
+`decode_at` borrows the image instead of cloning its `Bytes`, which took
+the median gap from 1.0 ms to 0.6 ms. Writing definitions without their
+`DEF` tag would recover about a byte per object.
+
+Three ways out (Eric chose the first):
 
 - **Out-of-line definitions.** Every occurrence is a reference, and each
   definition is written once, in first-occurrence order, in an area

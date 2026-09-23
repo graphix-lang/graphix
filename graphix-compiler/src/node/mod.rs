@@ -148,9 +148,9 @@ macro_rules! deref_typ {
 }
 
 pub(crate) static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
-    Arc::new(
-        ExprKind::Constant(Value::String(literal!("nop"))).to_expr(Default::default()),
-    )
+    let mut nop = Expr::default();
+    nop.kind = ExprKind::Constant(Value::String(literal!("nop")));
+    Arc::new(nop)
 });
 
 /// Set by a node's `sleep()`, taken by its next update: the first update

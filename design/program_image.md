@@ -277,24 +277,27 @@ first frame reaches about a third, which is what slice (b) is for.
 Every shared object is referenced by an ordinal, and a reference to an
 object the session has not built decodes it from its definition's
 offset on demand (`image::object_decode`, `decode_at`, and the same in
-every hand codec and the map-node table). The length pass assigns the
-ordinal at an object's first sight and records its definition's
-length in the session's `image::Slot`; the encode pass writes the
-definition at an offset its buffer, `ImageBuf`, reports, records it
-by ordinal, and the trailer carries the ordinal-to-offset table the
-reader loads before anything decodes (every decode buffer is a slice
-of the mapped image). What an occurrence costs is a function of the
-slot alone — a reference once written, the definition's measured
-length otherwise, and for an object met again inside its own
-definition a reference if its kind registers before its contents
-decode (cells and the address-keyed kinds) or a definition again (the
-content-keyed types) — so `encoded_len` is exact in both passes and
-in a length query in the middle of the encode, which is what lets a
-derived `Pack` frame an image object by its measured length. (The
-first version referenced objects by offset and bounded a reference's
-varint by the address in the length pass; the over-count broke every
-length-framed container holding a `Type`.) With that, any part of the
-image decodes in any order.
+every hand codec and the map-node table). Every occurrence of an
+object, the first included, is a reference; the definition is written
+once, when the encode first meets the object, into a scratch buffer and
+from there to the definitions area, which `ImageEncoder::finish` appends
+after the body and the heap (so a definition's own nested objects come
+before it there). The object is marked defined before its contents are
+written, so an occurrence of it inside its own definition is a reference
+too; a decode that reaches an object while that object is being decoded
+builds it again from its offset, and every such cycle passes through a
+kind that registers before its contents (a type variable's cell, a
+resolution cell), so it ends. The trailer carries the
+ordinal-to-offset table the reader loads before anything decodes (every
+decode buffer is a slice of the mapped image). An occurrence costs its
+reference, a function of its ordinal alone, in the length pass and in
+any length query of the encode pass, whatever was measured or written
+before it, which is what lets a derived `Pack` frame an image object by
+its measured length. (Earlier versions wrote a definition at its first
+occurrence: an offset-sized reference over-counted, and an ordinal
+reference beside inline definitions could not tell a frame's sibling
+fields from a repeated measurement.) With that, any part of the image
+decodes in any order.
 
 A program image writes instance bodies to a heap after the eager part
 and records an instance table at the end (the header carries both
@@ -333,10 +336,11 @@ ids cell) written by identity, so two types are one object exactly
 when they are interchangeable; equal types decode to one shared
 value, and a top-level hit skips the whole subtree (the key walk
 memoizes per shared subtree, `image::shared_key`, so the writer's
-walk is linear). A type can reach itself through a resolution cell it
-contains; while its definition is in progress the nested occurrence
-is written as a definition too (`image::ContentState`), since a
-reference can only name a finished one. And an expression is keyed by
+walk is linear; the memo holds each node it keyed, so an address names
+one node for the session even when the writer measures a node built on
+the fly, as a function type's normalized constraint view is). A type can reach itself through a resolution cell it
+contains; the nested occurrence is a reference like any other. And an
+expression is keyed by
 the address of the first expression seen with its id and contents
 (`image::expr_key`, `Expr::same_tree`), so every clone of a def body
 shares one definition. The trailer also carries the eager object

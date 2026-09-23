@@ -18,7 +18,7 @@
 
 use crate::{
     env::{Map, Set},
-    image,
+    image::{self, ImageBuf},
 };
 use ahash::AHashMap;
 use bytes::{Buf, BufMut};
@@ -95,7 +95,7 @@ where
 fn tree_encode<K, V, B: BufMut>(
     node: Option<NodeRef<'_, K, V, SIZE>>,
     buf: &mut B,
-    pair_encode: &mut impl FnMut(&K, &V, &mut B) -> Result<(), PackError>,
+    pair_encode: &mut impl FnMut(&K, &V, &mut ImageBuf) -> Result<(), PackError>,
 ) -> Result<(), PackError>
 where
     K: Ord + Clone + Send + Sync + 'static,
@@ -185,7 +185,7 @@ where
 pub(crate) fn map_encode<K, V, B: BufMut>(
     map: &Map<K, V>,
     buf: &mut B,
-    pair_encode: &mut impl FnMut(&K, &V, &mut B) -> Result<(), PackError>,
+    pair_encode: &mut impl FnMut(&K, &V, &mut ImageBuf) -> Result<(), PackError>,
 ) -> Result<(), PackError>
 where
     K: Ord + Clone + Send + Sync + 'static,
@@ -250,9 +250,8 @@ where
 mod tests {
     use super::*;
     use crate::image::{
-        DEF, DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder, REF,
+        DecodeImage, EncodeImage, ImageBuf, ImageDecoder, ImageEncoder, Packed,
     };
-    use bytes::Bytes;
     use compact_str::CompactString;
 
     type M = Map<i64, i64>;
@@ -266,8 +265,8 @@ mod tests {
 
     /// Encode `items` under one session, asserting each one's measured
     /// length is exactly what it wrote.
-    fn encode_exact<T: Pack>(items: &[T], enc: &mut ImageEncoder) -> Bytes {
-        EncodeImage::with(enc, || {
+    fn encode_exact<T: Pack>(items: &[T], enc: &mut ImageEncoder) -> Packed {
+        let buf = EncodeImage::with(enc, || {
             let mut buf = ImageBuf::with_capacity(0);
             for i in items {
                 let len = i.encoded_len();
@@ -275,57 +274,25 @@ mod tests {
                 i.encode(&mut buf).unwrap();
                 assert_eq!(buf.len() - before, len, "encoded_len is exact");
             }
-            buf.freeze()
-        })
+            buf
+        });
+        Packed::new(enc, buf)
     }
 
-    fn encode_all(maps: &[M], enc: &mut ImageEncoder) -> Bytes {
+    fn encode_all(maps: &[M], enc: &mut ImageEncoder) -> Packed {
         let shared: Vec<_> = maps.iter().map(|m| SharedMap(m.clone())).collect();
         encode_exact(&shared, enc)
     }
 
-    fn decoder(enc: &mut ImageEncoder, image: &Bytes) -> ImageDecoder {
-        let mut dec = ImageDecoder::new(Default::default());
-        dec.set_image(image.clone());
-        dec.set_offsets(enc.take_offsets());
-        dec
-    }
-
-    fn decode_all(image: &Bytes, n: usize, dec: &mut ImageDecoder) -> Vec<M> {
+    fn decode_all(packed: &Packed, n: usize, dec: &mut ImageDecoder) -> Vec<M> {
         DecodeImage::with(dec, || {
-            let mut buf = &image[..];
+            let mut buf = packed.body();
             let out: Vec<M> = (0..n)
                 .map(|_| SharedMap::<i64, i64>::decode(&mut buf).unwrap().0)
                 .collect();
             assert!(buf.is_empty());
             out
         })
-    }
-
-    /// The definitions in a stream of `SharedMap<i64, i64>`s.
-    fn definitions(bytes: &[u8]) -> usize {
-        let mut buf = bytes;
-        let mut defs = 0;
-        while buf.has_remaining() {
-            if !bool::decode(&mut buf).unwrap() {
-                continue;
-            }
-            match buf.get_u8() {
-                REF => {
-                    decode_varint(&mut buf).unwrap();
-                }
-                DEF => {
-                    defs += 1;
-                    let n = decode_varint(&mut buf).unwrap();
-                    for _ in 0..n {
-                        i64::decode(&mut buf).unwrap();
-                        i64::decode(&mut buf).unwrap();
-                    }
-                }
-                t => panic!("tag {t}"),
-            }
-        }
-        defs
     }
 
     fn walk(
@@ -344,15 +311,15 @@ mod tests {
     fn round_trip_shares_nodes() {
         let maps = forest();
         let mut enc = ImageEncoder::new();
-        let bytes = encode_all(&maps, &mut enc);
-        let mut dec = decoder(&mut enc, &bytes);
-        let decoded = decode_all(&bytes, maps.len(), &mut dec);
+        let packed = encode_all(&maps, &mut enc);
+        let mut dec = packed.decoder(&enc);
+        let decoded = decode_all(&packed, maps.len(), &mut dec);
         for (m, d) in maps.iter().zip(&decoded) {
             assert_eq!(m, d);
         }
         let mut again = ImageEncoder::new();
-        let bytes2 = encode_all(&decoded, &mut again);
-        assert_eq!(bytes, bytes2);
+        let packed2 = encode_all(&decoded, &mut again);
+        assert_eq!(packed.image, packed2.image);
         let distinct: std::collections::HashSet<usize> = {
             let mut ids = std::collections::HashSet::new();
             for m in &decoded {
@@ -360,7 +327,7 @@ mod tests {
             }
             ids
         };
-        assert_eq!(definitions(&bytes), distinct.len());
+        assert_eq!(packed.definitions(), distinct.len());
         let m0_nodes = {
             let mut ids = std::collections::HashSet::new();
             walk(maps[0].root(), &mut ids);
@@ -374,8 +341,7 @@ mod tests {
     }
 
     /// A length pass over the forest plans every node once; the encode
-    /// pass writes exactly what was measured, and the second map is
-    /// mostly references.
+    /// pass writes exactly what was measured.
     #[test]
     fn length_is_exact() {
         let maps = forest();
@@ -384,8 +350,6 @@ mod tests {
         let lens: Vec<usize> = EncodeImage::with(&mut enc, || {
             shared.iter().map(|s| s.encoded_len()).collect()
         });
-        assert!(lens[1] < lens[0] / 4, "the second map is mostly references");
-        enc.begin_encode();
         EncodeImage::with(&mut enc, || {
             let mut buf = ImageBuf::with_capacity(0);
             for (s, len) in shared.iter().zip(&lens) {
@@ -409,11 +373,11 @@ mod tests {
         outer.insert_cow(2_u64, inner);
         let outer = SharedMap(outer);
         let mut enc = ImageEncoder::new();
-        let bytes = encode_exact(&[outer.clone()], &mut enc);
-        let mut dec = decoder(&mut enc, &bytes);
+        let packed = encode_exact(&[outer.clone()], &mut enc);
+        let mut dec = packed.decoder(&enc);
         DecodeImage::with(&mut dec, || {
-            let d =
-                SharedMap::<u64, SharedMap<u64, u64>>::decode(&mut &bytes[..]).unwrap();
+            let d = SharedMap::<u64, SharedMap<u64, u64>>::decode(&mut packed.body())
+                .unwrap();
             assert_eq!(d, outer);
             let a = d.0.get(&1).unwrap().0.root().unwrap().identity();
             let b = d.0.get(&2).unwrap().0.root().unwrap().identity();
@@ -427,8 +391,8 @@ mod tests {
         let mut m = Map::new();
         m.insert_cow(1_u64, 2_u64);
         let mut enc = ImageEncoder::new();
-        let bytes = encode_exact(&[SharedMap(m)], &mut enc);
-        assert!(SharedMap::<u64, u64>::decode(&mut &bytes[..]).is_err());
+        let packed = encode_exact(&[SharedMap(m)], &mut enc);
+        assert!(SharedMap::<u64, u64>::decode(&mut packed.body()).is_err());
     }
 
     /// A map decoded on its own resolves the nodes it shares from
@@ -437,13 +401,13 @@ mod tests {
     fn later_decode_resolves_by_offset() {
         let maps = forest();
         let mut enc = ImageEncoder::new();
-        let bytes = encode_all(&maps, &mut enc);
+        let packed = encode_all(&maps, &mut enc);
         let first_len = {
             let mut e = ImageEncoder::new();
             EncodeImage::with(&mut e, || SharedMap(maps[0].clone()).encoded_len())
         };
-        let mut dec = decoder(&mut enc, &bytes);
-        let mut buf = &bytes[first_len..];
+        let mut dec = packed.decoder(&enc);
+        let mut buf = &packed.body()[first_len..];
         let rest = {
             DecodeImage::with(&mut dec, || {
                 let a = SharedMap::<i64, i64>::decode(&mut buf).unwrap().0;
@@ -455,7 +419,7 @@ mod tests {
         assert_eq!(rest[1], maps[2]);
         let first = {
             DecodeImage::with(&mut dec, || {
-                SharedMap::<i64, i64>::decode(&mut &bytes[..]).unwrap().0
+                SharedMap::<i64, i64>::decode(&mut packed.body()).unwrap().0
             })
         };
         assert_eq!(first, maps[0]);
@@ -482,23 +446,22 @@ mod tests {
         let set: Set<i64> = (0..500).collect();
         let (set2, _) = set.insert(-1);
         let mut enc = ImageEncoder::new();
-        let bytes = {
-            EncodeImage::with(&mut enc, || {
-                let o = SharedMap(outer.clone());
-                let s1 = SharedSet(set.clone());
-                let s2 = SharedSet(set2.clone());
-                let len = o.encoded_len() + s1.encoded_len() + s2.encoded_len();
-                let mut buf = ImageBuf::with_capacity(0);
-                o.encode(&mut buf).unwrap();
-                s1.encode(&mut buf).unwrap();
-                s2.encode(&mut buf).unwrap();
-                assert_eq!(buf.len(), len);
-                buf.freeze()
-            })
-        };
-        let mut dec = decoder(&mut enc, &bytes);
+        let buf = EncodeImage::with(&mut enc, || {
+            let o = SharedMap(outer.clone());
+            let s1 = SharedSet(set.clone());
+            let s2 = SharedSet(set2.clone());
+            let len = o.encoded_len() + s1.encoded_len() + s2.encoded_len();
+            let mut buf = ImageBuf::with_capacity(0);
+            o.encode(&mut buf).unwrap();
+            s1.encode(&mut buf).unwrap();
+            s2.encode(&mut buf).unwrap();
+            assert_eq!(buf.len(), len);
+            buf
+        });
+        let packed = Packed::new(&mut enc, buf);
+        let mut dec = packed.decoder(&enc);
         DecodeImage::with(&mut dec, || {
-            let mut b = &bytes[..];
+            let mut b = packed.body();
             let o = SharedMap::<i64, SharedMap<CompactString, i64>>::decode(&mut b)
                 .unwrap()
                 .0;

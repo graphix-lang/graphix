@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     env::Env,
-    expr::{At, Name},
+    expr::{At, Name, OriginScope},
     stack::ensure_sufficient,
     typ::{TVar, Type},
 };
@@ -53,7 +53,10 @@ impl Rewrite<'_> {
     }
 }
 
+/// The seq `spec` lowered to its machine, every expression of which
+/// comes from `spec`'s source.
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
+    let _ori = OriginScope::enter(spec.ori.clone());
     match &spec.kind {
         ExprKind::Seq { trigger: Some(SeqTrigger::Bind(b)), .. } => desugar_let(spec, b),
         ExprKind::Seq { queued: true, .. } => desugar_queued(spec, env, scope),
@@ -1659,6 +1662,25 @@ mod test {
             &AHashMap::new(),
             &CarriedBinds::new(),
         )
+    }
+
+    /// Every expression of a lowered machine comes from the seq's
+    /// source, whatever the thread built last.
+    #[test]
+    fn a_machine_has_the_seq_origin() {
+        use crate::expr::{Origin, Source, parser::parse};
+        let ori = |name: &str| Origin {
+            parent: None,
+            source: Source::Internal(ArcStr::from(name)),
+            text: ArcStr::from("seq { a <- 1; b <- a; let c = f(b); c }"),
+        };
+        let seq = parse(ori("seq")).expect("parses");
+        let _elsewhere = OriginScope::enter(Arc::new(ori("elsewhere")));
+        let lowered = desugar(&seq[0], &Env::default(), &ModPath::root()).unwrap();
+        let foreign = lowered.fold(0, &mut |n, e| {
+            n + (e.ori.source != Source::Internal(ArcStr::from("seq"))) as usize
+        });
+        assert_eq!(foreign, 0);
     }
 
     fn arms_of(body: &str) -> Vec<usize> {

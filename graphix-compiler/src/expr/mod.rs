@@ -51,27 +51,36 @@ pub const VNAME: LazyLock<Regex> =
 
 image_id!(ExprId);
 
-const DEFAULT_ORIGIN: LazyLock<Arc<Origin>> =
+static DEFAULT_ORIGIN: LazyLock<Arc<Origin>> =
     LazyLock::new(|| Arc::new(Origin::default()));
 
 thread_local! {
     static ORIGIN: RefCell<Option<Arc<Origin>>> = RefCell::new(None);
 }
 
-pub(crate) fn set_origin(ori: Arc<Origin>) {
-    ORIGIN.with_borrow_mut(|global| *global = Some(ori))
+/// The source the expressions built on this thread come from, while the
+/// scope lives: a parse, a decode, a lowering. Scopes nest; outside every
+/// scope an expression takes the default origin, never one another
+/// context left behind on a shared thread.
+pub(crate) struct OriginScope(Option<Arc<Origin>>);
+
+impl OriginScope {
+    pub(crate) fn enter(ori: Arc<Origin>) -> Self {
+        OriginScope(ORIGIN.with_borrow_mut(|cur| cur.replace(ori)))
+    }
+}
+
+impl Drop for OriginScope {
+    fn drop(&mut self) {
+        let outer = self.0.take();
+        ORIGIN.with_borrow_mut(|cur| *cur = outer)
+    }
 }
 
 pub(crate) fn get_origin() -> Arc<Origin> {
     ORIGIN.with_borrow(|ori| {
         ori.as_ref().cloned().unwrap_or_else(|| DEFAULT_ORIGIN.clone())
     })
-}
-
-/// Swap the thread-local origin, returning the previous value. Brackets a
-/// decode unit so decoded `Expr`s pick up their module origin via `get_origin`.
-pub(crate) fn swap_origin(ori: Option<Arc<Origin>>) -> Option<Arc<Origin>> {
-    ORIGIN.with_borrow_mut(|global| std::mem::replace(global, ori))
 }
 
 /// utility to read a file to an ArcStr with minimal allocation
@@ -1084,7 +1093,9 @@ impl Serialize for Expr {
 
 impl Default for Expr {
     fn default() -> Self {
-        ExprKind::Constant(Value::Null).to_expr(Default::default())
+        let mut e = ExprKind::Constant(Value::Null).to_expr(Default::default());
+        e.ori = DEFAULT_ORIGIN.clone();
+        e
     }
 }
 

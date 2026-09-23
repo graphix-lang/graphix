@@ -321,9 +321,15 @@ async fn resolve_from_files(
     }
 }
 
-// Splice modules mentioned only in the interface into the implementation,
-// keeping their relative location and order.
-pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
+/// `exprs` with the modules, types, traits and uses only `sig` declares
+/// spliced in, keeping their relative location and order; a declaration
+/// without an origin of its own (a packed interface's) takes `ori`, the
+/// interface's.
+pub fn add_interface_modules(
+    exprs: Arc<[Expr]>,
+    sig: &Sig,
+    ori: &Arc<Origin>,
+) -> Arc<[Expr]> {
     #[derive(Clone, Copy)]
     struct Item<'a> {
         kind: ItemKind<'a>,
@@ -373,7 +379,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         }
     }
     impl<'a> Item<'a> {
-        fn synth(self) -> Expr {
+        fn synth(self, ori: &Arc<Origin>) -> Expr {
             let kind = match self.kind {
                 ItemKind::Module(name) => ExprKind::Module {
                     name: name.clone(),
@@ -385,7 +391,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     ExprKind::Use { reexport, names: Arc::clone(m) }
                 }
             };
-            let ori = self.ori.cloned().unwrap_or_else(crate::expr::get_origin);
+            let ori = self.ori.unwrap_or(ori).clone();
             Expr {
                 id: ExprId::new(),
                 ori,
@@ -518,7 +524,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
     let mut res: LPooled<Vec<Expr>> = LPooled::take();
     if let Some(name) = first.take() {
         if in_sig.shift_remove(&name) {
-            res.push(name.synth());
+            res.push(name.synth(ori));
         }
     }
     let mut iter = exprs.iter();
@@ -529,7 +535,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                     if let Some(name) = after_bind.remove(n.as_str())
                         && in_sig.shift_remove(&name)
                     {
-                        res.push(name.synth());
+                        res.push(name.synth(ori));
                         continue;
                     }
                 }
@@ -539,7 +545,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 if let Some(name) = after_td.remove(td.name.as_str())
                     && in_sig.shift_remove(&name)
                 {
-                    res.push(name.synth());
+                    res.push(name.synth(ori));
                     continue;
                 }
             }
@@ -547,7 +553,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 if let Some(name) = after_trait.remove(t.name.as_str())
                     && in_sig.shift_remove(&name)
                 {
-                    res.push(name.synth());
+                    res.push(name.synth(ori));
                     continue;
                 }
             }
@@ -555,7 +561,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 if let Some(name) = after_mod.remove(name.as_str())
                     && in_sig.shift_remove(&name)
                 {
-                    res.push(name.synth());
+                    res.push(name.synth(ori));
                     continue;
                 }
             }
@@ -563,7 +569,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
                 if let Some(name) = names.iter().find_map(|n| after_use.remove(n))
                     && in_sig.shift_remove(&name)
                 {
-                    res.push(name.synth());
+                    res.push(name.synth(ori));
                     continue;
                 }
             }
@@ -575,7 +581,7 @@ pub fn add_interface_modules(exprs: Arc<[Expr]>, sig: &Sig) -> Arc<[Expr]> {
         }
     }
     for name in in_sig.drain(..) {
-        res.push(name.synth());
+        res.push(name.synth(ori));
     }
     Arc::from_iter(res.drain(..))
 }
@@ -602,25 +608,26 @@ async fn parse_module(
     let sig = match interface {
         None => None,
         Some(ori) => {
-            let ori = ori.clone();
+            let ori = Arc::new(ori.clone());
+            let unit = ori.clone();
             let sig = match intf_packed.filter(|_| !packed_ast_disabled()) {
-                Some(bytes) => task::spawn_blocking(move || {
-                    serialize::unpack_sig(&bytes, Arc::new(ori))
-                }),
-                None => task::spawn_blocking(move || parser::parse_sig(ori)),
+                Some(bytes) => {
+                    task::spawn_blocking(move || serialize::unpack_sig(&bytes, unit))
+                }
+                None => task::spawn_blocking(move || parser::parse_sig((*unit).clone())),
             }
             .await?
             .with_context(|| format!("parsing file {interface:?}"))?;
-            Some(sig)
+            Some((sig, ori))
         }
     };
     let exprs =
         exprs.await?.with_context(|| format!("parsing file {implementation:?}"))?;
     let exprs = match &sig {
-        Some(sig) => add_interface_modules(exprs, sig),
+        Some((sig, ori)) => add_interface_modules(exprs, sig, ori),
         None => exprs,
     };
-    Ok((exprs, sig))
+    Ok((exprs, sig.map(|(sig, _)| sig)))
 }
 
 /// A root source file: a program, or a package's `mod.gx`.
@@ -820,9 +827,14 @@ impl Expr {
                     Source::Unspecified => None,
                     s => Some(s),
                 });
+                // a file or a netidx path is one place; an `Internal`
+                // source is a VFS module's bare name, and a VFS lookup is
+                // scoped by the module path, so it cannot come round again
                 let chain = match source {
-                    Some(s) => Some(LoadChain::push(chain, s, name)?),
-                    None => chain.clone(),
+                    Some(s @ (Source::File(_) | Source::Netidx(_))) => {
+                        Some(LoadChain::push(chain, s, name)?)
+                    }
+                    _ => chain.clone(),
                 };
                 let chain = &chain;
                 // Sub-modules resolve relative to the implementation file's
