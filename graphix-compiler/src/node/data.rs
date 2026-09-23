@@ -1,20 +1,18 @@
-// CR claude for eric: [style] use grouping: `crate::image` is imported in two
-// statements apart from the `crate::{..}` group, and `netidx_core::pack` twice;
-// `anyhow::anyhow!` is spelled in full at StructRef::emit_clif though `anyhow` is
-// imported here.
-use super::{WakeBit, compiler::compile, dense_gate, gather};
-use crate::image::nodes::{
-    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-};
-use crate::image::{self, ImageBuf};
+use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent, abstract_value, deref_typ,
-    expr::{Expr, ExprId, ExprKind, ModPath, StructWithExpr, WrittenAt},
+    Update, UserEvent, abstract_value, bailat, deref_typ,
+    expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
         emit_struct_new_node, emit_struct_ref_node, emit_struct_with_node,
         emit_tuple_new_node, emit_tuple_ref_node, emit_variant_new_node,
+    },
+    image::{
+        self, ImageBuf,
+        nodes::{
+            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+        },
     },
     typ::{AbstractId, Type},
     wrap,
@@ -22,19 +20,70 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
-use netidx_core::pack::{decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::iter;
 use triomphe::Arc;
 
-// CR claude for eric: [structure] Struct, Tuple and Variant are one node: children
-// gathered, gated and packed into a `Value::Array`, differing only in the prefix
-// (field names / nothing / the tag) and the emit fn; every other method is the
-// same text three times (~250 lines). One composite node with a small kind enum
-// would say it once.
+/// The `Update` methods Struct, Tuple and Variant share: children `n`
+/// gathered into one value, a resident, a wake bit.
+macro_rules! composite_plumbing {
+    ($name:ident) => {
+        fn spec(&self) -> &Expr {
+            &self.spec
+        }
+
+        fn typ(&self) -> &Type {
+            &self.typ
+        }
+
+        fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+            self.n.iter_mut().for_each(|n| n.delete(ctx))
+        }
+
+        fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+            self.slept.set();
+            self.n.iter_mut().for_each(|n| n.sleep(ctx))
+        }
+
+        fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
+            self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
+        }
+
+        fn refs(&self, refs: &mut Refs) {
+            self.n.iter().for_each(|n| n.refs(refs))
+        }
+
+        fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            for n in self.n.iter_mut() {
+                wrap!(n, n.typecheck1(ctx))?
+            }
+            Ok(())
+        }
+
+        fn view(&self) -> NodeView<'_, R, E> {
+            NodeView::$name(self)
+        }
+    };
+}
+
+/// A composite's children gathered and gated: returns from the caller
+/// with `$empty` for a childless one, a bottom, or a ride; otherwise
+/// the values and the tag of the result.
+macro_rules! gathered {
+    ($self:ident, $ctx:ident, $event:ident, $empty:expr) => {{
+        if $self.n.is_empty() {
+            return super::produce_constant($ctx, $event, &mut $self.resident, || $empty);
+        }
+        let mut vals: LPooled<Vec<Value>> = LPooled::take();
+        let (trig, fired, bottom) = gather($ctx, $event, &mut $self.n, &mut vals);
+        dense_gate!($self, $ctx, trig, bottom);
+        (vals, if fired { Tag::FIRED } else { Tag::STALE })
+    }};
+}
+
 #[derive(Debug)]
 pub struct Struct<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
@@ -83,7 +132,8 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
-        let names = Vec::<ArcStr>::decode(buf)?.into_boxed_slice();
+        let names: Box<[ArcStr]> =
+            Vec::<ArcStr>::decode(buf)?.iter().map(|n| ctx.tag(n)).collect();
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
         Ok(Node::new(Self {
             spec,
@@ -113,47 +163,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         encode_nodes(&self.n, buf)
     }
 
+    composite_plumbing!(Struct);
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if self.n.is_empty() {
-            return super::produce_constant(ctx, event, &mut self.resident, || {
-                Value::Array(ValArray::from([]))
-            });
-        }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let (mut vals, tag) =
+            gathered!(self, ctx, event, Value::Array(ValArray::from([])));
         let iter = self.names.iter().zip(vals.drain(..)).map(|(name, v)| {
             let name = Value::String(name.clone());
             Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
         });
         let v = Value::Array(ValArray::from_iter_exact(iter));
         self.resident.set(TagValue::tagged(v, tag))
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept.set();
-        self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -169,26 +189,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
                         self.n.len()
                     )
                 }
-                // CR claude for eric: [style] a field mismatch here (and in
-                // Tuple::typecheck0) carries no site; Variant wraps it with `wrap!`.
                 for ((_, t, _), n) in typs.iter().zip(self.n.iter()) {
-                    t.check_contains(&ctx.env, &n.typ())?
+                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
                 }
             }
             _ => bail!("BUG: expected a struct rtype"),
         }
         Ok(())
-    }
-
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Struct(self)
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -198,8 +205,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 
 #[derive(Debug)]
 pub struct Replace<R: Rt, E: UserEvent> {
+    /// The field's position in the struct's sorted layout, resolved by
+    /// typecheck0.
     pub(crate) index: Option<usize>,
-    pub name: Value,
+    pub name: ArcStr,
     pub n: Node<R, E>,
 }
 
@@ -216,7 +225,7 @@ impl<R: Rt, E: UserEvent> Replace<R, E> {
 
     fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
         let index = Option::<usize>::decode(buf)?;
-        let name = Value::decode(buf)?;
+        let name = ArcStr::decode(buf)?;
         let n = decode_node(ctx, buf)?;
         Ok(Replace { index, name, n })
     }
@@ -271,7 +280,7 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
             .map(|(name, e)| {
                 Ok(Replace {
                     index: None,
-                    name: Value::String(name.clone()),
+                    name: name.clone(),
                     n: compile(ctx, flags, e.clone(), scope, top_id)?,
                 })
             })
@@ -310,81 +319,33 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         Ok(())
     }
 
-    // CR claude for eric: [structure] the source and replacement reads below are
-    // `read_prod!` (node/mod.rs) written out twice, and `src.unwrap()` leans on
-    // "None implies bottom" holding across the gate. The pairing loop also relies
-    // on `replace` being sorted by field index, an invariant nothing states.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let mut trig = false;
-        let mut fired = false;
-        let mut bottom = false;
-        let src = {
-            let tv = self.source.update(ctx, event);
-            let t = tv.tag();
-            trig |= t.triggers();
-            fired |= t.is_fired();
-            if t.is_bottom() {
+        let (mut trig, mut fired, mut bottom) = (false, false, false);
+        let src = match read_prod!(self.source, ctx, event, trig, fired, bottom) {
+            Some(Value::Array(a)) => Some(a),
+            // an unshaped (non-struct-rep) source is bottom
+            Some(_) => {
                 bottom = true;
                 None
-            } else {
-                match tv.value_cloned() {
-                    Value::Array(a) => Some(a),
-                    // an unshaped (non-struct-rep) source is bottom
-                    _ => {
-                        bottom = true;
-                        None
-                    }
-                }
             }
+            None => None,
         };
         let mut rvals: SmallVec<[Value; 8]> = SmallVec::new();
         for r in self.replace.iter_mut() {
-            let tv = r.n.update(ctx, event);
-            let t = tv.tag();
-            trig |= t.triggers();
-            fired |= t.is_fired();
-            if t.is_bottom() {
-                bottom = true
-            } else if !bottom {
-                rvals.push(tv.value_cloned())
-            }
+            rvals.extend(read_prod!(r.n, ctx, event, trig, fired, bottom));
         }
         dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let src = src.unwrap();
-        let mut si = 0;
-        let iter = src.iter().enumerate().map(|(i, v)| match v {
-            Value::Array(v) if v.len() == 2 => {
-                if let Some(r) = self.replace.get_mut(si) {
-                    match r.index {
-                        Some(index) if i == index => {
-                            let rep = rvals[si].clone();
-                            si += 1;
-                            Value::Array(ValArray::from_iter_exact(
-                                [v[0].clone(), rep].into_iter(),
-                            ))
-                        }
-                        // CR claude for eric: [dead] typecheck0 always sets `index`
-                        // (and the image carries it), so this name search never runs;
-                        // likewise StructRef::update's `None` search. Drop the
-                        // fallbacks and `Replace::name`'s runtime role with them.
-                        None if &r.name == &v[0] => {
-                            r.index = Some(i);
-                            let rep = rvals[si].clone();
-                            si += 1;
-                            Value::Array(ValArray::from_iter_exact(
-                                [v[0].clone(), rep].into_iter(),
-                            ))
-                        }
-                        _ => Value::Array(v.clone()),
-                    }
-                } else {
-                    Value::Array(v.clone())
-                }
+        let Some(src) = src else { return self.resident.set_bottom(trig) };
+        let mut fields: LPooled<Vec<Value>> = src.iter().cloned().collect();
+        for (r, v) in self.replace.iter().zip(rvals.drain(..)) {
+            if let Some(Value::Array(kv)) = r.index.and_then(|i| fields.get_mut(i))
+                && kv.len() == 2
+            {
+                *kv = ValArray::from_iter_exact([kv[0].clone(), v].into_iter());
             }
-            _ => v.clone(),
-        });
-        let v = Value::Array(ValArray::from_iter_exact(iter));
+        }
+        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let v = Value::Array(ValArray::from_iter_exact(fields.drain(..)));
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -419,28 +380,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
-        // CR claude for eric: [readability] the names are re-read from the spec,
-        // with a "BUG" arm, though each `Replace` already holds its name (as a
-        // `Value::String`; an `ArcStr` would serve both uses).
-        let fields = match &self.spec.kind {
-            ExprKind::StructWith(StructWithExpr { source: _, replace }) => {
-                replace.iter().map(|(n, _)| n.clone()).collect::<SmallVec<[ArcStr; 8]>>()
-            }
-            _ => bail!("BUG: miscompiled structwith"),
-        };
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
         let styp = self.source.typ().deref_cloned();
         let check = || -> Result<()> {
             match styp {
                 Some(Type::Struct(flds)) => {
-                    for (rep, n) in self.replace.iter_mut().zip(fields.iter()) {
+                    for rep in self.replace.iter_mut() {
                         let r =
                             flds.iter().enumerate().find_map(|(i, (field, typ, _))| {
-                                if field == n { Some((i, typ)) } else { None }
+                                if field == &rep.name { Some((i, typ)) } else { None }
                             });
                         match r {
-                            None => bail!("struct has no field named {n}"),
+                            None => bail!("struct has no field named {}", rep.name),
                             Some((i, typ)) => {
                                 wrap!(rep.n, rep.n.typecheck0(ctx))?;
                                 wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
@@ -563,34 +515,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         if tag.is_bottom() {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
-        let v = tv.value_cloned();
-        let res = match v {
-            Value::Array(a) => match self.sorted_field_idx {
-                Some(i) => a.get(i).and_then(|v| match v {
-                    Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
-                    _ => None,
-                }),
-                None => {
-                    let res = a.iter().enumerate().find_map(|(i, kv)| match kv {
-                        Value::Array(kv) => match &kv[..] {
-                            [Value::String(f), v] if f == &self.field_name => {
-                                Some((i, v.clone()))
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    });
-                    match res {
-                        Some((i, v)) => {
-                            self.sorted_field_idx = Some(i);
-                            Some(v)
-                        }
-                        None => None,
-                    }
-                }
-            },
+        let res = tv.with_value(|v| match (v, self.sorted_field_idx) {
+            (Value::Array(a), Some(i)) => a.get(i).and_then(|v| match v {
+                Value::Array(a) if a.len() == 2 => Some(a[1].clone()),
+                _ => None,
+            }),
             _ => None,
-        };
+        });
         match res {
             Some(v) => self.resident.set(TagValue::tagged(v, tag)),
             None => self.resident.ride(),
@@ -662,12 +593,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        // CR claude for eric: [readability] stale: there is no `field` here; the
-        // field name says it already.
-        // `field` is the position in the struct type's sorted layout.
         let sorted_idx = self
             .sorted_field_idx
-            .ok_or_else(|| anyhow::anyhow!("emit_clif: struct field index unresolved"))?;
+            .ok_or_else(|| anyhow!("emit_clif: struct field index unresolved"))?;
         emit_struct_ref_node(cx, &self.source, sorted_idx, &self.typ)
     }
 }
@@ -735,43 +663,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.typ.encode(buf)?;
         encode_nodes(&self.n, buf)
     }
+    composite_plumbing!(Tuple);
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if self.n.is_empty() {
-            return super::produce_constant(ctx, event, &mut self.resident, || {
-                Value::Array(ValArray::from([]))
-            });
-        }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let (mut vals, tag) =
+            gathered!(self, ctx, event, Value::Array(ValArray::from([])));
         let v = Value::Array(ValArray::from_iter_exact(vals.drain(..)));
         self.resident.set(TagValue::tagged(v, tag))
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept.set();
-        self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -784,23 +682,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
                     bail!("tuple arity mismatch {} vs {}", self.n.len(), typs.len())
                 }
                 for (t, n) in typs.iter().zip(self.n.iter()) {
-                    t.check_contains(&ctx.env, &n.typ())?
+                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
                 }
             }
             _ => bail!("BUG: unexpected tuple rtype"),
         }
         Ok(())
-    }
-
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Tuple(self)
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -835,10 +722,6 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
             .collect::<Result<Box<[_]>>>()?;
         let typs = Arc::from_iter(n.iter().map(|n| n.typ().clone()));
         let typ = Type::Variant(tag.clone(), typs, WrittenAt::NOWHERE);
-        // CR claude for eric: [perf] tags and struct field names are interned
-        // through `ctx.tag` here but decoded as fresh strings by image_decode (a
-        // warm start shares nothing), and the intern set is never pruned. Intern
-        // on both paths or drop the set.
         let tag = ctx.tag(tag);
         Ok(Node::new(Self {
             spec,
@@ -858,7 +741,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
-        let tag = ArcStr::decode(buf)?;
+        let tag = ctx.tag(&ArcStr::decode(buf)?);
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
         Ok(Node::new(Self {
             spec,
@@ -887,45 +770,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.tag.encode(buf)?;
         encode_nodes(&self.n, buf)
     }
+    composite_plumbing!(Variant);
+
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if self.n.is_empty() {
-            super::produce_constant(ctx, event, &mut self.resident, || {
-                Value::String(self.tag.clone())
-            })
-        } else {
-            let mut vals: LPooled<Vec<Value>> = LPooled::take();
-            let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-            dense_gate!(self, ctx, trig, bottom);
-            let tag = if fired { Tag::FIRED } else { Tag::STALE };
-            let a = iter::once(Value::String(self.tag.clone())).chain(vals.drain(..));
-            let v = Value::Array(ValArray::from_iter(a));
-            self.resident.set(TagValue::tagged(v, tag))
-        }
-    }
-
-    fn spec(&self) -> &Expr {
-        &self.spec
-    }
-
-    fn typ(&self) -> &Type {
-        &self.typ
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.delete(ctx))
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.slept.set();
-        self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-    }
-
-    fn refs(&self, refs: &mut Refs) {
-        self.n.iter().for_each(|n| n.refs(refs))
+        let (mut vals, tag) =
+            gathered!(self, ctx, event, Value::String(self.tag.clone()));
+        let a = iter::once(Value::String(self.tag.clone())).chain(vals.drain(..));
+        let v = Value::Array(ValArray::from_iter(a));
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -949,17 +801,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck1(ctx))?
-        }
-        Ok(())
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Variant(self)
-    }
-
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_variant_new_node(cx, &self.tag, &self.n)
     }
@@ -981,6 +822,8 @@ pub struct Construct<R: Rt, E: UserEvent> {
     /// construction: what every value minted here carries.
     params: Option<Arc<[Type]>>,
     resident: TagValue,
+    /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    slept: WakeBit,
 }
 
 impl<R: Rt, E: UserEvent> Construct<R, E> {
@@ -1003,6 +846,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
             arg,
             params: None,
             resident: TagValue::phantom(),
+            slept: WakeBit::default(),
         }))
     }
 
@@ -1016,19 +860,18 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
         arg: &Expr,
     ) -> Result<Node<R, E>> {
         let arg = compile(ctx, flags, arg.clone(), scope, top_id)?;
-        // CR claude for eric: [bug] these four errors have no ErrorSite. Probe:
-        // `type C = i64; let c = C(5);` reports "C is not an abstract type, so it
-        // has no constructor" with no position. `bailat!(spec, ..)` / `.at(&spec)`.
         let td = ctx
             .env
-            .lookup_typedef(&scope.lexical, name)?
-            .ok_or_else(|| anyhow!("unknown type {name}"))?;
+            .lookup_typedef(&scope.lexical, name)
+            .at(&spec)?
+            .ok_or_else(|| anyhow!("unknown type {name}").at(&spec))?;
         let Type::Abstract { id, .. } = &td.typ else {
-            bail!("{name} is not an abstract type, so it has no constructor")
+            bailat!(spec, "{name} is not an abstract type, so it has no constructor")
         };
         let id = *id;
         let Some(r) = ctx.env.abstract_rep(id, &scope.lexical) else {
-            bail!(
+            bailat!(
+                spec,
                 "the definition of {name} is not visible here, so it cannot be constructed"
             )
         };
@@ -1043,6 +886,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
             arg,
             params: None,
             resident: TagValue::phantom(),
+            slept: WakeBit::default(),
         }))
     }
 }
@@ -1071,12 +915,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.arg.update(ctx, event);
         let tag = tv.tag();
-        if tag.is_bottom() {
-            return self.resident.set(TagValue::tagged(Value::Null, tag));
-        }
-        // CR claude for eric: [perf] no dense gate: every update, stale ones
-        // included, allocates a new abstract box. And `params` is a type fact
-        // computed lazily on the hot path; take it once in typecheck1.
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        // XCR claude for eric: dense gate added. `params` stays lazy: it is taken
+        // once, at the first construction, after both typecheck passes over the
+        // whole program; this node's typecheck1 still precedes its later siblings'
+        // passes, which can bind a cell its type shares.
         let params = self.params.get_or_insert_with(|| match self.typ.resolve_tvars() {
             Type::Abstract { params, .. } => params,
             _ => Arc::from_iter([]),
@@ -1107,6 +950,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept.set();
         self.arg.sleep(ctx)
     }
 
