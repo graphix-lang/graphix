@@ -816,9 +816,6 @@ struct Resolved<'a> {
     moved: bool,
 }
 
-// XCR codex for eric: [CR09, P1] done: a dereference holds its address
-// as one optional value, released while its reference is bottom, so the
-// place unregisters, its cell bottoms and a write through it goes nowhere.
 /// The binding a place's root stands for and the path already under
 /// it (a dereferenced place reference composes); `None` while a
 /// dereferenced reference is bottom.
@@ -996,8 +993,6 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         let mut cur = self.root.typ().clone();
         for step in &self.steps {
             cur = match step {
-                // XCR codex for eric: [CR11, P2] done: the index goes
-                // through `array::check_index`, the rule `a[i]` uses.
                 PlaceStep::Index(i) => {
                     super::array::check_index(&ctx.env, i)?;
                     let et = Type::empty_tvar();
@@ -1226,9 +1221,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                     ctx.rt.set_ref_path(self.id, bind, path.clone());
                     self.registered = Some((bind, path.clone()));
                 }
-                // XCR codex for eric: [CR12, P2] done: the mirror reads the
-                // place's own steps from the root's production; the
-                // registration keeps the full path.
                 // the cell mirrors the element, read through the address
                 if (moved || event.init) && !root.tag().is_bottom() {
                     let read = super::coretraits::with_hooks(ctx, event, || {

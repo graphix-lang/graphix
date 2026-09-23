@@ -228,9 +228,6 @@ fn va_borrowed_bits(a: &ValArray) -> u64 {
 type ValueBuf = LPooled<Vec<Value>>;
 type StringBuf = LPooled<String>;
 
-// XCR codex for eric: [CR20, P2] done: only the empty boxes are kept; the
-// builder comes from its pool and returns to it, under the pool's
-// capacity limit (the string builder is pooled too).
 /// The boxes a builder's pointer names, kept empty for reuse. The
 /// builder itself comes from its pool and goes back to it, under the
 /// pool's limits; only the box is recycled here.

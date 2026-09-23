@@ -1147,11 +1147,6 @@ pub(crate) fn decode_at<T>(
     full(&mut sub)
 }
 
-// XCR codex for eric: [CR13, P1] done: definitions are written out of
-// line (the definitions area, `ImageEncoder::finish`) and every occurrence
-// is a reference, so a length is a function of the ordinal alone; the
-// measurement state is gone. `a_frame_measures_what_it_writes` measures
-// the frame alone and out of order before writing it.
 /// An object's place in the session: the ordinal every occurrence
 /// names, assigned at first sight, and whether its definition has been
 /// written.

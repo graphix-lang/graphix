@@ -1339,9 +1339,6 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, mode: Rewrite<'_>) -> 
     ensure_sufficient(|| rewrite_with_inner(e, map, mode))
 }
 
-// XCR codex for eric: [CR18, P2] done: a scope is a pooled copy
-// (`scope`), a rewritten sequence goes straight into `Arc::from_iter`,
-// and the seqq capture analysis is pooled too.
 fn rewrite_with_inner(
     e: &Expr,
     map: &AHashMap<ArcStr, ArcStr>,
