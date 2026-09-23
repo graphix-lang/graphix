@@ -81,6 +81,9 @@ impl StructurePattern {
         crate::stack::ensure_sufficient(|| self.with_names_inner(f))
     }
 
+    // CR claude for eric: [structure] The `all@` capture is handled by hand in every
+    // arm here and again in Display. An `all(&self) -> Option<&Name>` and a
+    // sub-pattern iterator would shrink both to a few lines.
     fn with_names_inner<'a>(&'a self, f: &mut impl FnMut(&'a ArcStr)) {
         match self {
             Self::Bind(n) => f(n),
@@ -193,6 +196,10 @@ impl StructurePattern {
                 let params = Arc::from_iter(params.iter().map(|_| Type::empty_tvar()));
                 Ok(Type::Abstract { id: *id, params })
             }
+            // CR claude for eric: [structure] `SliceSuffix` below repeats this arm
+            // with `list: false`, and `complete_type_predicate_inner` repeats its
+            // List arm as its Array arm but for the constructor. Bind
+            // `(list, binds)` once per slice form and share one body.
             Self::Slice { list, all: _, binds }
             | Self::SlicePrefix { list, all: _, prefix: binds, tail: _ } => {
                 let mut ts: SmallVec<[Type; 8]> = smallvec![Type::Bottom];
@@ -226,6 +233,8 @@ impl StructurePattern {
                         Ok((n.clone(), t, WrittenAt::NOWHERE))
                     })
                     .collect::<Result<SmallVec<[(ArcStr, Type, WrittenAt); 8]>>>()?;
+                // CR claude for eric: [perf] `sort_by_key` clones an `ArcStr` per
+                // comparison: `sort_by(|a, b| a.0.cmp(&b.0))`.
                 typs.sort_by_key(|(n, _, _)| n.clone());
                 Ok(Type::Struct(Arc::from_iter(typs.into_iter())))
             }
@@ -263,6 +272,11 @@ impl StructurePattern {
         scrutinee: &Type,
         depth: usize,
     ) -> Result<Option<Type>> {
+        // CR claude for eric: [risk] 128 (here and in `members`) is an unnamed
+        // limit that silently stops the completion: a partial struct pattern
+        // nested deeper types differently from a shallow one, and the parser
+        // admits deeper patterns. The levels below are not stack-guarded either;
+        // recurse through the guarded `complete_type_predicate` and drop it.
         if depth > 128 {
             return Ok(None);
         }
@@ -355,6 +369,17 @@ impl StructurePattern {
                 };
                 let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
                 members(env, scrutinee, depth, &mut ms);
+                // CR claude for eric: [bug] Completes against the FIRST struct
+                // member of the scrutinee, whatever its fields. probe: `select v
+                // { {x: {z, ..}} => .., _ => .. }` over `[{a: i64, x: {z: i64, w:
+                // i64}}, {x: {z: string, q: i64}}]` is refused ("pattern { x: { w:
+                // i64, z: _ } } will never match") though it matches the second
+                // member. The Tuple, Variant, List and Array arms below pick the
+                // first member of their shape too: `select v { (s, {a, ..}) => ..
+                // }` over `[(i64, {a: i64, b: i64}), (string, {a: string, c:
+                // i64})]` passes the exhaustiveness check, then is bottom for
+                // `("x", {a: "s", c: 1})` in both engines. Complete against the
+                // members the pattern can match; refuse two, as the partial arm does.
                 let sf = match ms.iter().find(|m| matches!(m, Type::Struct(_))) {
                     Some(Type::Struct(sf)) => sf.clone(),
                     _ => return Ok(None),
@@ -508,6 +533,10 @@ impl StructurePattern {
     }
 }
 
+// CR claude for eric: [structure] Patterns have no `PrettyDisplay`, so a long
+// destructuring or type predicate never breaks and pushes its value under the
+// head. probe: a seven-field `let { alpha_field, .. } = s` prints a 97-column
+// line, then `s;` on its own.
 impl fmt::Display for StructurePattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         macro_rules! with_sep {
@@ -566,6 +595,9 @@ impl fmt::Display for StructurePattern {
                 with_sep!(binds);
                 write!(f, ")")
             }
+            // CR claude for eric: [style] `x@` takes a space before a slice, tuple
+            // or struct pattern but not before a variant or abstract one: `kk@ `Up`
+            // (the book's spelling) formats to `kk@`Up`, `c@ T(x)` to `c@T(x)`.
             StructurePattern::Variant { all, tag, binds } if binds.len() == 0 => {
                 if let Some(all) = all {
                     write!(f, "{all}@")?

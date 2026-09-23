@@ -144,6 +144,10 @@ pub enum AbiKind {
     Null,
 }
 
+// CR claude for eric: [dead] No callers anywhere: `to_abi_param_kind`,
+// `AbiParamKind::wire_words` (always 2), `array_scalar_prim`, `unit_type`,
+// `bytes_type`, `datetime_type`, `duration_type`, `tuple_type`, `struct_type`,
+// `variant_type_from_cases`.
 impl AbiKind {
     /// The [`AbiParamKind`] for this shape; `None` for `Unit`/`Null`.
     pub fn to_abi_param_kind(self) -> Option<AbiParamKind> {
@@ -297,6 +301,11 @@ pub fn nullable_error_marked(t: &Type) -> Option<bool> {
 /// One named-type expansion on the path from the root, for cycle
 /// detection while concretizing a type. Structural nesting is not an
 /// expansion; only following a `Ref` to its definition is.
+// CR claude for eric: [structure] A one-variant enum every user destructures with
+// `let ExpandKey::Ref(tr) = key`; use `TypeRef` directly. `Seen::contains_fp`
+// and `outermost_occurrence` are the same walk twice, and the latter returns the
+// nearest match, not the outermost (they coincide only because a key never
+// repeats on the path): one `find` returning `Option<&TypeRef>`.
 #[derive(Clone, PartialEq)]
 pub(crate) enum ExpandKey {
     Ref(TypeRef),
@@ -373,6 +382,10 @@ const MAX_FREEZE_EXPANSIONS: usize = 256;
 /// form of `t` over the fusable subset, or `None` if any part has no
 /// kernel encoding. Accept/reject matches [`abi_kind`] at each level;
 /// `Map`/`Error` stop the recursion (opaque `Value` on the wire).
+// CR claude for eric: [readability] Not TVar-free: `Map`/`Error` are returned as
+// found and an option/result's non-success member is cloned unfrozen, so
+// `[i64, Error<'e>]` freezes with the `'e` cell inside. Say which parts are
+// concrete, or freeze those members too.
 ///
 /// A recursive named type freezes to an opaque leaf: the recurring
 /// `Ref` stays unexpanded, so the output is finite and the value
@@ -844,6 +857,10 @@ pub struct AbiParamDesc<'a> {
 }
 
 /// The wire shape of a kernel's return value: a two-word `(disc, payload)` pair.
+// CR claude for eric: [structure] A one-variant enum, so `abi_return()` is a bool
+// spelled `Option<AbiReturn>`. The unified Value ABI made every return a pair;
+// keep only the "bare null is refused" check (where the sig is built) and drop
+// the type.
 #[derive(Debug, Clone, Copy)]
 pub enum AbiReturn {
     Pair,
@@ -852,6 +869,13 @@ pub enum AbiReturn {
 /// A kernel's identity: the address of its shared [`KernelSig`]. Every
 /// "which kernel" map keys on this, never on `fn_name`: names shadow, and
 /// a polymorphic lambda mints one kernel per monomorphization.
+// CR claude for eric: [style] `std::sync::Arc` for `KernelSig`, `SiteLeaf`, the
+// `SelfBlock` slots (and `WrappedKernel`, `FnType` keys in mod.rs/kernel.rs)
+// although nothing takes a `Weak` or forms a cycle: `triomphe::Arc`, which the
+// file already imports. Spelled out 17 times here besides.
+// CR claude for eric: [style] kernel identity is a bare `usize` address used as
+// a map key in jit.rs; a `KernelKey` newtype keeps it from mixing with other
+// addresses and counts (CR at emit/jit.rs).
 pub(crate) fn kernel_key(k: &std::sync::Arc<KernelSig>) -> usize {
     std::sync::Arc::as_ptr(k) as usize
 }
@@ -877,6 +901,11 @@ pub struct KernelSig {
     pub tail_invariant: Vec<u32>,
     /// Set once the body's CLIF define completes. Callees define before
     /// callers, so `false` at a call site means a self/back-edge call.
+    // CR claude for eric: [dead] Written once (emit/jit.rs) and read by nothing
+    // but `Clone` and the image codec; back-edges are found by a missing
+    // `SiteLayout` instead. It is also wrong across JIT generations (stays true
+    // for a fresh module). Delete it; the hand-written `Clone` below looks
+    // unused too, and cloning a sig would mint a second kernel identity.
     pub defined: std::sync::atomic::AtomicBool,
     /// This body's call-site block size in words, filled once the layout
     /// is final. A self-call reads it at run time because the size is

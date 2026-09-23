@@ -92,6 +92,11 @@ impl KernelMatcher {
 
     /// Check this matcher against a real kernel. `Ok` on match, `Err`
     /// with a human reason on the first failing criterion.
+    // CR claude for eric: [style] Errors are `Result<(), String>` built with
+    // `format!` (here, match_at, match_node) rather than anyhow; `actual` is a
+    // Vec collected only to compare (`Iterator::eq` does it), and describe_at
+    // allocates `"  ".repeat(depth)` plus a `format!` per node where `write!`
+    // into `out` would do.
     fn check(&self, k: &KernelSig) -> Result<(), String> {
         if let Some(rt) = &self.return_type {
             if &k.return_type != rt {
@@ -185,6 +190,9 @@ fn match_at<R: Rt, E: UserEvent>(
     }
 }
 
+// CR claude for eric: [risk] match_at, find_match and describe_at recurse on
+// program-driven depth without stack::ensure_sufficient, and find_match builds
+// (then drops) an error String at every node that does not match.
 /// True if `node` or any descendant matches `spec`. Used by
 /// [`NodeShape::Contains`].
 fn find_match<R: Rt, E: UserEvent>(node: &Node<R, E>, spec: &NodeShape) -> bool {
@@ -233,6 +241,14 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
     }
 }
 
+// CR claude for eric: [structure] A second per-kind child enumeration beside
+// fusion::for_each_node (fusion/mod.rs:338), and the two disagree: Module is
+// `source()` here but `nodes` there, Select guards are skipped here, CallSite
+// puts `fnode` first here and last there. One direct-children walk on Node
+// (as Expr::for_each_child is for Expr) should serve both.
+// CR claude for eric: [dead] The second match is exhaustive, so this never
+// returns None; the None arms in match_at, find_match and describe_at are dead.
+// The binop pre-match plus the `unreachable!` arms also split one match in two.
 /// The child nodes of a view in a deterministic order; `None` for a
 /// variant whose children are not enumerated here. Leaves return
 /// `Some(empty)`.
@@ -385,6 +401,10 @@ fn node_children<'a, R: Rt, E: UserEvent>(
     Some(kids)
 }
 
+// CR claude for eric: [bug] 43 of the 62 NodeView variants map to "Other", so
+// `NodeShape::node("Constant")` or `node("Add")` can never match while
+// `node("Other")` matches any of them; the `Node { kind }` doc promises a
+// variant name. Name every variant with no `_` arm (a `&'static str` suffices).
 /// The `NodeView` variant name, used as the `Node { kind }` tag.
 pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> ArcStr {
     use arcstr::literal;

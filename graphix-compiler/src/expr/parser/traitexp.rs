@@ -30,6 +30,11 @@ where
     I::Range: Range,
 {
     (
+        // CR claude for eric: [bug] `leading_comments()` discards `//` lines above
+        // a trait method, so `graphix fmt` deletes them (probe: `// a plain
+        // comment` above `val show` is gone from the output), and `///` is
+        // accepted here in a .gx though comment_line refuses it elsewhere. Keep
+        // the comments on TraitMethod or refuse them.
         leading_comments().with(doc_comment()).skip(spaces()),
         attempt(string("val").skip(spaces1())).with(name()).skip(sptoken(':')),
         typ(),
@@ -136,6 +141,11 @@ where
                 let mut tvs: LPooled<Vec<TVar>> = LPooled::take();
                 let mut constraints: LPooled<Vec<(TVar, Type)>> = LPooled::take();
                 let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
+                // CR claude for eric: [structure] Four grammars for a type-variable
+                // list: here (optional `+` bound, duplicate check), typexp::typedef
+                // (optional single-type bound, no `+`), typexp::fnconstraints and
+                // lambda (required bound); this loop also re-implements
+                // typexp::flatten_bounds. One tvar-list parser.
                 if let Some(mut params) = params {
                     for (tv, bounds) in params.drain(..) {
                         if !seen.insert(tv.name.clone()) {

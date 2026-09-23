@@ -3,6 +3,10 @@
 //! async operations are fusion boundaries. Builtin effects are declared
 //! via `BuiltIn::EFFECT`; user-function effects are inferred.
 
+// CR claude for eric: [readability] Stale since strict fusion: this module doc
+// and `is_sync`/`is_async` below say sync means "fusion candidate" and only
+// async is a boundary, but a `Sync` builtin (stateful) de-fuses too; only
+// `Stateless(Some(FastCall))` fuses (CLAUDE.md, design/strict_fusion.md).
 /// The sync/async lattice: `Sync ⊔ Sync = Sync`, everything else is
 /// `Async`. `Async` is the conservative default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, netidx_derive::Pack)]
@@ -35,6 +39,8 @@ impl EffectKind {
     }
 }
 
+// CR claude for eric: [style] Hand-written `Default`; `RecursionKind` below
+// derives it with `#[default]`. Derive here too.
 impl Default for EffectKind {
     /// `Async`.
     fn default() -> Self {
@@ -86,6 +92,11 @@ impl Effect {
 /// The facts of a registered builtin, recorded from [`Effect`] and
 /// looked up by name. `default()` is the reading for an unregistered
 /// name: `Async` and stateful.
+// CR claude for eric: [structure] Three independent fields re-encode `Effect`,
+// so `stateless` with `Async`, or a `fastcall` without `stateless`, are
+// representable; analysis.rs then rebuilds `Stateless` as `effect.is_sync() &&
+// stateless` three times. `Effect` is `Copy`: store it (default `Async`) and ask
+// it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BuiltinFacts {
     pub effect: EffectKind,
@@ -115,6 +126,9 @@ pub enum RecursionKind {
     NotRecursive,
     /// Self-recursive outside tail position.
     Recursive,
+    // CR claude for eric: [readability] the analysis does not check loop-able
+    // formals or that a tail loop is built (CR at analysis.rs TailRecursive); say
+    // what it decides, or make it decide this.
     /// Self-recursive in tail position with loop-able formals.
     TailRecursive,
 }

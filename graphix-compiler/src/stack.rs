@@ -20,6 +20,9 @@ pub(crate) const SEGMENT: usize = 32 * 1024 * 1024;
 /// The stack a thread may hold on grown segments before the running
 /// runtime is aborted. Unlimited by default; set by
 /// `GRAPHIX_STACK_BUDGET` (bytes) or [`set_stack_budget`].
+// CR claude for eric: [bug] A malformed GRAPHIX_STACK_BUDGET ("64M", "1e8",
+// " 64 MB") parses to unlimited without a word, so the containment the user
+// asked for is silently off. Log it and refuse, or accept units.
 static STACK_BUDGET: LazyLock<AtomicUsize> = LazyLock::new(|| {
     AtomicUsize::new(match std::env::var("GRAPHIX_STACK_BUDGET") {
         Ok(s) => s.trim().parse().unwrap_or(usize::MAX),
@@ -27,6 +30,10 @@ static STACK_BUDGET: LazyLock<AtomicUsize> = LazyLock::new(|| {
     })
 });
 
+// CR claude for eric: [risk] The budget is process-global: two runtimes in one
+// process (tests, an embedder hosting several programs) cannot have different
+// budgets, and one's set_stack_budget changes the other's containment. A
+// per-runtime budget would live beside the Control the abort reaches.
 pub fn set_stack_budget(bytes: usize) {
     STACK_BUDGET.store(bytes, Ordering::Relaxed);
 }
@@ -67,6 +74,10 @@ pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
     if grow_exceeds_budget() {
         budget_abort();
     }
+    // CR claude for eric: [risk] GROWN is not restored if `f` unwinds. Tokio
+    // catches a task's panic and keeps the worker thread, so every later
+    // runtime on that thread starts with the leaked segments counted and hits
+    // the budget early. Decrement in a drop guard.
     GROWN.with(|g| g.set(g.get() + SEGMENT));
     let r = stacker::grow(SEGMENT, f);
     GROWN.with(|g| g.set(g.get() - SEGMENT));

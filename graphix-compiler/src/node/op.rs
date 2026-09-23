@@ -1,3 +1,5 @@
+// CR claude for eric: [style] `crate::image::ImageBuf` and `crate::image::nodes`
+// sit outside the `crate::{..}` group; merge them.
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::image::ImageBuf;
 use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
@@ -46,6 +48,14 @@ pub enum BoolOp {
     Or,
 }
 
+// CR claude for eric: [structure] `compare_op!`, `bool_op!` and `arith_op!` each
+// re-spell the whole binary-node shell: struct, `new`, `compile`, image codec,
+// `refs`/`delete`/`sleep`/`reset_replay`/`typecheck1`/`spec`/`typ`. Only the value
+// function, typecheck0 and `emit_clif` differ. One `Binary<R, E, K>` node over a
+// small `OpKind` trait (eval, check, emit, NodeTag) would remove ~500 lines of
+// macro and the 17 near-identical types. The `self.typ.check_contains(&ctx.env,
+// &Type::boolean())` in compare/bool/Not typecheck0 checks a type set to bool at
+// construction.
 macro_rules! compare_op {
     ($name:ident, $op:tt) => {
         #[derive(Debug)]
@@ -60,6 +70,9 @@ macro_rules! compare_op {
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
+            // CR claude for eric: [dead] there is no AOT codegen: this `new`, the
+            // bool/arith/Not/Neg `new`s (all `#[allow(dead_code)]`) have no caller
+            // and their doc comments describe a consumer that does not exist.
             /// Build the comparison node from already-compiled children.
             /// Used by AOT-generated code.
             #[allow(dead_code)]
@@ -136,6 +149,12 @@ macro_rules! compare_op {
                 dense_gate!(resident, ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
                 let fired = lt.is_fired() || rt.is_fired();
                 let tag = if fired { $crate::Tag::FIRED } else { $crate::Tag::STALE };
+                // CR claude for eric: [bug] over a numeric union the operands can
+                // be different variants and `Value`'s order ranks the variant
+                // before the number: probe `let x: [i64, f64] = t ~ 5; let y:
+                // [i64, f64] = t ~ 2.5;` prints `x < y` true and `x - y` 2.5,
+                // both engines. Arithmetic promotes, comparison does not. Decide:
+                // refuse multi-numeric unions for `'a` here, or compare numerically.
                 let v = coretraits::with_hooks(ctx, event, || {
                     l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
                 });
@@ -174,6 +193,11 @@ macro_rules! compare_op {
             fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
+                // CR claude for eric: [structure] this probe-both-directions-then-
+                // commit unification is duplicated verbatim in `arith_op!`'s
+                // `typecheck_tail`, and the "known operand: check, open cell:
+                // constrain" loop there is repeated in `Neg::typecheck0`. One
+                // `unify_operands(ctx, lt, rt, msg) -> Result<Type>` helper.
                 // Both operands share one type. Probe both directions
                 // without binding (a failed binding walk cannot be undone),
                 // then commit the widening direction.
@@ -578,6 +602,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         self.typ.encode(buf)?;
         self.n.image_encode(buf)
     }
+    // CR claude for eric: [perf] Not and Neg have no `dense_gate!`, so they
+    // recompute on every quiet cycle; for a `decimal` that is an `Arc` allocation
+    // per cycle. `resident.set(TagValue::tagged(Value::Null, tag))` for a bottom
+    // is `set_bottom(tag.triggers())` (also Not, and arith's div0 path).
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Integers wrap, matching the JIT's `ineg`.
         let tv = self.n.update(ctx, event);
@@ -658,6 +686,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
     }
 }
 
+// CR claude for eric: [structure] `Op` exists only to print the operator in one
+// type error, and it re-encodes what `arith_op!` already gets as `$base` (a
+// `BinOp`) plus `$checked`. Pass the operator's text, or print `BinOp` + `?`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Op {
     Add,
@@ -698,6 +729,10 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
     match result {
         Value::Error(e) => {
             let tag = Value::String(ARITH_ERR_TAG.clone());
+            // CR claude for eric: [bug] `e` is a `Value::String`, whose Display
+            // quotes it, so the payload string contains the quotes: probe `(t ~ 1)
+            // +? 9223372036854775807` prints `error:["ArithError", "\"arithmetic
+            // error\""]` in both engines. Take the string itself when it is one.
             let err = Value::from(format_compact!("{e}"));
             let var = Value::Array(ValArray::from_iter([tag, err]));
             Value::Error(var.into())
@@ -706,6 +741,13 @@ pub(crate) fn wrap_arith_error(result: Value) -> Value {
     }
 }
 
+// CR claude for eric: [bug] only unchecked `+ - *` keep the operand's variant;
+// `/`, `%` and every checked op fall through to netidx, whose integer arms fold
+// V32->U32, Z32->I32, V64->U64, Z64->I64. So `v32 / v32` is a `u32` value under
+// the static type `v32`: probe `let s: v32 = a / b; select s { v32 as n => n }`
+// (a, b v32) logs "type v32 does not match value 3" and bottoms, both engines;
+// `a +? b` is `u32` too. Cover div/mod (div0 -> bottom) and the checked ops here,
+// or fix netidx's `int_op` to keep the variant.
 /// Unchecked integer `+`/`-`/`*` wrap on overflow, matching the JIT.
 /// Same-variant integer pairs only; every other shape returns `None`
 /// and falls through to the netidx operator.
@@ -963,6 +1005,12 @@ macro_rules! arith_op {
                 } else {
                     match result {
                         Value::Error(e) => {
+                            // CR claude for eric: [readability] `self.spec.ori`
+                            // already renders as "in file ...", so this prints
+                            // "arith error in in file ..." (probed); and each
+                            // failure is written twice, `log::error!` plus
+                            // `eprintln!`. Same "in in" in error.rs
+                            // `unhandled_msg`, `OrNever`'s warn and the JIT helper.
                             // only a fresh failure logs
                             if trig {
                                 log::error!(

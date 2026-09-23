@@ -1,3 +1,6 @@
+// CR claude for eric: [style] `super::Sig` is `crate::expr::Sig`: one group with
+// the rest. `fmt::Write` is imported at the top and again inside `fmt_flat`, and
+// `Write`/`fmt::Write`, `Formatter`/`fmt::Formatter` are mixed through the file.
 use super::Sig;
 use crate::{
     expr::{
@@ -30,6 +33,10 @@ fn write_seq_let(f: &mut impl Write, b: &BindExpr) -> fmt::Result {
     }
 }
 
+// CR claude for eric: [structure] The twenty binary operators are listed three
+// times: here, in `fmt_inner`'s arms and in `fmt_pretty_inner`'s `binop!` arms.
+// One `fn binop(&ExprKind) -> Option<(&str, &Expr, &Expr)>` that also returns
+// the symbol would serve all three.
 /// The operands of a binary operator, `None` for any other kind.
 fn binop_operands(e: &ExprKind) -> Option<(&Expr, &Expr)> {
     use ExprKind::*;
@@ -133,6 +140,9 @@ fn trigger_needs_parens(t: &Expr) -> bool {
     reads_as_body_or_clause || !reads_bare(t)
 }
 
+// CR claude for eric: [structure] The projection `F` is only ever the identity
+// (`pretty_print_exprs` is the one caller), and hugging is switched on by
+// comparing `close` to ")". Take `&[Expr]` and say `hug: bool`.
 fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
     buf: &mut PrettyBuf,
     exprs: &'a [A],
@@ -218,6 +228,9 @@ pub(crate) fn pretty_file_items<T>(
 /// Whether the multi-line layout of `e` opens with a short head and a
 /// bracket, closing at its own indent: it can sit on the line of
 /// whatever introduces it.
+// CR claude for eric: [style] A dynamic module (`mod m dynamic {`) opens with a
+// bracket too but is missing, so `let s = mod m dynamic {` moves under its head
+// (probed).
 fn opens_with_bracket(e: &ExprKind) -> bool {
     use ExprKind::*;
     match e {
@@ -271,6 +284,12 @@ fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
     if Bare(e).fmt_flat(buf)? {
         return Ok(());
     }
+    // CR claude for eric: [perf] Exponential. The whole multi-line layout is
+    // rendered only to measure its first line, then thrown away and rendered
+    // again nested; once the indent passes the width every level fails and
+    // doubles the work. probe: `let s = { f: { f: .. 1 .. } }` 38 deep formats
+    // in 0.66s, 42 deep in 10.6s (`graphix fmt`; the LSP's formatting request
+    // too). Measure the head (`{`, `f(`, `|a| {`) without rendering the body.
     if opens_with_bracket(&e.kind) {
         let start = buf.len();
         let col = buf.col();
@@ -311,6 +330,10 @@ impl fmt::Display for Literal<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {
             Value::I64(v) => write!(f, "{v}"),
+            // CR claude for eric: [readability] `{v}` never uses an exponent:
+            // `1e300` formats to a 303-character literal, `6.02e23` to
+            // `602000000000000000000000.0` (probed). `{v:?}` prints `1e300`,
+            // `1000.0` and `0.5`, and makes the `fract` arm unnecessary.
             Value::F64(v) if v.is_finite() && v.fract() == 0. => write!(f, "{v}.0"),
             Value::F64(v) if v.is_finite() => write!(f, "{v}"),
             v => v.fmt_ext(f, &VAL_ESC, true),
@@ -321,6 +344,11 @@ impl fmt::Display for Literal<'_> {
 /// The spaces one level of nesting indents by, unless configured.
 pub const DEFAULT_INDENT: usize = 4;
 
+// CR claude for eric: [structure] Every field is public and callers edit the raw
+// string: the `truncate`/`pop`/`insert` in `pretty_file_items`, `pretty_tail_bare`,
+// `fmt_flat`, SigItem's use, BindExpr, LambdaExpr, `pretty_group` and
+// typ/print.rs are one idiom, try then roll back. A `mark()`/`rollback(mark)`
+// pair would name it and keep the buffer private.
 #[derive(Debug)]
 pub struct PrettyBuf {
     pub indent: usize,
@@ -395,11 +423,31 @@ impl fmt::Write for PrettyBuf {
     }
 }
 
+// CR claude for eric: [structure] Two printers, not one: each node has a flat
+// `Display` and a hand-written multi-line twin that must agree token for token
+// (Struct, StructWith, Apply, Select, Seq, TryWith, Trait, Impl, Sig, Sandbox,
+// Doc, the `let` head in `write_seq_let` and BindExpr, `write_returns` and
+// `pretty_returns`). The Construct, Deref, Sandbox and catch layout bugs below
+// are drift between twins. Describing each node once (text, group, break) and
+// rendering it flat or broken would remove the twins, the three fits tests and
+// the re-render in `pretty_tail_bare`.
 pub trait PrettyDisplay: fmt::Display {
+    // CR claude for eric: [risk] The multi-line recursion (`fmt_pretty` ->
+    // `fmt_pretty_inner` -> a child's `fmt_pretty`) is not under
+    // `ensure_sufficient`; only the flat `Display` is, and CLAUDE.md counts
+    // printing as guarded. No overflow today (990-deep arrays format on a
+    // 256K stack); `StructurePattern`'s Display (pattern.rs) is unguarded too.
     /// The multi-line layout; `fmt_pretty` calls it when the single-line
     /// form does not fit.
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result;
 
+    // CR claude for eric: [bug] A flat form holding a comment, doc or attribute
+    // is accepted: `write_leading` puts a newline inside it, so the comment
+    // trails the token before it and the next line starts unindented. probe:
+    // `let y = select x {\n // c\n `A => 1,\n _ => 2\n}` formats to
+    // `let y = select x { // c\n`A => 1, _ => 2 };`, and stdlib core/mod.gxi to
+    // `trait Eq { /// true if ..`. A node with a decorated descendant must take
+    // the multi-line layout.
     /// Write the single-line form and a newline if it fits the rest of
     /// the line, else write nothing.
     fn fmt_flat(&self, buf: &mut PrettyBuf) -> Result<bool, fmt::Error> {
@@ -417,6 +465,7 @@ pub trait PrettyDisplay: fmt::Display {
         Ok(fits)
     }
 
+    // CR claude for eric: [readability] Stale: `pretty_fmt` is `fmt_pretty_inner`.
     /// Format on a single line when it fits, else via `pretty_fmt`.
     fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
         if self.fmt_flat(buf)? { Ok(()) } else { self.fmt_pretty_inner(buf) }
@@ -668,6 +717,11 @@ impl fmt::Display for Sandbox {
     }
 }
 
+// CR claude for eric: [bug] Writes a trailing space after `[` and after every
+// `,`, closes with ` ]` one column right of the line that opened it, and ends
+// without the newline the other layouts end with. probe: a long whitelist prints
+// `sandbox whitelist [ `, `core, `, .., `         ];`. The flat `[ a, b ]`
+// spacing differs from every other bracket list as well.
 impl PrettyDisplay for Sandbox {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         macro_rules! write_sandbox {
@@ -730,6 +784,11 @@ impl PrettyDisplay for SigItem {
             SigKind::Trait(t) => t.fmt_pretty(buf),
             SigKind::Impl(i) => i.fmt_pretty(buf),
             SigKind::Module(name) => writeln!(buf, "mod {name}"),
+            // CR claude for eric: [bug] A second fits test for a use statement,
+            // `> limit` without the column the `;` takes, where `ExprKind::Use`
+            // goes through `fmt_flat`. probe: a 90-column `use` (91 with its `;`)
+            // breaks in a .gx and stays one 91-column line in a .gxi. Route both
+            // through one printer.
             SigKind::Use { reexport, names } => {
                 let start = buf.len();
                 write_use_names(buf, *reexport, names)?;
@@ -830,6 +889,12 @@ impl fmt::Display for StructWithExpr {
         }
         for (i, (name, e)) in as_written(replace).into_iter().enumerate() {
             write_leading(f, &e.dec)?;
+            // CR claude for eric: [structure] The field-pun test (a one-segment
+            // ref equal to the name, not reserved) is written four times (here,
+            // StructWith's pretty, StructExpr's Display and pretty), twice more
+            // for labeled arguments in ApplyExpr (without the reserved check) and
+            // once in pattern.rs. One `fn puns(name, &Expr) -> bool`; `ModPath`
+            // already compares to `[&str; 1]`.
             match &e.kind {
                 ExprKind::Ref { name: n }
                     if Path::dirname(&**n).is_none()
@@ -1062,6 +1127,9 @@ impl fmt::Display for Arg {
 }
 
 impl LambdaExpr {
+    // CR claude for eric: [style] No space between the quantifiers and the bar:
+    // `'a: Int |a: 'a, b: 'a|` (stdlib core, the book) formats to
+    // `'a: Int|a: 'a, b: 'a|` (probed).
     /// The quantifiers in front of the opening bar.
     fn write_constraints(&self, f: &mut impl Write) -> fmt::Result {
         for (i, (tvar, typ)) in self.constraints.iter().enumerate() {
@@ -1243,6 +1311,10 @@ impl PrettyDisplay for SelectExpr {
 
 impl PrettyDisplay for ExprKind {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        // CR claude for eric: [bug] The left operand is always written flat, so a
+        // left-leaning chain (`a + b + c`, the parser's shape) breaks only before
+        // its last operand. probe: a six-term sum of long names prints a
+        // 101-column line, then `sigma_tau;`. Break a chain at each operator.
         macro_rules! binop {
             ($sep:literal, $lhs:expr, $rhs:expr) => {{
                 writeln!(buf, "{} {}", $lhs, $sep)?;
@@ -1251,6 +1323,12 @@ impl PrettyDisplay for ExprKind {
         }
         match self {
             ExprKind::Use { reexport, names } => pretty_use_names(buf, *reexport, names),
+            // CR claude for eric: [bug] A field, index, slice or map access never
+            // breaks, so neither does the call in front of it. probe: `let v =
+            // some_function_with_long_name(argument_number_one,
+            // argument_number_two, argument_three).field` prints a 97-column
+            // line, where the same call with `?` breaks. Lay the source out with
+            // `fmt_pretty` and append the suffix, as `Qop` does.
             ExprKind::Constant(_)
             | ExprKind::NoOp
             | ExprKind::Ref { .. }
@@ -1354,6 +1432,10 @@ impl PrettyDisplay for ExprKind {
                 buf.nested(|buf| expr.fmt_pretty(buf))?;
                 writeln!(buf, ")")
             }
+            // CR claude for eric: [bug] Entries are written flat (`{k} => {v}`)
+            // whatever their width. probe: `{"alpha" => f(long, args, ..),
+            // "beta" => 2}` prints a 104-column entry. The value should take
+            // `pretty_tail` as a struct field's does.
             ExprKind::Map { args } => {
                 writeln!(buf, "{{")?;
                 buf.nested::<fmt::Result, _>(|buf| {
@@ -1379,6 +1461,10 @@ impl PrettyDisplay for ExprKind {
                 }
                 pretty_print_exprs(buf, args, "(", ")", ",")
             }
+            // CR claude for eric: [structure] Ends without the newline every other
+            // layout ends with (Sandbox's lists too). That contract is unstated,
+            // and the ~40 `kill_newline` calls in this file exist to cope with
+            // either. State it on `fmt_pretty_inner` and keep it. `is_empty()`.
             ExprKind::Variant { tag: _, args } if args.len() == 0 => {
                 write!(buf, "{self}")
             }
@@ -1386,6 +1472,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "`{tag}")?;
                 pretty_print_exprs(buf, args, "(", ")", ",")
             }
+            // CR claude for eric: [bug] `writeln!` puts the argument on the next
+            // line. probe: a `Counter(a + b + ..)` too long for its line prints
+            // `let e = Counter\n(\n    alpha_beta_gamma + ..\n);` and a hugged
+            // call as `Counter\n(f(..));` at column 0. Use `write!`.
             ExprKind::Construct { name, arg } => {
                 writeln!(buf, "{name}")?;
                 pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",")
@@ -1402,6 +1492,10 @@ impl PrettyDisplay for ExprKind {
                 buf.kill_newline();
                 writeln!(buf, "$")
             }
+            // CR claude for eric: [bug] The `"; "` separator leaves a trailing
+            // space on every broken handler statement (probed: `println(msg); `
+            // then newline); every other statement list passes ";".
+            // `pretty_body` has this one caller: inline it.
             ExprKind::Catch(c) => {
                 match &c.constraint {
                     None => write!(buf, "catch({}) ", c.bind)?,
@@ -1443,6 +1537,11 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "&")?;
                 e.fmt_pretty(buf)
             }
+            // CR claude for eric: [bug] `nested` indents the operand's inner lines
+            // one step too far and closes its bracket a step right of the line
+            // that opened it. probe: `let v = *f(a, b, c, d)` too long prints the
+            // arguments at 8 and `);` at 4, where `&f(..)` and `!f(..)` print 4
+            // and 0. Drop `nested`, as ByRef does.
             ExprKind::Deref(e) => {
                 write!(buf, "*")?;
                 buf.nested(|buf| e.fmt_pretty(buf))
@@ -1843,6 +1942,11 @@ impl ExprKind {
             ExprKind::Constant(v @ Value::String(s)) => {
                 write_str_constant(f, v, s, StrForm::Quoted)
             }
+            // CR claude for eric: [bug] An empty statement (a trailing `;`) prints
+            // as nothing and leaves debris in every layout: `{ a; b;  }` flat, a
+            // line of indent spaces in a broken block (book gui/data_table_*.gx),
+            // a blank last line when a file ends in `;`. Print it as part of the
+            // `;` that precedes it.
             ExprKind::NoOp => Ok(()),
             ExprKind::ExplicitParens(e) => write!(f, "({e})"),
             ExprKind::Constant(v) => write!(f, "{}", Literal(v)),
@@ -1984,6 +2088,11 @@ impl ExprKind {
                     write!(f, "({})[{}]", &source, &i)
                 }
             }
+            // CR claude for eric: [perf] Formats both bounds into temporary
+            // strings only to write them again: write the source, `[`, the
+            // bounds and `..` straight to `f`. The bare-or-parenthesized source
+            // test is also repeated for StructRef, TupleRef, MapRef, ArrayRef
+            // and ApplyExpr; one `Postfix(source)` Display would hold it.
             ExprKind::ArraySlice { source, start, end } => {
                 let s = match start.as_ref() {
                     None => "",
@@ -2023,6 +2132,10 @@ impl ExprKind {
             ExprKind::StrictSample { lhs, rhs } => write!(f, "{lhs} ~! {rhs}"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
             ExprKind::Deref(e) => write!(f, "*{e}"),
+            // CR claude for eric: [readability] A negated literal prints its type
+            // prefix: `- 8` formats to `-i64:8` and `- 1.5` to `-f64:1.5`, against
+            // the rule that i64 and f64 print bare. `- 8` (with the space) reads
+            // back as the negation too.
             // `-1` reads back as the literal, so a negated one keeps its type
             ExprKind::Neg(e) => match &e.kind {
                 ExprKind::Constant(v @ (Value::I64(0..) | Value::F64(_)))

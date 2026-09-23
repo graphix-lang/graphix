@@ -394,6 +394,11 @@ fn typexp() -> impl Strategy<Value = Type> {
                         rtype,
                         throws,
                         explicit_throws,
+                        // CR claude for eric: [structure] This copies the
+                        // parser's quantifier_names and its alias-then-seed
+                        // block (typexp.rs:250-265) "like the parser"; if the
+                        // parser changes, the generator keeps testing the old
+                        // rule. One shared `FnType` constructor for both.
                         // One quantifier per name: `fn<'a: A, 'a: B>` is one
                         // variable, two conjuncts.
                         quantifiers: {
@@ -815,6 +820,8 @@ macro_rules! arrayslice {
     };
 }
 
+// CR claude for eric: [dead] `$concat` is never read; every call passes
+// `false`.
 macro_rules! apply {
     ($inner:expr, $concat:literal) => {
         ($inner, collection::vec((option::of(random_fname()), $inner), (0, 10))).prop_map(
@@ -1437,6 +1444,9 @@ fn arithexpr() -> impl Strategy<Value = Expr> {
             binop!(inner.clone().prop_map(add_parens), CheckedDiv),
             binop!(inner.clone().prop_map(add_parens), Mod),
             binop!(inner.clone().prop_map(add_parens), CheckedMod),
+            // CR claude for eric: [risk] `~!` (StrictSample) is never generated,
+            // though add_parens, binop_precedence and `check` all handle it: the
+            // print/parse round trip of the strict sample is untested here.
             binop!(inner.clone().prop_map(add_parens), Sample)
         ]
     })
@@ -1548,6 +1558,10 @@ fn acc_strings<'a>(args: impl IntoIterator<Item = &'a Expr> + 'a) -> Arc<[Expr]>
     Arc::from_iter(v.drain(..))
 }
 
+// CR claude for eric: [style] `dbg!` is threaded through every comparator
+// (four per check_type call, two per binop arm, and each round-trip test dbg!s
+// the whole expression and its text), so a passing run formats megabytes that
+// the harness discards. Print the pair once in the failing `assert!` message.
 fn check_type(t0: &Type, t1: &Type) -> bool {
     dbg!(dbg!(&t0).normalize()) == dbg!(dbg!(&t1).normalize())
 }
@@ -1686,6 +1700,11 @@ fn check_pattern(pat0: &Pattern, pat1: &Pattern) -> bool {
         })
 }
 
+// CR claude for eric: [bug] `zip` without a length check: a lambda that loses
+// or gains an argument in the round trip passes. Same hole in the
+// StringInterpolate arm of `check` (srs0/srs1) and in the lambda constraint
+// comparison (constraints0/constraints1). These comparisons cannot fail on a
+// dropped element.
 fn check_args(args0: &[Arg], args1: &[Arg]) -> bool {
     args0.iter().zip(args1.iter()).fold(true, |r, (a0, a1)| {
         r && dbg!(check_structure_pattern(&a0.pattern, &a1.pattern))
@@ -2220,6 +2239,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
     }
 }
 
+// CR claude for eric: [style] expr_round_trip0..7 and expr_pp_round_trip0..7
+// are eight copies each of one body (more cases in parallel). One test each
+// under `#![proptest_config(ProptestConfig::with_cases(..))]` says the same
+// without the copies.
 proptest! {
     #[test]
     fn expr_round_trip0(s in expr()) {

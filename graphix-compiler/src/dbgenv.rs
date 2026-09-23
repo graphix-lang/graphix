@@ -2,6 +2,11 @@
 //! flags. Each flag is read once per process because several gate
 //! prints on hot paths; set them at launch.
 
+// CR claude for eric: [structure] Several debug flags bypass this module and
+// re-read the environment: GXDBG_CALLRET on every emit (fusion/emit/call.rs:940,
+// lower.rs:82, body.rs:1000), GXDBG_TYPEREF (typ/mod.rs:1470), GRAPHIX_DUMP_CLIF
+// (fusion/emit/jit.rs:252), GRAPHIX_DBG_PERF (perfdbg.rs), GRAPHIX_PROFILE and
+// GRAPHIX_PROFILE_INSTANCES (profile.rs). Declare them all here.
 macro_rules! dbg_flag {
     ($name:ident, $env:literal) => {
         pub(crate) fn $name() -> bool {
@@ -39,6 +44,9 @@ dbg_flag!(gxdbg_swallow, "GXDBG_SWALLOW");
 dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");
 dbg_flag!(gxdbg_tail, "GXDBG_TAIL");
 
+// CR claude for eric: [structure] GRAPHIX_DBG_BIND_BT is read into two statics:
+// `graphix_dbg_bind_bt()` is `graphix_dbg_bind_bt_id().is_some()`.
+// Keep only this one.
 /// The value of GRAPHIX_DBG_BIND_BT: a target TVarId for per-cell
 /// write backtraces.
 pub(crate) fn graphix_dbg_bind_bt_id() -> Option<&'static str> {

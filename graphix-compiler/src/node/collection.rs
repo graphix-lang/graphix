@@ -1,3 +1,8 @@
+// CR claude for eric: [style] `crate::image` and `netidx_value` are each
+// imported in two statements; `anyhow::anyhow!` is spelled out 7 times,
+// `super::lambda::GXLambda` 4, `crate::dbgenv::gxdbg_slot`,
+// `crate::fusion::check_attributes_subtree` and `std::sync::LazyLock` twice
+// each, and `netidx_value::Typ` in frozen_may_be_null though `Typ` is imported.
 use super::{
     MAX_ARRAY_INIT_LEN, NOP, WakeBit, callsite::CallSite, genn,
     pattern::StructPatternNode,
@@ -30,6 +35,10 @@ use smallvec::smallvec;
 use std::{fmt::Debug, marker::PhantomData};
 use triomphe::Arc;
 
+// CR claude for eric: [structure] the list rep is used by tval, cast, pattern,
+// array, lowering, emit_helpers and the list package, none of them about
+// collection HOFs; it is its own module (node/list.rs), not the head of this
+// 2.8k-line file. It also glob-imports `super::*` for three names.
 pub mod list {
     use super::*;
 
@@ -110,11 +119,23 @@ pub mod list {
         }
     }
 
+    // CR claude for eric: [risk] `to_array` checks only the outer cell, so a
+    // malformed spine flattens to a truncated array, while `len` (hence
+    // `ListCollection::select`) answers None and MapQ bottoms: the JIT
+    // flatten (`graphix_list_to_valarray`) and the node-walk disagree on one
+    // value. Gate on `len(value)` so both share one notion of a list.
     pub fn to_array(value: &Value) -> Option<ValArray> {
         is_list(value).then(|| ValArray::from_iter(Iter::new(value.clone())))
     }
 }
 
+// CR claude for eric: [structure] 20 variants are 8 ops x 3 flavors spelled
+// out in from_name, build, image_decode and 20 marker structs whose emit_clif
+// only forwards (op, Flavor) and whose finish bodies repeat per flavor
+// (Array/ListFindMap are identical; the Init/Map/Filter/FilterMap trios differ
+// in the result builder). An `{ op, flavor }` pair retires MapQ's `intrinsic`
+// field (read only by image_encode, able to disagree with `T`), the ZST
+// `operation: T` with its unused `&mut self`, and the `emit_call` pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
 pub(crate) enum CollectionIntrinsic {
     ArrayInit,
@@ -391,6 +412,11 @@ impl MapCollection for ListCollection {
         Some(Self { value, len })
     }
 
+    // CR claude for eric: [structure] suspected leftover: only the List impl
+    // accepts Abstract/Ref forms and then scans every fn-typed argument for
+    // its last parameter; the Array and Map impls accept only their own
+    // constructor. Either the fallbacks predate native List or Array/Map lack
+    // them; one rule (deref, then the constructor) for all three.
     fn element_type(ft: &FnType) -> Result<Type> {
         match &ft.args[0].typ {
             Type::List(t) => return Ok((**t).clone()),
@@ -428,6 +454,10 @@ impl MapCollection for IndexRange {
 
     fn select(value: Value) -> Option<Self> {
         let Value::I64(n) = value else { return None };
+        // CR claude for eric: [bug] logs on every cycle the source is read, not
+        // once per count: `array::init(20000000, f)` beside a 10ms timer logged
+        // 7 errors in 3 ticks (--no-fusion), while the fused loop never logs
+        // (scaffold.rs emit_init_loop). Log only when the count fired.
         if n > MAX_ARRAY_INIT_LEN {
             log::error!(
                 "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
@@ -442,6 +472,11 @@ impl MapCollection for IndexRange {
     }
 }
 
+// CR claude for eric: [structure] `tag` is only ever STALE or STALE_BOTTOM, a
+// `poisoned` bool in a Tag's clothing, and with `value` it spells 3 states in
+// 4. FoldSlot repeats the pair (`this_cycle`/`tag`, where None already means
+// bottom) under another rule: a stale production keeps a MapQ slot's poison
+// but clears a FoldQ slot's. One slot-state enum and one rule for both.
 #[derive(Debug)]
 struct Slot<R: Rt, E: UserEvent> {
     id: BindId,
@@ -451,6 +486,9 @@ struct Slot<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Slot<R, E> {
+    // CR claude for eric: [structure] `Slot::new` and `FoldSlot::new` repeat
+    // callback_fnode plus `if prototype { apply_prototype } else { apply }`
+    // behind a bool flag; one helper taking the argument nodes serves both.
     fn new(
         ctx: &mut ExecCtx<R, E>,
         scope: &Scope,
@@ -791,6 +829,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> MapQ<R, E, T> {
         }))
     }
 
+    // CR claude for eric: [perf] `prototype_def` (a lambda_defs lookup and a
+    // Value clone) runs once per added slot inside the grow loop, though the
+    // prototype cannot change between iterations; resolve once per resize
+    // (also FoldQ::add_slot).
     fn add_slot(&mut self, ctx: &mut ExecCtx<R, E>) {
         let resolved = prototype_def(ctx, &self.base.prototype);
         self.slots.push(Slot::new(
@@ -830,6 +872,10 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             + self.top_id.encoded_len()
     }
 
+    // CR claude for eric: [risk] live slots, `current` (and FoldQ's `init`)
+    // are dropped silently: an image written after a cycle decodes as a
+    // collection that never ran. CallSite refuses a bound dynamic callee with
+    // NOT_QUIESCENT; refuse here too when `!self.slots.is_empty()` (FoldQ too).
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Collection, buf);
         self.intrinsic.encode(buf)?;
@@ -877,6 +923,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
             } else if let Some(source) =
                 sval.and_then(|value| T::Collection::select(value))
             {
+                // CR claude for eric: [structure] this read / select / shrink /
+                // grow / deliver block is repeated in FoldQ::update, as are
+                // `fuse`, `callback_body` and `emit_clif_call` across the two
+                // nodes and bases; and the `None => ride()` arm is unreachable
+                // (len > n >= 0). One shared resize, with
+                // `for mut s in slots.drain(n..) { s.delete(ctx) }`.
                 while self.slots.len() > source.len() {
                     match self.slots.last_mut() {
                         Some(slot) => slot.delete(ctx),
@@ -889,11 +941,30 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
                     self.add_slot(ctx);
                     resized = true;
                 }
+                // CR claude for eric: [perf] every element is re-delivered (event
+                // and store inserts, plus a fresh [k, v] array per entry for a
+                // Map source) on every cycle the source is not bottom, quiet ones
+                // included: GXDBG_SLOT=1 on a constant 3-array map beside a
+                // timer shows every slot re-dispatched twice per tick. Deliver
+                // on a trigger, a resize or to fresh slots. The store copy is
+                // stamped FIRED whatever `tag` is (also FoldQ's deliveries).
                 for (slot, value) in self.slots.iter().zip(source.values()) {
                     ctx.rt.store_insert(slot.id, TagValue::fired(value.clone()));
                     event.variables.insert(slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
+                // CR claude for eric: [perf] filter/find merge the source tag even
+                // when it is STALE, so every quiet cycle rebuilds (allocates) the
+                // result: GXDBG_SLOT on `array::filter([1, 2, 3], ..)` beside a
+                // timer prints prod=Some(32) each cycle. Only a trigger changes
+                // the elements.
+                // CR claude for eric: [risk] "resident is bottom" stands in for
+                // "the source was bottom", but a poisoned or still-empty slot also
+                // bottoms it, and then a fired same-length source no slot reads
+                // re-fires the standing bottom as FreshBottom (suspected; the
+                // loop rule gives StaleBottom, not value-visible). Record the
+                // source's bottomness (forget the length); same in FoldQ's
+                // `recovered`.
                 // A source back from bottom changes the result whether
                 // or not a slot fires.
                 if resized || T::RESULT_READS_ELEMENTS || self.resident.tag().is_bottom()
@@ -973,6 +1044,9 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         }
         let tag = match production {
             Some(tag) => tag,
+            // CR claude for eric: [style] this is `self.resident.set_bottom(false)`
+            // spelled out (FoldQ's `tagged(Null, FRESH_BOTTOM)` resident is
+            // `set_bottom(true)`).
             None if poisoned => {
                 return self
                     .resident
@@ -991,6 +1065,12 @@ impl<R: Rt, E: UserEvent, T: MapFn<R, E>> Update<R, E> for MapQ<R, E, T> {
         if tag.is_bottom() || poisoned {
             return self.resident.set_bottom(tag.triggers());
         }
+        // CR claude for eric: [bug] `finish` builds map::map/filter/filter_map
+        // results in structural key order: it runs outside
+        // `coretraits::with_hooks`, the fused loop under the kernel's loan.
+        // Probe: keys Rev(1..5) with a reversed `impl Ord`, `m2 =
+        // map::filter(m, |_| true)`: fused, m2 iterates 5..1 and `m2{Rev(1)}`
+        // is 1; --no-fusion, 1..5 and MapKeyError. Also the empty-source call.
         if self.slots.iter().all(|slot| slot.value.is_some()) {
             match self.operation.finish(&self.slots, &self.current) {
                 Some(value) => self.resident.set(TagValue::tagged(value, tag)),
@@ -1117,6 +1197,11 @@ struct FoldSlot<R: Rt, E: UserEvent> {
     element_id: BindId,
     call: Node<R, E>,
     this_cycle: Option<Value>,
+    // CR claude for eric: [dead] `last_good` never differs from `this_cycle`
+    // where it is read: a fresh slot's seed reads slot i-1 after it ran this
+    // cycle and only when it was not bottom, and the `resized && last_good`
+    // fallback needs `this_cycle == None` with a non-bottom tag, which no path
+    // makes. The comments calling it sleep/frame memory describe no reader.
     last_good: Option<Value>,
     tag: Tag,
 }
@@ -1220,6 +1305,9 @@ struct FoldQ<R: Rt, E: UserEvent, T: FoldFn<R, E>> {
     top_id: ExprId,
     slots: LPooled<Vec<FoldSlot<R, E>>>,
     init: Option<Value>,
+    // CR claude for eric: [dead] `source_present` is always true where it is
+    // read: `!forced_taint` in the empty-fold test already means the source
+    // selected this cycle, which is what sets it.
     source_present: bool,
     operation: PhantomData<T>,
     resident: TagValue,
@@ -1482,6 +1570,11 @@ impl<R: Rt, E: UserEvent, T: FoldFn<R, E>> Update<R, E> for FoldQ<R, E, T> {
                     return self.resident.set_bottom(t.triggers());
                 }
             }
+            // CR claude for eric: [dead] `init_tag` is always Some; here
+            // `source_tag` is Some too (the source selected) and `self.init` is
+            // Some (a bottom init returned above), so the `None` arms of both
+            // matches and merge_tag's are unreachable: the branch is
+            // `set(tagged(init, source_tag.join(init_tag)))`.
             let tag = match (source_tag, init_tag) {
                 (None, None) => return self.resident.ride(),
                 (Some(a), Some(b)) => match merge_tag(Some(a), b) {
@@ -1869,6 +1962,11 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
     Ok(Some(finish_loop_result(cx, result, flags, &count, source_invariant)))
 }
 
+// CR claude for eric: [structure] every emit_*_kind repeats one frame:
+// bindable_array_element, `flavor.emit_source` + `node_loop_invariant_ref`, a
+// HofElem literal copied field by field from the CallbackParam (7 copies),
+// then `flavor.emit_result` + `finish_loop_result`. A `CallbackParam::elem`
+// and one wrapper around the loop-specific call would halve these.
 fn emit_map_kind<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -2001,6 +2099,12 @@ fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     else {
         return Ok(None);
     };
+    // CR claude for eric: [bug] `list::flat_map` never fuses: a List return is
+    // `AbiKind::Value` (kernel_abi.rs abi_kind), never `Variant`, so the List
+    // arm below is dead and the comment above it is stale. Probe:
+    // `#[native] list::flat_map([<1, 2>], |x| [<x, x + 1>])` is refused ("not
+    // discovered") while the same body under `#[native] list::map` fuses. The
+    // closure's CMap arm is unreachable through the same gate.
     // A List callback's return freezes to a 2-word opaque Variant; the
     // extend helper walks it. No CMap flat_map intrinsic exists.
     let output_kind = kernel_abi::freeze_for_abi_normalized(body.typ())
@@ -2150,6 +2254,9 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
     let Some(acc_type) = kernel_abi::freeze_for_abi_normalized(acc_type) else {
         return Ok(None);
     };
+    // CR claude for eric: [readability] `acc_leaves` comes from one match over
+    // `abi_kind(&acc_type)` and is unwrapped in a second match over the same
+    // kind below; compute the leaves inside the Composite arm.
     let acc_leaves = match kernel_abi::abi_kind(&acc_type) {
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let Some(leaves) = scaffold::elem_leaves(&acc_type, &acc.binds) else {
@@ -2669,6 +2776,10 @@ struct MapMap;
 impl<R: Rt, E: UserEvent> MapFn<R, E> for MapMap {
     type Collection = ValueMap;
 
+    // CR claude for eric: [risk] a malformed pair makes this finish (and
+    // MapFilterMap's) return None, so the node rides its previous map, while
+    // `graphix_valarray_into_cmap` logs and skips the pair: the engines build
+    // map results by two rules. One pairs-to-map function for both.
     fn finish(&mut self, slots: &[Slot<R, E>], _: &ValueMap) -> Option<Value> {
         let mut values = slots
             .iter()

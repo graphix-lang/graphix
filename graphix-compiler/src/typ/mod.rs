@@ -11,6 +11,12 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
+// CR claude for eric: [style] two `use netidx_core::` lines (group them);
+// `cmp::{Eq, PartialEq}` below are prelude items; `crate::image::` helpers
+// (~15), `crate::SourcePosition` (4) and `crate::expr::Origin` (3) are spelled
+// out repeatedly; seed_refs writes `poolshark::local::LPooled` though it is
+// imported; lookup_ref reads GXDBG_TYPEREF with `std::env::var_os` on each
+// miss instead of a `crate::dbgenv` accessor like every other debug switch.
 use netidx_core::pack::{Pack as PackTrait, PackError, encode_varint};
 use netidx_core::utils::Either;
 use netidx_value::Typ;
@@ -52,6 +58,13 @@ impl FromIterator<bool> for AndAc {
     }
 }
 
+// CR claude for eric: [structure] two things share this type: the per-relation
+// cycle memo (`inner`, reached through Deref) and caches only contains uses
+// (probe_pairs, probe_pins, expansions, content_ids, the distribution stack,
+// epoch). union, diff, could_match, sig_matches and strip_error each take five
+// pooled containers they never touch, and could_match even shares a contains
+// memo (matches.rs). A cycle memo plus a separate contains context would say
+// which walk owns what.
 struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
     ref_ids: LPooled<IntMap<usize, SmallVec<[(Arc<[Type]>, usize); 2]>>>,
@@ -180,6 +193,13 @@ impl<H: IsoPoolable> RefHist<H> {
     fn ref_id(&mut self, t: &Type, env: &Env) -> Option<usize> {
         match t {
             Type::Ref(tr) => {
+                // CR claude for eric: [risk] the id is not stable across the fill
+                // that expand_ref's lookup_ref performs: an empty cell keys on
+                // the env TypeDef's address, the same ref after the fill on the
+                // new ResolvedRef Arc's, so one ref gets two ids in one walk (an
+                // extra unrolling, a duplicate expansion), and two cells filled
+                // separately from one TypeDef never share an id. Fill the cell
+                // (resolve_in) before taking the id.
                 let def_addr = match tr.resolved() {
                     Some(r) => Arc::as_ptr(&r).addr(),
                     None => {
@@ -458,6 +478,11 @@ impl TypeRef {
         Self { params, ..self.clone() }
     }
 
+    // CR claude for eric: [readability] this copies a filled resolution into the
+    // re-scoped ref, but design/env_independent_typerefs.md ("A scope change
+    // changes the resolution, so scope_refs mints a fresh cell") and CLAUDE.md
+    // ("`with_scope` makes a fresh one") say the cell starts empty. One of them
+    // is stale; decide which and fix the other.
     /// This ref re-scoped, with a fresh resolution cell pre-filled from
     /// this ref's cell when that is resolved (a filled cell is the
     /// name's final target; a new scope may not even reach it). An
@@ -526,6 +551,9 @@ impl TypeRef {
         .flatten()
     }
 
+    // CR claude for eric: [dead] the "did this call fill the cell" flag is
+    // discarded by both callers (resolve_in, seed_refs); fold this into
+    // resolve_in.
     /// Resolve this ref's name in `env` and fill the cell if empty;
     /// `None` iff the name is not visible and the cell is empty. An
     /// existing resolution wins. The snapshot is computed without the
@@ -600,6 +628,19 @@ impl Ord for TypeRef {
     }
 }
 
+// CR claude for eric: [bug] type depth is not bounded by source nesting:
+// `let a0 = 1; let a1 = [a0]; ...` for 2000 lines builds Array^2000 and
+// `graphix --check` dies of a stack overflow (resolve_tvars_seen in
+// normalize.rs with --no-fusion, resolve_abstract_d in fusion/lowering.rs
+// without). So CLAUDE.md's "`Type` is the one uncovered cycle, made unreachable
+// by the limit" is false, and Type's destructor is exposed too. Unguarded walks
+// in this slice: seed_refs, strip_error_int, rewrite_trait_args, holes,
+// fill_hole, tvar_free, self_shape, record_ide_refs, any_as_tvar_int,
+// with_deref, content_key, shape_len/shape_encode; tvar.rs alias_tvars,
+// collect_tvars, check_tvars_declared, has_unbound, unfreeze_tvars,
+// reset_tvars_int, replace_tvars_int, unbind_(open_)tvars; contains.rs
+// type_has_refused_open_cell, settle_refs, trait_contains; setops.rs union_int,
+// diff_int, union_identical; matches.rs could_match_int, sig_matches_int.
 #[derive(Debug, Clone, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     Bottom,
@@ -1220,6 +1261,11 @@ impl Type {
                 let Some(filled) = head.fill_hole(&elem) else { continue };
                 // A proper subtype (`[`Nil]` under `List<'_>`) leaves the
                 // element open and is not this constructor.
+                // CR claude for eric: [risk] each candidate is tried with a
+                // committing `contains`; when it is then rejected (element still
+                // open) the loop moves on, but the bindings it made in the
+                // receiver's own open cells stay. Probe with empty flags first
+                // and commit only the head that is kept.
                 if filled.contains(env, &t)? && elem.with_deref(|e| e.is_some()) {
                     let r = (head.resolve_tvars(), elem.resolve_tvars());
                     if crate::dbgenv::graphix_dbg_bind() {
@@ -1334,6 +1380,8 @@ impl Type {
         }
     }
 
+    // CR claude for eric: [dead] is_defined, and below any(), number(), int(),
+    // uint() and is_bot(): no callers in graphix or netidx.
     pub fn is_defined(&self) -> bool {
         match self {
             Self::App(c, a) => c.is_defined() && a.is_defined(),
@@ -1379,6 +1427,13 @@ impl Type {
     /// that gives its names meaning. Names not visible are skipped
     /// (they fill at their first in-context lookup) and make the
     /// result false. Recurses through filled snapshot bodies.
+    // CR claude for eric: [bug] the Abstract arm answers `true` without visiting
+    // its params, and neither a cell's conjuncts nor a fn's constraints are
+    // walked, so a ref under `Counter<Foo>` (an abstract applied in a typedef
+    // body) or in a bound is never seeded; fusion's env-free expand_cell then
+    // finds the cell empty and de-fuses. Suspected (read). Hand-writes the
+    // child walk the design says to route through try_for_each_child
+    // (type_operation_scaling.md, "Invariants for future type walks").
     pub fn seed_refs(&self, env: &Env) -> bool {
         struct Seen {
             cells: poolshark::local::LPooled<AHashSet<usize>>,
@@ -1494,6 +1549,12 @@ impl Type {
                 if def_params.len() != params.len() {
                     bail!("{} expects {} type parameters", name, def_params.len());
                 }
+                // CR claude for eric: [perf] under lsp_mode every expansion pushes
+                // a TypeRefSite, and contains/union/diff/could_match expand the
+                // same refs many times per check; push_type_ref (env.rs:469)
+                // does not dedup, so the IDE sink and its mutex traffic grow per
+                // walk, not per written ref. Suspected (read). Site recording
+                // belongs to compile time (record_ide_refs), not to lookup.
                 if env.lsp_mode {
                     if let (Some(pos), Some(ori)) = (pos, ori) {
                         env.push_type_ref(crate::ide::TypeRefSite {
@@ -1515,6 +1576,13 @@ impl Type {
                         continue;
                     };
                     let constraint = constraint.replace_tvars(&known);
+                    // CR claude for eric: [risk] this checks the param bound with
+                    // a committing check_contains even when lookup_ref runs under
+                    // a pure probe (contains with empty flags reaches it through
+                    // RefHist::expand_ref): the probe can bind cells inside `arg`
+                    // (`Foo<[i64, 'y]>` with `'a: Number` binds 'y), and a
+                    // violation is an Err, not a `false` verdict. Take the
+                    // caller's flags.
                     match arg {
                         Type::TVar(tv) if tv.read().typ.read().typ.is_none() => {
                             tv.add_cell_constraint(constraint)
@@ -1533,6 +1601,9 @@ impl Type {
     pub fn record_ide_refs(&self, env: &Env, fallback_scope: &ModPath) {
         match self {
             Type::Ref(tr) => {
+                // CR claude for eric: [structure] this resolve_visible closure
+                // (canonical ModPath from `s`, def pos/ori) is resolve_pure's;
+                // call tr.resolve_pure(env) and read the three fields.
                 if let (Some(pos), Some(ori)) = (tr.pos, &tr.ori) {
                     let resolved = env
                         .resolve_visible(
@@ -1601,6 +1672,9 @@ impl Type {
         Self::Primitive(Typ::unsigned_integer())
     }
 
+    // CR claude for eric: [dead] strip_error/strip_error_int have no callers in
+    // graphix or netidx. (The doc also disagrees with the Set arm: non-error
+    // members are filtered out, not "None".)
     fn strip_error_int(
         &self,
         env: &Env,
@@ -1722,6 +1796,10 @@ impl Type {
         self.with_deref(|t| t.cloned())
     }
 
+    // CR claude for eric: [readability] `f` runs while the read guard of every
+    // cell on the deref chain is held, so an `f` (or a walk it starts) that
+    // writes one of those cells deadlocks. That is an invariant callers across
+    // the crate must know and the signature does not say; state it here.
     pub fn with_deref<R, F: FnOnce(Option<&Self>) -> R>(&self, f: F) -> R {
         match self {
             // A filled application is its filled type to every walk.
@@ -1755,6 +1833,9 @@ impl Type {
     /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
     /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
     /// trait anywhere else is an error. Returns the rewritten type.
+    // CR claude for eric: [perf] holes() is a full walk and runs again at every
+    // recursion level (quadratic in depth); check once at the entry and recurse
+    // through an inner fn.
     pub fn rewrite_trait_args(&self, env: &Env) -> Result<Type> {
         if self.holes() > 0 {
             bail!(

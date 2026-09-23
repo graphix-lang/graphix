@@ -2,6 +2,10 @@
 //! marshalling, drops, pending cleanup) and the direct fastcall /
 //! typed-fastcall path.
 
+// CR claude for eric: [style] these two sit outside the `crate::{..}` and
+// `super::{..}` groups below (lowering is already imported there), and
+// emit_site_block spells `crate::fusion::emit::lower::{TruncLeaf, TruncRec,
+// TruncAnchor}` in full three times though `lower` is imported.
 use super::record::KernelConst;
 use crate::fusion::lowering::cast_typed;
 use crate::{
@@ -33,6 +37,11 @@ use super::{
     scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
 };
 
+// CR claude for eric: [structure] prim_value_disc, ARRAY_VALUE_DISC and
+// STRING_VALUE_DISC recompute what abi::prim_to_value_disc and value_disc::ARRAY
+// / STRING already are (emit_builtin_call_node itself uses value_disc::STRING
+// further down): two names for one disc in one function. The `(u64,)`
+// one-tuples add nothing.
 /// The `Value` discriminant word of a register scalar's variant, stored
 /// beside a scalar arg's bits so the trampoline's `&[Value]` view reads
 /// a genuine `Value::I64(..)` etc.
@@ -351,6 +360,9 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
     }
 }
 
+// CR claude for eric: [readability] the first paragraph and the bullets are
+// emit_site_block's doc; they sit on emit_callee_context_word, merged with its own
+// last sentence.
 /// Emit the per-call-site state block argument for a cross-kernel call
 /// (wire slot 2): storage for the callee's interior memory, owned by
 /// this caller and sized by the callee's recorded `SiteLayout`.
@@ -365,6 +377,13 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// the same way), plus the inherited quiet bit.
 fn emit_callee_context_word(cx: &mut BodyCx) -> ClifValue {
     let quiet = cx.quiet_flag();
+    // CR claude for eric: [risk] suspected divergence from emit contract 3
+    // (distributed_jit.md: the first-call word lives in the per-call-site block).
+    // This claims a STATE word, so a call site inside a callee body (state
+    // disabled) never forces its callee's init view; and inside a loop the one
+    // "loop-invariant" word is shared by every slot, so a slot added on a later
+    // run dispatches its callee without the init view the node-walk's fresh
+    // instance gets. Neither is loop-invariant or per-instance data.
     let callee_init = match cx.claim_state_word_loop_invariant() {
         Some(off) => {
             let sp = cx.state_ptr();
@@ -397,6 +416,8 @@ fn emit_site_block(
         None => {
             // Passing 0 would run the callee with no interior memory, a
             // silent divergence; de-fuse loudly instead.
+            // CR claude for eric: [style] this message and the next one contain a
+            // run of ~20 spaces: the literal was broken across lines without `\`.
             if !is_self {
                 return Err(anyhow!(
                     "emit_clif: non-self recursive edge reached site-block                      emission — mutual cycles refuse at the call site"
@@ -420,6 +441,11 @@ fn emit_site_block(
                     "emit_clif: a self-call site names another kernel — de-fuse"
                 ));
             }
+            // CR claude for eric: [risk] the cell is on the shared KernelSig, but a
+            // kernel compiled under two by_kernel keys has two bodies, and jit.rs
+            // (seed_layout) says their SiteLayouts may differ; lower.rs:241 stores
+            // the last compile's size for both. A child block sized from the other
+            // variant is an out-of-bounds write. Key the size by body, not sig.
             let desc = cx.const_ptr(KernelConst::SiteBlockWords)?;
             let f = cx.helper("graphix_site_child_block")?;
             let call = cx.b.ins().call(f, &[word, desc]);
@@ -430,6 +456,9 @@ fn emit_site_block(
     if layout.words == 0 {
         return Ok(cx.b.ins().iconst(types::I64, 0));
     }
+    // CR claude for eric: [structure] the state branch and the site branch below
+    // are the same claim-run-then-rebase code over two channels (claims,
+    // self_blocks, anchors); one fn taking the channel removes the copy.
     if cx.ctx.loop_depth.get() == 0 {
         if let Some(first) = cx.claim_state_word() {
             for _ in 1..layout.words {
@@ -621,6 +650,10 @@ fn callee_results(
     Ok((results[0], results[1]))
 }
 
+// CR claude for eric: [structure] ~320 lines doing six jobs: slot collection and
+// validation, arg emission with drop bookkeeping, the context word and site block,
+// the self-call stack/interrupt dispatch, the abort check, and result decoding.
+// The self-call dispatch and the arg marshalling are separate functions.
 pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     cs: &CallSite<R, E>,
@@ -889,6 +922,10 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     cx.b.seal_block(rmerge);
     let r0 = cx.b.block_params(rmerge)[0];
     let r1 = cx.b.block_params(rmerge)[1];
+    // CR claude for eric: [perf] every cross-kernel call pays a helper call and a
+    // TLS read here. An aborting kernel returns (0, 0) (lower.rs:225) and disc 0
+    // is never a real value (unified_value_abi.md), so `r0 == 0` tests the same
+    // thing inline.
     // An aborted callee left `KERNEL_ABORT` set and returned the zero
     // pair, not a real value: drop what we own and jump to
     // `pending_exit` with the flag still set so `Kernel::update` discards.

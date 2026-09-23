@@ -1,3 +1,8 @@
+// CR claude for eric: [style] `crate::image` is imported in two `use` lines,
+// `netidx_core::pack::{Pack, PackError}` in two, and repeated items are spelled
+// in full in the body: `crate::image::slice_len/slice_encode`, `ahash::AHashMap`
+// (2x), `crate::fusion::fuse` (2x), `crate::fusion::emit::*`,
+// `netidx_core::pack::PackError` (imported), `super::read_var`/`VarRead` (6x).
 use super::{Nop, WakeBit, compiler::compile};
 use crate::image::ImageBuf;
 use crate::image::{
@@ -45,6 +50,10 @@ use triomphe::Arc;
 
 pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub id: LambdaId,
+    // CR claude for eric: [dead] nothing reads `src` (only the image codec in
+    // image/defs.rs carries it), and filling it pretty-prints the whole lambda at
+    // every `Lambda::compile`, including every instance body's re-compile of its
+    // nested literals. The stable identity it describes is now `source`. Delete.
     /// The pretty-printed source: an identity stable across compiles.
     /// Not used for equality — `PartialEq` is id-based so same-source
     /// closures over different captures stay distinct.
@@ -162,6 +171,10 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     env: Env,
 }
 
+// CR claude for eric: [perf] walks the whole body's refs into fresh sets on every
+// call, and a looped tail body calls it up to three times per dispatch (the
+// quiet-poll gate in `update`, `framed`, the result tag). The body's read set
+// only changes when a nested callee binds; cache it on the instance.
 fn body_reads_triggered<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -200,6 +213,10 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self.body.reset_replay(ctx);
             // a delivered formal keeps its cycle tag, a standing one
             // reads quiet
+            // CR claude for eric: [structure] "read a var, a standing entry retagged
+            // quiet" is written here, in the `None` rebind arm below and in
+            // CallSite::update_call's tail interception; one helper beside
+            // `read_var`.
             for pat in self.args.iter() {
                 pat.ids(&mut |id| {
                     if let Some(vr) = super::read_var(ctx, event, &id) {
@@ -350,6 +367,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         &self.body
     }
 
+    // CR claude for eric: [dead] no callers in either repo; nor for `Lambda::def`.
     /// The compiled body, for fusion to splice kernels into.
     pub fn body_mut(&mut self) -> &mut Node<R, E> {
         &mut self.body
@@ -401,6 +419,12 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
+    // CR claude for eric: [bug] `+ 3 .. + 1` counts four bools; image_encode
+    // writes three (tail_loop, self_recursive, resumes_mid_recursion), so the
+    // length is one byte too long per instance against the rule that every
+    // `encoded_len` in a session is exact. And `resumes_mid_recursion` is cycle
+    // state, always false before a cycle, while `first_dispatch` is not imaged:
+    // pick one rule (refuse it, or drop it and decode false).
     fn image_len(&self) -> usize {
         self.id.encoded_len()
             + self.instance_id.encoded_len()
@@ -447,6 +471,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             let tv = arg.update(ctx, event);
             let tag = tv.tag();
             entry_fired |= tag.triggers();
+            // CR claude for eric: [bug] the frame twin of the hole in
+            // CallSite::update_call: in a frame a quiet BOTTOM arg seeds nothing,
+            // so the formal reads through to the store's pre-frame value. Once the
+            // call site publishes the stale bottom, this seed must stand it on the
+            // overlay too, or the ride just moves here.
             // Seed the formals' value channel from a quiet arg production
             // on the first dispatch, after a wake, and on every framed
             // dispatch (a frame's seed dies with the pass; frames never
@@ -517,6 +546,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         {
             return self.resident.ride();
         }
+        // CR claude for eric: [dead] `active_lambdas` is read only by the image
+        // quiescence check, which runs between cycles when the count is always
+        // zero: a hash insert and remove per dispatch for nothing. Its doc in
+        // lib.rs cites `callsite::transient_body_ok`, which no longer exists.
+        // Also `ensure_sufficient` below is already inside `Node::update`.
         *ctx.active_lambdas.entry(self.id).or_insert(0) += 1;
         let res = if !self.tail_loop.load(Ordering::Relaxed) {
             crate::stack::ensure_sufficient(|| self.body.update(ctx, event).clone())
@@ -631,6 +665,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         self.body.refs(refs)
     }
 
+    // CR claude for eric: [bug] leak: `CallSite::register_fn_params` records this
+    // instance's fn-param BindIds in `ctx.fn_forward_resolutions` and nothing
+    // ever removes them. Instances are made at runtime (every recursion level,
+    // every collection slot), so a callback-taking call inside a shrinking and
+    // regrowing recursion or map grows the table without bound. Remove them here.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.delete(ctx);
         for n in &self.args {
@@ -1025,6 +1064,14 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                         body.clone(),
                     )
                 };
+                // CR claude for eric: [structure] this scope construction and
+                // three-way mode match are repeated verbatim in the intrinsic arm
+                // below; one helper over the `build` closure.
+                // CR claude for eric: [risk] `or_else(|_| ..)` retries on ANY error,
+                // not only the parameter-count refusal it is for: a body that fails
+                // to compile is compiled twice, the first error is lost, and what the
+                // failed attempt built (the argument patterns' env binds, the partial
+                // body's `ref_var`s) is dropped without `delete`.
                 match mode {
                     BindMode::Static { instance, .. } => {
                         build(ctx, Arc::new(instance.clone()))
@@ -1077,6 +1124,15 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                                 None => def_typ.clone(),
                             };
                             let resolved = mode.resolved();
+                            // CR claude for eric: [bug] a builtin gets the DEFINITION's
+                            // dynamic scope, where the lambda arms above get the call
+                            // site's, so a builtin HOF's callback raises to handlers at
+                            // the builtin's definition, not the caller's catch. Probe:
+                            // `{ catch(e) println("caught [e]"); filter(c, |v| select v {
+                            // 2 => error(`Boom)?, _ => true }) }` warns "will not be
+                            // caught" and logs "unhandled error Boom" on both engines;
+                            // the same through a Graphix HOF reaches the catch. Pass
+                            // `Scope { dynamic: scope.dynamic, lexical: def_scope.lexical }`.
                             init(ctx, &def_typ, resolved, &def_scope, args, tid).map(
                                 |apply| {
                                     let f: Box<dyn Apply<R, E>> =
@@ -1176,6 +1232,11 @@ impl Lambda {
         let def_scope = scope.clone();
         let env = ctx.env.clone();
         let def_env = ctx.env.clone();
+        // CR claude for eric: [structure] the kind of body (expression, collection
+        // intrinsic, builtin) is re-derived by `CollectionIntrinsic::from_name` here,
+        // in the effect and stateless initializers below, in make_init and in
+        // callsite.rs `finalize_lambda`. An enum on the def decides it once, and
+        // would carry the builtin-only `check` so "restored" is not read off a None.
         if let Either::Right(builtin) = &l.body {
             if CollectionIntrinsic::from_name(builtin).is_none()
                 && ctx.builtins.get(builtin.as_str()).is_none()
@@ -1258,6 +1319,10 @@ impl Lambda {
             }
         }
         typ.lambda_ids.set_id(id);
+        // CR claude for eric: [style] `def_typ`, `def_argspec`, `def_spec`, `body`
+        // (and `def_env` above) exist only to be cloned again into make_init, and
+        // `l.body` is cloned a third time for `origin`; pass the clones directly.
+        // Likewise `constraints` collects a `Result` its closure never fails.
         let def_typ = typ.clone();
         let def_argspec = argspec.clone();
         let def_spec = spec.clone();
@@ -1333,9 +1398,16 @@ pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
     def: &LambdaDef<R, E>,
     ctx: &mut ExecCtx<R, E>,
 ) -> Result<Box<dyn Apply<R, E>>> {
+    // CR claude for eric: [structure] the faux-arg, faux-bind and gate-scope setup
+    // is a copy of Lambda::typecheck0's. One def-gate type that enters (faux
+    // catch, rigid gates, rec_defs, depth) and leaves on drop would serve both
+    // and shorten the 120-line typecheck0 with its hand-written teardown.
     let mut faux_args: LPooled<Vec<Node<R, E>>> =
         def.typ.args.iter().map(|at| Node::new(Nop { typ: at.typ.clone() })).collect();
     let faux_id = BindId::new();
+    // CR claude for eric: [bug] this faux catch bind is never removed from
+    // `env.by_id` (Lambda::typecheck0 removes its own), so every restored builtin
+    // leaves a stray "faux" binding in the env for the session's life.
     ctx.env.by_id.insert_cow(
         faux_id,
         Bind {
@@ -1363,6 +1435,9 @@ pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
     Ok(f)
 }
 
+// CR claude for eric: [readability] stale references: the per-site default check
+// is `CallSite::prepare_bind` (static and dynamic binds alike), and the comment
+// in Lambda::typecheck0 names a `setup_bind` that no longer exists.
 /// The definition's check of its labeled defaults, under the gate:
 /// each default compiles in the def's scope and must fit its parameter.
 /// Against a declared tvar it must fit the tvar's constraints, not the
@@ -1416,6 +1491,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         self.typ.encode(buf)
     }
 
+    // CR claude for eric: [structure] a hand copy of `node::produce_constant`, the
+    // one frame rule CLAUDE.md names for every constant: call it with
+    // `&mut self.resident` and `|| self.def.clone()`.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // same production rule as `Constant`: FIRED at init, STALE inside
         // frames, which force init

@@ -141,6 +141,16 @@ impl Type {
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
+            // CR claude for eric: [bug] same-named refs union parameter-wise,
+            // which is an upper bound only for a covariant, single-differing
+            // parameter. With `type F<'a> = fn(x: 'a) -> i64`, `F<i64> ∪
+            // F<string>` becomes `F<[i64, string]>`, a fn that accepts both.
+            // Probe: `let c = select flag { true => `A(fi), false => `A(fs) }`
+            // (annotated `A(F<i64>) / `A(F<string>)) then `select c { `A(f) =>
+            // f("hello") }` checks and runs the i64 fn on "hello" (arith parse
+            // error at run time). With two params it also invents pairs, which
+            // the Variant arm below refuses to do. Merge only identical params
+            // (union_identical); otherwise keep both members.
             (Type::Ref(t0), Type::Ref(t1))
                 if t0.name == t1.name
                     && t0.scope == t1.scope
@@ -225,6 +235,11 @@ impl Type {
                 Type::Primitive(*p),
                 Type::Array(t.clone()),
             ]))),
+            // CR claude for eric: [structure] Array, List, Map, ByRef, Struct and
+            // Tuple below are one rule written six times ("identical: keep one,
+            // else a two-member set"), and `Type::Set(Arc::from_iter([a, b]))`
+            // is spelled ~15 times; a pair helper and one arm over the
+            // same-variant case would carry it.
             (t @ Type::Array(t0), u @ Type::Array(_)) => {
                 if union_identical(t, u) {
                     Ok(Type::Array(t0.clone()))
@@ -386,6 +401,15 @@ impl Type {
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
+            // CR claude for eric: [bug] same-named refs subtract to empty
+            // whatever their params: `Box<i64> - Box<string>` is empty, so
+            // `Array<Box<i64>> - Array<Box<string>>` is too. Probe: `type Box<'a>
+            // = {v: 'a}; type Both = [Array<Box<i64>>, Array<Box<string>>]; type
+            // BS = Array<Box<string>>; let x: Both = [{v: 1}];` then `select x {
+            // BS as s => 0, Array<Box<i64>> as b => 1 }` is refused as
+            // "unreachable arm"; the same program over inline struct types runs
+            // and prints 1. Empty only when the params are identical, else
+            // expand.
             (Type::Ref(tr0), Type::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
@@ -513,6 +537,13 @@ impl Type {
                     Ok(Type::Fn(f0.clone()))
                 }
             }
+            // CR claude for eric: [risk] these three arms recurse while the
+            // `match` scrutinee still holds both cells' read guards, against the
+            // rule contains.rs keeps ("never recurse under the cell guard"):
+            // diff(`'a := Foo<'b>`, `'b`) with `type Foo<'x: Number>` reaches
+            // lookup_ref, which add_cell_constraint's 'b under a write lock
+            // while this frame read-locks 'b: a self-deadlock. Clone the
+            // bindings out first. Same in matches.rs could_match_int's TVar arms.
             (Type::TVar(tv0), t1 @ Type::TVar(tv1)) => {
                 if Arc::ptr_eq(&tv0.read().typ, &tv1.read().typ) {
                     return Ok(Type::Primitive(BitFlags::empty()));

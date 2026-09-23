@@ -5,6 +5,13 @@
 //! Kernels own a `Box<[ArcStr]>` of these clones and emitted code holds
 //! raw pointers into that slice, never into the table, so a background
 //! thread may drop any table entry it alone references.
+// CR claude for eric: [structure] Doesn't pay rent: `BodyCx::const_ptr` already
+// dedups equal strings within a body, so this saves only a few bytes per
+// string repeated across kernels, at the price of a process-global
+// `std::sync::Mutex` on the compile path and a thread that wakes every 5s
+// forever. It is not even applied uniformly: the image decode path boxes a
+// fresh `ArcStr`. The doc above is stale too (each constant is its own
+// `Box<ArcStr>` now, no `Box<[ArcStr]>`). Delete the module; box `s.clone()`.
 
 use arcstr::ArcStr;
 use std::{

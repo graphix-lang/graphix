@@ -65,6 +65,9 @@ impl FormatConfig {
     }
 }
 
+// CR claude for eric: [style] The message is long and immutable (it can hold two
+// whole expressions): `ArcStr`, not `CompactString`. `format_source` also formats
+// the reparse error with `{e:?}` where `{e:#}` gives the chain without Debug.
 /// The formatter would not hand back its own output: a bug in it, never
 /// in the source, which is left as it was.
 #[derive(Debug)]
@@ -110,6 +113,12 @@ fn merge_uses<T: Clone>(
     fn binds(n: &UseItem) -> Option<&str> {
         n.rename.as_deref().or_else(|| netidx_core::path::Path::basename(&n.path.0))
     }
+    // CR claude for eric: [bug] One direction only: a later statement that BINDS
+    // the root an earlier one reads is not a dependency, and the sort can move it
+    // first. probe: `mod a; use str::len; use a::str; println(len("abc"))` prints
+    // 3 (a/str.gx: `let len = |x: string| 42`); formatted it becomes `use
+    // a::str; use str::len;` and prints 42. The reparse guard cannot see it: both
+    // sides it compares are already merged. Also test `binds(n) == reads(m)`.
     /// Would `names` read or shadow what `run` binds, if merged after
     /// it? A glob binds names unknown here, so it joins only items of
     /// its own root.
@@ -262,6 +271,11 @@ impl Parsed {
         Ok(())
     }
 
+    // CR claude for eric: [risk] Empty for an interface, and so is `string_forms`:
+    // a .gxi's expressions (trait default bodies; sys io.gxi has several) lose no
+    // comment or delimiter today, but the guard would not notice if they did.
+    // Walk an interface's trait defaults too (their `use` runs are not merged
+    // either: `merge_uses_within` runs only over programs).
     fn decorations(&self) -> LPooled<Vec<Decorations>> {
         let mut acc: LPooled<Vec<Decorations>> = LPooled::take();
         if let Self::Program(exprs) = self {
@@ -295,6 +309,10 @@ impl Parsed {
 
     /// The first place `other` says something else, as the text each
     /// side prints there.
+    // CR claude for eric: [style] Clones every child into a fresh `Vec` at each
+    // level (`for_each_child` lends `&'a Expr`, a pooled or small vec of refs
+    // would do) and returns plain `String`s; `smallest` also recurses down the
+    // tree without `ensure_sufficient`. Refusal path only.
     fn difference(&self, other: &Self) -> Option<(String, String)> {
         fn children(e: &Expr) -> Vec<Expr> {
             let mut acc = vec![];
@@ -338,6 +356,9 @@ fn layout(
     cfg: &FormatConfig,
 ) -> Result<(Parsed, PrettyBuf)> {
     let parsed = Parsed::new(kind, text)?;
+    // CR claude for eric: [style] Built with one setting and patched with the
+    // other; the defaults live apart (`DEFAULT_WIDTH` here, `DEFAULT_INDENT` in
+    // print.rs) and the width is called `limit` inside. `PrettyBuf::new(cfg)`.
     let mut buf = PrettyBuf::new(cfg.width);
     buf.step = cfg.indent;
     format_with_flags(PrintFlag::AsWritten, || parsed.print(&mut buf))?;
@@ -621,6 +642,10 @@ mod tests {
         assert!(FormatConfig::discover(&deep).is_err());
     }
 
+    // CR claude for eric: [risk] The child is picked by a hard-coded test path:
+    // after a rename or a move it runs zero tests, exits 0, and this passes
+    // vacuously. Check the child's output for one passed test (and pass
+    // `--include-ignored`, as CLAUDE.md asks of a re-executing test).
     /// A relative directory climbs past the working directory: run in a
     /// child process, whose working directory is its own.
     #[test]

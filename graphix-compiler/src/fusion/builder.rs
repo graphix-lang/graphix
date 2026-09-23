@@ -31,6 +31,11 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
+    // CR claude for eric: [structure] `wrapped: Option` whose `None` is an error,
+    // and the only caller passes `Some`; with `Kernel::new` infallible this can
+    // never fail, yet `try_fuse` carries an Err arm that would drop the feeders
+    // without `delete`, stranding their `ref_var` registrations. Take the
+    // `WrappedKernel` by value and return `Node` (the comment below narrates).
     pub fn new(
         spec: Expr,
         typ: Type,

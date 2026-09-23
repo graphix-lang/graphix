@@ -1,4 +1,5 @@
 use crate::stack::ensure_sufficient;
+// CR claude for eric: [style] Two `use combine` statements; one group.
 use combine::stream::position::SourcePosition;
 use combine::{
     ErrorOffset, ParseError, Parser, Stream, StreamOnce,
@@ -29,6 +30,11 @@ pub fn set_max_nesting(depth: usize) {
     MAX_NESTING.store(depth, Ordering::Relaxed)
 }
 
+// CR claude for eric: [bug] REFUSED stays set when the refusing branch is
+// backtracked and another succeeds, so a later unrelated error is reported as
+// "nesting too deep": probe `let y = x$$…` (1001 `$`, parses via qop) then
+// `let z = (1 +;` reports nesting at line 3. DEPTH is not restored if a parser
+// panics on a reused thread, and `parsing()` does not reset it.
 thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
     /// Set when a refusal happens. combine merges a committed error into
@@ -157,6 +163,12 @@ fn snippet(text: &str, pos: SourcePosition) -> String {
     format!("    {lead}{shown}{trail}\n    {}{pad}^", if start > 0 { " " } else { "" })
 }
 
+// CR claude for eric: [bug] A refusal raised with `unexpected_any` in a `.then`
+// keeps its message only when no other branch got further; otherwise this
+// prints "could not continue past this point" with no reason: probes `{x: 1,
+// x: 2}` (duplicate field), `seq t {}` (empty body) and a misordered seq head
+// all lose theirs. Route refusals through note_reason (a `refuse(pos, msg)`
+// helper), as fname and duration_unit_note already do.
 /// Wrap a parse of `text`: clears the flags, then reports the nesting
 /// limit when that stopped the parse, otherwise the furthest point any
 /// branch reached with the source line, a caret and any recorded reason.

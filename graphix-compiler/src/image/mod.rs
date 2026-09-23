@@ -47,6 +47,11 @@ use triomphe::Arc;
 pub(crate) const REF: u8 = 0;
 pub(crate) const DEF: u8 = 1;
 
+// CR claude for eric: [structure] IdCounts, IdSpans (a field-for-field copy of
+// this), Relocations and Bases are four hand-written structs over the same four
+// domains, each with its own per-field plumbing (each(), install/restore, the
+// Drop impls, ImageDecoder::new). One `PerDomain<T>` with map/zip would make a
+// new domain one line; the instance domain was missed (see Relocations).
 /// The span of each relocated id domain an image holds; the decoder
 /// reserves a block of each.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -121,6 +126,10 @@ impl ImageBuf {
     }
 }
 
+// CR claude for eric: [risk] the closure must be 'static, so callsite.rs:1986
+// transmutes a borrowed `&dyn Apply` to 'static and relies on the heap being
+// written before the session ends; nothing checks that. A lifetime on the
+// encoder (`Deferred<'a>`) would let the borrow checker hold the contract.
 /// An instance body the eager part of the image skipped: written
 /// after it, in the heap, at an offset the instance table records.
 type Deferred = Box<dyn FnOnce(&mut ImageBuf) -> Result<(), PackError>>;
@@ -144,6 +153,12 @@ unsafe impl BufMut for ImageBuf {
 }
 
 pub struct ImageEncoder {
+    // CR claude for eric: [structure] seven pins (map nodes, handlers, refcells,
+    // origins, tvars, cells, and KeyedNode in type_keys) do one job: keep an
+    // address-keyed object alive for the session. All but the map nodes are
+    // pushed only in encode closures, never in slot_len, so an object a length
+    // query meets first is keyed by an address nothing holds. Pin in the table
+    // entry at first sight, in both passes.
     /// Persistent map nodes by identity; `pinned_map_nodes` keeps every
     /// one seen alive so an identity names one node for the session.
     pub(crate) map_nodes: AHashMap<usize, Slot>,
@@ -215,6 +230,9 @@ impl Default for ImageEncoder {
 }
 
 impl ImageEncoder {
+    // CR claude for eric: [style] a field-by-field new() plus a Default that calls
+    // it; #[derive(Default)] on ImageEncoder (with ImageBuf and IdSpans) says the
+    // same in one line. ImageDecoder::new repeats the pattern for its tables.
     pub fn new() -> Self {
         ImageEncoder {
             map_nodes: AHashMap::new(),
@@ -289,6 +307,8 @@ impl ImageEncoder {
     }
 }
 
+// CR claude for eric: [readability] the first three doc lines below describe
+// ImageDecoder (line ~390, which has no doc), not ObjectCounts.
 /// The objects an image session has built, each by the offset of its
 /// definition in the image, and the image itself, so a reference to
 /// an object not built yet decodes it from there.
@@ -391,6 +411,12 @@ pub struct ImageDecoder {
 }
 
 impl ImageDecoder {
+    // CR claude for eric: [bug] the spans come from the image unchecked: a huge
+    // extent reserves (and can wrap) the process-wide counter every ExecCtx mints
+    // from, and a wire id outside [floor, extent) relocates outside the reserved
+    // block onto ids already minted. A corrupt image aliases live ids silently.
+    // Bound the spans, and carry the span in IdRelocation::Decode (ids.rs) so an
+    // out-of-span id is refused.
     /// Reserves a block of each id domain for the image's ids.
     pub fn new(counts: IdCounts) -> Self {
         ImageDecoder {
@@ -490,6 +516,13 @@ thread_local! {
     static DECODER: Cell<Option<NonNull<ImageDecoder>>> = const { Cell::new(None) };
 }
 
+// CR claude for eric: [bug] LambdaInstanceId is an image_id! but no domain here
+// relocates or reserves it: restored instances keep the writer's raw ids while
+// this process mints from its own counter. A warm registration restore followed
+// by a program compile mints colliding ids, and the program image write keys
+// `instances`/`instance_refs` by id, so two sites get one heap body and one refs
+// summary (needs a call at a package root's top level; the stdlib has none).
+// Add the domain; CLAUDE.md and the design say every image_id! is relocated.
 struct Relocations {
     bind: Option<IdRelocation>,
     lambda: Option<IdRelocation>,
@@ -617,6 +650,11 @@ impl Drop for DecodeImage<'_> {
     }
 }
 
+// CR claude for eric: [risk] safe fns that hand out `&mut` from a thread-local
+// pointer: an `encoding`/`decoding` call from inside `f` makes two live `&mut` to
+// one encoder (UB). Nothing nests today, but `f` already runs caller code
+// (shared_key's `keep`, expr_key's clone, slot_len's `owned` and `table`). Take
+// the pointer out of the cell while `f` runs so a nested call panics or sees none.
 /// Run `f` against the installed encoder, or `None` outside a session.
 pub(crate) fn encoding<R>(f: impl FnOnce(&mut ImageEncoder) -> R) -> Option<R> {
     // The session guard holds the `&mut` that produced this pointer for
@@ -839,6 +877,8 @@ pub(crate) fn handler_decode(buf: &mut impl Buf) -> Result<ErrorHandler, PackErr
 
 fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackError> {
     let Some(h) = scope.handler() else {
+        // CR claude for eric: [readability] the root scope's tag is a bare `2`
+        // beside the named REF/DEF (also in dynscope_decode); name it.
         buf.put_u8(2);
         return Ok(());
     };
@@ -925,6 +965,9 @@ pub(crate) fn pos_decode(buf: &mut impl Buf) -> Result<SourcePosition, PackError
     Ok(SourcePosition { line, column })
 }
 
+// CR claude for eric: [perf] builds an owned String per origin to measure a file
+// path, and source_encode builds another to write it; lossy too, so a non-UTF-8
+// path decodes to a different path. Write the Cow's bytes (or the OsStr's).
 fn source_len(s: &Source) -> usize {
     1 + match s {
         Source::File(p) => p.to_string_lossy().into_owned().encoded_len(),
@@ -1074,6 +1117,9 @@ fn cell_len(cell: &Arc<RwLock<TCell>>) -> usize {
         |k| *k,
         |e| &mut e.cells,
         || {
+            // CR claude for eric: [perf] `to_vec()` heap-allocates per cell just to
+            // drop the lock (cell_encode too); a SmallVec clone stays inline for the
+            // usual zero or one constraint, and slice_len/slice_encode write it.
             let (typ, constraints, refused) = {
                 let c = cell.read();
                 (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
@@ -1130,6 +1176,14 @@ pub(crate) fn position(sub: &[u8]) -> Result<u64, PackError> {
     Ok((at - base) as u64)
 }
 
+// CR claude for eric: [bug] every out-of-line definition recurses through here
+// (about eight frames per expression level) with no stack::ensure_sufficient.
+// probe: `let x = 1 + 1 + ... + 1` (900 terms) under RUST_MIN_STACK=1048576 runs
+// with --no-cache and cold, and the warm (image) run aborts with a stack overflow.
+// CR claude for eric: [bug] a definition whose contents reference its own ordinal
+// recurses here until the stack overflows. probe: point one trailer offset at the
+// bytes `00 <that ordinal>`: the warm run aborts instead of failing the read.
+// Track the offsets being decoded and refuse a second re-entry of one.
 /// Decode the object defined at `offset` with `full`, its whole codec,
 /// which enters it in its table as a side effect.
 pub(crate) fn decode_at<T>(
@@ -1142,6 +1196,9 @@ pub(crate) fn decode_at<T>(
     if offset >= len {
         return Err(PackError::InvalidFormat);
     }
+    // CR claude for eric: [risk] sound only while nobody calls the pub set_image
+    // mid-session, which nothing prevents. Cloning the `Bytes` (a refcount) and
+    // slicing it removes the unsafe.
     // The installed decoder holds the image, never replaced mid-session.
     let mut sub = unsafe { std::slice::from_raw_parts(base.add(offset), len - offset) };
     full(&mut sub)
@@ -1218,6 +1275,10 @@ where
             (ord, true)
         }
     });
+    // CR claude for eric: [dead] every caller checks is_encoding() first, so the
+    // out-of-session branches here, in slot_len and in expr_key never run; and
+    // this one writes contents with no tag, which object_decode (session-only)
+    // cannot read. Make no session an error here, or move the callers' check in.
     let Some((ord, first)) = seen else {
         let mut whole = ImageBuf::with_capacity(0);
         contents(&mut whole)?;
@@ -1245,6 +1306,9 @@ where
     written
 }
 
+// CR claude for eric: [structure] object_len/object_encode forward to
+// slot_len/slot_encode unchanged (content_len/encode nearly so); one pair of
+// names is a layer that pays no rent.
 /// The image length of the address-keyed object at `key`: its
 /// `contents` at the first sight, a reference afterwards. `owned`
 /// builds the stored key at the first sight only.
@@ -1498,6 +1562,11 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
                     None => decode_at(offset, |b| tvar_decode(b)),
                 }
             }
+            // CR claude for eric: [bug] suspected: the wrapper is entered after its
+            // cell, not before as tvar_len's doc says. A cell whose bound type or
+            // constraint holds this same wrapper decodes it again from its offset:
+            // two wrappers for one ordinal, and an alias through one no longer
+            // moves the other. Enter the wrapper over a placeholder cell first.
             DEF => {
                 let name = Pack::decode(sub)?;
                 let id = TVarId::decode(sub)?;

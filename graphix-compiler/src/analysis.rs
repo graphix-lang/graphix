@@ -6,6 +6,9 @@
 //! `RecursionKind`). Both engines read the facts; the structural
 //! tail-loop predicate is `fusion::lowering::structural_tail_loop`.
 
+// CR claude for eric: [style] Used more than once but spelled in full:
+// `crate::DefAssertionKind` (3), `crate::dbgenv::gxdbg_effect` (2), plus
+// `crate::expr::Expr`, `crate::Refs`, `crate::ExprId`; import them.
 use crate::{
     ApplyView, BindId, ExecCtx, LambdaId, LambdaInstanceId, Node, NodeView, Rt,
     UserEvent,
@@ -77,6 +80,9 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
     StaticCallGraph { instances, edges }
 }
 
+// CR claude for eric: [style] Returns a bare triple of pooled maps; component
+// ids are dense 0..n, so `sizes` and `cyclic` are a Vec<usize> and a Vec<bool>
+// (or one Vec of a small struct), named in a returned struct.
 fn strongly_connected<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
 ) -> (
@@ -240,6 +246,9 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
                     )),
                 },
             };
+        // CR claude for eric: [readability] Both arms return false; this is
+        // `err = failed; false` (err is None here), and the closure would read
+        // better as a loop that drains the covered assertions.
         match failed {
             Some(e) => {
                 err = Some(e);
@@ -251,6 +260,12 @@ fn check_def_assertions<R: Rt, E: UserEvent>(
     err.map_or(Ok(()), Err)
 }
 
+// CR claude for eric: [bug] A def reached only through a runtime-bound callee
+// never has its `#[sync]`/`#[async]`/`#[tail_recursive]` checked: this skips
+// check_def_assertions, and the assertion stays pending (ctx.def_assertions
+// only grows). Probe: `#[sync] let f = |n: i64| throttle(#rate:
+// duration:0.001s, n); let b = true; let g = select b { true => f, false =>
+// |n: i64| n }; println(g(1))` runs and prints 1; `println(f(1))` is refused.
 /// [`analyze`] for a callee bound at runtime (`CallSite::bind`), whose
 /// body compiled after the program-wide pass. Seeded with the outer
 /// `(callee, self_bind)` pair, which `collect_resolved_sites` skips.
@@ -269,6 +284,10 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     mark_recursion(&graph, &facts, ctx);
 }
 
+// CR claude for eric: [structure] The same reachability walk as
+// collect_static_graph (descend through each resolved_apply body once), run
+// back to back by analyze and analyze_bound_callee. One walk can yield both the
+// edges and the sites.
 /// Every reachable resolved-lambda call site, as `(callee, self_bind)`;
 /// callee instance bodies are walked once each.
 fn collect_resolved_sites<'a, R: Rt, E: UserEvent>(
@@ -328,10 +347,19 @@ fn infer_effects<R: Rt, E: UserEvent>(
             });
             (g.id(), body, local)
         });
+        // CR claude for eric: [risk] Keeps the first instance per self bind, so a
+        // def with two instances (different callbacks) answers the second one's
+        // unresolved self-call with the first one's facts, though callee_facts
+        // says this table "names the actual instance". Suspected; no probe.
         self_ids.entry(*sb).or_insert_with(|| g.instance_id());
     }
     let mut eff: InstanceFacts =
         bodies.keys().map(|id| (*id, LambdaFacts::PURE)).collect();
+    // CR claude for eric: [perf] Every round re-walks every body, and when the
+    // map visits callers before callees a round moves a degradation one caller
+    // up: O(call depth x program size). Probe: a 200-deep chain
+    // `f1 -> .. -> f200 = throttle(..)` under GRAPHIX_PROFILE=1 shows
+    // EffectRound calls=200. A worklist over reverse call edges is linear.
     loop {
         let _profile = profile::phase(Phase::EffectRound);
         let mut changed = false;
@@ -426,6 +454,10 @@ fn node_facts<R: Rt, E: UserEvent>(
         // Cross-cycle. Catch's Async is also what keeps catch-covered
         // recursion off the tail-loop machinery (a self-call after a
         // catch is a tail leaf).
+        // CR claude for eric: [risk] The tail-loop gate leans on the effect of
+        // an unrelated node: if Catch ever classifies Sync, catch-covered
+        // recursion silently becomes a tail loop. for_each_tail_leaf should
+        // refuse a leaf a catch covers itself, and this comment can go.
         NodeView::Sample(_)
         | NodeView::Catch(_)
         | NodeView::SeqGuard(_)
@@ -440,6 +472,13 @@ fn node_facts<R: Rt, E: UserEvent>(
             LambdaFacts { effect: EffectKind::Sync, stateless: false }
         }
         NodeView::Qop(_) | NodeView::OrNever(_) => LambdaFacts::PURE,
+        // CR claude for eric: [bug] A dynamic Module is PURE here and
+        // fusion::for_each_node never visits its `source`, so an async source is
+        // invisible. Probe: `#[sync] let f = |x: i64| { let s = mod t dynamic {
+        // sandbox whitelist [core]; sig { val foo: i64 }; source
+        // sys::time::after_idle(duration:0.01s, "let foo = 42") }; (s, x) }` is
+        // accepted; the same after_idle outside the module is refused. The same
+        // hole makes arm_sleeps_on_deselect call such an arm pure.
         NodeView::Bind(_)
         | NodeView::Module(_)
         | NodeView::Block(_)
@@ -587,6 +626,13 @@ fn mark_recursion<R: Rt, E: UserEvent>(
             == Some(1);
         // Tail means every self-call is in tail position; tail sites
         // loop regardless.
+        // CR claude for eric: [bug] TailRecursive ignores whether a loop is built
+        // (structural_tail_loop, positional_arg_order below), yet it alone passes
+        // `#[tail_recursive]`. Probe: `#[tail_recursive] let rec f = |#acc: i64 =
+        // 0, n: i64| -> i64 select n { 0 => acc, _ => f(#acc: acc + 1, n - 1) }`
+        // passes --check, and f(200000) blows GRAPHIX_STACK_BUDGET=100000000 while
+        // its positional twin runs in constant space. Assert on the tail_loop
+        // verdict; effects.rs:118's "with loop-able formals" is not what is computed.
         let tail = only_self
             && body_has_self_tail_call(g.body(), *instance)
             && !body_has_non_tail_self_call(g.body(), *instance);
@@ -647,6 +693,12 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
     )
 }
 
+// CR claude for eric: [structure] Per instance, three for_each_tail_leaf walks
+// with one predicate (this, body_has_non_tail_self_call, mark_tail_sites), plus a
+// same-named twin keyed by bind in fusion/lowering.rs:1198. One walk collecting
+// the tail self-call sites answers all three. The set below keys sites by spec
+// ExprId (AHashSet, though ExprId is nohash): a rewrite that places one Expr
+// twice would make a non-tail copy look tail; key by node address.
 fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     instance: LambdaInstanceId,
@@ -710,6 +762,13 @@ fn positional_arg_order<R: Rt, E: UserEvent>(
     Some(order.drain(..).collect())
 }
 
+// CR claude for eric: [bug] The def's recursion is the max over its instances
+// with TailRecursive ranked above Recursive, so one tail instance hides a
+// non-tail one. Probe: `#[tail_recursive] let rec f = |g: fn(x: i64) -> i64,
+// n: i64| -> i64 select n { 0 => g(0), _ => f(g, n - 1) }` with `let rec h =
+// |x: i64| -> i64 select x { 0 => 0, _ => f(h, x - 1) + 1 }`: `f(h, 10)` alone
+// is refused (mutual recursion); add `f(|x| x, 10)` and it is accepted.
+// Recursive should dominate TailRecursive in the join.
 fn rank(k: RecursionKind) -> u8 {
     match k {
         RecursionKind::NotRecursive => 0,
@@ -745,6 +804,11 @@ fn callee_lambda<R: Rt, E: UserEvent>(
     None
 }
 
+// CR claude for eric: [risk] A second classification of stateful nodes, with a
+// `_ => ()` arm where node_facts is exhaustive "on purpose"; they already differ
+// (SeqGuard/SeqAbort are ASYNC there, pure here). A new stateful node kind
+// silently makes the arms holding it skip sleep. Derive this from node_facts.
+// `FusedKernel => recurses = true` also misnames why a kernel sleeps.
 /// Whether an untaken arm must sleep: pure computation with no
 /// recursive call has nothing to pause. A `<-`, a catch, a sample, an
 /// `any`, a stateful/async callee, an unresolved callee or a fused

@@ -22,8 +22,14 @@ use netidx_value::parser::{VAL_ESC, VAL_MUST_ESC, value as parse_value};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
+// CR claude for eric: [style] A second `use` of this module apart from the
+// `crate::expr::parser` group above; list_slice_pattern also spells out
+// `combine::parser::char::string` though `string` is imported.
 use super::{grow::grow, not_prefix};
 
+// CR claude for eric: [structure] slice_pattern and list_slice_pattern are the
+// same ~80 lines (the all_left! macro twice) differing in delimiters, the `list`
+// flag and the suffix refusal; one function taking `list: bool`.
 /// Classify a slice-shaped pattern's element/rest mix into Slice /
 /// SlicePrefix / SliceSuffix. `list` selects the native-list flavor,
 /// which refuses the suffix form (a list's front is an O(n) walk).
@@ -273,6 +279,10 @@ where
         token('{'),
         sptoken('}'),
         spaces().with(sep_by1_tok(
+            // CR claude for eric: [readability] `..` is encoded as a fake field ("",
+            // Ignore, false) that `retain` strips while folding `exhaustive`, and a
+            // shorthand bind is found later by its NOWHERE position; an enum
+            // { Field(name, pat, shorthand), Rest } says both.
             (position(), choice((
                 string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
                 fldname()
@@ -325,6 +335,9 @@ where
     })
 }
 
+// CR claude for eric: [structure] underbar, bind and literal each take `all`
+// only to refuse it with the same message; refuse a capture on a leaf once in
+// structure_pattern.
 fn underbar_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -361,6 +374,10 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    // CR claude for eric: [bug] a pattern string is lexed by netidx's value parser,
+    // not the expression string lexer, so the two disagree: the string `a[b` is
+    // written `"a\[b"` in an expression but `"a[b"` in a pattern, and `"a\[b"` (or
+    // an r"..." string) does not parse as a pattern (probed). Share one string lexer.
     attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC)).skip(not_prefix()).then(move |v| {
         if all {
             unexpected_any("all patterns are not supported by literals").left()

@@ -107,6 +107,10 @@ pub fn decode_nodes<R: Rt, E: UserEvent>(
     Ok(out)
 }
 
+// CR claude for eric: [risk] recurses once per node level with no
+// stack::ensure_sufficient, where every other Node walk is guarded (lib.rs Node
+// impl); a program the guarded compile builds can overflow here on a warm start.
+// Wrap the dispatch below in the guard.
 pub fn decode_node<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     buf: &mut &[u8],

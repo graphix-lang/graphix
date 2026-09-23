@@ -122,6 +122,8 @@ pub fn phase(phase: Phase) -> Option<Span> {
         return None;
     }
     PROFILE.with_borrow_mut(|p| {
+        // CR claude for eric: [readability] `p.current.is_none()` is tested twice
+        // in a row (here and for `p.origin` below); one root-span branch.
         if p.current.is_none() {
             p.metrics.fill(Metric::default());
             p.census = CENSUS.then(Census::default);
@@ -204,6 +206,11 @@ pub fn failed(span: &mut Option<Span>) {
     }
 }
 
+// CR claude for eric: [risk] LIFO drop order is only a convention (the
+// PhantomData stops Send, not an early drop), and callers drop spans by hand
+// (lib.rs:1918-1928). An out-of-order drop restores the wrong parent and
+// silently corrupts every phase's self time; debug_assert that
+// `p.current == Some(self.phase)` here.
 impl Drop for Span {
     fn drop(&mut self) {
         let end = Instant::now();

@@ -38,6 +38,10 @@ pub enum IdRelocation {
 
 macro_rules! image_id {
     ($name:ident) => {
+        // CR claude for eric: [risk] The serde derives write the raw id,
+        // bypassing the relocation `Pack` applies, and I found nothing in the
+        // workspace that serde-serializes these ids (Expr serializes as text).
+        // Drop them so no path can carry an unrelocated id out of an image.
         #[derive(
             Debug,
             Clone,
@@ -82,6 +86,10 @@ macro_rules! image_id {
             /// typed value (e.g. a JIT'd kernel emitting `inner()` as a
             /// constant and reconstructing it on the other side). Do not
             /// use it to forge ids.
+            // CR claude for eric: [dead] The `allow(dead_code)` is stale (a pub
+            // fn; used by node/bind.rs:471), and `mk` below is an unused
+            // test-only copy of this. lib.rs:276/286/292 add three more
+            // forging doors (`From<u64>`, `TryFrom<Value>`) beside this one.
             #[allow(dead_code)]
             pub fn from_inner(i: u64) -> Self {
                 $name(i)
@@ -106,6 +114,10 @@ macro_rules! image_id {
 
             /// Install `r` as this id type's relocation on this thread
             /// and return the previous one.
+            // CR claude for eric: [style] `set_relocation`, `reserve` and the
+            // `IdRelocation` re-export (lib.rs:24) are public, but only
+            // image/mod.rs uses them; any crate can repoint every id this
+            // thread writes. Make them pub(crate).
             pub fn set_relocation(
                 r: Option<$crate::ids::IdRelocation>,
             ) -> Option<$crate::ids::IdRelocation> {
@@ -143,6 +155,10 @@ macro_rules! image_id {
                 let raw = netidx_core::pack::decode_varint(buf)?;
                 Ok(Self::relocation_slot().with_borrow(|slot| match slot {
                     Some($crate::ids::IdRelocation::Decode { base }) => {
+                        // CR claude for eric: [bug] no span check: a wire id outside the image's
+                        // reserved span (a corrupt cache) relocates onto a live id, and wrapping_add
+                        // hides overflow (companion to the CR at image/mod.rs on IdCounts). Refuse
+                        // `raw >= span` as a decode error.
                         Self(base.wrapping_add(raw))
                     }
                     _ => Self(raw),

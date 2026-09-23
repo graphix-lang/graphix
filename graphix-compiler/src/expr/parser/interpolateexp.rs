@@ -12,6 +12,9 @@ use combine::{
     token, unexpected_any, value,
 };
 use compact_str::CompactString;
+// CR claude for eric: [style] `netidx_value` in two statements; and
+// `combine::many1`/`combine::satisfy` are spelled out in triple_run while the
+// other combinators are imported.
 use netidx_value::Value;
 use netidx_value::parser::escaped_string;
 use poolshark::local::LPooled;
@@ -28,6 +31,8 @@ parser! {
             Expr(Expr),
         }
         impl Intp {
+            // CR claude for eric: [style] Hand-builds an Expr field by field;
+            // this is `ExprKind::Constant(..).to_expr(pos).ending(end)`.
             fn to_expr(self) -> Expr {
                 match self {
                     Intp::Lit(pos, end, s) => Expr {

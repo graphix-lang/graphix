@@ -1,3 +1,7 @@
+// CR claude for eric: [style] use grouping: `crate::env::Map` and two
+// `crate::image` statements sit outside the `crate::{..}` group (which already has
+// `env::{Env, ImplDef}`); error contexts below build `String`s with `format!`
+// (`format_compact!`); `std::collections::hash_map::Entry` is spelled inline.
 use crate::env::Map;
 use crate::image::ImageBuf;
 use crate::image::nodes::{
@@ -44,6 +48,11 @@ fn bind_sig(
             env.modules.insert_cow(scope.append(name).lexical);
         }
     }
+    // CR claude for eric: [bug] errors here put the position in the TEXT ("at
+    // {si.pos}") and lose the origin, so they are framed by the declaring file.
+    // Probe: `impl Nope for i64;` in m.gxi reports "in file main.gx .. no trait
+    // `Nope` in scope at line: 2, column: 1". Attach `expr::ParserContext { ori:
+    // si_ori, pos }` as compile_stmt does for pending imports.
     for si in sig.items.iter() {
         let si_ori = si.ori.clone().unwrap_or_else(|| Arc::new(Origin::default()));
         match &si.kind {
@@ -188,6 +197,10 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
                     break;
                 }
             }
+            // CR claude for eric: [perf] each `copy_sig!` range runs to the END of
+            // the map (the modules loop above breaks at the first path outside the
+            // prefix), and the prefix string is rebuilt on every iteration, in
+            // three places. Build it once per submodule and break.
             macro_rules! copy_sig {
                 ($kind:ident) => {
                     let iter = inner_env.$kind.range::<ModPath, _>(&scope.lexical..);
@@ -247,6 +260,10 @@ fn check_sig<R: Rt, E: UserEvent>(
     let mut has_bind: LPooled<AHashSet<ArcStr>> = LPooled::take();
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
+        // CR claude for eric: [bug] only a single-name `let` can satisfy a `val`.
+        // Probe: m.gx `let (a, b) = (1, 2)` with m.gxi `val a: i64; val b: i64;`
+        // fails "sig item val a: i64 is missing an implementation". Walk the
+        // pattern's names and ids instead of requiring `StructurePattern::Bind`.
         if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
             && let Some(binds) = ctx.env.binds.get(&scope.lexical)
             && let Expr { kind: ExprKind::Bind(bexp), .. } = bind.spec()
@@ -407,6 +424,10 @@ fn check_sig<R: Rt, E: UserEvent>(
                 }
             }
             SigKind::Trait(t) => {
+                // CR claude for eric: [risk] method types are compared as printed
+                // strings: two spellings of one type (a scoped vs unscoped ref, a
+                // renamed type variable) mismatch, and self_index/defaults are not
+                // compared at all. Compare the types (the sig_matches used for vals).
                 // an implementation's own re-declaration must agree
                 // with the interface
                 for n in nodes {
@@ -458,6 +479,11 @@ static TYP: LazyLock<Type> = LazyLock::new(|| {
     Type::Set(Arc::from_iter([err, Type::Primitive(Typ::Null.into())]))
 });
 
+// CR claude for eric: [structure] `runtime_sig_check_env.is_some()` doubles as
+// "this is a dynamic module" (update, delete, sleep, reset_replay, typ,
+// compile_inner), and a static module carries a dummy Nop `source`. An enum
+// `Static | Dynamic { source, sig_env }` makes the mixed states unrepresentable
+// and names the branch. `TYP` is also too generic a name for the dynamic result.
 #[derive(Debug)]
 pub struct Module<R: Rt, E: UserEvent> {
     spec: Expr,
@@ -498,6 +524,12 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let env = crate::image::lexical_decode(buf)?;
         let sig = Sig::decode(buf)?;
         let scope = crate::image::scope_decode(buf)?;
+        // CR claude for eric: [bug] check_sig `ref_var`s every proxy's inner and
+        // outer id under `top_id`; decode does not replay it (CLAUDE.md: a ref_var
+        // id is re-registered at decode), so a warm start never schedules the
+        // module when its interface ids are written. Probe: main.gx `m::x <- n ~ n
+        // * 10` into m.gx `let x = 0; println("inner [x]")` (m.gxi `val x: i64`)
+        // prints inner 0,0,10,20,30 cold and only "inner 0" on the warm run.
         let proxy = Vec::<Proxy>::decode(buf)?;
         let nodes = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
@@ -592,6 +624,12 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         Ok(Node::new(t))
     }
 
+    // CR claude for eric: [bug] a runtime (re)compile bypasses compile_stmt's
+    // end-of-statement work: `pending_imports` are never re-checked, and the
+    // attribute census / def assertions are never reconciled. Probe: source
+    // "use core::no_such_thing; let x = 42" loads and serves x = 42, while the
+    // same text as a file is refused "use: no `no_such_thing` in `core`". Share
+    // one post-compile step with compile_stmt.
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
         let exprs =
@@ -602,6 +640,12 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         self.compile_inner(ctx, &exprs)
     }
 
+    // CR claude for eric: [risk] `builtins_allowed` is reset to `true`, not to the
+    // value it had: any nesting of this under a sandboxed compile re-enables
+    // builtins for the rest of it. Save and restore (or make it a compile param).
+    // CR claude for eric: [structure] the "covered children, then catches in
+    // reverse" walk appears three times in this file (here, typecheck1_nodes,
+    // update) and three more in Block; one iterator helper for all six.
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
         ctx.builtins_allowed = self.runtime_sig_check_env.is_none();
         let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
@@ -808,6 +852,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         if compiled {
             event.init = true;
         }
+        // CR claude for eric: [bug] "the store never holds a taint placeholder" is
+        // false (Bind::update stores FRESH_BOTTOM), and skipping bottoms here and in
+        // the outbound loop below leaves the OUTER id's store on the last value
+        // while the inner binding is bottom. Probe: m.gx `let x = select k { 0 => 1,
+        // _ => never() }` (k ticking), m.gxi `val x: i64`, main reads `m::x` in an
+        // arm selected at n = 3: prints "3 1"; without the .gxi it reads bottom.
+        // Mirror the production, bottom included.
         for Proxy { inner, outer, private_inner } in &self.proxy {
             if *private_inner && let Some(tv) = event.variables.get(outer) {
                 let tv = tv.clone();
@@ -861,6 +912,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
+    // CR claude for eric: [bug] the static branch deletes the nodes but never
+    // `unref_var`s the proxies check_sig ref'd, so every deleted static module
+    // leaves its interface ids in the runtime's `by_ref`. `clear_compiled` does
+    // both; call it on both branches.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         if self.runtime_sig_check_env.is_none() {
             ctx.with_restored_mut(&mut self.env, |ctx| {
@@ -889,6 +944,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 }
             });
         } else {
+            // CR claude for eric: [bug] sleep is pause, not reset (CLAUDE.md), but
+            // this deletes the loaded graph, and a source that does not re-fire
+            // at the wake never reloads it. Probe: a dynamic module whose source
+            // (an outer `let src`) counts on a 50 ms timer, in an arm asleep on odd
+            // n: `foo::x` reads 0..3 at n = 0, then 3 at n = 2, 4, .. forever.
+            // Sleep the loaded nodes like the static branch does.
             self.source.sleep(ctx);
             self.clear_compiled(ctx);
         }
@@ -935,6 +996,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        // CR claude for eric: [readability] stale: `compile_source` runs no fusion
+        // pass, so a loaded graph is never fused, and `source` (the loader
+        // expression) is not the loaded graph. State what is true.
         // `source` is not fused here: a dynamic module's loaded graph
         // gets its own pass inside `compile_source`
         for child in self.nodes.iter_mut() {

@@ -89,6 +89,13 @@ where
         .map(|(pos, v, end)| ExprKind::Constant(v).to_expr(pos).ending(end))
 }
 
+// CR claude for eric: [perf] For a non-literal index the third arm parses the
+// whole expression, fails at the missing `..`, and the fourth parses it again:
+// `a[a[…a[0]…]]` 16 deep takes 4.4s to `graphix fmt` (probe, doubling per
+// level). Parse `optional(expr())` once and branch on `..`.
+// CR claude for eric: [readability] `Either` with Left = slice and Right =
+// index (here and in arithexp's Post::Array) needs this doc to be read; a
+// two-variant enum names the cases.
 /// The `[ idx ]` / `[ start..end ]` postfix suffix. `Right(e)` is a
 /// single-index `ArrayRef`; `Left((start, end))` is an `ArraySlice`.
 pub(super) fn array_index_suffix<I>()

@@ -1,3 +1,8 @@
+// CR claude for eric: [style] Imports: the two `crate::image` lines belong in the
+// `crate::{..}` group and `netidx_value::{Typ, Value}` in one line; and
+// `smallvec::SmallVec` (~20 uses), `nohash::{IntMap, IntSet}`,
+// `std::sync::atomic::{AtomicBool, AtomicUsize}` and `crate::env::Env` are
+// spelled fully qualified at every use although used many times.
 use super::{
     Held, WakeBit,
     compiler::compile,
@@ -28,6 +33,11 @@ use triomphe::Arc;
 
 atomic_id!(SelectId);
 
+// CR claude for eric: [structure] Nothing writes the selection through `&self`:
+// the only writer is `update(&mut self)` and nothing outside this file touches
+// it. An atomic with a `usize::MAX` sentinel stands in for `Option<usize>`; make
+// the field a plain `Option<usize>` and drop `SelCell`. The "anything that
+// rebuilds a node tree must preserve it" clause names no such code either.
 /// The selected arm index (`usize::MAX` = none), writable through
 /// `&self`. Semantic state: survives sleep and `reset_replay`, and
 /// anything that rebuilds a node tree must preserve it.
@@ -120,6 +130,11 @@ impl ArmMask {
     }
 }
 
+// CR claude for eric: [structure] The emission rule these planes feed lives in
+// an `emit!` macro inside `update`, which destructures the struct to capture its
+// fields; make it `EmissionPlanes::emit(&self, t, v) -> Option<TagValue>`.
+// `update` (~240 lines: guard ticking, routing, emission, deselect bookkeeping)
+// would lose a macro and one of its jobs.
 /// What a consulted-guard mask says about this cycle's emission.
 struct EmissionPlanes {
     /// A non-bottom fire was consumed.
@@ -207,6 +222,9 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         }))
     }
 
+    // CR claude for eric: [dead] No caller anywhere in the workspace; the
+    // `allow(dead_code)` hides it. Delete (it is also a fourth copy of the field
+    // initializers, with `compile` and `image_decode`).
     /// Build a `Select` node from an already-compiled scrutinee
     /// expression and a vector of (pattern, arm body) pairs.
     #[allow(dead_code)]
@@ -254,6 +272,11 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     spec.pos,
                     spec.ori.clone(),
                 )
+                // CR claude for eric: [bug] Pattern errors get string contexts, not
+                // `.at(&spec)`, so they carry no ErrorSite (the LSP cannot place them),
+                // and `spec` here is the ARM BODY, so the message reads "in select at
+                // <body pos>" (probe C/p8.gx: "in select at line 4, column 25" for a
+                // pattern at column 3). Also on the collect below. Use `.at(..)`.
                 .with_context(|| format!("in select at {}", spec.pos))?;
                 pat.structure_predicate
                     .ids(&mut |id| ctx.env.mark_pattern_bind(id, inputs.clone()));
@@ -425,6 +448,11 @@ impl TrackedFires {
         TrackedFires { per_arm, consumes, all, pending: nohash::IntSet::default() }
     }
 
+    // CR claude for eric: [perf] Each deselect allocates a fresh `Refs`, a fresh
+    // per-arm map and set, and rebuilds `all` from scratch with `collect()`; UI
+    // selects deselect on every state change. Clear and refill pooled
+    // containers (poolshark) instead. (`observe`'s `newly` staging is also
+    // needless: `self.all` and `self.pending` are disjoint field borrows.)
     fn refresh_arm<R: Rt, E: UserEvent>(
         &mut self,
         env: &crate::env::Env,
@@ -553,6 +581,13 @@ fn composite_literal_vector(
                 order.sort_by_key(|(_, i, _)| *i);
                 order.iter().all(|(_, _, p)| leaves(p, out))
             }
+            // CR claude for eric: [bug] A nested variant's tag test is dropped here and
+            // `shape_of` groups by the top head only, so `(true, `A) => 1, (false, `B)
+            // => 2` over `(bool, [`A, `B])` pools to "complete" and claims the whole
+            // tuple: the select is accepted and `(true, `B)` matches no arm (probe
+            // C/p7e.gx prints nothing); the full four-arm select is refused as
+            // "unreachable arm" (C/p7d.gx). A nested refutable head must end the
+            // pool (return false) or be part of the `Shape`.
             StructPatternNode::Variant { tag: _, all: _, binds } => {
                 binds.iter().all(|p| leaves(p, out))
             }
@@ -614,6 +649,10 @@ fn scrutinee_member(
         shape: &Shape,
         depth: usize,
     ) -> Result<Option<Type>> {
+        // CR claude for eric: [readability] Three unnamed caps in this file: 8 here,
+        // 64 in `array_members`, 10 positions in `LiteralPool::insert`. An alias
+        // chain of 9 silently drops the pool's coverage ("missing match cases" with
+        // no hint). Name them, and share the 64 `deref_typ!` uses for alias chains.
         if depth > 8 {
             return Ok(None);
         }
@@ -710,6 +749,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             + 1
     }
 
+    // CR claude for eric: [risk] The selection, resident, consulted mask and the
+    // tracker's pending bits are dropped silently: imaging a select that has run
+    // restores it unselected with its catch-up bits lost. The pre-cycle rule is
+    // enforced nowhere here; refuse with NOT_QUIESCENT when `selected` is set or
+    // `arm_facts` is built, as CallSite does for a bound dynamic callee.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Select, buf);
         self.arg.image_encode(buf)?;
@@ -765,6 +809,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 }
             }};
         }
+        // CR claude for eric: [perf] Every cycle, quiet ones included, each guarded
+        // arm whose shape admits the scrutinee re-runs `shape_matches` (a full
+        // `is_a` walk when unsealed), re-destructures the value and writes the
+        // store; the chain then runs `shape_matches` again in `arm_match` and the
+        // taken arm is bound a second time by `bind!`. Bind guards only when the
+        // scrutinee triggered or on a wake, and reuse the shape verdict.
         // Guards are live nodes and tick every cycle, even under a
         // tainted scrutinee. The bind is delivered only to an arm whose
         // shape admits the value: the checker narrowed the binds by that
@@ -802,6 +852,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 event.variables.len()
             );
         }
+        // CR claude for eric: [dead] Past the bottom return `arg_up` is always true,
+        // `bottomed` false and `arg.value` Some (Held::update stores every non-bottom
+        // production), so `&& arg_up` below, `!arg.tag.is_bottom()` in
+        // `route_unselected_present`, the `None => Taken(None)` chain arm, the
+        // `bottomed` param of `emission_planes` and `if arg_up { bind!(i) }` are all
+        // constant. Drop them so the routing reads as what it is.
         let tail = tail_dispatch_select.load(Ordering::Relaxed) && ctx.frame_depth > 0;
         // Inside frames selection is value-driven: a jump-rebound loop
         // variable arrives STALE, so a triggers-only driver would spin.
@@ -857,6 +913,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // A consulted-guard bottom makes the emission bottom whatever
         // else fired; otherwise a sound consumed fire emits the arm's
         // current value FIRED, and quiet rides.
+        // CR claude for eric: [bug] Both bottom branches return None when nothing
+        // triggers, so the resident RIDES its last value STALE while the arm (or a
+        // consulted guard) is bottom: the hole 7cd3ba73 closed for the scrutinee.
+        // Probe (scratchpad C/p1_arm_stale_bottom.gx): an arm `select m { _ => x }`
+        // inside a sleeping arm, `x` goes bottom during the sleep; at the wake the
+        // node-walk prints the pre-sleep 7 at every later cycle, the JIT is bottom.
+        // A bottom `t` (or consulted bottom) must set STALE_BOTTOM, never ride.
         macro_rules! emit {
             ($t:expr, $v:expr) => {{
                 let t: Tag = $t;
@@ -880,6 +943,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }};
         }
         let out = match chain {
+            // CR claude for eric: [bug] An undecidable selection is treated two ways:
+            // a cycle whose chain returns Undet skips the held arm, but a following
+            // quiet cycle (mask still consulted-bottom) evaluates it, so its effects
+            // run while the select is bottom, depending on whether the scrutinee
+            // happened to fire. Probe C/p2b.gx: the same arm under a quiet scrutinee
+            // prints at n=3,4,5 during the window, under a firing scrutinee never.
+            // Pick one rule: Quiet with `consulted_bottom` should stay Undet (or
+            // Undet should evaluate the held arm too).
             ChainOut::Quiet => selected.get().and_then(|i| {
                 let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx, event);
                 emit!(t, v)
@@ -913,6 +984,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                             event.init
                         );
                     }
+                    // CR claude for eric: [structure] The deselect (sleep if impure, then
+                    // refresh the tracker) is written twice, here and in `(None,
+                    // Some(j))`; one `deselect(j)` helper keeps the two in step.
                     if let Some(j) = selected.get() {
                         if sleep_on_deselect[j] {
                             deselect_sleep(&mut arms[j].1, ctx);
@@ -926,6 +1000,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     // a guard flip binds FIRED, so interior call sites
                     // dispatch; under an init view a guard's fire is its
                     // birth (its constants fire), not a flip.
+                    // CR claude for eric: [risk] "Only a guard flip binds FIRED", but
+                    // `pat_up` is any guard's fire, unconsulted ones included: a first
+                    // consult of a stale scrutinee (`route_unselected_present`) in a
+                    // cycle where some later arm's guard fired binds FIRED. Test the
+                    // consulted mask's guards, not `pat_up` (suspected, not probed).
                     let wake_tag = if tail {
                         bind_tag
                     } else if arg_prod.triggers() {
@@ -949,6 +1028,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                     event.wake_init = wake;
                     emit!(t, v)
                 }
+                // CR claude for eric: [risk] No arm matched, yet the resident rides the
+                // deselected arm's value STALE, so readers keep a value no arm now
+                // produces. Reachable through the literal-pool hole (probe
+                // C/p9_nomatch_ride.gx: `clock ~ r` keeps sampling 1 on both engines).
+                // Set STALE_BOTTOM here and in `(None, None)`.
                 (None, Some(j)) => {
                     if sleep_on_deselect[j] {
                         deselect_sleep(&mut arms[j].1, ctx);
@@ -1001,6 +1085,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         } = self;
         slept.set();
         arg.sleep(ctx);
+        // CR claude for eric: [readability] The arm body is named `arg` here and in
+        // `reset_replay`, shadowing the scrutinee `arg` one line up; call it `body`.
         for (pat, arg) in arms {
             arg.sleep(ctx);
             if let Some(n) = &mut pat.guard {
@@ -1058,6 +1144,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
+    // CR claude for eric: [perf] `--check` of one select over a nested tuple pattern
+    // is exponential in nesting depth (about 1.6x per level): depth 10 takes 0.15s,
+    // 14 takes 1.1s, and 20 takes more than 60s. The same nesting as a `let`
+    // destructure takes 0.06s at depth 14. Suspected: coverage or completion
+    // re-walks each sub-pattern per level. Probe: `let a = ((((1, 1), 2), 3), ..);
+    // select a { ((((x0, _), _), _), ..) => x0 + 1 }`.
+    // CR claude for eric: [structure] ~370 lines doing four jobs (predicate
+    // completion, exhaustiveness, narrowing + capture typing, dead arms), and
+    // two independent coverage engines that must agree but do not: bool
+    // literals (`saw_true`/`saw_t`), literal pools (`literal_pool`/`dead_pool`),
+    // slice ladders (`slice_pool` + an inline `hole` search vs per-member `Cov` +
+    // `lens_complete`). Their disagreement is the bug behind the or-narrowing and
+    // array/list CRs. One per-arm coverage accumulator both checks read.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         // An arm's coverage atoms: each or-alternative paired with its
         // member of the arm's predicate (the inferred Set is one member
@@ -1119,6 +1218,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let mut literal_pool = LiteralPool::default();
         let (mut guarded_slice, mut refutable_slice) = (false, false);
         for (pat, _) in self.arms.iter() {
+            // CR claude for eric: [bug] an arm whose structure matches anything counts as a
+            // wildcard even after completion narrowed its type predicate to one member, so
+            // the tuple-union select in the CR at expr/pattern.rs:372 passes this check and
+            // is then bottom for the other member. Test the narrowed type predicate too.
             let inferred_irrefutable = !pat.explicit_type_predicate
                 && pat.structure_predicate.matches_anything();
             match &pat.guard {
@@ -1188,6 +1291,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 let _ = itype.contains(&ctx.env, &self.arg.node.typ())?;
             }
         } else {
+            // CR claude for eric: [bug] Exhaustiveness over a union of arrays depends
+            // on which member a type test names: over `[Array<i64>, Array<string>]`,
+            // `Array<string> as s, [], [x, rest..]` is accepted but `Array<i64> as a,
+            // [], [x, rest..]` is refused "Array<i64> does not contain [..]" (probe
+            // C/p3y.gx). The slice arms' fresh element tvar is bound greedily while
+            // building/checking `itype`; root cause likely in Type::union/contains.
             itype.check_contains(&ctx.env, &self.arg.node.typ()).map_err(|e| {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     anyhow!("missing match cases {e}")
@@ -1195,7 +1304,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             })?;
             // The slice pool resolves after the itype check narrows the
             // scrutinee and before the mtype check joins its coverage.
+            // CR claude for eric: [style] The note is a plain `String` built with
+            // `format!` on the success path too; build it inside the `map_err`
+            // closure below (format_compact!), where it is used.
             let mut slice_note = String::new();
+            // CR claude for eric: [bug] The pool pools lengths across ALL array/list
+            // members and then admits a member only if EVERY slice arm's predicate
+            // contains it, so separate ladders per member never cover: `[Array<i64>,
+            // List<i64>]` with `[]`, `[x, rest..]`, `[<>]`, `[<h, t..>]` is refused
+            // "no unguarded arm irrefutably covers" (probe C/p6_arr_list.gx). The
+            // dead-arm walk's per-member `Cov` gets this right; use it here.
             if !slice_pool.is_empty() {
                 let rest =
                     slice_pool.iter().filter(|(_, e, _)| !e).map(|(k, _, _)| *k).min();
@@ -1285,6 +1403,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
             wrap!(n, n.typecheck0(ctx))?;
             rtypes.push(n.typ());
+            // CR claude for eric: [bug] `is_refutable` is always true for an Or, so an
+            // or-arm never narrows later arms, while the dead-arm walk below diffs it
+            // per atom: after `` `A | `B => 1 `` a later `` `A `` arm is dead (probe
+            // C/p4c.gx) yet `x => select x { `C => 2 }` is refused, x still [`A, `B,
+            // `C] (C/p4_or_narrow.gx). or_patterns.md says narrowing rides the union;
+            // the graphix-lang skill documents the opposite. Diff per atom here too.
             if !pat.structure_predicate.is_refutable() && pat.guard.is_none() {
                 ntype = ntype.diff(&ctx.env, &pat.type_predicate)?;
             }
@@ -1315,6 +1439,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let (mut saw_t, mut saw_f) = (false, false);
         let mut dead_pool = LiteralPool::default();
         for (pat, _) in self.arms.iter() {
+            // CR claude for eric: [readability] Every dead-arm error below is a bare
+            // `bail!`, so it is sited at the whole select (probe C/p4c.gx: "at: line
+            // 2, column 9 .. in: select v {..}") and in a long select the reader must
+            // hunt for the arm. `bailat!` the arm (its body spec) instead. Also
+            // `!&pat.type_predicate` below has a stray `&`.
             if atype == Type::Primitive(BitFlags::empty()) {
                 bail!(
                     "unreachable arm: the earlier arms already cover the whole \

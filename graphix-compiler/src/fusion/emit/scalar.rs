@@ -21,6 +21,11 @@ use super::{
     lower::LowerCtx,
 };
 
+// CR claude for eric: [structure] six PrimType-to-helper-name tables in this file
+// (value_buf_push, valarray_get, abstract_get, struct_get, string_buf_push,
+// variant_payload) differ only in the prefix; one macro or `[&str; 11]` per family
+// indexed by prim removes the copies. Three of them return a Result that is never
+// Err.
 /// Map a [`PrimType`] to the `graphix_value_buf_push_<T>` helper.
 pub(super) fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {
     Ok(match p {
@@ -104,6 +109,9 @@ pub(super) fn struct_get_helper(p: PrimType) -> Result<&'static str> {
     })
 }
 
+// CR claude for eric: [readability] the first three lines are
+// element_read_helper's doc, stranded on the enum and naming a `struct_access`
+// parameter that is now `read: ElementRead`.
 /// Map an element [`Type`] to its element-read helper by ABI kind.
 /// `struct_access` picks the `struct_get_*` (kv-pair read) family over
 /// the flat `valarray_get_*` family.
@@ -156,6 +164,8 @@ pub(super) fn element_read_helper(
     })
 }
 
+// CR claude for eric: [readability] "fresh box" is stale: composites are one-word
+// ValArray handles with no box since the unified Value ABI.
 /// Emit an element read `arr_ptr[idx]` (or struct field) of element
 /// type `elem`. The result is owned (fresh box or refcount-bumped clone).
 pub(super) fn compile_element_read(
@@ -214,6 +224,9 @@ pub(super) fn widen_to_i64(
     })
 }
 
+// CR claude for eric: [readability] the CR below is resolved (the prior review
+// said so too): this fn's signed arm sign-extends exactly as pack_value_to_u64
+// does. Delete it.
 /// Promote a scalar CLIF value to the 8-byte payload word of a Value,
 /// following `pack_value_to_u64`: signed ints sign-extend, unsigned
 /// ints and bool zero-extend, floats bitcast through their integer mirror.
@@ -378,6 +391,10 @@ pub(super) fn compile_bin(
             BinOp::Sub => b.ins().fsub(l, r),
             BinOp::Mul => b.ins().fmul(l, r),
             BinOp::Div => b.ins().fdiv(l, r),
+            // CR claude for eric: [perf] a float `%` de-fuses the whole region. A
+            // helper (or libm fmod libcall) with Rust `%` semantics keeps it native;
+            // CLAUDE.md asks to push on de-fuse corner cases. `let _ = (l, r)` is
+            // noise.
             BinOp::Mod => {
                 // Cranelift has no `frem`; refuse so the kernel node-walks.
                 let _ = (l, r);

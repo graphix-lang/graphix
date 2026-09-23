@@ -786,6 +786,9 @@ fn arith_div() {
     assert_eq!(exp, parse_one(s).unwrap());
 }
 
+// CR claude for eric: [bug] A copy of arith_div: it parses `a / b` and tests no
+// parentheses. arith_eq..arith_div are ten copies of one table-driven test, and
+// none mixes `*` with `/` or `%`, where arithexp::precedence is wrong.
 #[test]
 fn arith_paren() {
     let exp = ExprKind::Div {
@@ -1723,6 +1726,9 @@ fn paren_no_postfix_is_explicit() {
     assert_eq!(pa, parse_one("(a)").unwrap());
 }
 
+// CR claude for eric: [readability] The name promises linear parsing; it checks
+// one 4-deep AST. Failing nested parens, and valid nested blocks, index
+// expressions and seqs, parse in exponential time; nothing here times a parse.
 #[test]
 fn nested_parens_linear() {
     let mut e = ExprKind::Constant(Value::I64(1)).to_expr_nopos();
@@ -1771,6 +1777,8 @@ fn parse_prop0(s: &str) -> anyhow::Result<Type> {
         .map_err(|e| anyhow::anyhow!(format!("{}", e)))
 }
 
+// CR claude for eric: [dead] Asserts nothing (a `dbg!`); parse_prop0 above is
+// parse_typexpr again, and parse_typath at the top parses a modpath.
 #[test]
 fn prop0() {
     let s = r#"println(click ~ (target_power - 50)?)"#;

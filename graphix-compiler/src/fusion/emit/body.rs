@@ -42,6 +42,8 @@ use super::{
     scalar::scalar_to_payload_i64,
 };
 
+// CR claude for eric: [readability] stale doc: the taint field is gone; the new
+// value's disc carries its tag.
 /// One tail-call rebind: the kernel param slot index (among
 /// `KernelSig::params` — skipped and invariant formals leave holes,
 /// so the pairing is explicit), the new value, its composite
@@ -78,6 +80,10 @@ pub(super) fn emit_tail_rebind_jump(
     let head = ctx.tail.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
+    // CR claude for eric: [dead] TailSlots::Positional is chosen only when
+    // kernel.params is empty (lower.rs:163), where there is nothing to rebind, and
+    // the "hand-built test kernels" it was for no longer exist. Drop the enum and
+    // this branch, which would rebind a composite without clone or drop.
     let TailSlots::Named(slots) = ctx.tail.call_slots else {
         debug_assert!(rebinds.len() <= ctx.tail.param_mark);
         for r in rebinds.iter() {
@@ -95,6 +101,14 @@ pub(super) fn emit_tail_rebind_jump(
     use kernel_abi::AbiParamKind;
     let helper =
         |name: &str| ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing {name}"));
+    // CR claude for eric: [bug] use after free. Every new value was emitted before
+    // this loop, so a Borrowed one is the OLD payload of another formal; rebind i
+    // drops its formal's old value before rebind j clones it. Probe:
+    // `let rec f = |n: i64, a: Array<i64>, b: Array<i64>| -> Array<i64> select n
+    // { 0 => b, n => f(n - 1, [n, n, n, n], a) }` fed from a timer panics in
+    // poolshark (valarray_finalize); the node-walk prints [2, 2, 2, 2], and
+    // swapping the formal order fuses fine. Clone every Borrowed value first, then
+    // drop the old values. Same for the Variant/Nullable/Value arm.
     for r in rebinds.iter() {
         let slot = &slots[r.slot];
         let vv = lookup_slot(env, slot)
@@ -145,6 +159,13 @@ pub(super) fn emit_tail_rebind_jump(
             }
         }
     }
+    // CR claude for eric: [bug] leak: the filter keeps a local out of the drops when
+    // any formal has its NAME, so a top-level let shadowing a formal leaks once per
+    // iteration; lookup_slot above says names are not unique. Probe: `let rec f =
+    // |n: i64, a: Array<i64>| -> Array<i64> { let a = [n, ..16 elems]; select n
+    // { 0 => a, n => f(n - 1, a) } }` over 6M iterations peaks at 2.1GB RSS fused,
+    // 52MB node-walk or with the let renamed. Everything above param_mark is not a
+    // formal; drop it by position.
     // Block and select-arm locals were dropped at their scope exits,
     // so the env's tail holds only top-level lets without a rebind
     // slot; those would leak per iteration.
@@ -162,6 +183,9 @@ pub(super) fn emit_tail_rebind_jump(
     Ok(())
 }
 
+// CR claude for eric: [dead] only abi.rs's emit_or_abort_on_taint(_keep) call
+// this, and those have no callers in either repo (their re-exports in mod.rs are
+// unused). distributed_jit.md still says may-bottom HOF bodies route through it.
 /// When the I8 `valid` bit is 0, set the pending flag, run
 /// `emit_pending_cleanup` and jump to `pending_exit`; otherwise fall
 /// through to a fresh block. For a tainted scalar consumed by a site
@@ -190,6 +214,10 @@ pub(super) fn emit_bottom_abort(
     Ok(())
 }
 
+// CR claude for eric: [structure] this and emit_bottom_abort write out the same
+// abort edge that emit_kernel_bottom is (abort_set, pending cleanup, jump to
+// pending_exit) plus a continue block; branch to a block that calls
+// emit_kernel_bottom instead.
 /// Poll `graphix_interrupted` at a loop head: nonzero takes the
 /// kernel's abort path (pending flag, `emit_pending_cleanup`,
 /// `pending_exit`), zero falls through to a fresh block. Emitted at
@@ -236,6 +264,10 @@ pub(super) trait BodyEmitter {
     ) -> Result<()>;
 }
 
+// CR claude for eric: [structure] builtin_apply_sites, lambda_call_sites and
+// type_env are Option but both constructions (jit.rs, parent and callee) pass
+// Some; and allow_state/self_call encode "region parent" vs "callee" (a parent
+// never has a self_call). Plain references plus a role enum would say so.
 /// The data facts a kernel build needs about one body;
 /// `compile_into_function` copies them onto the [`LowerCtx`].
 #[derive(Clone, Copy)]
@@ -244,6 +276,9 @@ pub(super) struct BodySpec<'a> {
     /// `CallSite::emit_clif` lowers a registered site to a direct call.
     pub(super) builtin_apply_sites:
         Option<&'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>>,
+    // CR claude for eric: [readability] stale: callee bodies get their own sites
+    // (jit.rs passes `Some(&cb.sites)`) and layout_of keys on them. Same stale
+    // "None for callee bodies" at lower.rs:462-466.
     /// Statically-resolved lambda call sites of the region being
     /// emitted; `None` for callee bodies (a callee's only cross-kernel
     /// reference is itself).
@@ -496,6 +531,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Ok(())
     }
 
+    // CR claude for eric: [structure] the directory walk (call
+    // graphix_slot_state_table, use_var(idx), shift by 3, add) is written three
+    // times: here, in emit_slot_truncates and in call.rs emit_site_block's
+    // emit_chain. One fn over (word_addr, dirs, leaf_ptr) serves all three.
     /// Emit the owning-table chain from `word_addr` (an anchor word's
     /// address) through one directory level per enclosing frame down
     /// to this loop's LEAF selection table (sized `len`, resize gated
@@ -553,6 +592,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// with this frame's len, truncating on a shrink; the records then
     /// propagate to the enclosing frame.
     pub(crate) fn emit_slot_truncates(&mut self) -> Result<()> {
+        // CR claude for eric: [risk] a missing frame is an emitter bug, and a release
+        // build answers it by emitting the kernel without its truncates (slot
+        // state that never shrinks), not by losing fusion. Return Err so the region
+        // node-walks; same for the debug_assert-and-continue in close_slot_tables.
         let Some(ClosedFrame { depth, len, src_disc, pending: recs }) =
             self.ctx.closed_frame.borrow_mut().take()
         else {
@@ -740,6 +783,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.collection_site.get()
     }
 
+    // CR claude for eric: [readability] stale: mutual recursion is refused
+    // (callsite.rs:2457), and on None the call site roots a per-activation block
+    // tree (call.rs emit_site_block), it does not pass 0.
     /// The [`SiteLayout`] of an already-DEFINED callee, by kernel
     /// identity ([`kernel_abi::kernel_key`]). `None` = recursive
     /// back-edge (self-calls, mutual-recursion cycles): the call site
@@ -748,6 +794,8 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.callee_layouts.get(&key)
     }
 
+    // CR claude for eric: [structure] ctx.loop_depth and env.loop_depth are two
+    // copies of one counter kept equal only by these two fns; keep one.
     /// Bracket scaffold-loop body emission, including the loop's own
     /// element/index/acc binds (their `Local::depth` stamp is what
     /// [`node_loop_invariant_ref`] keys on).
@@ -831,6 +879,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 }
 
+// CR claude for eric: [bug] leak: a Ref to a String local answers Borrowed, but
+// emit_ref_node clones every String read, so the value is owned. Consumers that
+// ask this for a non-String slot kind never drop it: emit_lambda_call_node (a
+// string into a `[string, null]` formal) and emit_tail_rebind_jump's Value arm,
+// which clones it again. Probe: a tail loop calling `f(s)` with `f = |v: [string,
+// null]| ..` and a fresh `let s = "..[n]"` per iteration peaks at 311MB for 4M
+// iterations fused, 52MB node-walk or with `v: string`. Answer Owned for a
+// String-typed Ref.
 /// Ownership classification of a Node-rooted result: a binding read
 /// is borrowed (the env slot keeps the ref), grouping is transparent
 /// to its tail, everything else hands out an owned ref. Decides
@@ -996,6 +1052,9 @@ pub(super) fn emit_kernel_return(
 ) -> Result<()> {
     // The result fires if its value chain fired or any tail-select
     // scrutinee on the executed path did (`TailCtx::tail_scrut_stale_acc`).
+    // CR claude for eric: [style] GXDBG_CALLRET is read with env::var_os at every
+    // emission (also call.rs emit_lambda_call_node) while every other switch is a
+    // cached `dbgenv` fn, and CLAUDE.md's debug table does not list it.
     #[cfg(debug_assertions)]
     if std::env::var_os("GXDBG_CALLRET").is_some() {
         let f = cx.helper("graphix_dbg_disc")?;

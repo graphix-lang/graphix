@@ -30,6 +30,12 @@ use cranelift_module::{
 };
 use netidx_value::Value;
 use parking_lot::Mutex;
+// CR claude for eric: [style] names used many times are spelled in full:
+// `std::sync::Arc` (~12 times beside the `StdArc` alias), `poolshark::local::LPooled`,
+// `cranelift_codegen::ir::UserFuncName`, `smallvec::SmallVec`; and the fn-local
+// `use`s in declare_spill_thunk/define_spill_thunk and def_order re-import names
+// this block already imports (AbiParam, Signature, types, InstBuilder, MemFlags,
+// BTreeMap).
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc as StdArc,
@@ -56,6 +62,10 @@ pub struct JitCtx {
     helper_ids: HelperFuncIds,
     /// The helpers by their ids, for naming a relocation's target.
     helper_names: BTreeMap<FuncId, &'static str>,
+    // CR claude for eric: [perf] entries are only ever added: a failed compile's
+    // `{symbol}.cN` names stay, pointing at recipes the failure dropped (dangling
+    // addresses kept for the module's life), and most attempts fail (1,787
+    // attempted / 526 fused on the admin TUI). Remove a failed body's names.
     /// Where a body's constant symbols resolve; the module's lookup fn
     /// reads it at finalization.
     symbols: SymbolTable,
@@ -65,6 +75,8 @@ impl JitCtx {
     pub fn new() -> Result<Self> {
         let _profile = profile::phase(Phase::JitInit);
         let mut flag_builder = settings::builder();
+        // CR claude for eric: [readability] this comment is about `is_pic` two
+        // statements below, not `opt_level`.
         // cranelift-jit requires PIC off.
         flag_builder.set("opt_level", "speed").context("set opt_level")?;
         flag_builder
@@ -114,6 +126,10 @@ impl JitCtx {
         })
     }
 
+    // CR claude for eric: [structure] arena exhaustion surfaces here as a cranelift
+    // io error, and fusion/mod.rs:899 detects it by matching the rendered chain for
+    // "memory region exhausted". Map it to a typed error here so the retire path
+    // matches a type, not cranelift's message text.
     /// Compile the function in `func_ctx` to bytes, define `id` from
     /// them, and return them with the relocations.
     fn define_bytes(&mut self, id: FuncId) -> Result<(Box<[u8]>, u64, Vec<ModuleReloc>)> {
@@ -296,6 +312,14 @@ impl WrappedKernel {
     }
 }
 
+// CR claude for eric: [bug] nothing frees a JIT arena: Jit has no Drop, and
+// cranelift-jit 0.131's ArenaMemoryProvider::drop leaks an arena once any segment
+// was finalized (memory/arena.rs:209). A dropped ExecCtx, a retired generation and
+// every reset_jit_for_check (one per LSP check) keep their code pages and 256MB
+// reservation for the process life, so CLAUDE.md's "the reclamation unit is the
+// ExecCtx" and the comments in fusion/mod.rs saying so are false. A Drop calling
+// `unsafe free_memory()` needs a stated invariant that no WrappedKernel outlives
+// its Jit; WrappedKernel's Send/Sync and raw pointer rely on the leak today.
 /// The per-`ExecCtx` JIT module. Kernels call each other with direct
 /// CLIF calls, so they share one module that lives as long as the
 /// `ExecCtx`.
@@ -308,6 +332,12 @@ pub struct Jit {
     /// Boxed: cranelift's `Context` is ~5KB and this rides every
     /// `async fn` that moves a `GXConfig`.
     ctx: Box<JitCtx>,
+    // CR claude for eric: [dead] the key's `base` is always 0 (ensure_declared's
+    // only callers pass 0 and `let base = 0`), and so is every `u32` in a layout
+    // vector (`(ptr, 0)` at both pushes). Drop both and name the key with a struct.
+    // CR claude for eric: [style] kernel identity is a raw `usize` Arc address
+    // (kernel_abi::kernel_key) in by_kernel, layout_ids, funcids, emitters and
+    // callee_layouts, next to other usizes; a `KernelKey` newtype keeps them apart.
     /// The entry holds the `Arc` so the pointer key cannot be reused by
     /// a later allocation.
     by_kernel: BTreeMap<(usize, u32, u32), CachedKernel>,
@@ -351,6 +381,11 @@ impl Jit {
         }
         let callees: Vec<FuncId> =
             rec.callees.iter().map(|c| self.load(c)).collect::<Result<_>>()?;
+        // CR claude for eric: [risk] a failure after the first define_record
+        // (e.g. the thunk's) leaves a defined body relocating to a declared but
+        // undefined Local function; the next finalize_definitions of this module
+        // panics "can't resolve symbol". The compile path stubs abandoned ids; this
+        // path does not. Same hole in define_kernel_body, see below.
         let id = self.declare_record(rec)?;
         let thunk_id = match &rec.thunk {
             Some(t) => Some(self.declare_record(t)?),
@@ -518,6 +553,9 @@ pub fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     type_env: &Env,
 ) -> Result<WrappedKernel> {
     let parent = NodeBodyEmitter { root, return_type: &kernel.return_type };
+    // CR claude for eric: [dead] `parent_self_call` is always None: the only caller
+    // (fusion/mod.rs:882) passes None, so the "collection callback path" below no
+    // longer exists. Drop the parameter and the comment.
     let parent_spec = BodySpec {
         builtin_apply_sites: Some(apply_sites),
         lambda_call_sites: Some(lambda_sites),
@@ -697,6 +735,14 @@ fn compile_kernel_with_callees_inner(
     // Phase 2: define the fresh bodies in topological order over the
     // static call edges, callees first, so a caller can read its callees'
     // `SiteLayout`s. The only layout missing at definition is a self-call's.
+    // CR claude for eric: [structure] `by_ptr` maps a pointer to several to_define
+    // entries, but a pointer is never queued twice: funcids and define_kernel_body
+    // key by pointer alone, so a second entry would define one FuncId twice. Order
+    // the pointers directly; `done: BTreeMap<usize, ()>` is a set.
+    // CR claude for eric: [style] scratch collections here and above (pos, by_ptr,
+    // done, order, stack, the layout Vec, callee_layouts; callee_emitters and
+    // emitters in the caller) are plain allocations per compile, while to_define,
+    // defined and funcids are pooled.
     let def_order: Vec<usize> = {
         use std::collections::BTreeMap;
         let mut pos: BTreeMap<usize, usize> = BTreeMap::new();
@@ -786,6 +832,10 @@ fn compile_kernel_with_callees_inner(
         .context("finalize_definitions (per-context jit)")?;
     drop(finalize_profile);
     let wrapper_fn_ptr = jit.ctx.module.get_finalized_function(wrapper_id);
+    // CR claude for eric: [perf] a region parent is never a cache hit: try_fuse
+    // builds a fresh Arc<KernelSig> per attempt (fusion/mod.rs:880), so its
+    // by_kernel entry is never looked up again and accumulates for the module's
+    // life. The "cached parent" below cannot occur; the parent needs no entry.
     // The code and its string tables are owned by `jit.by_kernel`; the
     // parent's state footprint comes from its cache entry so a cached
     // parent sizes its buffer correctly.
@@ -875,6 +925,11 @@ fn declare_spill_thunk(jit: &mut JitCtx, fn_name: &str) -> Result<FuncId> {
         .context("declare_function (spill thunk)")
 }
 
+// CR claude for eric: [structure] define_spill_thunk and define_wrapper_body are
+// one trampoline: an `(args, out)` fn that loads the kernel's params at 8-byte
+// slots, calls it, stores two words and builds a BodyRecord; they differ in the
+// slot offsets, the debug counter and the RecordKind. The "clear_context + fresh
+// FunctionBuilderContext" reset is also written out seven times in this file.
 /// Load each kernel parameter from `args` at an 8-byte stride, call the
 /// kernel, store its two result words to `out`.
 fn define_spill_thunk(
@@ -1011,6 +1066,10 @@ fn define_kernel_body(
         }
         let consts: std::cell::RefCell<Vec<EmitConst>> =
             std::cell::RefCell::new(Vec::new());
+        // CR claude for eric: [perf] suspected: this imports all ~152 helpers (and
+        // clones the arity map) into every function, so each kernel's CLIF carries
+        // 152 ext funcs and signatures that cranelift lowers per compile while a
+        // body uses a handful. Declaring on first `BodyCx::helper` use avoids it.
         let helper_refs =
             declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let module = std::cell::RefCell::new(&mut jit.module);
@@ -1045,6 +1104,12 @@ fn define_kernel_body(
     };
     drop(clif_profile);
     let backend_profile = profile::phase(Phase::BackendBody);
+    // CR claude for eric: [risk] once this succeeds the body is defined and queued
+    // for finalization with a relocation to its thunk. If record_relocs or
+    // define_spill_thunk then fails, the caller's stub for this body is a
+    // duplicate definition and the thunk stays undefined, so the module's next
+    // finalize_definitions panics "can't resolve symbol". Define (or stub) the
+    // thunk on every exit after this point.
     let (bytes, align, relocs) = jit.define_bytes(func_id).context("shared body")?;
     drop(backend_profile);
     let mut callees = Vec::new();
@@ -1080,6 +1145,9 @@ fn define_kernel_body(
             site_layout.self_blocks.len()
         );
     }
+    // CR claude for eric: [dead] KernelSig::defined is write-only: nothing reads it
+    // to decide anything (kernel_abi.rs:880; only Clone and the image codec touch
+    // it). Delete the field and this store.
     kernel.defined.store(true, std::sync::atomic::Ordering::Relaxed);
     jit.module.clear_context(&mut jit.func_ctx);
     jit.builder_ctx = FunctionBuilderContext::new();
@@ -1236,6 +1304,10 @@ fn define_wrapper_body(
     }))
 }
 
+// CR claude for eric: [structure] the Value-variant/PrimType table is written three
+// times: here, scalar::compile_const and kernel_abi::scalar_prim_of_value.
+// compile_const could be this plus a bitcast, and this could check
+// `scalar_prim_of_value(v) == Some(prim)` once. The `bad!` macro is `return None`.
 /// Pack a scalar [`Value`] into a u64 slot as `prim`. `None` when `v`
 /// is not a scalar of `prim`'s shape; the caller substitutes the
 /// tainted placeholder. `Z32`/`Z64`/`V32`/`V64` pack as their
@@ -1294,6 +1366,8 @@ pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     })
 }
 
+// CR claude for eric: [dead] only a round-trip test uses this (fusion/kernel.rs:500);
+// kernel results decode through TagValue::from_raw. Move it into that test.
 /// Unpack a u64 slot into the scalar [`Value`] of `prim`.
 pub fn unpack_u64_to_value(bits: u64, prim: PrimType) -> Value {
     match prim {

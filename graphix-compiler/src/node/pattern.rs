@@ -139,6 +139,9 @@ fn leaf_bind<R: Rt, E: UserEvent>(
                     // widen both the recorded entry and the env binding
                     let u = Type::union(&ctx.env, &[t0, typ])?;
                     map.insert(name.clone(), (id, u.clone()));
+                    // CR claude for eric: [style] A hand copy of `Env::retype` that
+                    // skips its IDE sink push, so hover shows the pre-widening type
+                    // for such a capture. Call `ctx.env.retype(id, u)`.
                     if let Some(b) = ctx.env.by_id.get(&id) {
                         let mut b = b.clone();
                         b.typ = u;
@@ -156,6 +159,10 @@ fn leaf_bind<R: Rt, E: UserEvent>(
 }
 
 impl StructPatternNode {
+    // CR claude for eric: [readability] The first four doc lines below are
+    // `realign`'s: `captures` was inserted between them and `realign`, so rustdoc
+    // gives `captures` a doc that starts with the wrong function and `realign`
+    // none. Move them down to `realign`.
     /// Re-derive the struct binders' field indexes from a completed
     /// type predicate: a partial pattern compiles against the fields it
     /// names, so its indexes are wrong once the select typecheck
@@ -238,6 +245,11 @@ impl StructPatternNode {
         }
     }
 
+    // CR claude for eric: [risk] `realign`, `captures`, the `Pack` impl's
+    // `encoded_len`/`encode`/`decode` and select.rs's `composite_literal_vector::
+    // leaves` recurse over pattern depth without `stack::ensure_sufficient`, which
+    // CLAUDE.md's stack discipline requires of every program-driven pattern walk
+    // (the other walks in this impl have it).
     pub(super) fn realign(&mut self, env: &Env, typ: &Type) -> Result<()> {
         match self {
             Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
@@ -399,6 +411,9 @@ impl StructPatternNode {
                     _ => None,
                 }) {
                     Some(et) => {
+                        // CR claude for eric: [structure] This `all` capture block is
+                        // pasted six times (also the Slice, Tuple, Variant, Abstract and
+                        // Struct arms); one `bind_all(&mut mode, all)` closure or fn.
                         let all = match $all.as_ref() {
                             None => None,
                             Some(n) => Some(leaf_bind(
@@ -484,6 +499,13 @@ impl StructPatternNode {
                 // each alternative compiles against its own member of the
                 // inferred predicate; under an explicit `T as p1 | p2`
                 // every alternative checks against T
+                // CR claude for eric: [bug] The comment is false: an EXPLICIT union
+                // whose member count equals the alternative count is also zipped
+                // positionally, so `` [`A, `B] as `A | `B `` compiles but `` [`A, `B]
+                // as `B | `A `` is refused "type mismatch `A does not contain `B" (probe
+                // C/p5.gx); with another count every alternative gets the whole union
+                // and `` [`A, `B, `C] as `B | `A `` fails "variant patterns can't
+                // match". Pair only the inferred Set; the explicit case needs a rule.
                 let alt_types: Option<Arc<[Type]>> =
                     type_predicate.with_deref(|t| match t {
                         Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
@@ -492,6 +514,11 @@ impl StructPatternNode {
                 let alt_type = |i: usize| {
                     alt_types.as_ref().map(|ts| &ts[i]).unwrap_or(type_predicate)
                 };
+                // CR claude for eric: [structure] Three copies of the alternative loop
+                // that differ only in which map and whether alternative 0 records:
+                // pick `(map, reuse_first)` from the mode (a local map for `Fresh`)
+                // and run one loop with `Record` for i == 0 && !reuse_first, else
+                // `Reuse`.
                 let compiled = match mode.reborrow() {
                     BindMode::Reuse(m) => {
                         let mut out = Vec::with_capacity(alts.len());
@@ -595,6 +622,9 @@ impl StructPatternNode {
                 let (all, head, suffix) = with_pref_suf!(false, all, head, suffix);
                 Self::SliceSuffix { all, head, suffix }
             }
+            // CR claude for eric: [structure] This arm is `with_pref_suf!` minus the
+            // single bind (the want/check/deref/`all`/element loop are identical);
+            // let the macro (better, a fn) take an optional single and use it here.
             StructurePattern::Slice { list, all, binds } => {
                 let want = if *list {
                     Type::List(Arc::new(Type::empty_tvar()))
@@ -1006,6 +1036,11 @@ impl StructPatternNode {
                     _ => (),
                 }
             }
+            // CR claude for eric: [structure] The list-spine walk (split, visit head,
+            // advance, stop at nil) is written four times: here, the list
+            // SlicePrefix bind, and both list arms of `is_match_inner`, each with a
+            // fn-local `use ..::collection::list`. One iterator over the first n
+            // cells (heads + remaining tail) serves all four.
             Self::Slice { kind: SliceKind::List, all, binds } => {
                 use crate::node::collection::list;
                 if let Some(id) = all {
@@ -1114,6 +1149,10 @@ impl StructPatternNode {
         }
     }
 
+    // CR claude for eric: [structure] `unbind` is `ids` (same ids, only the
+    // SlicePrefix order differs) and `delete` is `ids` plus `store_remove` +
+    // `unbind_variable` per id: three hand-kept copies of one walk over eight
+    // variants. Keep `ids`; express `unbind_event`/`delete` through it.
     pub fn unbind<F: FnMut(BindId)>(&self, f: &mut F) {
         crate::stack::ensure_sufficient(|| self.unbind_inner(f))
     }
@@ -1464,6 +1503,11 @@ pub(super) enum ArmMatch {
 pub struct PatternNode<R: Rt, E: UserEvent> {
     pub explicit_type_predicate: bool,
     pub type_predicate: Type,
+    // CR claude for eric: [structure] A lazily sealed cache on the pattern, read
+    // only in this file, yet imaged (always `None` before any cycle, and
+    // re-sealed after decode anyway) and representable with
+    // `explicit_type_predicate == true`, where it must be `None`. It belongs
+    // with the select's other first-update facts (`LazyArmFacts`), not here.
     /// The O(1) shallow discriminator for an inferred predicate, sealed
     /// at the select's first consult ([`Type::shallow_discriminant`]);
     /// `None` = run the full `is_a` walk.
@@ -1718,6 +1762,10 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 }
 
+// CR claude for eric: [style] `Pack`, `PackError` are imported at the top, yet
+// the codec below spells `netidx_core::pack::{Pack, PackError, varint_len,
+// encode_varint, decode_varint}` in full at every use and re-imports them inside
+// `decode`; import the three varint fns once and drop the paths.
 fn boxed_len(items: &[StructPatternNode]) -> usize {
     netidx_core::pack::varint_len(items.len() as u64)
         + items.iter().map(|p| p.encoded_len()).sum::<usize>()
@@ -1738,6 +1786,10 @@ fn boxed_decode(
     buf: &mut impl bytes::Buf,
 ) -> Result<Box<[StructPatternNode]>, netidx_core::pack::PackError> {
     let n = netidx_core::pack::decode_varint(buf)? as usize;
+    // CR claude for eric: [risk] A count read from the image sizes the
+    // allocation; a corrupt cache file (no checksum) asks for 2^60 elements and
+    // aborts the shell instead of failing the decode and running cold. Cap by
+    // `buf.remaining()`; also the Struct arm below and select.rs `image_decode`.
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(StructPatternNode::decode(buf)?);

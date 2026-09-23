@@ -1,3 +1,7 @@
+// CR claude for eric: [style] names spelled out despite imports or repeated use:
+// `crate::typ::TVar` (TVar is imported) at cell_constraints_ok and `impl
+// crate::typ::TVar`, `crate::typ::TraitId` in trait_contains,
+// `crate::dbgenv::graphix_dbg_bind()` ~12 times, `crate::stack::ensure_sufficient`.
 use crate::{
     PrintFlag,
     env::Env,
@@ -14,12 +18,20 @@ use smallvec::SmallVec;
 use std::fmt::Debug;
 use triomphe::Arc;
 
+// CR claude for eric: [structure] AliasTVars and InitTVars are always set together
+// (check_contains, contains, fntyp.rs:912/992, op.rs:184/856), yet the walk
+// gates acts on them separately (link_equal aliases under InitTVars alone).
+// The real states are {probe, commit} x {rigid or not}; two bools or an enum
+// make the unused mixes unrepresentable. A RigidCheck-only probe (op.rs:183) is
+// also "non-empty", so it skips the probe memo and takes commit copies.
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
 #[repr(u8)]
 pub enum ContainsFlags {
     AliasTVars,
     InitTVars,
+    // CR claude for eric: [readability] `TCell::rigid` does not exist; the field
+    // is `TCell::rigid_gates`.
     /// Enforce rigid (declared) tvar semantics; see `TCell::rigid`.
     /// Set only on the def gate's acceptance checks — elsewhere rigid
     /// cells behave like ordinary unbound cells.
@@ -32,6 +44,8 @@ pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: uni
      contains itself (e.g. a function that returns itself); declare a \
      named recursive type and annotate the binding";
 
+// CR claude for eric: [readability] this doc comment describes open_cell_reaches
+// below, not is_unbound_tvar; move it.
 /// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
 fn is_unbound_tvar(t: &Type) -> bool {
     matches!(t, Type::TVar(tv) if tv.read().typ.read().typ.is_none())
@@ -71,6 +85,11 @@ fn type_has_refused_open_cell(t: &Type) -> bool {
                 }
                 cons.iter().any(|c| walk(c, visited))
             }
+            // CR claude for eric: [structure] this Fn arm is exactly what the
+            // for_each_child arm below does (try_for_each_type walks args,
+            // vargs, rtype, throws); delete it. The walk also has no composite
+            // dedup (tree cost) and runs twice on every check_contains failure,
+            // which fusion/lowering.rs:1244 uses as a probe.
             Type::Fn(ft) => {
                 ft.args.iter().any(|a| walk(&a.typ, visited))
                     || ft.vargs.as_ref().is_some_and(|v| walk(v, visited))
@@ -121,6 +140,11 @@ fn link_equal_inner(t0: &Type, t1: &Type) {
             let ab = a.read().typ.read().typ.clone();
             let bb = b.read().typ.read().typ.clone();
             match (ab, bb) {
+                // CR claude for eric: [structure] this frozen -> direction choice
+                // duplicates the TVar x TVar arm of contains_dispatch (the
+                // `(None, None)` Act selection); one helper for "unify two open
+                // cells" would keep them from drifting (they already differ:
+                // this one ignores the Distinct rule for two rigid cells).
                 (None, None) => {
                     let af = a.read().frozen;
                     let bf = b.read().frozen;
@@ -181,6 +205,9 @@ fn link_equal_inner(t0: &Type, t1: &Type) {
     }
 }
 
+// CR claude for eric: [structure] settle/settle_or_bottom (TVar) and
+// FnType::settle_terminal are the settle phase, not containment; they belong
+// with TVar in tvar.rs and FnType in fntyp.rs (or a settle.rs of their own).
 impl crate::typ::TVar {
     /// Bind a constrained-unbound cell to its conjunction's witness,
     /// the narrowest conjunct every other conjunct contains. Bound and
@@ -218,6 +245,11 @@ impl crate::typ::TVar {
             witness = Some(c.clone());
             break;
         }
+        // CR claude for eric: [bug] with any trait conjunct present, a conjunction
+        // whose concrete members have no witness (`'a: Show & i64 & string`) is
+        // left open silently instead of the "unsatisfiable constraints" error;
+        // nothing later reports it. Suspected (read). Exempt only the trait-only
+        // case (no non-trait, non-self-referential candidate at all).
         // No finite witness: leave the cell open for writers to refine.
         if witness.is_none() && (all_self_referential || has_trait) {
             return Ok(());
@@ -516,6 +548,11 @@ impl Type {
                 return Ok(r);
             }
             let r = self.contains_dispatch(flags, env, hist, t)?;
+            // CR claude for eric: [risk] a verdict computed while a Ref pair was
+            // assumed true in `hist` (in progress) is cached here and reused
+            // after that pair is popped, outside the assumption that produced
+            // it. Suspected (read); only verdicts reached with no pair in
+            // progress, or keyed with the pairs they consulted, are safe to keep.
             hist.probe_put(self, t, r);
             return Ok(r);
         }
@@ -554,6 +591,10 @@ impl Type {
             }
             // A cell bound to a reference meets a reference by name
             // before either expands.
+            // CR claude for eric: [style] the guard computes ref_behind (a deref
+            // and clone) and the body recomputes it behind `expect("checked")`,
+            // here and in the mirror arm; a let-chain guard binds it once. Same
+            // in matches.rs could_match_int (app_filled in guard, then unwrap).
             (Self::Ref(_), Self::TVar(_)) if t.ref_behind().is_some() => {
                 let behind = t.ref_behind().expect("checked");
                 self.contains_int(flags, env, hist, &behind)
@@ -580,6 +621,15 @@ impl Type {
             (Self::Hole, _) | (_, Self::Hole) => Ok(false),
             // Two filled cells can hold different defs for one name;
             // disagreement falls through to the expansion arm.
+            // CR claude for eric: [bug] this fast path treats every typedef
+            // parameter as covariant, but a parameter under a fn argument is
+            // contravariant. Probe: `type F<'a> = fn(x: 'a) -> i64;` then
+            // `let widen = |f: Array<F<i64>>| -> Array<F<Number>> f;` checks, and
+            // `widen([|x: i64| -> i64 x + 1])[0]$(1.5)` runs the i64 fn on 1.5
+            // (prints "type '_: i64 does not match value 2.5", then 2.5); the
+            // expansion arm rejects it. Take the fast path only when the params
+            // are pairwise identical (union_identical), or record per-parameter
+            // variance at typedef registration; else fall through to expansion.
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
@@ -596,9 +646,24 @@ impl Type {
             }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
+                // CR claude for eric: [bug] ref_id is None for every content-less
+                // type (tvars, primitives, Any), so `T ⊇ 'a` and a nested
+                // `T ⊇ 'b` share the in-progress key (Some(T), None) and the
+                // nested query answers `true` unexamined. Probe: `type T =
+                // [`Cons(i64, T), `Nil]; let mk = |a| `Cons(1, a);` then
+                // `let t: T = `Cons(2, mk(mk("oops")));` checks, and at run time
+                // prints "type [`Cons(i64, T), `Nil] does not match value
+                // [.., "oops"]". Key a tvar by its cell (or deref bound cells
+                // before keying) and a primitive by its bits. union_int, diff_int
+                // and could_match_int use the same keys.
                 let t0_id = hist.ref_id(t0, env);
                 let t1_id = hist.ref_id(t1, env);
                 let raw = flags.is_empty();
+                // CR claude for eric: [perf] both sides are expanded before the
+                // pair memo is consulted, so a memo hit still pays two
+                // expansions (two reset_tvars deep copies on a committing walk).
+                // Check the memo first. Same order in matches.rs could_match_int
+                // and sig_matches_int, setops.rs union_int (both arms), diff_int.
                 let t0 = hist.expand_ref(t0, t0_id, env, raw)?;
                 let t1 = hist.expand_ref(t1, t1_id, env, raw)?;
                 match hist.get(&(t0_id, t1_id)) {
@@ -609,6 +674,14 @@ impl Type {
                         Ok(*r)
                     }
                     None => {
+                        // CR claude for eric: [bug] the in-progress `true` is only
+                        // sound when the recursion passes a constructor; a
+                        // typedef reaching itself through unions alone is not
+                        // contractive. Probe: `type T = [i64, T]; let v: T =
+                        // "hello";` checks, `select v { i64 as n => n + 1 }` is
+                        // accepted as exhaustive, and at run time no arm matches.
+                        // Reject non-contractive typedefs at registration
+                        // (env.rs), or assume only under a constructor.
                         hist.insert((t0_id, t1_id), true);
                         let r = t0.contains_int(flags, env, hist, &t1);
                         hist.remove(&(t0_id, t1_id));
@@ -795,6 +868,12 @@ impl Type {
                     if addr0 == addr1 {
                         return Ok(true);
                     }
+                    // CR claude for eric: [perf] both occurs checks (two full
+                    // walks over bindings and conjuncts, each with a fresh
+                    // visited set) run for every tvar pair before the bindings
+                    // are looked at; only the arms where an open cell would bind
+                    // or alias need them. This is the hottest arm of the
+                    // typechecker; compute them lazily per arm.
                     let cyc0 = would_cycle_inner(addr0, tt1);
                     let cyc1 = would_cycle_inner(addr1, tt0);
                     let t0i = t0.typ.read();
@@ -955,6 +1034,12 @@ impl Type {
                 }
                 Ok(true)
             }
+            // CR claude for eric: [bug] the occurs check guards the arm before
+            // the bound test: for a bound cell it is a wasted walk, and a bound
+            // cell that `t1` mentions (`'a := Any` against `Array<'a>`) skips
+            // this arm and lands in the catch-all `Ok(false)` without its
+            // binding being consulted. Suspected (read). Deref first; occurs-
+            // check only the open-cell bind. Same for the mirror arm below.
             (Self::TVar(t0), t1) if !t0.would_cycle(t1) => {
                 let bound = t0.read().typ.read().typ.clone();
                 if let Some(t0) = bound {
@@ -1015,6 +1100,14 @@ impl Type {
                 Ok(true)
             }
             (Self::Set(s0), Self::Set(s1)) if Arc::ptr_eq(s0, s1) => Ok(true),
+            // CR claude for eric: [bug] `t0 == t1` uses TVar::eq, under which two
+            // distinct unbound cells are equal, and link_equal then merges them
+            // with no Distinct check: two rigid declared tvars unify inside a
+            // set. Probe: `let f = |x: ['a, i64]| -> ['b, i64] x; f(1.5)` checks
+            // (and `[Array<'a>, i64]` -> `[Array<'b>, i64]`), while
+            // `|x: Array<'a>| -> Array<'b> x` is refused. Same in the member
+            // pre-pass below (`*c == m`). Compare with union_identical, and have
+            // link_equal refuse two rigid cells.
             (t0 @ Self::Set(_), t1 @ Self::Set(_)) if t0 == t1 => {
                 if flags.contains(ContainsFlags::InitTVars) {
                     link_equal(t0, t1);
@@ -1122,6 +1215,10 @@ impl Type {
                 .0),
             (Self::Set(s), t) => {
                 let probe = BitFlags::empty();
+                // CR claude for eric: [perf] for any `t` but a multi-bit
+                // Primitive, iter_prims yields `t` itself, so prims_ok re-runs
+                // exactly the member probes whole_ok just ran (and clones `t`).
+                // Compute prims_ok only for a multi-bit primitive.
                 let whole_ok =
                     s.iter().fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
                         Ok(acc? || t0.contains_int(probe, env, hist, t)?)
@@ -1150,6 +1247,15 @@ impl Type {
                         Self::Set(s.clone())
                     );
                 }
+                // CR claude for eric: [bug] both committing branches fold the
+                // members with the committing flags and no per-member probe: a
+                // member that binds a cell and then fails leaves the binding,
+                // and the next member is judged against it. Probe: `let f = |x:
+                // [`A('a, i64), `A(Array<i64>, string)], d: 'a| -> 'a d;` then
+                // `f(`A([1], "s"), 42)` is refused with "'a: Array<i64> does not
+                // contain i64"; the arg matches the second member, so 'a should
+                // stay free for `d`. Probe each member and commit only the first
+                // that probes true, as the residue arm above does.
                 match (whole_ok, prims_ok) {
                     (false, false) => Self::set_covers_by_distribution(env, hist, s, t),
                     // Prims first: the narrowest TVar bindings.
@@ -1262,6 +1368,9 @@ impl Type {
         s: &Arc<[Type]>,
         t: &Self,
     ) -> Result<bool> {
+        // CR claude for eric: [readability] 64 is an unnamed bound on the
+        // deref/expand chain; a named const saying what it bounds (alias chains
+        // of refs) or a visited set would state the intent.
         fn head(env: &Env, t: &Type) -> Type {
             let mut cur = t.clone();
             for _ in 0..64 {
@@ -1281,6 +1390,13 @@ impl Type {
             cur
         }
         let t = head(env, t);
+        // CR claude for eric: [bug] this law answers a committing walk with
+        // `true` and binds nothing: open cells in the candidates (see below)
+        // stay open, so in `[`T(A, 'q), `T(B, 'q)] ⊇ `T([A, B], i64)` 'q is
+        // free to bind to something else later. And has_unbound does not look
+        // through bound cells, so a cell forwarded to an open cell (alias's
+        // forward link) passes as closed. Suspected (read). Commit the
+        // non-distributing positions (or refuse open candidates) under flags.
         if t.has_unbound() {
             return Ok(false);
         }
@@ -1482,6 +1598,13 @@ impl Type {
                 None if env.trait_def(tid).is_some_and(|d| d.hole) => {
                     Ok(env.find_impl(tid, t)?.is_some())
                 }
+                // CR claude for eric: [bug] no cycle guard: a typedef that
+                // reaches itself through a union recurses forever. Probe: `trait
+                // Show { val show: fn(self) -> string }; impl Show for i64 {..};
+                // type T = [i64, T]; let g = |x: Show| Show::show(x); let v: T =
+                // 1; g(v)` aborts `--check` with a stack overflow. Guard with
+                // `hist` (ref_id visited) like the other Ref walks; `hist` is
+                // currently only threaded through, never read.
                 None => {
                     let e = t.lookup_ref(env)?;
                     Self::trait_contains(tid, flags, env, hist, &e)

@@ -19,6 +19,10 @@ use triomphe::Arc;
 
 image_id!(TVarId);
 
+// CR claude for eric: [style] this function-local `use poolshark::local::LPooled`
+// (and those in reset_tvars, replace_tvars) repeats the top-level import;
+// `cmp::{Eq, PartialEq}` above are prelude items; `smallvec::SmallVec`,
+// `nohash::IntSet` and `std::cmp::Ordering` are spelled out 3-4 times each.
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
     use poolshark::local::LPooled;
     let mut seen: LPooled<nohash::IntSet<usize>> = LPooled::take();
@@ -112,6 +116,10 @@ pub struct TCell {
     pub(crate) rigid_gates: u32,
 }
 
+// CR claude for eric: [risk] closing is manual (`close(self)`) and there is no
+// Drop: a gate dropped unclosed (a `?` added between open_rigid and the close
+// loop at node/lambda.rs:1498-1560, or an unwind) leaves the cell rigid for the
+// life of the program. Decrement in Drop and delete `close`.
 /// An open rigid gate, holding the cell it counted on. A merge may
 /// re-point the var to another cell before the gate closes, and a
 /// rollback may undo the forward link the merge left, so the close
@@ -145,6 +153,12 @@ impl TCell {
     }
 }
 
+// CR claude for eric: [readability] `TVarInnerInner` says nothing, and `typ`
+// names two different things one level apart: here the shared cell, in TCell
+// the binding. Reading a binding is `tv.read().typ.read().typ.clone()` and the
+// open test `tv.read().typ.read().typ.is_none()`, ~50 times across typ/.
+// Accessors (`binding()`, `is_bound()`) and names like `TVarLink { cell }` would
+// say what each level is.
 #[derive(Debug)]
 pub struct TVarInnerInner {
     pub(crate) id: TVarId,
@@ -185,6 +199,8 @@ impl fmt::Debug for TVar {
                 .field(&format_args!("'{}: …", self.name))
                 .finish();
         }
+        // CR claude for eric: [style] `&self.0` prints the ManuallyDrop /
+        // MaybeDangling wrappers into every GRAPHIX_DBG_BIND line; `&**self.0`.
         let r = f.debug_tuple("TVar").field(&self.0).finish();
         DEBUGGING.with_borrow_mut(|s| s.remove(&addr));
         r
@@ -246,6 +262,10 @@ impl fmt::Display for TVar {
     }
 }
 
+// CR claude for eric: [readability] this mints two TVarIds: one for the `_N`
+// name and another inside empty_named. Dumps print the name (`BIND lhs '_8923`)
+// and the id (`TT-RIGHTCOPY`), which disagree, and GRAPHIX_DBG_BIND_BT matches
+// the id, so the N a dump shows never triggers it. Name the var from its id.
 impl Default for TVar {
     fn default() -> Self {
         Self::empty_named(ArcStr::from(format_compact!("_{}", TVarId::new().0).as_str()))
@@ -260,6 +280,12 @@ impl Deref for TVar {
     }
 }
 
+// CR claude for eric: [risk] under this Eq two distinct unbound cells are equal,
+// yet the conjunct dedups use it as identity (add_cell_constraint, and the
+// `to_add` dedups in alias/alias_cells/copy): conjuncts `Array<'x>` and
+// `Array<'y>` over distinct open cells collapse to one and 'y's relation to the
+// cell is lost. Suspected (read). The rigid bypass in contains.rs's Set x Set
+// arm is the same confusion; dedup with union_identical.
 impl PartialEq for TVar {
     fn eq(&self, other: &Self) -> bool {
         let t0 = self.read();
@@ -365,6 +391,12 @@ impl TVar {
     }
 
     /// Add a conjunct to this var's cell constraints (deduped).
+    // CR claude for eric: [bug] the `==` dedup misses equal constraints, so a
+    // declared `'a: Number` ends up `Number & Number` (probe: `let f = 'a: Number
+    // |x: 'a, y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f` prints "'a:
+    // unbound within Number & Number"). A two-conjunct cell then drops out of
+    // FnType::constraint_view (CR in fntyp.rs). Suspected: the two copies differ in
+    // Ref scope or cell identity; dedup by content key.
     pub fn add_cell_constraint(&self, c: Type) {
         let cell = self.read().typ.clone();
         let existing = cell.read().constraints.clone();
@@ -386,6 +418,10 @@ impl TVar {
         self.typ.write()
     }
 
+    // CR claude for eric: [structure] alias and alias_cells repeat the occurs
+    // checks, the conjunct merge and the forward link line for line; they
+    // differ only in the frozen gate, the rigid survivor choice and the id
+    // copy. One private merge with those as parameters.
     /// Make self an alias for other; self's constraints merge into the
     /// shared cell.
     pub fn alias(&self, other: &Self) {
@@ -457,6 +493,13 @@ impl TVar {
                         oc.constraints.push(c);
                     }
                 }
+                // CR claude for eric: [bug] the merge moves self's conjuncts
+                // into the survivor but not self's `cycle_refused` (nor, here,
+                // `rigid_gates`, nor a binding when self's cell was bound, which
+                // is silently dropped for self). A refused open cell merged into
+                // an unflagged unconstrained one settles to ⊥ at the terminal
+                // settle instead of the infinite-type error. Suspected (read);
+                // same in alias_cells. Carry the flags, refuse a bound self.
                 // Forward-link the abandoned cell: other TVars may share
                 // it and must follow the merge. The occurs check above
                 // guarantees the link closes no cycle.
@@ -550,6 +593,10 @@ impl TVar {
         }
     }
 
+    // CR claude for eric: [risk] `sc.typ = typ` overwrites self's binding with
+    // other's, so an unbound `other` UNBINDS self. Both callers (the RightCopy/
+    // LeftCopy acts) pass a bound other; take the binding as an argument (or
+    // assert it) so the precondition is in the signature.
     /// Copy self's binding from other, merging constraint lists.
     pub fn copy(&self, other: &Self) {
         // Occurs check as in [`Self::alias`].
@@ -658,6 +705,9 @@ impl TVar {
         would_cycle_inner(addr, t)
     }
 
+    // CR claude for eric: [style] two pairs of identical accessors: addr() and
+    // wrapper_addr() both give the wrapper Arc's address, inner_addr() and
+    // cell_addr() both the cell's. Keep one of each.
     pub(super) fn addr(&self) -> usize {
         Arc::as_ptr(&self.0).addr()
     }
@@ -756,6 +806,8 @@ impl Type {
         }
     }
 
+    // CR claude for eric: [dead] no callers in graphix or netidx (FnType::bind_as
+    // at fntyp.rs:778, its only other user, has none either).
     /// Bind all unbound type variables to the specified type.
     pub fn bind_as(&self, t: &Self) {
         match self {
@@ -842,6 +894,14 @@ impl Type {
         match self {
             Type::TVar(tv) => Some(match known.get(&tv.name) {
                 Some(t) => t.clone(),
+                // CR claude for eric: [bug] a tvar not in `known` becomes a fresh
+                // `_N` var with no conjuncts, no binding and a new name, so every
+                // typedef expansion (lookup_ref) drops a nested fn quantifier's
+                // bound. Probe: `type F = fn<'b: Number>(x: 'b) -> 'b; let apply
+                // = |f: F| f("hello");` checks (it expands to `fn(x: '_8866:
+                // unbound) -> '_8866`); the unaliased `|f: fn<'b: Number>(x: 'b)
+                // -> 'b| f("hello")` is refused. Freshen like reset_tvars: keyed
+                // by cell, keeping the name, conjuncts and binding.
                 None => {
                     let fresh =
                         renamed.entry(tv.name.clone()).or_insert_with(TVar::default);
@@ -871,6 +931,12 @@ impl Type {
                 // Bottom is a vacuous fact (`throws := ⊥` means the
                 // body observed nothing); Any is not.
                 let bound = tv.read().typ.read().typ.clone();
+                // CR claude for eric: [perf] resolve_tvars is a rebuild walk (it
+                // mints fresh cells for open ones) run only to answer a yes/no
+                // question; it is needed because has_unbound stops at a bound
+                // cell instead of following its binding. A has_unbound that
+                // derefs (with a visited set) answers this, and the
+                // distribution law in contains.rs, without the copy.
                 if let Some(t) = bound
                     && (t == Type::Bottom || t.resolve_tvars().has_unbound())
                 {

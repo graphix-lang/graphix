@@ -1,6 +1,7 @@
 use super::{PrintFlag, Type, TypeRef, cast::IsAFlags};
 use crate::{env::Env, typ::format_with_flags};
 use ahash::AHashSet;
+// CR claude for eric: [style] One `netidx_value::{NakedValue, Value}` group.
 use netidx_value::NakedValue;
 use netidx_value::Value;
 use poolshark::local::LPooled;
@@ -64,6 +65,9 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                         }
                     }
                     // Debug consults a user Display impl when the hooks are armed.
+                    // CR claude for eric: [style] `get(v).is_some()` in the guard,
+                    // then `get(v).unwrap()` in the body (also `fmt_inner`'s first
+                    // arm). Match `Value::Abstract(_)` and `if let Some(g)` inside.
                     v @ Value::Abstract(_) if crate::abstract_value::get(v).is_some() => {
                         let g = crate::abstract_value::get(v).unwrap();
                         write!(f, "{g:?}")?
@@ -102,6 +106,9 @@ fn shape_excludes(t: &Type, v: &Value) -> bool {
 /// The member of `ts` a value known to belong to one of them belongs
 /// to: the one whose shape admits it when that is one member, else
 /// `coretraits::union_member`'s choice.
+// CR claude for eric: [structure] The type printer reaches up into
+// `node::coretraits` for `union_member`, a pure type/value question built on
+// `is_a`. It belongs in `typ/cast.rs` beside `is_a`, used by both.
 fn member_of(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
     let mut admits = ts.iter().enumerate().filter(|(_, t)| !shape_excludes(t, v));
     match (admits.next(), admits.next()) {
@@ -131,6 +138,9 @@ impl<'a> TVal<'a> {
             });
         }
         match (&self.typ, &self.v) {
+            // CR claude for eric: [dead] This arm does exactly what the next one
+            // does through `fmt_naked`, whose `Abstract` arm prints `{g:?}` for a
+            // Graphix-minted box. Delete it.
             (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
                 let g = crate::abstract_value::get(v).unwrap();
                 write!(f, "{g:?}")
@@ -151,6 +161,14 @@ impl<'a> TVal<'a> {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,
                 };
+                // CR claude for eric: [bug] `typ` is the owned result of
+                // `lookup_ref`, a stack local, so `typ_addr` is a fresh frame
+                // address at every level and a cycle through names never repeats a
+                // key. probe: `` type A = [B, `X(i64)]; type B = [A, `Y(i64)]; let
+                // x: A = `Y(1); println("[x]") `` (--no-fusion) loops A -> B -> A
+                // forever growing the stack; `GRAPHIX_DBG_TVAL=1` shows the cycle.
+                // Key on the ref's identity (see `cast.rs` `ref_key`) and remove it
+                // on return, as `is_a` does.
                 let typ_addr = (&typ as *const Type).addr();
                 let v_addr = (self.v as *const Value).addr();
                 if !hist.contains(&(typ_addr, v_addr)) {
@@ -267,6 +285,9 @@ impl<'a> TVal<'a> {
 impl<'a> fmt::Display for TVal<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.typ.is_a_with(&self.env, IsAFlags::MatchAbstract.into(), &self.v) {
+            // CR claude for eric: [style] A library `Display` impl writing to
+            // stderr: an embedder (the TUI, the LSP) gets text on its terminal.
+            // Use `log::warn!` like the other swallowed-error diagnostics.
             return format_with_flags(PrintFlag::DerefTVars, || {
                 eprintln!(
                     "error, type {} does not match value {}",
@@ -301,6 +322,8 @@ mod test {
         }
         let s = format_compact!("{}", Naked(&v));
         assert!(s.starts_with("[99999, [99998, "));
+        // CR claude for eric: [readability] `|| s.ends_with("]")` makes the first
+        // disjunct moot; the assertion accepts any tail. The value ends `0]..]`.
         assert!(s.ends_with(", 0]]") || s.ends_with("]"));
     }
 

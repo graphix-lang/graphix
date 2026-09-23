@@ -68,6 +68,10 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
     let mut needed: LPooled<IntSet<BindId>> = LPooled::take();
     let mut live: LPooled<Vec<bool>> = LPooled::take();
     live.resize(children.len(), false);
+    // CR claude for eric: [perf] A statement's refs join `needed` even when the
+    // statement itself will be skipped, so `let a = [x]; let b = a; 0` keeps and
+    // emits `a` for a dead `b`. Add the refs only when the statement is live or
+    // not effect-free (the skip test below), which makes the pass transitive.
     for (i, child) in children.iter().enumerate().rev() {
         let mut refs = Refs::default();
         child.refs(&mut refs);
@@ -75,6 +79,10 @@ pub(crate) fn emit_block_node<R: Rt, E: UserEvent>(
         refs.with_refs(|id| {
             needed.insert(id);
         });
+        // CR claude for eric: [dead] Suspected: a Connect is an effect_blocker, so
+        // its statement is never skipped and its emission always Errs; a block
+        // holding one never finishes emitting, and the ids collected here decide
+        // nothing.
         fusion::for_each_node(child, &mut |n| {
             if let NodeView::Connect(c) = n.view() {
                 needed.insert(c.id);
@@ -131,6 +139,9 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     child: &Node<R, E>,
 ) -> Result<()> {
+    // CR claude for eric: [style] `use NodeView;` is a no-op: NodeView is already
+    // imported at the top. Same in select.rs's emit_select_value_arm and
+    // emit_select_arm_value.
     use NodeView;
     match child.view() {
         NodeView::Bind(bind) => {
@@ -183,6 +194,11 @@ pub(super) fn emit_body_tail<R: Rt, E: UserEvent>(
                 .children
                 .split_last()
                 .ok_or_else(|| anyhow!("emit_clif: empty block in tail position"))?;
+            // CR claude for eric: [structure] The tail-position block emits every
+            // statement, while emit_block_node skips dead effect-free ones: a dead
+            // let whose shape emit_let_node refuses de-fuses a recursive body but not
+            // the same block in value position. Share one liveness pass between the
+            // two block emitters.
             for child in init {
                 emit_block_stmt(cx, child)?;
             }
@@ -265,6 +281,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
         cx.b.switch_to_block(arms_bl);
         cx.b.seal_block(arms_bl);
     }
+    // CR claude for eric: [dead] `arm_index` is incremented per arm and never read.
     let arm_index = std::cell::Cell::new(0usize);
     emit_select_arms(
         cx,
@@ -329,6 +346,8 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
     if spec_apply.args.iter().any(|(label, _)| label.is_some()) {
         return Err(anyhow!("emit_clif: labeled args on a self tail-call"));
     }
+    // CR claude for eric: [perf] Two Vec clones per tail call only to be read;
+    // borrow them as `&[u32]` from the self-call info.
     let (skipped, invariant) = match cx.ctx.self_call {
         Some((_, info)) => {
             (info.kernel.skipped_args.clone(), info.kernel.tail_invariant.clone())
@@ -357,6 +376,9 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         let source = node_composite_source(arg);
         rebinds.push(TailRebind { slot, val: cv, source });
     }
+    // CR claude for eric: [bug] the tail rebind use-after-free (probe and fix in
+    // the CR at body.rs emit_tail_rebind_jump) can be fixed here instead: make every
+    // Borrowed composite/value arg owned before any old slot drops.
     emit_tail_rebind_jump(cx.b, cx.env, cx.ctx, rebinds)
 }
 
@@ -439,6 +461,11 @@ pub(super) fn emit_discard_result<R: Rt, E: UserEvent>(
     cv: CompiledExpr,
 ) -> Result<()> {
     let owned = matches!(node_composite_source(node), CompositeSource::Owned);
+    // CR claude for eric: [risk] This classifies the raw type, while the block tail
+    // and emit_let_node classify `freeze_for_abi_normalized` (their comment: a
+    // select's type is the un-normalized arm union). A shape abi_kind cannot name
+    // falls to `_ => {}` and the owned result is never dropped, silently. Classify
+    // the same way, and make an unclassifiable owned result an Err.
     match kernel_abi::abi_kind(node.typ()) {
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) if owned => {
             let drop = cx.helper("graphix_valarray_drop")?;
@@ -448,6 +475,8 @@ pub(super) fn emit_discard_result<R: Rt, E: UserEvent>(
             let drop = cx.helper("graphix_arcstr_drop")?;
             cx.b.ins().call(drop, &[cv.payload]);
         }
+        // CR claude for eric: [readability] Stale: the disc is passed as is, and
+        // graphix_value_drop takes a TagValue, which carries the tag bits.
         // A tainted value drops like an untainted one; clean the disc so
         // the helper sees a valid tag.
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) if owned => {
@@ -459,6 +488,8 @@ pub(super) fn emit_discard_result<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+// CR claude for eric: [structure] call.rs's drop_owned_composites is this function
+// at mark 0 with the BodyCx unpacked; keep one.
 /// Drop every owned non-scalar local above `mark`.
 pub(super) fn emit_scope_drops(cx: &mut BodyCx, mark: usize) -> Result<()> {
     // Snapshot so the `cx.env` borrow ends before driving `cx.b`.
@@ -492,6 +523,9 @@ fn type_always(t: &Type, marker: Typ) -> bool {
     }
 }
 
+// CR claude for eric: [style] `cranelift_codegen::ir::Value` is spelled out seven
+// times in QopSink and emit_qop_error_disposal; the rest of the emitter imports it
+// as ClifValue.
 /// Where a `?`/`$` site's fresh stripped value goes. The first two
 /// strip the operand's errors, the rest its null.
 #[derive(Clone, Copy)]
@@ -522,6 +556,8 @@ impl QopSink {
 
     /// The clean disc of the value this site strips.
     fn bad_disc(self) -> i64 {
+        // CR claude for eric: [readability] 0x2000_0000 is netidx's Error
+        // discriminant written bare; add value_disc::ERROR beside NULL.
         match self.marker() {
             Typ::Null => value_disc::NULL,
             _ => 0x2000_0000,
@@ -601,6 +637,8 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
 /// through. `result_typ` is the qop node's static type, which selects
 /// the arm: the typechecker strips every error member of the flattened
 /// inner union, so it can differ from the inner's one-layer success type.
+// CR claude for eric: [dead] `_spec_id` is unused; both callers (node/error.rs)
+// pass `self.spec.id` for nothing.
 pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     _spec_id: ExprId,
@@ -669,6 +707,9 @@ pub(crate) fn emit_qop_node<R: Rt, E: UserEvent>(
             Ok(CompiledExpr::new(disc, value))
         }
         // The bad path produces a tainted placeholder and continues.
+        // CR claude for eric: [style] The arm already matched the kind, yet
+        // abi_kind(&success_typ) is recomputed twice inside it (is_string and the
+        // unbox match); bind it with `Some(k @ (..))`.
         Some(AbiKind::String | AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let is_string =
                 matches!(kernel_abi::abi_kind(&success_typ), Some(AbiKind::String));

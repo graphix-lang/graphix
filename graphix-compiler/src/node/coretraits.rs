@@ -95,6 +95,8 @@ fn hook_of(
     let Some(bind) = im.methods.get(t.method()).copied().or(m.default) else {
         return Err(anyhow!("impl {} for {} has no {}", def.name, im.target, m.name));
     };
+    // CR claude for eric: [structure] this lookup is `method_ftype` (below)
+    // re-spelled; call it and `replace_tvars` the result.
     let ftype = match env.by_id.get(&bind).map(|b| &b.typ) {
         Some(Type::Fn(ft)) => Arc::new(ft.replace_tvars(open)),
         _ => return Err(anyhow!("core trait method {bind:?} is not a function")),
@@ -102,6 +104,8 @@ fn hook_of(
     Ok(Hook { bind, typ: target.clone(), ftype })
 }
 
+// CR claude for eric: [readability] two doc comments stacked on one fn; the
+// first two lines are a leftover of the second.
 /// The identity of the trait's implementation list: a registration or
 /// removal replaces it.
 /// The trait's implementation list, whose identity is the version an
@@ -139,6 +143,14 @@ fn impl_for(
             Type::Abstract { id: target, .. } if target == id => (),
             _ => continue,
         }
+        // CR claude for eric: [bug] the fresh variables copy their bounds
+        // verbatim, and a bound that names another declared variable still
+        // points at the impl's ORIGINAL cell (aliased in `impl_head`, settled by
+        // the body check), not the fresh one: `impl<'a, 'b: ['a, null]> Eq for
+        // Pair<'a, 'b> { let eq = |x, y| true }` is never consulted, so
+        // `q1 == q2` over `Pair<string, [string, null]>` prints false (probed,
+        // both engines); with `'b: [string, null]` it prints true. Make every
+        // fresh cell first, then `replace_tvars(&open)` each bound.
         let open: LPooled<AHashMap<ArcStr, Type>> = im
             .params
             .iter()
@@ -169,6 +181,9 @@ pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
     }
 }
 
+// CR claude for eric: [structure] nothing trait-related: the only caller is the
+// typed printer (`typ/tval.rs`), which reaches down into `node::coretraits` for
+// it. Move it to `typ/tval.rs`.
 /// The member of a union `ts` that `v` belongs to: the first strict
 /// match, else the first structured plain match, else the first plain
 /// match.
@@ -244,6 +259,8 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
 /// the ones not in a dispatch), never the caller's, so a loan needs no
 /// event from the caller and lends the context to nothing but the
 /// dispatch.
+// CR claude for eric: [style] `AHashMap` is imported, yet here and in `Default`
+// it is spelled `ahash::AHashMap`.
 pub struct CoreHookSites<R: Rt, E: UserEvent> {
     sites: ahash::AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
     template: Option<E>,
@@ -277,6 +294,13 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for CoreHookSites<R, E> {
     }
 }
 
+// CR claude for eric: [bug] leak: each site binds `#seam..` names at the root
+// scope (`genn::bind`) and `call_hook_over` `store_insert`s its argument ids, but
+// deleting a site (a stale entry in `take_site`, a `return_site` version
+// mismatch) only runs `site.delete`, which neither unbinds the env names nor
+// removes the store entries. Every rebuild after an impl-list change (REPL,
+// dynamic module) leaves both behind, and the store pins the last compared
+// values. Give the site a teardown that unbinds and `store_remove`s its args.
 fn build_site<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     t: CoreTrait,

@@ -7,6 +7,11 @@
 //! compile as typed bindings in a block below the declaring module
 //! with the trait's dispatchers glob-visible.
 
+// CR claude for eric: [style] `crate::env::Map`, `crate::image::ImageBuf` and
+// `crate::image::nodes` sit outside the `crate::{..}` group (which already opens
+// `env::{..}`); repeated paths stay spelled out: `ahash::AHashMap` x3,
+// `arcstr::literal!` x2, `super::coretraits::CoreTrait::of_id` x2,
+// `crate::BindId` x2, `crate::expr::{Attr, Decorations, LambdaExpr, Arg}`.
 use super::Block;
 use crate::env::Map;
 use crate::image::ImageBuf;
@@ -100,6 +105,13 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
         constraints: l.constraints.clone(),
         body: l.body.clone(),
     }));
+    // CR claude for eric: [structure] three `Expr` literals in this file list
+    // every field by hand (here, the default binds in `Trait::compile`, the
+    // method binds in `Impl::compile`), so a new `Expr` field must be threaded
+    // through each. `Impl::compile`'s copy also drops the method's parsed `end`
+    // and `str_form` (`Default::default()`) while keeping its id and pos, so
+    // anything ranged on the rebuilt bind (`env.warn`, LSP) ends at NOWHERE. Use
+    // `Expr { kind, ..value.clone() }` / `Expr { kind, dec, ..m.clone() }`.
     Expr {
         id: value.id,
         ori: value.ori.clone(),
@@ -268,6 +280,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         &Type::Bottom
     }
 
+    // CR claude for eric: [readability] a trait has no `NodeView` of its own and
+    // presents itself as its defaults block, so every view walker sees a module
+    // `Block` (`node_shape` names it "ModuleBlock") while the image, `typ` and
+    // `delete` see a `Trait`. `Impl` has `NodeView::Impl`; give `Trait` one, or
+    // say why it must impersonate.
     fn view(&self) -> NodeView<'_, R, E> {
         self.defaults.view()
     }
@@ -350,6 +367,10 @@ pub(crate) fn check_target(
             trait_def.name
         )
     }
+    // CR claude for eric: [style] `type_pkg` is a heap `String` (`to_string`,
+    // `String::new()`, and again in the hole branch above) built on every impl
+    // compile only to compare with `&str`s. Keep the resolved `Arc` alive and
+    // borrow, or use `ArcStr`.
     match &canonical {
         Type::Abstract { id, .. } => {
             let type_pkg = match env.abstract_reps.get(id) {
@@ -472,6 +493,12 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         im: &ImplExpr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
+        // CR claude for eric: [readability] errors here print positions into the
+        // message (`at {}`, `(at {})` with `spec.pos`/`m.pos`, and
+        // `with_context(format!("at {}"))` on `impl_head`/`register_impl`;
+        // `Trait::compile` likewise) instead of `bailat!`/`.at(&m)`, so they carry
+        // no `ErrorSite`: the LSP marks the whole impl, never the offending
+        // method.
         let trait_id = match ctx.env.lookup_trait(&scope.lexical, &im.trait_name)? {
             Some(id) => id,
             None => bail!("no trait `{}` in scope at {}", im.trait_name, spec.pos),
@@ -587,6 +614,11 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
+    // CR claude for eric: [structure] the loop body (a `genn::bind` per argument,
+    // `genn::reference` to the method, `genn::apply`, typecheck0 + typecheck1) is
+    // `coretraits::build_site` again; one shared builder. Like that one, the
+    // `#proto..` env binds it creates are never unbound when the prototypes are
+    // deleted.
     fn build_prototypes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         use super::genn;
         if super::coretraits::CoreTrait::of_id(self.def.trait_id).is_none() {
@@ -693,6 +725,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         &self.spec
     }
 
+    // CR claude for eric: [risk] `unregister_impl` (and `undeftrait` for
+    // `Trait::delete`) match by `Arc::ptr_eq`, but `def`/`trait_def` are imaged
+    // by value: after a warm start the node's `Arc` and the env's registered one
+    // are different allocations, so deleting a decoded Impl leaves its
+    // implementation registered. Match by identity that survives the image
+    // (trait id + scope), or make the defs shared image objects.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.delete(ctx);
         for p in self.prototypes.iter_mut() {

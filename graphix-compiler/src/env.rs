@@ -14,6 +14,11 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::CompactString;
+// CR claude for eric: [style] The type aliases sit between use statements; and
+// names imported or used more than once are spelled in full below:
+// `crate::mod_root` (use_anchor, though imported above), `crate::ide::Warning`,
+// `crate::ide::FieldRefSite`, `crate::typ::TypeRef`,
+// `crate::dbgenv::graphix_dbg_bind` (2), `compact_str::format_compact!`.
 // Chunk size 16: the env maps are write-heavy at compile time and a
 // COW insert clones the touched chunk.
 pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, 16>;
@@ -40,6 +45,9 @@ pub struct Bind {
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
+    // CR claude for eric: [structure] `pattern` and `facet` are exclusive (a
+    // select arm's bind vs a destructuring let's sibling, node/select.rs:259 vs
+    // node/bind.rs:197); one `Option<enum Facet { Pattern(..), Let(BindId) }>`.
     /// Bound by a select arm's pattern, with the inputs whose fires
     /// reach that select's scrutinee (closed over enclosing pattern
     /// binds): a facet of the scrutinee delivery, so no nested select
@@ -57,6 +65,7 @@ impl fmt::Debug for Bind {
     }
 }
 
+// CR claude for eric: [style] Field-for-field what `#[derive(Clone)]` writes.
 impl Clone for Bind {
     fn clone(&self) -> Self {
         Self {
@@ -313,6 +322,10 @@ pub struct Env {
     /// Registered package names, usable as module path roots from
     /// anywhere. Global.
     pub package_roots: Set<ArcStr>,
+    // CR claude for eric: [structure] Two fields for one mode: `lsp_mode` gates
+    // some recorders, `ide` is where every push lands. (false, Some) fills the
+    // sinks partially (binds, warnings, not references); (true, None) records
+    // into nothing. Decide which states exist and encode them in one field.
     /// Populate the IDE side-channels (the `ide` sink).
     pub lsp_mode: bool,
     /// The IDE side-channels ([`Ide`]); `Some` only under an LSP-style
@@ -322,6 +335,10 @@ pub struct Env {
 }
 
 impl Env {
+    // CR claude for eric: [dead] The only caller, ExecCtx::clear (lib.rs:1484),
+    // has no caller in the workspace. It also keeps `package_roots` while
+    // dropping those packages' modules, so a cleared env still resolves
+    // `sys::..` to a root with nothing under it.
     pub(super) fn clear(&mut self) {
         let Self {
             by_id,
@@ -354,6 +371,10 @@ impl Env {
         *typedefs = Map::new();
     }
 
+    // CR claude for eric: [structure] restore_lexical_env and _mut are two
+    // copies of one 15-field list, and clear() spells the lexical/global split a
+    // third time. A `Lexical { binds, modules, typedefs, traits }` sub-struct
+    // makes the split a type and a restore a swap of one field.
     // Restore the lexical environment to the snapshot `other`; the
     // global registries and IDE sinks stay as they are on `self`.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
@@ -396,6 +417,10 @@ impl Env {
         }
     }
 
+    // CR claude for eric: [structure] Seven copies of `if let Some(ide) =
+    // &self.ide { ide.lock().X.push(..) }` (through push_module_internal_view,
+    // and again in bind_variable/retype); one `fn with_ide(&self, f: impl
+    // FnOnce(&mut Ide))` serves them all.
     /// Push a `ReferenceSite` into the active IDE sink, if any.
     pub fn push_reference(&self, site: ReferenceSite) {
         if let Some(ide) = &self.ide {
@@ -410,6 +435,11 @@ impl Env {
         }
     }
 
+    // CR claude for eric: [structure] The callers decide WarningsAreErrors
+    // themselves and each hand-builds its own "ERROR: {ori} at {pos} .." bail
+    // (node/error.rs:636, node/callsite.rs:2284); taking the flags here makes
+    // this the one place. The stderr branch also bypasses the log (and
+    // --log-dir), and a runtime compile's warning lands on a TUI's screen.
     /// Warn about the text `[pos, end)`: to the IDE sink under a check
     /// that has one, else to stderr.
     pub fn warn(
@@ -474,6 +504,13 @@ impl Env {
         }
         match spec {
             Sandbox::Unrestricted => Ok(self.clone()),
+            // CR claude for eric: [bug] Blacklisting a module removes only that
+            // exact module: its submodules stay, and a package root resolves even
+            // when removed (resolve_module_seg, "the descent gates"). Probe: a
+            // dynamic module under `sandbox blacklist [sys]` whose source calls
+            // `sys::net::publish(..)` loads (status null); `blacklist [sys::net]`
+            // refuses it. Remove the whole subtree (modules, binds, typedefs,
+            // traits under `n`).
             Sandbox::Blacklist(bl) => {
                 let mut t = self.clone();
                 for n in bl.iter() {
@@ -492,6 +529,10 @@ impl Env {
                 }
                 Ok(t)
             }
+            // CR claude for eric: [style] Unpooled AHashSet/AHashMap scratch, and
+            // the same keep-if filter is written three times through
+            // `update_many(into_iter().map(clone))`; one retain helper. Also
+            // `if let None = ..` (Blacklist arm) is `.is_none()`.
             Sandbox::Whitelist(wl) => {
                 let mut t = self.clone();
                 let mut modules = AHashSet::default();
@@ -659,6 +700,12 @@ impl Env {
     /// Resolve the single segment `seg` as a module from `scope`: the
     /// lexical chain, then the package prelude, then the core prelude.
     fn resolve_module_seg(&self, scope: &str, seg: &str) -> Result<Option<ModPath>> {
+        // CR claude for eric: [structure] This "is `lvl/n` a module" closure is
+        // written four times (here, descend_step, resolve_visible,
+        // canonical_modpath; import_target_exists inlines it again), and each
+        // probe allocates an ArcStr and a joined Path per lexical level on every
+        // name lookup. One helper that looks up a stack-built &str and builds
+        // the ModPath only on a hit.
         let mut f = |lvl: &str, n: &str| {
             let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
             if self.modules.contains(&p) { Some(p) } else { None }
@@ -1154,6 +1201,12 @@ impl Env {
         res
     }
 
+    // CR claude for eric: [bug] Suspected, IDE only: the imports loop offers
+    // every import whose name matches, values and types included, as a module;
+    // `scan` leaves "/sub" under a module level but "sub" under "/"; and both
+    // this and lookup_matching run their `range` to the end of the map instead
+    // of stopping at the first name without the prefix. The two functions also
+    // share one chain/imports/globs/core skeleton.
     /// Modules in scope matching a partial name (IDE/shell completion).
     pub fn lookup_matching_modules(
         &self,
@@ -1228,6 +1281,10 @@ impl Env {
                     e.scope
                 )
             }
+            // CR claude for eric: [structure] The "declared at this level" test
+            // (binds, typedefs, traits) is written again in
+            // import_target_exists; one `fn declares(&self, level, name)`, with
+            // `is_some_and` in place of `.map(..).unwrap_or(false)`.
             let declared = self
                 .binds
                 .get(scope)
@@ -1303,9 +1360,20 @@ impl Env {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<()> {
+        // CR claude for eric: [bug] deftrait refuses a name that is already a
+        // type, but this does not refuse a name that is already a
+        // trait, so the outcome depends on order. Probe: `trait Foo { val show:
+        // fn(self) -> string }; type Foo = i64; let x: Foo = 1` compiles and runs;
+        // the reverse order is refused ("Foo is already defined as a type").
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
         }
+        // CR claude for eric: [bug] a typedef that reaches itself only through unions
+        // and refs is accepted: `type T = [i64, T]; let v: T = "hello"` checks and
+        // prints hello, and a select over T counts as exhaustive (the root of the CRs in
+        // typ/contains.rs on the in-progress `true` and trait_contains). Refuse a
+        // definition whose body is not contractive (every self-reference must sit under
+        // a constructor).
         let (typ, rep) = match body {
             TypeDefBody::Alias(typ) => {
                 (typ.scope_refs(scope).rewrite_trait_args(self)?, None)
@@ -1322,6 +1390,11 @@ impl Env {
                 (typ, rep)
             }
         };
+        // CR claude for eric: [bug] the body and rep are scoped with `scope_refs(scope)`
+        // above but the parameter constraints never are, so a constraint naming a type
+        // resolves from the root at the use site. Probe: in a module file `type N = i64;
+        // type T<'a: N> = Array<'a>; let x: T<i64> = [1]` fails "undefined type N in "
+        // (empty scope); the same lines at top level check. Scope `params` too.
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut declared: LPooled<AHashSet<ArcStr>> = LPooled::take();
         for (tv, tc) in params.iter() {
@@ -1344,6 +1417,11 @@ impl Env {
                 t.check_tvars_declared(&mut declared)?;
             }
         }
+        // CR claude for eric: [bug] Dead check: every parameter was aliased into
+        // `known` by the first loop above, so this never fires. Probe: `type T<'a>
+        // = i64; let x: T<string> = 1` is accepted. Collect `known` from typ and
+        // rep only (an Abstract's formals are in typ, so phantom params still
+        // pass), or delete the check if unused alias params are meant to be legal.
         for dec in declared.iter() {
             if !known.contains_key(dec) {
                 bail!("unused type parameter {dec} in definition of {name}")
@@ -1415,6 +1493,9 @@ impl Env {
     /// its definition is visible from `from` (the defining scope and
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
+        // CR claude for eric: [structure] `inside` re-implements
+        // scope_is_under(from, &r.scope). publish_abstract_rep below
+        // rebuilds the rep field by field where `..(**r).clone()` would do.
         let r = self.abstract_reps.get(&id)?;
         let mut from_parts = Path::parts(&from.0);
         let inside = Path::parts(&r.scope.0).all(|part| from_parts.next() == Some(part));
@@ -1473,11 +1554,23 @@ impl Env {
         }
     }
 
+    // CR claude for eric: [bug] The global registries are purged only through
+    // the lexical maps, so an entry the lexical maps no longer hold survives:
+    // every lambda parameter and body-local bind (compiled under
+    // `with_restored`, lib.rs:1638, which drops them from `binds`) and every
+    // shadowed bind keeps its by_id/poly_binds/byref_chain entry, and likewise
+    // an abstract rep or trait def outside `typedefs`/`traits`. The CLAUDE.md
+    // rule is "drop everything a package registers": filter each global map by
+    // its entry's own scope (Bind.scope, AbstractRep.scope, TraitDef.scope).
+    // The returned count also counts traits, which the doc omits.
     /// Drop everything registered at `scope` or any descendant, so a
     /// package's source can re-register under the same scope. Returns
     /// the number of bind and typedef entries removed.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
         let mut removed = 0;
+        // CR claude for eric: [structure] "Collect the keys under `scope`, then
+        // remove them" is written five times (binds, traits, typedefs, modules
+        // here, and clear_names_under); one helper over Map/Set<ModPath>.
         let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)
             .into_iter()
             .filter(|(s, _)| scope_is_under(s, scope))
@@ -1560,6 +1653,10 @@ impl Env {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> &mut Bind {
+        // CR claude for eric: [readability] The `existing` dance always ends in
+        // a fresh id, so it is `binds.insert_cow(name, BindId::new())`; the
+        // by_id `get_or_insert_cow` can never find the fresh id, and the final
+        // `get_mut_cow(id).unwrap()` repeats the lookup just made.
         let binds = self.binds.get_or_default_cow(scope.clone());
         let mut existing = true;
         let id = binds.get_or_insert_cow(CompactString::from(name), || {
@@ -1635,6 +1732,10 @@ impl Env {
     pub fn unbind_variable(&mut self, id: BindId) {
         if let Some(b) = self.by_id.remove_cow(&id) {
             if let Some(binds) = self.binds.get_mut_cow(&b.scope) {
+                // CR claude for eric: [risk] Removes the name even when it now
+                // maps to a newer bind that shadowed `id` in the same scope, so
+                // deleting the older node unbinds the live name. Remove only if
+                // `binds.get(&b.name) == Some(&id)`.
                 binds.remove_cow(&b.name);
                 if binds.len() == 0 {
                     self.binds.remove_cow(&b.scope);

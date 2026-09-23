@@ -15,6 +15,11 @@ use triomphe::Arc;
 /// cells (the first visit normalizes the binding in place); `memo` is a
 /// pointer-identity cache of composite results, keyed by (variant,
 /// content Arc address) for variants whose Arcs are their whole content.
+// CR claude for eric: [risk] `memo` is keyed by addresses the pass itself may
+// free: `TVar::normalize_int` replaces a cell's binding in place, dropping the old
+// one while its subtrees' keys stay in `memo`. Correct today only because the
+// walk never reaches a node allocated during the pass; `RefHist` pins its keyed
+// types for exactly this reason. Pin the keyed Arcs here too, or state the rule.
 pub(super) struct NormCx {
     pub(super) cells: LPooled<nohash::IntSet<usize>>,
     memo: LPooled<AHashMap<NormKey, Option<Type>>>,
@@ -186,6 +191,13 @@ impl Type {
             .unwrap_or_else(|| self.clone())
     }
 
+    // CR claude for eric: [bug] `resolve_tvars_seen` recurses on type depth with
+    // no `ensure_sufficient` (`normalize_int` has one; `merge` below, via its
+    // Tuple/Struct/Variant/ByRef arms, has none either). A flat program builds a
+    // deep type: `let x0 = 1; let x1 = [x0]; ... let x3000 = [x2999]` is
+    // `Array<Array<..>>` 3000 deep with no parser nesting (the same file already
+    // overflows `--check` in fusion lowering). This forwarder is where the guard
+    // belongs; otherwise it is a bare alias of `resolve_tvars_seen`.
     pub(super) fn resolve_tvars_seen_int(&self, cx: &mut ResolveTvarsCx) -> Option<Self> {
         self.resolve_tvars_seen(cx)
     }
@@ -386,6 +398,9 @@ impl Type {
             }
             (Type::Ref(TypeRef { .. }), _) | (_, Type::Ref(TypeRef { .. })) => None,
             // A bound constructor application is its filled type.
+            // CR claude for eric: [perf] `app_filled` runs twice per arm, in the
+            // guard and again in the body, building the filled type both times
+            // (here and the mirrored arm below). Compute it once before the match.
             (Type::App(c, a), _) if Type::app_filled(c, a).is_some() => {
                 Type::app_filled(c, a).unwrap().merge(t)
             }
@@ -469,6 +484,9 @@ impl Type {
             (Type::Set(s0), Type::Set(s1)) => {
                 Some(Self::flatten_set(s0.iter().cloned().chain(s1.iter().cloned())))
             }
+            // CR claude for eric: [dead] Unreachable: the earlier
+            // `(Type::Primitive(p), t) | (t, Type::Primitive(p)) if p.is_empty()`
+            // arm already takes every empty-primitive pair, a set included.
             (Type::Set(s), Type::Primitive(p)) | (Type::Primitive(p), Type::Set(s))
                 if p.is_empty() =>
             {
@@ -477,6 +495,15 @@ impl Type {
             (Type::Set(s), t) | (t, Type::Set(s)) => {
                 Some(Self::flatten_set(s.iter().cloned().chain(iter::once(t.clone()))))
             }
+            // CR claude for eric: [bug] A union of products merges component-wise
+            // whenever every component merges, which over-approximates for arity
+            // >= 2: `[(i64, i64), (string, string)]` becomes `([i64, string],
+            // [i64, string])`. probe: `let x: [(i64, i64), (string, string)] =
+            // (1, "a")` checks and runs; a select with arms `(i64, i64) as ..` and
+            // `(string, string) as ..` over `(1, "a")` passes exhaustiveness and
+            // silently produces nothing. Same in the Variant arm (`` `P(1, "a") ``
+            // accepted by `` [`P(i64, i64), `P(string, string)] ``) and the Struct
+            // arm. Merge only when all components but one are equal.
             (Type::Tuple(t0), Type::Tuple(t1)) => {
                 if t0.len() == t1.len() {
                     let mut t = t0

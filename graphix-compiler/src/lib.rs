@@ -120,6 +120,9 @@ pub enum CtlFlag {
 /// (nothing for `?` to catch), surfaced through the runtime's event
 /// stream. Pushed to [`ExecCtx::diagnostics`], drained every cycle.
 /// Currently no producer exists.
+// CR claude for eric: [dead] an uninhabited type with no producer, yet
+// ExecCtx::diagnostics and two drains per cycle in gx.rs exist for it. Delete the
+// channel until something produces a diagnostic.
 #[derive(Debug, Clone)]
 pub enum RtDiagnostic {}
 
@@ -186,6 +189,10 @@ impl Control {
     }
 }
 
+// CR claude for eric: [risk] a process-wide flag: with_trace in one ExecCtx traces
+// every other ExecCtx and thread, and a panic in `f` leaves it set. A thread-local
+// behind a restoring guard, as the other session flags are; the
+// #[allow(dead_code)]s on pub items below do nothing.
 #[allow(dead_code)]
 static TRACE: AtomicBool = AtomicBool::new(false);
 
@@ -350,6 +357,9 @@ pub(crate) fn print_as_written() -> bool {
     PRINT_FLAGS.get().contains(PrintFlag::AsWritten)
 }
 
+// CR claude for eric: [risk] no restoring guard: a panic in `f` leaves the flags
+// set on this thread for the next ExecCtx that runs on it (AsWritten would make
+// program-visible text non-canonical). Restore in a Drop.
 /// Run `f` with the given type-formatting flags on this thread.
 pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
     flags: G,
@@ -457,6 +467,9 @@ pub struct BuiltinBindInfo {
 }
 
 impl Refs {
+    // CR claude for eric: [risk] leaves `triggering` and `banked` as they were, so a
+    // reused Refs reports stale triggering reads (select.rs:292 reads them). No
+    // caller in the workspace: clear every field or delete it.
     pub fn clear(&mut self) {
         self.refed.clear();
         self.bound.clear();
@@ -553,6 +566,10 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
     pub fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         stack::ensure_sufficient(|| self.0.fuse(ctx))
     }
+
+    // CR claude for eric: [risk] image_len and image_encode recurse through every
+    // node but are not shadowed here, so the image write's node walk runs with no
+    // stack::ensure_sufficient (decode_node in image/nodes.rs neither).
 }
 
 impl<R: Rt, E: UserEvent> Debug for Node<R, E> {
@@ -660,6 +677,10 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         buf: &mut image::ImageBuf,
     ) -> std::result::Result<(), netidx_core::pack::PackError>;
 
+    // CR claude for eric: [risk] every Apply without an override (Kernel and each
+    // builtin's inner Apply; GXLambda and BuiltInLambda override) shares one static
+    // FnType across the process, and its LambdaIds cell is mutable (unification
+    // links into it): state shared by every ExecCtx. Make typ() required.
     /// The lambda's type; the BuiltIn wrapper implements it for builtins.
     fn typ(&self) -> Arc<FnType> {
         static EMPTY: LazyLock<Arc<FnType>> = LazyLock::new(|| {
@@ -719,6 +740,9 @@ pub enum ApplyView<'a, R: Rt, E: UserEvent> {
     BuiltIn,
 }
 
+// CR claude for eric: [dead] ApplyViewMut and Apply::view_mut have no reader
+// (see the CR at callsite.rs `callee_apply`/`resolved_apply_mut`); delete the
+// chain.
 /// Mutable counterpart to [`ApplyView`].
 pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
     Lambda(&'a mut GXLambda<R, E>),
@@ -1205,6 +1229,8 @@ impl LibState {
         self.0.contains_key(&TypeId::of::<T>())
     }
 
+    // CR claude for eric: [style] a shared read that takes &mut self, so a caller
+    // holding &ExecCtx cannot use it; &self.
     /// The library state of type `T`, if registered.
     pub fn get<T>(&mut self) -> Option<&T>
     where
@@ -1359,6 +1385,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
 
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
+    // CR claude for eric: [structure] builtins, builtin_decoders and
+    // fusion.builtin_facts are three maps keyed by one name and written together
+    // (register_builtin), and read_registration copies a fourth (fastcalls). One
+    // map of {init, decode, facts} makes a half-registered builtin unrepresentable.
     builtins: AHashMap<&'static str, BuiltInInitFn<R, E>>,
     builtin_decoders: AHashMap<&'static str, BuiltInDecodeFn<R, E>>,
     attributes: AHashMap<&'static str, AttributeCheckFn<R, E>>,
@@ -1405,6 +1435,8 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Def-gate nesting depth; a nested gate's cells are still
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
+    // CR claude for eric: [style] the Arc is never cloned; the Mutex alone gives
+    // the &self access resolving()/push_resolving() need.
     pub(crate) resolving_lambdas:
         Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingStack>>>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
@@ -1417,6 +1449,8 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// writer in its scope. A re-drive's leftovers merge up to the
     /// parent frame. Entries: (resolved sig, the site's rtype cell,
     /// defaulted-arg cells exempt from settling, the site spec).
+    // CR claude for eric: [readability] a four-tuple read positionally in
+    // drain_pending_settles; a named struct would carry the field list above.
     pub(crate) pending_settles: Vec<
         Vec<(
             typ::FnType,
@@ -1436,6 +1470,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Module names pre-registered by a block's header scan, so `mod`
     /// declaration order does not matter.
     pub(crate) predeclared_mods: AHashSet<ModPath>,
+    // CR claude for eric: [readability] stale doc: `callsite::transient_body_ok`
+    // does not exist; the only reader is the image quiescence check
+    // (image/registration.rs). Say what it is for now, or delete it (the CR at
+    // lambda.rs `active_lambdas` bookkeeping).
     /// `LambdaId`s whose `GXLambda::update` is on the Rust stack, with
     /// activation counts. `CallSite::bind` binds a recursive unfold
     /// transient (`callsite::transient_body_ok`), so non-tail recursion
@@ -1459,6 +1497,11 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// deselecting: a recursive-edge `CallSite::sleep` under it deletes
     /// its callee (shrink = delete). Cleared crossing into any callee
     /// body, so a whole-recursion pause retains.
+    // CR claude for eric: [structure] deselecting_arm, tail_scrut_fired,
+    // pending_tail_call, frame_depth and dispatch_init are evaluator state on the
+    // context, and this one steers sleep; CLAUDE.md's sleep rule says "no ExecCtx
+    // globals" so a parallel evaluator stays possible. Pass them down the dispatch
+    // (sleep's arguments, the event's frames) or keep them in the nodes.
     pub(crate) deselecting_arm: bool,
     /// Whether any tail-spine select's scrutinee fired during the
     /// current tail-loop dispatch: the dispatch's result fires if its
@@ -1472,6 +1515,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub(crate) attr_dispatched: Mutex<IntSet<ExprId>>,
     /// The tables of the image this session was restored from, for
     /// anything decoded later.
+    // CR claude for eric: [structure] pub, so an embedder can replace or take the
+    // decoder CallSite::materialize takes and puts back mid-cycle; only
+    // read_registration sets it. pub(crate) (the attr_* fields also sit split
+    // around it).
     pub image_decoder: Option<image::ImageDecoder>,
     pub(crate) attr_absorbed: Mutex<IntSet<ExprId>>,
     /// Variable deliveries raised inside an evaluation frame that must
@@ -1481,6 +1528,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
+    // CR claude for eric: [dead] no caller in the workspace, and it resets only env
+    // and rt while lambda_defs, bind_to_lambda, the image decoder and the rest
+    // stay: a half reset. Delete it or make it whole.
     pub fn clear(&mut self) {
         self.env.clear();
         self.rt.clear();
@@ -1491,6 +1541,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.frame_depth > 0
     }
 
+    // CR claude for eric: [readability] this doc belongs on `new` below;
+    // mark_connect_target has none of its own.
     /// Build a new execution context. A low-level interface for custom
     /// runtimes; most embedders want `graphix-rt`.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
@@ -1983,6 +2035,10 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     let env = ctx.env.clone();
     let st = Instant::now();
     let build_profile = profile::phase(Phase::BuildGraph);
+    // CR claude for eric: [structure] this declaration dispatch (Catch, Use, Module,
+    // TypeDef, Trait, Impl, else compile) repeats compile_block_children's
+    // (node/mod.rs); one `compile_declaration_or_expr` would serve both, so a new
+    // declaration kind cannot be added to one and missed in the other.
     let compiled = match &spec.kind {
         expr::ExprKind::Catch(c) => {
             let c = c.clone();
@@ -2043,6 +2099,11 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
                 e.scope
             )
             .context(expr::ParserContext { ori: p.ori.clone(), pos: p.pos });
+            // CR claude for eric: [bug] here and at the two error returns below
+            // only env is restored: the built node is dropped, not deleted, so its
+            // rt.ref_var registrations and bind_to_lambda/connect_targets entries
+            // stay (Bind::delete and Ref::delete remove them). Each failed REPL
+            // statement leaks them. Delete the node before returning.
             ctx.env = env;
             return Err(err);
         }

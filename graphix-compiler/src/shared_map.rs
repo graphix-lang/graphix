@@ -26,6 +26,8 @@ use immutable_chunkmap::map::{NodeHandle, NodeRef};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use std::any::{Any, TypeId};
 
+// CR claude for eric: [style] Repeats the chunk size env.rs:19 hard-codes in
+// `Map<K, V, 16>`; export one constant from env.rs and use it in both.
 const SIZE: usize = 16;
 
 /// A map packed with its sharing. The wrapped map is the environment's
@@ -81,6 +83,10 @@ where
         |k| *k,
         |e| &mut e.map_nodes,
         || {
+            // CR claude for eric: [perf] A node measured here and then written
+            // runs `pin` twice (again in tree_encode's definition closure, since
+            // the length pass leaves the slot undefined): two boxed keeps per
+            // map node per image. Pin once, at the slot's first sight.
             pin(&node);
             let pairs: usize = node.pairs().map(|(k, v)| pair_len(k, v)).sum();
             varint_len(node.len() as u64)
@@ -162,6 +168,11 @@ where
             let right = tree_decode(sub, pair_decode)?;
             // The stream is the encoder's walk of a map the chunkmap
             // built, read back in the same order.
+            // CR claude for eric: [risk] This contract rests on the image being
+            // intact, and a cache image carries no checksum (image/mod.rs): a
+            // corrupted file whose keys still decode builds a map whose lookups
+            // are silently wrong. The keys are in hand; checking strict order
+            // within `pairs` and against the subtrees' bounds is cheap.
             Ok(unsafe { NodeHandle::create(left, pairs, right) })
         },
         |sub| node_decode(sub, &mut **pd.borrow_mut()),

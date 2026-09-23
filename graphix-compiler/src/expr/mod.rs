@@ -46,6 +46,9 @@ pub mod serialize;
 #[cfg(test)]
 mod test;
 
+// CR claude for eric: [dead] VNAME has no user in the workspace, and as a
+// `const` every use would build a fresh LazyLock and recompile the regex (a
+// `static` was meant). Delete it (and the `regex` import it alone needs).
 pub const VNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("^[a-z][a-z0-9_]*$").unwrap());
 
@@ -83,6 +86,10 @@ pub(crate) fn get_origin() -> Arc<Origin> {
     })
 }
 
+// CR claude for eric: [structure] expr/mod.rs mixes the AST with async file IO
+// (read_to_arcstr/read_optional, used only by resolver.rs) and the error
+// reporting types (ErrorContext, ErrorSite, At, ParserContext). Move the IO to
+// resolver.rs and the error types to a module of their own.
 /// utility to read a file to an ArcStr with minimal allocation
 pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr> {
     let path = path.as_ref();
@@ -116,12 +123,22 @@ impl fmt::Display for CouldNotResolve {
     }
 }
 
+// CR claude for eric: [readability] Three-state fields are spelled as nested
+// Option/Either: `labeled: Option<Option<Expr>>` (positional / labeled /
+// labeled with default), LambdaExpr's `vargs: Option<Option<Type>>` and
+// `body: Either<Expr, ArcStr>` (a body or a builtin name). Named enums
+// (`ArgKind::{Positional, Labeled, Default(Expr)}`, `LambdaBody::{Expr,
+// BuiltIn}`) say at each match what `Some(None)` / `Right` mean.
 #[derive(Debug, Clone, Pack)]
 #[pack(unwrapped)]
 pub struct Arg {
     pub labeled: Option<Option<Expr>>,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
+    // CR claude for eric: [structure] `pos` is a SourcePosition kept out of
+    // equality by the hand-written PartialEq/PartialOrd below and out of the
+    // wire by `#[pack(skip)]`; that is exactly what `WrittenAt` is for. As a
+    // WrittenAt, Arg derives both impls and the comment goes.
     // IDE metadata: excluded from equality and from the packed form.
     #[pack(skip)]
     pub pos: SourcePosition,
@@ -225,6 +242,10 @@ pub struct ImplExpr {
     pub params: Arc<[TVar]>,
     pub constraints: Arc<[(TVar, Type)]>,
     pub target: Type,
+    // CR claude for eric: [structure] the parser admits only `let name = value`
+    // here, but the type says any Expr, so Impl::compile re-matches each method
+    // with `unreachable!()` (node/traits.rs). A method struct (name + value) makes
+    // the other shapes unrepresentable.
     pub methods: Arc<[Expr]>,
 }
 
@@ -404,6 +425,12 @@ pub struct LambdaExpr {
     pub body: Either<Expr, ArcStr>,
 }
 
+// CR claude for eric: [structure] Four compiler-only Options encode three roles
+// with fixed shapes: a user catch (all None), the seq machine's handler
+// (seq_abort + seq_pc, seq_manual optional) and a try's jump (seq_abort +
+// seq_capture). Every other combination is representable and meaningless. An
+// enum `role: CatchRole { User, SeqMachine { abort, manual, pc }, SeqJump {
+// jump, capture } }` makes them unrepresentable.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct CatchExpr {
@@ -472,6 +499,9 @@ pub enum ExprKind {
         value: ModuleKind,
     },
     ExplicitParens(Arc<Expr>),
+    // CR claude for eric: [readability] `Do` is the `{ a; b }` block; the `do`
+    // keyword it is named after is gone (seq_blocks.md). `Block` says what it
+    // is, and seq.rs's `lower_block`/`block()` already call it that.
     Do {
         exprs: Arc<[Expr]>,
     },
@@ -557,6 +587,11 @@ pub enum ExprKind {
     Select(SelectExpr),
     /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
     /// a select over a step variable.
+    // CR claude for eric: [structure] `queued: bool` beside `flush: Option<..>`
+    // represents a `seq` with a flush, which lowering refuses (seq.rs desugar);
+    // likewise SeqTrigger::Bind carries a `rec` that lowering refuses.
+    // `kind: SeqKind { Plain, Queued { flush } }` makes the first
+    // unrepresentable; the parser could refuse both where they are written.
     Seq {
         queued: bool,
         trigger: Option<SeqTrigger>,
@@ -671,6 +706,12 @@ pub enum ExprKind {
     },
 }
 
+// CR claude for eric: [structure] One constructor is spelled three ways with
+// the same struct literal: `to_expr(pos)`, `to_expr_nopos()` and `Expr::new`
+// (in a third `impl Expr` block below); seq.rs rewrite_with_inner, map_children
+// and serialize.rs syntax_decode repeat the literal again. Keep `Expr::new`
+// (plus an `Expr::with_kind(&self, kind)` for the rebuild-with-fresh-id case)
+// and route the rest through it.
 impl ExprKind {
     pub fn to_expr(self, pos: SourcePosition) -> Expr {
         Expr {
@@ -753,6 +794,12 @@ pub struct Origin {
     pub text: ArcStr,
 }
 
+// CR claude for eric: [structure] The `match source { File, Netidx, Internal,
+// Unspecified }` wording is written four times (here twice, ParserContext and
+// ErrorContext) and disagrees: a file prints `{n:?}` (quoted) here and
+// `p.display()` there, so one error reads `in file "/a.gx"` above `in file
+// /a.gx`. One `Display for Source` serves all four; `Default for Source` can
+// be derived.
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let flags = PRINT_FLAGS.with(|f| f.get());
@@ -809,6 +856,9 @@ impl Origin {
         .into()
     }
 
+    // CR claude for eric: [style] An inherent `from_str` that is not
+    // `FromStr` (and cannot fail) reads like the trait at its seven call
+    // sites; `Origin::unspecified(text)` or `From<&str>` says what it builds.
     pub fn from_str(s: &str) -> Self {
         Self { parent: None, source: Source::Unspecified, text: ArcStr::from(s) }
     }
@@ -818,6 +868,13 @@ impl Origin {
 /// formatter. It never decides anything: every `WrittenAt` is equal to
 /// every other, hashes to nothing and packs to nothing, so a type that
 /// holds one derives its own comparisons as if it did not.
+// CR claude for eric: [risk] Because every WrittenAt equals every other,
+// `at == WrittenAt::NOWHERE` compiles and is always true; the seven real tests
+// reach through `.0` (Name::pos_or, Expr::ending, patternexp.rs:316,
+// lambda.rs:1190, expr_spans.rs, lsp diagnostics.rs, typ/print.rs via
+// order()). An `is_written()` / `get() -> Option<SourcePosition>` removes the
+// trap and the repetition. Also `order()`'s doc is off: a stable sort moves
+// the unwritten (0, 0) keys to the FRONT, it does not leave them in place.
 #[derive(Debug, Clone, Copy)]
 pub struct WrittenAt(pub SourcePosition);
 
@@ -1007,6 +1064,10 @@ pub struct Expr {
     /// Comments/attributes on their own line directly above this
     /// expression. `None` unless the expression was decorated; not
     /// compared by equality.
+    // CR claude for eric: [perf] Every clone of a decorated Expr (each node's
+    // spec, each `.at()` context, every map_children/rewrite rebuild) allocates
+    // a new Box for two Arcs. `Option<Arc<Decorations>>` (triomphe) makes the
+    // clone a refcount bump.
     pub dec: Option<Box<Decorations>>,
     /// How a string literal was delimited, so that it prints as written;
     /// not compared by equality, and not part of the packed form.
@@ -1082,6 +1143,12 @@ impl Expr {
 
 impl Eq for Expr {}
 
+// CR claude for eric: [dead] Nothing in the workspace serializes or
+// deserializes an Expr through serde (the only serde derive in the crate is
+// FormatConfig), and printing a lowered expression would not reparse anyway
+// (compiler-only nodes). ExprVisitor's visit_borrowed_str/visit_string also
+// repeat serde's defaults. Drop Serialize/Deserialize/ExprVisitor unless an
+// embedder needs them.
 impl Serialize for Expr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1181,6 +1248,13 @@ impl Expr {
         acc.unwrap()
     }
 
+    // CR claude for eric: [risk] The doc overstates: map_children is a second
+    // hand-written enumeration that must agree in membership and order, and
+    // the seq rewrite a third (for ten kinds). A new child field on an
+    // existing kind (say on CatchExpr) fails to compile in map_children's
+    // struct literal but is silently skipped here (field access). No test
+    // checks the two agree; one over expr/test.rs's generator (ids seen by
+    // for_each_child == children passed to map_children, in order) would.
     /// Visit each direct sub-expression in the one canonical child order,
     /// shared by `fold` and `map_children`. A new `ExprKind` child is
     /// added here and nowhere else.
@@ -1502,6 +1576,11 @@ impl Expr {
     }
 }
 
+// CR claude for eric: [risk] Both tuple fields are `pub`, so the CLAUDE.md
+// rule "contexts are attached with `.at(&spec)`, never `ErrorContext(..)` by
+// hand" is unenforced: a hand-built context skips ErrorSite and the LSP loses
+// the error's position. Keep the constructors private to `At` and expose a
+// `fn expr(&self) -> &Expr` for the tooling that downcasts.
 /// An expression an error passed through on its way out.
 pub struct ErrorContext(pub Expr);
 
@@ -1582,6 +1661,13 @@ impl fmt::Display for ParserContext {
 
 impl std::error::Error for ParserContext {}
 
+// CR claude for eric: [perf] To show 38 bytes this prints the context's WHOLE
+// subtree, once per context in the chain: a chain of k contexts over a
+// lowered seq machine or a module prints O(k * size) text (a type error in a
+// seqq step: 16 contexts, five of them over the whole machine). Write through a
+// truncating fmt::Write that stops at MAX (and handle its early Err rather
+// than `.unwrap()`). The `thread_local! RefCell<String>` is the pattern Eric's
+// rules replace with `LPooled<String>`.
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use std::fmt::Write;

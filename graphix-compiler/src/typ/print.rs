@@ -15,6 +15,12 @@ use std::fmt::{self, Write};
 
 /// A set's members in print order: canonical, or under `AsWritten` the
 /// members nobody wrote first and then the written ones as written.
+// CR claude for eric: [bug] Only variants and refs carry a written position, so
+// every other member the user wrote (an Array, tuple, struct, map, fn, tvar)
+// counts as "nobody wrote it" and moves to the front. probe: `graphix fmt` turns
+// `` type T = [`A, Array<i64>, `B, (i64, string), {x: i64}] `` into
+// `` [Array<i64>, (i64, string), { x: i64 }, `A, `B] ``; CLAUDE.md promises only
+// that primitives print first. Every member kind needs its written position.
 fn set_members(s: &[Type]) -> SmallVec<[&Type; 16]> {
     let mut members: SmallVec<[&Type; 16]> = s.iter().collect();
     if print_as_written() {
@@ -37,6 +43,9 @@ fn write_primitives(
     bracketed: bool,
 ) -> fmt::Result {
     let replace = PRINT_FLAGS.get().contains(PrintFlag::ReplacePrims);
+    // CR claude for eric: [structure] The six class names are listed twice, once
+    // for the exact match and once in the `builtin!` subset pass, in different
+    // orders. One `[(BitFlags<Typ>, &str); 6]` table serves both.
     if replace && s == Typ::number() {
         write!(f, "Number")
     } else if replace && s == Typ::float() {
@@ -106,9 +115,20 @@ impl fmt::Display for Type {
 }
 
 impl Type {
+    // CR claude for eric: [structure] The "write each item, then `, ` unless it is
+    // the last" loop is hand-written seven times here (Abstract and Ref params,
+    // Tuple, Variant, Struct, Set, primitives) and its `kill_newline` + `,` twin
+    // five times in `fmt_pretty_inner` (more in fntyp.rs). One separated-list
+    // helper per printer.
     fn fmt_inner(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Abstract { id, params } => {
+                // CR claude for eric: [risk] The name comes from the process-global
+                // `ABSTRACT_NAMES`, filled only by `AbstractId::of`; an id decoded
+                // from an image in a process that never minted it prints as
+                // `abstract` / `<abstract#N>`, so printed types can differ between
+                // a cold and a warm start (suspected). `GxAbstract` carries its
+                // name for this reason; the type could too.
                 match id.name() {
                     Some(name) => write!(f, "{name}")?,
                     None if params.is_empty() => return write!(f, "abstract"),

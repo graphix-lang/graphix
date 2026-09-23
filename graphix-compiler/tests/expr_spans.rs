@@ -13,6 +13,10 @@ use std::{
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
+        // CR claude for eric: [risk] Only `.gx`: expressions in interfaces (trait
+        // default bodies; sys io.gxi has several) are never pinned, though their
+        // positions feed the LSP too. Parse `.gxi` with `parse_sig` and walk the
+        // defaults.
         if path.is_dir() {
             sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "gx") {

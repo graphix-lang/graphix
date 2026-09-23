@@ -1,3 +1,9 @@
+// CR claude for eric: [style] `crate::image` is imported in two statements apart
+// from the `crate::{..}` group, and paths used more than once stay spelled out:
+// `crate::image::{slice_len, slice_encode, scope_*}` (Block) although `image` is
+// imported, `crate::fusion::fuse` (ExplicitParens) although `fuse` is imported,
+// `crate::expr::UseItem` x2, `std::sync::OnceLock` x2, and `super::node::read_var`
+// (ConnectDeref::update) for this module's own `read_var`. Merge into one group.
 use crate::image::ImageBuf;
 use crate::image::{
     self,
@@ -102,6 +108,9 @@ macro_rules! bailat {
     };
 }
 
+// CR claude for eric: [style] the exported macro names `PrintFlag::DerefTVars`
+// unqualified, so every caller must import `PrintFlag` for it to expand. Use
+// `$crate::PrintFlag`.
 #[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
@@ -330,6 +339,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 /// the readers that must read history a production cannot carry: the
 /// select scrutinee, a pattern guard's truth, and `~`'s held arg.
 /// Everything else reads its children's productions directly.
+// CR claude for eric: [structure] `value: Option<Value>` and `tag: Tag` start
+// (and reset to) `(None, FIRED)`: a child that never produced reads as not bottom,
+// so every reader must check both fields. One field (e.g. a `TagValue` resident
+// plus a "had a value" state) would make that state unrepresentable. `invariant`
+// is a `OnceLock` (atomic) although it is only touched through `&mut self`; an
+// `Option<bool>` does.
 #[derive(Debug)]
 pub struct Held<R: Rt, E: UserEvent> {
     /// The last value-bearing production (`Some` = there was once a
@@ -378,6 +393,8 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
         tag
     }
 
+    // CR claude for eric: [dead] `update_triggers` has no caller anywhere in the
+    // workspace.
     /// [`Self::update`], reduced to whether the production triggers
     /// evaluation: true for fired and fresh-bottom productions, false
     /// for the stale states. Bottomness is read back off [`Self::tag`].
@@ -412,6 +429,15 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     }
 }
 
+// CR claude for eric: [structure] the `fired` output is redundant: once `bottom`
+// is excluded (every caller runs `dense_gate!` first, which returns on bottom) no
+// input was FreshBottom, so `fired == trig`. The three-bool accumulator re-derives
+// `Tag::join`; returning one joined `Tag` would do. `read_prod!` is the same
+// accumulator for one child, and `StringInterpolate::update` inlines a verbatim
+// copy of this loop instead of calling `gather`.
+// CR claude for eric: [perf] values are cloned before `dense_gate!` decides, so
+// on a quiet cycle every composite clones all its children's values and then
+// rides (same in `read_prod!`). Join the tags first; clone only past the gate.
 /// Update every child of a composite, join the tags, and clone the
 /// values. Returns `(trig, fired, bottom)`; `vals` receives the element
 /// values in order and is meaningful only when `bottom` is false.
@@ -473,6 +499,12 @@ macro_rules! read_prod {
 }
 pub(crate) use read_prod;
 
+// CR claude for eric: [structure] namespace-table logic, not a node: it takes only
+// `&mut Env` and is also called from `module.rs`; it belongs with the module
+// system. Inside, the three `ImportEntry` literals differ only in `scope` and
+// `keyword_anchored` (build `pos`/`ori`/`name` once), `ModPath(Path::from(
+// ArcStr::from(..)))` is spelled four times, and two `use` statements sit
+// mid-body.
 /// Compile one `use` item into the scope's namespace table
 /// ([`crate::env::Env::names`]): resolve its module prefix, then
 /// install a glob source or an explicit [`ImportEntry`].
@@ -580,6 +612,9 @@ pub(crate) fn compile_use<R: Rt, E: UserEvent>(
     items: &Arc<[crate::expr::UseItem]>,
 ) -> Result<Node<R, E>> {
     if reexport {
+        // CR claude for eric: [style] this refusal is written again in module.rs
+        // bind_sig, and both `bail!` without a site (no position for the LSP). One
+        // refusal inside the shared use-compile path, raised with `.at(&spec)`.
         bail!("re-exports (`pub use`) are not yet supported")
     }
     let replace = flags.contains(CFlag::ReplaceImports);
@@ -614,6 +649,11 @@ impl TypeDef {
         params: &Arc<[(TVar, Option<Type>)]>,
         body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
+        // CR claude for eric: [readability] the position goes into the message
+        // text (`format!("in typedef at {}")`) instead of an `ErrorSite`
+        // (`.at(&spec)`), so the LSP places the error at whatever encloses the
+        // typedef. Same in `TypeCast::compile` (`bail!("in cast at {} {e}")`,
+        // which also flattens `e`'s context chain into one string).
         ctx.env
             .deftype(
                 &scope.lexical,
@@ -710,6 +750,11 @@ impl Constant {
         Node::new(Self { spec: Arc::new(spec), value, typ, resident })
     }
 
+    // CR claude for eric: [structure] three constructors build a `Constant`:
+    // `new`, this infallible `compile` returning `Result`, and `genn::constant`,
+    // which starts its resident phantom instead of stale (the invariant `new`'s
+    // comment states). Keep `new`, derive `typ` here from it, and have
+    // `genn::constant` call it.
     pub(crate) fn compile<R: Rt, E: UserEvent>(
         spec: Expr,
         value: &Value,
@@ -822,6 +867,9 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// Production slot for the catch-bearing path: the last covered
     /// child's borrow can't be held across the catches pass.
     resident: TagValue,
+    // CR claude for eric: [dead] nothing reads `scope` (hence the allow), yet
+    // every image writes it (a DynScope handler chain per block). Drop the field
+    // and its codec.
     /// Scope at the block's declaration point: the containing scope for
     /// a module, the lexical scope for a `do` block.
     #[allow(dead_code)]
@@ -1035,6 +1083,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         &self.children.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
     }
 
+    // CR claude for eric: [structure] the "covered children in order, then
+    // catches in reverse" walk is spelled three times (update, typecheck0,
+    // typecheck1) and the module/non-module `wrap!` branch four times. One
+    // iterator over the evaluation order plus one `wrap_child` helper would carry
+    // the ordering rule in one place.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         // catches typecheck after the covered children so a handler sees
         // the complete error-type accumulation
@@ -1045,6 +1098,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
                 continue;
             }
             if self.module {
+                // CR claude for eric: [bug] for a module block `self.spec.ori` is the declaring
+                // file, so a type error in m.gx is framed "in file main.gx" (here, below, and in
+                // typecheck1); see the CR at compiler.rs compile_module for the right origin.
                 wrap!(n, n.typecheck0(ctx)).with_context(|| self.spec.ori.clone())?
             } else {
                 wrap!(n, n.typecheck0(ctx))?
@@ -1488,6 +1544,8 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         Ok(Node::new(Self { spec, rhs, src_id, target, top_id }))
     }
 
+    // CR claude for eric: [dead] `ConnectDeref::new` and `Connect::new` have no
+    // caller in the workspace.
     /// Build a `ConnectDeref` from an already-compiled RHS node and
     /// the source reference's BindId. The caller is responsible for
     /// registering the reference with the runtime (via
@@ -1561,6 +1619,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.spec.encode(buf)?;
         self.rhs.image_encode(buf)?;
         self.src_id.encode(buf)?;
+        // CR claude for eric: [structure] `target` is runtime state (resolved at
+        // update, `None` before the first cycle), yet it is written into the
+        // image while every other node's runtime state (Sample's debt, Catch's
+        // counters) is not. Refuse a `Some` with `NOT_QUIESCENT` and drop the
+        // `WriteTarget` codec, or say why it must travel.
         WriteTarget::image_encode(&self.target, buf)?;
         self.top_id.encode(buf)
     }
@@ -1710,6 +1773,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.image_encode(buf)
     }
 
+    // CR claude for eric: [perf] no `dense_gate!`: every cycle a stale input is
+    // re-cast from scratch (`cast_value` walks the whole value), so a quiet
+    // `cast<Array<T>>(big)` costs a full conversion per cycle. Gate on `trig`
+    // like the other computing nodes (needs a `slept` bit for the wake).
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
@@ -1821,6 +1888,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         encode_nodes(&self.n, buf)
     }
 
+    // CR claude for eric: [dead] `Never::resident` is only ever `ride()`n, so it
+    // stays the phantom forever; return `TagValue::phantom_ref()` and drop the
+    // field.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         for n in self.n.iter_mut() {
             n.update(ctx, event);
@@ -1941,6 +2011,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         }
         match winner {
             Some(tv) => self.resident.set(tv),
+            // CR claude for eric: [style] `resident.set(TagValue::tagged(
+            // Value::Null, Tag::FRESH_BOTTOM))` re-spells `resident.set_bottom(
+            // true)`; also Sample::update (x2) and TypeCast::update
+            // (`set_bottom(tag.triggers())`).
             None if bottomed => {
                 self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
             }
@@ -1998,6 +2072,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
     }
 }
 
+// CR claude for eric: [structure] `strict: bool` beside `triggered` and `id`:
+// under `~!` the debt counter and the payment variable are meaningless, yet the
+// node still mints and refs a `BindId`. An enum (`Strict` | `Banking { triggered,
+// id }`) makes that unrepresentable. In `update`, the `held` closure's
+// `None => unreachable!()` is guarded only by the call site's `is_some()`.
 #[derive(Debug)]
 pub struct Sample<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
@@ -2134,6 +2213,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
     }
 
+    // CR claude for eric: [bug] every payment of banked debt is a `set_var` on the
+    // private `self.id`, and the runtime stores each delivery (`store_insert`),
+    // but delete never `store_remove`s it (CallSite and pattern deletes do). Each
+    // deleted `~` that ever paid leaks a store entry holding its last value: a
+    // recursive body with `~` whose depth oscillates (shrink = delete, re-reach =
+    // fresh id) grows the store without bound. Same for `Catch::delete` and a
+    // cross-top error delivered to `bind_id`.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         ctx.rt.unref_var(self.id, self.top_id);
         self.arg.node.delete(ctx);

@@ -1,3 +1,7 @@
+// CR claude for eric: [style] use grouping: `crate::image` is imported in two
+// statements apart from the `crate::{..}` group, and `netidx_core::pack` twice;
+// `anyhow::anyhow!` is spelled in full at StructRef::emit_clif though `anyhow` is
+// imported here.
 use super::{WakeBit, compiler::compile, dense_gate, gather};
 use crate::image::nodes::{
     NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
@@ -26,6 +30,11 @@ use smallvec::SmallVec;
 use std::iter;
 use triomphe::Arc;
 
+// CR claude for eric: [structure] Struct, Tuple and Variant are one node: children
+// gathered, gated and packed into a `Value::Array`, differing only in the prefix
+// (field names / nothing / the tag) and the emit fn; every other method is the
+// same text three times (~250 lines). One composite node with a small kind enum
+// would say it once.
 #[derive(Debug)]
 pub struct Struct<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
@@ -160,6 +169,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
                         self.n.len()
                     )
                 }
+                // CR claude for eric: [style] a field mismatch here (and in
+                // Tuple::typecheck0) carries no site; Variant wraps it with `wrap!`.
                 for ((_, t, _), n) in typs.iter().zip(self.n.iter()) {
                     t.check_contains(&ctx.env, &n.typ())?
                 }
@@ -299,6 +310,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         Ok(())
     }
 
+    // CR claude for eric: [structure] the source and replacement reads below are
+    // `read_prod!` (node/mod.rs) written out twice, and `src.unwrap()` leans on
+    // "None implies bottom" holding across the gate. The pairing loop also relies
+    // on `replace` being sorted by field index, an invariant nothing states.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let mut trig = false;
         let mut fired = false;
@@ -349,6 +364,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
                                 [v[0].clone(), rep].into_iter(),
                             ))
                         }
+                        // CR claude for eric: [dead] typecheck0 always sets `index`
+                        // (and the image carries it), so this name search never runs;
+                        // likewise StructRef::update's `None` search. Drop the
+                        // fallbacks and `Replace::name`'s runtime role with them.
                         None if &r.name == &v[0] => {
                             r.index = Some(i);
                             let rep = rvals[si].clone();
@@ -400,6 +419,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
+        // CR claude for eric: [readability] the names are re-read from the spec,
+        // with a "BUG" arm, though each `Replace` already holds its name (as a
+        // `Value::String`; an `ArcStr` would serve both uses).
         let fields = match &self.spec.kind {
             ExprKind::StructWith(StructWithExpr { source: _, replace }) => {
                 replace.iter().map(|(n, _)| n.clone()).collect::<SmallVec<[ArcStr; 8]>>()
@@ -640,6 +662,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        // CR claude for eric: [readability] stale: there is no `field` here; the
+        // field name says it already.
         // `field` is the position in the struct type's sorted layout.
         let sorted_idx = self
             .sorted_field_idx
@@ -811,6 +835,10 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
             .collect::<Result<Box<[_]>>>()?;
         let typs = Arc::from_iter(n.iter().map(|n| n.typ().clone()));
         let typ = Type::Variant(tag.clone(), typs, WrittenAt::NOWHERE);
+        // CR claude for eric: [perf] tags and struct field names are interned
+        // through `ctx.tag` here but decoded as fresh strings by image_decode (a
+        // warm start shares nothing), and the intern set is never pruned. Intern
+        // on both paths or drop the set.
         let tag = ctx.tag(tag);
         Ok(Node::new(Self {
             spec,
@@ -988,6 +1016,9 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
         arg: &Expr,
     ) -> Result<Node<R, E>> {
         let arg = compile(ctx, flags, arg.clone(), scope, top_id)?;
+        // CR claude for eric: [bug] these four errors have no ErrorSite. Probe:
+        // `type C = i64; let c = C(5);` reports "C is not an abstract type, so it
+        // has no constructor" with no position. `bailat!(spec, ..)` / `.at(&spec)`.
         let td = ctx
             .env
             .lookup_typedef(&scope.lexical, name)?
@@ -1043,6 +1074,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         if tag.is_bottom() {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
         }
+        // CR claude for eric: [perf] no dense gate: every update, stale ones
+        // included, allocates a new abstract box. And `params` is a type fact
+        // computed lazily on the hot path; take it once in typecheck1.
         let params = self.params.get_or_insert_with(|| match self.typ.resolve_tvars() {
             Type::Abstract { params, .. } => params,
             _ => Arc::from_iter([]),

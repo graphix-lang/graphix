@@ -35,6 +35,13 @@ use crate::{
     profile::{self, Phase},
     typ::{FnType, Type},
 };
+// CR claude for eric: [style] Repeated long paths the imports should carry:
+// `std::sync::Arc` (6x), `compact_str::format_compact!` (9x),
+// `arcstr::ArcStr` (10x), `compact_str::CompactString` (5x),
+// `crate::format_with_flags`/`PrintFlag` (3x); and
+// `poolshark::local::LPooled`/`crate::ApplyView` in check_attributes_subtree
+// are spelled out although already imported. `FusionFailure::reason` holds a
+// full `{e:#}` chain, not a short string: `ArcStr`, not `CompactString`.
 use poolshark::local::LPooled;
 
 #[derive(Debug, Clone)]
@@ -151,11 +158,21 @@ pub struct FusionCtx {
     /// kernels stay mapped and executing; generations never link (a
     /// region builds atomically within one). Freed by ExecCtx drop or
     /// [`Self::reset_jit_for_check`].
+    // CR claude for eric: [bug] "Freed by ExecCtx drop" is false: nothing frees
+    // JIT memory (CR at emit/jit.rs `Jit`), so every fused ExecCtx, rotation and
+    // reset_jit_for_check leaks a 256MB reservation plus its code pages. Fix this
+    // doc, FusionStats::jit_generations and the rotation warning with it.
     pub retired_jits: parking_lot::Mutex<Vec<emit::Jit>>,
     /// Monomorphized lambda-kernel cache. Catch coverage and fn
     /// resolutions are part of the key because the kernel bakes them.
     /// The cached `Arc<KernelSig>` is the callable handle: the JIT's
     /// `by_kernel` cache keys on its pointer identity.
+    // CR claude for eric: [perf] Never evicted, and keyed by a LambdaId minted
+    // per compile, so an entry is dead once its compile ends; a long-lived
+    // context (LSP: one ExecCtx, a check per edit, `reset_jit_for_check`
+    // keeps this) grows without bound. `stats.failed`/`fused_sources` grow the
+    // same way ("bounded by program size" is false there) and are scanned
+    // linearly per lookup. Clear them per compile/check.
     pub kernels: parking_lot::Mutex<
         std::collections::BTreeMap<
             (
@@ -190,6 +207,9 @@ pub struct FusionCtx {
 impl FusionCtx {
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
+            // CR claude for eric: [perf] every ExecCtx builds a full Jit here (ISA probe,
+            // ~152 helper declarations, a 256MB arena reservation) even with fusion off
+            // (UIs, LSP checks, --no-fusion). Build it on first use.
             jit: parking_lot::Mutex::new(emit::Jit::new()?),
             retired_jits: parking_lot::Mutex::new(Vec::new()),
             kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
@@ -212,6 +232,10 @@ impl FusionCtx {
     /// would otherwise accumulate every checked file's kernels in one
     /// module. Must not be called on a runtime with live kernels: it
     /// frees their code.
+    // CR claude for eric: [risk] A safe `pub fn` whose misuse is a
+    // use-after-free of live kernel code (today it only leaks, see the
+    // `retired_jits` CR; once memory is really freed it is UB). Make it
+    // `unsafe`, or refuse when any Kernel still holds this module.
     pub fn reset_jit_for_check(&self) -> anyhow::Result<()> {
         *self.jit.lock() = emit::Jit::new()?;
         self.retired_jits.lock().clear();
@@ -355,6 +379,10 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::MapQ(m) => rec!(&m.source, &m.prototype),
         NodeView::FoldQ(m) => rec!(&m.source, &m.init, &m.prototype),
         NodeView::Module(m) => {
+            // CR claude for eric: [bug] a dynamic module's `source` is never visited, so
+            // effect analysis misses an async source: `#[sync]` is accepted on a function
+            // whose dynamic-module source calls `after_idle` (probed; CR at analysis.rs
+            // dynamic Module). node_shape.rs's second child walk visits source, not nodes.
             for child in m.nodes.iter() {
                 rec!(child)
             }
@@ -475,6 +503,12 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             }
         }
         NodeView::MapRef(m) => rec!(&m.source, &m.key),
+        // CR claude for eric: [bug] Calls `f` on the referent's direct children but
+        // never recurses into them, so every walk built on this (effect analysis,
+        // call graph, fusion discovery, fingerprints, #[native]) misses whatever
+        // sits two levels under a `&`. Probe: `#[sync] let f = |n: i64| { let r =
+        // &(throttle(#rate: duration:0.001s, n) + 1); *r }` compiles; without the
+        // `+ 1` it is refused as async. Fix: `b.for_each_child(&mut |c| rec!(c))`.
         NodeView::ByRef(b) => b.for_each_child(f),
         NodeView::Deref(d) => rec!(&d.child),
         NodeView::Add(o) => rec!(&o.lhs, &o.rhs),
@@ -561,6 +595,11 @@ pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
 /// One statically-resolved lambda call site in a region being compiled,
 /// recorded by [`discover_lambda_calls`] and consumed by
 /// `CallSite::emit_clif` to emit a CLIF `call` against the callee.
+// CR claude for eric: [structure] A per-site copy of the cached kernel:
+// `fn_name` repeats `kernel.fn_name` (and the doc is stale: `funcids` and
+// `callee_refs` key on `kernel_key`, not the name), and `arg_types`/`captures`
+// are Vec clones made per site on every region attempt (top-down fusion
+// re-runs discovery per subtree). Hold one `Arc<CachedKernel>` instead.
 #[derive(Debug, Clone)]
 pub struct LambdaCallInfo {
     /// The callee kernel's name in the `funcids`/`callee_refs` maps —
@@ -647,6 +686,11 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             // The source name labels the emitted symbol only; resolution
             // is by kernel identity. A lambda-literal call has no name
             // and stays on the node-walk.
+            // CR claude for eric: [structure] Fusion is gated on having a label: a
+            // statically resolved call whose fnode is not a `Ref` loses fusion only
+            // because the symbol would be unnamed. Probe: `#[native]
+            // ((|x: i64| x * 2 + 1)(n))` is refused ("lambda call site ... not
+            // discovered"). Label such a callee `lambda` (or by its LambdaId).
             let ExprKind::Ref { name } = &cs.fnode.spec().kind else {
                 return;
             };
@@ -860,6 +904,10 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         discover_lambda_calls(node, ctx);
     drop(phase);
     let source_id = node.spec().id;
+    // CR claude for eric: [readability] `try_fuse` is ~180 lines of phases glued by
+    // tuples: `discover_lambda_calls` returns an unnamed 4-tuple and
+    // `sig_from_inputs` a pair whose second half is discarded here. A
+    // `Discovery` struct and a sig-only builder would read better.
     let (sig, _arg_types) = match sig_from_inputs(
         arcstr::ArcStr::from(
             compact_str::format_compact!("region_{:?}", source_id).as_str(),
@@ -896,6 +944,11 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     // An exhausted arena retires the whole active `Jit` (its kernels
     // stay mapped) and the build retries once in a fresh module; the
     // retry recompiles the whole callee set, so generations never link.
+    // CR claude for eric: [risk] Exhaustion is detected by substring-matching
+    // cranelift's io::Error text, formatted into a fresh String on every failed
+    // build (every de-fused region), then formatted again by `refuse`. A reworded
+    // message silently stops rotation and every later region de-fuses. Downcast
+    // to `cranelift_module::ModuleError::Allocation` instead.
     if let Err(e) = &result {
         if format!("{e:#}").contains("memory region exhausted") {
             match emit::Jit::new() {
@@ -1006,6 +1059,12 @@ fn refuse<R: Rt, E: UserEvent>(
 /// Scalar env slots resolve by BindId, but the other per-kind tables
 /// are name-keyed, so two non-scalar inputs sharing a basename would
 /// alias one slot. Returns the first colliding name.
+// CR claude for eric: [structure] The hazard this guards looks gone: every
+// param local is bound with its BindId and `JitEnv::lookup` (emit/abi.rs:260)
+// resolves BindId-first for every kind, so shadowed names only cost fusion.
+// Probe: a lambda capturing `x` called as `#[native] f(array::len(x))` after
+// `let x` is re-bound is refused ("share basename `x`"); renaming the second
+// `x` fuses. Delete the check (and its doc premise) after a fuzz soak.
 pub(crate) fn non_scalar_basename_collision(
     inputs: &[FreeVarInput],
 ) -> Option<&arcstr::ArcStr> {

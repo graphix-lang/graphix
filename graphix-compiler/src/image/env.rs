@@ -69,6 +69,8 @@ impl Pack for TypeDef {
             + doc.encoded_len()
             + pos_len(pos)
             + origin_len(ori)
+            // CR claude for eric: [style] `1` stands for `seeded`'s bool; measure it
+            // as encode writes it.
             + 1
     }
 
@@ -276,6 +278,9 @@ pub(crate) fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
     })
 }
 
+// CR claude for eric: [structure] repeats lexical_len/encode/decode's four fields,
+// interleaved with the global tables; writing the lexical part through lexical_*
+// and the globals after it would say each once.
 /// The IDE side-channel is process state and is not in the image; a
 /// restored environment starts with none.
 impl Pack for Env {
@@ -362,6 +367,10 @@ impl Pack for Env {
             impls: SharedMap::decode(buf)?.0,
             poly_binds: SharedSet::decode(buf)?.0,
             package_roots: SharedSet::decode(buf)?.0,
+            // CR claude for eric: [risk] lsp_mode is runtime configuration, not
+            // session state: read_registration replaces the env wholesale, so a
+            // runtime configured for lsp (gx.rs:266 sets it before the restore)
+            // takes the writer's value. Keep it out of the image.
             lsp_mode: Pack::decode(buf)?,
             ide: None,
         })

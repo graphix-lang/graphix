@@ -32,6 +32,11 @@ use triomphe::Arc;
 /// Magic header on every packed blob.
 const MAGIC: &[u8; 4] = b"GXAS";
 
+// CR claude for eric: [structure] The Pack impls of AbstractId, TraitId, TVar
+// and FnType live here while Type's lives in typ/mod.rs beside the type; the
+// AbstractId and TraitId impls are identical, and a varint of a uuid-derived
+// u64 costs ~10 bytes where a fixed u64 costs 8. Move each impl next to its
+// type (typ/mod.rs, tvar.rs, fntyp.rs) and share the id codec.
 impl Pack for AbstractId {
     fn encoded_len(&self) -> usize {
         pack::varint_len(self.inner())
@@ -160,6 +165,14 @@ impl Pack for TraitId {
 /// Under an image session the wrapper and its cell are shared objects
 /// ([`image::tvar_encode`]); the syntax codec writes the cell's
 /// contents and mints a fresh variable.
+// CR claude for eric: [bug] suspected: the syntax path writes the cell's
+// constraints inline with no cycle guard, and the parser aliases a quantifier's
+// own name inside its constraint to the same cell (typexp.rs:263). So a fn
+// type `fn<'a: [i64, Array<'a>]>(x: 'a) -> 'a` (accepted: the same constraint
+// on a lambda runs) in a package .gx/.gxi makes pack_module/pack_sig recurse
+// until the build script overflows its stack. Only the image path shares
+// cells. Also: encoded_len and encode each clone the bound and `to_vec()` the
+// constraints; one borrowed helper serves both.
 impl Pack for TVar {
     fn encoded_len(&self) -> usize {
         if image::is_encoding() {
@@ -246,6 +259,13 @@ impl FnType {
         let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
         let throws = <Type as Pack>::decode(buf)?;
         let explicit_throws = <bool as Pack>::decode(buf)?;
+        // CR claude for eric: [risk] `quantifiers` is not on the wire; it is
+        // guessed from the single-conjunct cell pairs by name. That is wrong
+        // three ways: an inner fn type naming an outer constrained quantifier
+        // (`fn<'a: Number>(g: fn(x: 'a) -> 'a) -> 'a`) decodes with `['a]` where
+        // it had none, so its constraint_view (Eq, Hash, contains, printing)
+        // differs from the parsed type; a `+` (multi-conjunct) or unbounded
+        // quantifier is dropped; source order becomes name order. Encode it.
         // Named pairs are the declared quantifiers; anonymous '_N pairs are
         // inference facts, re-seeded below.
         let quantifiers = Arc::from_iter(
@@ -316,6 +336,8 @@ impl Pack for FnType {
     }
 }
 
+// CR claude for eric: [readability] A free fn named `map_err`, used as
+// `.map_err(map_err)`, reads as a typo; `codec_error` says what it builds.
 fn map_err(e: PackError) -> anyhow::Error {
     anyhow::anyhow!("packed AST codec error: {e:?}")
 }
@@ -388,6 +410,10 @@ pub fn pack_index(entries: &[(ArcStr, ArcStr, Bytes)]) -> Result<Bytes> {
 
 /// Decode a package index blob (see [`pack_index`]) into `(Path, VfsEntry)`
 /// pairs; each entry's AST stays packed in `VfsEntry.packed`.
+// CR claude for eric: [perf] The only caller (defpackage!'s register) passes an
+// `include_bytes!` blob, yet every module's AST is copied out of it
+// (`Bytes::copy_from_slice`) on every start, for every package. Taking
+// `&'static [u8]` and `Bytes::from_static(..)` slices keeps them zero-copy.
 pub fn unpack_index(mut bytes: &[u8]) -> Result<Vec<(Path, VfsEntry)>> {
     check_magic(&mut bytes)?;
     let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
@@ -406,6 +432,12 @@ pub fn unpack_index(mut bytes: &[u8]) -> Result<Vec<(Path, VfsEntry)>> {
     Ok(result)
 }
 
+// CR claude for eric: [risk] The round trips compare `kind` only (Expr
+// equality), so `pos`, which IS packed, is never checked; pack_sig/unpack_sig,
+// pack_index/unpack_index and FnType quantifiers have no test; and the inputs
+// are 47 hand-picked strings while expr/test.rs has a generator over every
+// kind and a `check` comparator. A proptest pack -> unpack -> `check` (plus
+// pos) over that generator would have caught the quantifier guess above.
 #[cfg(test)]
 mod test {
     use super::*;

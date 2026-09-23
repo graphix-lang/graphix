@@ -19,6 +19,9 @@ pub enum Step {
     Key(Value),
 }
 
+// CR claude for eric: [style] an alias cannot carry `Pack`, hence the free
+// path_len/path_encode/path_decode trio its callers (mod.rs, bind.rs) must
+// remember; a `Path` newtype implementing Pack is the one codec.
 pub type Path = SmallVec<[Step; 2]>;
 
 pub(crate) fn path_len(path: &Path) -> usize {
@@ -60,6 +63,9 @@ fn index_of(len: usize, i: i64) -> Result<usize> {
     Ok(j as usize)
 }
 
+// CR claude for eric: [style] both callers re-match `pairs[j]` as a 2-array
+// with an `unreachable!()` for what this fn already checked; return the
+// pair's value (and index) so the panic arms go.
 /// A struct value is an array of `[name, value]` pairs.
 fn field_of(pairs: &ValArray, name: &str) -> Result<usize> {
     pairs
@@ -95,6 +101,9 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
     Ok(cur.clone())
 }
 
+// CR claude for eric: [readability] a map step here compares keys too
+// (`get`, `insert`), and the runtime's patch delivery does arm the hooks, but
+// only read_path states the invariant; say it here as well.
 /// `root` with the value at `path` replaced by `v`.
 pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
     let Some((step, rest)) = path.split_first() else { return Ok(v) };

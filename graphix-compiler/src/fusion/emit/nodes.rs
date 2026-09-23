@@ -125,6 +125,7 @@ pub(crate) fn emit_ref_node(
     typ: &Type,
     id: BindId,
 ) -> Result<CompiledExpr> {
+    // CR claude for eric: [dead] `typ` is unused; drop the parameter.
     let _ = typ;
     // BindId first (exact under shadowing); a synthetic Ref has no name
     // and resolves by id alone.
@@ -323,6 +324,10 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     let rprim = kernel_abi::freeze_for_abi_normalized(rhs.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t));
+    // CR claude for eric: [risk] the rhs prim is not compared with the lhs one. The
+    // checker demands one type today, but a pair of one CLIF width (u64 vs i64)
+    // would compare with the lhs's signedness where the node-walk orders by Typ
+    // first. Err unless the two prims are equal.
     if let (Some(lp), Some(_)) = (lprim, rprim) {
         let lcv = lhs.emit_clif(cx)?;
         let rcv = rhs.emit_clif(cx)?;
@@ -643,6 +648,11 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     Ok(cv.disc)
 }
 
+// CR claude for eric: [risk] the helper's disc (r[0]) is dropped and the tuple's
+// ARRAY disc kept: right only while a cons cell is a Value::Array, a layout
+// CLAUDE.md says is private to node/collection.rs::list. Fold the helper's disc
+// with the tuple's flags. Building a ValArray and then copying it into cons
+// cells also allocates twice.
 /// `[<a, b, c>]`: build the elements as a ValArray, then convert through
 /// `graphix_valarray_into_list`. The disc is the tuple's.
 pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
@@ -656,6 +666,12 @@ pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(cv.disc, payload))
 }
 
+// CR claude for eric: [risk] suspected leak: this buf (and those of struct and
+// variant literals and string interpolation) is not on value_buf_stack, while
+// emit_struct_with_node registers its bufs for exactly the abort edge. A field
+// that takes one (a scaffold loop's interrupt check, an aborting callee) leaks the
+// buf and what was pushed. Register every in-flight buf, or none if no field can
+// abort.
 /// Tuple / array literal: push each field, finalize into an owned
 /// ValArray. Both share this emission; only the static type differs.
 pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
@@ -685,6 +701,9 @@ pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, payload))
 }
 
+// CR claude for eric: [structure] the `[name, value]` pair build (inner buf, push
+// the interned name, push the value, finalize, push into the outer buf) is written
+// here and again in emit_struct_with_node.
 /// Struct literal: an outer ValArray of `[name, value]` pairs sorted by
 /// name (the canonical struct layout).
 pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
@@ -1005,6 +1024,9 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
+// CR claude for eric: [readability] "borrowed read of the payload" reads as a
+// borrowed result, but graphix_abstract_get_* return owned clones
+// (emit_helpers.rs:792-810); what is borrowed is the source.
 /// `x.0` on a Graphix-minted abstract value: a guarded, borrowed read
 /// of the payload at the representation's shape `rep` (the
 /// abstract twin of [`emit_guarded_element_read`]).
@@ -1127,6 +1149,9 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
         let idx_cv = idx.emit_clif(cx)?;
+        // CR claude for eric: [bug] `widen_to_i64` reinterprets a u64 index above
+        // i64::MAX as negative, so the helper reads from the end; the node-walk has
+        // the same wrap (CR at array.rs `array_index`). Fix both together.
         let idx_i64 = widen_to_i64(cx.b, idx_cv.payload, idx_prim)?;
         let helper = cx.helper("graphix_valarray_index")?;
         let call = cx.b.ins().call(helper, &[arr_ptr, idx_i64]);
@@ -1245,6 +1270,9 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
+// CR claude for eric: [readability] `kernel_abi::int_div_may_bottom` does not
+// exist; this is the only implementation. The fn-local `use NodeView;` below
+// re-imports a top-level name (also body.rs node_composite_source).
 /// Node analog of `kernel_abi::int_div_may_bottom`: false only when the
 /// divisor is a constant that provably cannot bottom. Sees through
 /// `ExplicitParens`.

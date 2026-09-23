@@ -32,6 +32,10 @@ use triomphe::Arc;
 /// A carried cell per let name (and per try's `e`): its generated name,
 /// the declaring position, and the let's annotation when the pattern is a
 /// plain name.
+// CR claude for eric: [readability] The value is an anonymous triple read as
+// `.0` (lower_try) and `(cell, _, _)` (sink_writes, expose_step_binds,
+// lower_group_inner). A named struct (`Cell { name, pos, typ }`) says what
+// each slot is.
 type CarriedBinds = IndexMap<(ExprId, ArcStr), (ArcStr, SourcePosition, Option<Type>)>;
 
 #[derive(Clone, Copy)]
@@ -79,6 +83,12 @@ struct Queue<'a> {
 /// the trigger is a level named for the body, bound outside the machine
 /// so the run costs no step. A pattern that is not one name gets the
 /// level a name of its own and is destructured beside it.
+// CR claude for eric: [bug] A destructured trigger's names are bound outside the
+// machine and track the live level, so `seq let (a, b) = t` reads the NEW `a`
+// after a busy-dropped trigger while `seq let p = t` reads the run's snapshot.
+// probe: t=(0,0) at init, (1,1) at 50ms, body waits 120ms then prints: `p.0`
+// prints 0, `a` prints 1 (seqq is right: it captures a, b). Destructure inside
+// the body instead: `seq name { let pat = name; body }` (same arm, no cycle).
 fn desugar_let(spec: &Expr, b: &BindExpr) -> Result<Expr> {
     let ExprKind::Seq { queued, abort, flush, body, .. } = &spec.kind else {
         panic!("desugar_let on a non-seq");
@@ -119,12 +129,22 @@ fn desugar_let(spec: &Expr, b: &BindExpr) -> Result<Expr> {
     Ok(block(pos, exprs))
 }
 
+// CR claude for eric: [structure] desugar_plain is ~150 lines doing six jobs
+// (validation, naming, the machine handler, lowering, prelude, abort wiring);
+// the abort wiring (the `abort.is_some() || flush.is_some()` test is computed
+// three times, here and below) is one function of its own.
 fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
+    // CR claude for eric: [structure] The seq is destructured with a panic! here
+    // (naming `desugar_seq`, which does not exist), again in desugar_let and
+    // desugar_queued (unreachable!). `desugar` matched it already: pass the
+    // parts as one struct so no callee can be handed a non-seq.
     let ExprKind::Seq { trigger, abort, flush, body, .. } = &spec.kind else {
         panic!("desugar_seq on a non-seq");
     };
     let pos = spec.pos;
     let id = spec.id.inner();
+    // CR claude for eric: [dead] The empty-body check is repeated below (the
+    // `steps.is_empty()` test covers an empty body too).
     if body.is_empty() {
         return Err(anyhow!("a seq block must contain at least one step").at(&spec));
     }
@@ -158,11 +178,22 @@ fn desugar_plain(spec: &Expr, queue: Option<&Queue>) -> Result<Expr> {
     let t_name = format_compact!("seqgo{id}");
     let filter = apply_filter(pos, trig_expr, lambda_sampling(pos, idle.as_str()));
 
+    // CR claude for eric: [bug] The trigger's snapshot shares `visible` with the
+    // carried cells, so WRITES and `&` of the trigger name are redirected too:
+    // `seq t { t <- 10; .. }` writes the private `seqt` cell and the user's `t`
+    // is never written (probe: t stays 0 after the run, the same body under
+    // `seq let v = u` writes u = 10; `let q = &w; *q <- 10` also misses w).
+    // Redirect only reads of the trigger, as seqq's Captures mode does.
     let mut visible: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
     if let Some((n, _)) = &trigger_bind {
         visible.insert(n.clone(), ArcStr::from(trig_cell.as_str()));
     }
     let aborted = format_compact!("seqab{id}");
+    // CR claude for eric: [style] Compile-time strings are allocated on every
+    // lowering: `ArcStr::from("e")` here, "Idle" (below, pc_type, idle_of via
+    // variant/pat_variant), "x" (lambda_sampling), "clock"/"flush"
+    // (desugar_queued). Use `literal!`. Also unpooled scratch: `cells`
+    // (CarriedBinds::new) and `run_names` in desugar_queued.
     let err_bind = ArcStr::from("e");
     let catch_node = {
         let reset = connect(pos, pc.as_str(), variant(pos, "Idle"));
@@ -415,6 +446,13 @@ fn is_try(e: &Expr) -> bool {
 /// a name the arm bound starts the next arm, where the name is its
 /// carried cell. An arm lowers to nested selects, so a run is cut at
 /// the parser's nesting limit.
+// CR claude for eric: [bug] A call handed `&b` can write `b` through it, but
+// `refs` only feed `rebinds`, so the write is never pending: `set(&b, 5); let
+// s = b` puts both in one arm and s reads the old b (probe: 0), while the same
+// write spelled `let r = &a; *r <- 5; let s = a` ends its arm (probe: 5). An
+// opaque statement's refs should count as pending writes. The same hole for a
+// closure that writes a captured variable (`put(5); let s = b`, probe: 0) is a
+// design question: seq_blocks.md §5 treats a call as a reader only.
 fn split_arms(stmts: &[&Expr]) -> LPooled<Vec<usize>> {
     let mut ends: LPooled<Vec<usize>> = LPooled::take();
     let mut pending: LPooled<AHashSet<ArcStr>> = LPooled::take();
@@ -532,6 +570,11 @@ impl Machine<'_> {
         sink: &Sink,
         visible: &AHashMap<ArcStr, ArcStr>,
     ) -> Result<()> {
+        // CR claude for eric: [readability] `solo` is matched through
+        // `solo.map(|s| &s.kind)`, then `solo.unwrap()` and an `unreachable!`
+        // let-else re-match the same kind in each arm. Match `group` as
+        // `[stmt]` and then `&stmt.kind` (with `ExprKind::Bind(b)` binding the
+        // try via a nested pattern) and every unwrap goes away.
         let solo = match group {
             [stmt] => Some(*stmt),
             _ => None,
@@ -694,6 +737,10 @@ fn desugar_queued(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         body: body.clone(),
     }
     .to_expr(pos);
+    // CR claude for eric: [readability] `names` (capture -> cell map) is
+    // shadowed by the fold accumulators below that are also called `names`,
+    // and `written` is first a set of cell names then a set of bind ids.
+    // Distinct names (`cell_of`, `written_cells`, `written_ids`) read better.
     let mut captures =
         body.fold(LPooled::<IndexMap<_, _>>::take(), &mut |mut caps, e| {
             if let ExprKind::Ref { name } | ExprKind::Connect { name, deref: true, .. } =
@@ -964,6 +1011,11 @@ fn expose_step_binds(
     })
 }
 
+// CR claude for eric: [structure] lower_group, lower_group_inner (8 params),
+// sink_writes (7) and until_arm (6) thread `pc`, `result`, `vname` and `cells`
+// by hand while `Machine` already holds exactly those. Make them `&Machine`
+// methods (or pass one Copy context) and the call sites shrink to the
+// arguments that vary.
 fn lower_group(
     stmts: &[&Expr],
     pc: &str,
@@ -1075,6 +1127,11 @@ fn stmt_value(e: &Expr, visible: &AHashMap<ArcStr, ArcStr>, pc: &str) -> Result<
 /// A `{ … }` statement: every statement issued at entry, lets local to
 /// the block, connects clocked to the entry, and the value the last
 /// statement's once every statement has produced.
+// CR claude for eric: [risk] lower_block -> stmt_value -> lower_block recurses
+// once per nested `{ .. }` statement with no ensure_sufficient (every other seq
+// walk has one); depth is bounded only by the parser limit, which an embedder
+// may raise (set_max_nesting), and deep_nesting.rs has no nested-block-in-seq
+// shape. Guard stmt_value like lower_group.
 fn lower_block(
     spec: &Expr,
     exprs: &[Expr],
@@ -1082,6 +1139,8 @@ fn lower_block(
     visible: &AHashMap<ArcStr, ArcStr>,
 ) -> Result<Expr> {
     let pos = spec.pos;
+    // CR claude for eric: [dead] Stripping a trailing NoOp is redundant: the
+    // loop below `continue`s on NoOp anyway (and formats `v` before it does).
     let stmts = match exprs {
         [body @ .., Expr { kind: ExprKind::NoOp, .. }] => body,
         _ => exprs,
@@ -1254,6 +1313,10 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
 /// Whether a step produces later rather than standing as a level: it
 /// holds a call, or a nested seq, whose result cell stands from its
 /// previous run.
+// CR claude for eric: [perf] has_call clones the matching Expr only to test
+// `is_some()`, keeps folding after the first hit, and is re-run on every `?`
+// subtree by rewrite_with_inner's Qop arm (quadratic over nested `?`). A
+// short-circuiting bool walk over for_each_child does it without either cost.
 fn has_call(e: &Expr) -> bool {
     find_outside_lambdas(e, |x| {
         matches!(x.kind, ExprKind::Apply(_) | ExprKind::Seq { .. })
@@ -1326,6 +1389,13 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     )
 }
 
+// CR claude for eric: [bug] A `let rec` binds its name inside its own value, but
+// shadow_step runs only after the value is rewritten (also lower_block's Bind
+// arm: `stmt_value` before `vis.remove`), so the recursive call is redirected
+// to the outer carried cell or capture. probe: `let f = |n| n * 100; until
+// true; let r = { let rec f = |n| select n { 0 => 0, n => f(n - 1) + 1 };
+// f(3) }` gives 201, expected 3; under seqq with an outer `let k = 5` the
+// same shape fails "expected fn not i64". Shadow a rec pattern's names first.
 fn shadow_step(e: &Expr, map: &mut AHashMap<ArcStr, ArcStr>) {
     match &e.kind {
         ExprKind::Bind(b) => b.pattern.with_names(&mut |n| {
@@ -1339,6 +1409,15 @@ fn rewrite_with(e: &Expr, map: &AHashMap<ArcStr, ArcStr>, mode: Rewrite<'_>) -> 
     ensure_sufficient(|| rewrite_with_inner(e, map, mode))
 }
 
+// CR claude for eric: [structure] CLAUDE.md says the seq rewrite rides
+// for_each_child/map_children; it rides map_children only for the kinds it
+// does not name, and rebuilds ten kinds by hand for scoping (Select copies the
+// Pattern and patches `guard`, so a new expression field on Pattern would be
+// skipped here silently). The closing `Expr { .. }` literal repeats
+// map_children's and Expr::new's. A child visitor that hands each child with
+// the names it binds (pattern, params, catch bind, rec) lets this ride one
+// enumeration, and would have fixed the `let rec` scoping below by
+// construction.
 fn rewrite_with_inner(
     e: &Expr,
     map: &AHashMap<ArcStr, ArcStr>,
@@ -1386,6 +1465,13 @@ fn rewrite_with_inner(
                 handler: stmts(&t.handler, with_map),
             }))
         }
+        // CR claude for eric: [bug] A nested seq's `abort`/`flush` are rewritten
+        // with `rewrite` (the outer step's Issue mode), so a call in them is
+        // issued once per OUTER entry over a frozen argument snapshot and
+        // guarded, instead of reading everything live (seq_blocks.md §9).
+        // probe: inside a step, `seq abort(stop(cancel)) { wait 200ms }` with
+        // `cancel` flipping at 50ms never aborts; the same seq at top level
+        // does. Use `mode.deferred()` for abort/flush; decide the trigger too.
         ExprKind::Seq { queued, trigger, abort, flush, body } => {
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));
             let mut inner = scope(map);
@@ -1635,6 +1721,11 @@ fn pat_last(n: usize, name: &str) -> Pattern {
     }
 }
 
+// CR claude for eric: [risk] Nothing here pins the rewrite's scoping (a `let
+// rec`, select binds, lambda params, a catch bind, the trigger's name as a
+// write target or `&` operand, a nested seq's clauses): each of those bugs
+// above lowers without error. A table of `rewrite_with(parse(..), map)` ->
+// expected printed form would pin them cheaply.
 #[cfg(test)]
 mod test {
     use super::*;

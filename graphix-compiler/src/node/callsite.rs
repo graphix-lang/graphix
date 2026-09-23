@@ -1,3 +1,9 @@
+// CR claude for eric: [style] `crate::image` is imported in two `use` lines and
+// apart from the `crate::{..}` group; many repeated items are spelled in full
+// in the body: `compact_str::format_compact!` (4x), `crate::FnArgIdentity`,
+// `crate::node::coretraits::CoreTrait`, `crate::perfdbg::*`, `crate::dbgenv::*`,
+// `std::mem::replace` (`mem` is imported), `smallvec::SmallVec` (imported),
+// `std::sync::atomic::Ordering::Relaxed` (imported). Group and import them.
 use super::{NOP, Nop, WakeBit, bind::Ref, compiler::compile};
 use crate::image::ImageBuf;
 use crate::image::{
@@ -117,6 +123,12 @@ fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     }
 }
 
+// CR claude for eric: [readability] the name hides what this does: a user def's
+// `check` is always None, so it only re-runs a BUILTIN's shared check Apply at
+// this site's type (last writer wins on that shared state), rebuilding it when
+// `check == None` is read as "restored from an image". It also passes `&mut []`
+// to an Apply built over faux args and holds the `check` lock across
+// `typecheck1`. Name it for the builtin check and make "restored" explicit.
 fn finalize_lambda<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     id: LambdaId,
@@ -197,6 +209,12 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     },
 }
 
+// CR claude for eric: [structure] `ftype` duplicates `Callee::Static`'s
+// `resolved_ftype` (`refresh_static_ftype` must write both), and for a self-call
+// site `instance` names the ENCLOSING instance while the site binds a fresh one
+// at runtime; undocumented either way. It is also not imaged for an unbound
+// callee: a self-call site decodes with `static_target == None` (image_decode's
+// CALLEE_UNBOUND arm), so cold and warm nodes differ.
 #[derive(Debug, Clone)]
 pub(crate) struct StaticCallTarget {
     pub definition: LambdaId,
@@ -252,6 +270,8 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(crate) args: ArgMap<R, E>,
     pub(super) arg_refs: Vec<Node<R, E>>,
     pub(crate) callee: Callee<R, E>,
+    // CR claude for eric: [dead] only read in `bind`, right after it is set there;
+    // a local does it. As a field it goes stale when `take_apply` clears the callee.
     pub(super) callee_is_builtin: bool,
     pub(crate) static_target: Option<StaticCallTarget>,
     /// A trait call over a union self type lowered to a select, one
@@ -261,6 +281,11 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
+    // CR claude for eric: [structure] three fields that must agree ("Some iff
+    // is_self_tail_call"), and `callee_lambda_id` is always
+    // `static_target.definition` (`mark_tail_sites` requires it). One
+    // `OnceLock<Box<[BindId]>>` makes the bad states unrepresentable and takes
+    // two mutex locks off `update_call`'s path.
     /// Set by `analysis::analyze` when this is a tail-position self-call in
     /// a sync tail-recursive body; `update` then stashes its args in
     /// `ctx.pending_tail_call` instead of dispatching.
@@ -341,6 +366,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.callee.apply().map(|a| a.view())
     }
 
+    // CR claude for eric: [dead] `callee_apply` and `resolved_apply_mut` have no
+    // callers in either repo, and `resolved_apply_mut` is the only user of
+    // `Apply::view_mut`/`ApplyViewMut` (lib.rs), so that whole chain goes too.
     /// The resolved callee as a raw `&dyn Apply`.
     pub fn callee_apply(&self) -> Option<&dyn Apply<R, E>> {
         self.callee.apply()
@@ -367,10 +395,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         args: &TArc<[(Option<ArcStr>, Expr)]>,
         f: &TArc<Expr>,
     ) -> Result<Node<R, E>> {
+        // CR claude for eric: [bug] both refusals here (`reject_dead_variadic_call`,
+        // and `compile_apply_args`'s duplicate label) carry no position: nothing
+        // above `compile` wraps. Probe: `f(#a: 1, #a: 2, y)` and `str::concat()`
+        // report no line/column, so the LSP cannot place them. `.at(&spec)` both.
         reject_dead_variadic_call(ctx, scope, f, args)?;
         let fnode = compile(ctx, flags, (**f).clone(), scope, top_id)?;
         let spec = TArc::new(spec);
         let args = compile_apply_args(ctx, flags, scope, top_id, args)?;
+        // CR claude for eric: [structure] all 19 fields are spelled out here, in
+        // image_decode and in genn.rs `apply`; a new field must be added three
+        // times. One constructor taking the varying parts.
         let site = Self {
             slept: WakeBit::default(),
             spec,
@@ -395,6 +430,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(Node::new(site))
     }
 
+    // CR claude for eric: [risk] builds a `Ref` without `ctx.rt.ref_var`, yet
+    // `Ref::delete` unrefs it and `Ref::image_decode` registers it, so a warm
+    // session's `by_ref` holds entries for arg ids a cold one never had. Harmless
+    // only while no one sets an arg id through the runtime; register it (or give
+    // `Ref` a constructor that owns the registration).
     fn make_ref(&self, id: BindId, typ: Type, spec: TArc<Expr>) -> Node<R, E> {
         Node::new(Ref {
             spec,
@@ -440,6 +480,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let mut flags = flags;
         flags.remove(CFlag::WarnUnhandled);
         self.clear_prepared_bind(ctx);
+        // CR claude for eric: [structure] the formal-index → `ArgKey` walk is
+        // hand-rolled here, in typecheck0, register_fn_params, take_operands and
+        // emit_clif, and three of them get it wrong (see the CRs there). One
+        // helper. Here the node's typ/spec fallback is also written three times,
+        // and the positional search loop implies gaps `compile_apply_args` never
+        // makes (typecheck0 bails at the first miss).
         let mut pos_idx = 0;
         for (i, farg) in f.typ.args.iter().enumerate() {
             if let FnArgKind::Labeled { name, has_default: default } = &farg.kind {
@@ -487,6 +533,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         // signature, so an omitting site infers from it.
                         wrap!(default_node, default_node.typecheck0(ctx))?;
                         let typ = default_node.typ().clone();
+                        // CR claude for eric: [bug] `i` indexes the DEFINITION's
+                        // args but is used on the site's signature; a declared
+                        // type listing labeled args in another order checks the
+                        // default against the wrong parameter. Probe:
+                        // `let f: fn(?#b: i64, ?#a: string, x: i64) -> string =
+                        // |#a: string = "s", #b: i64 = 2, x: i64| ..; f(1)` is
+                        // refused "i64 does not contain string". Look up by name.
                         if let Some(site) = self.ftype.as_ref() {
                             if let Some(sarg) = site.args.get(i) {
                                 wrap!(
@@ -643,6 +696,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         }
+        // CR claude for eric: [structure] this repeats prepare_bind's check of each
+        // default against the site parameter (by name here, by index there), and
+        // the `ids().len() == 1` gate is unexplained. Keep one check, by name.
         // Runs after static resolution replaced the Nop placeholders with
         // the compiled defaults; a dynamic site's Nops make it vacuous.
         if ftype.lambda_ids.ids().len() == 1 {
@@ -697,6 +753,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             BindMode::Static { instance: &instance_ftype, site: &site_ftype },
         )?;
         let instance_ftype = apply.typ().as_ref().clone();
+        // CR claude for eric: [risk] suspected: if this check fails the built apply
+        // is dropped without `delete`, so its body's `ref_var`s and env binds stay
+        // behind in a REPL/LSP session that outlives the error (also resolve_static
+        // when its typecheck fails with the apply installed).
         // `site_ftype` is a deep clone: the instance's inferred return
         // must be unified back into the site's live rtype cell.
         if let Some(site_ft) = self.ftype.as_ref() {
@@ -723,6 +783,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             crate::perfdbg::BIND_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         let setup_span = crate::perfdbg::span(&crate::perfdbg::SETUP_NS);
+        // CR claude for eric: [dead] suspected: the defaults and the callee both run
+        // under the init view below, where a standing read is already Fired, so
+        // these primed FIRED entries add nothing a plain read would not give. If
+        // so, drop the closure parameter threaded through prepare_bind.
         // Prime each fresh default's external refs so the bound body
         // sees outer values on its first update in this cycle.
         let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
@@ -746,6 +810,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         self.callee_is_builtin = matches!(apply.view(), ApplyView::BuiltIn);
         self.callee = Callee::DynamicBound { def: fv, apply };
+        // CR claude for eric: [dead] a remnant of the deleted `gate_tainted_args`
+        // ("the gate" no longer exists). At depth 0 it changes nothing: update_call
+        // stored the same FRESH_BOTTOM stamped this cycle, which the arg ref then
+        // reads as Delivered. In a frame it exposes the pre-frame store value, a
+        // ride over a bottom. Delete it.
         // The publish loop ran before the callee was known; retract the
         // poisoned deliveries the gate would have silenced.
         if self.callee_is_builtin {
@@ -971,6 +1040,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         self.resolve_static(ctx, def)
     }
 
+    // CR claude for eric: [risk] the identity is a list in SOURCE order (labels
+    // as written, omitted defaults appended), not keyed by parameter: `f(#a: g,
+    // #b: h, x)` and `f(#b: h, #a: g, x)` are different instantiations, while
+    // `#a: g, #b: h` and `#b: g, #a: h` compare equal. Key it by `ArgKey`.
     /// This site's instantiation identity ([`crate::FnArgIdentity`]): per
     /// argument, the source lambda it resolves to (a literal is its own
     /// source; a `Ref` goes through `bind_to_lambda`; a `<-` target is
@@ -1017,6 +1090,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let Some(id) = g.args().get(i).and_then(|p| p.single_bind_id()) else {
                 continue;
             };
+            // CR claude for eric: [bug] `i` is the formal index, used here as a
+            // POSITIONAL index: after a labeled parameter each fn param is paired
+            // with the next positional arg, and a labeled fn param never registers.
+            // Probe: `let apply2 = |#k = 0, f: fn(x: i64) -> i64, g: fn(x: i64) ->
+            // i64| f(k) + g(k) * 100; apply2(|x| x + 1, |x| x + 2)` prints 202 on
+            // both engines (f statically bound to g's lambda); expected 201.
             let Some(arg_node) = self.arg_positional(i) else { continue };
             match arg_node.view() {
                 NodeView::Lambda(l) => {
@@ -1063,6 +1142,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
     }
 
+    // CR claude for eric: [structure] trait dispatch and its lowerings
+    // (resolve_trait_call through retarget, ~270 lines) sit in the call-dispatch
+    // file; they belong beside node/traits.rs and coretraits.rs, with CallSite
+    // exposing only take_operands/install_lowered/retarget.
     /// Resolve a trait method call to an implementation by the self
     /// argument's type. An open self type is an error outside a
     /// definition gate; a union self type lowers to a select.
@@ -1186,6 +1269,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     ArgKey::Positional(p)
                 }
             };
+            // CR claude for eric: [bug] `self_pos` is the method's FORMAL self index
+            // (`TraitMethod::self_index` counts labeled params) but is compared
+            // with a positional counter, so a labeled param before `self` names
+            // the wrong operand `#s`. Probe: `val show: fn(#pre: string, self, n:
+            // i64) -> string` over `x: [A, B]` is refused "[A, B] does not contain
+            // i64" (it dispatches on `n`); without `#pre` it works. `self_name` is
+            // always "#s" at both callers.
             let is_self = label.is_none() && Some(positional - 1) == self_pos;
             let name: ArcStr = if is_self {
                 self_name.clone()
@@ -1240,6 +1330,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let (operands, names) = self.take_operands(None, arcstr::literal!("#s"))?;
         let pos = self.spec.pos;
         let ori = self.spec.ori.clone();
+        // CR claude for eric: [structure] this synthesized-`Expr` closure is copied
+        // in lower_trait_union and bind.rs `lower_over_operands`; one constructor
+        // (`Expr::synth(&spec, kind)`) for all three.
         let mk = |kind: ExprKind| Expr {
             id: ExprId::new(),
             ori: ori.clone(),
@@ -1449,12 +1542,22 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         let mut arg_fired = false;
+        // CR claude for eric: [perf] a Dynamic callee captures (clones) every arg
+        // production every cycle though `prods` is read only on a rebind, and the
+        // fnode's value is cloned every cycle even for a Static callee that
+        // discards it. Every recursion level is a DynamicBound site.
         let capture_prods = self.is_self_tail_call.load(Ordering::Relaxed)
             || match &self.callee {
                 Callee::Static { first_update, .. } => *first_update,
                 _ => true,
             };
         let mut prods: SmallVec<[(BindId, TagValue); 4]> = SmallVec::new();
+        // CR claude for eric: [structure] the rule for publishing a production
+        // into a bind id (fired → store + overlay, fresh bottom → store bottom,
+        // wake → standing refresh, frame → overlay only) is written here, in
+        // GXLambda::update, in bind()'s default loop and in seed_quiet_arg, and
+        // the copies already disagree (the frame-bottom hole below exists in two
+        // of them). One helper both nodes call.
         for arg in self.args.values_mut() {
             if let Some(ref mut node) = arg.node {
                 let tv = node.update(ctx, event);
@@ -1494,6 +1597,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         TagValue::stale(tv.value_cloned())
                     };
                     ctx.rt.store_insert_standing(arg.id, standing);
+                // CR claude for eric: [bug] a QUIET BOTTOM arg in a frame is not
+                // published, so the arg ref reads through to the store's pre-frame
+                // value and the callee rides it. Probe (--no-fusion vs JIT): `let rec
+                // f = |n, x| select n { 0 => g(x), n => f(n - 1, x) }` with g = |y|
+                // y + 1, x = 5 / b; after g(5) ran at depth 0 and x went ⊥, a later
+                // n = 2 prints 6 in the node-walk, nothing in the JIT (the inline
+                // twin `0 => x + 1` prints nothing). Publish a stale bottom here.
                 } else if ctx.frame_depth > 0 && !tag.is_bottom() {
                     // In a frame the store holds the pre-frame value; publish
                     // the frame's value on the cycle-scoped overlay, stale.
@@ -1586,6 +1696,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                                     &mut set,
                                 ) {
                                     Ok(()) => true,
+                                    // CR claude for eric: [bug] a failed bind has
+                                    // already deleted the old callee, yet the site
+                                    // rides its last value, and it retries (and
+                                    // logs) every cycle. Probe: `f <- g` where f:
+                                    // fn(?#a: i64, x: i64) and g = |#a: i64, x| a
+                                    // * x prints the old `f(10)` = 11 each cycle
+                                    // and logs "BUG: in bind missing required
+                                    // argument a" each cycle. Bottom, and log once.
                                     Err(e) => {
                                         error!(
                                             "{}: binding the callee failed: {e:#}",
@@ -1600,6 +1718,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
         };
+        // CR claude for eric: [bug] on a REBIND `prods` still holds the previous
+        // callee's default-arg ids, which clear_prepared_bind just removed from
+        // `self.args` and the store; `is_default` is then false and
+        // seed_quiet_arg re-inserts a standing store entry for a dead id. A site
+        // whose callee alternates between lambdas with labeled defaults leaks one
+        // store entry per rebind. Skip ids no longer in `self.args`.
         if bound {
             for (id, tv) in prods.iter() {
                 let tag = tv.tag();
@@ -1720,6 +1844,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let mut bound: Vec<BindId> = refs.bound.iter().copied().collect();
             refed.sort();
             bound.sort();
+            // CR claude for eric: [risk] the summary keeps `refed` and `bound` but
+            // not `Refs::triggering`, so an imaged site answers `refs` differently
+            // from its materialized self (select's `scrutinee_inputs` reads
+            // `triggering`). Also `Ok(x?)` below is just `x`.
             return match image::encoding(|e| {
                 e.instance_refs.insert(instance, (refed, bound))
             }) {
@@ -1764,6 +1892,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(())
     }
 
+    // CR claude for eric: [style] these three hand-roll an `Option` codec; derive
+    // `Pack` on `StaticCallTarget` and use `Option<StaticCallTarget>` as the
+    // `ftype` field beside it already does.
     fn static_target_len(&self) -> usize {
         1 + self.static_target.as_ref().map_or(0, |t| {
             t.definition.encoded_len() + t.instance.encoded_len() + t.ftype.encoded_len()
@@ -1911,6 +2042,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     let summary = Self::with_refs_summary(&**apply, |refed, bound| {
                         image::slice_len(refed) + image::slice_len(bound)
                     });
+                    // CR claude for eric: [readability] `9` is a varint bound for the
+                    // instance id, not its length; CLAUDE.md promises every
+                    // `encoded_len` under a session is exact. Use the id's
+                    // `encoded_len()` (the `ApplyView::Lambda` is at hand).
                     9 + summary.unwrap_or(0)
                 } else {
                     body
@@ -2139,6 +2274,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 };
                 self.ftype = Some(ftype.clone());
                 let ftype = self.ftype.as_ref().unwrap();
+                // CR claude for eric: [structure] three overlapping arity checks with
+                // three messages: this total count is implied by the unknown-label
+                // and positional-count checks below, and the loop after this block
+                // re-bails "missing required positional argument" for the case
+                // "missing required argument" already caught. The comment on the
+                // positional check narrates the redundancy. Keep the two precise ones.
                 if ftype.args.len() < self.args.len() && ftype.vargs.is_none() {
                     bail!(
                         "too many arguments, expected {}, received {}",
@@ -2265,6 +2406,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
+        // CR claude for eric: [structure] joining an error type into the catch
+        // bind's cell by a raw cell write, and the warn/error on an uncaught one,
+        // are copied from Qop (error.rs: typecheck0's cell write, check_unhandled);
+        // the copies already differ (Qop panics on a non-TVar bind, this skips it).
+        // One helper beside the catch.
         if let Some(t) = ftype.throws.deref_cloned() {
             match self.scope.dynamic.catch() {
                 Some((id, _)) => {

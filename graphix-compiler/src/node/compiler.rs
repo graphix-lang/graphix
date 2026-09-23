@@ -28,6 +28,14 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use enumflags2::BitFlags;
 
+// CR claude for eric: [style] `crate::DefAssertionKind` (5 uses), `crate::NodeView`
+// (3), `crate::bailat!` (3) and `smallvec::SmallVec` are spelled in full below;
+// import them with the `crate::{..}` group above.
+// CR claude for eric: [risk] "the one place graph construction descends" is not
+// true for modules: compile_module -> Block::compile / Module::compile_static ->
+// compile_block_children -> compile_module never passes through `compile`, so a
+// deep module tree (a resolver can serve one) recurses without
+// `ensure_sufficient` (CLAUDE.md "Stack discipline"). Guard compile_module too.
 /// Every per-kind `compile` recurses back through here, so this is the
 /// one place graph construction descends the program tree — and the one
 /// place it needs stack headroom for however deeply the program nests.
@@ -80,6 +88,10 @@ fn compile_inner<R: Rt, E: UserEvent>(
     }
     if !def_asserts.is_empty() {
         let node = compile_kind(ctx, flags, &spec, scope, top_id)?;
+        // CR claude for eric: [bug] the lambda is found only as `Bind(Lambda)` or a
+        // bare `Lambda`; parentheses hide it. Probe: `#[sync] let f = (|x| x + 1);`
+        // is refused "#[sync] annotates a function definition" (without parens it
+        // checks). See through ExplicitParens as Bind::compile's rec check does.
         let lid = match node.view() {
             crate::NodeView::Bind(b) => match b.node.view() {
                 crate::NodeView::Lambda(l) => l.lambda_id::<R, E>(),
@@ -89,6 +101,9 @@ fn compile_inner<R: Rt, E: UserEvent>(
             _ => None,
         };
         let Some(id) = lid else {
+            // CR claude for eric: [style] this match is the inverse of
+            // `DefAssertionKind::from_name`; give the enum a `name()` beside it so
+            // the spelling lives in one place.
             crate::bailat!(
                 spec,
                 "#[{}] annotates a function definition",
@@ -110,6 +125,8 @@ fn compile_inner<R: Rt, E: UserEvent>(
     compile_kind(ctx, flags, &spec, scope, top_id)
 }
 
+// CR claude for eric: [readability] stale doc: `compile_stmt` (lib.rs) calls this
+// directly, and `compile_kind` calls it for a dynamic module in value position.
 /// Compile a `mod` declaration. Only reachable from
 /// [`super::compile_block_children`] in statement position — the general
 /// `compile_kind` arm errors, since a module is not a value.
@@ -124,6 +141,13 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
 ) -> Result<Node<R, E>> {
     let enclosing = scope;
     let scope = scope.append(name);
+    // CR claude for eric: [structure] `predeclared_mods` is an ExecCtx global that
+    // only carries "my caller pre-registered this path" from compile_block_children
+    // to here (memory: no new ctx globals). Pass it as an argument; the value-
+    // position dynamic case then needs compile_block_children to call this itself.
+    // CR claude for eric: [bug] this `bail!` and the Unresolved one below carry no
+    // ErrorSite. Probe: a file with `mod m;` twice reports "duplicate module
+    // definition m" with no position (the LSP cannot place it). Use `bailat!`.
     if !ctx.predeclared_mods.remove(&scope.lexical)
         && ctx.env.modules.contains(&scope.lexical)
     {
@@ -149,6 +173,11 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
         }
         ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
             ctx.env.modules.insert_cow(scope.lexical.clone());
+            // CR claude for eric: [bug] `spec.ori` is the DECLARING file, so an error
+            // in the module body is framed "in file main.gx" above its real "at: ..
+            // m.gx" site (probe: a bad typedef in m.gx). The module's own origin is
+            // `exprs.first().ori`, as `def_ori` above uses. Block::typecheck0/1 do
+            // the same with their spec (node/mod.rs).
             let res =
                 Block::compile(ctx, flags, spec.clone(), &scope, top_id, true, exprs)
                     .with_context(|| spec.ori.clone())?;
@@ -235,6 +264,11 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Struct(StructExpr { args }) => {
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
+        // CR claude for eric: [bug] these refusals (and Catch below) `bail!` with no
+        // ErrorSite. Probe: `let x = (use array::map);` reports "a use declaration
+        // is not an expression" with no position at all. Use `bailat!(spec, ..)`,
+        // and one helper for the five copies of the message (Catch puts `spec.pos`
+        // in its text instead).
         // Declarations (`use`, static `mod`, `type`, `trait`, `impl`) carry
         // no value and are compiled in statement position only; a dynamic
         // module produces a real `[error, null]` value, so it is an expression.
@@ -305,6 +339,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Seq { .. } => {
             let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
+            // CR claude for eric: [structure] the compiler library prints to stdout,
+            // which is the language server's transport; hand the lowered text to
+            // the embedder (a sink on ExecCtx or the Ide) and let the CLI print it.
             if flags.contains(CFlag::ExpandSeq) {
                 println!("// seq at {}\n{}\n", spec.pos, lowered.to_string_pretty(80));
             }
@@ -355,6 +392,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Not { expr } => {
             Not::compile(ctx, flags, spec.clone(), scope, top_id, expr)
         }
+        // CR claude for eric: [structure] the next 16 arms (Eq..CheckedMod) are one
+        // line of one shape: `$Op::compile(ctx, flags, spec.clone(), scope, top_id,
+        // lhs, rhs)`. A local macro_rules! listing (ExprKind variant, node type)
+        // pairs would make a new operator one entry instead of four lines.
         ExprKind::Eq { lhs, rhs } => {
             Eq::compile(ctx, flags, spec.clone(), scope, top_id, lhs, rhs)
         }

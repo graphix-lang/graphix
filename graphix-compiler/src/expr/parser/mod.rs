@@ -25,6 +25,11 @@ use combine::{
     },
     token, unexpected_any, value,
 };
+// CR claude for eric: [style] `CompactString` is imported yet spelled
+// `compact_str::CompactString` in comment_line; `compact_str::format_compact!`
+// (fname, duration_unit_note) wants an import; `combine::parser::char::spaces()`
+// is written out 7 times though the local `spaces()` is the same parser; and
+// `netidx_value` is imported in two statements below.
 use compact_str::CompactString;
 use escaping::Escape;
 use netidx_core::path::Path;
@@ -68,6 +73,9 @@ mod test;
 mod patternexp;
 use patternexp::{pattern, structure_pattern};
 
+// CR claude for eric: [style] A one-line wrapper used only by GRAPHIX_ESC
+// (`Some(char::is_control)`), and GRAPHIX_ESC's escape list repeats
+// GRAPHIX_MUST_ESC's four chars; derive one from the other.
 pub(super) fn escape_generic(c: char) -> bool {
     c.is_control()
 }
@@ -93,6 +101,10 @@ pub static TYPE_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     ])
 });
 
+// CR claude for eric: [dead] PATH_KEYWORDS is never read, and "?" and "_" here
+// can never reach a lookup: `ident` only yields words that start with a letter.
+// Five overlapping keyword sets are hard to audit; one (word, class) table
+// could derive them.
 pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
     AHashSet::from_iter(
         [
@@ -166,6 +178,10 @@ where
     combine::parser::char::spaces()
 }
 
+// CR claude for eric: [perf] Builds a String char by char, then copies it into
+// an ArcStr; on a RangeStream `take_while(|c| c != '\n')` yields the &str for
+// one allocation. Same in doc_comment (plus a `join`), raw_string (content and
+// a String just to count `#`s) and interpolateexp's triple_run.
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`.
 fn comment_line<I>() -> impl Parser<I, Output = ArcStr>
@@ -682,6 +698,11 @@ where
             .map(|_| ModPath::from([literal!("self")])),
         (path_root(), sep_by1(choice((fname(), typname())), string("::"))).then(
             |(mut root, mut v): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
+                // CR claude for eric: [bug] `ident` classes a caseless letter (CJK)
+                // as lowercase but this test needs `is_lowercase()`, so a name that
+                // binds cannot be read: probe `let 名 = 1; println(名)` binds, then
+                // fails to parse at `名`. One "value name" predicate; typexp::typath
+                // has the mirror test.
                 let terminal_is_value = v
                     .last()
                     .and_then(|s| s.chars().next())
@@ -706,6 +727,10 @@ where
     (position(), valpath()).map(|(pos, name)| ExprKind::Ref { name }.to_expr(pos))
 }
 
+// CR claude for eric: [bug] This fold is not capped by max_nesting, and it runs
+// whenever `attempt(arith(true))` in expr() fails, including when arith refused
+// an over-deep postfix chain: `x$$…` (1001 `$`) parses though `x.0.0…` (1001)
+// is refused, and 3000 `$` aborts `--check` with a stack overflow (probes).
 fn qop<I, P>(p: P) -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -760,6 +785,11 @@ where
         })
 }
 
+// CR claude for eric: [bug] `Until` is built outside expr(), so it never gets
+// its end (NOWHERE; the expr_spans corpus has no `until`) and nothing above it
+// is captured: a `// comment` or `#[attr]` line above `until x;` in a seq body
+// is a parse error at `until` (probe), though comments above a seq statement
+// are legal. Run it under leading_decorations and give it `.ending`.
 fn until_expr<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -822,6 +852,12 @@ where
         .map(Arc::new)
 }
 
+// CR claude for eric: [structure] The head takes any `;`-list of triggers,
+// aborts and flushes and `seq()` checks the order after the body parsed, so a
+// misordered head loses its message (probe `seq t; flush(t); abort(t) { .. }`
+// says "could not continue" at the closing brace) and a head with no body
+// slurps every following statement as a trigger (the error lands at EOF).
+// Parse `[trigger] [; abort(..)] [; flush(..)]` in order; SeqHead goes.
 /// The `;`-separated head of a seq: `[trigger][; abort(e)][; flush(e)]`.
 fn seq_head<I>() -> impl Parser<I, Output = LPooled<Vec<SeqHead>>>
 where
@@ -949,6 +985,10 @@ where
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
 }
 
+// CR claude for eric: [structure] "unique names, sorted by name" is written three
+// times (here, typexp::structtyp, patternexp::struct_pattern), each building an
+// AHashSet and sorting with `sort_by_key(|..| n.clone())`, an ArcStr clone per
+// comparison. One helper: `sort_by` on the name, then a `windows(2)` check.
 /// The `name: value, name, ..` field list of a struct literal or a
 /// functional update: names unique, sorted by name; decorations above a
 /// field attach to its value.
@@ -1152,6 +1192,10 @@ where
                     attempt(
                         token('_').skip(look_ahead(choice((sptoken(')'), sptoken(':'))))),
                     )
+                    // CR claude for eric: [structure] The `with(e)` bind is a bare
+                    // ArcStr (and `ArcStr::from("_")` allocates for a literal) where
+                    // `catch(e)` binds a `Name`: a declared name with no position, so
+                    // the LSP cannot place it. TryWithExpr.bind wants a Name.
                     .map(|_| ArcStr::from("_")),
                     fname(),
                 ))),
@@ -1229,6 +1273,13 @@ parser! {
                 attempt(lambda()),
                 attempt(connect()),
                 attempt(arith(true)),
+                // CR claude for eric: [perf] Everything below re-lists a form arith
+                // already covers (`&`, `*`, parens, literal, reference), so it runs
+                // only after arith failed and re-parses its input: a failing paren
+                // nest parses its inside twice per level, `((…(1 +)…))` 16 deep
+                // takes 8s to fail (probe, doubling per level; 20 deep is minutes
+                // in the LSP). Keep only the cases arith cannot parse (`&|x| ..`),
+                // named; byref/deref duplicate arithexp's byref_arith/deref_arith.
                 byref(),
                 qop(deref()),
                 qop((position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
@@ -1243,12 +1294,21 @@ parser! {
     }
 }
 
+// CR claude for eric: [structure] Six entry points (parse, parse_sig, parse_one,
+// parse_fn_type, parse_type, parse_modpath) repeat one easy_parse /
+// note_error_pos / ParserContext block; only parse and parse_sig enter an
+// OriginScope and only three record the Parse phase. One generic runner.
+// parse_modpath also shares its name with resolver::parse_modpath.
 /// Parse one or more expressions followed by optional whitespace and eof.
 pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
     let _profile = profile::phase(Phase::Parse);
     let ori = Arc::new(ori);
     let _scope = OriginScope::enter(ori.clone());
     let mut r: LPooled<Vec<Expr>> = grow::parsing(&ori.text, || {
+        // CR claude for eric: [bug] The terminator is looked for before whitespace
+        // is skipped, so an empty file parses but "\n\n" is a parse error, and so
+        // is a .gxi holding one newline (parse_sig; probes). seq_stmts and
+        // do_block share it: `seq t {}` and `seq t { }` fail differently.
         sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
             ExprKind::NoOp.to_expr(pos).ending(pos)
         })

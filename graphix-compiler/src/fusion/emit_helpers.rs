@@ -101,6 +101,12 @@ impl_helper_arg! {
     f64 => &[AbiTy::F64];
     f32 => &[AbiTy::F32];
     arcstr::ArcStr => &[AbiTy::I64];
+    // CR claude for eric: [risk] Still the SysV-only seam
+    // design/helper_abi_portability.md rules out: a 16-byte struct by value is
+    // two registers only on SysV/AAPCS64, so the ten pair helpers stay wrong on
+    // Win64 and AArch64 works by coincidence. The module doc repeats the
+    // SysV claim and names `emit.rs`, now emit/jit.rs + emit/lower.rs. Apply the
+    // doc's plan: pairs in as two u64, out through an out-pointer.
     TagValue => &[AbiTy::I64, AbiTy::I64];
     DynCallRet => &[AbiTy::I64, AbiTy::I64];
 }
@@ -454,6 +460,8 @@ unsafe fn graphix_swallowed_error(
             if unhandled == 0 {
                 log::warn!("ignored error in {site} {e}")
             } else {
+                // CR claude for eric: [structure] a third spelling of the swallowed-error
+                // report (see the CR at node/error.rs on "in in"); one shared formatter.
                 log::error!("unhandled error in {site} {e}");
                 eprintln!("unhandled error in {site} {e}");
             }
@@ -546,6 +554,12 @@ unsafe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
 /// Call a builtin's registered `FastFn` directly. `args`/`n` is the
 /// call site's stack buffer of (disc, payload) pairs, borrowed. See
 /// [`fast_dispatch`] for the tag rules.
+// CR claude for eric: [risk] Runs arbitrary builtin code, external packages'
+// included, inside `extern "C"`: a panic there aborts the whole process under
+// fusion, while the same `fast_eval` on the node-walk unwinds into the runtime
+// task. One engine-dependent failure mode for any buggy fast fn. Wrap the call
+// in `catch_unwind` in `fast_dispatch` and turn a panic into a logged bottom
+// (or abort in both engines, deliberately).
 unsafe fn graphix_fastcall(
     fn_ptr: u64,
     args: u64,
@@ -606,6 +620,11 @@ unsafe fn fast_dispatch(
     let args_vec: &[Value] =
         unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
     let n = n as usize;
+    // CR claude for eric: [risk] With no args `all_stale` is false, so a
+    // zero-argument fast fn reports FIRED on every kernel run, where the node-walk
+    // treats an argument-less call like a constant (fires at init only). None
+    // exists today (the zero-arg sys builtins are Async); make n == 0 follow the
+    // init flag, or refuse it at discovery.
     let all_stale = n > 0 && stale_mask == u64::MAX >> (64 - n);
     let bottom =
         if all_stale { crate::Tag::STALE_BOTTOM } else { crate::Tag::FRESH_BOTTOM };
@@ -884,6 +903,10 @@ safe fn graphix_array_slice(src: TagValue, start: i64, end: i64, flags: i64) -> 
 
 /// Borrowed `Value::Null` test. Lowering inlines the disc compare; the
 /// helper stays registered for direct callers.
+// CR claude for eric: [dead] No caller emits it (there are no "direct callers"),
+// nor `graphix_string_buf_drop`. The latter is a hint of a leak: tuple/struct
+// literal and string-interpolation bufs are never put on `value_buf_stack`,
+// so an abort in a part (a callee's interrupt exit) leaks the buf (emit/nodes.rs).
 safe fn graphix_value_is_null(v: TagValue) -> u8 {
     let r = v.with_value(|v| matches!(v, Value::Null) as u8);
     std::mem::forget(v);
@@ -1192,6 +1215,9 @@ jit_helpers! { registry = collection_helpers;
 safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
     let v = tv.value();
     let arr =
+        // CR claude for eric: [risk] `to_array` truncates a malformed list where
+        // `list::len` says None, so this flatten and the node-walk can disagree on the
+        // same value (CR at node/collection.rs `to_array`).
         crate::node::collection::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
     va_bits(arr)
 }
@@ -1301,6 +1327,15 @@ pub unsafe fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf
 /// Free a per-activation block tree rooted at `vecptr` (one
 /// `Box<Vec<u64>>` per activation, children at `slots`). Iterative:
 /// the tree is as deep as the recursion was. Returns the blocks freed.
+// CR claude for eric: [bug] Frees each activation's Vec but not what the block
+// owns: the slot chains anchored in it (the body's `SiteLayout::anchors`) and
+// callee self-block trees rooted in it; `SelfBlock` carries neither. Every shed
+// or dropped activation of a recursive kernel with a nested loop leaks its
+// chain. Probe: `let rec f = |k, a| select k { 0 => 0, _ =>
+// array::len(array::map(a, |r| array::map(r, |x| x + k))) + f(k - 1, a) }`
+// fused, depth alternating 200/1 per 1ms tick: VmRSS +29MB over 3500 ticks;
+// constant depth, or a single map, stays flat. Describe a block once (anchors +
+// self roots) and walk that here, in reclaim and in `free_blocks`.
 pub unsafe fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
     let mut freed = 0u64;
     let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
@@ -1319,6 +1354,11 @@ pub unsafe fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
 
 /// Live per-activation `SelfBlock` count (a test instrument for the
 /// reclaim).
+// CR claude for eric: [risk] A process-wide counter bumped on every activation
+// alloc/free in production, read by one test (lib_tests/lift.rs
+// `fused_recursion_sheds_unreached_blocks`) while other tests run in parallel
+// and move it too: a flaky pin with absolute thresholds. Count per Kernel (or
+// behind cfg(test)) and let the test read its own kernel's count.
 pub static LIVE_SELF_BLOCKS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
 
@@ -1372,6 +1412,13 @@ pub unsafe fn reclaim_self_block_tree(
 ///
 /// SAFETY: `words` are blocks laid out by `leaf`, whose anchors own
 /// their chains.
+// CR claude for eric: [bug] A per-slot block of a recursive callee also roots
+// that callee's activation trees, but `SiteLeaf` lists only anchors, so a
+// shrinking loop (and `Kernel::drop`) leaks every dropped slot's tree. Probe:
+// `let rec f = |k: i64| -> i64 select k { 0 => 0, _ => k + f(k - 1) }`;
+// `#[native] array::map(src, |x| f(x % 20))` with `src` alternating 50 and 1
+// elements per 1ms tick: VmRSS 62MB -> 97MB over 2500 ticks, flat when `src`
+// stays at 50. Same fix as `free_self_block_tree`.
 unsafe fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     for block in words.chunks_exact(leaf.stride as usize) {
         for a in leaf.anchors.iter() {
@@ -1413,6 +1460,12 @@ fn slot_arcstr(v: Option<&Value>) -> arcstr::ArcStr {
 // Element reads return an owned clone (except the `_borrowed` variants),
 // so the source array keeps its own ref.
 
+// CR claude for eric: [structure] Six families of eleven near-identical per-prim
+// helpers (valarray_get_*, struct_get_*, variant_payload_*, abstract_get_*,
+// value_buf_push_*, string_buf_push_*), each differing only in the reader or
+// the Value ctor. One helper per family returning the widened u64 payload word
+// (the CLIF narrows, as the wrapper already does) removes ~55 fns, or a macro
+// per family at least stops the copy-paste.
 jit_helpers! { registry = elem_helpers;
 
 unsafe fn graphix_valarray_get_i64(bits: u64, idx: usize) -> i64 {
@@ -1664,6 +1717,9 @@ use std::cell::Cell;
 /// The trampolines' return: `word0` = the Value disc (tag in-band),
 /// `word1` = the Value payload word for every return type; the call
 /// site adapts it to its static type.
+// CR claude for eric: [readability] Named for the deleted DynCall dispatcher
+// (as is `GXDBG_DYNC`); it is a `TagValue`'s two words. Return `TagValue` (or
+// the out-pointer pair the portability plan wants) and drop the type.
 #[repr(C)]
 pub struct DynCallRet {
     pub word0: u64,
@@ -1689,6 +1745,12 @@ thread_local! {
 
     /// The active runtime's [`crate::Control`], set per cycle by
     /// `do_cycle`; null when no cycle is in flight.
+    // CR claude for eric: [risk] Suspected use-after-free: nothing resets it, so
+    // "null when no cycle is in flight" is false. After a runtime drops, the
+    // thread keeps a dangling `*const Control`, and a kernel run outside a cycle
+    // (`compile_callable` updates a freshly fused node in graphix-rt/src/gx.rs)
+    // reads it at its first loop head, or reads another live runtime's flag.
+    // Make it a scoped restoring guard around the cycle (or hold an Arc).
     pub static INTERRUPT_PTR: Cell<*const crate::Control> =
         const { Cell::new(std::ptr::null()) };
 
@@ -1752,6 +1814,9 @@ pub fn reset_jit_invocations() {
     JIT_INVOCATIONS.with(|c| c.set(0));
 }
 
+// CR claude for eric: [dead] `record_fuse_bail` has no caller, so this log is
+// always empty and `run!`'s FUSEBAIL line always prints nothing;
+// `FusionStats::failed` replaced it. Delete the log and the harness line.
 #[cfg(debug_assertions)]
 thread_local! {
     /// Per-thread log of fusion-bail tags (e.g. `node:Sample`,
@@ -1870,6 +1935,9 @@ pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -
 
 /// Run `f` against a fresh `?` delivery queue and return what it raised,
 /// in order; an enclosing invocation's queue is set aside and restored.
+// CR claude for eric: [perf] `mem::take` leaves a capacity-less Vec, so every
+// raising invocation allocates a fresh queue that `Kernel::update` then drops.
+// Hand back an `LPooled<Vec<..>>` (or reuse the outer's buffer).
 pub(crate) fn with_qop_raises<T>(
     f: impl FnOnce() -> T,
 ) -> (T, Vec<(*const crate::node::error::QopSite, Value)>) {

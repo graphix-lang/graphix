@@ -5,6 +5,10 @@
 //! element binding and dropping, pending-cleanup registration); the
 //! caller supplies the body as a closure over the [`BodyCx`].
 //!
+// CR claude for eric: [readability] A constraint from the emit.rs split (cadda57d),
+// not an invariant: detcheck needs the same CLIF across processes, not across
+// edits. It now argues against the dedups below (bind_elem's four hand-inlined
+// bind_local copies differ from it only in declaration order). Delete it.
 //! The emitted CLIF must stay instruction-for-instruction stable:
 //! preserve instruction, block-creation and variable-declaration order.
 
@@ -62,6 +66,12 @@ pub struct HofElem<'a> {
     pub leaves: &'a [(crate::BindId, usize, LeafShape)],
 }
 
+// CR claude for eric: [structure] LeafShape (with ValueLeafKind) is LocalKind
+// under another name, BoundElem is (LocalKind, ValueVar), and drop_owned_elem and
+// FoldAcc::drop_old re-dispatch what call::emit_drop_local already does. The
+// filter push match and the find take match re-derive push_field's and the
+// Value-pair rules per BoundElem. Bind elements as (LocalKind, ValueVar) and
+// reuse emit_drop_local / push_field.
 /// The shape of one `|(k, v)|` destructure leaf (see [`elem_leaves`]).
 #[derive(Clone, Copy, Debug)]
 pub enum LeafShape {
@@ -128,6 +138,10 @@ fn carry_disc(
 /// locals (a pending exit drops them) and are returned for the
 /// normal-path [`drop_owned_leaves`]. Each leaf disc carries
 /// `src_disc & mask`.
+// CR claude for eric: [style] bind_leaves, bind_elem and elem_leaves return fresh
+// Vecs per call (also `Vec::new()` for "no leaves"); a SmallVec or LPooled would
+// not allocate. Each leaf also formats an ArcStr name that nothing looks up
+// (leaves bind by BindId). The Value arm below is bind_local written out.
 fn bind_leaves(
     cx: &mut BodyCx,
     base_ptr: ClifValue,
@@ -427,6 +441,8 @@ fn finalize_buf(cx: &mut BodyCx, buf: ClifValue) -> Result<ClifValue> {
     Ok(cx.b.inst_results(call)[0])
 }
 
+// CR claude for eric: [readability] The `_push_arcstr` aside is a rejected
+// alternative, not an invariant; "string SSA is always owned" is the rule.
 /// Push a compiled field into a `graphix_value_buf`, choosing the
 /// helper by shape and `src`. Strings ignore `src`: string SSA is
 /// always owned and `_push_string` consumes it (`_push_arcstr` would
@@ -478,6 +494,11 @@ pub fn push_field(
 /// taints the whole HOF result but never the kernel. The loop fires
 /// iff a loop input fired and the evaluation produced an event
 /// ([`Self::apply`]).
+// CR claude for eric: [structure] `len` is set by every loop emitter right after
+// `new`, so its None arm in `apply` and the `expect` in exact_stale guard a state
+// that never occurs: take len in `new`. `apply`'s `srcs` is always one disc, and
+// result_also_fires / pass_through are set only by fold resp. filter+find: one
+// loop-kind enum instead of three setters.
 pub struct SlotFlags {
     taint: Variable,
     stale: Variable,
@@ -744,6 +765,10 @@ where
     let is_negative = cx.b.ins().icmp(IntCC::SignedLessThan, n_widened, zero);
     let n = cx.b.ins().select(is_negative, zero, n_widened);
     let max = cx.b.ins().iconst(types::I64, crate::node::MAX_ARRAY_INIT_LEN);
+    // CR claude for eric: [bug] Suspected diagnostic divergence: the node-walk
+    // logs "collection init size {n} exceeds the ... element limit"
+    // (IndexRange::select) and bottoms; the kernel bottoms silently. CLAUDE.md
+    // allows node-walk-only diagnostics for unchecked arith alone.
     let oversize = cx.b.ins().icmp(IntCC::SignedGreaterThan, n, max);
     // An over-limit count is bottom: taint the count's disc (so the
     // stored length and slot tables are kept, not reset to 0) but keep
@@ -802,6 +827,13 @@ where
     Ok((finalize_buf(cx, buf)?, flags, n_disc))
 }
 
+// CR claude for eric: [structure] The eight emit_*_loop functions repeat one
+// prologue (SlotFlags::new, adopt_owned_src, len/buf, init_counter,
+// open_slot_tables, header/body/exit blocks, interrupt check, mark, enter_loop,
+// bind_elem, body, exit_loop, close_slot_tables) and one epilogue (increment, the
+// three seals, switch to exit, emit_slot_truncates, finalize, drop_owned_src),
+// ~40 identical lines each. A loop-frame open/close pair would leave each emitter
+// only its per-element policy.
 pub fn emit_map_loop<'a, 'f, 'c, F>(
     cx: &mut BodyCx<'a, 'f, 'c>,
     arr: ArraySrc,
@@ -1211,6 +1243,9 @@ impl FoldAcc<'_> {
     fn carry_disc(&self, cx: &mut BodyCx, from_disc: ClifValue) -> ClifValue {
         match self {
             FoldAcc::Value { .. } => {
+                // CR claude for eric: [style] TAINT and STALE are imported; the
+                // `super::` paths and the bare tag-byte mask (tval's TAG_MASK) are
+                // noise.
                 const KEEP: i64 = !(0xFFu64 << 56) as i64 | super::TAINT | super::STALE;
                 cx.b.ins().band_imm(from_disc, KEEP)
             }
@@ -1420,6 +1455,11 @@ where
             (cx.b.use_var(*disc), cx.b.use_var(*payload))
         }
     };
+    // CR claude for eric: [bug] Once taken, the owned element lives only in
+    // result_*_var, on no cleanup list (env, value_buf_stack, owned_input_stack).
+    // A later iteration's abort (the per-iteration interrupt poll, an aborting
+    // callee in the predicate) jumps to pending_exit and leaks it. Same for
+    // find_map's taken value. Bind the result as an env local outside the loop mark.
     cx.b.def_var(result_disc_var, disc);
     cx.b.def_var(result_payload_var, payload);
     let one = cx.b.ins().iconst(types::I8, 1);

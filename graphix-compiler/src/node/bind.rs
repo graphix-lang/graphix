@@ -1,3 +1,8 @@
+// CR claude for eric: [style] use grouping: `crate::image::..` is split from the
+// `crate::{..}` group and `netidx_core::pack` is imported twice; items spelled in
+// full more than once below (`smallvec::SmallVec`, `super::read_var`,
+// `super::VarRead`, `super::coretraits::with_hooks`, `std::any::Any`,
+// `crate::dbgenv`) belong in these groups.
 use super::{
     WakeBit, collection::CollectionIntrinsic, pattern::StructPatternNode, place,
 };
@@ -50,6 +55,9 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
     operands: impl IntoIterator<Item = (ArcStr, Node<R, E>)>,
     body: Expr,
 ) -> Result<Node<R, E>> {
+    // CR claude for eric: [structure] this `mk` is copied in callsite.rs (twice)
+    // and traits.rs: an `Expr` at a given origin and position. It belongs in
+    // expr/mod.rs beside `ExprKind::to_expr`, which reads the thread origin.
     let mk = |kind: ExprKind| Expr {
         id: ExprId::new(),
         ori: spec.ori.clone(),
@@ -92,10 +100,18 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
         exprs: Arc::from_iter(children.iter().chain([&body]).map(|n| n.spec().clone())),
     });
     children.push(body);
+    // CR claude for eric: [risk] the operands `#s`/`#aN` are bound in the CALLER's
+    // scope, not a fresh block scope as every source `{ .. }` gets: they stay in
+    // `env.binds` there for good and a second lowering in that scope shadows the
+    // first. `scope.append_block(..)` for the operands and body would contain them.
     Ok(super::Block::new(false, children.into_boxed_slice(), bspec, scope.clone()))
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
+    // CR claude for eric: [structure] `single_bind_id` and `single_id` (below) are
+    // the same function twice. Both callers (flow.rs, module.rs check_sig) have
+    // already checked the pattern is `StructurePattern::Bind`, so each can be
+    // `self.pattern.single_bind_id()` (pattern.rs) and both of these go.
     /// The single `BindId` this binding introduces when the pattern
     /// binds exactly one name; `None` for destructuring patterns.
     pub(crate) fn single_bind_id(&self) -> Option<BindId> {
@@ -120,6 +136,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     ) -> Result<Node<R, E>> {
         let expr::BindExpr { rec, pattern, typ, value } = b;
         let (node, pattern, typ) = if *rec {
+            // CR claude for eric: [style] `!..is_some()` is `is_none()`; the loop
+            // below is `unparen` (this file); the lambda check `bail!`s with no site
+            // (probe: `let rec y = x;` reports "let rec may only be used for
+            // lambdas" with no position); "error {} can't be matched" reads oddly
+            // beside the other branch's "match error".
             if !pattern.single_bind().is_some() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
@@ -131,6 +152,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 Expr { kind: ExprKind::Lambda(_), .. } => (),
                 _ => bail!("let rec may only be used for lambdas"),
             }
+            // CR claude for eric: [bug] the rec annotation skips `rewrite_trait_args`,
+            // which the plain `let` applies. Probe: `let rec f: fn(x: Display) ->
+            // string = |x| "a";` is refused ("can't be matched by fn(x: Display) ->
+            // string") while the same line without `rec` checks. One annotation
+            // path for both branches.
             let typ = match typ {
                 Some(typ) => typ.scope_refs(&scope.lexical),
                 None => Type::empty_tvar(),
@@ -204,6 +230,15 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 ctx.env.poly_binds.insert_cow(id);
             });
         }
+        // CR claude for eric: [bug] the (scope, name) entry is never removed, not
+        // when this Bind is deleted nor when a later non-builtin `let` of the same
+        // name in the same scope shadows it, and that let inherits it. Probe:
+        // `let f = |@args: ..| -> Number 'core_sum; let f = |@args: i64| -> i64 42;
+        // println(f())` is refused "a sync variadic builtin with no data inputs
+        // never fires" (the second f alone prints 42); effect analysis and fusion
+        // read the same stale entry. Overwrite/remove the key here and in delete.
+        // CR claude for eric: [readability] `spec.kind` is re-matched for the
+        // BindExpr already destructured above: `pattern` and `value` are in hand.
         // Keyed by (scope, name), not BindId: sig and impl get
         // different ids for one builtin binding.
         if let ExprKind::Bind(be) = &spec.kind {
@@ -311,6 +346,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
         // persists in the store.
+        // CR claude for eric: [bug] the comment says a QUIET initializer, but the
+        // guard also swallows a genuine fire at a wake. Probe: in an arm that
+        // sleeps on odd n, `let x = y; x <- select n { 0 => 5, _ => never() }`
+        // with `y = n * 100` prints x = 5 at n = 2, 4, 6 although y fired 200, 400,
+        // 600 in those cycles; the never-sleeping twin prints 200, 400.. It exists
+        // because a constant initializer re-fires at every wake and would reset
+        // the target; that phantom fire is the root cause to fix, not this guard.
         // A connect target's value is its last write: at a wake a quiet
         // initializer republishes nothing over it, a standing bottom
         // (`let x = never()`) included.
@@ -322,6 +364,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 });
                 target
             };
+        // CR claude for eric: [readability] the trace re-derives the publish
+        // predicate without `wake_refresh`, so `publishing=` is false on exactly the
+        // wake refreshes it exists to debug. Compute `publish` once below and print
+        // that.
         if crate::dbgenv::gxdbg_letbind() {
             eprintln!(
                 "LETBIND {} tag={tag:?} val={:?} ever_published={} fd={} keep_connect_target_value={keep_connect_target_value} publishing={}",
@@ -460,6 +506,9 @@ pub struct Ref {
     pub id: BindId,
     pub(super) top_id: ExprId,
     pub(crate) resident: TagValue,
+    // CR claude for eric: [readability] `typecheck0` sets this before its exempt
+    // returns (a rec knot, a gate parameter), so it means "considered", not
+    // "minted"; a later typecheck0 of the same node never mints. Say which is meant.
     /// This occurrence's signature has been minted (see `typecheck0`).
     pub(crate) instantiated: bool,
 }
@@ -474,6 +523,11 @@ fn synthesized_bind_ref(name: &ModPath) -> Option<BindId> {
 }
 
 impl Ref {
+    // CR claude for eric: [structure] a Ref without its `ref_var` is a state this
+    // constructor makes representable and every caller must remember to close
+    // (compile's `#bind` path, callsite `retarget`, image_decode); take `ctx` and
+    // register here. `compile` also builds `Self` by hand instead of calling this,
+    // and the `allow(dead_code)` is stale (retarget uses it).
     /// Construct a `Ref` from resolved components. Does not touch the
     /// ExecCtx: the caller must register the reference with
     /// `ctx.rt.ref_var(id, top_id)`.
@@ -605,6 +659,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 self.resident.set(tv.clone())
             }
             Some(super::VarRead::Standing(tv)) => {
+                // CR claude for eric: [structure] this init-view rule is copied
+                // verbatim into Deref::update; one helper (`standing_view(ctx,
+                // event, tv) -> TagValue`) next to `read_var` keeps them one rule.
                 // Fresh under a genuine init view only: a wake-forced
                 // view reads a standing entry stale, since its value is
                 // a past event the graph already consumed. Frames force
@@ -932,6 +989,9 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                 PlaceStep::Index(n) => {
                     let tv = n.update(ctx, event);
                     moved |= tv.tag().triggers();
+                    // CR claude for eric: [bug] a u64 index above i64::MAX wraps
+                    // negative here and addresses from the end; same fix as the
+                    // CR at array.rs `array_index` (one shared index conversion).
                     let i = if tv.tag().is_bottom() {
                         None
                     } else {
@@ -1008,6 +1068,12 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                     mt.check_contains(&ctx.env, &cur)?;
                     vt
                 }
+                // CR claude for eric: [bug] this re-types `.0` for tuples only, while
+                // TupleRef also types it on an Error and an abstract payload. Probe:
+                // `type C = Abstract<i64>; let c = C(5); let r = &c.0;` is refused
+                // "expected tuple not C" though `c.0` compiles. The step rules
+                // restate StructRef/TupleRef/ArrayRef/MapRef typing and have
+                // drifted; share one rule per accessor.
                 PlaceStep::Tuple(i) => deref_typ!("tuple", ctx, &cur,
                     Some(Type::Tuple(ts)) => match ts.get(*i) {
                         Some(t) => Ok(t.clone()),
@@ -1023,6 +1089,10 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                             }
                         }
                     )?;
+                    // CR claude for eric: [bug] every field of a place is recorded at
+                    // `spec.pos`, the `&`, because `PlaceSpec::Field` kept only the
+                    // name and dropped its `Name` position; StructRef records
+                    // `field.pos_or(..)`. Hover/definition on `b` in `&s.a.b` misses.
                     if ctx.env.lsp_mode {
                         ctx.env.push_field_ref(crate::ide::FieldRefSite {
                             pos: spec.pos,
@@ -1135,6 +1205,13 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         self.referent.each_ref(f)
     }
 
+    // CR claude for eric: [bug] outside init a fire is QUEUED (`set_var`), and a
+    // bottom is never written. For a chainless reference the cell is what `*r`
+    // reads, so `*r` lags its expression a cycle and rides stale over bottom.
+    // Probe: n ticking, `v = select n { 2 => never(), k => k * 10 }; r = &(v + 1);
+    // println("[n] [*r]")` prints "1 1", "2 11", "4 31"; the twin `let w = v + 1;
+    // r = &w` prints "1 11", nothing at 2, "4 41". Publish like Bind::update does
+    // (this cycle, bottoms included).
     /// Write the cell: a fire is delivered (this cycle under init, so
     /// `Deref` reads it under a wake view too; else queued), a stale
     /// value under an init view still materializes the cell (embedders
@@ -1221,6 +1298,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                     ctx.rt.set_ref_path(self.id, bind, path.clone());
                     self.registered = Some((bind, path.clone()));
                 }
+                // CR claude for eric: [bug] suspected: a root that goes bottom while
+                // its address stays determined skips this and leaves the cell (what
+                // embedders read) on the old element; a bottom input must set the
+                // mirror bottom (`bottom_mirror`), as an undetermined key does.
                 // the cell mirrors the element, read through the address
                 if (moved || event.init) && !root.tag().is_bottom() {
                     let read = super::coretraits::with_hooks(ctx, event, || {
@@ -1343,6 +1424,8 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         }))
     }
 
+    // CR claude for eric: [dead] no caller anywhere in the workspace; the module
+    // is pub(crate), so `allow(dead_code)` only hides that.
     /// Build a `Deref` from an already-compiled child that evaluates to
     /// a `Value::U64` / `Value::V64` holding a BindId.
     #[allow(dead_code)]
@@ -1489,6 +1572,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             }
             (res, _) => res,
         };
+        // CR claude for eric: [bug] when the address moved to a binding that has
+        // never delivered, this rides the PREVIOUS referent's value. Probe: `x = 1;
+        // y = sys::time::after_idle(duration:10.s, 2); r = select n { 0 => &x, _ =>
+        // &y }; println("[n] [*r]")` prints "1 1", "2 1", "3 1" (y has no value).
+        // A moved address with nothing to read is bottom, not the old resident.
         match res {
             Some(mut tv) => {
                 let t = tv.tag().join(addr);

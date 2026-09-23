@@ -27,8 +27,16 @@ parser! {
     pub(super) fn sig_item[I]()(I) -> SigItem
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
+        // CR claude for eric: [bug] Dropping `//` lines here makes `graphix fmt`
+        // delete them from a .gxi: probe `// plain comment` above `val x: i64`
+        // formats without it; the formatter's comment guard cannot see a comment
+        // both parses drop. Keep them on SigItem or refuse them.
         // Plain `//` lines above an interface declaration are skipped, not
         // retained; only `///` doc comments are captured.
+        // CR claude for eric: [structure] Six arms each clone `doc` and `ori` into a
+        // closure building the same SigItem; return a SigKind per arm and build the
+        // SigItem once. typedef/trait/impl parse an Expr only to be taken apart
+        // with `unreachable!()`: return their payloads, wrap them in expr().
         grow((position(), leading_comments().with(doc_comment()).skip(spaces())).then(|(pos, doc)| {
             let ori = Some(crate::expr::get_origin());
             choice((
@@ -218,6 +226,9 @@ fn check_use_item(segs: &[Name], rename: &Option<ArcStr>) -> Option<&'static str
             "self" | "super" | "package" => {
                 return Some("self/super/package are only legal leading a path");
             }
+            // CR claude for eric: [dead] use_tree yields `*` only as the last segment
+            // and never with a rename, so this arm and the glob-rename check below
+            // cannot fire.
             "*" if i != segs.len() - 1 => {
                 return Some("a glob must be the last segment of a use path");
             }
@@ -258,6 +269,9 @@ parser! {
             (
                 spaces().with(use_segment()),
                 optional(attempt(spstring("::").with(use_tree()))),
+                // CR claude for eric: [structure] The `as` rename is a declared name
+                // kept as a bare ArcStr (UseItem.rename), so it has no WrittenAt and
+                // the LSP cannot place it; build a `Name::written` here.
                 optional(attempt(
                     spaces1()
                         .with(string("as"))
@@ -275,6 +289,10 @@ parser! {
                             value(vec![(vec![], rename)]).right()
                         }
                         (None, rename) => value(vec![(vec![seg], rename)]).right(),
+                        // CR claude for eric: [perf] Every level collects fresh
+                        // plain Vecs and prepends its segment with `insert(0, ..)`;
+                        // pass the prefix down and push whole paths into one pooled
+                        // Vec.
                         (Some(sufs), None) => {
                             let sufs: Vec<(Vec<Name>, Option<ArcStr>)> = sufs;
                             value(

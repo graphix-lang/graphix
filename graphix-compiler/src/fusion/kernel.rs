@@ -167,6 +167,11 @@ impl Kernel {
     }
 }
 
+// CR claude for eric: [structure] `Kernel` is never a CallSite's Apply: its one
+// owner is `FusedKernel`, which forwards every Update method to it. The trait
+// impl (and `delete`/`reset_replay`/`refs` no-ops, the infallible `new` returning
+// `Result`, `n_args` kept only for a debug_assert) is a layer that pays no rent;
+// fold these fields and methods into `FusedKernel`.
 impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
     fn image_len(&self) -> usize {
         let w = &self.jit;
@@ -177,6 +182,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             + record_len(&w.wrapper)
     }
 
+    // CR claude for eric: [risk] `state`, `site`, `resident`, `slept`, `self_gen`
+    // and `tree_size` are dropped silently: a kernel imaged after it ran decodes
+    // as one that never ran (every prev-length/first-call word reads "no
+    // previous"). Refuse with NOT_QUIESCENT unless all are initial, as CallSite
+    // does for a bound dynamic callee.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let w = &self.jit;
         encode_varint(w.state_words as u64, buf);
@@ -195,6 +205,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut any_updated = false;
         let mut any_bottom = false;
+        // CR claude for eric: [perf] Every input is cloned into `polled` each update,
+        // even when the kernel then rides, and every composite is cloned again into
+        // `staged` below. Stage (disc, payload, keepalive) directly in this loop
+        // and move the value; one Vec, one refcount bump per input.
         let mut polled: LPooled<Vec<TagValue>> = LPooled::take();
         for src in from.iter_mut() {
             let tv = src.update(ctx, event);
@@ -300,6 +314,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                                 (disc | flag, payload, v)
                             }
                             None => {
+                                // CR claude for eric: [style] Builds a new (pooled)
+                                // empty array where the design's placeholder is a
+                                // clone of emit_helpers' static EMPTY_ARR, which
+                                // `graphix_list_to_valarray`/`graphix_cmap_to_pairs`
+                                // also bypass. One placeholder, one spelling.
                                 let v = Value::Array(ValArray::from([]));
                                 let (disc, payload) = bits(&v);
                                 (disc | bflag, payload, v)

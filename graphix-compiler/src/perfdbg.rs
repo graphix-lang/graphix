@@ -9,11 +9,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+// CR claude for eric: [structure] A second phase timer beside profile.rs, whose
+// phases already cover these (Typecheck1, Analysis, InstanceGraph/InstanceCheck).
+// Fold the lazy-bind counters into profile phases and delete this module. It is
+// also `pub mod` with `pub static`s used only inside the crate (lib.rs:28).
 pub static BIND_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static BIND_NS: AtomicU64 = AtomicU64::new(0);
 pub static SETUP_NS: AtomicU64 = AtomicU64::new(0);
 pub static TC1_NS: AtomicU64 = AtomicU64::new(0);
 pub static ANALYZE_NS: AtomicU64 = AtomicU64::new(0);
+// CR claude for eric: [dead] TBO_NS, PRIME_CALLS, PRIME_NS, REPLAY_NS,
+// CLONE_ENTRIES, DELETE_NS and REFS_NS are never incremented (the only users are
+// node/callsite.rs:721-790), yet the dumper prints them every 250ms.
 pub static TBO_NS: AtomicU64 = AtomicU64::new(0);
 pub static PRIME_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static PRIME_NS: AtomicU64 = AtomicU64::new(0);

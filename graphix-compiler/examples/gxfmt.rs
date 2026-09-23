@@ -20,6 +20,10 @@ fn main() -> ExitCode {
                 continue;
             }
         };
+        // CR claude for eric: [style] The unchecked path unwraps (a file that does
+        // not parse panics the run) and prints every file even when many are
+        // given; `SourceKind::of_path` is computed three times; and the harness
+        // uses the default config where `graphix fmt` uses `FormatConfig::discover`.
         if env::var("GXFMT_UNCHECKED").is_ok() {
             let kind = SourceKind::of_path(Path::new(f));
             print!("{}", &*format_source_unchecked(kind, &text, &cfg).unwrap());

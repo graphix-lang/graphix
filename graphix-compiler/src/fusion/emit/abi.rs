@@ -15,6 +15,11 @@ use super::{
     scalar::prim_to_clif,
 };
 
+// CR claude for eric: [risk] These are copied by hand from netidx-value and nothing
+// pins them: emit_helpers.rs asserts only the 16-byte size. A renumbered netidx
+// discriminant would miscompile every tag test silently. Pin each against the real
+// enum in a test (read the first word of `Value::Null`, `Value::I64(0)`, ...). ERROR
+// is also missing, so flow.rs's QopSink::bad_disc writes 0x2000_0000 bare.
 /// `Value` discriminants, mirroring `netidx_value::Value`'s
 /// `#[repr(u64)]` tags. A Value-shaped expression is a
 /// `(disc, payload)` pair of `I64`s; `emit_helpers.rs` pins the
@@ -77,6 +82,9 @@ pub struct CompiledExpr {
 /// of [`STALE`]: a fresh bottom is an event.
 pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 
+// CR claude for eric: [style] TAINT is derived from `Tag::TAINT_BIT` but STALE is a
+// literal; derive it from `Tag::STALE_BIT` too so the two cannot drift. The tag
+// byte mask is likewise re-spelled as `0xFF << 56` in FoldAcc::carry_disc.
 /// Disc bit 61: the value did not fire this cycle; when it is not
 /// tainted the payload is the standing value. Leaves set it, ops
 /// AND-reduce it ([`propagate_stale`]) while [`TAINT`] ORs, and only the
@@ -201,6 +209,15 @@ pub(super) enum LocalKind {
     /// An owned `ArcStr` pointer, dropped via `graphix_arcstr_drop`;
     /// reads clone.
     String,
+    // CR claude for eric: [structure] Variant, Nullable and Value are never told
+    // apart: every match on LocalKind (call::emit_drop_local, nodes.rs'
+    // local read, select's scrutinee drop, install_arm_binds, placeholder_for_kind)
+    // takes all three in one arm, and `IsNull`/`VariantTagEq` no longer exist. Yet
+    // the AbiKind -> LocalKind split is rewritten in compile_into_function,
+    // classify_select_scrutinee, payload_local_kind, emit_let_node, bind_leaves,
+    // bind_elem and FoldAcc::local_kind, and scaffold's ValueLeafKind exists only to
+    // carry it. One `Value` kind plus one `LocalKind::of(AbiKind) -> Option<Self>`
+    // would replace all of it.
     /// The value word of a two-word Value, dropped via
     /// `graphix_value_drop`; reads borrow. The three stay distinct so
     /// consumer ops stay well-typed (`IsNull` vs `VariantTagEq`).
@@ -215,6 +232,10 @@ pub(super) struct Local {
     pub(super) name: ArcStr,
     pub(super) words: ValueVar,
     pub(super) kind: LocalKind,
+    // CR claude for eric: [readability] Stale: pattern binds (`__pat`), HOF leaves
+    // (`__leaf`) and elements are synthetic and carry Some(id); only the adopted
+    // select scrutinee (`__scrut`) is None. Their ArcStr names are then never
+    // looked up, yet each bind formats and allocates one.
     /// `Some` for params and lets; a `Ref` resolves BindId-first, which
     /// is exact under shadowing. `None` for synthetic locals.
     pub(super) bind_id: Option<BindId>,
@@ -324,6 +345,10 @@ pub(crate) fn bind_scalar_var_with_disc(
     cx.env.bind(name, ValueVar { disc, payload }, LocalKind::Scalar(prim), bind_id);
 }
 
+// CR claude for eric: [dead] emit_or_abort_on_taint, emit_or_abort_on_taint_keep
+// and scalar_result have no caller in the workspace or ../netidx (only the mod.rs
+// re-export); HOF bodies now fold taint into SlotFlags. With them goes
+// body::emit_bottom_abort, whose only callers are these two. Delete all four.
 /// Emit an operand and abort the kernel if it is tainted, returning the
 /// payload word. For HOF operands that have no per-value taint channel.
 pub fn emit_or_abort_on_taint<R: Rt, E: UserEvent>(

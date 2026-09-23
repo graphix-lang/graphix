@@ -63,6 +63,11 @@ impl Type {
             | (_, Type::App(..))
             | (Type::Hole, _)
             | (_, Type::Hole) => Ok(self == t),
+            // CR claude for eric: [risk] contains_int runs on could_match's own
+            // `hist`, so a pair could_match holds in progress (`true`, meaning
+            // "might overlap") is read by contains' Ref arm as a containment
+            // verdict for the same key, and contains' probe_pairs persist into
+            // could_match. Two relations need two memos.
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
                     if t0.contains_int(fl, env, hist, &Type::Primitive(t1.into()))? {
@@ -284,6 +289,12 @@ impl Type {
                 a0.sig_matches_int(env, a1, tvar_map, hist)
             }
             (Self::Hole, Self::Hole) => Ok(()),
+            // CR claude for eric: [readability] TVar's `!=` is binding
+            // inequality (any two unbound cells are "equal"), so this arm fires
+            // only for two bound cells with different bindings, and a bound
+            // signature var whose binding matches falls to the "signature has
+            // type variable" error below instead of being compared by binding.
+            // Say what is meant: cell identity, or deref the signature side.
             (Self::TVar(sig_tv), Self::TVar(impl_tv)) if sig_tv != impl_tv => {
                 format_with_flags(PrintFlag::DerefTVars, || {
                     bail!(

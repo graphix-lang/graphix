@@ -23,6 +23,9 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
+// CR claude for eric: [style] `std::cell::RefCell` (x24), `std::cell::Cell` (x7),
+// `std::sync::Arc` (x4) and `poolshark::local::LPooled` (x2) are spelled out in
+// full throughout; import them here with BTreeMap.
 use std::collections::BTreeMap;
 
 use super::{
@@ -31,6 +34,12 @@ use super::{
     record::{EmitConst, SymbolTable},
 };
 
+// CR claude for eric: [structure] Eleven parameters in, an anonymous 4-tuple out,
+// and a side effect on the shared KernelSig (`site_block_words.store`, line 256)
+// made before the caller knows the function verifies: a discarded build still
+// writes the cell a constant recipe points at, against the design's "a discarded
+// function is free of consequences". Return a named struct and let the caller
+// publish the words after a successful define.
 pub(super) fn compile_into_function<'a>(
     b: &mut FunctionBuilder,
     kernel: &'a KernelSig,
@@ -78,6 +87,9 @@ pub(super) fn compile_into_function<'a>(
         }
     };
     let state_ptr = initial_vals[1];
+    // CR claude for eric: [style] GXDBG_CALLRET is read with std::env on every
+    // compile (also in emit_kernel_return) instead of through a dbgenv flag, is
+    // missing from CLAUDE.md's debug table, and tags its output with bare 2/3/4.
     #[cfg(debug_assertions)]
     if std::env::var_os("GXDBG_CALLRET").is_some() {
         if let Some(f) = helper_refs.get("graphix_dbg_disc") {
@@ -228,6 +240,9 @@ pub(super) fn compile_into_function<'a>(
     }
 
     b.seal_all_blocks();
+    // CR claude for eric: [perf] `lower` dies here, yet every registry is cloned out
+    // of its RefCell (and `site.anchors` cloned then copied again into an Arc).
+    // `take()` / `into_inner()` hands the Vecs over without a copy.
     let slot_table_words = lower.state.anchors.borrow().clone();
     let words = lower.site.next.get() as u32;
     // A self-call's child block has this body's layout, which is only
@@ -279,6 +294,11 @@ pub(crate) enum SelWord {
     Guarded { base: ClifValue, addr: ClifValue },
 }
 
+// CR claude for eric: [structure] `leaf_rt` is Some exactly when `leaf` is
+// `Blocks` (call.rs's trunc_rec, BodyCx::open_slot_tables), so the pair can
+// disagree. Carry the SiteLeaf in the variant, `TruncLeaf::Blocks(Arc<SiteLeaf>)`,
+// and drop leaf_rt. The Arcs here and in SiteLayout are immutable shared data:
+// triomphe::Arc.
 /// An in-loop state-chain claim re-ensured in every enclosing loop's
 /// exit block, so a zero-length epoch still truncates the chain and
 /// frees the dropped subtrees.
@@ -335,6 +355,13 @@ pub(crate) struct SlotTableFrame {
     pub(super) pending: Vec<TruncRec>,
 }
 
+// CR claude for eric: [structure] "Only one is enabled" is an invariant two bools
+// hold by construction (lines 205, 212); one `claims: Channel::{State, Site}` on
+// LowerCtx would make it unrepresentable. More broadly, LowerCtx carries ~12
+// Cell/RefCell fields of per-emission mutable state behind a shared `&` while
+// JitEnv is already `&mut` in BodyCx, and `loop_depth` exists twice (here and
+// JitEnv::loop_depth, bumped together in BodyCx::enter_loop). Moving the mutable
+// half into the `&mut` side removes the RefCells and the duplicate counter.
 /// One state-word channel: base pointer, claim counter, claim
 /// registries. `state` is the per-instance channel (wire slot 1),
 /// `site` the per-call-site channel (wire slot 2); only one is
@@ -371,6 +398,11 @@ pub(super) struct TailCtx<'a> {
     pub(super) tail_scrut_stale_acc: Variable,
 }
 
+// CR claude for eric: [dead] `Positional` is chosen only when `kernel.params` is
+// empty (line 176), where a tail call has nothing to rebind; no hand-built test
+// kernel exists anymore. Drop the enum for the slice, and the line-63 comment
+// ("tail-call dispatch relies on env.locals[0..param_count]"), which only the
+// Positional path relied on.
 /// How a tail-call rebind maps its args onto the kernel's params.
 #[derive(Clone, Copy)]
 pub(super) enum TailSlots<'a> {
@@ -388,6 +420,14 @@ pub(crate) struct ClosedFrame {
     pub(super) pending: Vec<TruncRec>,
 }
 
+// CR claude for eric: [dead] Suspected redundant, the whole `sel_fires` stack.
+// `tail.tail_scrut_stale_acc` already ANDs every tail select's scrutinee STALE and
+// each taken arm's guard fold along the executed path (emit_select_node_tail), so
+// it is bitwise <= each level's `sound_stale` and the per-level fold in
+// emit_kernel_return is absorbed by its final acc fold. `bfired` is false on every
+// arms path (a tainted scrutinee returns before its arms), so the override never
+// fires. Both date from the stored-selection ride. Check with the
+// tail-select-bottom-out pins, then delete.
 /// A tail-position select's own-fire summary; a still-stale result
 /// meeting `bfired` becomes TAINT fresh.
 #[derive(Clone, Copy)]
@@ -487,6 +527,10 @@ pub(super) fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
         .or_else(|| kernel_abi::freeze_for_abi_normalized(&resolve_node_typ(ctx, t)))
 }
 
+// CR claude for eric: [perf] declare_helpers imports all ~150 registered helpers
+// into every function and clones the whole `arity` BTreeMap per function
+// (line 628), though a kernel calls a handful. Borrow the module-level arity map
+// and declare a helper's FuncRef on its first `get`.
 /// Runtime-helper `FuncRef`s, valid within one function body.
 #[derive(Default)]
 pub(super) struct HelperRefs {

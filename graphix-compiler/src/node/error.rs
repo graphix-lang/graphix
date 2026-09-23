@@ -1,3 +1,6 @@
+// CR claude for eric: [style] `crate::image` is imported twice outside the
+// `crate::{..}` group; `crate::fusion::fuse` (4 uses), `super::read_var` and
+// `super::VarRead` are spelled out at their uses. Merge and import.
 use crate::image::ImageBuf;
 use crate::image::{
     self,
@@ -49,6 +52,12 @@ fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
 }
 
 pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
+    // CR claude for eric: [risk] a process-wide static `TypeRef` carries a
+    // write-once resolution cell: the first ExecCtx whose `is_a` resolves
+    // `ErrChain` fills it with that env's typedef, and every other context in the
+    // process reuses it (the rule: statics never cache what can differ between
+    // contexts). Build the ref per call or keep it in the context. Below,
+    // `error[1]` relies on the sorted field order without saying so.
     static ERRCHAIN: LazyLock<Type> = LazyLock::new(|| typ_echain(Type::empty_tvar()));
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
@@ -73,6 +82,12 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     }
 }
 
+// CR claude for eric: [structure] `seq_abort`, `capture` and `received` are one
+// seq-only concern spread over three independent fields: `capture` is only read
+// when `seq_abort` is `Some` (`first`), so `(capture: Some, seq_abort: None)` is
+// representable and inert. Fold them into one `Option<SeqCatch>`. `typ` is
+// always `Type::Bottom` yet stored and imaged; return `&Type::Bottom` as
+// `Connect` does.
 #[derive(Debug)]
 pub struct Catch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
@@ -311,6 +326,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
+    // CR claude for eric: [risk] suspected: `handled()` runs only when an awake
+    // catch sees a delivery. A delivery still in flight when the catch sleeps or
+    // is deleted (the second same-cycle error, queued by `deliver_error`'s
+    // `Occupied` arm, or a cross-top one) is never acknowledged, so every
+    // ancestor's `nested` count stays raised for its lifetime and an enclosing
+    // seq guard answers bottom from then on. Reconcile outstanding raises
+    // (`generation` vs handled) here and in `delete`.
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.handler.sleep(ctx);
         if let Some(abort) = &mut self.seq_abort {
@@ -514,6 +536,11 @@ pub(crate) fn null_error(spec: &Expr) -> Value {
     Value::Array(ValArray::from_iter([tag, Value::from(operand)]))
 }
 
+// CR claude for eric: [readability] `spec.ori` renders as "in file ...", so the
+// message reads "unhandled error in in file ..." (probed, both engines; the JIT
+// helper `graphix_swallowed_error` re-spells the same format, as does
+// `OrNever`'s "ignored error in {} at {}"). Drop the literal "in" and keep one
+// formatter for both engines.
 /// What a handler-less `?` reports for the error payload `e` it raised.
 pub(crate) fn unhandled_msg(spec: &Expr, e: &Value) -> ArcStr {
     format_compact!("unhandled error in {} at {} {e}", spec.ori, spec.pos).as_str().into()
@@ -632,6 +659,10 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }))
     }
 
+    // CR claude for eric: [readability] the error is a string with the origin
+    // and position printed into it (and an "ERROR:" prefix) rather than a
+    // `bailat!(spec, ..)`, so it carries no `ErrorSite` and the LSP cannot place
+    // it on the `?`.
     fn check_unhandled(env: &Env, flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
         if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
             bail!(
@@ -675,6 +706,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         image::flags_encode(self.flags, buf)
     }
 
+    // CR claude for eric: [structure] `Qop` and `OrNever` repeat one skeleton
+    // (bottom passes, strip test, stale strip rides, fired strip bottoms) and one
+    // typecheck (`Strip::of` + `diff`), differing only in the sink. The copies
+    // have already drifted: `?` turns an uninhabited result into `Bottom`, `$`
+    // leaves the empty union (probe: `let x: Error<`E> = error(`E); select x$ {
+    // i64 as n => n, _ => 0 }` reports "pattern i64 will never match '_: []",
+    // the `?` form "unreachable arm"). Share the skeleton and the typing.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         if tv.tag().is_bottom() {
@@ -731,6 +769,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.reset_replay(ctx);
     }
 
+    // CR claude for eric: [structure] a 55-line recursive helper nested inside
+    // `typecheck0`: `fix_echain_typ` is the ErrChain typing rule and belongs
+    // beside `wrap_error`/`typ_echain` at module level, where its pairing with
+    // `wrap_error`'s chaining is visible.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         fn fix_echain_typ<R: Rt, E: UserEvent>(
             ctx: &ExecCtx<R, E>,
@@ -973,6 +1015,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
                 return self.resident.ride();
             }
         };
+        // CR claude for eric: [bug] a FIRED production that arrives while a nested
+        // catch still has an error in flight falls through to FRESH_BOTTOM and is
+        // forgotten (`fired_since_entry` stays false); once the nested count
+        // drains the value is stale and the guard answers bottom forever, so the
+        // run never completes. Probe: a callee with `catch(e) ..` and two `?`
+        // raising in one cycle (the second queues via `set_var`) called as `seq
+        // let k = n { f(k) }` wedges the seq for good; with one `?` it proceeds
+        // (both engines). design/seq_blocks.md §7.4 says a nested catch may
+        // consume its errors without aborting. Remember the suppressed fire and
+        // pass the value when the count drains.
         if generation == current || self.handler.has_nested_errors() {
             let value = self.n.update(ctx, event);
             let current = (self.handler.generation(), self.machine.generation());

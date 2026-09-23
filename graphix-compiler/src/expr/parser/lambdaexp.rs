@@ -60,6 +60,9 @@ where
         sptoken(')'),
         spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
     )
+    // CR claude for eric: [structure] "labeled before anonymous" is checked three
+    // times with three messages (here, lambda_args, typexp::fntype); one helper
+    // over the is-labeled flags.
     .then(|args: LPooled<Vec<(Option<ArcStr>, Expr)>>| {
         let mut anon = false;
         for (a, _) in &*args {
@@ -105,6 +108,9 @@ where
         csep(),
         attempt(sptoken('|')),
     )
+    // CR claude for eric: [style] `bail!("labeled")` allocates an anyhow error only
+    // as a flag and discards it; with the @args and order checks below this makes
+    // three `.then` passes over the args. One loop returning the first refusal.
     .then(
         |mut v: LPooled<
             Vec<((SourcePosition, (bool, StructurePattern)), Option<Type>, Option<Expr>)>,

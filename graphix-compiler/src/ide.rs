@@ -1,8 +1,13 @@
+// CR claude for eric: [readability] The sinks fill whenever `Env.ide` is Some
+// (every `Env::push_*`, `bind_variable`, `warn`); `lsp_mode` gates only some
+// recorders. The doc names the wrong knob (see the lsp_mode CR in env.rs).
 //! IDE/LSP side-channels: write-only sinks the compiler fills when
 //! [`crate::env::Env::lsp_mode`] is set, drained at the compile
 //! boundary into the check result. Nothing here is read by the
 //! compiler itself. [`Ide`] owns all of them, shared via `Env.ide`.
 
+// CR claude for eric: [style] `expr::Origin` (9 uses) and `expr::ModPath` (6)
+// are spelled through the module; import them.
 use crate::{
     BindId, Scope, SourcePosition,
     env::{Bind, Env},

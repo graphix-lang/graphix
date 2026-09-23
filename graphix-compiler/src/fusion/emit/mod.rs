@@ -31,6 +31,9 @@ pub mod scaffold;
 mod scalar;
 mod select;
 
+// CR claude for eric: [dead] emit_or_abort_on_taint, emit_or_abort_on_taint_keep
+// and scalar_result have no users in this repo or ../netidx; with them goes
+// body.rs emit_bottom_abort.
 pub use self::abi::{
     CompiledExpr, array_result, emit_or_abort_on_taint, emit_or_abort_on_taint_keep,
     scalar_result,
@@ -43,6 +46,10 @@ pub use self::body::{
 pub use self::call::CompositeSource;
 pub(crate) use self::call::{emit_builtin_call_node, emit_lambda_call_node};
 pub(crate) use self::flow::{QopSink, emit_block_node, emit_qop_node};
+// CR claude for eric: [structure] `fusion::emit` is a pub module, and JitCtx,
+// WrapperFn, KernelConst, RecordKind, RecordReloc and RelocTarget are public
+// re-exports nothing outside emit uses; they leak the record internals. Narrow
+// them to pub(crate) or drop them.
 pub use self::jit::{
     Jit, JitCtx, WrappedKernel, WrapperFn, compile_kernel_with_callees_direct,
     pack_value_to_u64, unpack_u64_to_value,

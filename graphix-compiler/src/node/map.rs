@@ -1,3 +1,6 @@
+// CR claude for eric: [style] `crate::image` is split over two statements
+// beside the `crate::{..}` group, and `super::coretraits::with_hooks` is
+// spelled out twice; group and import.
 use super::WakeBit;
 use crate::image::ImageBuf;
 use crate::image::nodes::{
@@ -29,6 +32,9 @@ pub struct Map<R: Rt, E: UserEvent> {
     slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
+    // CR claude for eric: [structure] `keys` and `vals` must be the same length
+    // (update zips them, the codec writes them apart and would decode a
+    // mismatch); one `Box<[(Node, Node)]>` makes a mismatch unrepresentable.
     pub keys: Box<[Node<R, E>]>,
     pub vals: Box<[Node<R, E>]>,
     resident: TagValue,

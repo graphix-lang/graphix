@@ -101,6 +101,8 @@ impl PartialEq<[&str]> for ModPath {
     }
 }
 
+// CR claude for eric: [style] Same body as the slice impl above; delegate to it
+// (`self.eq(&other[..])`).
 impl<const L: usize> PartialEq<[&str; L]> for ModPath {
     fn eq(&self, other: &[&str; L]) -> bool {
         Path::levels(&self.0) == L

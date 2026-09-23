@@ -1,3 +1,6 @@
+// CR claude for eric: [style] `std::sync::Arc` is spelled out seven times,
+// `use std::fmt::Write as _` is fn-local twice (resolve, LoadChain::push), and
+// `expr::TraitExpr` sits in its own group beside the other `expr::` imports.
 use crate::{
     PrintFlag,
     expr::TraitExpr,
@@ -159,6 +162,10 @@ pub fn parse_modpath(
     s: &str,
 ) -> Result<Vec<ResolverRef>> {
     let mut res: Vec<ResolverRef> = vec![];
+    // CR claude for eric: [bug] `escaping::split` does not unescape, so the book's
+    // `file:/path/with\,comma` becomes the path `with\,comma` (probe: resolution
+    // tries `…/with\,comma/libmod/mod.gx`). Unescape each entry. The `file:` arm
+    // also spells out FilesResolver::new.
     for l in escaping::split(s, '\\', ',') {
         let l = l.trim();
         if let Some(s) = l.strip_prefix("file:") {
@@ -187,6 +194,9 @@ fn packed_ast_disabled() -> bool {
     *DISABLED
 }
 
+// CR claude for eric: [structure] `intf_packed` without `interface` is
+// representable; pair each Origin with its packed blob (a small Unit struct).
+// parse_module would then take `Option<&Unit>`, not `&Option<Origin>`.
 /// The result of one resolver's attempt — the [`ModuleResolver`]
 /// trait's currency.
 pub enum Resolution {
@@ -240,6 +250,10 @@ fn resolve_from_vfs(
             }
         }
     };
+    // CR claude for eric: [risk] This pairs `name.gxi` or `name/mod.gxi` with
+    // whichever implementation was found, while FilesResolver only pairs the one
+    // beside it: a package with `foo/mod.gx` and `foo.gxi` has an interface when
+    // built into the binary and none when checked from its files.
     let (interface, intf_packed) = match vfs.get(&scoped_intf).or_else(|| {
         let mod_intf = scope.append(&format_compact!("{name}/mod.gxi"));
         vfs.get(&mod_intf)
@@ -281,6 +295,11 @@ async fn resolve_from_files(
     }
     impl_path.set_extension("gx");
     let mut intf_path = impl_path.with_extension("gxi");
+    // CR claude for eric: [risk] A module file that exists but cannot be read
+    // (not UTF-8, EACCES), or an unreadable .gxi beside a good .gx, becomes
+    // TryNextMethod, so a later resolver's module of the same name wins silently;
+    // a found but broken module should fail. The "no such file" error also names
+    // only the mod.gx candidate.
     let implementation = match read(overrides, &impl_path).await {
         Ok(Some(s)) => ori!(s, impl_path),
         Ok(None) => {
@@ -411,6 +430,11 @@ pub fn add_interface_modules(
     let mut after_use: LPooled<AHashMap<&UseItem, Item>> = LPooled::take();
     let mut first: Option<Item> = None;
     let mut last: Option<&SigItem> = None;
+    // CR claude for eric: [structure] The Use arm below repeats this macro's body
+    // by hand, the four `if let` probes over `exprs` differ only in the ItemKind,
+    // and `.map(|p| ..insert..).last().flatten()` runs a loop for its side effect.
+    // The six explicit drops exist because the probes tie `in_sig`'s lifetime to
+    // `exprs`; keying the set by name would lift that.
     macro_rules! push {
         ($kind:ident, $name:expr, $si:expr) => {{
             let name = Item {
@@ -530,6 +554,11 @@ pub fn add_interface_modules(
     let mut iter = exprs.iter();
     loop {
         match res.last().map(|e| &e.kind) {
+            // CR claude for eric: [bug] Only a `let name` anchors: when the item
+            // before `type T` in the .gxi is `val a` and the .gx binds `a` by
+            // destructuring (`let (a, c) = ..`), T is appended after the body and
+            // `let b: T` fails with "undefined type T" (probe). Anchor on every
+            // name the pattern binds.
             Some(ExprKind::Bind(v)) => match &v.pattern {
                 StructurePattern::Bind(n) => {
                     if let Some(name) = after_bind.remove(n.as_str())
@@ -617,6 +646,11 @@ async fn parse_module(
                 None => task::spawn_blocking(move || parser::parse_sig((*unit).clone())),
             }
             .await?
+            // CR claude for eric: [bug] `{interface:?}` is Origin's derived Debug:
+            // the error carries the full text of the file and of every parent
+            // (probe: a bad .gxi prints `parsing file Some(Origin { parent:
+            // Some(Origin { .. text: "<all of main.gx>" ..`). Name the path; the
+            // implementation context below has the same problem.
             .with_context(|| format!("parsing file {interface:?}"))?;
             Some((sig, ori))
         }
@@ -688,6 +722,10 @@ impl RootFile {
     }
 }
 
+// CR claude for eric: [bug] The rebuilt Module keeps the `mod` statement's id,
+// pos and ori but drops its `dec` (comments, attributes) and its `end`, so a
+// resolved `mod foo;` has no end. Four of the eight parameters are fields of
+// that one Expr: take `&Expr` and replace only the kind, as `expr!` does below.
 async fn resolve(
     scope: ModPath,
     prepend: Option<ResolverRef>,
@@ -698,6 +736,9 @@ async fn resolve(
     module: Name,
     from_interface: bool,
 ) -> Result<Expr> {
+    // CR claude for eric: [readability] A macro used once to destructure a
+    // Resolution; `let Resolution::Resolved { .. } = .. else { continue }`
+    // reads in place.
     macro_rules! check {
         ($res:expr) => {
             match $res {
@@ -721,12 +762,17 @@ async fn resolve(
             parse_module(&interface, &implementation, impl_packed, intf_packed).await?;
         let value = ModuleKind::Resolved { exprs, sig, from_interface };
         let kind = ExprKind::Module { name: module, value };
+        // CR claude for eric: [bug] Debug ignores PRINT_FLAGS, so format_with_flags
+        // does nothing here and every module load logs its full source and every
+        // parent's at info (probe: the log holds core's whole text). Log the
+        // sources, not the Origins.
         format_with_flags(PrintFlag::NoSource | PrintFlag::NoParents, || {
             info!(
                 "load and parse {implementation:?} and {interface:?} {:?}",
                 ts.elapsed()
             )
         });
+        // CR claude for eric: [dead] A no-op statement with a comment narrating it.
         let _ = implementation; // implementation lives on the inner exprs
         return Ok(Expr {
             id,
@@ -859,6 +905,13 @@ impl Expr {
                         Some(std::sync::Arc::new(FilesResolver { base: dir, overrides })
                             as ResolverRef)
                     }
+                    // CR claude for eric: [bug] For a module whose body is not from a
+                    // file, the base comes from `self.ori`, the file that wrote `mod
+                    // foo;`, not from `source`, the module's own: a VFS module
+                    // included from a script resolves its `mod x;` beside the script
+                    // first (probe: `mod core;` in a script next to an opt.gx makes
+                    // core::opt that file), and for_source gets the includer's
+                    // netidx path (suspected). The FilesResolver is built twice.
                     None => match &self.ori.source {
                         Source::Unspecified | Source::Internal(_) => None,
                         Source::File(p) => p.parent().map(|p| {
@@ -891,6 +944,9 @@ impl Expr {
                     name: name.clone(),
                 })
             }),
+            // CR claude for eric: [perf] Every node of every module gets a boxed
+            // future and a SmallVec only to look for `mod`; a sync "holds an
+            // unresolved module" scan before boxing would skip the rest.
             _ => Box::pin(async move {
                 let mut children: SmallVec<[&Expr; 4]> = SmallVec::new();
                 self.for_each_child(&mut |c| children.push(c));

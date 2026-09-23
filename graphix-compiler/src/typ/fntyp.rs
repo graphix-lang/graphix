@@ -146,6 +146,9 @@ impl FnArgType {
     }
 }
 
+// CR claude for eric: [style] `FnArgType`'s hand-written PartialEq, PartialOrd,
+// Ord and Hash compare `kind` then `typ`, which is exactly what `#[derive]`
+// produces for this field order. Derive them.
 impl PartialEq for FnArgType {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind && self.typ == other.typ
@@ -315,6 +318,12 @@ impl FnType {
     /// Name-sorted `(tvar, constraint)` pairs for every declared
     /// quantifier whose cell carries exactly one conjunct.
     /// Multi-conjunct cells are unlisted.
+    // CR claude for eric: [bug] Dropping multi-conjunct cells drops declared
+    // bounds from Display, Eq, Ord and Hash. probe: `let f = 'a: Number |x: 'a,
+    // y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f` reports `f` as
+    // `fn(x: 'a: unbound within Number & Number, ..)`: the cell holds `Number`
+    // twice and the `fn<'a: Number>` header is gone. List the (deduped)
+    // conjunction instead of nothing.
     pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
         // Only declared names produce pairs: an inner fn mentioning a
         // quantifier has an empty `quantifiers`, which terminates the
@@ -342,6 +351,9 @@ impl FnType {
         r
     }
 
+    // CR claude for eric: [readability] The first three doc lines belong to
+    // `cell_constraint_pairs` below; `content_key` was inserted between them and
+    // their function, so it now carries both docs and that one has none.
     /// Every reachable single-conjunct cell as (tvar, conjunct) pairs,
     /// declared or not (an inferred impl's constraints sit on auto
     /// `'_N` cells).
@@ -357,6 +369,8 @@ impl FnType {
             quantifiers: _,
             lambda_ids,
         } = self;
+        // CR claude for eric: [structure] `text` re-implements `key_text` in
+        // typ/mod.rs, which `Type::content_key` uses for the same bytes. Share it.
         let text = |s: &str, out: &mut Vec<u8>| {
             encode_varint(s.len() as u64, out);
             out.put_slice(s.as_bytes());
@@ -395,6 +409,9 @@ impl FnType {
         out.put_u64_le(lambda_ids.addr() as u64);
     }
 
+    // CR claude for eric: [structure] The loop body and the sort are
+    // `constraint_view`'s; the two differ only in which names they visit.
+    // `constraint_view` is this filtered to `quantifiers`.
     pub(crate) fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
         let known = self.sig_tvars();
         let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
@@ -408,6 +425,13 @@ impl FnType {
         view
     }
 
+    // CR claude for eric: [risk] One thread-local set guards two different walks
+    // (`constraint_view`, `for_each_sig_constraint`) by the same key, and neither
+    // removes its key on unwind: a nested call of the other walk, or any panic
+    // mid-walk, silently empties later answers for that address (Eq and
+    // `collect_tvars` read them). `constraint_view`'s comment says empty inner
+    // `quantifiers` end the regress, yet image decode (expr/serialize.rs) gives
+    // inner fns quantifiers. Use a drop guard and a separate set per walk.
     fn walking<R>(f: impl FnOnce(&mut nohash::IntSet<usize>) -> R) -> R {
         thread_local! {
             static WALKING: std::cell::RefCell<nohash::IntSet<usize>> =
@@ -417,6 +441,11 @@ impl FnType {
     }
 }
 
+// CR claude for eric: [perf] Eq, Ord and Hash each call `constraint_view` on
+// both sides: a full signature walk into a pooled map, a normalize of every
+// conjunct (itself a quadratic set flatten), a sort. `flatten_set`'s `acc.sort()`
+// and `merge`'s `f0 == f1` hit this per comparison. Compare the shape first and
+// read the constraints only when it is equal (PartialOrd already orders it so).
 impl PartialEq for FnType {
     fn eq(&self, other: &Self) -> bool {
         let Self {
@@ -447,6 +476,10 @@ impl PartialEq for FnType {
 
 impl Eq for FnType {}
 
+// CR claude for eric: [style] The nested `match .. Some(Equal) => ..` pyramid is
+// `cmp(..).then_with(..)` chained; `Ord` should hold it and `partial_cmp` return
+// `Some(self.cmp(other))`, not `Ord` unwrapping `partial_cmp`. The local
+// `use std::cmp::Ordering` repeats the top-level import.
 impl PartialOrd for FnType {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         use std::cmp::Ordering;
@@ -626,6 +659,10 @@ impl FnType {
     pub(crate) fn for_each_sig_constraint(&self, f: &mut impl FnMut(&Type)) {
         let key = self as *const Self as usize;
         if Self::walking(|w| w.insert(key)) {
+            // CR claude for eric: [structure] "sig_tvars drained into a Vec,
+            // sorted by (name, id)" is written three times: here,
+            // `constrain_known` and `sig_matches_int` (which also calls
+            // `impl_fn.sig_tvars()` twice). One `sorted_sig_tvars` helper.
             let mut tvs: LPooled<Vec<(ArcStr, TVar)>> =
                 self.sig_tvars().drain().collect();
             tvs.sort_by(|a, b| {
@@ -744,6 +781,9 @@ impl FnType {
                 known.insert(name, Type::TVar(tv));
             }
         }
+        // CR claude for eric: [structure] The rebuild below is
+        // `self.replace_tvars(&known)` (every name is in `known`, so the shared
+        // `renamed` map is never used), minus its copy-on-write sharing.
         let args = Arc::from_iter(args.iter().map(|FnArgType { kind, typ }| FnArgType {
             kind: kind.clone(),
             typ: typ.replace_tvars(&known),
@@ -779,6 +819,10 @@ impl FnType {
         self.for_each_type(&mut |x| x.bind_as(t))
     }
 
+    // CR claude for eric: [structure] `alias_tvars`, `unfreeze_tvars` and
+    // `collect_tvars` each hand-write the same args/vargs/rtype/constraints/throws
+    // walk, and `sig_tvars` re-writes `for_each_type`'s. One walker that takes a
+    // "visit constraints" switch keeps the order in one place.
     // The three walks below visit the cell constraints between rtype
     // and throws; for `alias_tvars` the first-seen occurrence of a
     // name becomes the surviving cell, so the order is observable.
@@ -858,6 +902,11 @@ impl FnType {
     /// Whether a value of type `t` could match a pattern typed `self`:
     /// same arity and labels, every component could match; nothing is
     /// unified.
+    // CR claude for eric: [structure] Pairing a labeled prefix by name and a
+    // positional suffix by index, with the missing-label checks, is written out
+    // in `could_match_int`, `contains_int` and `pre_unify_params` (and a fourth
+    // variant in `sig_contains`). One alignment iterator would keep the rules,
+    // including the `has_default` one `contains_int` misses, in one place.
     pub(super) fn could_match_int(
         &self,
         env: &Env,
@@ -925,6 +974,14 @@ impl FnType {
     ) -> Result<bool> {
         let sul = self.first_positional();
         let tul = t.first_positional();
+        // CR claude for eric: [bug] A label present on both sides is accepted
+        // whatever its `has_default`: `fn(?#x: i64) -> i64` contains
+        // `fn(#x: i64) -> i64`, so a caller may omit `#x` on a function that
+        // requires it. probe: `let f = |#x: i64| x + 1; let a: Array<fn(?#x:
+        // i64) -> i64> = [f]; let h = a[0]$; println("r = [h()]")` passes
+        // `--check` and never prints; passed to a `|h: fn(?#x: i64) -> i64| h()`
+        // parameter it fails with "BUG: in bind missing required argument x".
+        // A defaulted label in `self` needs a defaulted label in `t`.
         for a in &self.args[..sul] {
             if let FnArgKind::Labeled { name: l, .. } = &a.kind {
                 match t.args.iter().find(|a| a.label() == Some(l)) {
@@ -1006,6 +1063,9 @@ impl FnType {
         Ok(())
     }
 
+    // CR claude for eric: [dead] `sig_contains` / `check_sig_contains` have no
+    // caller in the workspace (and compare arguments covariantly, unlike
+    // `contains`); `map_argpos` below has none either. Delete them.
     /// [`Self::contains`] without labeled argument subtyping.
     pub fn sig_contains(&self, env: &Env, other: &Self) -> Result<bool> {
         let Self {
@@ -1289,6 +1349,12 @@ impl fmt::Display for FnType {
         } else {
             write!(f, "fn<")?;
             for (i, (tv, t)) in constraints.iter().enumerate() {
+                // CR claude for eric: [bug] `{tv}` is the variable's Display,
+                // which under `DerefTVars` (every error message) renders its cell:
+                // probe: `let f = 'a: Eq + Ord |x: 'a, y: 'a| -> bool x < y; let g:
+                // fn(x: string) -> string = f` reports `fn<'a: unbound within Ord:
+                // Ord>(..)`. The header wants the bare name `'{tv.name}` (also the
+                // pretty printer's header).
                 write!(f, "{tv}: {t}")?;
                 if i < constraints.len() - 1 {
                     write!(f, ", ")?;
@@ -1296,6 +1362,10 @@ impl fmt::Display for FnType {
             }
             write!(f, ">(")?;
         }
+        // CR claude for eric: [structure] The argument prefix (`?#x: `, `#x: `,
+        // `x: `) and the rtype parenthesization (`-> (fn..)`, `-> &(fn..)`) are
+        // written again in `fmt_pretty_inner`; factor both so the printers
+        // cannot drift.
         for (i, a) in self.args.iter().enumerate() {
             if is_self_param(a) {
                 write!(f, "{}", a.typ)?;

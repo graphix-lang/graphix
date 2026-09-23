@@ -23,6 +23,10 @@ use netidx_value::parser::{int, sep_by1_tok};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
+// CR claude for eric: [bug] The prefix forms (`&`, `*`, `-` here and both `!`s
+// in primary) recurse with `arith_term(true)`, dropping the seq head's `key =
+// false`: `seq *r { .. }`, `seq !b { .. }` and `seq -n { .. }` read the body as
+// a map access and fail at EOF (probes); only `seq (*r) {` works. Thread `key`.
 fn byref_arith<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -89,6 +93,10 @@ where
             ))),
         ),
         attempt(array_index_suffix()).map(Post::Array),
+        // CR claude for eric: [perf] With `key` false the `{..}` is still parsed
+        // in full before `and_then` refuses it, then the seq body parses it again:
+        // a seq whose first statement holds the next seq doubles per level (14
+        // nested: 3.3s to --check, probe). Do not offer this arm when `key` is off.
         attempt(between(sptoken('{'), sptoken('}'), expr()).and_then(move |k| {
             if key {
                 Ok(Post::Key(k))
@@ -157,6 +165,11 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
 /// else the bare postfix source.
 struct Parenthesized;
 
+// CR claude for eric: [bug] `sep_by1_tok` also accepts an empty list, so `()` is
+// a 0-tuple expression and (typexp::tupletyp) a 0-tuple type, though tuples have
+// 2+ elements and a tuple pattern refuses fewer: probe `let x = ();
+// println(x)` prints `()`. `` `A() ``, `T<>`, `{s with }` and a `{}` struct
+// pattern parse too (probes). The root is netidx_value's sep_by1_tok.
 fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -203,8 +216,15 @@ where
         never_expr().map(|e| (e, None)),
         any().map(|e| (e, None)),
         interpolated().map(|e| (e, None)),
+        // CR claude for eric: [dead] Unreachable: the first alternative owns a
+        // leading `!` and commits once it is consumed.
         (position(), token('!').with(arith(true)))
             .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
+        // CR claude for eric: [perf] map() parses a block's first statement before
+        // failing at its `;`, then do_block() parses it again, so a block whose
+        // first statement holds a block doubles per level: 16 nested `{ let x =
+        // { .. }; x }` take 10s to --check (probe). Parse `{` and the first item
+        // once, then branch on `=>`, `,`/`:`/`}`, `with` or `;`.
         attempt(map()).map(|e| (e, None)),
         attempt(structure()).map(|e| (e, None)),
         attempt(structwith()).map(|e| (e, None)),
@@ -255,11 +275,18 @@ parser! {
                             .fold(base, |acc, (op, end)| apply_post(pos, acc, op).ending(end)))
                     }),
             ))
+        // CR claude for eric: [readability] Wrong: postfix_op reads the `{` with
+        // `sptoken`, so `m {"k"}` IS a map access (probe: `println(m {"k"})`
+        // parses). Make the `{` adjacent-only or fix the comment.
         // arith_term must not skip trailing spaces: `m{"k"}` is a map
         // access and `m {"k"}` is not, so the postfix loop must see them.
     }
 }
 
+// CR claude for eric: [structure] Operators travel as `&'static str` and are
+// matched three times (arith's choice, mke, precedence) with `unreachable!()`
+// for any other string; a BinOp enum carrying its token, precedence and
+// constructor makes an unknown operator unrepresentable.
 fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
     macro_rules! mk {
         ($ctor:ident) => {{
@@ -294,6 +321,10 @@ fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
     }
 }
 
+// CR claude for eric: [bug] `*` binds tighter than `/` and `%`, so `8 / 2 * 2`
+// is 8 / (2 * 2) = 2 and `7 % 4 * 2` is 7 (probe; expected 8 and 6); the
+// graphix-lang reference and C-family languages put the three at one level.
+// A fix changes the meaning of existing `a / b * c`. The bool is always true.
 /// Returns (precedence, left_associative) for an operator.
 /// Higher precedence binds tighter.
 pub(crate) fn precedence(op: &str) -> (u8, bool) {

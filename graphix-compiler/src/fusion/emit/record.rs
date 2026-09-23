@@ -27,6 +27,9 @@ use netidx_value::Value;
 use parking_lot::Mutex;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
+// CR claude for eric: [style] std Arc where triomphe fits (no Weak, no cycle; also
+// BodyRecord's Arc), std HashMap with String keys where the names are short
+// generated ones (CompactString), and a raw usize for an address.
 /// The addresses the module resolves imported constant symbols to,
 /// shared with its symbol lookup fn.
 pub(crate) type SymbolTable = Arc<Mutex<HashMap<String, usize>>>;
@@ -78,6 +81,12 @@ impl KernelConst {
     pub(super) fn same_as(&self, other: &KernelConst) -> bool {
         match (self, other) {
             (KernelConst::Str(a), KernelConst::Str(b)) => a == b,
+            // CR claude for eric: [bug] netidx `Value ==` is not identity: 0.0 ==
+            // -0.0 and every NaN equals every NaN, so the second of two such
+            // constants in one body reads the first's value. Probe: `select k
+            // { 5 => {"a" => 0.0}, _ => {"a" => -0.0} }` prints {"a" => 0} for k=6
+            // fused, {"a" => -0} node-walk. Share only on exact identity (packed
+            // bytes, or float bits).
             (KernelConst::Value(a), KernelConst::Value(b)) => a == b,
             (KernelConst::FastFn { f: a, .. }, KernelConst::FastFn { f: b, .. }) => {
                 *a as usize == *b as usize
@@ -132,6 +141,10 @@ pub enum RecordKind {
     Wrapper,
 }
 
+// CR claude for eric: [structure] `kind` beside fields only some kinds may carry: a
+// Thunk or Wrapper never has consts or a thunk, a Kernel's thunk must be a Thunk
+// record, and RelocTarget::Thunk only makes sense in a Kernel. An enum with
+// per-kind payloads makes those states unrepresentable.
 /// One defined function: its code, relocations and constants, plus the
 /// records it refers to. Callees are recorded before their callers, so
 /// the records form a tree below a region's wrapper; a self reference
@@ -227,6 +240,9 @@ impl Pack for RecordReloc {
             RelocTarget::Helper(n) => n.encoded_len(),
             RelocTarget::Callee(i) | RelocTarget::Const(i) => i.encoded_len(),
             RelocTarget::Owner | RelocTarget::Thunk => 0,
+            // CR claude for eric: [style] allocates a String to measure it, and
+            // again in encode; decode goes through String too. A fixed tag per
+            // LibCall (like reloc_tag) avoids all three.
             RelocTarget::LibCall(lc) => lc.to_string().encoded_len(),
         };
         offset.encoded_len() + 1 + 1 + target + addend.encoded_len()

@@ -10,6 +10,9 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::{BitFlags, bitflags};
 use immutable_chunkmap::map::Map;
+// CR claude for eric: [style] Two `netidx_value` lines should be one group, and
+// `triomphe::Arc` is spelled out ten times below (`shallow_discriminant`,
+// `shallowify`) instead of imported.
 use netidx_value::ValArray;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
@@ -32,6 +35,11 @@ pub enum IsAFlags {
 }
 
 impl Type {
+    // CR claude for eric: [bug] Recurses once per type level with no
+    // `ensure_sufficient` (so does `flatten_union_members` at the end of the
+    // file). A flat chain of typedefs is as deep as it is long. probe: 20000
+    // lines `` type A{i} = [`N(A{i-1}), `Z]; `` then `cast<A20000>(`Z)` aborts
+    // with a stack overflow in `check_cast_int` (3000 lines run).
     fn check_cast_int(
         &self,
         env: &Env,
@@ -105,6 +113,10 @@ impl Type {
         hist: &mut AHashSet<(usize, usize)>,
         v: &Value,
     ) -> Result<Value> {
+        // CR claude for eric: [perf] A full `is_a` walk of the subtree at every
+        // level of the cast: a value that fails deep down is re-walked from each
+        // ancestor, O(depth x size). Test only the level's own shape here and let
+        // the children's casts decide the rest.
         if self.is_a_int(env, hist, BitFlags::empty(), v) {
             return Ok(v.clone());
         }
@@ -144,6 +156,14 @@ impl Type {
             },
             // A list casts element-wise, an array converts, anything
             // else becomes a singleton.
+            // CR claude for eric: [bug] An array and a list share `Value::Array`,
+            // so an array whose last element is list-shaped (`[]` or a pair) is
+            // read as a list spine. probe: `cast<List<Array<i64>>>(a)` with
+            // `a: Array<Array<i64>> = [[1], []]` gives `[<[1]>]`, and
+            // `[[[1]], [[2], []]]` cast to `List<Array<Array<i64>>>` gives
+            // `[<[[1]], [[2]]>]` (element rewritten); both engines. The top-level
+            // `is_a` shortcut has the same confusion. The source's static type
+            // (known at the cast site) has to pick the conversion, not its shape.
             Type::List(et) => {
                 use crate::node::collection::list;
                 if list::len(v).is_some() {
@@ -282,6 +302,11 @@ impl Type {
                 hist.remove(&key);
                 r
             }
+            // CR claude for eric: [perf] Every failed member attempt builds an
+            // anyhow error that formats the whole value (`can't cast {v} to
+            // {self}`, unbounded), then `.ok()` throws it away; nested unions
+            // repeat this at each level. Failed attempts should not format, and
+            // the final message should use a bounded prefix (`NakedPrefix`).
             Type::Set(ts) => ts
                 .iter()
                 .find_map(|t| t.cast_value_int(env, hist, v).ok())
@@ -318,6 +343,8 @@ impl Type {
         v: &Value,
     ) -> bool {
         match self {
+            // CR claude for eric: [readability] This comment is about the `Ref`
+            // arm's `hist`, but sits above `App`. Move it to the `Ref` arm.
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
             // structure; a repeat off the path is union backtracking.
@@ -539,6 +566,12 @@ fn struct_field(v: &Value) -> Option<(&ArcStr, &Value)> {
 }
 
 /// The identity of a type name on the current walk's path.
+// CR claude for eric: [structure] Four ref-identity schemes for one job: this XOR
+// of two addresses (two distinct names can collide and read as a
+// non-consuming recursion, failing a valid cast or `is_a`),
+// `flatten_union_members`' (scope, name) tuple, `RefHist::ref_id` in
+// `check_cast_int`, and typed printing's address of a local (`typ/tval.rs`,
+// broken). One keyed identity, e.g. the resolution cell, shared by all.
 fn ref_key(scope: &ModPath, name: &ModPath) -> usize {
     (scope.as_ref() as *const _ as *const u8).addr()
         ^ (name.as_ref() as *const _ as *const u8).addr()
@@ -562,6 +595,9 @@ enum ArrCon {
 }
 
 fn member_facts(t: &Type) -> MemberFacts {
+    // CR claude for eric: [readability] `f(None, false, false, true)` is four
+    // positional bools the reader must count. Write the struct literal with
+    // field names, or give `MemberFacts` constructors per class.
     let f = |arr, map, error, exact| MemberFacts { arr, map, error, exact };
     match t {
         Type::Primitive(bits) => f(
@@ -613,6 +649,9 @@ fn arr_overlap(
     }
 }
 
+// CR claude for eric: [style] Each arm collects into a temporary `Vec` and then
+// copies it into an `Arc` (also `shallow_discriminant`'s final `Set`);
+// `Arc::from_iter` builds the slice directly.
 fn shallowify(t: &Type) -> Type {
     match t {
         Type::Variant(tag, ps, at) => Type::Variant(

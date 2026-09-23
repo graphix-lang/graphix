@@ -27,6 +27,12 @@ pub use kernel_abi::{KnownFusedFn, PrimType};
 /// A lambda kernel signature, cached per monomorphization in
 /// `FusionCtx::kernels`. `fn_name` is the symbol call sites resolve
 /// against.
+// CR claude for eric: [structure] `is_rec` + `self_bind` is a pair that must agree
+// (discover_lambda_calls `expect`s it, with a message claiming is_rec derives
+// from self_bind; it comes from `g.self_recursive()`), so it should be one
+// `self_call: Option<BindId>`. `fn_name` repeats `kernel.fn_name`, and
+// `signature.self_bind`/`return_type` are never read (only `arg_types`). The
+// doc is stale: calls resolve by `kernel_key`, not by `fn_name`.
 #[derive(Debug, Clone)]
 pub struct CachedKernel {
     pub fn_name: ArcStr,
@@ -153,6 +159,11 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// (design/wake_catchup.md), and a constant fires at the arm's wake. A
 /// kernel derives its selection fresh every run and remembers neither,
 /// so the raise node-walks.
+// CR claude for eric: [perf] One full `for_each_reachable_node` walk per arm of
+// every select in the region, callee bodies included and re-walked per arm, and
+// `found` only mutes the visitor without stopping the walk: nested selects make
+// this quadratic, and it re-runs on every top-down region attempt. One walk
+// that tracks "under an arm" (and stops at the first hit) gives the same answer.
 fn arm_raise_blocker<R: Rt, E: UserEvent>(
     selects: &[&Node<R, E>],
 ) -> Option<FusionBlocker> {
@@ -200,6 +211,9 @@ fn root_blocker<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&'static str> 
 /// Register a cast that is not emitted inline. The inline test here
 /// must mirror `emit_cast_node`'s, or the site registers out of step
 /// with emission.
+// CR claude for eric: [structure] "Must mirror" is a duplicated predicate held in
+// sync by a comment (`emit_cast_node` repeats it). Make it one
+// `cast_is_inline(source, target)` fn both call.
 fn try_register_cast<R: Rt, E: UserEvent>(
     tc: &crate::node::TypeCast<R, E>,
     out: &mut BuiltinCallDiscovery,
@@ -285,6 +299,10 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     let mut marshal_args: Vec<MarshalArg> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
+        // CR claude for eric: [style] `use FnArgKind;` re-imports a name the file
+        // already imports (also `use NodeView;` in node_const_value_inner, `use
+        // AbiKind;` x3, `use kernel_abi::Seen;` x2); `use kernel_abi::expand_key_fp`
+        // sits mid-file. Delete the no-ops and move the last one to the top.
         use FnArgKind;
         match &fa.kind {
             FnArgKind::Positional { .. } => {
@@ -463,6 +481,10 @@ pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
 /// number of distinct types, not paths.
 struct ResolveCx {
     /// Ref expansions.
+    // CR claude for eric: [perf] Looked up by a linear scan (`lookup`), and every
+    // hit clones the whole entry (its `deps` Vec and resolved `Type`) just to read
+    // it: O(entries) per Ref with up to `budget` entries. Key it by `fp` in a map
+    // and borrow the hit.
     memo: std::cell::RefCell<LPooled<Vec<MemoEntry>>>,
     /// Shared composite subtrees between expansions.
     nodes: std::cell::RefCell<LPooled<ahash::AHashMap<crate::typ::NormKey, NodeEntry>>>,
@@ -680,6 +702,10 @@ impl ResolveCx {
 
 /// `None` when nothing beneath resolved (the caller keeps the original)
 /// or the resolve was truncated (`cx.poisoned` set).
+// CR claude for eric: [readability] `resolve_abstract_d`/`resolve_abstract_node`
+// expand named types (`Type::Ref`); abstract types are the one thing they leave
+// alone. Name them for what they do (`expand_ref_d`/`expand_ref_node`). The 256
+// below is `kernel_abi::MAX_FREEZE_EXPANSIONS` spelled again; share the const.
 fn resolve_abstract_d<'a>(
     typ: &Type,
     env: &Env,
@@ -687,6 +713,10 @@ fn resolve_abstract_d<'a>(
     cx: &ResolveCx,
 ) -> Option<Type> {
     use kernel_abi::Seen;
+    // CR claude for eric: [bug] structural depth is uncounted and this recursion
+    // has no `stack::ensure_sufficient`: a flat 3000-line program `let x1 = [x0];
+    // let x2 = [x1]; ...` aborts `graphix --check` with a stack overflow when fusion
+    // is on (probed by two reviewers; --no-fusion survives this walk).
     // Bounds distinct expansions on one path, which is what stops
     // non-regular recursion; structural depth is not counted.
     if Seen::len(seen) > 256 {
@@ -771,6 +801,15 @@ pub(crate) type QopCoverage = smallvec::SmallVec<[u64; 4]>;
 /// those resolutions as CLIF calls.
 pub(crate) type FnResolutions = smallvec::SmallVec<[u64; 4]>;
 
+// CR claude for eric: [bug] Walks `for_each_node`, which skips inline collection
+// callback bodies, but the kernel emits them (`for_each_emitted_node`): a `?`
+// in a callback is baked into the kernel yet absent from the key, so a second
+// instance under another catch reuses the first instance's handler — a fusion
+// wrong answer. Probe: `let h = |x: [i64, Error<`E(string)>]| -> i64 x?; let g =
+// |a: Array<[i64, Error<`E(string)>]>| -> Array<i64> array::map(a, h);` then
+// `{ catch(e) println(e ~ "h1"); g(a1) }` and the same with "h2"/`a2`: fused
+// prints h1 h1, --no-fusion h1 h2. Walk `for_each_emitted_node` here;
+// `invariant_formals` and `self_calls_abi_consistent` share the blind spot.
 fn body_fingerprint<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ec: &ExecCtx<R, E>,
@@ -914,6 +953,11 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
 /// `None` means the lambda has no kernel-representable signature and
 /// its call sites node-walk. A cache hit returns the first builder's
 /// `fn_name`.
+// CR claude for eric: [structure] ~230 lines doing eight jobs in sequence (key
+// and cache, discovery, naming, site/instance agreement, reentry guard,
+// formals, captures, return + recursion checks, sig build). Split at least the
+// formal and capture slot builders out; each `return None` is a silent de-fuse
+// with no reason recorded for #[native] or `FusionStats`.
 pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     site_ftype: &FnType,
@@ -939,6 +983,10 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     walk_node_for_builtin_calls(g.body(), ec, &mut discovery).ok()?;
     // Kernel names are module-wide, so each coverage variant needs its
     // own symbol; the suffix is deterministic in compile order.
+    // CR claude for eric: [dead] The premise is false: `ensure_declared` makes
+    // every symbol unique with `next_symbol`'s counter, and calls resolve by
+    // `kernel_key`, so `fn_name` is only a label. The range scan under the lock
+    // and the `__cov{n}` suffix can go.
     let variant = {
         let kernels = ec.fusion.kernels.lock();
         kernels
@@ -982,6 +1030,11 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     // Mutual recursion would re-enter this build forever (the cache
     // entry lands only on completion); a re-entered build refuses and
     // the chain de-fuses.
+    // CR claude for eric: [dead] Nothing below re-enters this function: the only
+    // caller, `discover_lambda_calls`, walks callees from a worklist after each
+    // build returns (its cache entry already landed). So `FusionCtx::building`,
+    // this guard and the Arc they need are unreachable machinery. Also nothing
+    // here mutates the context: take `&ExecCtx`, not `&mut`.
     struct BuildingGuard(triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>, u64);
     impl Drop for BuildingGuard {
         fn drop(&mut self) {
@@ -1241,6 +1294,9 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
                 ok = false;
                 return;
             };
+            // CR claude for eric: [perf] a committing check used as a yes/no probe: every
+            // failure pays contains_mismatch's diagnostic walks and builds an error that is
+            // dropped. Use the probe form (`contains` with probe flags).
             if formal_kt.check_contains(&ec.env, &arg_kt).is_err() {
                 ok = false;
                 return;
@@ -1253,6 +1309,12 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
 /// Kernel input slot classification, the source of a
 /// [`kernel_abi::KernelParam`]'s `ParamKind`. Function-typed inputs are
 /// not value slots. Each carried `Type` is frozen.
+// CR claude for eric: [structure] A fourth copy of the shape enum (with AbiKind,
+// AbiParamKind, ParamKind) that can hold invalid states: `Tuple(Type)` may carry
+// a non-tuple, hence the "freeze invariant" errors `sig_from_inputs` returns.
+// Build `ParamKind` directly here (Tuple{elems}, Struct{fields}, ...) and
+// `sig_from_inputs` becomes infallible. `type_to_region_input_kind` also
+// re-freezes types every caller has just frozen.
 #[derive(Debug, Clone)]
 pub enum RegionInputKind {
     Prim(PrimType),

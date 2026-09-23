@@ -6,6 +6,8 @@
 //! session, then the instance heap, the shared objects' definitions and
 //! the trailer. The writer measures everything first, then encodes.
 
+// CR claude for eric: [readability] the layout above omits the ISA description
+// and the two header offsets (heap, trailer) written after the id counts.
 use super::{
     DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder, defs,
     nodes, scope_decode, scope_encode, scope_len,
@@ -77,6 +79,10 @@ struct Tables<'a, R: Rt, E: UserEvent> {
     defs: Vec<&'a LambdaDef<R, E>>,
     bind_to_lambda: Vec<(BindId, LambdaId)>,
     builtin_bindings: Vec<(ModPath, CompactString, BuiltinBindInfo)>,
+    // CR claude for eric: [dead] rec_defs is non-empty only inside a def gate
+    // (lambda.rs:1501/1558), which the busy check refuses, and compile_stmt clears
+    // predeclared_mods before every statement (lib.rs:1978): both are per-compile
+    // scratch that travels empty or unread. Drop them from the image.
     rec_defs: Vec<LambdaId>,
     fn_forward_resolutions: Vec<(BindId, LambdaId)>,
     connect_targets: Vec<BindId>,
@@ -220,6 +226,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let tables = Tables::collect(self)?;
         let mut enc = ImageEncoder::new();
         enc.defer_instances = program.is_some();
+        // CR claude for eric: [perf] this pass (content keys, expr_key clones, refs
+        // summaries, every node) only sizes `buf`: nothing frames the body, and the
+        // node lengths are already estimates (callsite.rs:1914 `9 +`). It is about
+        // half the cold write's walks for a capacity hint; let the buffer grow.
         let measure = |enc: &mut ImageEncoder| {
             enc.deferred_len = 0;
             EncodeImage::with(enc, || {
@@ -253,6 +263,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         buf.put_u8(REGISTRATION_FORMAT);
         counts.encode(&mut buf)?;
         isa.encode(&mut buf)?;
+        // CR claude for eric: [readability] this is the header slot holding the
+        // heap and trailer offsets, not the trailer; `offsets_at`.
         let trailer_at = buf.len();
         buf.put_u64(0);
         buf.put_u64(0);
@@ -321,6 +333,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         Ok(buf.freeze())
     }
 
+    // CR claude for eric: [bug] a bad image fails GX::new and the shell refuses to
+    // start on every run until the file is deleted (probe: truncating the program
+    // image gives "reading the registration image: BufferShort" each run). The
+    // caller cannot fall back cold on this context: env, lambda_defs and the tables
+    // are already overwritten when the error returns. Decode into locals, commit
+    // at the end, and let the runtime compile cold on Err.
     /// Restore a registration image into this session, which must have
     /// its builtins registered and nothing compiled. The decoder stays
     /// with the session for anything decoded later.
@@ -362,6 +380,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let restored = DecodeImage::with(&mut dec, || -> Result<_, PackError> {
             {
                 let mut table = &image[table_at..];
+                // CR claude for eric: [bug] capacities come straight from the
+                // image. probe: an eager count of 2^62 in the trailer panics
+                // (capacity overflow), 1e11 aborts the process (allocation failure).
+                // Same at the offsets, d.reserve(eager) and the node Vec below, and
+                // nodes.rs decode_nodes. Bound each by the bytes that remain.
                 let n = decode_varint(&mut table)? as usize;
                 let mut instances = ahash::AHashMap::with_capacity(n);
                 for _ in 0..n {

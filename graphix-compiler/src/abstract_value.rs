@@ -23,6 +23,8 @@ use triomphe::Arc;
 /// for the duration of an operation (`node::coretraits::
 /// with_hooks`); with no loan installed the structural case
 /// applies.
+// CR claude for eric: [style] Only `node::coretraits` builds one, yet the struct
+// and its raw-pointer fields are `pub` API. `pub(crate)`.
 #[repr(C)]
 pub struct ValueHookDispatch {
     /// Type-erased pointer to the monomorphized dispatch state
@@ -42,6 +44,11 @@ thread_local! {
 /// Install `h` as the thread's value-hook dispatch until the guard
 /// drops (loans nest). The caller must keep the handle and its state
 /// alive and unmoved for the guard's lifetime.
+// CR claude for eric: [risk] A safe fn with a liveness contract on a raw
+// pointer, returning a guard that `mem::forget` can leak, after which any `==`
+// on an abstract value dereferences a dead frame. Take `(&ValueHookDispatch, f:
+// impl FnOnce() -> T)` and restore inside, so the one caller's closure-scoped
+// use is the only possible use.
 pub(crate) fn arm_value_hooks(h: *const ValueHookDispatch) -> ValueHookGuard {
     ValueHookGuard { prev: VALUE_HOOKS.with(|c| c.replace(h)) }
 }
@@ -137,6 +144,12 @@ impl Ord for GxAbstract {
     }
 }
 
+// CR claude for eric: [bug] Hashes the payload structurally while `eq` consults a
+// user `Eq` impl, so values that are `==` hash apart. probe: with `impl Eq for
+// Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) }`,
+// `array::dedup([Key("Foo"), Key("FOO"), Key("foo")])` keeps all three while
+// `Key("Foo") == Key("FOO")` is true (both engines). Hash only `id` when the
+// type may carry an `Eq` impl, or route hashing through the hooks too.
 impl Hash for GxAbstract {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
@@ -144,6 +157,10 @@ impl Hash for GxAbstract {
     }
 }
 
+// CR claude for eric: [style] Hand-written, and asymmetric: encode goes through
+// `image::slice_*`, decode through `Vec<Type>` plus a copy into the `Arc`.
+// netidx already implements `Pack` for `triomphe::Arc<[T]>` with this layout;
+// `#[derive(Pack)]` on the struct gives the same bytes.
 impl Pack for GxAbstract {
     fn encoded_len(&self) -> usize {
         Pack::encoded_len(&self.id)
@@ -177,6 +194,10 @@ static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
 });
 
 /// Mint a value of the abstract type `id<params>` around `payload`.
+// CR claude for eric: [risk] The module doc says a value is "minted only by the
+// constructor `T(..)`", but `wrap` and every `GxAbstract` field are `pub`, so
+// any package can mint or rewrite a value of any Graphix abstract type. Only
+// this crate calls `wrap`: make it `pub(crate)` and the fields read-only.
 pub fn wrap(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Value {
     WRAPPER.wrap(GxAbstract { id, name, params, payload })
 }
@@ -198,6 +219,8 @@ pub fn payload(v: &Value) -> Option<&Value> {
 /// Is `v` a value of the abstract type `id`? A Graphix-minted box
 /// answers by its tag; a Rust-backed value by its registered wrapper
 /// UUID ([`crate::typ::abstract_uuid`] of the type's path).
+// CR claude for eric: [dead] No caller in the workspace (the runtime test is
+// `Type::is_a`'s `Abstract` arm, which duplicates this logic).
 pub fn is_instance(v: &Value, id: AbstractId) -> bool {
     match v {
         Value::Abstract(a) => match a.downcast_ref::<GxAbstract>() {

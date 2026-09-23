@@ -33,6 +33,8 @@ where
     )
         .then(
             |(mut root, mut parts): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
+                // CR claude for eric: [dead] `sep_by1` never yields zero parts and
+                // `ident` never an empty name: both refusals are unreachable.
                 if parts.len() == 0 {
                     unexpected_any("empty type path").left()
                 } else {
@@ -51,6 +53,10 @@ where
         )
 }
 
+// CR claude for eric: [structure] A third spelling of the primitive names
+// (after mod.rs TYPE_KEYWORDS and netidx's `Typ::name`), with `attempt`s placed
+// by shared prefix; `ident(false)` then `Typ::from_str` over the lowercase names
+// says it once.
 fn typeprim<I>() -> impl Parser<I, Output = Typ>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -203,6 +209,10 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    // CR claude for eric: [style] This is `not_prefix()` spelled out; also
+    // `ahash::AHashMap` and `crate::expr::get_origin()` (typref) are written in
+    // full, and `spaces().then(|_| ..)` (fnargs, typedef, traitexp::impl_decl)
+    // is `spaces().with(..)`.
     attempt(string("fn").skip(not_followed_by(choice((token('_'), alpha_num())))))
         .with((
             fnconstraints(),
@@ -260,6 +270,11 @@ where
                 }
                 ft.alias_tvars(&mut known);
                 for (tv, tc) in constraints.iter() {
+                    // CR claude for eric: [risk] a constraint that names its own quantifier (`'a:
+                    // [i64, Array<'a>]`) is aliased here into a cell whose constraint contains the
+                    // cell itself. Every walk over cell constraints must then carry a cycle guard;
+                    // the syntax codec does not (CR at expr/serialize.rs:168). Either refuse the
+                    // self-reference here or state the invariant where cells are walked.
                     tc.alias_tvars(&mut known);
                     tv.add_cell_constraint(tc.clone());
                 }

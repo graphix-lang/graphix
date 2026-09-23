@@ -1,3 +1,6 @@
+// CR claude for eric: [style] `crate::image` is split over two statements
+// beside the `crate::{..}` group, and `super::produce_constant` is spelled out
+// twice; one grouped `use crate::{..}` and import it.
 use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
 use crate::image::ImageBuf;
 use crate::image::nodes::{
@@ -94,10 +97,18 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 }
 
+// CR claude for eric: [readability] stale: the fused init loop taints without
+// logging, the node-walk logs every cycle (collection.rs IndexRange::select),
+// and `list::init` shares the limit. Only collection init and the init
+// scaffold read it; it belongs beside IndexRange, not in array.rs.
 /// The largest `n` `array::init(n, f)` will build; beyond it both
 /// evaluators log and produce bottom.
 pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
 
+// CR claude for eric: [structure] "negative counts from the end" is written
+// three times, here, in bytes_index and in place::index_of, with three
+// different out-of-bounds messages. One `fn index(len, i) -> Option<usize>`
+// here, used by all three (and so by the JIT helpers).
 /// `array[i]`, shared by the node-walk and the JIT. Returns the bare
 /// element, or the `ArrayIndexError` value when out of bounds. Negative
 /// indices count from the end.
@@ -137,6 +148,9 @@ pub(crate) fn array_slice(
     start: Option<usize>,
     end: Option<usize>,
 ) -> Value {
+    // CR claude for eric: [style] the three subslice arms differ only in the
+    // range; build one `(Bound, Bound)` and call subslice once. `{e:?}` renders
+    // the error with Debug where Display is the message.
     match src {
         Value::Array(elts) => match (start, end) {
             (None, None) => Value::Array(elts.clone()),
@@ -204,6 +218,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         let ival = read_prod!(self.i, ctx, event, trig, fired, bottom);
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        // CR claude for eric: [bug] `cast_to::<i64>` wraps an unsigned index, so a
+        // u64 above i64::MAX reads from the end: `a[u64:18446744073709551615]`
+        // on [1, 2, 3] is 3 in both engines (the JIT's widen_to_i64 and the
+        // place step in bind.rs wrap too) where it is out of bounds. An
+        // unsigned index needs its range check before the negative rule.
         let i = match ival.unwrap() {
             Value::I64(i) => i,
             v => match v.cast_to::<i64>() {
@@ -383,6 +402,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         };
         dense_gate!(self, ctx, trig, bottom);
         let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        // CR claude for eric: [bug] a negative bound wraps through
+        // `cast_to::<usize>`: `a[-1..]` on [1, 2, 3] is the error "start index
+        // 18446744073709551615 out of bounds 3" in both engines (array_slice_i64
+        // copies the wrap), and the "expected a non negative number" arm is
+        // unreachable for the integer bounds typecheck admits. Refuse a
+        // negative bound by name, or honor it as `a[-1]` does; a fn, not two
+        // macros with hidden returns.
         macro_rules! number {
             ($e:expr) => {
                 match $e.clone().cast_to::<usize>() {
@@ -539,6 +565,11 @@ impl<R: Rt, E: UserEvent> Array<R, E> {
     }
 }
 
+// CR claude for eric: [structure] ListLit is Array with `Type::List` and
+// `list::from_iter` in place of `Type::Array` and a ValArray: the struct,
+// compile, image codec, delete/sleep/refs/typecheck are copies. One node with
+// a kind (collection.rs has `Flavor`). Both impls are also split into two
+// interleaved blocks each (Array's compile at the top, its codec at the end).
 #[derive(Debug)]
 pub struct ListLit<R: Rt, E: UserEvent> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`

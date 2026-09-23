@@ -36,6 +36,11 @@ impl Tag {
     pub const STALE_BOTTOM: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT);
 
     /// Wrap a raw tag byte.
+    // CR claude for eric: [structure] Any byte becomes a `Tag`, so 252 values
+    // with meaningless bits are representable, and `==` tells `Tag(0x01)` from
+    // `FIRED` though every predicate agrees they are the same.
+    // graphix-package-core decodes image bytes straight through here. Mask to
+    // `STALE_BIT | TAINT_BIT` (or make `Tag` the four-state enum `TagView` is).
     pub fn from_raw(bits: u8) -> Self {
         Tag(bits)
     }
@@ -133,6 +138,10 @@ pub fn value_words(v: &Value) -> [u64; 2] {
     [disc, payload]
 }
 
+// CR claude for eric: [risk] `TagValue` owns a `Value` but is declared as two
+// `u64`s, so its `Send`/`Sync` and drop-check come from the integers, not from
+// `Value`. Harmless while `Value` is `Send + Sync`; a `PhantomData<Value>`
+// field keeps it true by construction.
 #[repr(C)]
 pub struct TagValue {
     disc: u64,
@@ -146,6 +155,13 @@ impl TagValue {
     /// SAFETY: the masked words `(disc & !TAG_MASK, payload)` must be a
     /// valid `Value` bit pattern, or the zero sentinel checked via
     /// [`Self::is_sentinel`] before any clone/drop.
+    // CR claude for eric: [readability] A resolved XCR is still here (and its
+    // "both callers ... in fusion/kernel.rs" is stale: four callers, three in
+    // emit_helpers.rs). Delete it.
+    // CR claude for eric: [risk] The contract names only clone and drop, but
+    // `value`, `with_value`, `value_cloned` and `Display` also materialize the
+    // disc-0 `Value` (UB); only `Debug` checks `is_sentinel`. State it as "no
+    // use but `is_sentinel`/`tag` until checked".
     // XCR estokes: This should be marked unsafe, you can use it to construct
     // and invalid Value.
     // (done — unsafe with the contract above; both callers are the JIT
@@ -171,6 +187,8 @@ impl TagValue {
     }
 
     /// Alias of [`Self::clean`] under the interpreter's vocabulary.
+    // CR claude for eric: [style] Two names for one constructor (142 call sites
+    // say `fired`, 20 say `clean`). Keep `fired`, which matches `Tag::FIRED`.
     #[inline]
     pub fn fired(v: Value) -> Self {
         Self::clean(v)
@@ -221,6 +239,11 @@ impl TagValue {
     }
 
     /// The shared production of a node that never produces.
+    // CR claude for eric: [structure] `phantom_ref`, `tainted_null` and
+    // `bottom_null(false)` are three statics holding the same bits (Null,
+    // STALE_BOTTOM), as are `phantom()` and `tainted(Null)`; `tainted_null` has
+    // no caller. One static, one constructor; `tainted` (which sets STALE too)
+    // is the misleading name to drop.
     pub fn phantom_ref() -> &'static TagValue {
         static PHANTOM: std::sync::LazyLock<TagValue> =
             std::sync::LazyLock::new(TagValue::phantom);
@@ -259,6 +282,7 @@ impl TagValue {
     }
 
     /// The raw tag byte as the JIT wrote it (boundary code only).
+    // CR claude for eric: [dead] No caller in the workspace.
     #[inline]
     pub fn raw_tag(&self) -> u8 {
         (self.disc >> 56) as u8
@@ -288,6 +312,11 @@ impl TagValue {
 
     /// Recover the clean `Value`, MASKING the tag. The sole raw-words →
     /// `Value` gateway; consumes self, transferring payload ownership.
+    // CR claude for eric: [structure] Not the sole gateway: the same masked
+    // `transmute::<[u64; 2], Value>` is written four times (`value`,
+    // `with_value`, `Clone`, `Drop`). One private `fn masked(&self) ->
+    // ManuallyDrop<Value>` would hold the unsafe once, next to the layout
+    // assertion it relies on (today in fusion/emit_helpers.rs).
     #[inline]
     pub fn value(self) -> Value {
         let me = std::mem::ManuallyDrop::new(self);
