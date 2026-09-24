@@ -235,7 +235,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             Type::Primitive(Typ::get(v).into()),
             spec.clone(),
         )),
-        ExprKind::Do { exprs } => {
+        ExprKind::Block { exprs } => {
             let scope = scope.append_block("do", spec.id.inner());
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)
         }

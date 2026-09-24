@@ -154,7 +154,7 @@ fn a_use_completes_with_the_modules_exports() {
     c.open("main.gx");
     c.open("shapes/round.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
-    let mut at = |c: &mut Client, file: &str, original: &str, from: &str, to: &str| {
+    let at = |c: &mut Client, file: &str, original: &str, from: &str, to: &str| {
         c.replace(file, from, to);
         let got = c.completions(file, &format!("{to}|"));
         c.edit(file, original);

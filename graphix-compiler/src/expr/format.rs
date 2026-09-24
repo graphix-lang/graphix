@@ -227,12 +227,11 @@ fn merge_uses_within(e: &Expr) -> Expr {
     use ExprKind::*;
     let e = ensure_sufficient(|| e.map_children(&mut merge_uses_within));
     let kind = match &e.kind {
-        Do { exprs } => Do { exprs: merge_expr_uses(exprs) },
-        Seq { queued, trigger, abort, flush, body } => Seq {
-            queued: *queued,
+        Block { exprs } => Block { exprs: merge_expr_uses(exprs) },
+        Seq { kind, trigger, abort, body } => Seq {
+            kind: kind.clone(),
             trigger: trigger.clone(),
             abort: abort.clone(),
-            flush: flush.clone(),
             body: merge_expr_uses(body),
         },
         TryWith(t) => TryWith(Arc::new(TryWithExpr {

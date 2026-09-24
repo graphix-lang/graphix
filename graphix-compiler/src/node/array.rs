@@ -1,9 +1,7 @@
-use super::{
-    WakeBit, compiler::compile, dense_gate, gather, list, produce_constant, read_prod,
-};
+use super::{WakeBit, compiler::compile, dense_gate, gather, list, produce_constant};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent, defetyp,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    defetyp,
     env::Env,
     err, errf,
     expr::{Expr, ExprId},
@@ -188,19 +186,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let mut trig = false;
-        let mut fired = false;
-        let mut bottom = false;
-        let sval = read_prod!(self.source, ctx, event, trig, fired, bottom);
-        let ival = read_prod!(self.i, ctx, event, trig, fired, bottom);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = match (sval.unwrap(), ival.as_ref().and_then(index_i64)) {
+        let s = self.source.update(ctx, event);
+        let i = self.i.update(ctx, event);
+        let tag = s.tag().join(i.tag());
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let v = s.with_value(|s| match (s, i.with_value(index_i64)) {
             (_, None) => err!(ERR_TAG, "expected an integer"),
-            (Value::Array(elts), Some(i)) => array_index(&elts, i),
-            (Value::Bytes(b), Some(i)) => bytes_index(&b, i),
+            (Value::Array(elts), Some(i)) => array_index(elts, i),
+            (Value::Bytes(b), Some(i)) => bytes_index(b, i),
             (_, Some(_)) => err!(ERR_TAG, "expected an array"),
-        };
+        });
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -349,24 +344,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let mut trig = false;
-        let mut fired = false;
-        let mut bottom = false;
-        let sval = read_prod!(self.source, ctx, event, trig, fired, bottom);
-        let stval = match self.start.as_mut() {
-            None => None,
-            Some(n) => read_prod!(n, ctx, event, trig, fired, bottom),
+        let s = self.source.update(ctx, event);
+        let start = self.start.as_mut().map(|n| n.update(ctx, event));
+        let end = self.end.as_mut().map(|n| n.update(ctx, event));
+        let tag = [start, end].iter().flatten().fold(s.tag(), |t, b| t.join(b.tag()));
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let bound = |b: Option<&TagValue>| {
+            b.map(|b| b.with_value(index_i64).ok_or(())).transpose()
         };
-        let etval = match self.end.as_mut() {
-            None => None,
-            Some(n) => read_prod!(n, ctx, event, trig, fired, bottom),
-        };
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let bound =
-            |b: &Option<Value>| b.as_ref().map(|v| index_i64(v).ok_or(())).transpose();
-        let v = match (bound(&stval), bound(&etval)) {
-            (Ok(start), Ok(end)) => array_slice(&sval.unwrap(), start, end),
+        let v = match (bound(start), bound(end)) {
+            (Ok(start), Ok(end)) => s.with_value(|s| array_slice(s, start, end)),
             _ => err!(ERR_TAG, "expected an integer"),
         };
         self.resident.set(TagValue::tagged(v, tag))

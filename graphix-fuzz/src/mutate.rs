@@ -168,7 +168,7 @@ fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
 /// earlier one's name, creating a shadow. Type-blind.
 fn try_shadow_rename(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
     let exprs = match &e.kind {
-        ExprKind::Do { exprs } => exprs,
+        ExprKind::Block { exprs } => exprs,
         _ => return None,
     };
     let binds: Vec<usize> = exprs
@@ -209,7 +209,7 @@ fn try_shadow_rename(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
             _ => ex.clone(),
         })
         .collect();
-    Some(ExprKind::Do { exprs: aslice(new_exprs) })
+    Some(ExprKind::Block { exprs: aslice(new_exprs) })
 }
 
 /// If `e` is a lambda (or a bind of one), strip one type annotation:
@@ -461,7 +461,7 @@ pub fn parse(s: &str) -> Option<Expr> {
 pub fn parse_items(s: &str) -> Option<Expr> {
     let items = parser::parse(Origin::unspecified(s)).ok()?;
     let pos = items.first()?.pos;
-    Some(Expr::new(ExprKind::Do { exprs: items }, pos))
+    Some(Expr::new(ExprKind::Block { exprs: items }, pos))
 }
 
 /// Render a [`parse_items`] `Do` back to module-section text: the items
@@ -469,7 +469,7 @@ pub fn parse_items(s: &str) -> Option<Expr> {
 /// `to_string` would emit.
 pub fn render_items(e: &Expr) -> String {
     match &e.kind {
-        ExprKind::Do { exprs } => {
+        ExprKind::Block { exprs } => {
             exprs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(";\n")
         }
         _ => e.to_string(),
@@ -545,7 +545,7 @@ pub fn statements(e: &Expr) -> Vec<(usize, usize, usize)> {
 fn statements_at(e: &Expr, ctr: &mut usize, out: &mut Vec<(usize, usize, usize)>) {
     let here = *ctr;
     *ctr += 1;
-    if let ExprKind::Do { exprs } = &e.kind
+    if let ExprKind::Block { exprs } = &e.kind
         && exprs.len() >= 2
     {
         let mut idx = here + 1;
@@ -563,7 +563,7 @@ fn statements_at(e: &Expr, ctr: &mut usize, out: &mut Vec<(usize, usize, usize)>
 pub fn drop_statement(prog: &Expr, at: usize, pos: usize) -> Expr {
     let mut nodes = Vec::new();
     collect_preorder(prog, &mut nodes);
-    let Some(ExprKind::Do { exprs }) = nodes.get(at).map(|e| &e.kind) else {
+    let Some(ExprKind::Block { exprs }) = nodes.get(at).map(|e| &e.kind) else {
         return prog.clone();
     };
     let kept: Vec<Expr> = exprs
@@ -572,7 +572,7 @@ pub fn drop_statement(prog: &Expr, at: usize, pos: usize) -> Expr {
         .filter(|(k, _)| *k != pos)
         .map(|(_, e)| e.clone())
         .collect();
-    let block = Expr::new(ExprKind::Do { exprs: aslice(kept) }, nodes[at].pos);
+    let block = Expr::new(ExprKind::Block { exprs: aslice(kept) }, nodes[at].pos);
     replace(prog, at, &block)
 }
 
@@ -613,14 +613,14 @@ mod test {
         let stmts = statements(&e);
         assert_eq!(stmts.len(), 4 + 2); // outer block, inner block
         for (block, pos, stmt) in stmts {
-            let ExprKind::Do { exprs } = &nodes[block].kind else {
+            let ExprKind::Block { exprs } = &nodes[block].kind else {
                 panic!("statement {stmt}'s block {block} is not a block")
             };
             assert_eq!(exprs[pos].to_string(), nodes[stmt].to_string());
             let mut want: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
             want.remove(pos);
             let after = preorder(&drop_statement(&e, block, pos));
-            let ExprKind::Do { exprs } = &after[block].kind else { panic!() };
+            let ExprKind::Block { exprs } = &after[block].kind else { panic!() };
             let got: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
             assert_eq!(got, want);
         }
@@ -630,7 +630,7 @@ mod test {
     fn items_round_trip() {
         let src = "let a: i64 = i64:1;\nlet b = |x: i64| -> i64 x + a;\nb(a)";
         let e = parse_items(src).unwrap();
-        assert!(matches!(&e.kind, ExprKind::Do { exprs } if exprs.len() == 3));
+        assert!(matches!(&e.kind, ExprKind::Block { exprs } if exprs.len() == 3));
         assert!(parse_items(&render_items(&e)).is_some());
         // a section renders bare: no block braces
         assert!(!render_items(&e).starts_with('{'));

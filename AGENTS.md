@@ -328,7 +328,8 @@ registration entry (the package root compiled; key = image format +
 root; the build id covers the packages compiled in) and, for a script,
 the program entry (the program compiled too; key adds the program
 source). A warm start maps the program entry, else the registration
-entry and compiles the program, else compiles both; a missing entry is
+entry and compiles the program, else compiles both; an entry that fails
+to read leaves the session untouched and starts cold; a missing entry is
 written from the runtime that compiled it. `--no-cache` disables the
 cache, `--warm` writes and exits; the program key carries the compile
 flags and the header the ISA. A script compiles at runtime
@@ -386,13 +387,16 @@ chose rides beside it as metadata that decides nothing: `WrittenAt` (a
 position that is always equal, hashes to nothing, packs to nothing) on
 struct pattern binds, struct type fields, variant types, every declared
 name (`Name`) and every expression's end, `Expr::pos`
-for struct literal fields, `Expr::str_form` for a string's delimiters.
+for struct literal fields, `Expr::str_form` for a string's delimiters,
+`Comments` (always equal) for the `//` lines above an interface item or
+a trait method.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error); `WrittenAt` and
 `str_form` are not part of a session image (`Expr::pos` and comments
 are), and a type is shared by content, so whose written order it carries
-is incidental. What the formatter
+is incidental. A tree holding a comment,
+an attribute or a doc has no single-line form. What the formatter
 does normalize: `i64`/`f64` literals print bare; a run of adjacent
 undecorated `use` statements merges into one per root and visibility, a
 sorted tree with every shared prefix written once; a blank line stands
@@ -477,8 +481,12 @@ netidx-aware embedder (`ShellBuilder::setup_context`,
 during `contains` hold the EXPANDED form — code inspecting resolved types
 handles both. `TypeRef` carries a write-once resolution cell
 (`design/env_independent_typerefs.md`): rebuilds share it via
-`with_params`, `with_scope` makes a fresh one, never overwrite a filled
-cell; `Env::seed_typedef_refs` runs right before fusion in both modes.
+`with_params`, `with_scope` makes a new one (filled when the source's
+is), never overwrite a filled cell; `Env::seed_typedef_refs` runs right
+before fusion in both modes. A typedef must be contractive: every
+self-reference sits under a constructor (`type T = [i64, T]` is refused
+at `Env::deftype`), which is what makes the coinductive ref-pair memos
+sound.
 Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`.
 
 **Two-phase typecheck knot.** While an instance body typechecks, its
@@ -620,9 +628,11 @@ node graph IS the IR — there is no parallel typed IR
   (`nodes::emit_bottom_placeholder` takes the governing discs); kernel
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
-- **JIT memory**: one JITModule + 256MB arena per ExecCtx; on exhaustion
-  the module retires whole and the region rebuilds in a fresh one; the
-  reclamation unit is the ExecCtx. Kernel ABI: kind-grouped params from
+- **JIT memory**: one JITModule + 256MB arena per ExecCtx, built on its
+  first fusion (a fusion-off context never builds one); on exhaustion
+  the module retires whole and the region rebuilds in a fresh one; a
+  module's code is freed when the module and every kernel compiled into
+  it have dropped (each `WrappedKernel` holds its code). Kernel ABI: kind-grouped params from
   `KernelSig::abi_params`; recursive types and abstract types are opaque
   2-word values (`design/unified_value_abi.md`).
 
@@ -676,8 +686,11 @@ blocker profile, not a gap count.
   args stay live and are consumed. An unannotated `let` over a ⊥
   initializer takes its type from its writers.
 - **Sets and coverage**: select exhaustiveness is enforced; slice-pattern
-  length ladders count as coverage; bool literals pool per position
-  inside composite patterns; set coverage distributes over product
+  length ladders count as coverage, one ladder per array or list member;
+  bool literals and variant heads (payload irrefutable) pool per position
+  inside composite patterns; an or-arm narrows later arms per
+  alternative; a structure that matches anything is a wildcard only over
+  a scrutinee its shape covers; set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
   same scrutinee ref claims nothing on re-entry.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
@@ -694,7 +707,7 @@ blocker profile, not a gap count.
 - **Native List** (`design/list_native.md`): `List<'a>` is a compiler
   constructor like `Array`; `[<1, 2>]` literals and `[<h, rest..>]`
   patterns (rest is the O(1) tail; the suffix form is refused); the rep
-  is private to `node/collection.rs::list`.
+  is private to `node/list.rs`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere.
@@ -719,7 +732,8 @@ blocker profile, not a gap count.
   in the first cycle its predecessor's effect can be seen: statements
   share a select arm until one reads or rewrites a variable an earlier
   one wrote (a call, a deref or a nested seq counts as reading
-  everything pending), and the next arm is the next cycle. A `{ .. }`
+  everything pending and writing what the arm took `&` of), and the
+  next arm is the next cycle. A `{ .. }`
   statement issues its statements together with local lets. `until`,
   `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
   in a seq body outside lambda literals). A step completes on a FIRED
@@ -734,19 +748,26 @@ blocker profile, not a gap count.
   `sleep()`: a run does not survive its arm's sleep. `--expand` prints the machine. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
 - **Comments** are legal only above an expression, a select arm, an impl
-  method or a struct-literal field; parse errors report the furthest
-  point reached with the source line and a caret.
+  or trait method, a struct-literal field or an interface item; `///`
+  docs only in an interface. Parse errors report the furthest point
+  reached with the source line and a caret, and a refusal its reason.
+- **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
+  comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is
+  left-associative (`8 / 2 * 2` is 8). `BinOp` (`expr/binop.rs`) is the
+  one table.
 
 ## Stack discipline
 
 Nesting depth is attacker-controlled and overflow aborts, so it is
 closed two ways: `crate::stack::ensure_sufficient` (stacker) wraps every
 program-driven recursion — parser knots (`GrowStack`), `compile`,
-`Display`, `fold`/`for_each_child`, type walks, pattern walks, seq
-lowering, and the `Node`/`TVar`/`Expr` destructors (explicit teardown
-inside the guard; `Type` is the one uncovered cycle, made unreachable by
-the limit) — and `parser::DEFAULT_MAX_NESTING` (counted in parser knots;
-iterative loops that fold into nested ASTs are capped at the fold).
+`Display`, `fold`/`for_each_child`, type walks (`Eq`/`Ord`/`Hash`
+included), pattern walks, seq lowering, and the `Node`/`TVar`/`Expr`/
+`Type` destructors (explicit teardown inside the guard) — and
+`parser::DEFAULT_MAX_NESTING` (counted in parser knots; iterative loops
+that fold into nested ASTs are capped at the fold). Type depth is not
+bounded by the limit: `let x1 = [x0]; let x2 = [x1]; ..`, or a chain of
+typedefs, builds a type as deep as the program is long.
 Refusals set a thread-local (`note_refused`) because combine merges
 messages. Pins: `graphix-compiler/tests/deep_drop.rs`,
 `graphix-shell/tests/deep_nesting.rs` (add a case for a new recursive
@@ -765,6 +786,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DBG_INVOKE=1` | each fused-kernel invocation with per-input fired/present |
 | `GRAPHIX_DBG_REGION=1` / `_FREEZE=1` | fused-region input wiring / freeze outcomes |
 | `GRAPHIX_DUMP_CLIF=1` | every kernel's CLIF (`u0:N` = helper registration order in `emit_helpers.rs`) |
+| `GXDBG_CALLRET=1` | from inside JIT code (debug builds): each kernel's entry init word (tag 4) and return disc (2) and scrutinee accumulator (3) |
 | `GRAPHIX_DBG_VARS=1` | runtime variable events (ref/unref, set, same-cycle notify) — graphix-rt |
 | `GRAPHIX_DBG_PERF=1` | interp lazy-bind phase counters every 250ms |
 | `GRAPHIX_PROFILE=1` | nested compiler phase accounting per root (`bench/profile.py` reads it; `design/jit_startup.md`) |
@@ -775,6 +797,7 @@ compile, so unscoped prints are gigabytes.
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |
 | `GXDBG_CS=1` / `GXDBG_DYNC=1` | every CallSite dispatch and result tag / every fastcall trampoline dispatch |
+| `GXDBG_CALLRET=1` | (debug builds) from inside kernels: each entry's init flag, each return disc and tail fold, each cross-kernel call result |
 | `GXDBG_TYPEREF=1` | scope table dump on an "undefined type" refusal |
 | `GXDBG_LETBIND=1` / `GXDBG_REF=1` | let publication decisions / read misses |
 | `GXDBG_SLOT=1` | per-slot production tags and the collection fold decision |

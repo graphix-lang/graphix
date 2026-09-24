@@ -491,29 +491,6 @@ macro_rules! dense_gate {
 }
 pub(crate) use dense_gate;
 
-/// Read one child's dense production into the caller's join
-/// accumulators, yielding `Some(value)` for the value-bearing states
-/// and `None` for a bottom (which also sets `$bottom`).
-// XCR claude for eric: still clones before the gate. Its callers are
-// ArrayRef/ArraySlice/MapRef::update, which select-coll rewrites this round for
-// the index CRs; after the merge they take `gather`'s shape (one `Tag` join,
-// borrowed productions) and this macro goes.
-macro_rules! read_prod {
-    ($n:expr, $ctx:ident, $event:ident, $trig:ident, $fired:ident, $bottom:ident) => {{
-        let tv = $n.update($ctx, $event);
-        let t = tv.tag();
-        $trig |= t.triggers();
-        $fired |= t.is_fired();
-        if t.is_bottom() {
-            $bottom = true;
-            None
-        } else {
-            Some(tv.value_cloned())
-        }
-    }};
-}
-pub(crate) use read_prod;
-
 // XCR claude for eric: agreed it belongs with the module system (module.rs calls
 // it too); not moved this round because modules-image is rewriting module.rs's
 // `bind_sig` loop around it. The body cleanup is done.

@@ -1,8 +1,8 @@
 use crate::{
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind,
-        ImplExpr, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqTrigger, Sig, SigItem,
-        SigKind, StrForm, StructExpr, StructWithExpr, TraitExpr, TraitMethod,
+        ImplExpr, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqKind, SeqTrigger, Sig,
+        SigItem, SigKind, StrForm, StructExpr, StructWithExpr, TraitExpr, TraitMethod,
         TypeDefBody, TypeDefExpr, UseItem, format::FormatConfig, parser,
     },
     print_as_written,
@@ -74,7 +74,7 @@ fn trigger_needs_parens(t: &Expr) -> bool {
             | Map { .. }
             | Struct(_)
             | StructWith(_)
-            | Do { .. }
+            | Block { .. }
             | Select(_)
             | Seq { .. }
             | Variant { .. }
@@ -101,7 +101,9 @@ fn trigger_needs_parens(t: &Expr) -> bool {
     }
     let reads_as_body_or_clause = match leftmost(t, false) {
         (Expr { kind: Ref { name }, .. }, true) => &*name.0 == "/flush",
-        (e, _) => matches!(&e.kind, Do { .. } | Struct(_) | StructWith(_) | Map { .. }),
+        (e, _) => {
+            matches!(&e.kind, Block { .. } | Struct(_) | StructWith(_) | Map { .. })
+        }
     };
     reads_as_body_or_clause || !reads_bare(t)
 }
@@ -179,7 +181,7 @@ pub(crate) fn pretty_file_items<T>(
 fn opens_with_bracket(e: &ExprKind) -> bool {
     use ExprKind::*;
     match e {
-        Do { .. }
+        Block { .. }
         | Lambda(_)
         | Select(_)
         | Seq { .. }
@@ -227,8 +229,8 @@ fn head_min(e: &ExprKind) -> usize {
     match e {
         List { .. } => 2,
         TryWith(_) => "try {".len(),
-        Seq { queued: true, .. } => "seqq {".len(),
-        Seq { queued: false, .. } => "seq {".len(),
+        Seq { kind: SeqKind::Queued { .. }, .. } => "seqq {".len(),
+        Seq { kind: SeqKind::Plain, .. } => "seq {".len(),
         Select(_) => "select _ {".len(),
         StructWith(_) => "{ _ with".len(),
         Any { .. } => "any(".len(),
@@ -1357,9 +1359,9 @@ impl PrettyDisplay for ExprKind {
                 buf.nested(|buf| e.fmt_pretty(buf))?;
                 writeln!(buf, ")")
             }
-            Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";", false),
-            Seq { queued, trigger, abort, flush, body } => {
-                write!(buf, "{} ", if *queued { "seqq" } else { "seq" })?;
+            Block { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";", false),
+            Seq { kind, trigger, abort, body } => {
+                write!(buf, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
                     if let SeqTrigger::Bind(b) = t {
                         write_seq_let(buf, b)?;
@@ -1376,7 +1378,7 @@ impl PrettyDisplay for ExprKind {
                     }
                 }
                 let mut first = trigger.is_none();
-                for (name, e) in [("abort", abort), ("flush", flush)] {
+                for (name, e) in [("abort", abort.as_ref()), ("flush", kind.flush())] {
                     if let Some(e) = e {
                         write!(buf, "{}{name}(", if first { "" } else { "; " })?;
                         first = false;
@@ -1487,7 +1489,7 @@ impl PrettyDisplay for ExprKind {
             Apply(ae) => ae.fmt_pretty_inner(buf),
             Lambda(l) => l.fmt_pretty_inner(buf),
             Not { expr } => match &expr.kind {
-                Do { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";", false),
+                Block { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";", false),
                 _ => {
                     write!(buf, "!")?;
                     expr.fmt_pretty(buf)
@@ -1982,9 +1984,9 @@ impl ExprKind {
             ExprKind::TypeDef(td) => write!(f, "{td}"),
             ExprKind::Trait(t) => write!(f, "{t}"),
             ExprKind::Impl(i) => write!(f, "{i}"),
-            ExprKind::Do { exprs } => print_exprs(f, &**exprs, "{ ", " }", "; "),
-            ExprKind::Seq { queued, trigger, abort, flush, body } => {
-                write!(f, "{} ", if *queued { "seqq" } else { "seq" })?;
+            ExprKind::Block { exprs } => print_exprs(f, &**exprs, "{ ", " }", "; "),
+            ExprKind::Seq { kind, trigger, abort, body } => {
+                write!(f, "{} ", if kind.queued() { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
                     if let SeqTrigger::Bind(b) = t {
                         write_seq_let(f, b)?;
@@ -1997,7 +1999,7 @@ impl ExprKind {
                     }
                 }
                 let mut first = trigger.is_none();
-                for (name, e) in [("abort", abort), ("flush", flush)] {
+                for (name, e) in [("abort", abort.as_ref()), ("flush", kind.flush())] {
                     if let Some(e) = e {
                         write!(f, "{}{name}({e})", if first { "" } else { "; " })?;
                         first = false;

@@ -2,14 +2,17 @@ use crate::{
     dbgenv::graphix_dbg_bind,
     env::Env,
     expr::ModPath,
+    image,
     stack::ensure_sufficient,
     typ::{PRINT_FLAGS, PrintFlag, Type, node_addr, setops::union_identical},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
+use netidx_core::pack::{self, Pack, PackError};
 use nohash::IntSet;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use poolshark::local::LPooled;
@@ -817,5 +820,94 @@ mod tests {
         tv.alias(&tv);
         tv.alias_cells(&tv);
         assert!(!tv.is_bound());
+    }
+}
+
+thread_local! {
+    /// The cells whose contents the syntax codec is writing, innermost
+    /// last.
+    static WRITING: RefCell<SmallVec<[usize; 8]>> = RefCell::new(SmallVec::new());
+}
+
+/// What the syntax codec writes of `tv`'s cell: its bound and constraints,
+/// or nothing inside that cell's own contents, where a quantifier that
+/// its constraint names (`'a: [i64, Array<'a>]`) is the name alone and the
+/// typechecker re-aliases it.
+fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> R {
+    struct Writing;
+    impl Drop for Writing {
+        fn drop(&mut self) {
+            WRITING.with_borrow_mut(|w| w.pop());
+        }
+    }
+    let cell = tv.read().cell.clone();
+    let key = Arc::as_ptr(&cell) as usize;
+    if WRITING.with_borrow(|w| w.contains(&key)) {
+        return f(None, &[]);
+    }
+    WRITING.with_borrow_mut(|w| w.push(key));
+    let _writing = Writing;
+    let cell = cell.read();
+    f(cell.binding.as_ref(), &cell.constraints)
+}
+
+/// Under an image session the wrapper and its cell are shared objects
+/// ([`image::tvar_encode`]); the syntax codec writes the cell's
+/// contents (`Option<Type>`, then `Vec<Type>`) and mints a fresh variable.
+impl Pack for TVar {
+    fn encoded_len(&self) -> usize {
+        if image::is_encoding() {
+            return image::tvar_len(self);
+        }
+        self.name.encoded_len()
+            + cell_contents(self, |bound, constraints| {
+                1 + bound.map_or(0, |t| t.encoded_len())
+                    + constraints
+                        .iter()
+                        .fold(pack::varint_len(constraints.len() as u64), |n, t| {
+                            n + t.encoded_len()
+                        })
+            })
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if image::is_encoding() {
+            return image::tvar_encode(self, buf);
+        }
+        self.name.encode(buf)?;
+        cell_contents(self, |bound, constraints| {
+            match bound {
+                None => buf.put_u8(0),
+                Some(t) => {
+                    buf.put_u8(1);
+                    t.encode(buf)?
+                }
+            }
+            pack::encode_varint(constraints.len() as u64, buf);
+            constraints.iter().try_for_each(|t| t.encode(buf))
+        })
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if image::is_decoding() {
+            return image::tvar_decode(buf);
+        }
+        let name = <ArcStr as Pack>::decode(buf)?;
+        let bound = <Option<Type> as Pack>::decode(buf)?;
+        let constraints = <Vec<Type> as Pack>::decode(buf)?;
+        // A fresh id is sound: the typechecker re-aliases same-named tvars
+        // within a scope.
+        let tv = match bound {
+            Some(t) => TVar::named(name, t),
+            None => TVar::empty_named(name),
+        };
+        {
+            let cell = tv.cell();
+            let mut cell = cell.write();
+            for c in constraints {
+                cell.add_constraint(c);
+            }
+        }
+        Ok(tv)
     }
 }

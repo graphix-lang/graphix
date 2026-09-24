@@ -134,7 +134,7 @@ fn comment_block_round_trips() {
 fn comment_above_block_item() {
     let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
     match &e.kind {
-        ExprKind::Do { exprs } => {
+        ExprKind::Block { exprs } => {
             let last = exprs.last().unwrap();
             assert_eq!(
                 &last.dec.as_ref().expect("comment lost").comments[..],
@@ -291,7 +291,7 @@ fn block_item_comment_pretty_round_trips() {
     let e = parse_one("{ let x = 1;\n// note\nx }").unwrap();
     let e2 = parse_one(&e.to_string_pretty(0)).unwrap();
     match &e2.kind {
-        ExprKind::Do { exprs } => {
+        ExprKind::Block { exprs } => {
             assert_eq!(comments_of(exprs.last().unwrap()), vec![literal!(" note")])
         }
         other => panic!("expected a do block, got {other:?}"),
@@ -370,7 +370,7 @@ fn comment_and_attr_interleave() {
 fn attr_above_block_item() {
     let e = parse_one("{ let x = 1;\n#[native]\nx }").unwrap();
     match &e.kind {
-        ExprKind::Do { exprs } => {
+        ExprKind::Block { exprs } => {
             let last = exprs.last().unwrap();
             let dec = last.dec.as_ref().expect("attribute lost");
             assert_eq!(&dec.attrs[0].name, &literal!("native"));
@@ -1017,7 +1017,7 @@ fn array() {
 
 #[test]
 fn doexpr() {
-    let exp = ExprKind::Do {
+    let exp = ExprKind::Block {
         exprs: Arc::from_iter([
             ExprKind::Bind(Arc::new(BindExpr {
                 rec: false,
@@ -1922,7 +1922,7 @@ fn type_as_pattern_beats_keyword_bind() {
 fn keyword_field_does_not_shadow_literals() {
     // A block whose first statement is a duration literal is still a block.
     let e = parse_one("{ duration:1.0s; 42 }").unwrap();
-    assert!(matches!(&e.kind, ExprKind::Do { .. }), "got {:?}", e.kind);
+    assert!(matches!(&e.kind, ExprKind::Block { .. }), "got {:?}", e.kind);
 }
 
 #[test]
@@ -2201,16 +2201,16 @@ fn seq_parses() {
         assert!(matches!(e.kind, ExprKind::Seq { .. }), "{s} -> {:?}", e.kind);
         let again = parse_one(&e.to_string()).unwrap();
         match (&e.kind, &again.kind) {
-            (ExprKind::Seq { queued: a, .. }, ExprKind::Seq { queued: b, .. }) => {
-                assert_eq!(*a, s.starts_with("seqq"));
-                assert_eq!(a, b);
+            (ExprKind::Seq { kind: a, .. }, ExprKind::Seq { kind: b, .. }) => {
+                assert_eq!(a.queued(), s.starts_with("seqq"));
+                assert_eq!(a.queued(), b.queued());
             }
             _ => panic!("round-trip of {s}: {e}"),
         }
     }
     let clauses = |s: &str| match &parse_one(s).unwrap().kind {
-        ExprKind::Seq { trigger, abort, flush, .. } => {
-            (trigger.is_some(), abort.is_some(), flush.is_some())
+        ExprKind::Seq { kind, trigger, abort, .. } => {
+            (trigger.is_some(), abort.is_some(), kind.flush().is_some())
         }
         k => panic!("{s} -> {k:?}"),
     };

@@ -106,7 +106,10 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         let sites: Vec<usize> = (0..pre.len())
             .filter(|&i| {
                 value_pos(&pre[i].kind)
-                    && !matches!(pre[i].kind, ExprKind::Lambda(_) | ExprKind::Do { .. })
+                    && !matches!(
+                        pre[i].kind,
+                        ExprKind::Lambda(_) | ExprKind::Block { .. }
+                    )
                     && !leaks_binds(&pre[i])
             })
             .collect();
@@ -119,12 +122,13 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             }))
             .to_expr_nopos();
             let r = ExprKind::Ref { name: mp(VAL) }.to_expr_nopos();
-            let repl = ExprKind::Do { exprs: Arc::from_iter([bind, r]) }.to_expr_nopos();
+            let repl =
+                ExprKind::Block { exprs: Arc::from_iter([bind, r]) }.to_expr_nopos();
             let cand = mutate::replace(&root, i, &repl);
             push(&mut out, &mut noparse, TmKind::BlockWrap, i, &cand);
         }
     }
-    let ExprKind::Do { exprs: stmts } = &root.kind else {
+    let ExprKind::Block { exprs: stmts } = &root.kind else {
         return (out, noparse);
     };
     let stmts: Vec<Expr> = stmts.to_vec();
@@ -150,7 +154,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         for (si, gi) in sample(&found, cap) {
             let r = ExprKind::Ref { name: mp(VAL) }.to_expr_nopos();
             let replaced = mutate::replace(&root, gi, &r);
-            let ExprKind::Do { exprs } = &replaced.kind else { continue };
+            let ExprKind::Block { exprs } = &replaced.kind else { continue };
             let bind = ExprKind::Bind(Arc::new(BindExpr {
                 rec: false,
                 pattern: StructurePattern::Bind(Name::from(VAL)),
@@ -160,7 +164,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             .to_expr_nopos();
             let mut v: Vec<Expr> = exprs.to_vec();
             v.insert(si, bind);
-            let cand = ExprKind::Do { exprs: Arc::from_iter(v) }.to_expr_nopos();
+            let cand = ExprKind::Block { exprs: Arc::from_iter(v) }.to_expr_nopos();
             push(&mut out, &mut noparse, TmKind::LetExtract, gi, &cand);
         }
     }
@@ -214,14 +218,14 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 continue;
             };
             let replaced = mutate::replace(&root, gi, &b.value);
-            let ExprKind::Do { exprs } = &replaced.kind else { continue };
+            let ExprKind::Block { exprs } = &replaced.kind else { continue };
             let v: Vec<Expr> = exprs
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != si)
                 .map(|(_, e)| e.clone())
                 .collect();
-            let cand = ExprKind::Do { exprs: Arc::from_iter(v) }.to_expr_nopos();
+            let cand = ExprKind::Block { exprs: Arc::from_iter(v) }.to_expr_nopos();
             push(&mut out, &mut noparse, TmKind::LetInline, si, &cand);
             done += 1;
         }
@@ -237,7 +241,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         for i in sample(&sites, cap) {
             let mut v = stmts.clone();
             v.swap(i, i + 1);
-            let cand = ExprKind::Do { exprs: Arc::from_iter(v) }.to_expr_nopos();
+            let cand = ExprKind::Block { exprs: Arc::from_iter(v) }.to_expr_nopos();
             push(&mut out, &mut noparse, TmKind::StmtPermute, i, &cand);
         }
     }
@@ -270,7 +274,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let mut v = stmts.clone();
             v[si] = nb;
             v.insert(si, td);
-            let cand = ExprKind::Do { exprs: Arc::from_iter(v) }.to_expr_nopos();
+            let cand = ExprKind::Block { exprs: Arc::from_iter(v) }.to_expr_nopos();
             push(&mut out, &mut noparse, TmKind::AliasSwap, si, &cand);
             done += 1;
         }
@@ -324,7 +328,7 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
             ExprKind::Lambda(_)
                 | ExprKind::Select(_)
                 | ExprKind::Catch(_)
-                | ExprKind::Do { .. }
+                | ExprKind::Block { .. }
                 | ExprKind::Seq { .. }
                 | ExprKind::TryWith(_)
         );
@@ -423,7 +427,7 @@ fn leaks_binds(e: &Expr) -> bool {
         | ExprKind::Trait(_)
         | ExprKind::Impl(_)
         | ExprKind::Catch(_) => true,
-        ExprKind::Do { .. } | ExprKind::Lambda(_) => false,
+        ExprKind::Block { .. } | ExprKind::Lambda(_) => false,
         ExprKind::Select(s) => leaks_binds(&s.arg),
         _ => {
             let mut found = false;

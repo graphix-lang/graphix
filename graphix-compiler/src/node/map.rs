@@ -1,4 +1,4 @@
-use super::{WakeBit, compiler::compile, coretraits::with_hooks, dense_gate, read_prod};
+use super::{WakeBit, compiler::compile, coretraits::with_hooks, dense_gate};
 use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp, err, errf,
@@ -18,6 +18,7 @@ use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Value;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
@@ -126,24 +127,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
                 Value::Map(CMap::new())
             });
         }
-        let (mut trig, mut fired, mut bottom) = (false, false, false);
-        let mut keys: LPooled<Vec<Option<Value>>> = LPooled::take();
-        for (k, _) in self.entries.iter_mut() {
-            keys.push(read_prod!(k, ctx, event, trig, fired, bottom));
-        }
-        let mut kvs: LPooled<Vec<(Value, Value)>> = LPooled::take();
-        for ((_, v), k) in self.entries.iter_mut().zip(keys.drain(..)) {
-            let v = read_prod!(v, ctx, event, trig, fired, bottom);
-            if let (Some(k), Some(v)) = (k, v) {
-                kvs.push((k, v))
-            }
-        }
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let (mut keys, mut vals): (SmallVec<[&mut Node<R, E>; 8]>, SmallVec<[_; 8]>) =
+            self.entries.iter_mut().map(|(k, v)| (k, v)).unzip();
+        let keys: SmallVec<[&TagValue; 8]> =
+            keys.iter_mut().map(|k| k.update(ctx, event)).collect();
+        let vals: SmallVec<[&TagValue; 8]> =
+            vals.iter_mut().map(|v| v.update(ctx, event)).collect();
+        let tag = keys.iter().chain(vals.iter()).fold(Tag::STALE, |t, p| t.join(p.tag()));
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
         let m = with_hooks(ctx, event, || {
             let mut m = CMap::new();
-            for (k, v) in kvs.drain(..) {
-                m.insert_cow(k, v);
+            for (k, v) in keys.iter().zip(vals.iter()) {
+                m.insert_cow(k.value_cloned(), v.value_cloned());
             }
             m
         });
@@ -300,14 +295,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let mut trig = false;
-        let mut fired = false;
-        let mut bottom = false;
-        let sval = read_prod!(self.source, ctx, event, trig, fired, bottom);
-        let kval = read_prod!(self.key, ctx, event, trig, fired, bottom);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = with_hooks(ctx, event, || map_get(&sval.unwrap(), &kval.unwrap()));
+        let s = self.source.update(ctx, event);
+        let k = self.key.update(ctx, event);
+        let tag = s.tag().join(k.tag());
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let v =
+            with_hooks(ctx, event, || s.with_value(|s| k.with_value(|k| map_get(s, k))));
         self.resident.set(TagValue::tagged(v, tag))
     }
 

@@ -392,6 +392,31 @@ impl SeqTrigger {
     }
 }
 
+/// `seq` runs one trigger at a time and drops triggers that arrive
+/// mid-run; `seqq` queues them with their captured values.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub enum SeqKind {
+    Plain,
+    /// `flush(e)`: an abort that also empties the queue
+    Queued {
+        flush: Option<Arc<Expr>>,
+    },
+}
+
+impl SeqKind {
+    pub fn queued(&self) -> bool {
+        matches!(self, SeqKind::Queued { .. })
+    }
+
+    pub fn flush(&self) -> Option<&Arc<Expr>> {
+        match self {
+            SeqKind::Plain => None,
+            SeqKind::Queued { flush } => flush.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct LambdaExpr {
@@ -403,28 +428,55 @@ pub struct LambdaExpr {
     pub body: Either<Expr, ArcStr>,
 }
 
-// XCR claude for eric: agreed, but the roles are built in seq.rs, read in node/error.rs,
-// fusion/mod.rs and node_shape.rs (seq-ops, fusion-b, core-misc): a `CatchRole` enum is
-// one pass across those after the merge. Recommend `role: CatchRole { User,
-// SeqMachine { abort, manual, pc }, SeqJump { jump, capture } }`.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct CatchExpr {
     pub bind: Name,
     pub constraint: Option<Type>,
     pub handler: Arc<Expr>,
-    /// Compiler-only: this catch unconditionally rethrows before aborting.
-    pub seq_abort: Option<Arc<Expr>>,
-    /// Compiler-only: a seq `try`'s per-arm handler. The first error
-    /// delivered per failure is written to this cell, and the handler's
-    /// inferred throws are unioned into the cell's type.
-    pub seq_capture: Option<ArcStr>,
-    /// Compiler-only: a seq's `abort(..)` event. A fired production
-    /// requests the abort action without an error.
-    pub seq_manual: Option<Arc<Expr>>,
-    /// Compiler-only: the machine's step variable, written idle when the
-    /// machine sleeps.
-    pub seq_pc: Option<ArcStr>,
+    pub role: CatchRole,
+}
+
+/// Who installed a catch: the program, or seq lowering, whose catches
+/// run `action` once every error of a failure has arrived.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub enum CatchRole {
+    User,
+    /// A seq machine's handler, which rethrows before the action.
+    Machine {
+        action: Arc<Expr>,
+        /// The machine's `abort(..)` event: a fired production requests
+        /// the action without an error.
+        manual: Option<Arc<Expr>>,
+        /// The machine's step variable, written idle when it sleeps.
+        pc: ArcStr,
+    },
+    /// A seq `try` body arm's jump to its `with` branch.
+    Try {
+        action: Arc<Expr>,
+        /// The `with` body's cell: the first error delivered per failure
+        /// is written to it, and the handler's throws join its type.
+        capture: ArcStr,
+    },
+}
+
+impl CatchRole {
+    pub fn action(&self) -> Option<&Arc<Expr>> {
+        match self {
+            CatchRole::User => None,
+            CatchRole::Machine { action, .. } | CatchRole::Try { action, .. } => {
+                Some(action)
+            }
+        }
+    }
+
+    pub fn manual(&self) -> Option<&Arc<Expr>> {
+        match self {
+            CatchRole::Machine { manual, .. } => manual.as_ref(),
+            CatchRole::User | CatchRole::Try { .. } => None,
+        }
+    }
 }
 
 /// `try { stmts } with(e[: T]) { stmts }` — a seq statement: an
@@ -475,10 +527,7 @@ pub enum ExprKind {
         value: ModuleKind,
     },
     ExplicitParens(Arc<Expr>),
-    // XCR claude for eric: agreed; the rename touches node/bind.rs, node/compiler.rs,
-    // seq.rs, graphix-rt and graphix-fuzz besides this package, so it is a one-line
-    // sed (`ExprKind::Do` -> `ExprKind::Block`, `Do {` under the globs) after the merge.
-    Do {
+    Block {
         exprs: Arc<[Expr]>,
     },
     Use {
@@ -563,16 +612,11 @@ pub enum ExprKind {
     Select(SelectExpr),
     /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
     /// a select over a step variable.
-    // XCR claude for eric: the parser now refuses both where written (a `flush` in a
-    // `seq` head, a `let rec` trigger); `SeqKind { Plain, Queued { flush } }` would also
-    // reshape seq.rs's desugar (seq-ops), so it is left for that package.
     Seq {
-        queued: bool,
+        kind: SeqKind,
         trigger: Option<SeqTrigger>,
         /// `abort(e)`: a fire of `e` during a run ends it
         abort: Option<Arc<Expr>>,
-        /// `flush(e)`, `seqq` only: an abort that also empties the queue
-        flush: Option<Arc<Expr>>,
         body: Arc<[Expr]>,
     },
     /// `until expr` — wait until a bool level is true. Legal only as a
@@ -716,7 +760,7 @@ impl ExprKind {
             | Connect { value: x, .. }
             | StructRef { source: x, .. }
             | TupleRef { source: x, .. } => f(x),
-            Do { exprs: xs }
+            Block { exprs: xs }
             | StringInterpolate { args: xs }
             | Any { args: xs }
             | Never { args: xs, .. }
@@ -774,13 +818,13 @@ impl ExprKind {
             }
             Catch(c) => {
                 f(&c.handler);
-                c.seq_abort.iter().for_each(|e| f(e));
-                c.seq_manual.iter().for_each(|e| f(e));
+                c.role.action().iter().for_each(|e| f(e));
+                c.role.manual().iter().for_each(|e| f(e));
             }
-            Seq { trigger, abort, flush, body, .. } => {
+            Seq { kind, trigger, abort, body } => {
                 trigger.iter().for_each(|t| f(t.expr()));
                 abort.iter().for_each(|e| f(e));
-                flush.iter().for_each(|e| f(e));
+                kind.flush().iter().for_each(|e| f(e));
                 body.iter().for_each(|e| f(e));
             }
             TryWith(t) => {
@@ -1339,7 +1383,7 @@ impl Expr {
             TupleRef { source, field } => {
                 TupleRef { source: a(f, source), field: *field }
             }
-            Do { exprs } => Do { exprs: xs(f, exprs) },
+            Block { exprs } => Block { exprs: xs(f, exprs) },
             StringInterpolate { args } => StringInterpolate { args: xs(f, args) },
             Any { args } => Any { args: xs(f, args) },
             Never { typ, args } => Never { typ: typ.clone(), args: xs(f, args) },
@@ -1427,16 +1471,27 @@ impl Expr {
                 bind: c.bind.clone(),
                 constraint: c.constraint.clone(),
                 handler: a(f, &c.handler),
-                seq_abort: c.seq_abort.as_ref().map(|e| a(f, e)),
-                seq_capture: c.seq_capture.clone(),
-                seq_manual: c.seq_manual.as_ref().map(|e| a(f, e)),
-                seq_pc: c.seq_pc.clone(),
+                role: match &c.role {
+                    CatchRole::User => CatchRole::User,
+                    CatchRole::Machine { action, manual, pc } => CatchRole::Machine {
+                        action: a(f, action),
+                        manual: manual.as_ref().map(|e| a(f, e)),
+                        pc: pc.clone(),
+                    },
+                    CatchRole::Try { action, capture } => {
+                        CatchRole::Try { action: a(f, action), capture: capture.clone() }
+                    }
+                },
             })),
-            Seq { queued, trigger, abort, flush, body } => Seq {
-                queued: *queued,
+            Seq { kind, trigger, abort, body } => Seq {
                 trigger: trigger.as_ref().map(|t| t.map(|e| f(e))),
                 abort: abort.as_ref().map(|e| a(f, e)),
-                flush: flush.as_ref().map(|e| a(f, e)),
+                kind: match kind {
+                    SeqKind::Plain => SeqKind::Plain,
+                    SeqKind::Queued { flush } => {
+                        SeqKind::Queued { flush: flush.as_ref().map(|e| a(f, e)) }
+                    }
+                },
                 body: xs(f, body),
             },
             TryWith(t) => TryWith(Arc::new(TryWithExpr {

@@ -1,8 +1,8 @@
 use crate::{
     expr::{
-        Attr, BindExpr, CatchExpr, Decorations, Doc, Expr, ExprKind, ModPath, Name,
-        Origin, OriginScope, ParserContext, Pattern, SelectExpr, SeqTrigger, Sig,
-        SigItem, StrForm, StructExpr, StructWithExpr, TryWithExpr,
+        Attr, BindExpr, CatchExpr, CatchRole, Decorations, Doc, Expr, ExprKind, ModPath,
+        Name, Origin, OriginScope, ParserContext, Pattern, SelectExpr, SeqKind,
+        SeqTrigger, Sig, SigItem, StrForm, StructExpr, StructWithExpr, TryWithExpr,
     },
     profile::{self, Phase},
     typ::{FnType, Type},
@@ -861,7 +861,7 @@ where
 /// The head of a seq, in order: `[trigger][; abort(e)][; flush(e)]`.
 fn seq_head<I>(
     queued: bool,
-) -> impl Parser<I, Output = (Option<SeqTrigger>, Option<Arc<Expr>>, Option<Arc<Expr>>)>
+) -> impl Parser<I, Output = (SeqKind, Option<SeqTrigger>, Option<Arc<Expr>>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -887,7 +887,9 @@ where
                         )
                             .right()
                     } else {
-                        value((trigger.clone(), abort.clone(), flush)).left()
+                        let kind =
+                            if queued { SeqKind::Queued { flush } } else { SeqKind::Plain };
+                        value((kind, trigger.clone(), abort.clone())).left()
                     }
                 })
         })
@@ -906,17 +908,16 @@ where
             attempt(string("seqq").skip(not_prefix())).map(|_| true),
             attempt(string("seq").skip(not_prefix())).map(|_| false),
         ))
-        .then(|queued| seq_head(queued).map(move |head| (queued, head))),
+        .then(seq_head),
         seq_stmts(),
         position(),
     )
-        .then(|(pos, (queued, (trigger, abort, flush)), mut body, end)| {
+        .then(|(pos, (kind, trigger, abort), mut body, end)| {
             if body.iter().all(|e: &Expr| matches!(e.kind, ExprKind::NoOp)) {
                 grow::refuse(end, "a seq block must contain at least one step").right()
             } else {
                 let body = Arc::from_iter(body.drain(..));
-                value(ExprKind::Seq { queued, trigger, abort, flush, body }.to_expr(pos))
-                    .left()
+                value(ExprKind::Seq { kind, trigger, abort, body }.to_expr(pos)).left()
             }
         })
 }
@@ -1116,7 +1117,7 @@ where
                             }),
                         }
                     }
-                    Some((first, Tail::Block(mut rest))) => ExprKind::Do {
+                    Some((first, Tail::Block(mut rest))) => ExprKind::Block {
                         exprs: Arc::from_iter(
                             std::iter::once(first).chain(rest.drain(..)),
                         ),
@@ -1197,10 +1198,7 @@ where
                 bind,
                 constraint,
                 handler: Arc::new(handler),
-                seq_abort: None,
-                seq_capture: None,
-                seq_manual: None,
-                seq_pc: None,
+                role: CatchRole::User,
             }))
             .to_expr(pos)
         })

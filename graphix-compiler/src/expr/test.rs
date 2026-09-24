@@ -743,7 +743,7 @@ macro_rules! bind {
 macro_rules! qop {
     ($inner:expr) => {
         ($inner, any::<bool>()).prop_map(|(e, qop)| match &e.kind {
-            ExprKind::Do { .. }
+            ExprKind::Block { .. }
             | ExprKind::Select { .. }
             | ExprKind::TypeCast { .. }
             | ExprKind::Never { .. }
@@ -772,10 +772,7 @@ macro_rules! catch_stmt {
                     bind: bind.into(),
                     constraint,
                     handler: Arc::new(handler),
-                    seq_abort: None,
-                    seq_capture: None,
-                    seq_manual: None,
-                    seq_pc: None,
+                    role: CatchRole::User,
                 }))
                 .to_expr_nopos()
             },
@@ -876,7 +873,7 @@ macro_rules! do_block {
         )
             .prop_map(|(e, nop)| {
                 if nop {
-                    ExprKind::Do {
+                    ExprKind::Block {
                         exprs: Arc::from_iter(
                             e.into_iter()
                                 .chain(iter::once(ExprKind::NoOp.to_expr_nopos())),
@@ -884,7 +881,7 @@ macro_rules! do_block {
                     }
                     .to_expr_nopos()
                 } else {
-                    ExprKind::Do { exprs: Arc::from(e) }.to_expr_nopos()
+                    ExprKind::Block { exprs: Arc::from(e) }.to_expr_nopos()
                 }
             })
     };
@@ -1433,10 +1430,13 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             )
                 .prop_map(|(queued, trigger, abort, flush, body)| {
                     ExprKind::Seq {
-                        queued,
+                        kind: if queued {
+                            SeqKind::Queued { flush: flush.map(Arc::new) }
+                        } else {
+                            SeqKind::Plain
+                        },
                         trigger,
                         abort: abort.map(Arc::new),
-                        flush: flush.filter(|_| queued).map(Arc::new),
                         body: Arc::from(body),
                     }
                     .to_expr_nopos()
@@ -1926,7 +1926,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 && (check_module_sig(si0, si1))
                 && (check(sr0, sr1))
         }
-        (ExprKind::Do { exprs: exprs0 }, ExprKind::Do { exprs: exprs1 }) => {
+        (ExprKind::Block { exprs: exprs0 }, ExprKind::Block { exprs: exprs1 }) => {
             exprs0.len() == exprs1.len()
                 && exprs0.iter().zip(exprs1.iter()).all(|(v0, v1)| check(v0, v1))
         }
@@ -1950,31 +1950,29 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         (ExprKind::Qop(e0), ExprKind::Qop(e1)) => check(e0, e1),
         (ExprKind::OrNever(e0), ExprKind::OrNever(e1)) => check(e0, e1),
         (ExprKind::Catch(c0), ExprKind::Catch(c1)) => {
-            let CatchExpr {
-                bind: b0,
-                constraint: c0,
-                handler: h0,
-                seq_abort: a0,
-                seq_capture: s0,
-                seq_manual: _,
-                seq_pc: _,
-            } = &**c0;
-            let CatchExpr {
-                bind: b1,
-                constraint: c1,
-                handler: h1,
-                seq_abort: a1,
-                seq_capture: s1,
-                seq_manual: _,
-                seq_pc: _,
-            } = &**c1;
+            let CatchExpr { bind: b0, constraint: c0, handler: h0, role: r0 } = &**c0;
+            let CatchExpr { bind: b1, constraint: c1, handler: h1, role: r1 } = &**c1;
             b0 == b1
-                && s0 == s1
                 && check_type_opt(c0, c1)
                 && check(h0, h1)
-                && match (a0, a1) {
-                    (None, None) => true,
-                    (Some(a0), Some(a1)) => check(a0, a1),
+                && match (r0, r1) {
+                    (CatchRole::User, CatchRole::User) => true,
+                    (
+                        CatchRole::Machine { action: a0, manual: m0, pc: p0 },
+                        CatchRole::Machine { action: a1, manual: m1, pc: p1 },
+                    ) => {
+                        p0 == p1
+                            && check(a0, a1)
+                            && match (m0, m1) {
+                                (None, None) => true,
+                                (Some(m0), Some(m1)) => check(m0, m1),
+                                _ => false,
+                            }
+                    }
+                    (
+                        CatchRole::Try { action: a0, capture: s0 },
+                        CatchRole::Try { action: a1, capture: s1 },
+                    ) => s0 == s1 && check(a0, a1),
                     _ => false,
                 }
         }
@@ -2095,10 +2093,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
         ) => check(l0, l1) && check(r0, r1),
         (ExprKind::NoOp, ExprKind::NoOp) => true,
         (
-            ExprKind::Seq { queued: q0, trigger: t0, abort: a0, flush: f0, body: b0 },
-            ExprKind::Seq { queued: q1, trigger: t1, abort: a1, flush: f1, body: b1 },
+            ExprKind::Seq { kind: k0, trigger: t0, abort: a0, body: b0 },
+            ExprKind::Seq { kind: k1, trigger: t1, abort: a1, body: b1 },
         ) => {
-            let clause = |a: &Option<Arc<Expr>>, b: &Option<Arc<Expr>>| match (a, b) {
+            let clause = |a: Option<&Arc<Expr>>, b: Option<&Arc<Expr>>| match (a, b) {
                 (None, None) => true,
                 (Some(a), Some(b)) => check(a, b),
                 _ => false,
@@ -2114,10 +2112,10 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 }
                 _ => false,
             };
-            q0 == q1
+            k0.queued() == k1.queued()
                 && trig
-                && clause(a0, a1)
-                && clause(f0, f1)
+                && clause(a0.as_ref(), a1.as_ref())
+                && clause(k0.flush(), k1.flush())
                 && b0.len() == b1.len()
                 && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
         }

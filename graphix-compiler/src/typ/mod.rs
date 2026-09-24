@@ -1984,3 +1984,26 @@ impl Type {
         })
     }
 }
+
+/// An id that is the low 64 bits of a uuid: a fixed eight bytes, where a
+/// varint would take ten.
+macro_rules! uuid_id_codec {
+    ($id:ty) => {
+        impl PackTrait for $id {
+            fn encoded_len(&self) -> usize {
+                self.inner().encoded_len()
+            }
+
+            fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+                self.inner().encode(buf)
+            }
+
+            fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+                Ok(<$id>::from_inner(u64::decode(buf)?))
+            }
+        }
+    };
+}
+
+uuid_id_codec!(AbstractId);
+uuid_id_codec!(TraitId);

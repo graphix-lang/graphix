@@ -1,7 +1,7 @@
-use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
+use super::{WakeBit, compiler::compile, dense_gate, gather};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent, abstract_value, bailat, deref_typ,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    abstract_value, bailat, deref_typ,
     expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
@@ -318,32 +318,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (mut trig, mut fired, mut bottom) = (false, false, false);
-        let src = match read_prod!(self.source, ctx, event, trig, fired, bottom) {
-            Some(Value::Array(a)) => Some(a),
-            // an unshaped (non-struct-rep) source is bottom
-            Some(_) => {
-                bottom = true;
-                None
+        let index: SmallVec<[Option<usize>; 8]> =
+            self.replace.iter().map(|r| r.index).collect();
+        let src = self.source.update(ctx, event);
+        let vals: SmallVec<[&TagValue; 8]> =
+            self.replace.iter_mut().map(|r| r.n.update(ctx, event)).collect();
+        let tag = vals.iter().fold(src.tag(), |t, v| t.join(v.tag()));
+        // an unshaped (non-struct-rep) source is bottom
+        let shaped = src.with_value(|v| matches!(v, Value::Array(_)));
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom() || !shaped);
+        let v = src.with_value(|src| {
+            let Value::Array(src) = src else { unreachable!("gated on the shape") };
+            let mut fields: LPooled<Vec<Value>> = src.iter().cloned().collect();
+            for (i, v) in index.iter().zip(vals.iter()) {
+                if let Some(Value::Array(kv)) = i.and_then(|i| fields.get_mut(i))
+                    && kv.len() == 2
+                {
+                    *kv = ValArray::from_iter_exact(
+                        [kv[0].clone(), v.value_cloned()].into_iter(),
+                    );
+                }
             }
-            None => None,
-        };
-        let mut rvals: SmallVec<[Value; 8]> = SmallVec::new();
-        for r in self.replace.iter_mut() {
-            rvals.extend(read_prod!(r.n, ctx, event, trig, fired, bottom));
-        }
-        dense_gate!(self, ctx, trig, bottom);
-        let Some(src) = src else { return self.resident.set_bottom(trig) };
-        let mut fields: LPooled<Vec<Value>> = src.iter().cloned().collect();
-        for (r, v) in self.replace.iter().zip(rvals.drain(..)) {
-            if let Some(Value::Array(kv)) = r.index.and_then(|i| fields.get_mut(i))
-                && kv.len() == 2
-            {
-                *kv = ValArray::from_iter_exact([kv[0].clone(), v].into_iter());
-            }
-        }
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = Value::Array(ValArray::from_iter_exact(fields.drain(..)));
+            Value::Array(ValArray::from_iter_exact(fields.drain(..)))
+        });
         self.resident.set(TagValue::tagged(v, tag))
     }
 

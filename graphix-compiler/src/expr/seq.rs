@@ -8,8 +8,9 @@
 //! consumes one argument snapshot per entry.
 
 use super::{
-    ApplyExpr, Arg, BindExpr, CatchExpr, Expr, ExprId, ExprKind, LambdaExpr, ModPath,
-    Pattern, SelectExpr, SeqTrigger, StructurePattern, TryWithExpr, WrittenAt,
+    ApplyExpr, Arg, BindExpr, CatchExpr, CatchRole, Expr, ExprId, ExprKind, LambdaExpr,
+    ModPath, Pattern, SelectExpr, SeqKind, SeqTrigger, StructurePattern, TryWithExpr,
+    WrittenAt,
 };
 use crate::{
     BindId,
@@ -96,24 +97,20 @@ struct Parts<'a> {
 /// comes from `spec`'s source.
 pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
-    let ExprKind::Seq { queued, trigger, abort, flush, body } = &spec.kind else {
+    let ExprKind::Seq { kind, trigger, abort, body } = &spec.kind else {
         bail!("BUG: seq lowering of a non-seq")
     };
     let seq = Parts {
         spec,
         trigger: trigger.as_ref(),
         abort: abort.as_deref(),
-        flush: flush.as_deref(),
+        flush: kind.flush().map(|e| &**e),
         body,
     };
-    match (*queued, seq.trigger, seq.flush) {
-        (true, Some(SeqTrigger::Bind(b)), _) => desugar_let(&seq, b),
-        (true, _, _) => desugar_queued(&seq, env, scope),
-        (false, _, Some(f)) => Err(anyhow!(
-            "flush empties a queue, and a seq has none: write seqq, or abort(..)"
-        )
-        .at(f)),
-        (false, _, None) => desugar_plain(&seq, None),
+    match (kind, seq.trigger) {
+        (SeqKind::Queued { .. }, Some(SeqTrigger::Bind(b))) => desugar_let(&seq, b),
+        (SeqKind::Queued { .. }, _) => desugar_queued(&seq, env, scope),
+        (SeqKind::Plain, _) => desugar_plain(&seq, None),
     }
 }
 
@@ -155,10 +152,9 @@ fn desugar_let(seq: &Parts, b: &BindExpr) -> Result<Expr> {
         })
     };
     let queued = ExprKind::Seq {
-        queued: true,
+        kind: SeqKind::Queued { flush: seq.flush.map(&event) },
         trigger: Some(SeqTrigger::Expr(Arc::new(r#ref(pos, &name)))),
         abort: seq.abort.map(&event),
-        flush: seq.flush.map(&event),
         body: seq.body.clone(),
     }
     .to_expr(pos);
@@ -278,10 +274,11 @@ fn desugar_plain(seq: &Parts, queue: Option<&Queue>) -> Result<Expr> {
             handler: Arc::new(
                 ExprKind::Rethrow(Arc::new(r#ref(pos, &err_bind))).to_expr(pos),
             ),
-            seq_abort: Some(Arc::new(block(pos, abort_body))),
-            seq_capture: None,
-            seq_manual: manual.then(|| Arc::new(r#ref(pos, &aborted))),
-            seq_pc: Some(ArcStr::from(pc.as_str())),
+            role: CatchRole::Machine {
+                action: Arc::new(block(pos, abort_body)),
+                manual: manual.then(|| Arc::new(r#ref(pos, &aborted))),
+                pc: ArcStr::from(pc.as_str()),
+            },
         }))
         .to_expr(pos)
     };
@@ -675,7 +672,7 @@ impl Machine<'_> {
     }
 
     /// Each try-body arm carries a generated handler that captures the
-    /// first error into the with body's cell (`seq_capture`) and whose
+    /// first error into the with body's cell (`CatchRole::Try`) and whose
     /// drain action jumps to the with body's entry. Both tails write the
     /// sink and transition to `next`.
     fn lower_try(
@@ -702,14 +699,10 @@ impl Machine<'_> {
                 bind: caught.clone().into(),
                 constraint: t.constraint.clone(),
                 handler: Arc::new(never(pos)),
-                seq_abort: Some(Arc::new(connect(
-                    pos,
-                    self.pc,
-                    variant(pos, &with_entry),
-                ))),
-                seq_capture: Some(e_cell.clone()),
-                seq_manual: None,
-                seq_pc: None,
+                role: CatchRole::Try {
+                    action: Arc::new(connect(pos, self.pc, variant(pos, &with_entry))),
+                    capture: e_cell.clone(),
+                },
             }))
             .to_expr(pos);
             let inner = std::mem::replace(arm, never(pos));
@@ -871,7 +864,7 @@ impl Machine<'_> {
     /// anything else is issued.
     fn stmt_value(&self, e: &Expr, visible: &Names) -> Result<Expr> {
         ensure_sufficient(|| match &e.kind {
-            ExprKind::Do { exprs } => self.lower_block(e, exprs, visible),
+            ExprKind::Block { exprs } => self.lower_block(e, exprs, visible),
             _ => Ok(issue_expr(e, visible, self.pc)),
         })
     }
@@ -1485,7 +1478,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         // the trigger is the outer step's, issued with it; the clauses
         // and the body belong to the inner machine's own runs
-        ExprKind::Seq { queued, trigger, abort, flush, body } => {
+        ExprKind::Seq { kind, trigger, abort, body } => {
             let trigger = trigger.as_ref().map(|t| t.map(|e| rewrite(e, map)));
             let mut inner = scope(map);
             if let Some(SeqTrigger::Bind(b)) = &trigger {
@@ -1496,9 +1489,14 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let clause =
                 |e: &Arc<Expr>| Arc::new(rewrite_with(e, &inner, mode.deferred()));
             let abort = abort.as_ref().map(clause);
-            let flush = flush.as_ref().map(clause);
+            let kind = match kind {
+                SeqKind::Plain => SeqKind::Plain,
+                SeqKind::Queued { flush } => {
+                    SeqKind::Queued { flush: flush.as_ref().map(clause) }
+                }
+            };
             let body = rewrite_stmts(body, &inner, mode.deferred());
-            ExprKind::Seq { queued: *queued, trigger, abort, flush, body }
+            ExprKind::Seq { kind, trigger, abort, body }
         }
         ExprKind::Qop(x) => {
             let x = rewrite(x, map);
@@ -1524,7 +1522,9 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 .collect();
             ExprKind::ByRef(Arc::new(rewrite_with(x, &cells, mode.deferred())))
         }
-        ExprKind::Do { exprs } => ExprKind::Do { exprs: rewrite_stmts(exprs, map, mode) },
+        ExprKind::Block { exprs } => {
+            ExprKind::Block { exprs: rewrite_stmts(exprs, map, mode) }
+        }
         ExprKind::Apply(a) => {
             let call = ApplyExpr {
                 function: Arc::new(rewrite(&a.function, map)),
@@ -1557,16 +1557,20 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 bind: c.bind.clone(),
                 constraint: c.constraint.clone(),
                 handler: Arc::new(rewrite_with(&c.handler, &inner, mode.deferred())),
-                seq_abort: c
-                    .seq_abort
-                    .as_ref()
-                    .map(|e| Arc::new(rewrite_with(e, &inner, mode.deferred()))),
-                seq_capture: c.seq_capture.clone(),
-                seq_manual: c
-                    .seq_manual
-                    .as_ref()
-                    .map(|e| Arc::new(rewrite_with(e, map, mode.deferred()))),
-                seq_pc: c.seq_pc.clone(),
+                role: match &c.role {
+                    CatchRole::User => CatchRole::User,
+                    CatchRole::Machine { action, manual, pc } => CatchRole::Machine {
+                        action: Arc::new(rewrite_with(action, &inner, mode.deferred())),
+                        manual: manual
+                            .as_ref()
+                            .map(|e| Arc::new(rewrite_with(e, map, mode.deferred()))),
+                        pc: pc.clone(),
+                    },
+                    CatchRole::Try { action, capture } => CatchRole::Try {
+                        action: Arc::new(rewrite_with(action, &inner, mode.deferred())),
+                        capture: capture.clone(),
+                    },
+                },
             }))
         }
         ExprKind::Lambda(l) => {
@@ -1674,7 +1678,7 @@ fn block(pos: SourcePosition, exprs: impl IntoIterator<Item = Expr>) -> Expr {
     match exprs.len() {
         0 => never(pos),
         1 => exprs.pop().unwrap(),
-        _ => ExprKind::Do { exprs: Arc::from_iter(exprs.drain(..)) }.to_expr(pos),
+        _ => ExprKind::Block { exprs: Arc::from_iter(exprs.drain(..)) }.to_expr(pos),
     }
 }
 

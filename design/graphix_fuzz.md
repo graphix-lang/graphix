@@ -271,7 +271,7 @@ that essentially never survives; drops are keyed by the STATEMENT's
 preorder index, not the block's, so a whole round can apply together),
 replace-subtree-with-simplest-literal-of-its-type, hoist, and module
 section internals (`parse_items`/`render_items`: a section is an item
-sequence, so it shrinks as a `Do` and renders back bare — otherwise a
+sequence, so it shrinks as a `Block` and renders back bare — otherwise a
 divergence that needs `m0::f` keeps every unrelated binding in `m0.gx`).
 
 **Rounds, not restarts** (`shrink`): one scan tries every reduction

@@ -96,7 +96,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
     body.typecheck1(ctx)?;
     let bspec = Expr::synth(
         spec,
-        ExprKind::Do {
+        ExprKind::Block {
             exprs: Arc::from_iter(
                 children.iter().chain([&body]).map(|n| n.spec().clone()),
             ),

@@ -6,6 +6,7 @@ use crate::{
         ModPath,
         print::{PrettyBuf, PrettyDisplay},
     },
+    image,
     typ::{
         TVar, Type,
         contains::{ContainsFlags, ContainsHist},
@@ -16,9 +17,9 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
-use bytes::BufMut;
+use bytes::{Buf, BufMut};
 use enumflags2::BitFlags;
-use netidx_core::pack::encode_varint;
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_derive::Pack;
 use nohash::{IntMap, IntSet};
 use parking_lot::RwLock;
@@ -1221,5 +1222,105 @@ mod tests {
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(ft)));
         assert!(s.contains("throws"), "explicit throws should be shown, got: {s}");
         assert!(s.contains("`Boom"), "throws variant should be printed, got: {s}");
+    }
+}
+
+impl FnType {
+    // The constraints wire slot is a derived view of the cells: decode
+    // re-seeds its entries onto the cells (`add_cell_constraint` dedups).
+    fn shape_len(&self) -> usize {
+        // The full cell pairs, not the declared-quantifier view: anonymous
+        // cells carry inference facts that must cross the wire.
+        let constraints = self.cell_constraint_pairs();
+        self.args.encoded_len()
+            + self.vargs.encoded_len()
+            + self.rtype.encoded_len()
+            + <Vec<(TVar, Type)> as Pack>::encoded_len(&constraints)
+            + self.throws.encoded_len()
+            + self.explicit_throws.encoded_len()
+            + self.quantifiers.encoded_len()
+    }
+
+    fn shape_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        self.args.encode(buf)?;
+        self.vargs.encode(buf)?;
+        self.rtype.encode(buf)?;
+        let constraints = self.cell_constraint_pairs();
+        <Vec<(TVar, Type)> as Pack>::encode(&constraints, buf)?;
+        self.throws.encode(buf)?;
+        self.explicit_throws.encode(buf)?;
+        self.quantifiers.encode(buf)
+    }
+
+    fn shape_decode(
+        buf: &mut impl Buf,
+        own: Option<LambdaId>,
+    ) -> Result<Self, PackError> {
+        let args = <Arc<[FnArgType]> as Pack>::decode(buf)?;
+        let vargs = <Option<Type> as Pack>::decode(buf)?;
+        let rtype = <Type as Pack>::decode(buf)?;
+        let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
+        let throws = <Type as Pack>::decode(buf)?;
+        let explicit_throws = <bool as Pack>::decode(buf)?;
+        let quantifiers = <Arc<[ArcStr]> as Pack>::decode(buf)?;
+        for (tv, tc) in constraints {
+            tv.add_cell_constraint(tc);
+        }
+        // Provenance only; excluded from FnType identity.
+        let lambda_ids = LambdaIds::default();
+        if let Some(id) = own {
+            lambda_ids.set_id(id);
+        }
+        Ok(FnType {
+            args,
+            vargs,
+            rtype,
+            throws,
+            explicit_throws,
+            quantifiers,
+            lambda_ids,
+        })
+    }
+}
+
+/// Under an image session a function type is an object carrying its
+/// own lambda id, written once and referenced afterwards (a binding's
+/// type and its definition share one).
+impl Pack for FnType {
+    fn encoded_len(&self) -> usize {
+        if image::is_encoding() {
+            image::fntype_len(self, || {
+                self.lambda_ids.own().encoded_len() + self.shape_len()
+            })
+        } else {
+            self.shape_len()
+        }
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        if image::is_encoding() {
+            image::fntype_encode(self, buf, |buf| {
+                self.lambda_ids.own().encode(buf)?;
+                self.shape_encode(buf)
+            })
+        } else {
+            self.shape_encode(buf)
+        }
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if image::is_decoding() {
+            image::object_decode(
+                buf,
+                |d| &mut d.fntypes,
+                |buf| {
+                    let own = <Option<LambdaId> as Pack>::decode(buf)?;
+                    Self::shape_decode(buf, own)
+                },
+                |b| Self::decode(b),
+            )
+        } else {
+            Self::shape_decode(buf, None)
+        }
     }
 }

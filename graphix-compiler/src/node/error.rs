@@ -5,7 +5,7 @@ use crate::{
     compiler::compile,
     defetyp, deref_typ,
     env::Env,
-    expr::{self, Expr, ExprId, ExprKind, ModPath, WrittenAt},
+    expr::{self, CatchRole, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     format_with_flags,
     fusion::{
         emit::{BodyCx, CompiledExpr, QopSink, emit_qop_node},
@@ -92,16 +92,46 @@ pub struct Catch<R: Rt, E: UserEvent> {
 #[derive(Debug)]
 pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
     pub(crate) node: Node<R, E>,
-    /// A machine's `abort(..)` event, which a [`SeqAbortEvent`] counted
-    /// into the handler's generation before the machine updated: a fired
-    /// production runs `node` with no error in flight.
-    pub(crate) manual: Option<Node<R, E>>,
-    /// A machine's step variable, written idle when the machine sleeps.
-    pc: Option<BindId>,
+    role: AbortRole<R, E>,
+    pending: bool,
+}
+
+#[derive(Debug)]
+enum AbortRole<R: Rt, E: UserEvent> {
+    Machine {
+        /// The `abort(..)` event, which a [`SeqAbortEvent`] counted into
+        /// the handler's generation before the machine updated: a fired
+        /// production runs `node` with no error in flight.
+        manual: Option<Node<R, E>>,
+        /// The step variable, written idle when the machine sleeps.
+        pc: BindId,
+    },
     /// A `try`'s capture cell (§7.3): receives the first error of each
     /// failure and the union of this handler's inferred throws.
-    capture: Option<BindId>,
-    pending: bool,
+    Try { capture: BindId },
+}
+
+impl<R: Rt, E: UserEvent> SeqAbort<R, E> {
+    pub(crate) fn manual(&self) -> Option<&Node<R, E>> {
+        match &self.role {
+            AbortRole::Machine { manual, .. } => manual.as_ref(),
+            AbortRole::Try { .. } => None,
+        }
+    }
+
+    fn manual_mut(&mut self) -> Option<&mut Node<R, E>> {
+        match &mut self.role {
+            AbortRole::Machine { manual, .. } => manual.as_mut(),
+            AbortRole::Try { .. } => None,
+        }
+    }
+
+    fn capture(&self) -> Option<BindId> {
+        match self.role {
+            AbortRole::Try { capture } => Some(capture),
+            AbortRole::Machine { .. } => None,
+        }
+    }
 }
 
 /// Join `etyp`, an error type raised to the catch `catch`, into the type
@@ -128,13 +158,17 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         let handler = decode_node(ctx, buf)?;
         let seq_abort = match opt_node_decode(ctx, buf)? {
             None => None,
-            Some(node) => Some(SeqAbort {
-                node,
-                manual: opt_node_decode(ctx, buf)?,
-                pc: Option::<BindId>::decode(buf)?,
-                capture: Option::<BindId>::decode(buf)?,
-                pending: false,
-            }),
+            Some(node) => {
+                let role = if bool::decode(buf)? {
+                    AbortRole::Machine {
+                        manual: opt_node_decode(ctx, buf)?,
+                        pc: BindId::decode(buf)?,
+                    }
+                } else {
+                    AbortRole::Try { capture: BindId::decode(buf)? }
+                };
+                Some(SeqAbort { node, role, pending: false })
+            }
         };
         let own_handler = image::handler_decode(buf)?;
         let constraint = Option::<Type>::decode(buf)?;
@@ -186,7 +220,8 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         // the handler compiles before this catch registers, so a
         // rethrowing `?` inside it never resolves to itself
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
-        let covered = scope.with_catch((bind_id, top_id), c.seq_pc.is_some());
+        let covered = scope
+            .with_catch((bind_id, top_id), matches!(c.role, CatchRole::Machine { .. }));
         let lookup = |ctx: &ExecCtx<R, E>, name: &ArcStr| {
             let path = ModPath::from([name.as_str()]);
             match ctx.env.lookup_bind(&scope.lexical, &path)? {
@@ -194,23 +229,22 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 None => bail!("BUG: seq cell {name} is not bound"),
             }
         };
-        let seq_abort = match &c.seq_abort {
-            None if c.seq_manual.is_some()
-                || c.seq_pc.is_some()
-                || c.seq_capture.is_some() =>
-            {
-                bail!("BUG: a seq catch without an abort action")
-            }
-            None => None,
-            Some(e) => Some(SeqAbort {
-                node: compile(ctx, flags, (**e).clone(), &catch_scope, top_id)?,
-                manual: c
-                    .seq_manual
-                    .as_ref()
-                    .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
-                    .transpose()?,
-                pc: c.seq_pc.as_ref().map(|n| lookup(ctx, n)).transpose()?,
-                capture: c.seq_capture.as_ref().map(|n| lookup(ctx, n)).transpose()?,
+        let seq_abort = match &c.role {
+            CatchRole::User => None,
+            CatchRole::Machine { action, manual, pc } => Some(SeqAbort {
+                node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
+                role: AbortRole::Machine {
+                    manual: manual
+                        .as_ref()
+                        .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
+                        .transpose()?,
+                    pc: lookup(ctx, pc)?,
+                },
+                pending: false,
+            }),
+            CatchRole::Try { action, capture } => Some(SeqAbort {
+                node: compile(ctx, flags, (**action).clone(), &catch_scope, top_id)?,
+                role: AbortRole::Try { capture: lookup(ctx, capture)? },
                 pending: false,
             }),
         };
@@ -247,9 +281,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             + self.handler.image_len()
             + opt_node_len(self.seq_abort.as_ref().map(|a| &a.node))
             + self.seq_abort.as_ref().map_or(0, |a| {
-                opt_node_len(a.manual.as_ref())
-                    + a.pc.encoded_len()
-                    + a.capture.encoded_len()
+                true.encoded_len()
+                    + match &a.role {
+                        AbortRole::Machine { manual, pc } => {
+                            opt_node_len(manual.as_ref()) + pc.encoded_len()
+                        }
+                        AbortRole::Try { capture } => capture.encoded_len(),
+                    }
             })
             + image::handler_len(&self.own_handler)
             + self.constraint.encoded_len()
@@ -263,10 +301,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.spec.encode(buf)?;
         self.handler.image_encode(buf)?;
         opt_node_encode(self.seq_abort.as_ref().map(|a| &a.node), buf)?;
-        if let Some(a) = &self.seq_abort {
-            opt_node_encode(a.manual.as_ref(), buf)?;
-            a.pc.encode(buf)?;
-            a.capture.encode(buf)?;
+        match self.seq_abort.as_ref().map(|a| &a.role) {
+            None => (),
+            Some(AbortRole::Machine { manual, pc }) => {
+                true.encode(buf)?;
+                opt_node_encode(manual.as_ref(), buf)?;
+                pc.encode(buf)?;
+            }
+            Some(AbortRole::Try { capture }) => {
+                false.encode(buf)?;
+                capture.encode(buf)?;
+            }
         }
         image::handler_encode(&self.own_handler, buf)?;
         self.constraint.encode(buf)?;
@@ -279,7 +324,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         let _ = self.handler.update(ctx, event);
         let cycle = ctx.rt.cycle();
         let capture =
-            self.seq_abort.as_ref().and_then(|a| a.capture.filter(|_| !a.pending));
+            self.seq_abort.as_ref().and_then(|a| a.capture().filter(|_| !a.pending));
         // a delivery whose raise was given up while asleep is not counted again
         let delivered = match read_var(ctx, event, &self.bind_id) {
             Some(VarRead::Delivered(tv))
@@ -303,7 +348,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             }
         }
         if let Some(abort) = &mut self.seq_abort {
-            if let Some(manual) = &mut abort.manual
+            if let Some(manual) = abort.manual_mut()
                 && manual.update(ctx, event).is_fired()
             {
                 self.received = self.received.wrapping_add(1);
@@ -331,7 +376,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.delete(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.delete(ctx);
-            abort.manual.iter_mut().for_each(|n| n.delete(ctx));
+            abort.manual_mut().into_iter().for_each(|n| n.delete(ctx));
         }
     }
 
@@ -340,9 +385,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.sleep(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.sleep(ctx);
-            abort.manual.iter_mut().for_each(|n| n.sleep(ctx));
+            abort.manual_mut().into_iter().for_each(|n| n.sleep(ctx));
             abort.pending = false;
-            if let Some(pc) = abort.pc {
+            if let AbortRole::Machine { pc, .. } = abort.role {
                 ctx.rt.set_var(pc, Value::String(literal!("Idle")));
             }
         }
@@ -352,7 +397,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.reset_replay(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.reset_replay(ctx);
-            abort.manual.iter_mut().for_each(|n| n.reset_replay(ctx));
+            abort.manual_mut().into_iter().for_each(|n| n.reset_replay(ctx));
         }
     }
 
@@ -380,12 +425,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         wrap!(self.handler, self.handler.typecheck0(ctx))?;
         let Some(abort) = &mut self.seq_abort else { return Ok(()) };
         wrap!(abort.node, abort.node.typecheck0(ctx))?;
-        if let Some(manual) = &mut abort.manual {
+        if let Some(manual) = abort.manual_mut() {
             wrap!(manual, manual.typecheck0(ctx))?;
         }
         // the capture cell's type is the union of every covering
         // handler's throws
-        if let Some(cap) = abort.capture {
+        if let Some(cap) = abort.capture() {
             let etyp = ctx
                 .env
                 .by_id
@@ -418,7 +463,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         wrap!(self.handler, self.handler.typecheck1(ctx))?;
         if let Some(abort) = &mut self.seq_abort {
             wrap!(abort.node, abort.node.typecheck1(ctx))?;
-            if let Some(manual) = &mut abort.manual {
+            if let Some(manual) = abort.manual_mut() {
                 wrap!(manual, manual.typecheck1(ctx))?;
             }
         }
@@ -448,7 +493,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.handler.refs(refs);
         if let Some(abort) = &self.seq_abort {
             abort.node.refs(refs);
-            abort.manual.iter().for_each(|n| n.refs(refs));
+            abort.manual().into_iter().for_each(|n| n.refs(refs));
         }
     }
 
@@ -461,7 +506,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         fuse(&mut self.handler, ctx)?;
         if let Some(abort) = &mut self.seq_abort {
             fuse(&mut abort.node, ctx)?;
-            if let Some(manual) = &mut abort.manual {
+            if let Some(manual) = abort.manual_mut() {
                 fuse(manual, ctx)?;
             }
         }

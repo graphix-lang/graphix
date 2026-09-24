@@ -160,7 +160,7 @@ fn is_output_kind(kind: &ExprKind) -> bool {
     }
 }
 
-/// Wrap a file's top-level Exprs in one synthetic `ExprKind::Do` so the
+/// Wrap a file's top-level Exprs in one synthetic `ExprKind::Block` so the
 /// compiler produces one Node and fusion sees the whole file at once.
 /// `Do` rather than `Module` because the last expression's value must
 /// propagate out as the runtime output.
@@ -169,7 +169,7 @@ fn wrap_file_in_do(exprs: Arc<[Expr]>, ori: Arc<Origin>) -> Expr {
         id: ExprId::new(),
         ori,
         pos: Default::default(),
-        kind: ExprKind::Do { exprs },
+        kind: ExprKind::Block { exprs },
         dec: None,
         str_form: Default::default(),
         end: Default::default(),

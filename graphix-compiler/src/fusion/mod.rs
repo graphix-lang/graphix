@@ -391,7 +391,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             rec!(&c.handler);
             if let Some(abort) = &c.seq_abort {
                 rec!(&abort.node);
-                if let Some(manual) = &abort.manual {
+                if let Some(manual) = abort.manual() {
                     rec!(manual);
                 }
             }
