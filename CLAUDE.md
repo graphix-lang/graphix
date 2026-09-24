@@ -283,8 +283,12 @@ netidx-aware embedder (`ShellBuilder::setup_context`,
 during `contains` hold the EXPANDED form — code inspecting resolved types
 handles both. `TypeRef` carries a write-once resolution cell
 (`design/env_independent_typerefs.md`): rebuilds share it via
-`with_params`, `with_scope` makes a fresh one, never overwrite a filled
-cell; `Env::seed_typedef_refs` runs right before fusion in both modes.
+`with_params`, `with_scope` makes a new one (filled when the source's
+is), never overwrite a filled cell; `Env::seed_typedef_refs` runs right
+before fusion in both modes. A typedef must be contractive: every
+self-reference sits under a constructor (`type T = [i64, T]` is refused
+at `Env::deftype`), which is what makes the coinductive ref-pair memos
+sound.
 Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`.
 
 **Two-phase typecheck knot.** While an instance body typechecks, its
@@ -548,11 +552,13 @@ blocker profile, not a gap count.
 Nesting depth is attacker-controlled and overflow aborts, so it is
 closed two ways: `crate::stack::ensure_sufficient` (stacker) wraps every
 program-driven recursion — parser knots (`GrowStack`), `compile`,
-`Display`, `fold`/`for_each_child`, type walks, pattern walks, seq
-lowering, and the `Node`/`TVar`/`Expr` destructors (explicit teardown
-inside the guard; `Type` is the one uncovered cycle, made unreachable by
-the limit) — and `parser::DEFAULT_MAX_NESTING` (counted in parser knots;
-iterative loops that fold into nested ASTs are capped at the fold).
+`Display`, `fold`/`for_each_child`, type walks (`Eq`/`Ord`/`Hash`
+included), pattern walks, seq lowering, and the `Node`/`TVar`/`Expr`/
+`Type` destructors (explicit teardown inside the guard) — and
+`parser::DEFAULT_MAX_NESTING` (counted in parser knots; iterative loops
+that fold into nested ASTs are capped at the fold). Type depth is not
+bounded by the limit: `let x1 = [x0]; let x2 = [x1]; ..`, or a chain of
+typedefs, builds a type as deep as the program is long.
 Refusals set a thread-local (`note_refused`) because combine merges
 messages. Pins: `graphix-compiler/tests/deep_drop.rs`,
 `graphix-shell/tests/deep_nesting.rs` (add a case for a new recursive

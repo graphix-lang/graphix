@@ -1,38 +1,36 @@
-// CR claude for eric: [style] names spelled out despite imports or repeated use:
-// `crate::typ::TVar` (TVar is imported) at cell_constraints_ok and `impl
-// crate::typ::TVar`, `crate::typ::TraitId` in trait_contains,
-// `crate::dbgenv::graphix_dbg_bind()` ~12 times, `crate::stack::ensure_sufficient`.
 use crate::{
     PrintFlag,
+    dbgenv::{graphix_dbg_bind, graphix_dbg_cycle_bt},
     env::Env,
     format_with_flags,
-    typ::{AndAc, FnType, RefHist, TVar, Type, TypeRef, tvar::would_cycle_inner},
+    node::coretraits::CoreTrait,
+    stack::ensure_sufficient,
+    typ::{
+        AndAc, NormKey, RefHist, RefPair, TVar, TraitId, Type, TypeRef, node_addr,
+        probe_key, setops::union_identical, tvar::would_cycle_inner,
+    },
 };
-use ahash::{AHashMap, AHashSet};
-use anyhow::{Result, bail};
-use arcstr::ArcStr;
+use ahash::AHashMap;
+use anyhow::Result;
 use enumflags2::{BitFlags, bitflags};
 use netidx_value::Typ;
+use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::fmt::Debug;
+use std::{
+    mem,
+    ops::{Deref, DerefMut},
+};
 use triomphe::Arc;
 
-// CR claude for eric: [structure] AliasTVars and InitTVars are always set together
-// (check_contains, contains, fntyp.rs:912/992, op.rs:184/856), yet the walk
-// gates acts on them separately (link_equal aliases under InitTVars alone).
-// The real states are {probe, commit} x {rigid or not}; two bools or an enum
-// make the unused mixes unrepresentable. A RigidCheck-only probe (op.rs:183) is
-// also "non-empty", so it skips the probe memo and takes commit copies.
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
 #[repr(u8)]
 pub enum ContainsFlags {
-    AliasTVars,
-    InitTVars,
-    // CR claude for eric: [readability] `TCell::rigid` does not exist; the field
-    // is `TCell::rigid_gates`.
-    /// Enforce rigid (declared) tvar semantics; see `TCell::rigid`.
+    /// Bind and alias cells to make the containment hold; without it
+    /// the walk is a probe that binds nothing.
+    Commit,
+    /// Enforce rigid (declared) tvar semantics; see `TCell::rigid_gates`.
     /// Set only on the def gate's acceptance checks — elsewhere rigid
     /// cells behave like ordinary unbound cells.
     RigidCheck,
@@ -44,64 +42,164 @@ pub(crate) const INFINITE_TYPE_MSG: &str = "cannot infer a finite type here: uni
      contains itself (e.g. a function that returns itself); declare a \
      named recursive type and annotate the binding";
 
-// CR claude for eric: [readability] this doc comment describes open_cell_reaches
-// below, not is_unbound_tvar; move it.
-/// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
-fn is_unbound_tvar(t: &Type) -> bool {
-    matches!(t, Type::TVar(tv) if tv.read().typ.read().typ.is_none())
+/// contains' walk state: its cycle memo (each pair in progress with the
+/// memo depth it was assumed at), and caches no other relation uses.
+pub(super) struct ContainsHist {
+    hist: RefHist<AHashMap<RefPair, usize>>,
+    /// Per-call ref-expansion cache (ref_id → raw `lookup_ref` result).
+    /// Committing consumers take `reset_tvars()` copies; the concrete
+    /// mass stays Arc-shared so repeated pairs are pruned by identity.
+    expansions: LPooled<IntMap<usize, Type>>,
+    /// Pure-probe pair memo: `contains_int` verdicts for empty-flag
+    /// calls, keyed by both sides' content-Arc identities. Each entry
+    /// pins both types so an address cannot be recycled under its key,
+    /// and carries the `epoch` at insert: a committing call may bind a
+    /// cell a verdict read, so the epoch bumps there.
+    probe_pairs: LPooled<AHashMap<(NormKey, NormKey), (u64, bool)>>,
+    probe_pins: LPooled<Vec<Type>>,
+    /// A probe that depends on its own verdict claims nothing.
+    distribution_probes_in_progress: SmallVec<[usize; 4]>,
+    /// The typedefs a trait question is in progress for.
+    traits_in_progress: SmallVec<[(usize, TraitId); 4]>,
+    /// The shallowest in-progress pair the current verdict assumed.
+    low_water: usize,
+    epoch: u64,
 }
 
-fn open_cell_reaches(a: &Type, b: &Type) -> bool {
-    match a {
-        Type::TVar(tv) => {
-            let open = tv.read().typ.read().typ.is_none();
-            open && tv.would_cycle(b)
-        }
-        _ => false,
+impl Deref for ContainsHist {
+    type Target = RefHist<AHashMap<RefPair, usize>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.hist
     }
+}
+
+impl DerefMut for ContainsHist {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.hist
+    }
+}
+
+impl ContainsHist {
+    pub(super) fn new() -> Self {
+        ContainsHist {
+            hist: RefHist::new(),
+            expansions: LPooled::take(),
+            probe_pairs: LPooled::take(),
+            probe_pins: LPooled::take(),
+            distribution_probes_in_progress: SmallVec::new(),
+            traits_in_progress: SmallVec::new(),
+            low_water: usize::MAX,
+            epoch: 0,
+        }
+    }
+
+    /// Cached pure-probe verdict for `(t0, t1)`, if current.
+    fn probe_get(&self, t0: &Type, t1: &Type) -> Option<bool> {
+        let k = (probe_key(t0)?, probe_key(t1)?);
+        let (epoch, r) = self.probe_pairs.get(&k).copied()?;
+        (epoch == self.epoch).then_some(r)
+    }
+
+    fn probe_put(&mut self, t0: &Type, t1: &Type, r: bool) {
+        if let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1))
+            && self.probe_pairs.insert((k0, k1), (self.epoch, r)).is_none()
+        {
+            self.probe_pins.push(t0.clone());
+            self.probe_pins.push(t1.clone());
+        }
+    }
+
+    /// Decide `key` by `f`, assuming it holds meanwhile: a pair met
+    /// again inside its own proof is `true` (coinduction), and the depth
+    /// of that assumption lowers `low_water`.
+    fn assuming(
+        &mut self,
+        key: RefPair,
+        f: impl FnOnce(&mut Self) -> Result<bool>,
+    ) -> Result<bool> {
+        if let Some(&depth) = self.hist.get(&key) {
+            self.low_water = self.low_water.min(depth);
+            return Ok(true);
+        }
+        let depth = self.hist.len();
+        self.hist.insert(key, depth);
+        let r = f(self);
+        self.hist.remove(&key);
+        r
+    }
+
+    /// [`Type::lookup_ref_with`] through the expansion cache. A non-Ref,
+    /// an unresolvable ref, or a ref with TVar params (its expansion
+    /// embeds the caller's live cells) goes uncached. A probe (`!commit`)
+    /// hands back the cached expansion itself; committing calls take
+    /// `reset_tvars()` copies. `None` is a violated parameter bound
+    /// under a probe.
+    fn expand_ref(
+        &mut self,
+        t: &Type,
+        id: Option<usize>,
+        env: &Env,
+        commit: bool,
+    ) -> Result<Option<Type>> {
+        let (Type::Ref(tr), Some(id)) = (t, id) else {
+            return t.lookup_ref_with(env, commit);
+        };
+        if !tr.params.iter().all(|p| p.tvar_free()) {
+            return t.lookup_ref_with(env, commit);
+        }
+        let fresh = |e: &Type| if commit { e.reset_tvars() } else { e.clone() };
+        if let Some(e) = self.expansions.get(&id) {
+            return Ok(Some(fresh(e)));
+        }
+        let Some(e) = t.lookup_ref_with(env, commit)? else { return Ok(None) };
+        let r = fresh(&e);
+        self.expansions.insert(id, e);
+        Ok(Some(r))
+    }
+}
+
+fn is_unbound_tvar(t: &Type) -> bool {
+    matches!(t, Type::TVar(tv) if !tv.is_bound())
+}
+
+/// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
+fn open_cell_reaches(a: &Type, b: &Type) -> bool {
+    matches!(a, Type::TVar(tv) if !tv.is_bound() && tv.would_cycle(b))
 }
 
 /// Does `t` reach a cell that is open, unconstrained and
 /// `cycle_refused`? Pure read through bindings and constraints.
 fn type_has_refused_open_cell(t: &Type) -> bool {
-    fn walk(t: &Type, visited: &mut LPooled<nohash::IntSet<usize>>) -> bool {
-        match t {
-            Type::TVar(tv) => {
-                if !visited.insert(tv.cell_addr()) {
-                    return false;
-                }
-                let (bound, cons, refused) = {
-                    let g = tv.read();
-                    let cell = g.typ.read();
-                    (cell.typ.clone(), cell.constraints.clone(), cell.cycle_refused)
-                };
-                if bound.is_none() && cons.is_empty() && refused {
-                    return true;
-                }
-                if let Some(b) = &bound
-                    && walk(b, visited)
-                {
-                    return true;
-                }
-                cons.iter().any(|c| walk(c, visited))
+    fn walk(t: &Type, visited: &mut IntSet<usize>) -> bool {
+        ensure_sufficient(|| {
+            if let Some(node) = node_addr(t)
+                && !visited.insert(node)
+            {
+                return false;
             }
-            // CR claude for eric: [structure] this Fn arm is exactly what the
-            // for_each_child arm below does (try_for_each_type walks args,
-            // vargs, rtype, throws); delete it. The walk also has no composite
-            // dedup (tree cost) and runs twice on every check_contains failure,
-            // which fusion/lowering.rs:1244 uses as a probe.
-            Type::Fn(ft) => {
-                ft.args.iter().any(|a| walk(&a.typ, visited))
-                    || ft.vargs.as_ref().is_some_and(|v| walk(v, visited))
-                    || walk(&ft.rtype, visited)
-                    || walk(&ft.throws, visited)
+            match t {
+                Type::TVar(tv) => {
+                    if !visited.insert(tv.cell_addr()) {
+                        return false;
+                    }
+                    let (bound, cons, refused) = {
+                        let cell = tv.cell();
+                        let cell = cell.read();
+                        (cell.binding.clone(), cell.constraints.clone(), cell.cycle_refused)
+                    };
+                    if bound.is_none() && cons.is_empty() && refused {
+                        return true;
+                    }
+                    bound.iter().chain(cons.iter()).any(|c| walk(c, visited))
+                }
+                t => {
+                    let mut found = false;
+                    t.for_each_child(&mut |c| found |= walk(c, visited));
+                    found
+                }
             }
-            t => {
-                let mut found = false;
-                t.for_each_child(&mut |c| found |= walk(c, visited));
-                found
-            }
-        }
+        })
     }
     walk(t, &mut LPooled::take())
 }
@@ -109,13 +207,12 @@ fn type_has_refused_open_cell(t: &Type) -> bool {
 /// True iff binding `t` into the cell would satisfy every conjunct of
 /// the cell's constraints. A pure probe.
 fn cell_constraints_ok(
-    tv: &crate::typ::TVar,
+    tv: &TVar,
     env: &Env,
-    hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+    hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<bool> {
-    let cons = tv.read().typ.read().constraints.clone();
-    for c in cons.iter() {
+    for c in tv.cell_constraints().iter() {
         if !c.contains_int(BitFlags::empty(), env, hist, t)? {
             return Ok(false);
         }
@@ -123,319 +220,124 @@ fn cell_constraints_ok(
     Ok(true)
 }
 
-/// Weld the tvar cells of two loosely-equal types by position: two
-/// open cells that compared equal must share fate, or the discarded
-/// side's later binding never reaches the survivor. The alias carries
-/// the occurs check.
-fn link_equal(t0: &Type, t1: &Type) {
-    crate::stack::ensure_sufficient(|| link_equal_inner(t0, t1))
+/// How two distinct open cells unify.
+#[derive(Debug, Clone, Copy)]
+enum OpenPair {
+    /// Two declared vars of the def under check (rigid cells exist only
+    /// inside its gate): the body must not require them equal.
+    Distinct,
+    /// Both names are settled (`frozen`): merge the cells, since
+    /// `frozen` gates name-aliasing, not unification.
+    Merge,
+    /// `t0` keeps its name: `t1` aliases it.
+    AliasRight,
+    /// `t0` aliases `t1`.
+    AliasLeft,
 }
 
-fn link_equal_inner(t0: &Type, t1: &Type) {
+impl OpenPair {
+    fn of(t0: &TVar, t1: &TVar) -> Self {
+        if t0.is_rigid() && t1.is_rigid() {
+            return OpenPair::Distinct;
+        }
+        match (t0.read().frozen, t1.read().frozen) {
+            (true, true) => OpenPair::Merge,
+            (true, false) => OpenPair::AliasRight,
+            (false, _) => OpenPair::AliasLeft,
+        }
+    }
+
+    /// Perform the unification; `false` for [`OpenPair::Distinct`].
+    fn apply(self, t0: &TVar, t1: &TVar) -> bool {
+        let dbg = |what: &str, a: &TVar, b: &TVar| {
+            if graphix_dbg_bind() {
+                eprintln!(
+                    "{what} '{}({:x}) -> '{}({:x})",
+                    a.name,
+                    a.cell_addr(),
+                    b.name,
+                    b.cell_addr()
+                );
+            }
+        };
+        match self {
+            OpenPair::Distinct => return false,
+            OpenPair::Merge => t0.alias_cells(t1),
+            OpenPair::AliasRight => {
+                dbg("RALIAS", t1, t0);
+                t1.alias(t0)
+            }
+            OpenPair::AliasLeft => {
+                dbg("LALIAS", t0, t1);
+                t0.alias(t1)
+            }
+        }
+        true
+    }
+}
+
+/// Weld the tvar cells of two loosely-equal types by position (the
+/// loose part is `Fn` equality, which does not tell distinct open cells
+/// apart): two open cells that compared equal must share fate, or the
+/// discarded side's later binding never reaches the survivor. `false`
+/// when two distinct rigid cells meet; only `commit` links.
+fn link_equal(t0: &Type, t1: &Type, commit: bool) -> bool {
+    ensure_sufficient(|| link_equal_inner(t0, t1, commit))
+}
+
+fn link_equal_inner(t0: &Type, t1: &Type, commit: bool) -> bool {
+    let all = |a: &[Type], b: &[Type]| {
+        a.iter().zip(b.iter()).all(|(x, y)| link_equal(x, y, commit))
+    };
     match (t0, t1) {
         (Type::TVar(a), Type::TVar(b)) => {
             if a.same_cell(b) {
-                return;
+                return true;
             }
-            let ab = a.read().typ.read().typ.clone();
-            let bb = b.read().typ.read().typ.clone();
-            match (ab, bb) {
-                // CR claude for eric: [structure] this frozen -> direction choice
-                // duplicates the TVar x TVar arm of contains_dispatch (the
-                // `(None, None)` Act selection); one helper for "unify two open
-                // cells" would keep them from drifting (they already differ:
-                // this one ignores the Distinct rule for two rigid cells).
-                (None, None) => {
-                    let af = a.read().frozen;
-                    let bf = b.read().frozen;
-                    if af && bf {
-                        a.alias_cells(b)
-                    } else if af {
-                        b.alias(a)
-                    } else {
-                        a.alias(b)
-                    }
-                }
-                (Some(x), Some(y)) => link_equal(&x, &y),
+            match (a.binding(), b.binding()) {
+                (None, None) => match OpenPair::of(a, b) {
+                    OpenPair::Distinct => false,
+                    act => !commit || act.apply(a, b),
+                },
+                (Some(x), Some(y)) => link_equal(&x, &y, commit),
                 // Unreachable under an eq-true verdict.
-                _ => (),
+                _ => true,
             }
         }
         (Type::Fn(f0), Type::Fn(f1)) => {
-            for (a, b) in f0.args.iter().zip(f1.args.iter()) {
-                link_equal(&a.typ, &b.typ);
-            }
-            if let (Some(a), Some(b)) = (&f0.vargs, &f1.vargs) {
-                link_equal(a, b);
-            }
-            link_equal(&f0.rtype, &f1.rtype);
-            link_equal(&f0.throws, &f1.throws);
+            f0.args.iter().zip(f1.args.iter()).all(|(a, b)| link_equal(&a.typ, &b.typ, commit))
+                && match (&f0.vargs, &f1.vargs) {
+                    (Some(a), Some(b)) => link_equal(a, b, commit),
+                    _ => true,
+                }
+                && link_equal(&f0.rtype, &f1.rtype, commit)
+                && link_equal(&f0.throws, &f1.throws, commit)
         }
-        (Type::Ref(r0), Type::Ref(r1)) => {
-            for (a, b) in r0.params.iter().zip(r1.params.iter()) {
-                link_equal(a, b);
-            }
-        }
+        (Type::Ref(r0), Type::Ref(r1)) => all(&r0.params, &r1.params),
         (Type::Set(a), Type::Set(b))
         | (Type::Tuple(a), Type::Tuple(b))
         | (Type::Variant(_, a, _), Type::Variant(_, b, _))
-        | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => {
-            for (x, y) in a.iter().zip(b.iter()) {
-                link_equal(x, y);
-            }
-        }
+        | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => all(a, b),
         (Type::Struct(a), Type::Struct(b)) => {
-            for ((_, x, _), (_, y, _)) in a.iter().zip(b.iter()) {
-                link_equal(x, y);
-            }
+            a.iter().zip(b.iter()).all(|((_, x, _), (_, y, _))| link_equal(x, y, commit))
         }
         (Type::Array(a), Type::Array(b))
         | (Type::List(a), Type::List(b))
         | (Type::Error(a), Type::Error(b))
-        | (Type::ByRef(a), Type::ByRef(b)) => link_equal(a, b),
+        | (Type::ByRef(a), Type::ByRef(b)) => link_equal(a, b, commit),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
-            link_equal(k0, k1);
-            link_equal(v0, v1);
+            link_equal(k0, k1, commit) && link_equal(v0, v1, commit)
         }
         (Type::App(c0, a0), Type::App(c1, a1)) => {
-            link_equal(c0, c1);
-            link_equal(a0, a1);
+            link_equal(c0, c1, commit) && link_equal(a0, a1, commit)
         }
-        _ => (),
+        _ => true,
     }
 }
 
-// CR claude for eric: [structure] settle/settle_or_bottom (TVar) and
-// FnType::settle_terminal are the settle phase, not containment; they belong
-// with TVar in tvar.rs and FnType in fntyp.rs (or a settle.rs of their own).
-impl crate::typ::TVar {
-    /// Bind a constrained-unbound cell to its conjunction's witness,
-    /// the narrowest conjunct every other conjunct contains. Bound and
-    /// unconstrained cells are untouched. No witness is a type error.
-    pub fn settle(&self, env: &Env) -> Result<()> {
-        let cons = {
-            let tv = self.read();
-            let cell = tv.typ.read();
-            if cell.typ.is_some() || cell.constraints.is_empty() {
-                return Ok(());
-            }
-            cell.constraints.clone()
-        };
-        let mut hist = RefHist::new(LPooled::take());
-        let mut witness = None;
-        let addr = self.cell_addr();
-        let mut all_self_referential = true;
-        let mut has_trait = false;
-        'cand: for c in cons.iter() {
-            // A trait conjunct is a predicate, not a binding.
-            if c.is_trait_ref(env) {
-                has_trait = true;
-                continue;
-            }
-            // A conjunct reaching this cell has no finite witness.
-            if would_cycle_inner(addr, c) {
-                continue;
-            }
-            all_self_referential = false;
-            for o in cons.iter() {
-                if !o.contains_int(BitFlags::empty(), env, &mut hist, c)? {
-                    continue 'cand;
-                }
-            }
-            witness = Some(c.clone());
-            break;
-        }
-        // CR claude for eric: [bug] with any trait conjunct present, a conjunction
-        // whose concrete members have no witness (`'a: Show & i64 & string`) is
-        // left open silently instead of the "unsatisfiable constraints" error;
-        // nothing later reports it. Suspected (read). Exempt only the trait-only
-        // case (no non-trait, non-self-referential candidate at all).
-        // No finite witness: leave the cell open for writers to refine.
-        if witness.is_none() && (all_self_referential || has_trait) {
-            return Ok(());
-        }
-        match witness {
-            Some(w) => {
-                // A private copy: binding the store's type verbatim
-                // would alias its interior cells into live inference.
-                let w = w.reset_tvars();
-                if crate::dbgenv::graphix_dbg_bind() {
-                    eprintln!("SETTLE '{}({:x}) := {w:?}", self.name, self.cell_addr());
-                }
-                self.read().typ.write().typ = Some(w);
-                Ok(())
-            }
-            None => {
-                format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                    let mut cs: LPooled<String> = LPooled::take();
-                    for (i, c) in cons.iter().enumerate() {
-                        use std::fmt::Write;
-                        if i > 0 {
-                            cs.push_str(" & ");
-                        }
-                        write!(cs, "{c}")?;
-                    }
-                    bail!("unsatisfiable constraints on '{}: {}", self.name, &*cs)
-                })
-            }
-        }
-    }
-
-    /// [`Self::settle`], but an unconstrained unbound cell binds to ⊥:
-    /// nothing produced or bounded it. Only the terminal walk uses this
-    /// (an earlier call would foreclose writers not yet typechecked).
-    pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
-        {
-            let tv = self.read();
-            let cell = tv.typ.read();
-            if cell.typ.is_some() {
-                return Ok(());
-            }
-            if cell.constraints.is_empty() {
-                // The only solution was infinite; ⊥ would be a lie.
-                if cell.cycle_refused {
-                    if crate::dbgenv::graphix_dbg_bind() {
-                        eprintln!(
-                            "SETTLE-INFINITE '{}({:x})",
-                            self.name,
-                            self.cell_addr()
-                        );
-                    }
-                    bail!("{INFINITE_TYPE_MSG}")
-                }
-                drop(cell);
-                if crate::dbgenv::graphix_dbg_bind() {
-                    eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
-                }
-                if crate::dbgenv::graphix_dbg_bind_bt() {
-                    eprintln!("{}", std::backtrace::Backtrace::force_capture());
-                }
-                tv.typ.write().typ = Some(Type::Bottom);
-                return Ok(());
-            }
-        }
-        self.settle(env)
-    }
-}
-
-/// Record which settle-set members `t` references, descending through
-/// non-member cells' bindings and constraints but stopping at members
-/// (their reach is their own edge list).
-fn settle_refs(
-    t: &Type,
-    index: &AHashMap<usize, usize>,
-    visited: &mut AHashSet<usize>,
-    out: &mut SmallVec<[usize; 4]>,
-) {
-    match t {
-        Type::TVar(tv) => {
-            let addr = tv.cell_addr();
-            if let Some(&i) = index.get(&addr) {
-                out.push(i);
-            } else if visited.insert(addr) {
-                let (bound, cons) = {
-                    let g = tv.read();
-                    let cell = g.typ.read();
-                    (cell.typ.clone(), cell.constraints.clone())
-                };
-                if let Some(b) = &bound {
-                    settle_refs(b, index, visited, out);
-                }
-                for c in cons.iter() {
-                    settle_refs(c, index, visited, out);
-                }
-            }
-        }
-        Type::Fn(ft) => {
-            for arg in ft.args.iter() {
-                settle_refs(&arg.typ, index, visited, out);
-            }
-            if let Some(vargs) = &ft.vargs {
-                settle_refs(vargs, index, visited, out);
-            }
-            settle_refs(&ft.rtype, index, visited, out);
-            ft.for_each_sig_constraint(&mut |c| settle_refs(c, index, visited, out));
-            settle_refs(&ft.throws, index, visited, out);
-        }
-        t => t.for_each_child(&mut |c| settle_refs(c, index, visited, out)),
-    }
-}
-
-impl FnType {
-    /// Terminal settle of a call site's resolved signature in
-    /// dependency order: a member settles only after every member its
-    /// binding or constraints reach. Ordering keys are (name, TVarId)
-    /// only — `cell_addr` is ASLR-dependent and used for identity alone.
-    /// `defaulted` cells are ordered but not settled.
-    pub fn settle_terminal(
-        &self,
-        env: &Env,
-        rtype_cell: Option<&TVar>,
-        defaulted: &AHashSet<usize>,
-    ) -> Result<()> {
-        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.collect_tvars(&mut tvs);
-        let mut nodes: LPooled<Vec<(ArcStr, TVar)>> = tvs.drain().collect();
-        if let Some(tv) = rtype_cell {
-            if !nodes.iter().any(|(_, n)| n.cell_addr() == tv.cell_addr()) {
-                nodes.push((tv.name.clone(), tv.clone()));
-            }
-        }
-        nodes.sort_by(|a, b| {
-            a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
-        });
-        let mut index: LPooled<AHashMap<usize, usize>> = LPooled::take();
-        for (i, (_, tv)) in nodes.iter().enumerate() {
-            index.insert(tv.cell_addr(), i);
-        }
-        let mut edges: LPooled<Vec<SmallVec<[usize; 4]>>> = LPooled::take();
-        for (_, tv) in nodes.iter() {
-            let mut out: SmallVec<[usize; 4]> = SmallVec::new();
-            let mut visited: LPooled<AHashSet<usize>> = LPooled::take();
-            let (bound, cons) = {
-                let g = tv.read();
-                let cell = g.typ.read();
-                (cell.typ.clone(), cell.constraints.clone())
-            };
-            if let Some(b) = &bound {
-                settle_refs(b, &index, &mut visited, &mut out);
-            }
-            for c in cons.iter() {
-                settle_refs(c, &index, &mut visited, &mut out);
-            }
-            out.sort_unstable();
-            out.dedup();
-            edges.push(out);
-        }
-        fn visit(
-            i: usize,
-            edges: &[SmallVec<[usize; 4]>],
-            seen: &mut [bool],
-            order: &mut LPooled<Vec<usize>>,
-        ) {
-            if seen[i] {
-                return;
-            }
-            seen[i] = true;
-            for &j in edges[i].iter() {
-                visit(j, edges, seen, order);
-            }
-            order.push(i);
-        }
-        let mut seen: LPooled<Vec<bool>> = LPooled::take();
-        seen.resize(nodes.len(), false);
-        let mut order: LPooled<Vec<usize>> = LPooled::take();
-        for i in 0..nodes.len() {
-            visit(i, &edges, &mut seen, &mut order);
-        }
-        for i in order.drain(..) {
-            let tv = &nodes[i].1;
-            if !defaulted.contains(&tv.cell_addr()) {
-                tv.settle_or_bottom(env)?;
-            }
-        }
-        Ok(())
-    }
+/// Two types identical up to `Fn` equality whose cells can be welded.
+fn identical_linked(t0: &Type, t1: &Type, commit: bool) -> bool {
+    union_identical(t0, t1) && link_equal(t0, t1, false) && (!commit || link_equal(t0, t1, true))
 }
 
 /// A non-containment report that formats lazily: callers probe these
@@ -479,16 +381,15 @@ fn same_content(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// The deref/expansion steps [`Type::set_covers_by_distribution`] takes
+/// to reach a head constructor before giving up on a chain of aliases.
+const HEAD_CHAIN_LIMIT: usize = 64;
+
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
-        let mut hist = RefHist::new(LPooled::take());
-        let ok = self.contains_int(
-            ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
-            env,
-            &mut hist,
-            t,
-        )?;
-        if crate::dbgenv::graphix_dbg_bind() {
+        let ok =
+            self.contains_int(ContainsFlags::Commit.into(), env, &mut ContainsHist::new(), t)?;
+        if graphix_dbg_bind() {
             eprintln!("CHK-CONTAINS {self} >= {t} -> {ok}");
         }
         if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
@@ -510,15 +411,8 @@ impl Type {
     /// [`Self::check_contains`] with rigid enforcement; the def gate's
     /// acceptance checks only.
     pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
-        let mut hist = RefHist::new(LPooled::take());
-        let ok = self.contains_int(
-            ContainsFlags::AliasTVars
-                | ContainsFlags::InitTVars
-                | ContainsFlags::RigidCheck,
-            env,
-            &mut hist,
-            t,
-        )?;
+        let flags = ContainsFlags::Commit | ContainsFlags::RigidCheck;
+        let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
         if ok { Ok(()) } else { Err(self.contains_mismatch(t)) }
     }
 
@@ -526,47 +420,56 @@ impl Type {
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        crate::stack::ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t))
+        ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t))
     }
 
     fn contains_int_inner(
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
         if (self as *const Type) == (t as *const Type) || same_content(self, t) {
             return Ok(true);
         }
-        // Flagged calls may bind cells, so they invalidate the memo.
-        if flags.is_empty() {
-            if let Some(r) = hist.probe_get(self, t) {
-                return Ok(r);
-            }
-            let r = self.contains_dispatch(flags, env, hist, t)?;
-            // CR claude for eric: [risk] a verdict computed while a Ref pair was
-            // assumed true in `hist` (in progress) is cached here and reused
-            // after that pair is popped, outside the assumption that produced
-            // it. Suspected (read); only verdicts reached with no pair in
-            // progress, or keyed with the pairs they consulted, are safe to keep.
-            hist.probe_put(self, t, r);
+        if flags.contains(ContainsFlags::Commit) {
+            // A committing call may bind a cell a cached verdict read.
+            hist.epoch += 1;
+            return self.contains_dispatch(flags, env, hist, t);
+        }
+        if !flags.is_empty() {
+            return self.contains_dispatch(flags, env, hist, t);
+        }
+        if let Some(r) = hist.probe_get(self, t) {
             return Ok(r);
         }
-        hist.note_commit();
-        self.contains_dispatch(flags, env, hist, t)
+        // Only a verdict that assumed no pair from further out holds
+        // outside this call.
+        let height = hist.len();
+        let outer = mem::replace(&mut hist.low_water, usize::MAX);
+        let r = self.contains_dispatch(flags, env, hist, t);
+        let assumed = hist.low_water;
+        hist.low_water = outer.min(assumed);
+        let r = r?;
+        if assumed >= height {
+            hist.probe_put(self, t, r);
+        }
+        Ok(r)
     }
 
     fn contains_dispatch(
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        let rigid = flags.contains(ContainsFlags::RigidCheck);
         // A trait in type position is a predicate, reached only as a
         // cell conjunct.
         if let Self::Ref(tr) = self
@@ -583,129 +486,76 @@ impl Type {
                 _ => false,
             });
         }
+        // A constructor application decomposes a reference by name,
+        // ahead of the expansion arm.
+        if matches!((self, t), (Self::App(..), Self::Ref(_)) | (Self::Ref(_), Self::App(..))) {
+            return self.app_contains(flags, env, hist, t);
+        }
+        // A cell bound to a reference meets a reference by name before
+        // either expands.
+        if let (Self::Ref(_), Self::TVar(_)) = (self, t)
+            && let Some(behind) = t.ref_behind()
+        {
+            return self.contains_int(flags, env, hist, &behind);
+        }
+        if let (Self::TVar(_), Self::Ref(_)) = (self, t)
+            && let Some(behind) = self.ref_behind()
+        {
+            return behind.contains_int(flags, env, hist, t);
+        }
         match (self, t) {
-            // A constructor application decomposes a reference by
-            // name, ahead of the expansion arm.
-            (Self::App(..), Self::Ref(_)) | (Self::Ref(_), Self::App(..)) => {
-                self.app_contains(flags, env, hist, t)
-            }
-            // A cell bound to a reference meets a reference by name
-            // before either expands.
-            // CR claude for eric: [style] the guard computes ref_behind (a deref
-            // and clone) and the body recomputes it behind `expect("checked")`,
-            // here and in the mirror arm; a let-chain guard binds it once. Same
-            // in matches.rs could_match_int (app_filled in guard, then unwrap).
-            (Self::Ref(_), Self::TVar(_)) if t.ref_behind().is_some() => {
-                let behind = t.ref_behind().expect("checked");
-                self.contains_int(flags, env, hist, &behind)
-            }
-            (Self::TVar(_), Self::Ref(_)) if self.ref_behind().is_some() => {
-                let behind = self.ref_behind().expect("checked");
-                behind.contains_int(flags, env, hist, t)
-            }
             (Self::Hole, Self::Hole) => Ok(true),
-            (Self::Hole, Self::TVar(tv)) => {
-                let bound = tv.read().typ.read().typ.clone();
-                match bound {
-                    Some(b) => Self::Hole.contains_int(flags, env, hist, &b),
-                    None => Ok(false),
-                }
-            }
-            (Self::TVar(tv), Self::Hole) => {
-                let bound = tv.read().typ.read().typ.clone();
-                match bound {
-                    Some(b) => b.contains_int(flags, env, hist, &Self::Hole),
-                    None => Ok(false),
-                }
-            }
+            (Self::Hole, Self::TVar(tv)) => match tv.binding() {
+                Some(b) => Self::Hole.contains_int(flags, env, hist, &b),
+                None => Ok(false),
+            },
+            (Self::TVar(tv), Self::Hole) => match tv.binding() {
+                Some(b) => b.contains_int(flags, env, hist, &Self::Hole),
+                None => Ok(false),
+            },
             (Self::Hole, _) | (_, Self::Hole) => Ok(false),
-            // Two filled cells can hold different defs for one name;
-            // disagreement falls through to the expansion arm.
-            // CR claude for eric: [bug] this fast path treats every typedef
-            // parameter as covariant, but a parameter under a fn argument is
-            // contravariant. Probe: `type F<'a> = fn(x: 'a) -> i64;` then
-            // `let widen = |f: Array<F<i64>>| -> Array<F<Number>> f;` checks, and
-            // `widen([|x: i64| -> i64 x + 1])[0]$(1.5)` runs the i64 fn on 1.5
-            // (prints "type '_: i64 does not match value 2.5", then 2.5); the
-            // expansion arm rejects it. Take the fast path only when the params
-            // are pairwise identical (union_identical), or record per-parameter
-            // variance at typedef registration; else fall through to expansion.
+            // A reference is contained by itself with identical params
+            // (whatever each param's variance). Two filled cells can
+            // hold different defs for one name; disagreement, like any
+            // other pair, takes the expansion arm.
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
                     && tr0.name == tr1.name
-                    && tr0.cells_agree(tr1) =>
+                    && tr0.cells_agree(tr1)
+                    && tr0.params.len() == tr1.params.len()
+                    && tr0.params.iter().zip(tr1.params.iter()).all(|(a, b)| {
+                        identical_linked(a, b, commit)
+                    }) =>
             {
-                Ok(tr0.params.len() == tr1.params.len()
-                    && tr0
-                        .params
-                        .iter()
-                        .zip(tr1.params.iter())
-                        .map(|(t0, t1)| t0.contains_int(flags, env, hist, t1))
-                        .collect::<Result<AndAc>>()?
-                        .0)
+                Ok(true)
             }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
-                // CR claude for eric: [bug] ref_id is None for every content-less
-                // type (tvars, primitives, Any), so `T ⊇ 'a` and a nested
-                // `T ⊇ 'b` share the in-progress key (Some(T), None) and the
-                // nested query answers `true` unexamined. Probe: `type T =
-                // [`Cons(i64, T), `Nil]; let mk = |a| `Cons(1, a);` then
-                // `let t: T = `Cons(2, mk(mk("oops")));` checks, and at run time
-                // prints "type [`Cons(i64, T), `Nil] does not match value
-                // [.., "oops"]". Key a tvar by its cell (or deref bound cells
-                // before keying) and a primitive by its bits. union_int, diff_int
-                // and could_match_int use the same keys.
-                let t0_id = hist.ref_id(t0, env);
-                let t1_id = hist.ref_id(t1, env);
-                let raw = flags.is_empty();
-                // CR claude for eric: [perf] both sides are expanded before the
-                // pair memo is consulted, so a memo hit still pays two
-                // expansions (two reset_tvars deep copies on a committing walk).
-                // Check the memo first. Same order in matches.rs could_match_int
-                // and sig_matches_int, setops.rs union_int (both arms), diff_int.
-                let t0 = hist.expand_ref(t0, t0_id, env, raw)?;
-                let t1 = hist.expand_ref(t1, t1_id, env, raw)?;
-                match hist.get(&(t0_id, t1_id)) {
-                    Some(r) => {
-                        if crate::dbgenv::graphix_dbg_bind() && !raw {
-                            eprintln!("REF-MEMO-HIT ({t0_id:?},{t1_id:?}) -> {r}");
-                        }
-                        Ok(*r)
-                    }
-                    None => {
-                        // CR claude for eric: [bug] the in-progress `true` is only
-                        // sound when the recursion passes a constructor; a
-                        // typedef reaching itself through unions alone is not
-                        // contractive. Probe: `type T = [i64, T]; let v: T =
-                        // "hello";` checks, `select v { i64 as n => n + 1 }` is
-                        // accepted as exhaustive, and at run time no arm matches.
-                        // Reject non-contractive typedefs at registration
-                        // (env.rs), or assume only under a constructor.
-                        hist.insert((t0_id, t1_id), true);
-                        let r = t0.contains_int(flags, env, hist, &t1);
-                        hist.remove(&(t0_id, t1_id));
-                        r
-                    }
-                }
+                let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
+                hist.assuming(key, |hist| {
+                    let Some(e0) = hist.expand_ref(t0, key.0, env, commit)? else {
+                        return Ok(false);
+                    };
+                    let Some(e1) = hist.expand_ref(t1, key.1, env, commit)? else {
+                        return Ok(false);
+                    };
+                    e0.contains_int(flags, env, hist, &e1)
+                })
             }
             // ⊥ fits whatever the cell becomes; binding would only
             // foreclose its writers. An unrefined cell settles to ⊥.
             (Self::TVar(_), Self::Bottom) => Ok(true),
-            // ⊥ ⊇ 'r has one solution, so an open cell commits under
-            // InitTVars; a bound cell answers for its binding.
-            (Self::Bottom, Self::TVar(t0)) => {
-                let bound = t0.read().typ.read().typ.clone();
-                match bound {
-                    Some(b) => Self::Bottom.contains_int(flags, env, hist, &b),
-                    None => {
-                        if flags.contains(ContainsFlags::InitTVars) {
-                            t0.read().typ.write().typ = Some(Self::Bottom);
-                        }
-                        Ok(true)
+            // ⊥ ⊇ 'r has one solution, so an open cell commits; a bound
+            // cell answers for its binding.
+            (Self::Bottom, Self::TVar(t0)) => match t0.binding() {
+                Some(b) => Self::Bottom.contains_int(flags, env, hist, &b),
+                None => {
+                    if commit {
+                        t0.bind(Self::Bottom);
                     }
+                    Ok(true)
                 }
-            }
+            },
             (Self::Bottom, Self::Bottom) => Ok(true),
             (Self::Bottom, _) => Ok(false),
             (_, Self::Bottom) => Ok(true),
@@ -713,12 +563,11 @@ impl Type {
                 // Clone the binding out before recursing, here and in
                 // every deref arm: the walk can revisit this cell and
                 // write-lock it, and the locks are non-reentrant.
-                let bound = t0.read().typ.read().typ.clone();
-                if let Some(t0) = bound {
+                if let Some(t0) = t0.binding() {
                     return t0.contains_int(flags, env, hist, t);
                 }
                 // A rigid cell contains only itself and Bottom.
-                if flags.contains(ContainsFlags::RigidCheck) && t0.is_rigid() {
+                if rigid && t0.is_rigid() {
                     return Ok(false);
                 }
                 if !cell_constraints_ok(t0, env, hist, &Self::Any)? {
@@ -726,11 +575,11 @@ impl Type {
                 }
                 // A rigid cell is never written outside the acceptance
                 // judgment.
-                if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() {
-                    if crate::dbgenv::graphix_dbg_bind() {
+                if commit && !t0.is_rigid() {
+                    if graphix_dbg_bind() {
                         eprintln!("BIND lhs '{}({:x}) := Any", t0.name, t0.cell_addr());
                     }
-                    t0.read().typ.write().typ = Some(Self::Any);
+                    t0.bind(Self::Any);
                 }
                 Ok(true)
             }
@@ -834,219 +683,25 @@ impl Type {
             // Two vars sharing one cell are already unified; the cycle
             // guard below would otherwise poison both.
             (Self::TVar(t0), Self::TVar(t1))
-                if t0.addr() == t1.addr()
+                if t0.wrapper_addr() == t1.wrapper_addr()
                     || t0.read().id == t1.read().id
                     || t0.same_cell(t1) =>
             {
                 Ok(true)
             }
             (tt0 @ Self::TVar(t0), tt1 @ Self::TVar(t1)) => {
-                #[derive(Debug)]
-                enum Act {
-                    RightCopy,
-                    RightAlias,
-                    LeftAlias,
-                    LeftCopy,
-                    CellMerge,
-                }
-                // Recursion happens outside the guard block.
-                enum ActOrRecurse {
-                    Act(Act, Option<Type>),
-                    Recurse(Type, Type),
-                    Memo(Type, Type, usize, usize),
-                    Refuse,
-                    /// Two declared vars of the def under check (rigid
-                    /// cells exist only inside its gate): the body must
-                    /// not require them equal.
-                    Distinct,
-                }
-                let act = {
-                    let t0 = t0.read();
-                    let t1 = t1.read();
-                    let addr0 = Arc::as_ptr(&t0.typ).addr();
-                    let addr1 = Arc::as_ptr(&t1.typ).addr();
-                    if addr0 == addr1 {
-                        return Ok(true);
-                    }
-                    // CR claude for eric: [perf] both occurs checks (two full
-                    // walks over bindings and conjuncts, each with a fresh
-                    // visited set) run for every tvar pair before the bindings
-                    // are looked at; only the arms where an open cell would bind
-                    // or alias need them. This is the hottest arm of the
-                    // typechecker; compute them lazily per arm.
-                    let cyc0 = would_cycle_inner(addr0, tt1);
-                    let cyc1 = would_cycle_inner(addr1, tt0);
-                    let t0i = t0.typ.read();
-                    let t1i = t1.typ.read();
-                    match (&t0i.typ, &t1i.typ) {
-                        // An open cell meeting a bound cell whose binding
-                        // reaches it is the μ-shape through a binding: a
-                        // copy would bind the infinite type, so walk the
-                        // binding, where `'r ⊇ [T, 'r]` collapses.
-                        (None, Some(b)) if cyc0 => {
-                            ActOrRecurse::Recurse(tt0.clone(), b.clone())
-                        }
-                        (Some(b), None) if cyc1 => {
-                            ActOrRecurse::Recurse(b.clone(), tt1.clone())
-                        }
-                        // Two bound cells decide by walking the bindings;
-                        // every bind is occurs-checked, so the walk
-                        // bottoms out (the pair memo bounds it otherwise).
-                        (Some(b0), Some(b1)) if cyc0 || cyc1 => {
-                            ActOrRecurse::Memo(b0.clone(), b1.clone(), addr0, addr1)
-                        }
-                        _ if cyc0 || cyc1 => ActOrRecurse::Refuse,
-                        (Some(t0), Some(t1)) => {
-                            ActOrRecurse::Recurse(t0.clone(), t1.clone())
-                        }
-                        (None, None) if t0i.rigid_gates > 0 && t1i.rigid_gates > 0 => {
-                            ActOrRecurse::Distinct
-                        }
-                        (None, None) => {
-                            if t0.frozen && t1.frozen {
-                                // Merge the cells: `frozen` gates
-                                // name-aliasing, not unification.
-                                ActOrRecurse::Act(Act::CellMerge, None)
-                            } else if t0.frozen {
-                                ActOrRecurse::Act(Act::RightAlias, None)
-                            } else {
-                                ActOrRecurse::Act(Act::LeftAlias, None)
-                            }
-                        }
-                        // A rigid receiver must not bind; re-verdict
-                        // against the bare var in the arms below.
-                        (Some(b), None)
-                            if flags.contains(ContainsFlags::RigidCheck)
-                                && t1i.rigid_gates > 0 =>
-                        {
-                            ActOrRecurse::Recurse(b.clone(), tt1.clone())
-                        }
-                        (None, Some(b))
-                            if flags.contains(ContainsFlags::RigidCheck)
-                                && t0i.rigid_gates > 0 =>
-                        {
-                            ActOrRecurse::Recurse(tt0.clone(), b.clone())
-                        }
-                        (Some(b), None) => {
-                            if crate::dbgenv::graphix_dbg_bind() {
-                                eprintln!(
-                                    "TT-RIGHTCOPY '{} <= '{}",
-                                    t1.id.inner(),
-                                    t0.id.inner()
-                                );
-                            }
-                            ActOrRecurse::Act(Act::RightCopy, Some(b.clone()))
-                        }
-                        (None, Some(b)) => {
-                            if crate::dbgenv::graphix_dbg_bind() {
-                                eprintln!(
-                                    "TT-LEFTCOPY '{} <= '{}",
-                                    t0.id.inner(),
-                                    t1.id.inner()
-                                );
-                            }
-                            ActOrRecurse::Act(Act::LeftCopy, Some(b.clone()))
-                        }
-                    }
-                };
-                let (act, bound) = match act {
-                    ActOrRecurse::Distinct => return Ok(false),
-                    ActOrRecurse::Refuse => {
-                        if crate::dbgenv::graphix_dbg_cycle_bt() {
-                            eprintln!(
-                                "CYCLE-REFUSED-PAIR ({:x},{:x})\n{}",
-                                t0.cell_addr(),
-                                t1.cell_addr(),
-                                std::backtrace::Backtrace::force_capture()
-                            );
-                        }
-                        t0.mark_cycle_refused();
-                        t1.mark_cycle_refused();
-                        return Ok(true);
-                    }
-                    ActOrRecurse::Recurse(a, b) => {
-                        return a.contains_int(flags, env, hist, &b);
-                    }
-                    ActOrRecurse::Memo(a, b, addr0, addr1) => {
-                        let key = (Some(addr0), Some(addr1));
-                        if let Some(r) = hist.get(&key) {
-                            return Ok(*r);
-                        }
-                        hist.insert(key, true);
-                        let r = a.contains_int(flags, env, hist, &b);
-                        hist.remove(&key);
-                        return r;
-                    }
-                    ActOrRecurse::Act(act, bound) => (act, bound),
-                };
-                // The receiver's constraints must admit the binding.
-                match act {
-                    Act::RightCopy
-                        if flags.contains(ContainsFlags::InitTVars) && !t1.is_rigid() =>
-                    {
-                        let b = bound.as_ref().expect("copy without binding");
-                        if !cell_constraints_ok(t1, env, hist, b)? {
-                            return Ok(false);
-                        }
-                        t1.copy(t0)
-                    }
-                    Act::RightAlias if flags.contains(ContainsFlags::AliasTVars) => {
-                        if crate::dbgenv::graphix_dbg_bind() {
-                            eprintln!(
-                                "RALIAS '{}({:x}) -> '{}({:x})",
-                                t1.name,
-                                t1.cell_addr(),
-                                t0.name,
-                                t0.cell_addr()
-                            );
-                        }
-                        t1.alias(t0)
-                    }
-                    Act::LeftAlias if flags.contains(ContainsFlags::AliasTVars) => {
-                        if crate::dbgenv::graphix_dbg_bind() {
-                            eprintln!(
-                                "LALIAS '{}({:x}) -> '{}({:x})",
-                                t0.name,
-                                t0.cell_addr(),
-                                t1.name,
-                                t1.cell_addr()
-                            );
-                        }
-                        t0.alias(t1)
-                    }
-                    Act::LeftCopy
-                        if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() =>
-                    {
-                        let b = bound.as_ref().expect("copy without binding");
-                        if !cell_constraints_ok(t0, env, hist, b)? {
-                            return Ok(false);
-                        }
-                        t0.copy(t1)
-                    }
-                    Act::CellMerge if flags.contains(ContainsFlags::AliasTVars) => {
-                        t0.alias_cells(t1)
-                    }
-                    Act::RightCopy
-                    | Act::RightAlias
-                    | Act::LeftAlias
-                    | Act::LeftCopy
-                    | Act::CellMerge => (),
-                }
-                Ok(true)
+                Self::contains_tvars(flags, env, hist, (tt0, t0), (tt1, t1))
             }
-            // CR claude for eric: [bug] the occurs check guards the arm before
-            // the bound test: for a bound cell it is a wasted walk, and a bound
-            // cell that `t1` mentions (`'a := Any` against `Array<'a>`) skips
-            // this arm and lands in the catch-all `Ok(false)` without its
-            // binding being consulted. Suspected (read). Deref first; occurs-
-            // check only the open-cell bind. Same for the mirror arm below.
-            (Self::TVar(t0), t1) if !t0.would_cycle(t1) => {
-                let bound = t0.read().typ.read().typ.clone();
-                if let Some(t0) = bound {
+            // Deref first: a bound cell answers for its binding. The
+            // occurs check guards the open cell's bind; an open cell
+            // `t1` reaches (the μ-shape `'r ⊇ [T, 'r]`) takes the arms
+            // below, where the union collapses.
+            (Self::TVar(t0), t1) if t0.is_bound() || !t0.would_cycle(t1) => {
+                if let Some(t0) = t0.binding() {
                     return t0.contains_int(flags, env, hist, t1);
                 }
                 // A rigid tvar contains only itself and Bottom.
-                if flags.contains(ContainsFlags::RigidCheck) && t0.is_rigid() {
+                if rigid && t0.is_rigid() {
                     return Ok(false);
                 }
                 // A constraint violation fails here, at the site that
@@ -1054,28 +709,26 @@ impl Type {
                 if !cell_constraints_ok(t0, env, hist, t1)? {
                     return Ok(false);
                 }
-                if flags.contains(ContainsFlags::InitTVars) && !t0.is_rigid() {
-                    if crate::dbgenv::graphix_dbg_bind() {
+                if commit && !t0.is_rigid() {
+                    if graphix_dbg_bind() {
                         eprintln!(
                             "BIND lhs '{}({:x}) := {t1:?}",
                             t0.name,
                             t0.cell_addr()
                         );
                     }
-                    t0.read().typ.write().typ = Some(t1.clone());
+                    t0.bind(t1.clone());
                 }
                 Ok(true)
             }
-            (t0, Self::TVar(t1)) if !t1.would_cycle(t0) => {
-                let bound = t1.read().typ.read().typ.clone();
-                if let Some(t1) = bound {
+            (t0, Self::TVar(t1)) if t1.is_bound() || !t1.would_cycle(t0) => {
+                if let Some(t1) = t1.binding() {
                     return t0.contains_int(flags, env, hist, &t1);
                 }
                 // t0 contains an arbitrary 'a only when it contains one
                 // of the cell's conjuncts ('a ⊆ C ⊆ t0).
-                if flags.contains(ContainsFlags::RigidCheck) && t1.is_rigid() {
-                    let cons = t1.read().typ.read().constraints.clone();
-                    for c in cons.iter() {
+                if rigid && t1.is_rigid() {
+                    for c in t1.cell_constraints().iter() {
                         // A probe: a flagged check would alias live
                         // cells into the constraint store.
                         if t0.contains_int(BitFlags::empty(), env, hist, c)? {
@@ -1087,56 +740,34 @@ impl Type {
                 if !cell_constraints_ok(t1, env, hist, t0)? {
                     return Ok(false);
                 }
-                if flags.contains(ContainsFlags::InitTVars) && !t1.is_rigid() {
-                    if crate::dbgenv::graphix_dbg_bind() {
+                if commit && !t1.is_rigid() {
+                    if graphix_dbg_bind() {
                         eprintln!(
                             "BIND rhs '{}({:x}) := {t0:?}",
                             t1.name,
                             t1.cell_addr()
                         );
                     }
-                    t1.read().typ.write().typ = Some(t0.clone());
+                    t1.bind(t0.clone());
                 }
                 Ok(true)
             }
             (Self::Set(s0), Self::Set(s1)) if Arc::ptr_eq(s0, s1) => Ok(true),
-            // CR claude for eric: [bug] `t0 == t1` uses TVar::eq, under which two
-            // distinct unbound cells are equal, and link_equal then merges them
-            // with no Distinct check: two rigid declared tvars unify inside a
-            // set. Probe: `let f = |x: ['a, i64]| -> ['b, i64] x; f(1.5)` checks
-            // (and `[Array<'a>, i64]` -> `[Array<'b>, i64]`), while
-            // `|x: Array<'a>| -> Array<'b> x` is refused. Same in the member
-            // pre-pass below (`*c == m`). Compare with union_identical, and have
-            // link_equal refuse two rigid cells.
-            (t0 @ Self::Set(_), t1 @ Self::Set(_)) if t0 == t1 => {
-                if flags.contains(ContainsFlags::InitTVars) {
-                    link_equal(t0, t1);
-                }
+            (t0 @ Self::Set(_), t1 @ Self::Set(_)) if identical_linked(t0, t1, commit) => {
                 Ok(true)
             }
             // A set with a bare unbound tvar member binds the tvar to
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
-            (t0 @ Self::Set(s0), Self::Set(s1))
-                if s0.iter().any(
-                    |m| matches!(m, Self::TVar(tv) if tv.read().typ.read().typ.is_none()),
-                ) =>
-            {
+            (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
                 let probe = BitFlags::empty();
                 let mut residue: LPooled<Vec<Type>> = LPooled::take();
                 for m in s1.iter() {
                     // An rhs member equal to the whole lhs set is
                     // covered reflexively; as residue it would close a
                     // cycle.
-                    let reflexive = m.with_deref(|md| match md {
-                        Some(md) if t0 == md => {
-                            if flags.contains(ContainsFlags::InitTVars) {
-                                link_equal(t0, md);
-                            }
-                            true
-                        }
-                        _ => false,
-                    });
+                    let reflexive =
+                        m.deref_cloned().is_some_and(|md| identical_linked(t0, &md, commit));
                     if reflexive {
                         continue;
                     }
@@ -1144,9 +775,7 @@ impl Type {
                     // is covered reflexively too.
                     let own_cell = match m {
                         Self::TVar(mtv) => s0.iter().any(|c| match c {
-                            Self::TVar(ctv) => {
-                                Arc::ptr_eq(&ctv.read().typ, &mtv.read().typ)
-                            }
+                            Self::TVar(ctv) => ctv.same_cell(mtv),
                             _ => false,
                         }),
                         _ => false,
@@ -1157,7 +786,7 @@ impl Type {
                     // A free rhs member is residue too: the coverage
                     // loop would bind it greedily; in the residue it
                     // aliases with the bare lhs member.
-                    if is_unbound_tvar(&m) {
+                    if is_unbound_tvar(m) {
                         residue.push(m.clone());
                         continue;
                     }
@@ -1189,21 +818,14 @@ impl Type {
                     None => Ok(false),
                 }
             }
-            // Member-wise equality pre-pass: only the residue takes the
+            // Member-wise identity pre-pass: only the residue takes the
             // general per-member walk (which is O(|s0|·|s1|) per level).
             (t0 @ Self::Set(s0), Self::Set(s1)) => {
                 for m in s1.iter() {
-                    match s0.iter().find(|c| *c == m) {
-                        Some(c) => {
-                            if flags.contains(ContainsFlags::InitTVars) {
-                                link_equal(c, m);
-                            }
-                        }
-                        None => {
-                            if !t0.contains_int(flags, env, hist, m)? {
-                                return Ok(false);
-                            }
-                        }
+                    if !s0.iter().any(|c| identical_linked(c, m, commit))
+                        && !t0.contains_int(flags, env, hist, m)?
+                    {
+                        return Ok(false);
                     }
                 }
                 Ok(true)
@@ -1214,74 +836,36 @@ impl Type {
                 .collect::<Result<AndAc>>()?
                 .0),
             (Self::Set(s), t) => {
-                let probe = BitFlags::empty();
-                // CR claude for eric: [perf] for any `t` but a multi-bit
-                // Primitive, iter_prims yields `t` itself, so prims_ok re-runs
-                // exactly the member probes whole_ok just ran (and clones `t`).
-                // Compute prims_ok only for a multi-bit primitive.
-                let whole_ok =
-                    s.iter().fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
-                        Ok(acc? || t0.contains_int(probe, env, hist, t)?)
-                    })?;
-                let prims_ok =
-                    t.iter_prims().fold(Ok::<_, anyhow::Error>(true), |acc, t1| {
-                        Ok(acc?
-                            && s.iter().fold(
-                                Ok::<_, anyhow::Error>(false),
-                                |acc, t0| {
-                                    Ok(acc? || t0.contains_int(probe, env, hist, &t1)?)
-                                },
-                            )?)
-                    })?;
-                // Structural members first: a bare unbound TVar admits
-                // anything, so it is the fallback (`['b, Array<'b>]`
-                // must bind an array through `Array<'b>`).
-                let members = || {
-                    s.iter()
-                        .filter(|t0| !is_unbound_tvar(t0))
-                        .chain(s.iter().filter(|t0| is_unbound_tvar(t0)))
-                };
-                if crate::dbgenv::graphix_dbg_bind() {
-                    eprintln!(
-                        "SET-T {} >= {t} whole={whole_ok} prims={prims_ok}",
-                        Self::Set(s.clone())
-                    );
+                if graphix_dbg_bind() {
+                    eprintln!("SET-T {} >= {t}", Self::Set(s.clone()));
                 }
-                // CR claude for eric: [bug] both committing branches fold the
-                // members with the committing flags and no per-member probe: a
-                // member that binds a cell and then fails leaves the binding,
-                // and the next member is judged against it. Probe: `let f = |x:
-                // [`A('a, i64), `A(Array<i64>, string)], d: 'a| -> 'a d;` then
-                // `f(`A([1], "s"), 42)` is refused with "'a: Array<i64> does not
-                // contain i64"; the arg matches the second member, so 'a should
-                // stay free for `d`. Probe each member and commit only the first
-                // that probes true, as the residue arm above does.
-                match (whole_ok, prims_ok) {
-                    (false, false) => Self::set_covers_by_distribution(env, hist, s, t),
+                match t {
                     // Prims first: the narrowest TVar bindings.
-                    (_, true) => Ok(t.iter_prims().fold(
-                        Ok::<_, anyhow::Error>(true),
-                        |acc, t1| {
-                            Ok(acc?
-                                && members().fold(
-                                    Ok::<_, anyhow::Error>(false),
-                                    |acc, t0| {
-                                        Ok(acc?
-                                            || t0.contains_int(flags, env, hist, &t1)?)
-                                    },
-                                )?)
-                        },
-                    )?),
-                    (true, false) => Ok(members()
-                        .fold(Ok::<_, anyhow::Error>(false), |acc, t0| {
-                            Ok(acc? || t0.contains_int(flags, env, hist, t)?)
-                        })?),
+                    Self::Primitive(p) if p.len() > 1 => {
+                        let mut all = true;
+                        for p in t.iter_prims() {
+                            all &= Self::set_admits(s, env, hist, &p)?;
+                        }
+                        if all {
+                            for p in t.iter_prims() {
+                                if Self::set_commit(s, flags, env, hist, &p)? != Some(true) {
+                                    return Ok(false);
+                                }
+                            }
+                            return Ok(true);
+                        }
+                    }
+                    _ => (),
+                }
+                match Self::set_commit(s, flags, env, hist, t)? {
+                    Some(r) => Ok(r),
+                    None => Self::set_covers_by_distribution(flags, env, hist, s, t),
                 }
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
                 let same = Arc::ptr_eq(f0, f1);
                 let r = same || f0.contains_int(flags, env, hist, f1)?;
-                if r && !same && flags.contains(ContainsFlags::InitTVars) {
+                if r && !same && commit {
                     f0.lambda_ids.link(&f1.lambda_ids);
                 }
                 Ok(r)
@@ -1336,15 +920,151 @@ impl Type {
         }
     }
 
+    /// Two distinct cells. Occurs checks run only where a cell would
+    /// bind or alias: an open cell meeting a bound cell whose binding
+    /// reaches it is the μ-shape through a binding (a copy would bind
+    /// the infinite type, so the binding is walked, where `'r ⊇ [T,
+    /// 'r]` collapses); any other cycle is refused.
+    fn contains_tvars(
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        (tt0, t0): (&Type, &TVar),
+        (tt1, t1): (&Type, &TVar),
+    ) -> Result<bool> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        let rigid = flags.contains(ContainsFlags::RigidCheck);
+        let (addr0, addr1) = (t0.cell_addr(), t1.cell_addr());
+        let cyc0 = || would_cycle_inner(addr0, tt1);
+        let cyc1 = || would_cycle_inner(addr1, tt0);
+        let refuse = || {
+            if graphix_dbg_cycle_bt() {
+                eprintln!(
+                    "CYCLE-REFUSED-PAIR ({addr0:x},{addr1:x})\n{}",
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
+            t0.mark_cycle_refused();
+            t1.mark_cycle_refused();
+            Ok(true)
+        };
+        match (t0.binding(), t1.binding()) {
+            // Two bound cells decide by walking the bindings; every bind
+            // is occurs-checked, and the pair memo bounds a walk that
+            // meets the pair again.
+            (Some(b0), Some(b1)) => hist.assuming((Some(addr0), Some(addr1)), |hist| {
+                b0.contains_int(flags, env, hist, &b1)
+            }),
+            (None, Some(b1)) => {
+                if cyc0() {
+                    return tt0.contains_int(flags, env, hist, &b1);
+                }
+                if cyc1() {
+                    return refuse();
+                }
+                // A rigid receiver must not bind; re-verdict against
+                // the binding.
+                if rigid && t0.is_rigid() {
+                    return tt0.contains_int(flags, env, hist, &b1);
+                }
+                if commit && !t0.is_rigid() {
+                    if graphix_dbg_bind() {
+                        eprintln!("TT-LEFTCOPY '{} <= '{}", t0.read().id.inner(), t1.read().id.inner());
+                    }
+                    if !cell_constraints_ok(t0, env, hist, &b1)? {
+                        return Ok(false);
+                    }
+                    t0.copy(t1, b1);
+                }
+                Ok(true)
+            }
+            (Some(b0), None) => {
+                if cyc1() {
+                    return b0.contains_int(flags, env, hist, tt1);
+                }
+                if cyc0() {
+                    return refuse();
+                }
+                if rigid && t1.is_rigid() {
+                    return b0.contains_int(flags, env, hist, tt1);
+                }
+                if commit && !t1.is_rigid() {
+                    if graphix_dbg_bind() {
+                        eprintln!("TT-RIGHTCOPY '{} <= '{}", t1.read().id.inner(), t0.read().id.inner());
+                    }
+                    if !cell_constraints_ok(t1, env, hist, &b0)? {
+                        return Ok(false);
+                    }
+                    t1.copy(t0, b0);
+                }
+                Ok(true)
+            }
+            (None, None) => {
+                if cyc0() || cyc1() {
+                    return refuse();
+                }
+                match OpenPair::of(t0, t1) {
+                    OpenPair::Distinct => Ok(false),
+                    act => {
+                        if commit {
+                            act.apply(t0, t1);
+                        }
+                        Ok(true)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Does some member of `s` admit `t` (a probe)?
+    fn set_admits(s: &[Type], env: &Env, hist: &mut ContainsHist, t: &Type) -> Result<bool> {
+        for m in s.iter() {
+            if m.contains_int(BitFlags::empty(), env, hist, t)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Decide `s ⊇ t` by the first member (structural members before
+    /// bare unbound tvars, which admit anything: `['b, Array<'b>]` must
+    /// bind an array through `Array<'b>`) that a probe admits `t` into,
+    /// deciding with `flags` only there: a member that would bind a cell
+    /// and then fail is never tried. `None` when no member admits `t`.
+    fn set_commit(
+        s: &[Type],
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Type,
+    ) -> Result<Option<bool>> {
+        let members = s
+            .iter()
+            .filter(|m| !is_unbound_tvar(m))
+            .chain(s.iter().filter(|m| is_unbound_tvar(m)));
+        let mut admitted = false;
+        for m in members {
+            if m.contains_int(BitFlags::empty(), env, hist, t)? {
+                admitted = true;
+                if flags.is_empty() || m.contains_int(flags, env, hist, t)? {
+                    return Ok(Some(true));
+                }
+            }
+        }
+        Ok(admitted.then_some(false))
+    }
+
     /// The distribution law for product heads: a set whose members
     /// split one argument position of a constructor across same-shaped
     /// alternatives covers the pooled constructor —
     /// `` [`T(A), `T(B)] ⊇ `T([A, B]) `` — provided every candidate
-    /// covers every other position in full. A pure probe over cell-free
-    /// operands; commits nothing.
+    /// covers every other position in full. Decided by probes over a
+    /// cell-free scrutinee; a committing walk then commits every
+    /// candidate's covering positions and the pooled one.
     fn set_covers_by_distribution(
+        flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
         s: &Arc<[Type]>,
         t: &Self,
     ) -> Result<bool> {
@@ -1355,7 +1075,7 @@ impl Type {
             }
             hist.distribution_probes_in_progress.push(id);
         }
-        let r = Self::set_covers_by_distribution_inner(env, hist, s, t);
+        let r = Self::set_covers_by_distribution_inner(flags, env, hist, s, t);
         if t_id.is_some() {
             hist.distribution_probes_in_progress.pop();
         }
@@ -1363,40 +1083,31 @@ impl Type {
     }
 
     fn set_covers_by_distribution_inner(
+        flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
         s: &Arc<[Type]>,
         t: &Self,
     ) -> Result<bool> {
-        // CR claude for eric: [readability] 64 is an unnamed bound on the
-        // deref/expand chain; a named const saying what it bounds (alias chains
-        // of refs) or a visited set would state the intent.
-        fn head(env: &Env, t: &Type) -> Type {
+        fn head(env: &Env, t: &Type) -> Result<Type> {
             let mut cur = t.clone();
-            for _ in 0..64 {
+            for _ in 0..HEAD_CHAIN_LIMIT {
                 cur = match &cur {
                     Type::TVar(_) => match cur.deref_cloned() {
                         Some(next) => next,
                         None => break,
                     },
                     // An unresolvable ref does not distribute; not an error.
-                    Type::Ref(_) => match cur.lookup_ref(env) {
-                        Ok(next) => next,
-                        Err(_) => break,
+                    Type::Ref(_) => match cur.lookup_ref_with(env, false) {
+                        Ok(Some(next)) => next,
+                        Ok(None) | Err(_) => break,
                     },
                     _ => break,
                 }
             }
-            cur
+            Ok(cur)
         }
-        let t = head(env, t);
-        // CR claude for eric: [bug] this law answers a committing walk with
-        // `true` and binds nothing: open cells in the candidates (see below)
-        // stay open, so in `[`T(A, 'q), `T(B, 'q)] ⊇ `T([A, B], i64)` 'q is
-        // free to bind to something else later. And has_unbound does not look
-        // through bound cells, so a cell forwarded to an open cell (alias's
-        // forward link) passes as closed. Suspected (read). Commit the
-        // non-distributing positions (or refuse open candidates) under flags.
+        let t = head(env, t)?;
         if t.has_unbound() {
             return Ok(false);
         }
@@ -1409,7 +1120,7 @@ impl Type {
         }
         let mut cands: LPooled<Vec<LPooled<Vec<Type>>>> = LPooled::take();
         for m in s.iter() {
-            let m = head(env, m);
+            let m = head(env, m)?;
             let args: Option<LPooled<Vec<Type>>> = match (&t, &m) {
                 (Type::Variant(tt, ta, _), Type::Variant(mt, ma, _))
                     if tt == mt && ta.len() == ma.len() =>
@@ -1457,13 +1168,32 @@ impl Type {
                 distributing = Some(j);
             }
         }
-        match distributing {
-            None => Ok(true),
-            Some(j) => {
-                let pool = Type::Set(Arc::from_iter(cands.iter().map(|c| c[j].clone())))
-                    .normalize();
-                pool.contains_int(probe, env, hist, &targs[j])
+        let pool = distributing.map(|j| {
+            Type::Set(Arc::from_iter(cands.iter().map(|c| c[j].clone()))).normalize()
+        });
+        if let (Some(j), Some(pool)) = (distributing, &pool)
+            && !pool.contains_int(probe, env, hist, &targs[j])?
+        {
+            return Ok(false);
+        }
+        if flags.is_empty() {
+            return Ok(true);
+        }
+        // With no distributing position the first candidate covers `t`.
+        let covering = match distributing {
+            None => &cands[..1],
+            Some(_) => &cands[..],
+        };
+        for c in covering.iter() {
+            for (j, (cj, tj)) in c.iter().zip(targs.iter()).enumerate() {
+                if Some(j) != distributing && !cj.contains_int(flags, env, hist, tj)? {
+                    return Ok(false);
+                }
             }
+        }
+        match (distributing, pool) {
+            (Some(j), Some(pool)) => pool.contains_int(flags, env, hist, &targs[j]),
+            _ => Ok(true),
         }
     }
 
@@ -1477,7 +1207,7 @@ impl Type {
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
         match (self, t) {
@@ -1523,20 +1253,20 @@ impl Type {
         ctor: &Self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
     ) -> Result<bool> {
         if let Self::TVar(cv) = c
-            && cv.read().typ.read().typ.is_none()
+            && !cv.is_bound()
             && !(flags.contains(ContainsFlags::RigidCheck) && cv.is_rigid())
         {
             if !cell_constraints_ok(cv, env, hist, ctor)? {
                 return Ok(false);
             }
-            if flags.contains(ContainsFlags::InitTVars) && !cv.is_rigid() {
-                if crate::dbgenv::graphix_dbg_bind() {
+            if flags.contains(ContainsFlags::Commit) && !cv.is_rigid() {
+                if graphix_dbg_bind() {
                     eprintln!("BIND ctor '{}({:x}) := {ctor:?}", cv.name, cv.cell_addr());
                 }
-                cv.read().typ.write().typ = Some(ctor.clone());
+                cv.bind(ctor.clone());
             }
             return Ok(true);
         }
@@ -1549,27 +1279,35 @@ impl Type {
     /// its own conjuncts), a typedef by its expansion, anything
     /// structural by the impl table.
     fn trait_contains(
-        tid: crate::typ::TraitId,
+        tid: TraitId,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
+        t: &Self,
+    ) -> Result<bool> {
+        ensure_sufficient(|| Self::trait_contains_inner(tid, flags, env, hist, t))
+    }
+
+    fn trait_contains_inner(
+        tid: TraitId,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
         // The core traits have a structural default for every type.
-        if crate::node::coretraits::CoreTrait::of_id(tid).is_some() {
+        if CoreTrait::of_id(tid).is_some() {
             return Ok(true);
         }
         match t {
             Self::Bottom => Ok(true),
             Self::Any => Ok(false),
             Self::TVar(tv) => {
-                let bound = tv.read().typ.read().typ.clone();
-                if let Some(b) = bound {
+                if let Some(b) = tv.binding() {
                     return Self::trait_contains(tid, flags, env, hist, &b);
                 }
                 if flags.contains(ContainsFlags::RigidCheck) && tv.is_rigid() {
-                    let cons = tv.read().typ.read().constraints.clone();
-                    return Ok(cons.iter().any(
+                    return Ok(tv.cell_constraints().iter().any(
                         |c| matches!(c, Self::Ref(r) if env.trait_of_ref(r) == Some(tid)),
                     ));
                 }
@@ -1598,16 +1336,18 @@ impl Type {
                 None if env.trait_def(tid).is_some_and(|d| d.hole) => {
                     Ok(env.find_impl(tid, t)?.is_some())
                 }
-                // CR claude for eric: [bug] no cycle guard: a typedef that
-                // reaches itself through a union recurses forever. Probe: `trait
-                // Show { val show: fn(self) -> string }; impl Show for i64 {..};
-                // type T = [i64, T]; let g = |x: Show| Show::show(x); let v: T =
-                // 1; g(v)` aborts `--check` with a stack overflow. Guard with
-                // `hist` (ref_id visited) like the other Ref walks; `hist` is
-                // currently only threaded through, never read.
+                // A typedef met again inside its own question implements
+                // the trait if the rest of it does.
                 None => {
                     let e = t.lookup_ref(env)?;
-                    Self::trait_contains(tid, flags, env, hist, &e)
+                    let key = (hist.ref_id(t, env).unwrap_or(usize::MAX), tid);
+                    if hist.traits_in_progress.contains(&key) {
+                        return Ok(true);
+                    }
+                    hist.traits_in_progress.push(key);
+                    let r = Self::trait_contains(tid, flags, env, hist, &e);
+                    hist.traits_in_progress.pop();
+                    r
                 }
             },
             t => Ok(env.find_impl(tid, t)?.is_some()),
@@ -1620,13 +1360,9 @@ impl Type {
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
-        let r = self.contains_int(
-            ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
-            env,
-            &mut RefHist::new(LPooled::take()),
-            t,
-        );
-        if crate::dbgenv::graphix_dbg_bind() {
+        let r =
+            self.contains_int(ContainsFlags::Commit.into(), env, &mut ContainsHist::new(), t);
+        if graphix_dbg_bind() {
             eprintln!("CONTAINS {self} >= {t} -> {r:?}");
         }
         r
@@ -1638,6 +1374,21 @@ impl Type {
         env: &Env,
         t: &Self,
     ) -> Result<bool> {
-        self.contains_int(flags, env, &mut RefHist::new(LPooled::take()), t)
+        self.contains_int(flags, env, &mut ContainsHist::new(), t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcstr::literal;
+
+    #[test]
+    fn a_bound_cell_the_other_side_mentions_answers_by_its_binding() {
+        let env = Env::default();
+        let a = TVar::empty_named(literal!("a"));
+        a.bind(Type::Any);
+        let array = Type::Array(Arc::new(Type::TVar(a.clone())));
+        assert!(Type::TVar(a).contains(&env, &array).unwrap());
     }
 }

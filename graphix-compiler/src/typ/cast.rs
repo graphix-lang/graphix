@@ -2,22 +2,20 @@ use crate::{
     AbstractTypeRegistry, CAST_ERR_TAG,
     env::Env,
     errf,
-    expr::ModPath,
-    typ::{RefHist, Type, TypeRef},
+    node::collection::list,
+    stack::ensure_sufficient,
+    typ::{Type, tval::NakedPrefix},
 };
 use ahash::AHashSet;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::{BitFlags, bitflags};
 use immutable_chunkmap::map::Map;
-// CR claude for eric: [style] Two `netidx_value` lines should be one group, and
-// `triomphe::Arc` is spelled out ten times below (`shallow_discriminant`,
-// `shallowify`) instead of imported.
-use netidx_value::ValArray;
-use netidx_value::{Typ, Value};
+use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::iter;
+use std::fmt;
+use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
@@ -34,294 +32,439 @@ pub enum IsAFlags {
     Strict,
 }
 
+/// A failed cast. Formatting is deferred to the report: a union tries
+/// its members and discards every failure but the last.
+#[derive(Debug)]
+struct CastFail {
+    why: &'static str,
+    to: Type,
+    v: Value,
+}
+
+impl fmt::Display for CastFail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "can't cast {} to {}: {}", NakedPrefix(&self.v), self.to, self.why)
+    }
+}
+
+/// A cast level's result: `None` when the value already has the type.
+type Cast = std::result::Result<Option<Value>, CastFail>;
+
+/// The static source type at a cast position, with names, cells and
+/// applications looked through; `None` when unknown or a union.
+fn src_head(src: Option<&Type>, env: &Env) -> Option<Type> {
+    let mut cur = src?.clone();
+    loop {
+        cur = match &cur {
+            Type::TVar(_) | Type::App(..) => cur.deref_cloned()?,
+            Type::Ref(_) => cur.lookup_ref(env).ok()?,
+            Type::Set(_) | Type::Any | Type::Bottom | Type::Hole => return None,
+            _ => return Some(cur),
+        };
+    }
+}
+
+/// `f` over the values of `elts`, rebuilt only if some value changed.
+fn cast_elts<T>(
+    elts: &[T],
+    get: impl Fn(&T) -> &Value,
+    mut f: impl FnMut(usize, &Value) -> Cast,
+) -> std::result::Result<Option<LPooled<Vec<Value>>>, CastFail> {
+    let mut out: Option<LPooled<Vec<Value>>> = None;
+    for (i, e) in elts.iter().enumerate() {
+        let v = get(e);
+        match f(i, v)? {
+            Some(c) => out
+                .get_or_insert_with(|| elts[..i].iter().map(|e| get(e).clone()).collect())
+                .push(c),
+            None => {
+                if let Some(o) = out.as_mut() {
+                    o.push(v.clone())
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 impl Type {
-    // CR claude for eric: [bug] Recurses once per type level with no
-    // `ensure_sufficient` (so does `flatten_union_members` at the end of the
-    // file). A flat chain of typedefs is as deep as it is long. probe: 20000
-    // lines `` type A{i} = [`N(A{i-1}), `Z]; `` then `cast<A20000>(`Z)` aborts
-    // with a stack overflow in `check_cast_int` (3000 lines run).
-    fn check_cast_int(
-        &self,
-        env: &Env,
-        hist: &mut RefHist<AHashSet<Option<usize>>>,
-    ) -> Result<()> {
+    fn check_cast_int(&self, env: &Env, seen: &mut AHashSet<usize>) -> Result<()> {
+        ensure_sufficient(|| self.check_cast_inner(env, seen))
+    }
+
+    fn check_cast_inner(&self, env: &Env, seen: &mut AHashSet<usize>) -> Result<()> {
         match self {
             Type::App(c, a) => match Type::app_filled(c, a) {
-                Some(t) => t.check_cast_int(env, hist),
+                Some(t) => t.check_cast_int(env, seen),
                 None => bail!("can't cast a value to a type constructor"),
             },
             Type::Hole => bail!("can't cast a value to a type constructor"),
             Type::Primitive(_) | Type::Any => Ok(()),
             Type::Fn(_) => bail!("can't cast a value to a function"),
             Type::Bottom => bail!("can't cast a value to bottom"),
-            Type::Set(s) => Ok(for t in s.iter() {
-                t.check_cast_int(env, hist)?
-            }),
             Type::Abstract { .. } => {
                 bail!("can't cast a value to an abstract type; use its constructor")
             }
-            Type::TVar(tv) => match &tv.read().typ.read().typ {
-                Some(t) => t.check_cast_int(env, hist),
+            Type::TVar(_) => match self.deref_cloned() {
+                Some(t) => t.check_cast_int(env, seen),
                 None => bail!("can't cast a value to a free type variable"),
             },
-            Type::Error(e) => e.check_cast_int(env, hist),
-            Type::Array(et) => et.check_cast_int(env, hist),
-            Type::List(et) => et.check_cast_int(env, hist),
-            Type::Map { key, value } => {
-                key.check_cast_int(env, hist)?;
-                value.check_cast_int(env, hist)
-            }
             Type::ByRef(_) => bail!("can't cast a reference"),
-            Type::Tuple(ts) => Ok(for t in ts.iter() {
-                t.check_cast_int(env, hist)?
-            }),
-            Type::Struct(ts) => Ok(for (_, t, _) in ts.iter() {
-                t.check_cast_int(env, hist)?
-            }),
-            Type::Variant(_, ts, _) => Ok(for t in ts.iter() {
-                t.check_cast_int(env, hist)?
-            }),
-            Type::Ref(TypeRef { .. }) => {
-                let id = hist.ref_id(self, env);
+            Type::Ref(tr) => {
                 let t = self.lookup_ref(env)?;
-                if hist.contains(&id) {
-                    Ok(())
-                } else {
-                    hist.insert(id);
-                    t.check_cast_int(env, hist)
+                match tr.def_key() {
+                    Some(k) if !seen.insert(k) => Ok(()),
+                    _ => t.check_cast_int(env, seen),
                 }
+            }
+            t => {
+                let mut r = Ok(());
+                t.for_each_child(&mut |c| {
+                    if r.is_ok() {
+                        r = c.check_cast_int(env, seen)
+                    }
+                });
+                r
             }
         }
     }
 
     pub fn check_cast(&self, env: &Env) -> Result<()> {
-        self.check_cast_int(env, &mut RefHist::new(LPooled::take()))
+        self.check_cast_int(env, &mut LPooled::take())
     }
 
-    fn cast_value_int(
+    fn cast_int(
         &self,
         env: &Env,
         hist: &mut AHashSet<(usize, usize)>,
+        src: Option<&Type>,
         v: &Value,
-    ) -> Result<Value> {
-        crate::stack::ensure_sufficient(|| self.cast_value_inner(env, hist, v))
+    ) -> Cast {
+        ensure_sufficient(|| self.cast_inner(env, hist, src, v))
     }
 
-    fn cast_value_inner(
+    fn cast_fail(&self, why: &'static str, v: &Value) -> CastFail {
+        CastFail { why, to: self.clone(), v: v.clone() }
+    }
+
+    fn cast_inner(
         &self,
         env: &Env,
         hist: &mut AHashSet<(usize, usize)>,
+        src: Option<&Type>,
         v: &Value,
-    ) -> Result<Value> {
-        // CR claude for eric: [perf] A full `is_a` walk of the subtree at every
-        // level of the cast: a value that fails deep down is re-walked from each
-        // ancestor, O(depth x size). Test only the level's own shape here and let
-        // the children's casts decide the rest.
-        if self.is_a_int(env, hist, BitFlags::empty(), v) {
-            return Ok(v.clone());
-        }
+    ) -> Cast {
         match self {
             Type::App(c, a) => match Type::app_filled(c, a) {
-                Some(t) => t.cast_value_int(env, hist, v),
-                None => bail!("can't cast {v} to a type constructor"),
+                Some(t) => t.cast_int(env, hist, src, v),
+                None => Ok(None),
             },
-            Type::Hole => bail!("can't cast {v} to a type constructor"),
-            Type::Bottom => bail!("can't cast {v} to Bottom"),
-            Type::Fn(_) => bail!("can't cast {v} to a function"),
-            Type::Abstract { id: _, params: _ } => {
-                bail!("can't cast {v} to an abstract type")
-            }
-            Type::ByRef(_) => bail!("can't cast {v} to a reference"),
-            Type::Primitive(s) => s
-                .iter()
-                .find_map(|t| v.clone().cast(t))
-                .ok_or_else(|| anyhow!("can't cast {v} to {self}")),
-            Type::Any => Ok(v.clone()),
-            Type::Error(e) => {
-                let inner = match v {
-                    Value::Error(v) => &**v,
-                    v => v,
-                };
-                Ok(Value::Error(e.cast_value_int(env, hist, inner)?.into()))
-            }
-            Type::Array(et) => match v {
-                Value::Array(elts) => {
-                    let mut va = elts
-                        .iter()
-                        .map(|el| et.cast_value_int(env, hist, el))
-                        .collect::<Result<LPooled<Vec<Value>>>>()?;
-                    Ok(Value::Array(ValArray::from_iter_exact(va.drain(..))))
-                }
-                v => Ok(Value::Array([et.cast_value_int(env, hist, v)?].into())),
+            Type::Hole => Err(self.cast_fail("a type constructor", v)),
+            Type::Bottom | Type::Any => Ok(None),
+            Type::Fn(_) => match v {
+                Value::Abstract(a) if AbstractTypeRegistry::is_a(a, "lambda") => Ok(None),
+                _ => Err(self.cast_fail("not a function", v)),
             },
-            // A list casts element-wise, an array converts, anything
-            // else becomes a singleton.
-            // CR claude for eric: [bug] An array and a list share `Value::Array`,
-            // so an array whose last element is list-shaped (`[]` or a pair) is
-            // read as a list spine. probe: `cast<List<Array<i64>>>(a)` with
-            // `a: Array<Array<i64>> = [[1], []]` gives `[<[1]>]`, and
-            // `[[[1]], [[2], []]]` cast to `List<Array<Array<i64>>>` gives
-            // `[<[[1]], [[2]]>]` (element rewritten); both engines. The top-level
-            // `is_a` shortcut has the same confusion. The source's static type
-            // (known at the cast site) has to pick the conversion, not its shape.
-            Type::List(et) => {
-                use crate::node::collection::list;
-                if list::len(v).is_some() {
-                    let mut elems = list::Iter::new(v.clone())
-                        .map(|el| et.cast_value_int(env, hist, &el))
-                        .collect::<Result<LPooled<Vec<Value>>>>()?;
-                    Ok(list::from_iter(elems.drain(..)))
+            Type::Abstract { .. } => {
+                if self.is_a(env, v) {
+                    Ok(None)
                 } else {
-                    match v {
-                        Value::Array(elts) => {
-                            let mut elems = elts
-                                .iter()
-                                .map(|el| et.cast_value_int(env, hist, el))
-                                .collect::<Result<LPooled<Vec<Value>>>>()?;
-                            Ok(list::from_iter(elems.drain(..)))
-                        }
-                        v => Ok(list::from_iter([et.cast_value_int(env, hist, v)?])),
+                    Err(self.cast_fail("not this abstract type", v))
+                }
+            }
+            Type::ByRef(_) => match v {
+                Value::U64(_) | Value::V64(_) => Ok(None),
+                _ => Err(self.cast_fail("not a reference", v)),
+            },
+            Type::Primitive(s) => {
+                if s.contains(Typ::get(v)) {
+                    return Ok(None);
+                }
+                match s.iter().find_map(|t| v.clone().cast(t)) {
+                    Some(v) => Ok(Some(v)),
+                    None => Err(self.cast_fail("no primitive conversion", v)),
+                }
+            }
+            Type::TVar(tv) => match tv.binding() {
+                Some(t) => t.cast_int(env, hist, src, v),
+                None => Ok(None),
+            },
+            Type::Error(e) => {
+                let src = src_head(src, env);
+                let src = match &src {
+                    Some(Type::Error(s)) => Some(&**s),
+                    _ => None,
+                };
+                match v {
+                    Value::Error(inner) => Ok(e
+                        .cast_int(env, hist, src, inner)?
+                        .map(|c| Value::Error(c.into()))),
+                    v => {
+                        let c = e.cast_int(env, hist, src, v)?;
+                        Ok(Some(Value::Error(c.unwrap_or_else(|| v.clone()).into())))
                     }
                 }
             }
-            Type::Map { key, value } => match v {
-                Value::Map(m) => {
-                    let mut m = m
-                        .into_iter()
-                        .map(|(k, v)| {
-                            Ok((
-                                key.cast_value_int(env, hist, k)?,
-                                value.cast_value_int(env, hist, v)?,
-                            ))
-                        })
-                        .collect::<Result<LPooled<Vec<(Value, Value)>>>>()?;
-                    Ok(Value::Map(Map::from_iter(m.drain(..))))
-                }
-                Value::Array(a) => {
-                    let mut m = a
-                        .iter()
-                        .map(|a| match a {
-                            Value::Array(a) if a.len() == 2 => Ok((
-                                key.cast_value_int(env, hist, &a[0])?,
-                                value.cast_value_int(env, hist, &a[1])?,
-                            )),
-                            _ => bail!("expected an array of pairs"),
-                        })
-                        .collect::<Result<LPooled<Vec<(Value, Value)>>>>()?;
-                    Ok(Value::Map(Map::from_iter(m.drain(..))))
-                }
-                _ => bail!("can't cast {v} to {self}"),
-            },
-            Type::Tuple(ts) => match v {
-                Value::Array(elts) => {
-                    if elts.len() != ts.len() {
-                        bail!("tuple size mismatch {self} with {v}")
-                    }
-                    let mut a = ts
-                        .iter()
-                        .zip(elts.iter())
-                        .map(|(t, el)| t.cast_value_int(env, hist, el))
-                        .collect::<Result<LPooled<Vec<Value>>>>()?;
-                    Ok(Value::Array(ValArray::from_iter_exact(a.drain(..))))
-                }
-                v => bail!("can't cast {v} to {self}"),
-            },
-            Type::Struct(ts) => match v {
-                Value::Array(elts) => {
-                    if elts.len() != ts.len() {
-                        bail!("struct size mismatch {self} with {v}")
-                    }
-                    let mut fields: SmallVec<[(&ArcStr, &Value); 8]> = elts
-                        .iter()
-                        .map(struct_field)
-                        .collect::<Option<_>>()
-                        .ok_or_else(|| anyhow!("expected array of pairs, got {v}"))?;
-                    fields.sort_by_key(|(n, _)| *n);
-                    if ts
-                        .iter()
-                        .zip(fields.iter())
-                        .any(|((fname, _, _), (n, _))| n != &fname)
-                    {
-                        bail!("struct fields mismatch {self}, {v}")
-                    }
-                    let mut elts = ts
-                        .iter()
-                        .zip(fields.iter())
-                        .map(|((n, t, _), (_, fv))| {
-                            let a = [
-                                Value::String(n.clone()),
-                                t.cast_value_int(env, hist, fv)?,
-                            ];
-                            Ok(Value::Array(ValArray::from_iter_exact(a.into_iter())))
-                        })
-                        .collect::<Result<LPooled<Vec<Value>>>>()?;
-                    Ok(Value::Array(ValArray::from_iter_exact(elts.drain(..))))
-                }
-                v => bail!("can't cast {v} to {self}"),
-            },
-            Type::Variant(tag, ts, _) if ts.len() == 0 => match v {
-                Value::String(s) if s == tag => Ok(v.clone()),
-                _ => bail!("variant tag mismatch expected {tag} got {v}"),
-            },
-            Type::Variant(tag, ts, _) => match v {
-                Value::Array(elts) => {
-                    if ts.len() + 1 == elts.len() {
-                        match &elts[0] {
-                            Value::String(s) if s == tag => (),
-                            v => bail!("variant tag mismatch expected {tag} got {v}"),
+            // An array and a list share `Value::Array`: the source's
+            // static type says which one the value is, the shape only
+            // when the source is unknown.
+            Type::Array(et) => {
+                let src = src_head(src, env);
+                let from_list = matches!(&src, Some(Type::List(_)));
+                let src = match &src {
+                    Some(Type::Array(s) | Type::List(s)) => Some(&**s),
+                    _ => None,
+                };
+                match v {
+                    _ if from_list => {
+                        let mut out: LPooled<Vec<Value>> = LPooled::take();
+                        for el in list::Iter::new(v.clone()) {
+                            let c = et.cast_int(env, hist, src, &el)?;
+                            out.push(c.unwrap_or(el));
                         }
-                        let mut a = iter::once(&Type::Primitive(Typ::String.into()))
-                            .chain(ts.iter())
-                            .zip(elts.iter())
-                            .map(|(t, v)| t.cast_value_int(env, hist, v))
-                            .collect::<Result<LPooled<Vec<Value>>>>()?;
-                        Ok(Value::Array(ValArray::from_iter_exact(a.drain(..))))
-                    } else if ts.len() == elts.len() {
-                        let mut a = ts
-                            .iter()
-                            .zip(elts.iter())
-                            .map(|(t, v)| t.cast_value_int(env, hist, v))
-                            .collect::<Result<LPooled<Vec<Value>>>>()?;
-                        a.insert(0, Value::String(tag.clone()));
-                        Ok(Value::Array(ValArray::from_iter_exact(a.drain(..))))
-                    } else {
-                        bail!("variant length mismatch")
+                        Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
+                    }
+                    Value::Array(elts) => {
+                        Ok(cast_elts(&elts[..], |v| v, |_, el| et.cast_int(env, hist, src, el))?
+                            .map(|mut a| {
+                                Value::Array(ValArray::from_iter_exact(a.drain(..)))
+                            }))
+                    }
+                    v => {
+                        let c = et.cast_int(env, hist, src, v)?;
+                        Ok(Some(Value::Array([c.unwrap_or_else(|| v.clone())].into())))
                     }
                 }
-                v => bail!("can't cast {v} to {self}"),
-            },
-            Type::Ref(TypeRef { scope, name, .. }) => {
-                let t = self.lookup_ref(env)?;
-                let key = (ref_key(scope, name), (v as *const Value).addr());
-                if !hist.insert(key) {
-                    bail!(
-                        "can't cast {v} to {self}: the type recurses without consuming it"
-                    )
+            }
+            Type::List(et) => {
+                let src = src_head(src, env);
+                let spine = match &src {
+                    Some(Type::List(_)) => true,
+                    Some(Type::Array(_)) => false,
+                    _ => list::len(v).is_some(),
+                };
+                let src = match &src {
+                    Some(Type::Array(s) | Type::List(s)) => Some(&**s),
+                    _ => None,
+                };
+                match v {
+                    _ if spine => {
+                        let mut out: LPooled<Vec<Value>> = LPooled::take();
+                        let mut changed = false;
+                        for el in list::Iter::new(v.clone()) {
+                            match et.cast_int(env, hist, src, &el)? {
+                                Some(c) => {
+                                    changed = true;
+                                    out.push(c)
+                                }
+                                None => out.push(el),
+                            }
+                        }
+                        Ok(changed.then(|| list::from_iter(out.drain(..))))
+                    }
+                    Value::Array(elts) => {
+                        let mut out: LPooled<Vec<Value>> = LPooled::take();
+                        for el in elts.iter() {
+                            let c = et.cast_int(env, hist, src, el)?;
+                            out.push(c.unwrap_or_else(|| el.clone()));
+                        }
+                        Ok(Some(list::from_iter(out.drain(..))))
+                    }
+                    v => {
+                        let c = et.cast_int(env, hist, src, v)?;
+                        Ok(Some(list::from_iter([c.unwrap_or_else(|| v.clone())])))
+                    }
                 }
-                let r = t.cast_value_int(env, hist, v);
+            }
+            Type::Map { key, value } => {
+                let src = src_head(src, env);
+                let (ks, vs) = match &src {
+                    Some(Type::Map { key, value }) => (Some(&**key), Some(&**value)),
+                    _ => (None, None),
+                };
+                let mut entry = |k: &Value, v: &Value| -> std::result::Result<_, CastFail> {
+                    let ck = key.cast_int(env, hist, ks, k)?;
+                    let cv = value.cast_int(env, hist, vs, v)?;
+                    Ok((ck.is_some() || cv.is_some())
+                        .then(|| (ck.unwrap_or_else(|| k.clone()), cv.unwrap_or_else(|| v.clone()))))
+                };
+                match v {
+                    Value::Map(m) => {
+                        let mut out: LPooled<Vec<(Value, Value)>> = LPooled::take();
+                        let mut changed = false;
+                        for (k, v) in m.into_iter() {
+                            match entry(k, v)? {
+                                Some(kv) => {
+                                    changed = true;
+                                    out.push(kv)
+                                }
+                                None => out.push((k.clone(), v.clone())),
+                            }
+                        }
+                        Ok(changed.then(|| Value::Map(Map::from_iter(out.drain(..)))))
+                    }
+                    Value::Array(a) => {
+                        let mut out: LPooled<Vec<(Value, Value)>> = LPooled::take();
+                        for p in a.iter() {
+                            match p {
+                                Value::Array(p) if p.len() == 2 => {
+                                    let kv = entry(&p[0], &p[1])?;
+                                    out.push(kv.unwrap_or_else(|| (p[0].clone(), p[1].clone())))
+                                }
+                                _ => return Err(self.cast_fail("expected an array of pairs", v)),
+                            }
+                        }
+                        Ok(Some(Value::Map(Map::from_iter(out.drain(..)))))
+                    }
+                    _ => Err(self.cast_fail("not a map", v)),
+                }
+            }
+            Type::Tuple(ts) => {
+                let src = src_head(src, env);
+                let ss = match &src {
+                    Some(Type::Tuple(ss)) if ss.len() == ts.len() => Some(ss),
+                    _ => None,
+                };
+                match v {
+                    Value::Array(elts) if elts.len() == ts.len() => {
+                        Ok(cast_elts(&elts[..], |v| v, |i, el| {
+                            ts[i].cast_int(env, hist, ss.map(|ss| &ss[i]), el)
+                        })?
+                        .map(|mut a| Value::Array(ValArray::from_iter_exact(a.drain(..)))))
+                    }
+                    Value::Array(_) => Err(self.cast_fail("tuple size mismatch", v)),
+                    _ => Err(self.cast_fail("not a tuple", v)),
+                }
+            }
+            Type::Struct(ts) => {
+                let Value::Array(elts) = v else {
+                    return Err(self.cast_fail("not a struct", v));
+                };
+                if elts.len() != ts.len() {
+                    return Err(self.cast_fail("struct size mismatch", v));
+                }
+                let mut fields: SmallVec<[(&ArcStr, &Value); 8]> =
+                    match elts.iter().map(struct_field).collect::<Option<_>>() {
+                        Some(f) => f,
+                        None => return Err(self.cast_fail("expected an array of pairs", v)),
+                    };
+                let sorted = fields.is_sorted_by_key(|(n, _)| *n);
+                if !sorted {
+                    fields.sort_by_key(|(n, _)| *n);
+                }
+                if ts.iter().zip(fields.iter()).any(|((fname, _, _), (n, _))| n != &fname) {
+                    return Err(self.cast_fail("struct fields mismatch", v));
+                }
+                let src = src_head(src, env);
+                let ss = match &src {
+                    Some(Type::Struct(ss)) if ss.len() == ts.len() => Some(ss),
+                    _ => None,
+                };
+                let cast = cast_elts(&fields[..], |(_, fv)| *fv, |i, fv| {
+                    ts[i].1.cast_int(env, hist, ss.map(|ss| &ss[i].1), fv)
+                })?;
+                if sorted && cast.is_none() {
+                    return Ok(None);
+                }
+                let mut out: LPooled<Vec<Value>> = LPooled::take();
+                for (i, (n, fv)) in fields.iter().enumerate() {
+                    let fv = match &cast {
+                        Some(c) => c[i].clone(),
+                        None => (*fv).clone(),
+                    };
+                    let pair = [Value::String((*n).clone()), fv];
+                    out.push(Value::Array(ValArray::from_iter_exact(pair.into_iter())));
+                }
+                Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
+            }
+            Type::Variant(tag, ts, _) if ts.is_empty() => match v {
+                Value::String(s) if s == tag => Ok(None),
+                _ => Err(self.cast_fail("variant tag mismatch", v)),
+            },
+            Type::Variant(tag, ts, _) => {
+                let src = src_head(src, env);
+                let ss = match &src {
+                    Some(Type::Variant(stag, ss, _)) if stag == tag && ss.len() == ts.len() => {
+                        Some(ss)
+                    }
+                    _ => None,
+                };
+                let payload = |i: usize| ss.map(|ss| &ss[i]);
+                match v {
+                    Value::Array(elts) if elts.len() == ts.len() + 1 => {
+                        if !matches!(&elts[0], Value::String(s) if s == tag) {
+                            return Err(self.cast_fail("variant tag mismatch", v));
+                        }
+                        Ok(cast_elts(&elts[1..], |v| v, |i, el| {
+                            ts[i].cast_int(env, hist, payload(i), el)
+                        })?
+                        .map(|mut a| {
+                            a.insert(0, Value::String(tag.clone()));
+                            Value::Array(ValArray::from_iter_exact(a.drain(..)))
+                        }))
+                    }
+                    Value::Array(elts) if elts.len() == ts.len() => {
+                        let mut out: LPooled<Vec<Value>> = LPooled::take();
+                        out.push(Value::String(tag.clone()));
+                        for (i, el) in elts.iter().enumerate() {
+                            let c = ts[i].cast_int(env, hist, payload(i), el)?;
+                            out.push(c.unwrap_or_else(|| el.clone()));
+                        }
+                        Ok(Some(Value::Array(ValArray::from_iter_exact(out.drain(..)))))
+                    }
+                    Value::Array(_) => Err(self.cast_fail("variant length mismatch", v)),
+                    _ => Err(self.cast_fail("not a variant", v)),
+                }
+            }
+            // `hist` is the current path, not a visited set: a name met
+            // again on the same value expands without consuming it.
+            Type::Ref(tr) => {
+                let t = match self.lookup_ref(env) {
+                    Ok(t) => t,
+                    Err(_) => return Err(self.cast_fail("undefined type", v)),
+                };
+                let key = (tr.def_key().unwrap_or(0), (v as *const Value).addr());
+                if !hist.insert(key) {
+                    return Err(self.cast_fail("the type recurses without consuming it", v));
+                }
+                let r = t.cast_int(env, hist, src, v);
                 hist.remove(&key);
                 r
             }
-            // CR claude for eric: [perf] Every failed member attempt builds an
-            // anyhow error that formats the whole value (`can't cast {v} to
-            // {self}`, unbounded), then `.ok()` throws it away; nested unions
-            // repeat this at each level. Failed attempts should not format, and
-            // the final message should use a bounded prefix (`NakedPrefix`).
-            Type::Set(ts) => ts
-                .iter()
-                .find_map(|t| t.cast_value_int(env, hist, v).ok())
-                .ok_or_else(|| anyhow!("can't cast {v} to {self}")),
-            Type::TVar(tv) => match &tv.read().typ.read().typ {
-                Some(t) => t.cast_value_int(env, hist, v),
-                None => Ok(v.clone()),
-            },
+            // A member the value already inhabits wins; else the first
+            // member it converts to.
+            Type::Set(ts) => {
+                let mut converted = None;
+                for t in ts.iter() {
+                    match t.cast_int(env, hist, src, v) {
+                        Ok(None) => return Ok(None),
+                        Ok(Some(c)) if converted.is_none() => converted = Some(c),
+                        Ok(Some(_)) | Err(_) => (),
+                    }
+                }
+                converted.map(Some).ok_or_else(|| self.cast_fail("no member admits it", v))
+            }
         }
     }
 
+    /// Cast `v` of unknown static type to this type; a failure is the
+    /// `InvalidCast` error value. An array and a list are told apart by
+    /// shape.
     pub fn cast_value(&self, env: &Env, v: Value) -> Value {
-        match self.cast_value_int(env, &mut LPooled::take(), &v) {
-            Ok(v) => v,
-            Err(e) => errf!(CAST_ERR_TAG, "{e:?}"),
+        self.cast_value_int(env, None, v)
+    }
+
+    /// [`Self::cast_value`] of a `v` statically of type `src`, which
+    /// decides whether a value is an array or a list.
+    pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
+        self.cast_value_int(env, Some(src), v)
+    }
+
+    fn cast_value_int(&self, env: &Env, src: Option<&Type>, v: Value) -> Value {
+        match self.cast_int(env, &mut LPooled::take(), src, &v) {
+            Ok(None) => v,
+            Ok(Some(v)) => v,
+            Err(e) => errf!(CAST_ERR_TAG, "{e}"),
         }
     }
 
@@ -332,7 +475,7 @@ impl Type {
         flags: BitFlags<IsAFlags>,
         v: &Value,
     ) -> bool {
-        crate::stack::ensure_sufficient(|| self.is_a_int_inner(env, hist, flags, v))
+        ensure_sufficient(|| self.is_a_int_inner(env, hist, flags, v))
     }
 
     fn is_a_int_inner(
@@ -343,20 +486,18 @@ impl Type {
         v: &Value,
     ) -> bool {
         match self {
-            // CR claude for eric: [readability] This comment is about the `Ref`
-            // arm's `hist`, but sits above `App`. Move it to the `Ref` arm.
-            // `hist` is the current path, not a visited set: a repeat
-            // on the path is a name expanding without consuming value
-            // structure; a repeat off the path is union backtracking.
             Type::App(c, a) => match Type::app_filled(c, a) {
                 Some(t) => t.is_a_int(env, hist, flags, v),
                 None => !flags.contains(IsAFlags::Strict),
             },
             Type::Hole => false,
-            Type::Ref(TypeRef { scope, name, .. }) => match self.lookup_ref(env) {
+            // `hist` is the current path, not a visited set: a repeat
+            // on the path is a name expanding without consuming value
+            // structure; a repeat off the path is union backtracking.
+            Type::Ref(tr) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
-                    let key = (ref_key(scope, name), (v as *const Value).addr());
+                    let key = (tr.def_key().unwrap_or(0), (v as *const Value).addr());
                     hist.insert(key) && {
                         let r = t.is_a_int(env, hist, flags, v);
                         hist.remove(&key);
@@ -397,7 +538,6 @@ impl Type {
             },
             // Walk the spine iteratively (heads recurse).
             Type::List(et) => {
-                use crate::node::collection::list;
                 let mut cur = v;
                 loop {
                     if list::is_nil(cur) {
@@ -476,7 +616,7 @@ impl Type {
                 }
                 _ => false,
             },
-            Type::TVar(tv) => match &tv.read().typ.read().typ {
+            Type::TVar(tv) => match tv.binding() {
                 None => !flags.contains(IsAFlags::Strict),
                 Some(t) => t.is_a_int(env, hist, flags, v),
             },
@@ -508,7 +648,7 @@ impl Type {
     /// against their member; explicit `x as T` stays strict.
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
         let mut scrut: LPooled<Vec<Type>> = LPooled::take();
-        let mut seen: LPooled<Vec<(usize, usize)>> = LPooled::take();
+        let mut seen: LPooled<Vec<usize>> = LPooled::take();
         flatten_union_members(scrutinee, env, &mut scrut, &mut seen)?;
         let mut sfacts: LPooled<Vec<MemberFacts>> = LPooled::take();
         for m in scrut.iter() {
@@ -549,7 +689,7 @@ impl Type {
         Some(if out.len() == 1 {
             out.pop().unwrap()
         } else {
-            Type::Set(triomphe::Arc::from(out.drain(..).collect::<Vec<_>>()))
+            Type::Set(Arc::from_iter(out.drain(..)))
         })
     }
 }
@@ -563,18 +703,6 @@ fn struct_field(v: &Value) -> Option<(&ArcStr, &Value)> {
         },
         _ => None,
     }
-}
-
-/// The identity of a type name on the current walk's path.
-// CR claude for eric: [structure] Four ref-identity schemes for one job: this XOR
-// of two addresses (two distinct names can collide and read as a
-// non-consuming recursion, failing a valid cast or `is_a`),
-// `flatten_union_members`' (scope, name) tuple, `RefHist::ref_id` in
-// `check_cast_int`, and typed printing's address of a local (`typ/tval.rs`,
-// broken). One keyed identity, e.g. the resolution cell, shared by all.
-fn ref_key(scope: &ModPath, name: &ModPath) -> usize {
-    (scope.as_ref() as *const _ as *const u8).addr()
-        ^ (name.as_ref() as *const _ as *const u8).addr()
 }
 
 /// A flattened union member's runtime footprint. Variants, tuples,
@@ -594,32 +722,35 @@ enum ArrCon {
     AnyLen,
 }
 
+impl MemberFacts {
+    const EXACT: Self = MemberFacts { arr: None, map: false, error: false, exact: true };
+
+    fn arr(tag: Option<ArcStr>, con: ArrCon) -> Self {
+        MemberFacts { arr: Some((tag, con)), map: false, error: false, exact: false }
+    }
+}
+
 fn member_facts(t: &Type) -> MemberFacts {
-    // CR claude for eric: [readability] `f(None, false, false, true)` is four
-    // positional bools the reader must count. Write the struct literal with
-    // field names, or give `MemberFacts` constructors per class.
-    let f = |arr, map, error, exact| MemberFacts { arr, map, error, exact };
     match t {
-        Type::Primitive(bits) => f(
-            bits.contains(Typ::Array).then_some((None, ArrCon::AnyLen)),
-            bits.contains(Typ::Map),
-            bits.contains(Typ::Error),
-            true,
-        ),
-        Type::Variant(_, ps, _) if ps.is_empty() => f(None, false, false, true),
+        Type::Primitive(bits) => MemberFacts {
+            arr: bits.contains(Typ::Array).then_some((None, ArrCon::AnyLen)),
+            map: bits.contains(Typ::Map),
+            error: bits.contains(Typ::Error),
+            exact: true,
+        },
+        Type::Variant(_, ps, _) if ps.is_empty() => MemberFacts::EXACT,
         Type::Variant(tag, ps, _) => {
-            f(Some((Some(tag.clone()), ArrCon::Len(ps.len() + 1))), false, false, false)
+            MemberFacts::arr(Some(tag.clone()), ArrCon::Len(ps.len() + 1))
         }
-        Type::Tuple(ts) => f(Some((None, ArrCon::Len(ts.len()))), false, false, false),
-        Type::Struct(fs) => f(Some((None, ArrCon::Len(fs.len()))), false, false, false),
-        Type::Array(_) => f(Some((None, ArrCon::AnyLen)), false, false, false),
+        Type::Tuple(ts) => MemberFacts::arr(None, ArrCon::Len(ts.len())),
+        Type::Struct(fs) => MemberFacts::arr(None, ArrCon::Len(fs.len())),
         // A list shapes as an array at runtime, so beside an Array
         // member the deep walk is forced.
-        Type::List(_) => f(Some((None, ArrCon::AnyLen)), false, false, false),
-        Type::Map { .. } => f(None, true, false, false),
-        Type::Error(_) => f(None, false, true, false),
+        Type::Array(_) | Type::List(_) => MemberFacts::arr(None, ArrCon::AnyLen),
+        Type::Map { .. } => MemberFacts { map: true, exact: false, ..MemberFacts::EXACT },
+        Type::Error(_) => MemberFacts { error: true, exact: false, ..MemberFacts::EXACT },
         Type::Abstract { .. } | Type::Fn(_) | Type::ByRef(_) | Type::Bottom => {
-            f(None, false, false, true)
+            MemberFacts::EXACT
         }
         // `flatten_union_members` never yields these.
         Type::Any
@@ -627,7 +758,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         | Type::Ref(_)
         | Type::TVar(_)
         | Type::App(..)
-        | Type::Hole => f(None, false, false, true),
+        | Type::Hole => MemberFacts::EXACT,
     }
 }
 
@@ -649,69 +780,54 @@ fn arr_overlap(
     }
 }
 
-// CR claude for eric: [style] Each arm collects into a temporary `Vec` and then
-// copies it into an `Arc` (also `shallow_discriminant`'s final `Set`);
-// `Arc::from_iter` builds the slice directly.
 fn shallowify(t: &Type) -> Type {
     match t {
-        Type::Variant(tag, ps, at) => Type::Variant(
-            tag.clone(),
-            triomphe::Arc::from(ps.iter().map(|_| Type::Any).collect::<Vec<_>>()),
-            *at,
-        ),
-        Type::Tuple(ts) => Type::Tuple(triomphe::Arc::from(
-            ts.iter().map(|_| Type::Any).collect::<Vec<_>>(),
+        Type::Variant(tag, ps, at) => {
+            Type::Variant(tag.clone(), Arc::from_iter(ps.iter().map(|_| Type::Any)), *at)
+        }
+        Type::Tuple(ts) => Type::Tuple(Arc::from_iter(ts.iter().map(|_| Type::Any))),
+        Type::Struct(fs) => Type::Struct(Arc::from_iter(
+            fs.iter().map(|(n, _, at)| (n.clone(), Type::Any, *at)),
         )),
-        Type::Struct(fs) => Type::Struct(triomphe::Arc::from(
-            fs.iter().map(|(n, _, at)| (n.clone(), Type::Any, *at)).collect::<Vec<_>>(),
-        )),
-        Type::Array(_) => Type::Array(triomphe::Arc::new(Type::Any)),
-        Type::List(_) => Type::List(triomphe::Arc::new(Type::Any)),
-        Type::Map { .. } => Type::Map {
-            key: triomphe::Arc::new(Type::Any),
-            value: triomphe::Arc::new(Type::Any),
-        },
-        Type::Error(_) => Type::Error(triomphe::Arc::new(Type::Any)),
+        Type::Array(_) => Type::Array(Arc::new(Type::Any)),
+        Type::List(_) => Type::List(Arc::new(Type::Any)),
+        Type::Map { .. } => {
+            Type::Map { key: Arc::new(Type::Any), value: Arc::new(Type::Any) }
+        }
+        Type::Error(_) => Type::Error(Arc::new(Type::Any)),
         t => t.clone(),
     }
 }
 
+/// `seen` is the path of definitions being expanded.
 fn flatten_union_members(
     t: &Type,
     env: &Env,
     out: &mut LPooled<Vec<Type>>,
-    seen: &mut LPooled<Vec<(usize, usize)>>,
+    seen: &mut LPooled<Vec<usize>>,
 ) -> Option<()> {
-    match t {
+    ensure_sufficient(|| match t {
         Type::Set(ts) => {
             for t in ts.iter() {
                 flatten_union_members(t, env, out, seen)?;
             }
             Some(())
         }
-        Type::Ref(TypeRef { scope, name, .. }) => {
-            let key = (
-                (scope.as_ref() as *const _ as *const u8).addr(),
-                (name.as_ref() as *const _ as *const u8).addr(),
-            );
+        Type::Ref(tr) => {
+            let t = t.lookup_ref(env).ok()?;
+            let key = tr.def_key()?;
             if seen.contains(&key) {
                 return None;
             }
             seen.push(key);
-            let res = match t.lookup_ref(env) {
-                Ok(t) => flatten_union_members(&t, env, out, seen),
-                Err(_) => None,
-            };
+            let res = flatten_union_members(&t, env, out, seen);
             seen.pop();
             res
         }
-        Type::TVar(tv) => {
-            let bound = tv.read().typ.read().typ.clone();
-            match bound {
-                Some(t) => flatten_union_members(&t, env, out, seen),
-                None => None,
-            }
-        }
+        Type::TVar(tv) => match tv.binding() {
+            Some(t) => flatten_union_members(&t, env, out, seen),
+            None => None,
+        },
         Type::App(c, a) => match Type::app_filled(c, a) {
             Some(t) => flatten_union_members(&t, env, out, seen),
             None => None,
@@ -721,5 +837,5 @@ fn flatten_union_members(
             out.push(t.clone());
             Some(())
         }
-    }
+    })
 }

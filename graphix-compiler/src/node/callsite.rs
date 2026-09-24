@@ -2417,9 +2417,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     if let Some(bind) = ctx.env.by_id.get(&id)
                         && let Type::TVar(tv) = &bind.typ
                     {
-                        let tv = tv.read();
-                        let mut cell = tv.typ.write();
-                        cell.typ = match &cell.typ {
+                        let cell = tv.cell();
+                        let mut cell = cell.write();
+                        cell.binding = match &cell.binding {
                             None => Some(t),
                             Some(inner) => Some(Type::union(&ctx.env, &[inner, &t])?),
                         };

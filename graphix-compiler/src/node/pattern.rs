@@ -191,8 +191,8 @@ impl StructPatternNode {
             }
             Self::Struct { all, binds } => {
                 let elts = typ.with_deref(|t| match t {
-                    Some(t @ Type::Ref(_)) => match t.lookup_ref(env) {
-                        Ok(Type::Struct(elts)) => Some(elts),
+                    Some(t @ Type::Ref(_)) => match &t.lookup_ref(env) {
+                        Ok(Type::Struct(elts)) => Some(elts.clone()),
                         Ok(_) | Err(_) => None,
                     },
                     Some(Type::Struct(elts)) => Some(elts.clone()),
@@ -275,7 +275,7 @@ impl StructPatternNode {
             Self::Struct { binds, all: _ } => {
                 let elts = typ.with_deref(|t| match t {
                     Some(t @ Type::Ref(_)) => {
-                        t.lookup_ref(env).ok().and_then(|t| match t {
+                        t.lookup_ref(env).ok().and_then(|t| match &t {
                             Type::Struct(elts) => Some(elts.clone()),
                             _ => None,
                         })

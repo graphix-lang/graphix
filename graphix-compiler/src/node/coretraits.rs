@@ -13,7 +13,7 @@ use crate::{
     abstract_value::{self, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
     expr::{ExprId, ModPath},
-    typ::{AbstractId, FnType, IsAFlags, TVar, TraitId, Type},
+    typ::{AbstractId, FnType, TVar, TraitId, Type},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow};
@@ -179,22 +179,6 @@ pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
         Some(Type::Fn(ft)) => Some(ft.clone()),
         _ => None,
     }
-}
-
-// CR claude for eric: [structure] nothing trait-related: the only caller is the
-// typed printer (`typ/tval.rs`), which reaches down into `node::coretraits` for
-// it. Move it to `typ/tval.rs`.
-/// The member of a union `ts` that `v` belongs to: the first strict
-/// match, else the first structured plain match, else the first plain
-/// match.
-pub(crate) fn union_member(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
-    let blind = |t: &Type| {
-        t.with_deref(|t| matches!(t, None | Some(Type::Any) | Some(Type::Bottom)))
-    };
-    ts.iter()
-        .position(|t| t.is_a_with(env, IsAFlags::Strict.into(), v))
-        .or_else(|| ts.iter().position(|t| !blind(t) && t.is_a(env, v)))
-        .or_else(|| ts.iter().position(|t| t.is_a(env, v)))
 }
 
 /// One hook call site: a static call to the implementation's method

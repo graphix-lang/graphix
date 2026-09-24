@@ -277,7 +277,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &Type::Bottom
+        Type::BOTTOM
     }
 
     // CR claude for eric: [readability] a trait has no `NodeView` of its own and
@@ -750,7 +750,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &Type::Bottom
+        Type::BOTTOM
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

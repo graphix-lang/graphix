@@ -1924,7 +1924,7 @@ fn keyword_field_in_struct_literal() {
 #[test]
 fn keyword_field_in_struct_type() {
     let t = parse_typexpr("{ duration: duration, i64: i64 }").unwrap();
-    match t {
+    match &t {
         Type::Struct(fields) => {
             assert_eq!(&*fields[0].0, "duration");
             assert_eq!(&*fields[1].0, "i64");

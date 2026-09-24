@@ -1368,12 +1368,6 @@ impl Env {
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
         }
-        // CR claude for eric: [bug] a typedef that reaches itself only through unions
-        // and refs is accepted: `type T = [i64, T]; let v: T = "hello"` checks and
-        // prints hello, and a select over T counts as exhaustive (the root of the CRs in
-        // typ/contains.rs on the in-progress `true` and trait_contains). Refuse a
-        // definition whose body is not contractive (every self-reference must sit under
-        // a constructor).
         let (typ, rep) = match body {
             TypeDefBody::Alias(typ) => {
                 (typ.scope_refs(scope).rewrite_trait_args(self)?, None)
@@ -1459,32 +1453,16 @@ impl Env {
                 seeded: Arc::new(AtomicBool::new(false)),
             },
         );
-        // A chain of bare aliases must not close a cycle: `type A = B;
-        // type B = A` names nothing, and contains' coinductive memo
-        // would accept it against everything.
-        {
-            let mut seen: LPooled<AHashSet<(CompactString, CompactString)>> =
-                LPooled::take();
-            let scope_str: &str = scope;
-            seen.insert((scope_str.into(), name.into()));
-            let mut cur = typ;
-            while let Type::Ref(tr) = &cur {
-                let Some(r) = tr.resolve_pure(self) else { break };
-                let refname: &str = &tr.name;
-                let base = Path::basename(&refname).unwrap_or(refname);
-                let canon: &str = r.canonical_scope();
-                if !seen.insert((canon.into(), base.into())) {
-                    self.undeftype(scope, name);
-                    bail!(
-                        "circular type alias: {name} refers back to itself \
-                         through a chain of bare aliases; a recursive type \
-                         must recurse through a structural body (variant, \
-                         union, tuple, struct, ...)"
-                    );
-                }
-                let next = r.typ().clone();
-                cur = next;
-            }
+        // Every self-reference must sit under a constructor: `type T =
+        // [i64, T]` (or `type A = B; type B = A`) names no value, and
+        // contains' coinductive memo would accept it against anything.
+        if typ.reaches_unguarded(self, scope, name) {
+            self.undeftype(scope, name);
+            bail!(
+                "recursive type {name} refers back to itself through unions and \
+                 aliases alone, so it names no value; a recursive type must recurse \
+                 through a structural body (variant, tuple, struct, array, ...)"
+            );
         }
         Ok(())
     }

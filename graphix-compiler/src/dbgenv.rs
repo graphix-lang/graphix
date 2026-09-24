@@ -43,6 +43,7 @@ dbg_flag!(gxdbg_resolve, "GXDBG_RESOLVE");
 dbg_flag!(gxdbg_swallow, "GXDBG_SWALLOW");
 dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");
 dbg_flag!(gxdbg_tail, "GXDBG_TAIL");
+dbg_flag!(gxdbg_typeref, "GXDBG_TYPEREF");
 
 // CR claude for eric: [structure] GRAPHIX_DBG_BIND_BT is read into two statics:
 // `graphix_dbg_bind_bt()` is `graphix_dbg_bind_bt_id().is_some()`.

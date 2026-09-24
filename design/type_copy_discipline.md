@@ -36,7 +36,7 @@ settled groups whose types are equated must share one cell from that
 moment on, or they fork. The arm now takes `Act::CellMerge` →
 `TVar::alias_cells` (`typ/contains.rs`, `typ/tvar.rs`): a cell merge
 that bypasses the frozen gate while keeping `alias`'s occurs checks,
-committed under `AliasTVars` like every other aliasing act. This is
+committed under `Commit` like every other aliasing act. This is
 what makes the site's facts collide in one cell so the strict
 argument-boundary check fires, and it makes the null witnesses reject
 in both modes, consistent with their direct forms.

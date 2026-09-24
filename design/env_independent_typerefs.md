@@ -42,8 +42,10 @@ snapshot.
   param-substituting rebuilds SHARE it (`TypeRef::with_params`, used by
   normalize/resolve_tvars/union and, load-bearing, by
   `reset_tvars`/`replace_tvars` — the expansion-commit copies in
-  `RefHist` must keep seeded cells). A scope change changes the
-  resolution, so `scope_refs` mints a fresh cell (`with_scope`). The
+  `ContainsHist` must keep seeded cells). A scope change changes the
+  resolution, so `scope_refs` mints a new cell (`with_scope`), filled
+  from the source's cell when that is filled (a filled cell is the
+  name's final target, which the new scope may not even reach). The
   field is `pub(in crate::typ)`; outside construction goes through
   `TypeRef::new`/`synthetic`, so a fresh cell is compiler-enforced.
 - **Accepted leak.** A recursive typedef's filled self-ref cell is an
@@ -91,10 +93,14 @@ views of one name. A DIFFERENT definition found in a stale env is a
 horizon artifact; the cell, filled post-registration, is the name's
 true meaning and wins.
 
-`RefHist::ref_id` derives a ref's identity from the filled cell's Arc
-address (fallback: the env `TypeDef` address), so a ref unresolvable in
-the ambient env never collapses to a shared `None` cycle key, and an
-old-cell ref never aliases a redefined def's identity.
+`RefHist::ref_id` fills the cell first and derives a ref's identity
+from the resolution's definition (`ResolvedRef::def_key`, the params
+allocation every cell filled from one `TypeDef` shares) and its
+params, so one ref has one identity in a walk, a ref unresolvable in
+the ambient env has none rather than a shared `None` cycle key, and an
+old-cell ref never aliases a redefined def's identity. The value walks
+(`is_a`, casts, typed printing, union flattening) key the path of names
+they expand on the same `def_key`.
 
 ## Fusion: refs at the freeze boundary
 

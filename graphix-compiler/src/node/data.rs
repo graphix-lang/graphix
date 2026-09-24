@@ -431,8 +431,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
         let styp = self.source.typ().deref_cloned();
-        let check = || -> Result<()> {
-            match styp {
+        let mut check = || -> Result<()> {
+            match &styp {
                 Some(Type::Struct(flds)) => {
                     for (rep, n) in self.replace.iter_mut().zip(fields.iter()) {
                         let r =
@@ -1077,8 +1077,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         // CR claude for eric: [perf] no dense gate: every update, stale ones
         // included, allocates a new abstract box. And `params` is a type fact
         // computed lazily on the hot path; take it once in typecheck1.
-        let params = self.params.get_or_insert_with(|| match self.typ.resolve_tvars() {
-            Type::Abstract { params, .. } => params,
+        let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
+            Type::Abstract { params, .. } => params.clone(),
             _ => Arc::from_iter([]),
         });
         let v = abstract_value::wrap(

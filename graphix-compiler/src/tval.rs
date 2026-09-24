@@ -9,7 +9,12 @@
 //! is never read as a `Value` discriminant.
 
 use netidx_value::Value;
-use std::fmt;
+use std::{
+    fmt,
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    sync::LazyLock,
+};
 
 /// The reserved tag byte — the upper 8 bits of the discriminant word.
 const TAG_MASK: u64 = 0xFF00_0000_0000_0000;
@@ -35,14 +40,9 @@ impl Tag {
     /// has never produced.
     pub const STALE_BOTTOM: Tag = Tag(Self::TAINT_BIT | Self::STALE_BIT);
 
-    /// Wrap a raw tag byte.
-    // CR claude for eric: [structure] Any byte becomes a `Tag`, so 252 values
-    // with meaningless bits are representable, and `==` tells `Tag(0x01)` from
-    // `FIRED` though every predicate agrees they are the same.
-    // graphix-package-core decodes image bytes straight through here. Mask to
-    // `STALE_BIT | TAINT_BIT` (or make `Tag` the four-state enum `TagView` is).
+    /// Wrap a raw tag byte; bits other than STALE and TAINT are dropped.
     pub fn from_raw(bits: u8) -> Self {
-        Tag(bits)
+        Tag(bits & (Self::STALE_BIT | Self::TAINT_BIT))
     }
 
     pub fn bits(self) -> u8 {
@@ -138,14 +138,14 @@ pub fn value_words(v: &Value) -> [u64; 2] {
     [disc, payload]
 }
 
-// CR claude for eric: [risk] `TagValue` owns a `Value` but is declared as two
-// `u64`s, so its `Send`/`Sync` and drop-check come from the integers, not from
-// `Value`. Harmless while `Value` is `Send + Sync`; a `PhantomData<Value>`
-// field keeps it true by construction.
+/// The masked words must be a `Value`: `TagValue::masked` reads them as one.
+const _: () = assert!(size_of::<Value>() == 16 && align_of::<Value>() == 8);
+
 #[repr(C)]
 pub struct TagValue {
     disc: u64,
     payload: u64,
+    owns: PhantomData<Value>,
 }
 
 impl TagValue {
@@ -153,22 +153,12 @@ impl TagValue {
     /// via [`TagValue::value`].
     ///
     /// SAFETY: the masked words `(disc & !TAG_MASK, payload)` must be a
-    /// valid `Value` bit pattern, or the zero sentinel checked via
-    /// [`Self::is_sentinel`] before any clone/drop.
-    // CR claude for eric: [readability] A resolved XCR is still here (and its
-    // "both callers ... in fusion/kernel.rs" is stale: four callers, three in
-    // emit_helpers.rs). Delete it.
-    // CR claude for eric: [risk] The contract names only clone and drop, but
-    // `value`, `with_value`, `value_cloned` and `Display` also materialize the
-    // disc-0 `Value` (UB); only `Debug` checks `is_sentinel`. State it as "no
-    // use but `is_sentinel`/`tag` until checked".
-    // XCR estokes: This should be marked unsafe, you can use it to construct
-    // and invalid Value.
-    // (done — unsafe with the contract above; both callers are the JIT
-    // out-slot decodes in fusion/kernel.rs, which guard the sentinel)
+    /// valid `Value` bit pattern, or the zero sentinel; a sentinel admits
+    /// no use but [`Self::is_sentinel`] and [`Self::tag`] (it must be
+    /// forgotten, never dropped).
     #[inline]
     pub unsafe fn from_raw(disc: u64, payload: u64) -> Self {
-        TagValue { disc, payload }
+        TagValue { disc, payload, owns: PhantomData }
     }
 
     /// Stuff `tag` into the upper 8 bits of `v`'s discriminant.
@@ -177,21 +167,13 @@ impl TagValue {
         let [disc, payload] = value_words(&v);
         std::mem::forget(v);
         debug_assert_eq!(disc & TAG_MASK, 0, "Value discriminant overlaps the tag byte");
-        TagValue { disc: disc | ((tag.bits() as u64) << 56), payload }
+        TagValue { disc: disc | ((tag.bits() as u64) << 56), payload, owns: PhantomData }
     }
 
     /// An untagged `TagValue`: fired this cycle.
     #[inline]
-    pub fn clean(v: Value) -> Self {
-        Self::tagged(v, Tag::FIRED)
-    }
-
-    /// Alias of [`Self::clean`] under the interpreter's vocabulary.
-    // CR claude for eric: [style] Two names for one constructor (142 call sites
-    // say `fired`, 20 say `clean`). Keep `fired`, which matches `Tag::FIRED`.
-    #[inline]
     pub fn fired(v: Value) -> Self {
-        Self::clean(v)
+        Self::tagged(v, Tag::FIRED)
     }
 
     /// A value-channel refresh: present and valid, did not fire.
@@ -238,54 +220,26 @@ impl TagValue {
         self.retag(t)
     }
 
-    /// The shared production of a node that never produces.
-    // CR claude for eric: [structure] `phantom_ref`, `tainted_null` and
-    // `bottom_null(false)` are three statics holding the same bits (Null,
-    // STALE_BOTTOM), as are `phantom()` and `tainted(Null)`; `tainted_null` has
-    // no caller. One static, one constructor; `tainted` (which sets STALE too)
-    // is the misleading name to drop.
+    /// The shared production of a node that never produces: the
+    /// phantom, a standing bottom.
     pub fn phantom_ref() -> &'static TagValue {
-        static PHANTOM: std::sync::LazyLock<TagValue> =
-            std::sync::LazyLock::new(TagValue::phantom);
+        static PHANTOM: LazyLock<TagValue> = LazyLock::new(TagValue::phantom);
         &PHANTOM
-    }
-
-    /// The shared tainted-placeholder production, for a return path
-    /// that must deliver a bottom without clobbering its resident.
-    pub fn tainted_null() -> &'static TagValue {
-        static TAINTED: std::sync::LazyLock<TagValue> =
-            std::sync::LazyLock::new(|| TagValue::tainted(Value::Null));
-        &TAINTED
     }
 
     /// The shared bottom production for a wrapper that bottoms an
     /// invocation without clobbering its resident: `FreshBottom` when
-    /// `triggering`, else `StaleBottom`.
+    /// `triggering`, else `StaleBottom` (the phantom).
     pub fn bottom_null(triggering: bool) -> &'static TagValue {
-        static FRESH: std::sync::LazyLock<TagValue> =
-            std::sync::LazyLock::new(|| TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-        static STALE: std::sync::LazyLock<TagValue> =
-            std::sync::LazyLock::new(|| TagValue::tagged(Value::Null, Tag::STALE_BOTTOM));
-        if triggering { &FRESH } else { &STALE }
-    }
-
-    /// A possible-bottom placeholder (tainted, hence also stale).
-    #[inline]
-    pub fn tainted(v: Value) -> Self {
-        Self::tagged(v, Tag::STALE_BOTTOM)
+        static FRESH: LazyLock<TagValue> =
+            LazyLock::new(|| TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+        if triggering { &FRESH } else { Self::phantom_ref() }
     }
 
     /// The tag byte, invariant-restored.
     #[inline]
     pub fn tag(&self) -> Tag {
         Tag::from_raw((self.disc >> 56) as u8)
-    }
-
-    /// The raw tag byte as the JIT wrote it (boundary code only).
-    // CR claude for eric: [dead] No caller in the workspace.
-    #[inline]
-    pub fn raw_tag(&self) -> u8 {
-        (self.disc >> 56) as u8
     }
 
     #[inline]
@@ -310,19 +264,20 @@ impl TagValue {
         }
     }
 
-    /// Recover the clean `Value`, MASKING the tag. The sole raw-words →
-    /// `Value` gateway; consumes self, transferring payload ownership.
-    // CR claude for eric: [structure] Not the sole gateway: the same masked
-    // `transmute::<[u64; 2], Value>` is written four times (`value`,
-    // `with_value`, `Clone`, `Drop`). One private `fn masked(&self) ->
-    // ManuallyDrop<Value>` would hold the unsafe once, next to the layout
-    // assertion it relies on (today in fusion/emit_helpers.rs).
+    /// The words as a `Value` with the tag masked off: a bitwise view
+    /// that owns nothing (the sole raw-words → `Value` gateway).
+    #[inline]
+    fn masked(&self) -> ManuallyDrop<Value> {
+        ManuallyDrop::new(unsafe {
+            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
+        })
+    }
+
+    /// Recover the clean `Value`, MASKING the tag; consumes self,
+    /// transferring payload ownership.
     #[inline]
     pub fn value(self) -> Value {
-        let me = std::mem::ManuallyDrop::new(self);
-        unsafe {
-            std::mem::transmute::<[u64; 2], Value>([me.disc & !TAG_MASK, me.payload])
-        }
+        ManuallyDrop::into_inner(ManuallyDrop::new(self).masked())
     }
 
     /// Split into the clean `Value` and its tag.
@@ -343,10 +298,7 @@ impl TagValue {
     /// consuming or touching the refcount.
     #[inline]
     pub fn with_value<T>(&self, f: impl FnOnce(&Value) -> T) -> T {
-        let v = std::mem::ManuallyDrop::new(unsafe {
-            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
-        });
-        f(&v)
+        f(&self.masked())
     }
 
     /// Clone out the clean `Value` (refcount bump), keeping self.
@@ -366,24 +318,14 @@ impl Default for TagValue {
 impl Clone for TagValue {
     #[inline]
     fn clone(&self) -> Self {
-        // `view` is a borrowed view of our own bits and must not drop.
-        let view = std::mem::ManuallyDrop::new(unsafe {
-            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
-        });
-        let dup: Value = (*view).clone();
-        let [disc, payload] = value_words(&dup);
-        std::mem::forget(dup);
-        TagValue { disc: disc | (self.disc & TAG_MASK), payload }
+        Self::tagged((*self.masked()).clone(), self.tag())
     }
 }
 
 impl Drop for TagValue {
     #[inline]
     fn drop(&mut self) {
-        let v = unsafe {
-            std::mem::transmute::<[u64; 2], Value>([self.disc & !TAG_MASK, self.payload])
-        };
-        drop(v);
+        drop(ManuallyDrop::into_inner(self.masked()))
     }
 }
 
@@ -405,7 +347,7 @@ impl fmt::Display for TagValue {
 
 impl From<Value> for TagValue {
     fn from(v: Value) -> Self {
-        Self::clean(v)
+        Self::fired(v)
     }
 }
 
@@ -422,11 +364,12 @@ mod tests {
         assert_eq!(T::STALE.join(T::STALE_BOTTOM), T::STALE_BOTTOM);
         assert!(T::STALE_BOTTOM.is_bottom() && !T::STALE_BOTTOM.is_fired());
         assert_eq!(T::from_raw(T::TAINT_BIT), T::FRESH_BOTTOM);
+        assert_eq!(T::from_raw(0x01), T::FIRED);
     }
 
     #[test]
     fn tags_ride_clone_and_mask_on_value() {
-        let tv = TagValue::tainted(Value::from("boo"));
+        let tv = TagValue::tagged(Value::from("boo"), Tag::STALE_BOTTOM);
         let dup = tv.clone();
         assert!(dup.is_bottom());
         assert_eq!(dup.value(), Value::from("boo"));
@@ -443,7 +386,7 @@ mod tests {
         assert!(
             matches!(stale.view(), TagView::Stale(tv) if tv.value_cloned() == Value::from(2i64))
         );
-        let bottom = TagValue::tainted(Value::Null);
+        let bottom = TagValue::phantom();
         assert!(matches!(bottom.view(), TagView::StaleBottom));
     }
 

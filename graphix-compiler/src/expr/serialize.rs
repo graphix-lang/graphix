@@ -179,9 +179,9 @@ impl Pack for TVar {
             return image::tvar_len(self);
         }
         let (bound, constraints): (Option<Type>, Vec<Type>) = {
-            let cell = self.read().typ.clone();
+            let cell = self.cell();
             let cell = cell.read();
-            (cell.typ.clone(), cell.constraints.to_vec())
+            (cell.binding.clone(), cell.constraints.to_vec())
         };
         self.name.encoded_len() + bound.encoded_len() + constraints.encoded_len()
     }
@@ -192,9 +192,9 @@ impl Pack for TVar {
         }
         self.name.encode(buf)?;
         let (bound, constraints): (Option<Type>, Vec<Type>) = {
-            let cell = self.read().typ.clone();
+            let cell = self.cell();
             let cell = cell.read();
-            (cell.typ.clone(), cell.constraints.to_vec())
+            (cell.binding.clone(), cell.constraints.to_vec())
         };
         bound.encode(buf)?;
         constraints.encode(buf)
@@ -214,7 +214,7 @@ impl Pack for TVar {
             None => TVar::empty_named(name),
         };
         {
-            let cell = tv.read().typ.clone();
+            let cell = tv.cell();
             let mut cell = cell.write();
             for c in constraints {
                 cell.add_constraint(c);

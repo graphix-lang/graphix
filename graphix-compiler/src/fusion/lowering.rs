@@ -73,14 +73,16 @@ pub enum SiteDispatch {
     Fast { name: ArcStr, f: crate::FastFn },
     /// A builtin's typed fast fn, directed by the site's return type.
     Typed { name: ArcStr, f: crate::TypedFastFn, typ: Type },
-    /// A cast to the type, through [`cast_typed`].
-    Cast(Type),
+    /// A cast from `source` to `target`, through [`cast_typed`].
+    Cast { target: Type, source: Type },
 }
 
-/// The cast pseudo-site's typed fast fn: the same `cast_value` call
-/// `TypeCast::update` makes on the node-walk.
-pub(crate) fn cast_typed(env: &Env, target: &Type, args: &[Value]) -> Option<Value> {
-    Some(target.cast_value(env, args[0].clone()))
+/// The cast pseudo-site's typed fast fn: the same `cast_from` call
+/// `TypeCast::update` makes on the node-walk. `typ` is the site's
+/// `(target, source)` pair.
+pub(crate) fn cast_typed(env: &Env, typ: &Type, args: &[Value]) -> Option<Value> {
+    let Type::Tuple(ts) = typ else { return None };
+    Some(ts[0].cast_from(env, &ts[1], args[0].clone()))
 }
 
 /// Where one buffer slot of a fastcall site comes from: an arg the call
@@ -232,7 +234,10 @@ fn try_register_cast<R: Rt, E: UserEvent>(
             marshal_args: vec![MarshalArg::Call(0)],
             arg_types: vec![arg_frozen],
             return_type: ret_frozen,
-            dispatch: SiteDispatch::Cast(tc.target.clone()),
+            dispatch: SiteDispatch::Cast {
+                target: tc.target.clone(),
+                source: source.clone(),
+            },
         },
     );
 }

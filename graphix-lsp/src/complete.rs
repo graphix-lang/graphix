@@ -149,10 +149,10 @@ impl<'a> Completer<'a> {
     fn fields(&self, typed: &Typed) -> Vec<CompletionItem> {
         let Some((first, rest)) = typed.receiver.split_first() else { return vec![] };
         let Some(bind) = self.lookup(first) else { return vec![] };
-        let fields_of = |typ: &Type| match typ.resolve_tvars() {
-            Type::Struct(fields) => Some(fields),
-            t @ Type::Ref(_) => match t.lookup_ref(self.env) {
-                Ok(Type::Struct(fields)) => Some(fields),
+        let fields_of = |typ: &Type| match &typ.resolve_tvars() {
+            Type::Struct(fields) => Some(fields.clone()),
+            t @ Type::Ref(_) => match &t.lookup_ref(self.env) {
+                Ok(Type::Struct(fields)) => Some(fields.clone()),
                 Ok(_) | Err(_) => None,
             },
             _ => None,

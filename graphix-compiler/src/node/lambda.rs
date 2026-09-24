@@ -1217,11 +1217,17 @@ impl Lambda {
             });
         }
         let argspec = Arc::from_iter(argspec.drain(..));
+        // One scoped var per quantifier: a `'a: A + B` bound is a pair
+        // per conjunct over one var.
+        let mut scoped: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut constraints = l
             .constraints
             .iter()
             .map(|(tv, tc)| {
-                let tv = tv.scope_refs(&scope.lexical);
+                let tv = scoped
+                    .entry(tv.name.clone())
+                    .or_insert_with(|| tv.scope_refs(&scope.lexical))
+                    .clone();
                 let tc = tc.scope_refs(&scope.lexical);
                 Ok((tv, tc))
             })
@@ -1464,7 +1470,7 @@ fn check_defaults<R: Rt, E: UserEvent>(
         let res = node.typecheck0(ctx).and_then(|()| {
             let typ = node.typ().clone();
             match &at.typ {
-                Type::TVar(tv) if tv.read().typ.read().typ.is_none() => tv
+                Type::TVar(tv) if !tv.is_bound() => tv
                     .cell_constraints()
                     .iter()
                     .try_for_each(|c| c.check_contains(&ctx.env, &typ)),
@@ -1635,9 +1641,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         ctx.def_gate_depth -= 1;
         ctx.rec_defs.remove(&def.id);
         ctx.env.by_id.remove_cow(&faux_id);
-        for gate in gates.drain(..) {
-            gate.close();
-        }
+        gates.clear();
         // closed inferred bindings survive the gate: a solved fact must not
         // degrade to an upper bound a consumer can narrow first
         self.typ.unbind_open_tvars();

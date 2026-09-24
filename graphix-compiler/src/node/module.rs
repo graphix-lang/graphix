@@ -972,7 +972,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
 
     fn typ(&self) -> &Type {
         if self.runtime_sig_check_env.is_none() {
-            self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
+            self.nodes.last().map(|n| n.typ()).unwrap_or(Type::BOTTOM)
         } else {
             &TYP
         }

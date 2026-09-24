@@ -1,13 +1,13 @@
 use crate::{
     expr::WrittenAt,
-    typ::{TVar, Type, TypeRef},
+    stack::ensure_sufficient,
+    typ::{TVar, Type, TypeRef, setops::union_identical},
 };
 use ahash::AHashMap;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
 use std::{iter, mem::Discriminant};
 use triomphe::Arc;
 
@@ -15,14 +15,11 @@ use triomphe::Arc;
 /// cells (the first visit normalizes the binding in place); `memo` is a
 /// pointer-identity cache of composite results, keyed by (variant,
 /// content Arc address) for variants whose Arcs are their whole content.
-// CR claude for eric: [risk] `memo` is keyed by addresses the pass itself may
-// free: `TVar::normalize_int` replaces a cell's binding in place, dropping the old
-// one while its subtrees' keys stay in `memo`. Correct today only because the
-// walk never reaches a node allocated during the pass; `RefHist` pins its keyed
-// types for exactly this reason. Pin the keyed Arcs here too, or state the rule.
+/// Each entry pins the keyed type: an in-place rebinding frees the old
+/// binding, and its address must not be reused under its key.
 pub(super) struct NormCx {
     pub(super) cells: LPooled<nohash::IntSet<usize>>,
-    memo: LPooled<AHashMap<NormKey, Option<Type>>>,
+    memo: LPooled<AHashMap<NormKey, (Type, Option<Type>)>>,
 }
 
 pub(crate) type NormKey = (Discriminant<Type>, usize, usize);
@@ -95,9 +92,9 @@ impl Type {
         let mut absorb =
             |t: Self, nested: &mut Vec<(Arc<[Self]>, usize)>, acc: &mut Vec<Self>| {
                 match t {
-                    Type::Set(s) => {
+                    Type::Set(ref s) => {
                         changed = true;
-                        nested.push((s, 0));
+                        nested.push((s.clone(), 0));
                     }
                     Type::Any => return false,
                     // ⊥ ∪ X = X; an all-⊥ set is ⊥ (the exit match).
@@ -187,22 +184,15 @@ impl Type {
     /// cell, preserving alias topology. The result shares no cell with
     /// the original; TVar-free subtrees are returned shared.
     pub fn resolve_tvars(&self) -> Self {
-        self.resolve_tvars_seen(&mut ResolveTvarsCx::take())
+        self.resolve_tvars_seen_int(&mut ResolveTvarsCx::take())
             .unwrap_or_else(|| self.clone())
     }
 
-    // CR claude for eric: [bug] `resolve_tvars_seen` recurses on type depth with
-    // no `ensure_sufficient` (`normalize_int` has one; `merge` below, via its
-    // Tuple/Struct/Variant/ByRef arms, has none either). A flat program builds a
-    // deep type: `let x0 = 1; let x1 = [x0]; ... let x3000 = [x2999]` is
-    // `Array<Array<..>>` 3000 deep with no parser nesting (the same file already
-    // overflows `--check` in fusion lowering). This forwarder is where the guard
-    // belongs; otherwise it is a bare alias of `resolve_tvars_seen`.
+    /// `None` = no TVar anywhere beneath — the caller keeps the original.
     pub(super) fn resolve_tvars_seen_int(&self, cx: &mut ResolveTvarsCx) -> Option<Self> {
-        self.resolve_tvars_seen(cx)
+        ensure_sufficient(|| self.resolve_tvars_seen(cx))
     }
 
-    /// `None` = no TVar anywhere beneath — the caller keeps the original.
     fn resolve_tvars_seen(&self, cx: &mut ResolveTvarsCx) -> Option<Self> {
         let key = norm_key(self);
         if let Some(k) = key
@@ -212,7 +202,7 @@ impl Type {
         }
         let r = match self {
             Type::Bottom | Type::Any | Type::Primitive(_) | Type::Hole => None,
-            Type::App(c, a) => match (c.resolve_tvars_seen(cx), a.resolve_tvars_seen(cx))
+            Type::App(c, a) => match (c.resolve_tvars_seen_int(cx), a.resolve_tvars_seen_int(cx))
             {
                 (None, None) => None,
                 (c2, a2) => Some(Type::app(
@@ -221,10 +211,10 @@ impl Type {
                 )),
             },
             Type::Abstract { id, params } => {
-                Self::cow_slice(params, |t| t.resolve_tvars_seen(cx))
+                Self::cow_slice(params, |t| t.resolve_tvars_seen_int(cx))
                     .map(|params| Type::Abstract { id: *id, params })
             }
-            Type::Ref(tr) => Self::cow_slice(&tr.params, |t| t.resolve_tvars_seen(cx))
+            Type::Ref(tr) => Self::cow_slice(&tr.params, |t| t.resolve_tvars_seen_int(cx))
                 .map(|params| Type::Ref(tr.with_params(params))),
             Type::TVar(tv) => Some({
                 let addr = tv.cell_addr();
@@ -237,10 +227,9 @@ impl Type {
                 if !cx.in_progress.insert(addr) {
                     return Some(Type::TVar(TVar::empty_named(tv.name.clone())));
                 }
-                let bound = tv.read().typ.read().typ.clone();
-                let r = match bound {
+                let r = match tv.binding() {
                     Some(t) => {
-                        let r = match t.resolve_tvars_seen(cx) {
+                        let r = match t.resolve_tvars_seen_int(cx) {
                             Some(t) => t,
                             None => t,
                         };
@@ -257,13 +246,13 @@ impl Type {
                 r
             }),
             Type::Set(s) => {
-                Self::cow_slice(s, |t| t.resolve_tvars_seen(cx)).map(Type::Set)
+                Self::cow_slice(s, |t| t.resolve_tvars_seen_int(cx)).map(Type::Set)
             }
-            Type::Error(t) => t.resolve_tvars_seen(cx).map(|t| Type::Error(Arc::new(t))),
-            Type::Array(t) => t.resolve_tvars_seen(cx).map(|t| Type::Array(Arc::new(t))),
-            Type::List(t) => t.resolve_tvars_seen(cx).map(|t| Type::List(Arc::new(t))),
+            Type::Error(t) => t.resolve_tvars_seen_int(cx).map(|t| Type::Error(Arc::new(t))),
+            Type::Array(t) => t.resolve_tvars_seen_int(cx).map(|t| Type::Array(Arc::new(t))),
+            Type::List(t) => t.resolve_tvars_seen_int(cx).map(|t| Type::List(Arc::new(t))),
             Type::Map { key, value } => {
-                match (key.resolve_tvars_seen(cx), value.resolve_tvars_seen(cx)) {
+                match (key.resolve_tvars_seen_int(cx), value.resolve_tvars_seen_int(cx)) {
                     (None, None) => None,
                     (k, v) => Some(Type::Map {
                         key: k.map(Arc::new).unwrap_or_else(|| key.clone()),
@@ -271,15 +260,15 @@ impl Type {
                     }),
                 }
             }
-            Type::ByRef(t) => t.resolve_tvars_seen(cx).map(|t| Type::ByRef(Arc::new(t))),
+            Type::ByRef(t) => t.resolve_tvars_seen_int(cx).map(|t| Type::ByRef(Arc::new(t))),
             Type::Tuple(t) => {
-                Self::cow_slice(t, |t| t.resolve_tvars_seen(cx)).map(Type::Tuple)
+                Self::cow_slice(t, |t| t.resolve_tvars_seen_int(cx)).map(Type::Tuple)
             }
             Type::Struct(t) => Self::cow_slice(t, |(n, t, at)| {
-                t.resolve_tvars_seen(cx).map(|t| (n.clone(), t, *at))
+                t.resolve_tvars_seen_int(cx).map(|t| (n.clone(), t, *at))
             })
             .map(Type::Struct),
-            Type::Variant(tag, t, at) => Self::cow_slice(t, |t| t.resolve_tvars_seen(cx))
+            Type::Variant(tag, t, at) => Self::cow_slice(t, |t| t.resolve_tvars_seen_int(cx))
                 .map(|t| Type::Variant(tag.clone(), t, *at)),
             Type::Fn(ft) => {
                 ft.resolve_tvars_seen_int(cx).map(|ft| Type::Fn(Arc::new(ft)))
@@ -300,13 +289,13 @@ impl Type {
     /// `None` when already normal. A `TVar` normalizes its binding in
     /// place inside the shared cell and is therefore always `None`.
     pub(super) fn normalize_int(&self, cx: &mut NormCx) -> Option<Self> {
-        crate::stack::ensure_sufficient(|| self.normalize_int_inner(cx))
+        ensure_sufficient(|| self.normalize_int_inner(cx))
     }
 
     fn normalize_int_inner(&self, cx: &mut NormCx) -> Option<Self> {
         let key = norm_key(self);
         if let Some(k) = key
-            && let Some(r) = cx.memo.get(&k)
+            && let Some((_, r)) = cx.memo.get(&k)
         {
             return r.clone();
         }
@@ -369,12 +358,16 @@ impl Type {
             Type::Fn(ft) => ft.normalize_int(cx).map(|ft| Type::Fn(Arc::new(ft))),
         };
         if let Some(k) = key {
-            cx.memo.insert(k, r.clone());
+            cx.memo.insert(k, (self.clone(), r.clone()));
         }
         r
     }
 
     fn merge(&self, t: &Self) -> Option<Self> {
+        ensure_sufficient(|| self.merge_inner(t))
+    }
+
+    fn merge_inner(&self, t: &Self) -> Option<Self> {
         // Equality modulo set-flattening at a nested position.
         fn flat_eq(t0: &Type, t1: &Type) -> bool {
             match (t0, t1) {
@@ -388,6 +381,37 @@ impl Type {
                 (t0, t1) => t0 == t1,
             }
         }
+        // Products merge component-wise only when at most one component
+        // differs: `(A, X) ∪ (B, Y)` is not `([A, B], [X, Y])`.
+        fn merge_one_differing<'a, T: 'a>(
+            t0: impl IntoIterator<Item = &'a T>,
+            t1: impl IntoIterator<Item = &'a T>,
+            typ: impl Fn(&T) -> &Type,
+        ) -> Option<Option<(usize, Type)>> {
+            let mut differing = None;
+            for (i, (a, b)) in t0.into_iter().zip(t1).enumerate() {
+                let (a, b) = (typ(a), typ(b));
+                if flat_eq(a, b) {
+                    continue;
+                }
+                if differing.is_some() {
+                    return None;
+                }
+                differing = Some((i, a.merge(b)?));
+            }
+            Some(differing)
+        }
+        // A bound constructor application is its filled type.
+        if let Type::App(c, a) = self
+            && let Some(filled) = Type::app_filled(c, a)
+        {
+            return filled.merge(t);
+        }
+        if let Type::App(c, a) = t
+            && let Some(filled) = Type::app_filled(c, a)
+        {
+            return self.merge(&filled);
+        }
         match (self, t) {
             (Type::Ref(t0), Type::Ref(t1)) => {
                 if t0 == t1 {
@@ -397,16 +421,6 @@ impl Type {
                 }
             }
             (Type::Ref(TypeRef { .. }), _) | (_, Type::Ref(TypeRef { .. })) => None,
-            // A bound constructor application is its filled type.
-            // CR claude for eric: [perf] `app_filled` runs twice per arm, in the
-            // guard and again in the body, building the filled type both times
-            // (here and the mirrored arm below). Compute it once before the match.
-            (Type::App(c, a), _) if Type::app_filled(c, a).is_some() => {
-                Type::app_filled(c, a).unwrap().merge(t)
-            }
-            (_, Type::App(c, a)) if Type::app_filled(c, a).is_some() => {
-                self.merge(&Type::app_filled(c, a).unwrap())
-            }
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)
@@ -484,80 +498,57 @@ impl Type {
             (Type::Set(s0), Type::Set(s1)) => {
                 Some(Self::flatten_set(s0.iter().cloned().chain(s1.iter().cloned())))
             }
-            // CR claude for eric: [dead] Unreachable: the earlier
-            // `(Type::Primitive(p), t) | (t, Type::Primitive(p)) if p.is_empty()`
-            // arm already takes every empty-primitive pair, a set included.
-            (Type::Set(s), Type::Primitive(p)) | (Type::Primitive(p), Type::Set(s))
-                if p.is_empty() =>
-            {
-                Some(Type::Set(s.clone()))
-            }
             (Type::Set(s), t) | (t, Type::Set(s)) => {
                 Some(Self::flatten_set(s.iter().cloned().chain(iter::once(t.clone()))))
             }
-            // CR claude for eric: [bug] A union of products merges component-wise
-            // whenever every component merges, which over-approximates for arity
-            // >= 2: `[(i64, i64), (string, string)]` becomes `([i64, string],
-            // [i64, string])`. probe: `let x: [(i64, i64), (string, string)] =
-            // (1, "a")` checks and runs; a select with arms `(i64, i64) as ..` and
-            // `(string, string) as ..` over `(1, "a")` passes exhaustiveness and
-            // silently produces nothing. Same in the Variant arm (`` `P(1, "a") ``
-            // accepted by `` [`P(i64, i64), `P(string, string)] ``) and the Struct
-            // arm. Merge only when all components but one are equal.
-            (Type::Tuple(t0), Type::Tuple(t1)) => {
-                if t0.len() == t1.len() {
-                    let mut t = t0
-                        .iter()
-                        .zip(t1.iter())
-                        .map(|(t0, t1)| t0.merge(t1))
-                        .collect::<Option<LPooled<Vec<Type>>>>()?;
-                    Some(Type::Tuple(Arc::from_iter(t.drain(..))))
-                } else {
-                    None
+            (Type::Tuple(t0), Type::Tuple(t1)) if t0.len() == t1.len() => {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t)? {
+                    None => Some(self.clone()),
+                    Some((i, m)) => {
+                        let mut m = Some(m);
+                        Some(Type::Tuple(Arc::from_iter(t0.iter().enumerate().map(
+                            |(j, t)| if j == i { m.take().unwrap() } else { t.clone() },
+                        ))))
+                    }
                 }
             }
-            (Type::Variant(tag0, t0, at), Type::Variant(tag1, t1, _)) => {
-                if tag0 == tag1 && t0.len() == t1.len() {
-                    let t = t0
-                        .iter()
-                        .zip(t1.iter())
-                        .map(|(t0, t1)| t0.merge(t1))
-                        .collect::<Option<SmallVec<[Type; 8]>>>()?;
-                    Some(Type::Variant(tag0.clone(), Arc::from_iter(t), *at))
-                } else {
-                    None
+            (Type::Variant(tag0, t0, at), Type::Variant(tag1, t1, _))
+                if tag0 == tag1 && t0.len() == t1.len() =>
+            {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t)? {
+                    None => Some(self.clone()),
+                    Some((i, m)) => {
+                        let mut m = Some(m);
+                        let ts = Arc::from_iter(t0.iter().enumerate().map(|(j, t)| {
+                            if j == i { m.take().unwrap() } else { t.clone() }
+                        }));
+                        Some(Type::Variant(tag0.clone(), ts, *at))
+                    }
                 }
             }
-            (Type::Struct(t0), Type::Struct(t1)) => {
-                if t0.len() == t1.len() {
-                    let t = t0
-                        .iter()
-                        .zip(t1.iter())
-                        .map(|((n0, t0, at), (n1, t1, _))| {
-                            if n0 != n1 {
-                                None
-                            } else {
-                                t0.merge(t1).map(|t| (n0.clone(), t, *at))
-                            }
-                        })
-                        .collect::<Option<SmallVec<[(ArcStr, Type, WrittenAt); 8]>>>()?;
-                    Some(Type::Struct(Arc::from_iter(t)))
-                } else {
-                    None
+            (Type::Struct(t0), Type::Struct(t1))
+                if t0.len() == t1.len()
+                    && t0.iter().zip(t1.iter()).all(|((n0, _, _), (n1, _, _))| n0 == n1) =>
+            {
+                match merge_one_differing(t0.iter(), t1.iter(), |(_, t, _)| t)? {
+                    None => Some(self.clone()),
+                    Some((i, m)) => {
+                        let mut m = Some(m);
+                        let fs: Arc<[(ArcStr, Type, WrittenAt)]> =
+                            Arc::from_iter(t0.iter().enumerate().map(|(j, (n, t, at))| {
+                                let t = if j == i { m.take().unwrap() } else { t.clone() };
+                                (n.clone(), t, *at)
+                            }));
+                        Some(Type::Struct(fs))
+                    }
                 }
             }
             // Strict tvar identity: two distinct unbound cells never merge.
-            (t0v @ Type::TVar(_), t1v @ Type::TVar(_))
-                if super::setops::union_identical(t0v, t1v) =>
-            {
+            (t0v @ Type::TVar(_), t1v @ Type::TVar(_)) if union_identical(t0v, t1v) => {
                 Some(t0v.clone())
             }
-            (Type::TVar(tv), t) => {
-                tv.read().typ.read().typ.as_ref().and_then(|tv| tv.merge(t))
-            }
-            (t, Type::TVar(tv)) => {
-                tv.read().typ.read().typ.as_ref().and_then(|tv| t.merge(tv))
-            }
+            (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t)),
+            (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b)),
             (Type::ByRef(_), _)
             | (_, Type::ByRef(_))
             | (Type::Abstract { .. }, _)

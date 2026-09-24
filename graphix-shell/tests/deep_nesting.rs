@@ -100,9 +100,31 @@ fn program(shape: &str, d: usize) -> String {
             }
             format!("let x = {s}")
         }
+        // Flat programs whose types are as deep as the program is long.
+        "flattype" => {
+            let mut s = String::from("let x0 = 1;\n");
+            for i in 1..=d {
+                s.push_str(&format!("let x{i} = [x{}];\n", i - 1));
+            }
+            s.push_str(&format!("x{d}"));
+            s
+        }
+        "flatcast" => {
+            let mut s = String::from("type A0 = [`Z];\n");
+            for i in 1..=d {
+                s.push_str(&format!("type A{i} = [`N(A{}), `Z];\n", i - 1));
+            }
+            s.push_str(&format!("let x = cast<A{d}>(`Z)"));
+            s
+        }
         _ => panic!("unknown shape {shape}"),
     }
 }
+
+/// Shapes with no source nesting at all: the parser cannot refuse
+/// them, so each must compile at `FLAT_DEPTH`.
+const FLAT_SHAPES: &[&str] = &["flattype", "flatcast"];
+const FLAT_DEPTH: usize = 3000;
 
 const SHAPES: &[&str] = &[
     "parens",
@@ -190,6 +212,7 @@ fn deep_nesting_does_not_overflow() {
         .iter()
         .flat_map(|s| [(*s, accepted()), (*s, REJECTED)])
         .chain([("parens", REJECTED)])
+        .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH)))
         .collect();
     let mut codes: HashMap<(&str, usize), Option<i32>> = HashMap::new();
     for batch in cases.chunks(CONCURRENCY) {
@@ -215,6 +238,11 @@ fn deep_nesting_does_not_overflow() {
         // 100k is a flat union); only assert the child came back.
         if run(shape, REJECTED).is_none() {
             failed.push(format!("{shape}@{REJECTED}: killed by a signal"))
+        }
+    }
+    for shape in FLAT_SHAPES {
+        if run(shape, FLAT_DEPTH) != Some(0) {
+            failed.push(format!("{shape}@{FLAT_DEPTH}: {:?}", run(shape, FLAT_DEPTH)))
         }
     }
     // The limit must fire on a shape that genuinely nests.

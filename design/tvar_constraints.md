@@ -117,26 +117,27 @@ fact, and erasing it made the static type lie about the runtime value
 The `constraints` list is gone from `FnType` (`typ/fntyp.rs`). Every
 former consumer derives from the cells:
 
-- `constraint_view()` — name-sorted `(tvar, constraint)` pairs for
-  signature-reachable cells carrying exactly ONE conjunct (a
-  multi-conjunct cell prints at use sites as `'a: unbound within A &
-  B`; listing an approximation could leak into interface matching).
-  Feeds Display, Eq/Ord/Hash, the contains/sig_contains constraint
-  checks, and the Pack wire slot (decode re-seeds cells;
-  `add_cell_constraint` dedups).
+- `constraint_view()` — `(tvar, conjunct)` pairs, one per conjunct of
+  each declared quantifier's cell, normalized, sorted by name then
+  conjunct and deduped; a `+` bound prints as `fn<'a: A + B>`. Feeds
+  Display, Eq/Ord/Hash (Hash reads the shape only), and the contains
+  bound check: a variable with one bound meets it (an open one binds to
+  it); with several, only a bound variable is checked, since an open
+  conjunction settles by a witness and the cell enforces it at every
+  binding meanwhile. `cell_constraint_pairs()` is the same listing over
+  every reachable cell, declared or not; it is the Pack wire slot
+  (decode re-seeds cells; `add_cell_constraint` dedups).
 - `FnType.quantifiers: Arc<[ArcStr]>` — the names the `fn<...>` header
   declared, in source order. Names only, excluded from identity; the
-  constraint types stay in the cells. This is the one fact the cells
-  cannot carry: a self-referential constraint `fn<'a: fn(x: 'a) ->
-  _>(…)` is legal, and once seeded the declaring header and the inner
-  fn that merely mentions `'a` reach the same cell and conjunct — a
-  purely cell-derived view re-prints the header at every occurrence
-  forever. `constraint_view` yields pairs only for declared names, so
-  the regress terminates with exact print fidelity.
+  constraint types stay in the cells. A self-referential constraint
+  `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
+  header and an inner fn that mentions `'a` reach the same cell and
+  conjunct; each listing walk holds a per-signature reentrancy guard, so
+  the regress stops at the signature already being listed.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells
-  directly (inference declares no header); `sig_matches_int`'s impl
-  side uses `cell_constraint_pairs()` (all reachable single-conjunct
-  cells), and its impl-constraint check is SATISFACTION — the
+  directly (inference declares no header); `sig_matches_int` requires
+  each of the signature's declared conjuncts among the impl cell's
+  conjunction, and its impl-constraint check is SATISFACTION — the
   signature's concrete choice must be admitted by the impl's inferred
   constraint — not structural equality, which spuriously rejected a
   concretely typed `.gxi` signature over an inferred-generic impl.

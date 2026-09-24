@@ -114,8 +114,9 @@ with mutable TVar cells.
   `Type::cow_children` for rebuilds — write only the walk's
   interesting arms (TVar, and any arm whose traversal policy differs,
   e.g. skipping `Ref` params) and route the rest through the walker.
-  `FnType::try_for_each_type`/`for_each_type` and
-  `for_each_sig_constraint` are the signature-side equivalents.
+  `FnType::try_for_each_type`/`for_each_type` and `for_each_part`
+  (which adds the signature cells' conjuncts) are the signature-side
+  equivalents.
 - A new rebuild walk over `Type` returns `Option<Type>` (None =
   unchanged) and uses `cow_children`/`cow_slice`/`cow_walk` — never
   unconditional reconstruction.

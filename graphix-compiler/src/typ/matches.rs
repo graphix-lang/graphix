@@ -2,23 +2,66 @@ use crate::{
     PrintFlag,
     env::Env,
     format_with_flags,
-    typ::{AndAc, RefHist, Type, TypeRef},
+    stack::ensure_sufficient,
+    typ::{AndAc, RefHist, RefPair, Type, TypeRef, contains::ContainsHist},
 };
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashSet;
 use anyhow::{Result, bail};
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use nohash::IntMap;
 use poolshark::local::LPooled;
+use std::ops::{Deref, DerefMut};
+
+/// could_match's walk state: its pairs in progress (assumed to overlap),
+/// and a memo of its own for the containment questions it asks.
+pub(super) struct MatchHist {
+    pub(super) hist: RefHist<AHashSet<RefPair>>,
+    contains: ContainsHist,
+}
+
+impl MatchHist {
+    pub(super) fn new() -> Self {
+        MatchHist { hist: RefHist::new(), contains: ContainsHist::new() }
+    }
+}
+
+impl Deref for MatchHist {
+    type Target = RefHist<AHashSet<RefPair>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.hist
+    }
+}
+
+impl DerefMut for MatchHist {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.hist
+    }
+}
 
 impl Type {
     pub(super) fn could_match_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut MatchHist,
         t: &Self,
     ) -> Result<bool> {
-        let fl = BitFlags::empty();
+        ensure_sufficient(|| self.could_match_inner(env, hist, t))
+    }
+
+    fn could_match_inner(&self, env: &Env, hist: &mut MatchHist, t: &Self) -> Result<bool> {
+        // A bound constructor application is its filled type.
+        if let Type::App(c, a) = self
+            && let Some(filled) = Type::app_filled(c, a)
+        {
+            return filled.could_match_int(env, hist, t);
+        }
+        if let Type::App(c, a) = t
+            && let Some(filled) = Type::app_filled(c, a)
+        {
+            return self.could_match_int(env, hist, &filled);
+        }
         match (self, t) {
             (Self::Ref(tr0), Self::Ref(tr1))
                 if tr0.scope == tr1.scope
@@ -36,41 +79,25 @@ impl Type {
             }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
-                let t0_id = hist.ref_id(t0, env);
-                let t1_id = hist.ref_id(t1, env);
+                let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
+                if hist.contains(&key) {
+                    return Ok(true);
+                }
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                match hist.get(&(t0_id, t1_id)) {
-                    Some(r) => Ok(*r),
-                    None => {
-                        hist.insert((t0_id, t1_id), true);
-                        let r = t0.could_match_int(env, hist, &t1);
-                        hist.remove(&(t0_id, t1_id));
-                        r
-                    }
-                }
-            }
-            // A bound constructor application is its filled type.
-            (Type::App(c, a), _) if Type::app_filled(c, a).is_some() => {
-                let filled = Type::app_filled(c, a).unwrap();
-                filled.could_match_int(env, hist, t)
-            }
-            (_, Type::App(c, a)) if Type::app_filled(c, a).is_some() => {
-                let filled = Type::app_filled(c, a).unwrap();
-                self.could_match_int(env, hist, &filled)
+                hist.insert(key);
+                let r = t0.could_match_int(env, hist, &t1);
+                hist.remove(&key);
+                r
             }
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)
             | (_, Type::Hole) => Ok(self == t),
-            // CR claude for eric: [risk] contains_int runs on could_match's own
-            // `hist`, so a pair could_match holds in progress (`true`, meaning
-            // "might overlap") is read by contains' Ref arm as a containment
-            // verdict for the same key, and contains' probe_pairs persist into
-            // could_match. Two relations need two memos.
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
-                    if t0.contains_int(fl, env, hist, &Type::Primitive(t1.into()))? {
+                    let t1 = Type::Primitive(t1.into());
+                    if t0.contains_int(BitFlags::empty(), env, &mut hist.contains, &t1)? {
                         return Ok(true);
                     }
                 }
@@ -128,12 +155,13 @@ impl Type {
                 }
                 Ok(false)
             }
-            (Type::TVar(t0), t1) => match &t0.read().typ.read().typ {
+            // Bindings are cloned out: the recursion may lock these cells.
+            (Type::TVar(t0), t1) => match t0.binding() {
                 Some(t0) => t0.could_match_int(env, hist, t1),
                 None => Ok(true),
             },
-            (t0, Type::TVar(t1)) => match &t1.read().typ.read().typ {
-                Some(t1) => t0.could_match_int(env, hist, t1),
+            (t0, Type::TVar(t1)) => match t1.binding() {
+                Some(t1) => t0.could_match_int(env, hist, &t1),
                 None => Ok(true),
             },
             (
@@ -173,16 +201,11 @@ impl Type {
     }
 
     pub fn could_match(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.could_match_int(env, &mut RefHist::new(LPooled::take()), t)
+        self.could_match_int(env, &mut MatchHist::new(), t)
     }
 
     pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
-        self.sig_matches_int(
-            env,
-            impl_type,
-            &mut LPooled::take(),
-            &mut RefHist::new(LPooled::take()),
-        )
+        self.sig_matches_int(env, impl_type, &mut LPooled::take(), &mut RefHist::new())
     }
 
     pub(super) fn sig_matches_int(
@@ -190,7 +213,17 @@ impl Type {
         env: &Env,
         impl_type: &Self,
         tvar_map: &mut IntMap<usize, Type>,
-        hist: &mut RefHist<AHashSet<(Option<usize>, Option<usize>)>>,
+        hist: &mut RefHist<AHashSet<RefPair>>,
+    ) -> Result<()> {
+        ensure_sufficient(|| self.sig_matches_inner(env, impl_type, tvar_map, hist))
+    }
+
+    fn sig_matches_inner(
+        &self,
+        env: &Env,
+        impl_type: &Self,
+        tvar_map: &mut IntMap<usize, Type>,
+        hist: &mut RefHist<AHashSet<RefPair>>,
     ) -> Result<()> {
         if (self as *const Type) == (impl_type as *const Type) {
             return Ok(());
@@ -210,18 +243,16 @@ impl Type {
             }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
-                let t0_id = hist.ref_id(t0, env);
-                let t1_id = hist.ref_id(t1, env);
+                let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
+                if hist.contains(&key) {
+                    return Ok(());
+                }
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                if hist.contains(&(t0_id, t1_id)) {
-                    Ok(())
-                } else {
-                    hist.insert((t0_id, t1_id));
-                    let r = t0.sig_matches_int(env, &t1, tvar_map, hist);
-                    hist.remove(&(t0_id, t1_id));
-                    r
-                }
+                hist.insert(key);
+                let r = t0.sig_matches_int(env, &t1, tvar_map, hist);
+                hist.remove(&key);
+                r
             }
             (Self::Fn(f0), Self::Fn(f1)) => {
                 f0.sig_matches_int(env, f1, tvar_map, hist)?;
@@ -289,33 +320,20 @@ impl Type {
                 a0.sig_matches_int(env, a1, tvar_map, hist)
             }
             (Self::Hole, Self::Hole) => Ok(()),
-            // CR claude for eric: [readability] TVar's `!=` is binding
-            // inequality (any two unbound cells are "equal"), so this arm fires
-            // only for two bound cells with different bindings, and a bound
-            // signature var whose binding matches falls to the "signature has
-            // type variable" error below instead of being compared by binding.
-            // Say what is meant: cell identity, or deref the signature side.
-            (Self::TVar(sig_tv), Self::TVar(impl_tv)) if sig_tv != impl_tv => {
-                format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!(
-                        "signature type variable {sig_tv} does not match implementation {impl_tv}"
-                    )
-                })
+            // A bound signature var is its binding.
+            (Self::TVar(sig_tv), impl_type) if let Some(b) = sig_tv.binding() => {
+                b.sig_matches_int(env, impl_type, tvar_map, hist)
             }
             (sig_type, Self::TVar(impl_tv)) => {
                 // A bound impl tvar is a solved fact: the signature's
                 // concrete type must match its binding structurally.
-                let bound = impl_tv.read().typ.read().typ.clone();
-                if let Some(b) = bound {
+                if let Some(b) = impl_tv.binding() {
                     return sig_type.sig_matches_int(env, &b, tvar_map, hist);
                 }
-                let impl_tv_addr = impl_tv.inner_addr();
-                match tvar_map.get(&impl_tv_addr) {
+                match tvar_map.get(&impl_tv.cell_addr()) {
                     Some(prev_sig_type) => {
                         let matches = match (sig_type, prev_sig_type) {
-                            (Type::TVar(tv0), Type::TVar(tv1)) => {
-                                tv0.inner_addr() == tv1.inner_addr()
-                            }
+                            (Type::TVar(tv0), Type::TVar(tv1)) => tv0.same_cell(tv1),
                             _ => sig_type == prev_sig_type,
                         };
                         if matches {
@@ -329,7 +347,7 @@ impl Type {
                         }
                     }
                     None => {
-                        tvar_map.insert(impl_tv_addr, sig_type.clone());
+                        tvar_map.insert(impl_tv.cell_addr(), sig_type.clone());
                         Ok(())
                     }
                 }

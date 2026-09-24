@@ -172,9 +172,8 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         let typ = Type::empty_tvar();
         match &typ {
             Type::TVar(tv) => {
-                let mut tv = tv.write();
-                tv.frozen = true;
-                tv.typ.write().typ = Some(Type::Bottom)
+                tv.freeze();
+                tv.bind(Type::Bottom)
             }
             _ => unreachable!(),
         }
@@ -369,10 +368,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                 }
             };
             if self.thrown.is_none() {
-                let contents = tv.read().typ.read().typ.clone().unwrap_or(Type::Bottom);
+                let contents = tv.binding().unwrap_or(Type::Bottom);
                 self.thrown = Some(contents);
             }
-            tv.read().typ.write().typ = Some(t);
+            tv.bind(t);
         }
         wrap!(self.handler, self.handler.typecheck0(ctx))?;
         if let Some(abort) = &mut self.seq_abort {
@@ -400,18 +399,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             };
             // union the cell's content, not the cell
             let etyp = match &etyp {
-                Type::TVar(b) => b.read().typ.read().typ.clone().unwrap_or(Type::Bottom),
+                Type::TVar(b) => b.binding().unwrap_or(Type::Bottom),
                 t => t.clone(),
             };
-            let joined = {
-                let tv = tv.read();
-                let cell = tv.typ.read();
-                match &cell.typ {
-                    None => etyp.clone(),
-                    Some(t) => Type::union(&ctx.env, &[t, &etyp])?,
-                }
+            let joined = match tv.binding() {
+                None => etyp.clone(),
+                Some(t) => Type::union(&ctx.env, &[&t, &etyp])?,
             };
-            tv.read().typ.write().typ = Some(joined);
+            tv.bind(joined);
         }
         Ok(())
     }
@@ -862,9 +857,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             let bind = ctx.env.by_id.get(&id).ok_or_else(|| anyhow!("BUG: catch"))?;
             match &bind.typ {
                 Type::TVar(tv) => {
-                    let tv = tv.read();
-                    let mut cell = tv.typ.write();
-                    cell.typ = match &cell.typ {
+                    let cell = tv.cell();
+                    let mut cell = cell.write();
+                    cell.binding = match &cell.binding {
                         None => Some(etyp.clone()),
                         Some(t) => Some(Type::union(&ctx.env, &[t, &etyp])?),
                     };
@@ -1177,7 +1172,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &Type::Bottom
+        Type::BOTTOM
     }
 
     fn refs(&self, refs: &mut Refs) {

@@ -1,68 +1,46 @@
 use crate::{
+    dbgenv::graphix_dbg_bind,
+    env::Env,
     expr::ModPath,
-    typ::{FnType, PRINT_FLAGS, PrintFlag, Type},
+    stack::ensure_sufficient,
+    typ::{PRINT_FLAGS, PrintFlag, Type, node_addr, setops::union_identical},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
+use enumflags2::BitFlags;
+use nohash::IntSet;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
-    cmp::{Eq, PartialEq},
+    cell::RefCell,
+    cmp::Ordering,
     collections::hash_map::Entry,
     fmt::{self, Debug},
     hash::Hash,
+    mem::ManuallyDrop,
     ops::{ControlFlow, Deref},
 };
 use triomphe::Arc;
 
 image_id!(TVarId);
 
-// CR claude for eric: [style] this function-local `use poolshark::local::LPooled`
-// (and those in reset_tvars, replace_tvars) repeats the top-level import;
-// `cmp::{Eq, PartialEq}` above are prelude items; `smallvec::SmallVec`,
-// `nohash::IntSet` and `std::cmp::Ordering` are spelled out 3-4 times each.
 pub(super) fn would_cycle_inner(addr: usize, t: &Type) -> bool {
-    use poolshark::local::LPooled;
-    let mut seen: LPooled<nohash::IntSet<usize>> = LPooled::take();
-    would_cycle_seen(addr, t, &mut seen)
+    would_cycle_seen(addr, t, &mut LPooled::take())
 }
 
 // Conjunct graphs can be cyclic; a revisited cell adds no
 // reachability, so it answers false.
-fn would_cycle_seen(addr: usize, t: &Type, seen: &mut nohash::IntSet<usize>) -> bool {
-    crate::stack::ensure_sufficient(|| would_cycle_seen_inner(addr, t, seen))
+fn would_cycle_seen(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bool {
+    ensure_sufficient(|| would_cycle_seen_inner(addr, t, seen))
 }
 
-fn would_cycle_seen_inner(
-    addr: usize,
-    t: &Type,
-    seen: &mut nohash::IntSet<usize>,
-) -> bool {
+fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bool {
     // `seen` is a true visited set holding both cell and composite
     // node addresses; the answer depends only on reachable leaves.
-    let node = match t {
-        Type::Set(a) | Type::Tuple(a) | Type::Variant(_, a, _) => {
-            Some((**a).as_ptr().addr())
-        }
-        Type::Abstract { params: a, .. } => Some((**a).as_ptr().addr()),
-        Type::Struct(a) => Some((**a).as_ptr().addr()),
-        Type::Fn(f) => Some((&**f as *const FnType).addr()),
-        Type::Array(a) | Type::List(a) | Type::Error(a) | Type::ByRef(a) => {
-            Some((&**a as *const Type).addr())
-        }
-        // Map carries two Arcs, so its children dedup individually.
-        Type::Map { .. }
-        | Type::App(..)
-        | Type::Hole
-        | Type::Primitive(_)
-        | Type::Any
-        | Type::Bottom
-        | Type::Ref(_)
-        | Type::TVar(_) => None,
-    };
-    if let Some(node) = node
+    if let Some(node) = node_addr(t)
         && !seen.insert(node)
     {
         return false;
@@ -72,18 +50,18 @@ fn would_cycle_seen_inner(
         // body's free tvars are its params, so the params cover it.
         Type::Ref(r) => r.params.iter().any(|p| would_cycle_seen(addr, p, seen)),
         Type::TVar(t) => {
-            Arc::as_ptr(&t.read().typ).addr() == addr || {
-                let cell = t.read().typ.clone();
-                if !seen.insert(Arc::as_ptr(&cell).addr()) {
+            let cell = t.cell();
+            let cell_addr = Arc::as_ptr(&cell).addr();
+            cell_addr == addr || {
+                if !seen.insert(cell_addr) {
                     return false;
                 }
-                let cell = cell.read();
-                let in_bind = match &cell.typ {
-                    None => false,
-                    Some(t) => would_cycle_seen(addr, t, seen),
+                let (binding, cons) = {
+                    let cell = cell.read();
+                    (cell.binding.clone(), cell.constraints.clone())
                 };
-                in_bind
-                    || cell.constraints.iter().any(|c| would_cycle_seen(addr, c, seen))
+                binding.is_some_and(|b| would_cycle_seen(addr, &b, seen))
+                    || cons.iter().any(|c| would_cycle_seen(addr, c, seen))
             }
         }
         t => t
@@ -104,8 +82,8 @@ fn would_cycle_seen_inner(
 /// bind site checks it where an `Env` exists.
 #[derive(Debug, Default)]
 pub struct TCell {
-    pub(crate) typ: Option<Type>,
-    pub(crate) constraints: smallvec::SmallVec<[Type; 1]>,
+    pub(crate) binding: Option<Type>,
+    pub(crate) constraints: SmallVec<[Type; 1]>,
     /// An occurs check refused to bind or link this cell (the only
     /// solution was an infinite type). A flagged cell still open at
     /// the terminal settle must error rather than default to ⊥.
@@ -116,72 +94,73 @@ pub struct TCell {
     pub(crate) rigid_gates: u32,
 }
 
-// CR claude for eric: [risk] closing is manual (`close(self)`) and there is no
-// Drop: a gate dropped unclosed (a `?` added between open_rigid and the close
-// loop at node/lambda.rs:1498-1560, or an unwind) leaves the cell rigid for the
-// life of the program. Decrement in Drop and delete `close`.
-/// An open rigid gate, holding the cell it counted on. A merge may
-/// re-point the var to another cell before the gate closes, and a
-/// rollback may undo the forward link the merge left, so the close
-/// decrements this cell and not whatever the var reads by then.
+/// An open rigid gate, holding the cell it counted on; dropping it
+/// closes the gate. A merge may re-point the var to another cell before
+/// the gate closes, and a rollback may undo the forward link the merge
+/// left, so the close decrements this cell and not whatever the var
+/// reads by then.
 pub struct RigidGate(Arc<RwLock<TCell>>);
 
-impl RigidGate {
-    pub fn close(self) {
+impl Drop for RigidGate {
+    fn drop(&mut self) {
         let mut cell = self.0.write();
         cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
     }
 }
 
-impl TCell {
-    fn bound(typ: Type) -> Self {
-        TCell {
-            typ: Some(typ),
-            constraints: smallvec::SmallVec::new(),
-            rigid_gates: 0,
-            cycle_refused: false,
+/// `incoming` minus what `existing` (or an earlier incoming conjunct)
+/// already holds, by strict identity: two conjuncts over distinct open
+/// cells are different facts.
+fn new_conjuncts(
+    existing: &[Type],
+    incoming: impl IntoIterator<Item = Type>,
+) -> LPooled<Vec<Type>> {
+    let mut out: LPooled<Vec<Type>> = LPooled::take();
+    for c in incoming {
+        if !existing.iter().chain(out.iter()).any(|e| union_identical(e, &c)) {
+            out.push(c)
         }
     }
+    out
+}
 
-    /// Add `c` to the conjunction unless an equal member is present.
-    /// The eq walk can reach this very cell, so this must not run
+impl TCell {
+    fn bound(typ: Type) -> Self {
+        TCell { binding: Some(typ), ..TCell::default() }
+    }
+
+    /// Add `c` to the conjunction unless an identical member is present.
+    /// The identity walk can reach this very cell, so this must not run
     /// under a held tvar/cell guard.
     pub(crate) fn add_constraint(&mut self, c: Type) {
-        if !self.constraints.iter().any(|e| e == &c) {
+        if !self.constraints.iter().any(|e| union_identical(e, &c)) {
             self.constraints.push(c)
         }
     }
 }
 
-// CR claude for eric: [readability] `TVarInnerInner` says nothing, and `typ`
-// names two different things one level apart: here the shared cell, in TCell
-// the binding. Reading a binding is `tv.read().typ.read().typ.clone()` and the
-// open test `tv.read().typ.read().typ.is_none()`, ~50 times across typ/.
-// Accessors (`binding()`, `is_bound()`) and names like `TVarLink { cell }` would
-// say what each level is.
+/// A var's link to its binding cell; aliased vars share one cell.
 #[derive(Debug)]
-pub struct TVarInnerInner {
+pub struct TVarLink {
     pub(crate) id: TVarId,
     pub(crate) frozen: bool,
-    pub(crate) typ: Arc<RwLock<TCell>>,
+    pub(crate) cell: Arc<RwLock<TCell>>,
 }
 
 #[derive(Debug)]
 pub struct TVarInner {
     pub name: ArcStr,
-    pub(crate) typ: RwLock<TVarInnerInner>,
+    pub(crate) link: RwLock<TVarLink>,
 }
 
 #[derive(Clone)]
-pub struct TVar(std::mem::ManuallyDrop<Arc<TVarInner>>);
+pub struct TVar(ManuallyDrop<Arc<TVarInner>>);
 
 /// A cell's constraints hold types that hold cells, so teardown
 /// recurses and must run inside the stack guard.
 impl Drop for TVar {
     fn drop(&mut self) {
-        crate::stack::ensure_sufficient(|| unsafe {
-            std::mem::ManuallyDrop::drop(&mut self.0)
-        })
+        ensure_sufficient(|| unsafe { ManuallyDrop::drop(&mut self.0) })
     }
 }
 
@@ -189,8 +168,7 @@ impl Drop for TVar {
 impl fmt::Debug for TVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         thread_local! {
-            static DEBUGGING: std::cell::RefCell<nohash::IntSet<usize>> =
-                std::cell::RefCell::new(nohash::IntSet::default());
+            static DEBUGGING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
         }
         let addr = self.cell_addr();
         if !DEBUGGING.with_borrow_mut(|s| s.insert(addr)) {
@@ -199,9 +177,7 @@ impl fmt::Debug for TVar {
                 .field(&format_args!("'{}: …", self.name))
                 .finish();
         }
-        // CR claude for eric: [style] `&self.0` prints the ManuallyDrop /
-        // MaybeDangling wrappers into every GRAPHIX_DBG_BIND line; `&**self.0`.
-        let r = f.debug_tuple("TVar").field(&self.0).finish();
+        let r = f.debug_tuple("TVar").field(&**self.0).finish();
         DEBUGGING.with_borrow_mut(|s| s.remove(&addr));
         r
     }
@@ -227,8 +203,7 @@ impl fmt::Display for TVar {
             // revisit on the print stack elides. Contents are cloned
             // out before recursing (never recurse under the cell guard).
             thread_local! {
-                static PRINTING: std::cell::RefCell<nohash::IntSet<usize>> =
-                    std::cell::RefCell::new(nohash::IntSet::default());
+                static PRINTING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
             }
             let addr = self.cell_addr();
             if !PRINTING.with_borrow_mut(|s| s.insert(addr)) {
@@ -237,9 +212,9 @@ impl fmt::Display for TVar {
             let r = (|| {
                 write!(f, "'{}: ", self.name)?;
                 let (typ, cons) = {
-                    let cell = self.read().typ.clone();
+                    let cell = self.cell();
                     let cell = cell.read();
-                    (cell.typ.clone(), cell.constraints.clone())
+                    (cell.binding.clone(), cell.constraints.clone())
                 };
                 match typ {
                     Some(t) => write!(f, "{t}"),
@@ -262,13 +237,11 @@ impl fmt::Display for TVar {
     }
 }
 
-// CR claude for eric: [readability] this mints two TVarIds: one for the `_N`
-// name and another inside empty_named. Dumps print the name (`BIND lhs '_8923`)
-// and the id (`TT-RIGHTCOPY`), which disagree, and GRAPHIX_DBG_BIND_BT matches
-// the id, so the N a dump shows never triggers it. Name the var from its id.
 impl Default for TVar {
     fn default() -> Self {
-        Self::empty_named(ArcStr::from(format_compact!("_{}", TVarId::new().0).as_str()))
+        let id = TVarId::new();
+        let name = ArcStr::from(format_compact!("_{}", id.0).as_str());
+        Self::from_parts(name, id, false, Arc::new(RwLock::new(TCell::default())))
     }
 }
 
@@ -280,90 +253,66 @@ impl Deref for TVar {
     }
 }
 
-// CR claude for eric: [risk] under this Eq two distinct unbound cells are equal,
-// yet the conjunct dedups use it as identity (add_cell_constraint, and the
-// `to_add` dedups in alias/alias_cells/copy): conjuncts `Array<'x>` and
-// `Array<'y>` over distinct open cells collapse to one and 'y's relation to the
-// cell is lost. Suspected (read). The rigid bypass in contains.rs's Set x Set
-// arm is the same confusion; dedup with union_identical.
+/// Binding equality: two vars are equal when they share a cell or their
+/// bindings are equal, so two distinct unbound cells compare equal. Use
+/// [`union_identical`] where identity is meant.
 impl PartialEq for TVar {
     fn eq(&self, other: &Self) -> bool {
-        let t0 = self.read();
-        let t1 = other.read();
-        Arc::ptr_eq(&t0.typ, &t1.typ) || {
-            let t0 = t0.typ.read();
-            let t1 = t1.typ.read();
-            t0.typ == t1.typ
-        }
+        let (c0, c1) = (self.cell(), other.cell());
+        Arc::ptr_eq(&c0, &c1) || c0.read().binding == c1.read().binding
     }
 }
 
 impl Eq for TVar {}
 
 impl PartialOrd for TVar {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let t0 = self.read();
-        let t1 = other.read();
-        if Arc::ptr_eq(&t0.typ, &t1.typ) {
-            Some(std::cmp::Ordering::Equal)
-        } else {
-            let t0 = t0.typ.read();
-            let t1 = t1.typ.read();
-            t0.typ.partial_cmp(&t1.typ)
-        }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for TVar {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let t0 = self.read();
-        let t1 = other.read();
-        if Arc::ptr_eq(&t0.typ, &t1.typ) {
-            std::cmp::Ordering::Equal
+    fn cmp(&self, other: &Self) -> Ordering {
+        let (c0, c1) = (self.cell(), other.cell());
+        if Arc::ptr_eq(&c0, &c1) {
+            Ordering::Equal
         } else {
-            let t0 = t0.typ.read();
-            let t1 = t1.typ.read();
-            t0.typ.cmp(&t1.typ)
+            c0.read().binding.cmp(&c1.read().binding)
         }
     }
 }
 
-impl std::hash::Hash for TVar {
+impl Hash for TVar {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let t = self.read();
-        let inner = t.typ.read();
-        inner.typ.hash(state);
+        self.cell().read().binding.hash(state)
     }
+}
+
+/// How a merge treats the var being merged away.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Merge {
+    /// Name aliasing: once per var (`frozen` gates it), and the var
+    /// takes the survivor's id.
+    Name,
+    /// Unification of two cells: a rigid cell survives whichever side
+    /// it is on.
+    Cells,
 }
 
 impl TVar {
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
-        match Type::TVar(self.clone()).scope_refs(scope) {
-            Type::TVar(tv) => tv,
+        match &Type::TVar(self.clone()).scope_refs(scope) {
+            Type::TVar(tv) => tv.clone(),
             _ => unreachable!(),
         }
     }
 
     pub fn empty_named(name: ArcStr) -> Self {
-        Self(std::mem::ManuallyDrop::new(Arc::new(TVarInner {
-            name,
-            typ: RwLock::new(TVarInnerInner {
-                id: TVarId::new(),
-                frozen: false,
-                typ: Arc::new(RwLock::new(TCell::default())),
-            }),
-        })))
+        Self::from_parts(name, TVarId::new(), false, Arc::new(RwLock::new(TCell::default())))
     }
 
     pub fn named(name: ArcStr, typ: Type) -> Self {
-        Self(std::mem::ManuallyDrop::new(Arc::new(TVarInner {
-            name,
-            typ: RwLock::new(TVarInnerInner {
-                id: TVarId::new(),
-                frozen: false,
-                typ: Arc::new(RwLock::new(TCell::bound(typ))),
-            }),
-        })))
+        Self::from_parts(name, TVarId::new(), false, Arc::new(RwLock::new(TCell::bound(typ))))
     }
 
     /// A wrapper over an existing cell, as an image restores it.
@@ -373,16 +322,16 @@ impl TVar {
         frozen: bool,
         cell: Arc<RwLock<TCell>>,
     ) -> Self {
-        Self(std::mem::ManuallyDrop::new(Arc::new(TVarInner {
+        Self(ManuallyDrop::new(Arc::new(TVarInner {
             name,
-            typ: RwLock::new(TVarInnerInner { id, frozen, typ: cell }),
+            link: RwLock::new(TVarLink { id, frozen, cell }),
         })))
     }
 
     /// The wrapper's id and frozen flag, and its cell.
     pub(crate) fn parts(&self) -> (TVarId, bool, Arc<RwLock<TCell>>) {
-        let inner = self.read();
-        (inner.id, inner.frozen, inner.typ.clone())
+        let link = self.read();
+        (link.id, link.frozen, link.cell.clone())
     }
 
     /// Identity of the wrapper: equal for clones of one `TVar`.
@@ -390,132 +339,62 @@ impl TVar {
         Arc::as_ptr(&*self.0) as *const () as usize
     }
 
+    /// The cell this var reads now.
+    pub(crate) fn cell(&self) -> Arc<RwLock<TCell>> {
+        self.read().cell.clone()
+    }
+
+    /// The cell's binding, cloned out (never recurse under the guard).
+    pub fn binding(&self) -> Option<Type> {
+        self.read().cell.read().binding.clone()
+    }
+
+    pub fn is_bound(&self) -> bool {
+        self.read().cell.read().binding.is_some()
+    }
+
+    /// Bind the cell, replacing any binding.
+    pub(crate) fn bind(&self, t: Type) {
+        self.read().cell.write().binding = Some(t)
+    }
+
     /// Add a conjunct to this var's cell constraints (deduped).
-    // CR claude for eric: [bug] the `==` dedup misses equal constraints, so a
-    // declared `'a: Number` ends up `Number & Number` (probe: `let f = 'a: Number
-    // |x: 'a, y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f` prints "'a:
-    // unbound within Number & Number"). A two-conjunct cell then drops out of
-    // FnType::constraint_view (CR in fntyp.rs). Suspected: the two copies differ in
-    // Ref scope or cell identity; dedup by content key.
     pub fn add_cell_constraint(&self, c: Type) {
-        let cell = self.read().typ.clone();
+        let cell = self.cell();
         let existing = cell.read().constraints.clone();
-        if !existing.iter().any(|e| e == &c) {
-            cell.write().constraints.push(c);
+        let mut new = new_conjuncts(&existing, [c]);
+        cell.write().constraints.extend(new.drain(..));
+    }
+
+    /// Narrow the cell by `c` unless a conjunct already is at least
+    /// that narrow (a probe in `env`: `c` contains it).
+    pub(crate) fn narrow_cell(&self, env: &Env, c: Type) -> Result<()> {
+        for e in self.cell_constraints().iter() {
+            if c.contains_with_flags(BitFlags::empty(), env, e)? {
+                return Ok(());
+            }
         }
+        self.add_cell_constraint(c);
+        Ok(())
     }
 
     /// The cell's constraint conjunction (cloned out).
-    pub fn cell_constraints(&self) -> smallvec::SmallVec<[Type; 1]> {
-        self.read().typ.read().constraints.clone()
+    pub fn cell_constraints(&self) -> SmallVec<[Type; 1]> {
+        self.read().cell.read().constraints.clone()
     }
 
-    pub fn read<'a>(&'a self) -> RwLockReadGuard<'a, TVarInnerInner> {
-        self.typ.read()
+    pub fn read<'a>(&'a self) -> RwLockReadGuard<'a, TVarLink> {
+        self.link.read()
     }
 
-    pub fn write<'a>(&'a self) -> RwLockWriteGuard<'a, TVarInnerInner> {
-        self.typ.write()
+    pub fn write<'a>(&'a self) -> RwLockWriteGuard<'a, TVarLink> {
+        self.link.write()
     }
 
-    // CR claude for eric: [structure] alias and alias_cells repeat the occurs
-    // checks, the conjunct merge and the forward link line for line; they
-    // differ only in the frozen gate, the rigid survivor choice and the id
-    // copy. One private merge with those as parameters.
     /// Make self an alias for other; self's constraints merge into the
     /// shared cell.
     pub fn alias(&self, other: &Self) {
-        // Occurs check: a merged cell reachable from its own contents
-        // is an infinite type every later walk loops on. Skipping the
-        // merge only keeps inference looser.
-        {
-            let self_addr = Arc::as_ptr(&self.read().typ).addr();
-            let other_addr = Arc::as_ptr(&other.read().typ).addr();
-            if self_addr != other_addr {
-                if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
-                    if crate::dbgenv::graphix_dbg_bind() {
-                        eprintln!(
-                            "ALIAS-REFUSE-1 {}({:x}) -> {}({:x}): other reaches self; other bound={:?} cons={:?}",
-                            self.name,
-                            self_addr,
-                            other.name,
-                            other_addr,
-                            other.read().typ.read().typ,
-                            other.read().typ.read().constraints
-                        );
-                    }
-                    self.mark_cycle_refused();
-                    other.mark_cycle_refused();
-                    return;
-                }
-                let scons = self.read().typ.read().constraints.clone();
-                if scons.iter().any(|c| would_cycle_inner(other_addr, c)) {
-                    if crate::dbgenv::graphix_dbg_bind() {
-                        eprintln!(
-                            "ALIAS-REFUSE-2 {}({:x}) -> {}({:x}): self cons reach other; cons={scons:?}",
-                            self.name, self_addr, other.name, other_addr
-                        );
-                    }
-                    self.mark_cycle_refused();
-                    other.mark_cycle_refused();
-                    return;
-                }
-            }
-        }
-        // Dedup computed lock-free: the eq walk can re-enter these cells.
-        let mut to_add = {
-            let s_cell = self.read().typ.clone();
-            let o_cell = other.read().typ.clone();
-            if Arc::ptr_eq(&s_cell, &o_cell) {
-                LPooled::take()
-            } else {
-                let mine = s_cell.read().constraints.clone();
-                let theirs = o_cell.read().constraints.clone();
-                let mut to_add: LPooled<Vec<Type>> = LPooled::take();
-                for c in mine {
-                    if !theirs.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c)
-                    {
-                        to_add.push(c)
-                    }
-                }
-                to_add
-            }
-        };
-        let mut s = self.write();
-        if !s.frozen {
-            s.frozen = true;
-            let o = other.read();
-            s.id = o.id;
-            if !Arc::ptr_eq(&s.typ, &o.typ) {
-                {
-                    let mut oc = o.typ.write();
-                    for c in to_add.drain(..) {
-                        oc.constraints.push(c);
-                    }
-                }
-                // CR claude for eric: [bug] the merge moves self's conjuncts
-                // into the survivor but not self's `cycle_refused` (nor, here,
-                // `rigid_gates`, nor a binding when self's cell was bound, which
-                // is silently dropped for self). A refused open cell merged into
-                // an unflagged unconstrained one settles to ⊥ at the terminal
-                // settle instead of the infinite-type error. Suspected (read);
-                // same in alias_cells. Carry the flags, refuse a bound self.
-                // Forward-link the abandoned cell: other TVars may share
-                // it and must follow the merge. The occurs check above
-                // guarantees the link closes no cycle.
-                {
-                    let mut sc = s.typ.write();
-                    if sc.typ.is_none() {
-                        sc.typ = Some(Type::TVar(other.clone()));
-                    }
-                }
-                s.typ = Arc::clone(&o.typ);
-            }
-        }
-    }
-
-    pub fn freeze(&self) {
-        self.write().frozen = true;
+        self.merge_into(other, Merge::Name)
     }
 
     /// Merge self's cell into other's for a unification-driven merge:
@@ -525,128 +404,124 @@ impl TVar {
     /// counts on that cell, and a var re-pointed away from it would
     /// read as free for the rest of the def's check and take a binding.
     pub(super) fn alias_cells(&self, other: &Self) {
-        if self.is_rigid() && !other.is_rigid() {
-            return other.alias_cells(self);
-        }
-        {
-            let self_addr = Arc::as_ptr(&self.read().typ).addr();
-            let other_addr = Arc::as_ptr(&other.read().typ).addr();
-            if self_addr == other_addr {
-                return;
-            }
-            if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
-                self.mark_cycle_refused();
-                other.mark_cycle_refused();
-                return;
-            }
-            let scons = self.read().typ.read().constraints.clone();
-            if scons.iter().any(|c| would_cycle_inner(other_addr, c)) {
-                self.mark_cycle_refused();
-                other.mark_cycle_refused();
-                return;
-            }
-        }
-        let mut to_add = {
-            let s_cell = self.read().typ.clone();
-            let o_cell = other.read().typ.clone();
-            if Arc::ptr_eq(&s_cell, &o_cell) {
-                LPooled::take()
-            } else {
-                let mine = s_cell.read().constraints.clone();
-                let theirs = o_cell.read().constraints.clone();
-                let mut to_add: LPooled<Vec<Type>> = LPooled::take();
-                for c in mine {
-                    if !theirs.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c)
-                    {
-                        to_add.push(c)
-                    }
-                }
-                to_add
-            }
-        };
-        let mut s = self.write();
-        let o = other.read();
-        if !Arc::ptr_eq(&s.typ, &o.typ) {
-            if crate::dbgenv::graphix_dbg_bind() {
-                eprintln!(
-                    "CELL-MERGE '{}({:x}) <=> '{}({:x})",
-                    self.name,
-                    Arc::as_ptr(&s.typ).addr(),
-                    other.name,
-                    Arc::as_ptr(&o.typ).addr()
-                );
-            }
-            {
-                let mut oc = o.typ.write();
-                for c in to_add.drain(..) {
-                    oc.constraints.push(c);
-                }
-            }
-            // Forward-link as in [`Self::alias`].
-            {
-                let mut sc = s.typ.write();
-                if sc.typ.is_none() {
-                    sc.typ = Some(Type::TVar(other.clone()));
-                }
-            }
-            s.typ = Arc::clone(&o.typ);
-        }
+        self.merge_into(other, Merge::Cells)
     }
 
-    // CR claude for eric: [risk] `sc.typ = typ` overwrites self's binding with
-    // other's, so an unbound `other` UNBINDS self. Both callers (the RightCopy/
-    // LeftCopy acts) pass a bound other; take the binding as an argument (or
-    // assert it) so the precondition is in the signature.
-    /// Copy self's binding from other, merging constraint lists.
-    pub fn copy(&self, other: &Self) {
-        // Occurs check as in [`Self::alias`].
-        {
-            let self_addr = Arc::as_ptr(&self.read().typ).addr();
-            if would_cycle_inner(self_addr, &Type::TVar(other.clone())) {
+    fn merge_into(&self, other: &Self, how: Merge) {
+        if how == Merge::Cells && self.is_rigid() && !other.is_rigid() {
+            return other.merge_into(self, how);
+        }
+        let (s_cell, o_cell) = (self.cell(), other.cell());
+        let same = Arc::ptr_eq(&s_cell, &o_cell);
+        if how == Merge::Name && self.read().frozen {
+            return;
+        }
+        if !same {
+            // Occurs check: a merged cell reachable from its own contents
+            // is an infinite type every later walk loops on. Skipping the
+            // merge only keeps inference looser.
+            let (s_addr, o_addr) = (Arc::as_ptr(&s_cell).addr(), Arc::as_ptr(&o_cell).addr());
+            let scons = s_cell.read().constraints.clone();
+            if would_cycle_inner(s_addr, &Type::TVar(other.clone()))
+                || scons.iter().any(|c| would_cycle_inner(o_addr, c))
+            {
+                if graphix_dbg_bind() {
+                    eprintln!(
+                        "ALIAS-REFUSE {}({s_addr:x}) -> {}({o_addr:x}): the merge closes a cycle",
+                        self.name, other.name
+                    );
+                }
                 self.mark_cycle_refused();
+                other.mark_cycle_refused();
+                return;
+            }
+            // A bound cell's binding would be lost for this var.
+            if s_cell.read().binding.is_some() {
+                if graphix_dbg_bind() {
+                    eprintln!("ALIAS-REFUSE {}({s_addr:x}): bound", self.name);
+                }
                 return;
             }
         }
-        let s = self.read();
-        let o = other.read();
-        if Arc::ptr_eq(&s.typ, &o.typ) {
+        // Dedup computed lock-free: the identity walk can re-enter these cells.
+        let (mut to_add, refused) = if same {
+            (LPooled::take(), false)
+        } else {
+            let mine = s_cell.read().constraints.clone();
+            let theirs = o_cell.read().constraints.clone();
+            (new_conjuncts(&theirs, mine), s_cell.read().cycle_refused)
+        };
+        let oid = other.read().id;
+        let mut s = self.write();
+        if how == Merge::Name {
+            s.frozen = true;
+            s.id = oid;
+        }
+        if same {
             return;
         }
-        let (typ, ocons) = {
-            let oc = o.typ.read();
-            (oc.typ.clone(), oc.constraints.clone())
-        };
-        if crate::dbgenv::graphix_dbg_bind() {
+        if graphix_dbg_bind() && how == Merge::Cells {
             eprintln!(
-                "COPY '{}({:x}) <= '{}: {:?}",
+                "CELL-MERGE '{}({:x}) <=> '{}({:x})",
                 self.name,
-                Arc::as_ptr(&s.typ).addr(),
+                Arc::as_ptr(&s_cell).addr(),
                 other.name,
-                typ
+                Arc::as_ptr(&o_cell).addr()
             );
         }
-        if let Some(id) = crate::dbgenv::graphix_dbg_bind_bt_id() {
-            if id == s.id.inner().to_string() {
-                eprintln!(
-                    "BT for write to '{}({}):\n{}",
-                    self.name,
-                    id,
-                    std::backtrace::Backtrace::force_capture()
-                );
-            }
+        {
+            let mut oc = o_cell.write();
+            oc.constraints.extend(to_add.drain(..));
+            oc.cycle_refused |= refused;
         }
-        let existing = s.typ.read().constraints.clone();
-        let mut to_add: LPooled<Vec<Type>> = LPooled::take();
-        for c in ocons {
-            if !existing.iter().any(|e| e == &c) && !to_add.iter().any(|e| e == &c) {
-                to_add.push(c)
-            }
+        // Forward-link the abandoned cell: other TVars may share it and
+        // must follow the merge. The occurs check above guarantees the
+        // link closes no cycle.
+        s_cell.write().binding = Some(Type::TVar(other.clone()));
+        s.cell = o_cell;
+    }
+
+    pub fn freeze(&self) {
+        self.write().frozen = true;
+    }
+
+    /// Bind self to `binding` (other's, read by the caller), merging
+    /// other's constraints into self's cell.
+    pub(super) fn copy(&self, other: &Self, binding: Type) {
+        let s_cell = self.cell();
+        // Occurs check as in [`Self::alias`].
+        if would_cycle_inner(Arc::as_ptr(&s_cell).addr(), &Type::TVar(other.clone())) {
+            self.mark_cycle_refused();
+            return;
         }
-        let mut sc = s.typ.write();
-        sc.typ = typ;
-        for c in to_add.drain(..) {
-            sc.constraints.push(c);
+        let o_cell = other.cell();
+        if Arc::ptr_eq(&s_cell, &o_cell) {
+            return;
         }
+        let ocons = o_cell.read().constraints.clone();
+        if graphix_dbg_bind() {
+            eprintln!(
+                "COPY '{}({:x}) <= '{}: {binding:?}",
+                self.name,
+                Arc::as_ptr(&s_cell).addr(),
+                other.name
+            );
+        }
+        if let Some(id) = crate::dbgenv::graphix_dbg_bind_bt_id()
+            && id == self.read().id.inner().to_string()
+        {
+            eprintln!(
+                "BT for write to '{}({}):\n{}",
+                self.name,
+                id,
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
+        let existing = s_cell.read().constraints.clone();
+        let mut to_add = new_conjuncts(&existing, ocons);
+        let mut sc = s_cell.write();
+        sc.binding = Some(binding);
+        sc.constraints.extend(to_add.drain(..));
     }
 
     pub fn normalize(&self) -> Self {
@@ -656,37 +531,35 @@ impl TVar {
     pub(super) fn normalize_int(&self, cx: &mut super::normalize::NormCx) -> Self {
         // First visit only. Clone the binding out, normalize unlocked,
         // write back: the lock is non-reentrant.
-        if cx.cells.insert(self.cell_addr()) {
-            let bound = self.read().typ.read().typ.clone();
-            if let Some(t) = bound
-                && let Some(n) = t.normalize_int(cx)
-            {
-                self.read().typ.write().typ = Some(n);
-            }
+        if cx.cells.insert(self.cell_addr())
+            && let Some(t) = self.binding()
+            && let Some(n) = t.normalize_int(cx)
+        {
+            self.bind(n);
         }
         self.clone()
     }
 
     /// Clear the binding; the constraints stay.
     pub fn unbind(&self) {
-        self.read().typ.write().typ = None
+        self.read().cell.write().binding = None
     }
 
     /// Open a rigid gate on the cell this var reads now; see
     /// [`TCell::rigid_gates`].
     pub fn open_rigid(&self) -> RigidGate {
-        let cell = self.read().typ.clone();
+        let cell = self.cell();
         cell.write().rigid_gates += 1;
         RigidGate(cell)
     }
 
     pub(crate) fn is_rigid(&self) -> bool {
-        self.read().typ.read().rigid_gates > 0
+        self.read().cell.read().rigid_gates > 0
     }
 
     /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
     pub(super) fn mark_cycle_refused(&self) {
-        if crate::dbgenv::graphix_dbg_bind() {
+        if graphix_dbg_bind() {
             eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
         }
         if crate::dbgenv::graphix_dbg_cycle_bt() {
@@ -697,33 +570,51 @@ impl TVar {
                 std::backtrace::Backtrace::force_capture()
             );
         }
-        self.read().typ.write().cycle_refused = true;
+        self.read().cell.write().cycle_refused = true;
     }
 
     pub(super) fn would_cycle(&self, t: &Type) -> bool {
-        let addr = Arc::as_ptr(&self.read().typ).addr();
-        would_cycle_inner(addr, t)
-    }
-
-    // CR claude for eric: [style] two pairs of identical accessors: addr() and
-    // wrapper_addr() both give the wrapper Arc's address, inner_addr() and
-    // cell_addr() both the cell's. Keep one of each.
-    pub(super) fn addr(&self) -> usize {
-        Arc::as_ptr(&self.0).addr()
-    }
-
-    pub(super) fn inner_addr(&self) -> usize {
-        Arc::as_ptr(&self.read().typ).addr()
+        would_cycle_inner(self.cell_addr(), t)
     }
 
     /// True iff both vars share one binding cell (aliases of each other).
     pub fn same_cell(&self, other: &Self) -> bool {
-        self.inner_addr() == other.inner_addr()
+        self.cell_addr() == other.cell_addr()
     }
 
     /// Identity of the shared binding cell, for set membership tests.
     pub(crate) fn cell_addr(&self) -> usize {
-        self.inner_addr()
+        Arc::as_ptr(&self.read().cell).addr()
+    }
+
+    /// A fresh cell standing for this one in a copy: the name, and the
+    /// conjuncts, refusal and binding rebuilt through `walk`; memoized
+    /// by cell in `fresh`, so a copy keeps the source's alias topology.
+    fn freshen<M>(
+        &self,
+        fresh: &mut AHashMap<usize, TVar>,
+        memo: &mut M,
+        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>, &mut M) -> Option<Type>,
+    ) -> TVar {
+        let addr = self.cell_addr();
+        if let Some(f) = fresh.get(&addr) {
+            return f.clone();
+        }
+        let f = TVar::empty_named(self.name.clone());
+        fresh.insert(addr, f.clone());
+        for c in self.cell_constraints() {
+            let c = walk(&c, fresh, memo).unwrap_or(c);
+            f.add_cell_constraint(c);
+        }
+        // A var whose only solution was infinite in the source is
+        // infinite in every copy.
+        if self.read().cell.read().cycle_refused {
+            f.read().cell.write().cycle_refused = true;
+        }
+        if let Some(t) = self.binding() {
+            f.bind(walk(&t, fresh, memo).unwrap_or(t));
+        }
+        f
     }
 }
 
@@ -732,16 +623,16 @@ impl TVar {
 // routes through `Type::try_for_each_child` / `Type::cow_children`.
 impl Type {
     pub fn unfreeze_tvars(&self) {
-        match self {
+        ensure_sufficient(|| match self {
             Type::TVar(tv) => tv.write().frozen = false,
             Type::Fn(ft) => ft.unfreeze_tvars(),
             t => t.for_each_child(&mut |c| c.unfreeze_tvars()),
-        }
+        })
     }
 
     /// Alias type variables with the same name to each other.
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        match self {
+        ensure_sufficient(|| match self {
             Type::TVar(tv) => match known.entry(tv.name.clone()) {
                 Entry::Occupied(e) => {
                     let v = e.get();
@@ -754,21 +645,21 @@ impl Type {
             },
             Type::Fn(ft) => ft.alias_tvars(known),
             t => t.for_each_child(&mut |c| c.alias_tvars(known)),
-        }
+        })
     }
 
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        match self {
+        ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
             Type::Fn(ft) => ft.collect_tvars(known),
             t => t.for_each_child(&mut |c| c.collect_tvars(known)),
-        }
+        })
     }
 
     pub fn check_tvars_declared(&self, declared: &AHashSet<ArcStr>) -> Result<()> {
-        match self {
+        ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 if !declared.contains(&tv.name) {
                     bail!("undeclared type variable '{}'", tv.name)
@@ -787,49 +678,37 @@ impl Type {
                 ControlFlow::Continue(()) => Ok(()),
                 ControlFlow::Break(e) => Err(e),
             },
-        }
+        })
     }
 
+    /// An open cell anywhere beneath, through bindings: a cell bound to
+    /// an open cell is open. `Ref` params are walked (`Alias<'b>` with
+    /// 'b open is open), expansions are not.
     pub fn has_unbound(&self) -> bool {
-        match self {
-            Type::TVar(tv) => tv.read().typ.read().typ.is_none(),
-            // Ref params are walked: `Alias<'b>` with 'b unbound is open.
-            t => t
-                .try_for_each_child(&mut |c| {
-                    if c.has_unbound() {
-                        ControlFlow::Break(())
-                    } else {
-                        ControlFlow::Continue(())
-                    }
-                })
-                .is_break(),
-        }
-    }
-
-    // CR claude for eric: [dead] no callers in graphix or netidx (FnType::bind_as
-    // at fntyp.rs:778, its only other user, has none either).
-    /// Bind all unbound type variables to the specified type.
-    pub fn bind_as(&self, t: &Self) {
-        match self {
-            Type::TVar(tv) => {
-                let tv = tv.read();
-                let mut tv = tv.typ.write();
-                // A rigid cell is an enclosing def's declared
-                // universal, not a leftover.
-                if tv.typ.is_none() && tv.rigid_gates == 0 {
-                    tv.typ = Some(t.clone());
+        fn go(t: &Type, seen: &mut IntSet<usize>) -> bool {
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => {
+                    seen.insert(tv.cell_addr())
+                        && tv.binding().is_none_or(|b| go(&b, seen))
                 }
-            }
-            Type::Ref(_) => (),
-            s => s.for_each_child(&mut |c| c.bind_as(t)),
+                t => t
+                    .try_for_each_child(&mut |c| {
+                        if go(c, seen) {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    })
+                    .is_break(),
+            })
         }
+        go(self, &mut LPooled::take())
     }
 
     /// A copy of self with fresh type variable cells: unbound cells
     /// freshen unbound, a bound cell freshens to a fresh cell bound to
     /// the reset of its binding. self is not modified.
     pub fn reset_tvars(&self) -> Type {
-        use poolshark::local::LPooled;
         self.reset_tvars_int(&mut LPooled::take()).unwrap_or_else(|| self.clone())
     }
 
@@ -840,47 +719,24 @@ impl Type {
         &self,
         known: &mut AHashMap<usize, TVar>,
     ) -> Option<Type> {
-        match self {
-            Type::TVar(tv) => Some({
-                // The fresh cell carries the source's constraints.
-                let addr = tv.cell_addr();
-                if let Some(fresh) = known.get(&addr) {
-                    return Some(Type::TVar(fresh.clone()));
-                }
-                let fresh = TVar::empty_named(tv.name.clone());
-                known.insert(addr, fresh.clone());
-                for c in tv.cell_constraints() {
-                    let c = c.reset_tvars_int(known).unwrap_or_else(|| c.clone());
-                    fresh.add_cell_constraint(c);
-                }
-                // A var whose only solution was infinite in the def is
-                // infinite in every instance.
-                if tv.read().typ.read().cycle_refused {
-                    fresh.read().typ.write().cycle_refused = true;
-                }
-                // A bound source cell is a solved fact the fresh cell
-                // must carry. Clone the binding out before recursing.
-                let bound = tv.read().typ.read().typ.clone();
-                if let Some(t) = bound {
-                    let t = t.reset_tvars_int(known).unwrap_or(t);
-                    fresh.read().typ.write().typ = Some(t);
-                }
-                Type::TVar(fresh)
-            }),
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                Some(Type::TVar(tv.freshen(known, &mut (), |t, k, ()| t.reset_tvars_int(k))))
+            }
             // `cow_children` rebuilds a Ref through `with_params`, which
             // shares the resolution cell; commit copies rely on that.
             // A nested fn type is always fresh: its `lambda_ids` cell
             // must be the instance's own.
             Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.reset_tvars_int(known)))),
             t => t.cow_children(&mut |c| c.reset_tvars_int(known)),
-        }
+        })
     }
 
     /// A copy of self with every TVar named in `known` replaced by the
-    /// corresponding type; other TVars become fresh uniquely named
-    /// TVars. TVar-free structure is returned shared.
+    /// corresponding type; any other TVar is freshened as
+    /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten
+    /// the same way. TVar-free structure is returned shared.
     pub fn replace_tvars(&self, known: &AHashMap<ArcStr, Self>) -> Type {
-        use poolshark::local::LPooled;
         self.replace_tvars_int(known, &mut LPooled::take())
             .unwrap_or_else(|| self.clone())
     }
@@ -889,56 +745,39 @@ impl Type {
     pub(super) fn replace_tvars_int(
         &self,
         known: &AHashMap<ArcStr, Self>,
-        renamed: &mut AHashMap<ArcStr, TVar>,
+        fresh: &mut AHashMap<usize, TVar>,
     ) -> Option<Type> {
-        match self {
+        ensure_sufficient(|| match self {
             Type::TVar(tv) => Some(match known.get(&tv.name) {
                 Some(t) => t.clone(),
-                // CR claude for eric: [bug] a tvar not in `known` becomes a fresh
-                // `_N` var with no conjuncts, no binding and a new name, so every
-                // typedef expansion (lookup_ref) drops a nested fn quantifier's
-                // bound. Probe: `type F = fn<'b: Number>(x: 'b) -> 'b; let apply
-                // = |f: F| f("hello");` checks (it expands to `fn(x: '_8866:
-                // unbound) -> '_8866`); the unaliased `|f: fn<'b: Number>(x: 'b)
-                // -> 'b| f("hello")` is refused. Freshen like reset_tvars: keyed
-                // by cell, keeping the name, conjuncts and binding.
-                None => {
-                    let fresh =
-                        renamed.entry(tv.name.clone()).or_insert_with(TVar::default);
-                    Type::TVar(fresh.clone())
-                }
+                None => Type::TVar(tv.freshen(fresh, &mut (), |t, f, ()| {
+                    t.replace_tvars_int(known, f)
+                })),
             }),
-            t => t.cow_children(&mut |c| c.replace_tvars_int(known, renamed)),
-        }
+            t => t.cow_children(&mut |c| c.replace_tvars_int(known, fresh)),
+        })
     }
 
     /// Unbind any bound tvars, but do not unalias them.
     pub(crate) fn unbind_tvars(&self) {
-        match self {
+        ensure_sufficient(|| match self {
             Type::TVar(tv) => tv.unbind(),
             // Sig-level Ref params are concrete or rigid: nothing to unbind.
             Type::Ref(_) => (),
             t => t.for_each_child(&mut |c| c.unbind_tvars()),
-        }
+        })
     }
 
     /// [`Self::unbind_tvars`], except a cell whose binding is fully
     /// closed stays bound: a closed def-body inference is a solved
     /// fact. Partial bindings snapshot mid-solve state and still unbind.
     pub(crate) fn unbind_open_tvars(&self) {
-        match self {
+        ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 // Bottom is a vacuous fact (`throws := ⊥` means the
                 // body observed nothing); Any is not.
-                let bound = tv.read().typ.read().typ.clone();
-                // CR claude for eric: [perf] resolve_tvars is a rebuild walk (it
-                // mints fresh cells for open ones) run only to answer a yes/no
-                // question; it is needed because has_unbound stops at a bound
-                // cell instead of following its binding. A has_unbound that
-                // derefs (with a visited set) answers this, and the
-                // distribution law in contains.rs, without the copy.
-                if let Some(t) = bound
-                    && (t == Type::Bottom || t.resolve_tvars().has_unbound())
+                if let Some(t) = tv.binding()
+                    && (t == Type::Bottom || t.has_unbound())
                 {
                     // A partial inference is still a fact about shape;
                     // it survives as a constraint. Bottom bounds nothing.
@@ -950,6 +789,20 @@ impl Type {
             }
             Type::Ref(_) => (),
             t => t.for_each_child(&mut |c| c.unbind_open_tvars()),
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcstr::literal;
+
+    #[test]
+    fn alias_to_itself_is_a_no_op() {
+        let tv = TVar::empty_named(literal!("a"));
+        tv.alias(&tv);
+        tv.alias_cells(&tv);
+        assert!(!tv.is_bound());
     }
 }

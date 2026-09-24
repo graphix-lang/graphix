@@ -205,7 +205,7 @@ macro_rules! compare_op {
                 let rt = self.rhs.typ().clone();
                 use $crate::typ::ContainsFlags as CF;
                 let rc = CF::RigidCheck.into();
-                let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
+                let commit = CF::Commit | CF::RigidCheck;
                 if lt.contains_with_flags(rc, &ctx.env, &rt)? {
                     if !lt.contains_with_flags(commit, &ctx.env, &rt)? {
                         wrap!(self, lt.check_contains(&ctx.env, &rt))?;
@@ -662,7 +662,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         if self.n.typ().with_deref(|t| t.is_some()) {
             wrap!(self.n, negatable.check_contains(&ctx.env, self.n.typ()))?;
         } else if let Type::TVar(tv) = self.n.typ() {
-            tv.add_cell_constraint(negatable);
+            wrap!(self.n, tv.narrow_cell(&ctx.env, negatable))?;
         }
         wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
     }
@@ -888,14 +888,14 @@ macro_rules! arith_op {
                     if known {
                         wrap!(self, num.check_contains(&ctx.env, t))?;
                     } else if let Type::TVar(tv) = t {
-                        tv.add_cell_constraint(num.clone());
+                        wrap!(self, tv.narrow_cell(&ctx.env, num.clone()))?;
                     }
                 }
                 // A declared `'a: Number` formal is rigid while its def
                 // gate is open: `x + f64:0.` must reject, not bind 'a.
                 use $crate::typ::ContainsFlags as CF;
                 let rc = CF::RigidCheck.into();
-                let commit = CF::AliasTVars | CF::InitTVars | CF::RigidCheck;
+                let commit = CF::Commit | CF::RigidCheck;
                 let out = if lt.contains_with_flags(rc, &ctx.env, &rt)? {
                     if !lt.contains_with_flags(commit, &ctx.env, &rt)? {
                         wrap!(self, lt.check_contains(&ctx.env, &rt))?;
