@@ -353,6 +353,54 @@ async fn program_image_restores() -> Result<()> {
     Ok(())
 }
 
+/// A program over a collection HOF with a recursive callee, whose
+/// synthesized nodes share the process-static `NOP` expression.
+const REPEATED: &str = r#"
+let rec f = |n: i64| -> i64 select n { 0 => 0, _ => n + f(n - 1) };
+array::fold([41], f(256), |acc, x| x + 1)
+"#;
+
+/// Images written and restored in turn in one process keep restoring:
+/// each reserves its own id span, which the process's first ids do not
+/// stretch (a span reaching back to them doubles the counter per round).
+#[tokio::test]
+async fn program_images_restore_round_after_round() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let (reg_tx, reg_rx) = oneshot::channel();
+    let cold = init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(reg_tx))
+        .await?;
+    let registration = reg_rx.await??;
+    cold.shutdown().await;
+    for i in 0..80 {
+        let (tx, _rx) = mpsc::channel(10);
+        let (prog_tx, prog_rx) = oneshot::channel();
+        let writer = init_with_session(
+            tx,
+            TEST_REGISTER,
+            CFlag::FusionDisabled.into(),
+            RegistrationImage::Load(registration.clone()),
+            Some(Source::Internal(REPEATED.into())),
+            Some(prog_tx),
+        )
+        .await?;
+        let image = prog_rx.await??;
+        writer.shutdown().await;
+        let (tx, _rx) = mpsc::channel(10);
+        let reader = init_with_session(
+            tx,
+            TEST_REGISTER,
+            CFlag::FusionDisabled.into(),
+            RegistrationImage::Load(image),
+            None,
+            None,
+        )
+        .await?;
+        assert!(reader.rt.env_stats().await?.restored, "round {i} compiled cold");
+        reader.shutdown().await;
+    }
+    Ok(())
+}
+
 /// Builtins travel as their own bytes: the restart, cadence, option,
 /// typed, unit and generated-node shapes, plus a collection intrinsic
 /// passed as a value to a builtin.

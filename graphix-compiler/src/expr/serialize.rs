@@ -16,6 +16,7 @@ use crate::{
         get_origin,
     },
     image,
+    node::NOP,
     profile::{self, Phase},
     typ::{AbstractId, FnArgType, FnType, TVar, TraitId, Type, fntyp::LambdaIds},
 };
@@ -102,7 +103,10 @@ impl Expr {
 /// Under an image session an expression is an object carrying its id
 /// and origin, written once and referenced afterwards (a node's spec
 /// and a definition's body are clones of subtrees of one tree); the
-/// syntax codec mints a fresh id and takes the unit's origin.
+/// syntax codec mints a fresh id and takes the unit's origin. The
+/// process-static [`NOP`] is a flag alone and decodes to the reader's:
+/// its id, minted at the process's first compile, would stretch the
+/// image's id span back to it.
 impl Pack for Expr {
     fn encoded_len(&self) -> usize {
         if image::is_encoding() {
@@ -110,10 +114,13 @@ impl Pack for Expr {
                 &image::expr_key(self),
                 |k| (*k, ()),
                 |e| &mut e.exprs,
-                || {
-                    self.id.encoded_len()
-                        + image::origin_len(&self.ori)
-                        + self.syntax_len()
+                || match self.id == NOP.id {
+                    true => 1,
+                    false => {
+                        1 + self.id.encoded_len()
+                            + image::origin_len(&self.ori)
+                            + self.syntax_len()
+                    }
                 },
             )
         } else {
@@ -129,6 +136,11 @@ impl Pack for Expr {
                 |e| &mut e.exprs,
                 buf,
                 |buf| {
+                    let nop = self.id == NOP.id;
+                    nop.encode(buf)?;
+                    if nop {
+                        return Ok(());
+                    }
                     self.id.encode(buf)?;
                     image::origin_encode(&self.ori, buf)?;
                     self.syntax_encode(buf)
@@ -145,6 +157,9 @@ impl Pack for Expr {
                 buf,
                 |d| &mut d.exprs,
                 |buf| {
+                    if bool::decode(buf)? {
+                        return Ok((**NOP).clone());
+                    }
                     let id = ExprId::decode(buf)?;
                     let ori = image::origin_decode(buf)?;
                     Self::syntax_decode(buf, id, ori)
