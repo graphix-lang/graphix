@@ -1,7 +1,7 @@
 use super::{VarRead, read_var};
 use crate::{
     BindId, CFlag, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Tag, TagValue, Update, UserEvent, bailat,
+    Scope, Tag, TagValue, Update, UserEvent,
     compiler::compile,
     defetyp, deref_typ,
     env::Env,

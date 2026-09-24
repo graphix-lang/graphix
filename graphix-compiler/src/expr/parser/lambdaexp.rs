@@ -1,27 +1,37 @@
 use super::{
-    csep, expr, fname, name, spaces, sptoken, structure_pattern,
-    typexp::{bound, flatten_bounds, tvar, typ},
+    csep, expr, fname,
+    grow::refusal,
+    name, sep_by_tok, spaces, spaces1, sptoken, structure_pattern,
+    typexp::{flatten_bounds, tvar_bound, typ},
 };
 use crate::{
-    expr::{
-        Arg, Expr, ExprKind, LambdaExpr, Name, StructurePattern,
-        parser::{sep_by_tok, spaces1},
-    },
+    expr::{Arg, Expr, ExprKind, LambdaExpr, Name, StructurePattern, WrittenAt},
     typ::{TVar, Type},
 };
-use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, not_followed_by, optional,
     parser::char::string,
     position,
     stream::{Range, position::SourcePosition},
-    token, unexpected_any, value,
+    token,
 };
 use netidx_core::utils::Either;
 use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
+
+/// Whether every labeled item stands before every positional one.
+pub(super) fn labeled_first(labeled: impl IntoIterator<Item = bool>) -> bool {
+    let mut positional = false;
+    labeled.into_iter().all(|labeled| {
+        let ok = !(labeled && positional);
+        positional |= !labeled;
+        ok
+    })
+}
+
+pub(super) const LABELED_FIRST: &str = "labeled arguments come before positional ones";
 
 fn applyarg<I>() -> impl Parser<I, Output = (Option<ArcStr>, Expr)>
 where
@@ -55,28 +65,25 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(
-        token('('),
-        sptoken(')'),
-        spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
+    (
+        between(
+            token('('),
+            sptoken(')'),
+            spaces().with(sep_by_tok(applyarg(), csep(), token(')'))),
+        ),
+        position(),
     )
-    // CR claude for eric: [structure] "labeled before anonymous" is checked three
-    // times with three messages (here, lambda_args, typexp::fntype); one helper
-    // over the is-labeled flags.
-    .then(|args: LPooled<Vec<(Option<ArcStr>, Expr)>>| {
-        let mut anon = false;
-        for (a, _) in &*args {
-            if a.is_some() && anon {
-                return unexpected_any(
-                    "labeled arguments must come before anonymous arguments",
-                )
-                .right();
+        .and_then(|(args, end): (LPooled<Vec<(Option<ArcStr>, Expr)>>, _)| {
+            match labeled_first(args.iter().map(|(l, _)| l.is_some())) {
+                true => Ok(args),
+                false => Err(refusal::<I>(end, LABELED_FIRST)),
             }
-            anon |= a.is_none();
-        }
-        value(args).left()
-    })
+        })
 }
+
+/// One argument between a lambda's bars: whether it is labeled, its
+/// pattern, and its annotation and default.
+type LambdaArg = ((SourcePosition, (bool, StructurePattern)), Option<Type>, Option<Expr>);
 
 pub(super) fn lambda_args<I>()
 -> impl Parser<I, Output = (LPooled<Vec<Arg>>, Option<Option<Type>>)>
@@ -85,86 +92,58 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    sep_by_tok(
-        (
-            spaces().with(position()).and(choice((
-                (position(), string("@args")).map(|(pos, s)| {
-                    (false, StructurePattern::Bind(Name::written(ArcStr::from(s), pos)))
-                }),
-                token('#').with(name()).map(|b| (true, StructurePattern::Bind(b))),
-                (position(), attempt(string("self").skip(not_prefix()))).map(
-                    |(pos, _)| {
-                        (
-                            false,
-                            StructurePattern::Bind(Name::written(literal!("self"), pos)),
-                        )
-                    },
-                ),
-                structure_pattern().map(|p| (false, p)),
-            ))),
-            spaces().with(optional(token(':').with(typ()))),
-            spaces().with(optional(token('=').with(expr()))),
-        ),
-        csep(),
-        attempt(sptoken('|')),
-    )
-    // CR claude for eric: [style] `bail!("labeled")` allocates an anyhow error only
-    // as a flag and discards it; with the @args and order checks below this makes
-    // three `.then` passes over the args. One loop returning the first refusal.
-    .then(
-        |mut v: LPooled<
-            Vec<((SourcePosition, (bool, StructurePattern)), Option<Type>, Option<Expr>)>,
-        >| {
-            let args = v
-                .drain(..)
-                .map(|((pos, (labeled, pattern)), constraint, default)| {
-                    if !labeled && default.is_some() {
-                        bail!("labeled")
-                    } else {
-                        Ok(Arg {
-                            labeled: labeled.then_some(default),
-                            pattern,
-                            constraint,
-                            pos,
-                        })
-                    }
-                })
-                .collect::<Result<LPooled<Vec<_>>>>();
-            match args {
-                Ok(a) => value(a).right(),
-                Err(_) => {
-                    unexpected_any("only labeled arguments may have a default value")
-                        .left()
+    let arg = (
+        spaces().with(position()).and(choice((
+            (position(), string("@args")).map(|(pos, s)| {
+                (false, StructurePattern::Bind(Name::written(ArcStr::from(s), pos)))
+            }),
+            token('#').with(name()).map(|b| (true, StructurePattern::Bind(b))),
+            (position(), attempt(string("self").skip(not_prefix()))).map(|(pos, _)| {
+                (false, StructurePattern::Bind(Name::written(literal!("self"), pos)))
+            }),
+            structure_pattern().map(|p| (false, p)),
+        ))),
+        spaces().with(optional(token(':').with(typ()))),
+        spaces().with(optional(token('=').with(expr()))),
+    );
+    (sep_by_tok(arg, csep(), attempt(sptoken('|'))), position()).and_then(
+        |(mut v, end): (LPooled<Vec<LambdaArg>>, _)| {
+            let n = v.len();
+            let mut args: LPooled<Vec<Arg>> = LPooled::take();
+            let mut vargs = None;
+            for (i, ((pos, (labeled, pattern)), constraint, default)) in
+                v.drain(..).enumerate()
+            {
+                if !labeled && default.is_some() {
+                    return Err(refusal::<I>(
+                        end,
+                        "only labeled arguments may have a default value",
+                    ));
                 }
+                match &pattern {
+                    StructurePattern::Bind(b) if b == "@args" => {
+                        if i + 1 < n {
+                            return Err(refusal::<I>(
+                                end,
+                                "@args must be the last argument",
+                            ));
+                        }
+                        vargs = Some(constraint)
+                    }
+                    _ => args.push(Arg {
+                        labeled: labeled.then_some(default),
+                        pattern,
+                        constraint,
+                        pos: WrittenAt(pos),
+                    }),
+                }
+            }
+            match labeled_first(args.iter().map(|a| a.labeled.is_some())) {
+                true => Ok((args, vargs)),
+                false => Err(refusal::<I>(end, LABELED_FIRST)),
             }
         },
     )
-    .then(|mut v: LPooled<Vec<Arg>>| {
-        match v.iter().enumerate().find(|(_, a)| match &a.pattern {
-            StructurePattern::Bind(n) if n == "@args" => true,
-            _ => false,
-        }) {
-            None => value((v, None)).left(),
-            Some((i, _)) => {
-                if i == v.len() - 1 {
-                    let a = v.pop().unwrap();
-                    value((v, Some(a.constraint))).left()
-                } else {
-                    unexpected_any("@args must be the last argument").right()
-                }
-            }
-        }
-    })
-    .then(|(v, vargs): (LPooled<Vec<Arg>>, Option<Option<Type>>)| {
-        let mut anon = false;
-        for a in v.iter() {
-            if a.labeled.is_some() && anon {
-                return unexpected_any("labeled args must come before anon args").right();
-            }
-            anon |= a.labeled.is_none();
-        }
-        value((v, vargs)).left()
-    })
 }
 
 pub(super) fn lambda<I>() -> impl Parser<I, Output = Expr>
@@ -175,12 +154,12 @@ where
 {
     (
         position(),
-        spaces()
-            .with(sep_by_tok((tvar().skip(sptoken(':')), bound()), csep(), token('|')))
-            .map(|tvs: LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>| {
-                let mut tvs = flatten_bounds(tvs);
+        spaces().with(sep_by_tok(tvar_bound(), csep(), token('|'))).map(
+            |mut tvs: LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>| {
+                let mut tvs = flatten_bounds(tvs.drain(..));
                 Arc::from_iter(tvs.drain(..))
-            }),
+            },
+        ),
         between(sptoken('|'), sptoken('|'), lambda_args()),
         optional(attempt(spaces().with(string("->")).with(typ()))),
         optional(attempt(spaces1().with(string("throws")).with(spaces1()).with(typ()))),

@@ -766,7 +766,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                 &atyp.typ,
                 &a.pattern,
                 scope,
-                a.pos,
+                a.pos.0,
                 origin.clone(),
             )?;
             if pattern.is_refutable() {

@@ -38,7 +38,7 @@ impl FromStr for ModPath {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> result::Result<Self, Self::Err> {
-        parser::parse_modpath(s)
+        parser::parse_path(s)
     }
 }
 
@@ -101,11 +101,8 @@ impl PartialEq<[&str]> for ModPath {
     }
 }
 
-// CR claude for eric: [style] Same body as the slice impl above; delegate to it
-// (`self.eq(&other[..])`).
 impl<const L: usize> PartialEq<[&str; L]> for ModPath {
     fn eq(&self, other: &[&str; L]) -> bool {
-        Path::levels(&self.0) == L
-            && Path::parts(&self.0).zip(other.iter()).all(|(s0, s1)| s0 == *s1)
+        self.eq(&other[..])
     }
 }

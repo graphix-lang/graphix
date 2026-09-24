@@ -1,22 +1,21 @@
 use super::{
     csep, doc_comment, expr, fname,
-    grow::grow,
+    grow::{grow, refusal},
     leading_comments, modpath, sep_by1_tok, spaces, spname, spstring, sptoken,
     traitexp::{impl_decl, trait_decl},
     typ, typedef, typname,
 };
 use crate::expr::{
-    BindSig, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox, Sig, SigItem, SigKind,
-    UseItem, WrittenPath,
+    BindSig, Comments, Expr, ExprKind, ModPath, ModuleKind, Name, Sandbox, Sig, SigItem,
+    SigKind, UseItem, WrittenPath, get_origin,
     parser::{semisep, spaces1},
 };
-use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, optional,
     parser::char::{space, string},
     position,
     stream::{Range, position::SourcePosition},
-    token, unexpected_any, value,
+    token,
 };
 use netidx_core::path::Path;
 use netidx_value::parser::not_prefix;
@@ -24,71 +23,35 @@ use poolshark::local::LPooled;
 use triomphe::Arc;
 
 parser! {
+    /// One interface item, with the `//` lines and then the `///` doc
+    /// lines above it.
     pub(super) fn sig_item[I]()(I) -> SigItem
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        // CR claude for eric: [bug] Dropping `//` lines here makes `graphix fmt`
-        // delete them from a .gxi: probe `// plain comment` above `val x: i64`
-        // formats without it; the formatter's comment guard cannot see a comment
-        // both parses drop. Keep them on SigItem or refuse them.
-        // Plain `//` lines above an interface declaration are skipped, not
-        // retained; only `///` doc comments are captured.
-        // CR claude for eric: [structure] Six arms each clone `doc` and `ori` into a
-        // closure building the same SigItem; return a SigKind per arm and build the
-        // SigItem once. typedef/trait/impl parse an Expr only to be taken apart
-        // with `unreachable!()`: return their payloads, wrap them in expr().
-        grow((position(), leading_comments().with(doc_comment()).skip(spaces())).then(|(pos, doc)| {
-            let ori = Some(crate::expr::get_origin());
+        grow((
+            leading_comments(),
+            doc_comment().skip(spaces()),
+            position(),
             choice((
-                typedef().map({
-                    let doc = doc.clone();
-                    let ori = ori.clone();
-                    move |mut e: Expr| match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
-                        ExprKind::TypeDef(td) => SigItem { doc: doc.clone(), kind: SigKind::TypeDef(td), pos, ori: ori.clone() },
-                        _ => unreachable!()
-                    }
-                }),
-                trait_decl().map({
-                    let doc = doc.clone();
-                    let ori = ori.clone();
-                    move |mut e: Expr| match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
-                        ExprKind::Trait(t) => SigItem { doc: doc.clone(), kind: SigKind::Trait(t), pos, ori: ori.clone() },
-                        _ => unreachable!()
-                    }
-                }),
-                impl_decl().map({
-                    let doc = doc.clone();
-                    let ori = ori.clone();
-                    move |mut e: Expr| match std::mem::replace(&mut e.kind, ExprKind::NoOp) {
-                        ExprKind::Impl(i) => SigItem { doc: doc.clone(), kind: SigKind::Impl(i), pos, ori: ori.clone() },
-                        _ => unreachable!()
-                    }
-                }),
-                string("val").with(space()).with((spname(), sptoken(':').with(typ())))
-                    .map({
-                        let doc = doc.clone();
-                        let ori = ori.clone();
-                        move |(name, typ)| {
-                            SigItem { doc: doc.clone(), kind: SigKind::Bind(BindSig { name, typ }), pos, ori: ori.clone() }
-                        }
-                    }),
-                (use_intro(), use_items()).map({
-                    let doc = doc.clone();
-                    let ori = ori.clone();
-                    move |(reexport, names)| SigItem {
-                        doc: doc.clone(),
-                        kind: SigKind::Use { reexport, names },
-                        pos,
-                        ori: ori.clone(),
-                    }
-                }),
-                string("mod").with(space()).with(spname().skip(spaces())).map({
-                    let doc = doc.clone();
-                    let ori = ori.clone();
-                    move |n: Name| SigItem { doc: doc.clone(), kind: SigKind::Module(n), pos, ori: ori.clone() }
-                })
-            ))
-        }))
+                typedef().map(SigKind::TypeDef),
+                trait_decl(true).map(|t| SigKind::Trait(Arc::new(t))),
+                impl_decl().map(|i| SigKind::Impl(Arc::new(i))),
+                string("val")
+                    .with(space())
+                    .with((spname(), sptoken(':').with(typ())))
+                    .map(|(name, typ)| SigKind::Bind(BindSig { name, typ })),
+                (use_intro(), use_items())
+                    .map(|(reexport, names)| SigKind::Use { reexport, names }),
+                string("mod").with(space()).with(spname().skip(spaces())).map(SigKind::Module),
+            )),
+        )
+            .map(|(mut comments, doc, pos, kind)| SigItem {
+                comments: Comments::of(comments.drain(..)),
+                doc,
+                kind,
+                pos,
+                ori: Some(get_origin()),
+            }))
     }
 }
 
@@ -182,7 +145,7 @@ where
 }
 
 /// A use-tree path segment: an ordinary name or a path keyword
-/// (`self`/`super`/`package`); [`check_use_items`] enforces the keywords'
+/// (`self`/`super`/`package`); [`check_use_item`] enforces the keywords'
 /// positional rules on the assembled path.
 fn use_segment<I>() -> impl Parser<I, Output = Name>
 where
@@ -207,9 +170,9 @@ where
         .map(|(pos, seg)| Name::written(seg, pos))
 }
 
-/// The positional rules for one assembled use path (segments +
-/// optional rename). Returns the refusal message, or None if legal.
-fn check_use_item(segs: &[Name], rename: &Option<ArcStr>) -> Option<&'static str> {
+/// The positional rules for one assembled use path. Returns the refusal
+/// message, or None if legal.
+fn check_use_item(segs: &[Name]) -> Option<&'static str> {
     if segs.is_empty() {
         return Some("`self` outside a use group");
     }
@@ -221,89 +184,70 @@ fn check_use_item(segs: &[Name], rename: &Option<ArcStr>) -> Option<&'static str
     if lead == segs.len() {
         return Some("a use path must name something below self/super/package");
     }
-    for (i, s) in segs.iter().enumerate().skip(lead) {
-        match s.as_str() {
-            "self" | "super" | "package" => {
-                return Some("self/super/package are only legal leading a path");
-            }
-            // CR claude for eric: [dead] use_tree yields `*` only as the last segment
-            // and never with a rename, so this arm and the glob-rename check below
-            // cannot fire.
-            "*" if i != segs.len() - 1 => {
-                return Some("a glob must be the last segment of a use path");
-            }
-            _ => (),
-        }
-    }
-    if segs.last().map(|s| s.as_str()) == Some("*") && rename.is_some() {
-        return Some("a glob import cannot be renamed");
+    if segs[lead..].iter().any(|s| matches!(s.as_str(), "self" | "super" | "package")) {
+        return Some("self/super/package are only legal leading a path");
     }
     None
 }
 
+/// The paths of a use tree, each its segments, LAST FIRST, and rename.
+type UsePaths = LPooled<Vec<(LPooled<Vec<Name>>, Option<Name>)>>;
+
 parser! {
-    /// One element of a use tree, yielding the path suffixes it denotes as
-    /// (segment list, rename) pairs: a path, a path ending in a group, a
-    /// bare group, a glob leaf, a renamed leaf, or `self` (an empty suffix).
-    fn use_tree[I]()(I) -> Vec<(Vec<Name>, Option<ArcStr>)>
+    /// One element of a use tree, yielding the path suffixes it denotes:
+    /// a path, a path ending in a group, a bare group, a glob leaf, a
+    /// renamed leaf, or `self` (an empty suffix).
+    fn use_tree[I]()(I) -> UsePaths
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
+        let one = |seg: Option<Name>, rename: Option<Name>| {
+            let mut paths: UsePaths = LPooled::take();
+            let mut path: LPooled<Vec<Name>> = LPooled::take();
+            path.extend(seg);
+            paths.push((path, rename));
+            paths
+        };
         grow(choice((
             between(
                 sptoken('{'),
                 sptoken('}'),
                 spaces().with(sep_by1_tok(use_tree(), csep(), token('}'))),
             )
-            .then(|mut groups: LPooled<Vec<Vec<(Vec<Name>, Option<ArcStr>)>>>| {
-                let flat: Vec<(Vec<Name>, Option<ArcStr>)> =
-                    groups.drain(..).flatten().collect();
-                if flat.is_empty() {
-                    unexpected_any("empty use group").left()
-                } else {
-                    value(flat).right()
+            .map(|mut groups: LPooled<Vec<UsePaths>>| {
+                let mut paths: UsePaths = LPooled::take();
+                for mut g in groups.drain(..) {
+                    paths.extend(g.drain(..));
                 }
+                paths
             }),
             spaces()
                 .with((position(), token('*')))
-                .map(|(pos, _)| vec![(vec![Name::written(arcstr::literal!("*"), pos)], None)]),
+                .map(move |(pos, _)| one(Some(Name::written(arcstr::literal!("*"), pos)), None)),
             (
                 spaces().with(use_segment()),
                 optional(attempt(spstring("::").with(use_tree()))),
-                // CR claude for eric: [structure] The `as` rename is a declared name
-                // kept as a bare ArcStr (UseItem.rename), so it has no WrittenAt and
-                // the LSP cannot place it; build a `Name::written` here.
                 optional(attempt(
                     spaces1()
                         .with(string("as"))
                         .with(spaces1())
-                        .with(choice((fname(), typname()))),
+                        .with((position(), choice((fname(), typname())))),
                 )),
+                position(),
             )
-                .then(|(seg, tail, rename): (Name, _, Option<ArcStr>)| {
+                .and_then(move |(seg, tail, rename, end): (Name, Option<UsePaths>, _, _)| {
+                    let rename = rename.map(|(pos, n)| Name::written(n, pos));
                     match (tail, rename) {
-                        (Some(_), Some(_)) => unexpected_any(
+                        (Some(_), Some(_)) => Err(refusal::<I>(
+                            end,
                             "`as` renames a single imported name, not a group",
-                        )
-                        .left(),
-                        (None, rename) if seg.as_str() == "self" => {
-                            value(vec![(vec![], rename)]).right()
-                        }
-                        (None, rename) => value(vec![(vec![seg], rename)]).right(),
-                        // CR claude for eric: [perf] Every level collects fresh
-                        // plain Vecs and prepends its segment with `insert(0, ..)`;
-                        // pass the prefix down and push whole paths into one pooled
-                        // Vec.
-                        (Some(sufs), None) => {
-                            let sufs: Vec<(Vec<Name>, Option<ArcStr>)> = sufs;
-                            value(
-                                sufs.into_iter()
-                                    .map(|(mut suf, rename)| {
-                                        suf.insert(0, seg.clone());
-                                        (suf, rename)
-                                    })
-                                    .collect::<Vec<_>>(),
-                            )
-                            .right()
+                        )),
+                        (None, rename) if seg.as_str() == "self" => Ok(one(None, rename)),
+                        (None, rename) => Ok(one(Some(seg), rename)),
+                        (Some(mut paths), None) => {
+                            for (path, _) in paths.iter_mut() {
+                                path.push(seg.clone());
+                            }
+                            Ok(paths)
                         }
                     }
                 }),
@@ -319,18 +263,18 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    use_tree().then(|items: Vec<(Vec<Name>, Option<ArcStr>)>| {
-        for (segs, rename) in items.iter() {
-            if let Some(msg) = check_use_item(segs, rename) {
-                return unexpected_any(msg).left();
+    (use_tree(), position()).and_then(|(mut paths, end): (UsePaths, _)| {
+        for (segs, _) in paths.iter_mut() {
+            segs.reverse();
+            if let Some(msg) = check_use_item(segs) {
+                return Err(refusal::<I>(end, msg));
             }
         }
-        value(UseItem::sorted(items.into_iter().map(|(segs, rename)| UseItem {
+        Ok(UseItem::sorted(paths.drain(..).map(|(segs, rename)| UseItem {
             at: WrittenPath(segs.iter().map(|s| s.at.0).collect()),
             path: ModPath(Path::from_iter(segs.iter().map(|s| s.as_str()))),
             rename,
         })))
-        .right()
     })
 }
 

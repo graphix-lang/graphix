@@ -551,7 +551,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
                         Some(d) => (d.comments.clone(), d.attrs.clone()),
                         None => (Arc::from_iter([]), Arc::from_iter([])),
                     };
-                    Some(Box::new(crate::expr::Decorations {
+                    Some(Arc::new(crate::expr::Decorations {
                         comments,
                         attrs: Arc::from_iter(attrs.iter().cloned().chain([sync])),
                     }))

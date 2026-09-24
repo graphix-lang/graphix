@@ -2,24 +2,30 @@ use crate::{
     PrintFlag,
     expr::{
         Decorations, Expr, ExprKind, ModuleKind, Origin, Sig, SigItem, SigKind, StrForm,
-        TryWithExpr, UseItem,
+        TraitExpr, TraitMethod, TryWithExpr, UseItem,
         parser::{parse, parse_sig},
         print::{
-            DEFAULT_INDENT, PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items,
-            use_seg, use_seg_key,
+            PrettyBuf, PrettyDisplay, cmp_use_items, pretty_file_items, use_seg,
+            use_seg_key,
         },
     },
     format_with_flags,
+    stack::ensure_sufficient,
 };
 use anyhow::{Context, Result, bail};
+use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use serde_derive::Deserialize;
+use smallvec::SmallVec;
 use std::{fmt, fs, path::Path};
 use triomphe::Arc;
 
 pub const DEFAULT_WIDTH: usize = 90;
+
+/// The spaces one level of nesting indents by, unless configured.
+pub const DEFAULT_INDENT: usize = 4;
 
 /// The name of the formatter's configuration file.
 pub const CONFIG_FILE: &str = "graphixfmt.json";
@@ -65,13 +71,10 @@ impl FormatConfig {
     }
 }
 
-// CR claude for eric: [style] The message is long and immutable (it can hold two
-// whole expressions): `ArcStr`, not `CompactString`. `format_source` also formats
-// the reparse error with `{e:?}` where `{e:#}` gives the chain without Debug.
 /// The formatter would not hand back its own output: a bug in it, never
 /// in the source, which is left as it was.
 #[derive(Debug)]
-pub struct Refused(CompactString);
+pub struct Refused(ArcStr);
 
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -111,28 +114,28 @@ fn merge_uses<T: Clone>(
     }
     /// The name a use item binds; a glob binds any.
     fn binds(n: &UseItem) -> Option<&str> {
-        n.rename.as_deref().or_else(|| netidx_core::path::Path::basename(&n.path.0))
+        n.rename
+            .as_ref()
+            .map(|n| n.as_str())
+            .or_else(|| netidx_core::path::Path::basename(&n.path.0))
     }
-    // CR claude for eric: [bug] One direction only: a later statement that BINDS
-    // the root an earlier one reads is not a dependency, and the sort can move it
-    // first. probe: `mod a; use str::len; use a::str; println(len("abc"))` prints
-    // 3 (a/str.gx: `let len = |x: string| 42`); formatted it becomes `use
-    // a::str; use str::len;` and prints 42. The reparse guard cannot see it: both
-    // sides it compares are already merged. Also test `binds(n) == reads(m)`.
-    /// Would `names` read or shadow what `run` binds, if merged after
-    /// it? A glob binds names unknown here, so it joins only items of
-    /// its own root.
+    /// The name a use item's path starts from, when it is not a keyword.
+    fn reads(n: &UseItem) -> Option<&str> {
+        use_seg(n, 0).filter(|r| !matches!(*r, "self" | "super" | "package"))
+    }
+    /// Would `names`, merged after `run`, read or shadow what `run` binds,
+    /// or bind what `run` reads? The sort could reorder them. A glob binds
+    /// names unknown here, so it joins only items of its own root.
     fn depends(run: &[(bool, UseItem)], names: &[UseItem]) -> bool {
         names.iter().any(|n| {
-            let reads =
-                use_seg(n, 0).filter(|r| !matches!(*r, "self" | "super" | "package"));
             run.iter().any(|(_, m)| {
                 if m.is_glob() || n.is_glob() {
                     return root(m) != root(n);
                 }
-                let b = binds(m);
                 let same = m.path == n.path && m.rename == n.rename;
-                b == reads || (b == binds(n) && !same)
+                binds(m) == reads(n)
+                    || binds(n) == reads(m)
+                    || (binds(m) == binds(n) && !same)
             })
         })
     }
@@ -165,11 +168,14 @@ fn merge_uses<T: Clone>(
     Arc::from_iter(merged.drain(..))
 }
 
+/// `sig` with its use runs merged, and those of its trait defaults.
 fn merge_sig_uses(sig: &Sig) -> Sig {
     let items = merge_uses(
         &sig.items,
         |si| match &si.kind {
-            SigKind::Use { reexport, names } if si.doc.0.is_none() => {
+            SigKind::Use { reexport, names }
+                if si.doc.0.is_none() && si.comments.lines().is_empty() =>
+            {
                 Some((*reexport, names))
             }
             _ => None,
@@ -179,7 +185,23 @@ fn merge_sig_uses(sig: &Sig) -> Sig {
             ..si.clone()
         },
     );
+    let items = Arc::from_iter(items.iter().map(|si| match &si.kind {
+        SigKind::Trait(t) => {
+            SigItem { kind: SigKind::Trait(merge_trait_uses(t)), ..si.clone() }
+        }
+        _ => si.clone(),
+    }));
     Sig { items, toplevel: sig.toplevel }
+}
+
+fn merge_trait_uses(t: &TraitExpr) -> Arc<TraitExpr> {
+    Arc::new(TraitExpr {
+        name: t.name.clone(),
+        methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
+            default: m.default.as_ref().map(merge_uses_within),
+            ..m.clone()
+        })),
+    })
 }
 
 fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
@@ -191,14 +213,11 @@ fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
             }
             _ => None,
         },
-        |e, reexport, names| Expr {
-            id: e.id,
-            ori: e.ori.clone(),
-            pos: e.pos,
-            kind: ExprKind::Use { reexport, names },
-            dec: None,
-            str_form: Default::default(),
-            end: Default::default(),
+        |e, reexport, names| {
+            let mut stmt = Expr::new(ExprKind::Use { reexport, names }, e.pos);
+            stmt.id = e.id;
+            stmt.ori = e.ori.clone();
+            stmt
         },
     )
 }
@@ -206,7 +225,7 @@ fn merge_expr_uses(exprs: &[Expr]) -> Arc<[Expr]> {
 /// `e` with the use statements of every statement list in it merged.
 fn merge_uses_within(e: &Expr) -> Expr {
     use ExprKind::*;
-    let e = crate::stack::ensure_sufficient(|| e.map_children(&mut merge_uses_within));
+    let e = ensure_sufficient(|| e.map_children(&mut merge_uses_within));
     let kind = match &e.kind {
         Do { exprs } => Do { exprs: merge_expr_uses(exprs) },
         Seq { queued, trigger, abort, flush, body } => Seq {
@@ -231,15 +250,7 @@ fn merge_uses_within(e: &Expr) -> Expr {
         },
         _ => return e,
     };
-    Expr {
-        id: e.id,
-        ori: e.ori.clone(),
-        pos: e.pos,
-        kind,
-        dec: e.dec.clone(),
-        str_form: e.str_form,
-        end: e.end,
-    }
+    e.with_kind(kind)
 }
 
 enum Parsed {
@@ -249,7 +260,7 @@ enum Parsed {
 
 impl Parsed {
     fn new(kind: SourceKind, text: &str) -> Result<Self> {
-        let ori = Origin::from_str(text);
+        let ori = Origin::unspecified(text);
         Ok(match kind {
             SourceKind::Program => {
                 let exprs = parse(ori)?;
@@ -264,72 +275,54 @@ impl Parsed {
     fn print(&self, buf: &mut PrettyBuf) -> Result<()> {
         match self {
             Self::Program(exprs) => {
-                pretty_file_items(buf, exprs, |buf, e| e.fmt_pretty(buf))?
+                pretty_file_items(buf, exprs, |buf, e| match e.kind {
+                    ExprKind::NoOp => Ok(()),
+                    _ => e.fmt_pretty(buf),
+                })?
             }
             Self::Interface(sig) => sig.fmt_pretty_inner(buf)?,
         }
         Ok(())
     }
 
-    // CR claude for eric: [risk] Empty for an interface, and so is `string_forms`:
-    // a .gxi's expressions (trait default bodies; sys io.gxi has several) lose no
-    // comment or delimiter today, but the guard would not notice if they did.
-    // Walk an interface's trait defaults too (their `use` runs are not merged
-    // either: `merge_uses_within` runs only over programs).
-    fn decorations(&self) -> LPooled<Vec<Decorations>> {
-        let mut acc: LPooled<Vec<Decorations>> = LPooled::take();
-        if let Self::Program(exprs) = self {
-            for e in exprs.iter() {
-                e.fold((), &mut |(), e| {
-                    if let Some(d) = &e.dec {
-                        acc.push((**d).clone())
-                    }
-                })
+    /// What equality does not see that the formatter must hand back, in
+    /// source order: every comment and attribute, and every string
+    /// literal's delimiters.
+    fn ornaments(&self) -> LPooled<Vec<Ornament<'_>>> {
+        let mut acc: LPooled<Vec<Ornament>> = LPooled::take();
+        match self {
+            Self::Program(exprs) => {
+                exprs.iter().for_each(|e| expr_ornaments(e, &mut acc))
             }
-        }
-        acc
-    }
-
-    /// The delimiters of every string literal, in source order.
-    fn string_forms(&self) -> LPooled<Vec<StrForm>> {
-        let mut acc: LPooled<Vec<StrForm>> = LPooled::take();
-        if let Self::Program(exprs) = self {
-            for e in exprs.iter() {
-                e.fold((), &mut |(), e| {
-                    if let ExprKind::Constant(Value::String(_))
-                    | ExprKind::StringInterpolate { .. } = &e.kind
-                    {
-                        acc.push(e.str_form)
-                    }
-                })
-            }
+            Self::Interface(sig) => sig_ornaments(sig, &mut acc),
         }
         acc
     }
 
     /// The first place `other` says something else, as the text each
     /// side prints there.
-    // CR claude for eric: [style] Clones every child into a fresh `Vec` at each
-    // level (`for_each_child` lends `&'a Expr`, a pooled or small vec of refs
-    // would do) and returns plain `String`s; `smallest` also recurses down the
-    // tree without `ensure_sufficient`. Refusal path only.
-    fn difference(&self, other: &Self) -> Option<(String, String)> {
-        fn children(e: &Expr) -> Vec<Expr> {
-            let mut acc = vec![];
-            e.for_each_child(&mut |c| acc.push(c.clone()));
-            acc
-        }
-        fn smallest(a: &Expr, b: &Expr) -> (String, String) {
+    fn difference(&self, other: &Self) -> Option<(CompactString, CompactString)> {
+        fn smallest(a: &Expr, b: &Expr) -> (CompactString, CompactString) {
+            let children = |e| {
+                let mut acc: SmallVec<[&Expr; 8]> = SmallVec::new();
+                Expr::for_each_child(e, &mut |c| acc.push(c));
+                acc
+            };
             let (ac, bc) = (children(a), children(b));
-            if ac.len() == bc.len() {
-                if let Some((a, b)) = ac.iter().zip(bc.iter()).find(|(a, b)| a != b) {
-                    return smallest(a, b);
-                }
+            if ac.len() == bc.len()
+                && let Some((a, b)) = ac.iter().zip(bc.iter()).find(|(a, b)| a != b)
+            {
+                return ensure_sufficient(|| smallest(a, b));
             }
-            (format!("{}: {a}", a.pos), format!("{}: {b}", b.pos))
+            (format_compact!("{}: {a}", a.pos), format_compact!("{}: {b}", b.pos))
         }
-        fn count(what: &str, a: usize, b: usize) -> Option<(String, String)> {
-            (a != b).then(|| (format!("{a} {what}"), format!("{b} {what}")))
+        fn count(
+            what: &str,
+            a: usize,
+            b: usize,
+        ) -> Option<(CompactString, CompactString)> {
+            (a != b)
+                .then(|| (format_compact!("{a} {what}"), format_compact!("{b} {what}")))
         }
         match (self, other) {
             (Self::Program(a), Self::Program(b)) => {
@@ -341,11 +334,57 @@ impl Parsed {
             (Self::Interface(a), Self::Interface(b)) => {
                 let differ = a.items.iter().zip(b.items.iter()).find(|(a, b)| a != b);
                 differ
-                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .map(|(a, b)| (format_compact!("{a}"), format_compact!("{b}")))
                     .or_else(|| count("items", a.len(), b.len()))
             }
             (Self::Program(_), Self::Interface(_))
             | (Self::Interface(_), Self::Program(_)) => unreachable!(),
+        }
+    }
+}
+
+/// Something a parse keeps beside the syntax, for the formatter to hand
+/// back.
+#[derive(Debug, PartialEq)]
+enum Ornament<'a> {
+    Decorations(&'a Decorations),
+    Comments(&'a [ArcStr]),
+    Delimiters(StrForm),
+}
+
+fn expr_ornaments<'a>(e: &'a Expr, acc: &mut Vec<Ornament<'a>>) {
+    ensure_sufficient(|| {
+        if let Some(d) = &e.dec {
+            acc.push(Ornament::Decorations(d))
+        }
+        match &e.kind {
+            ExprKind::Constant(Value::String(_)) | ExprKind::StringInterpolate { .. } => {
+                acc.push(Ornament::Delimiters(e.str_form))
+            }
+            ExprKind::Trait(t) => {
+                for m in t.methods.iter() {
+                    acc.push(Ornament::Comments(m.comments.lines()))
+                }
+            }
+            ExprKind::Module { value: ModuleKind::Dynamic { sig, .. }, .. } => {
+                sig_ornaments(sig, acc)
+            }
+            _ => (),
+        }
+        e.for_each_child(&mut |c| expr_ornaments(c, acc))
+    })
+}
+
+fn sig_ornaments<'a>(sig: &'a Sig, acc: &mut Vec<Ornament<'a>>) {
+    for si in sig.items.iter() {
+        acc.push(Ornament::Comments(si.comments.lines()));
+        if let SigKind::Trait(t) = &si.kind {
+            for m in t.methods.iter() {
+                acc.push(Ornament::Comments(m.comments.lines()));
+                if let Some(d) = &m.default {
+                    expr_ornaments(d, acc)
+                }
+            }
         }
     }
 }
@@ -356,11 +395,7 @@ fn layout(
     cfg: &FormatConfig,
 ) -> Result<(Parsed, PrettyBuf)> {
     let parsed = Parsed::new(kind, text)?;
-    // CR claude for eric: [style] Built with one setting and patched with the
-    // other; the defaults live apart (`DEFAULT_WIDTH` here, `DEFAULT_INDENT` in
-    // print.rs) and the width is called `limit` inside. `PrettyBuf::new(cfg)`.
-    let mut buf = PrettyBuf::new(cfg.width);
-    buf.step = cfg.indent;
+    let mut buf = PrettyBuf::new(*cfg);
     format_with_flags(PrintFlag::AsWritten, || parsed.print(&mut buf))?;
     Ok((parsed, buf))
 }
@@ -371,7 +406,7 @@ pub fn format_source_unchecked(
     text: &str,
     cfg: &FormatConfig,
 ) -> Result<LPooled<String>> {
-    Ok(layout(kind, text, cfg)?.1.buf)
+    Ok(layout(kind, text, cfg)?.1.into_string())
 }
 
 /// `text` laid out canonically. The result is reparsed and refused unless
@@ -382,24 +417,31 @@ pub fn format_source(
     cfg: &FormatConfig,
 ) -> Result<LPooled<String>> {
     let (parsed, buf) = layout(kind, text, cfg)?;
-    let reparsed = match Parsed::new(kind, &buf.buf) {
+    let reparsed = match Parsed::new(kind, buf.as_str()) {
         Ok(p) => p,
         Err(e) => {
-            bail!(Refused(format_compact!("the formatted text does not parse: {e:?}")))
+            let msg = format_compact!("the formatted text does not parse: {e:#}");
+            bail!(Refused(msg.as_str().into()))
         }
     };
     if let Some((was, now)) = parsed.difference(&reparsed) {
-        bail!(Refused(format_compact!(
+        let msg = format_compact!(
             "the formatted text says something else\nwas {was}\nnow {now}"
-        )))
+        );
+        bail!(Refused(msg.as_str().into()))
     }
-    if parsed.string_forms() != reparsed.string_forms() {
-        bail!(Refused("the formatted text changed a string's delimiters".into()))
+    let (was, now) = (parsed.ornaments(), reparsed.ornaments());
+    if *was != *now {
+        let lost = was.iter().zip(now.iter()).find(|(a, b)| a != b);
+        let msg = match lost.map(|(a, _)| a).or_else(|| was.get(now.len())) {
+            Some(Ornament::Delimiters(_)) => {
+                "the formatted text changed a string's delimiters"
+            }
+            _ => "the formatted text lost a comment or an attribute",
+        };
+        bail!(Refused(arcstr::ArcStr::from(msg)))
     }
-    if parsed.decorations() != reparsed.decorations() {
-        bail!(Refused("the formatted text lost a comment or an attribute".into()))
-    }
-    Ok(buf.buf)
+    Ok(buf.into_string())
 }
 
 #[cfg(test)]
@@ -642,10 +684,6 @@ mod tests {
         assert!(FormatConfig::discover(&deep).is_err());
     }
 
-    // CR claude for eric: [risk] The child is picked by a hard-coded test path:
-    // after a rename or a move it runs zero tests, exits 0, and this passes
-    // vacuously. Check the child's output for one passed test (and pass
-    // `--include-ignored`, as CLAUDE.md asks of a re-executing test).
     /// A relative directory climbs past the working directory: run in a
     /// child process, whose working directory is its own.
     #[test]
@@ -659,16 +697,17 @@ mod tests {
         let deep = root.path().join("src/graphix");
         fs::create_dir_all(&deep).unwrap();
         fs::write(root.path().join(CONFIG_FILE), r#"{ "width": 37 }"#).unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "expr::format::tests::a_relative_directory_finds_the_project_config",
-            ])
+        let module = module_path!().split_once("::").unwrap().1;
+        let test = format!("{module}::a_relative_directory_finds_the_project_config");
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test, "--include-ignored"])
             .env("GRAPHIX_FMT_DISCOVER_CHILD", "1")
             .current_dir(&deep)
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "the child ran no test: {stdout}");
     }
 
     #[test]
@@ -708,13 +747,156 @@ mod tests {
         use SourceKind::Program;
         formats_to(
             Program,
-            "[i64:1, -2, f64:3., 4.5, u8:6, f32:7., - 8, 1e3]",
-            "[1, -2, 3.0, 4.5, u8:6, f32:7., -i64:8, 1000.0]\n",
+            "[i64:1, -2, f64:3., 4.5, u8:6, f32:7., - 8, 1e3, 1e300, - 1.5]",
+            "[1, -2, 3.0, 4.5, u8:6, f32:7., - 8, 1000.0, 1e300, - 1.5]\n",
         );
     }
 
     #[test]
     fn primitive_sets_print_as_written() {
         stable(SourceKind::Interface, "type Sint = [i8, i16, i32, z32, i64, z64]");
+    }
+
+    /// Every line of `text` fits `width`.
+    fn fits(text: &str, width: usize) {
+        for l in text.lines() {
+            assert!(
+                l.chars().count() <= width,
+                "{} columns: {l}\n{text}",
+                l.chars().count()
+            )
+        }
+    }
+
+    #[test]
+    fn a_use_binding_what_an_earlier_one_reads_stays_after_it() {
+        use SourceKind::*;
+        formats_to(
+            Program,
+            "use str::len; use a::str; x",
+            "use str::len;\nuse a::str;\nx\n",
+        );
+        formats_to(
+            Program,
+            "use a::str; use str::len; x",
+            "use a::str;\nuse str::len;\nx\n",
+        );
+    }
+
+    #[test]
+    fn comments_above_interface_items_and_trait_methods_stay() {
+        use SourceKind::*;
+        formats_to(
+            Interface,
+            "// plain comment\nval x: i64",
+            "// plain comment\nval x: i64\n",
+        );
+        formats_to(
+            Interface,
+            "trait T {\n  // c\n  /// d\n  val m: fn(self) -> i64\n}",
+            "trait T {\n    // c\n    /// d\n    val m: fn(self) -> i64\n}\n",
+        );
+        formats_to(
+            Program,
+            "trait T { // a plain comment\nval show: fn(self) -> string }",
+            "trait T {\n    // a plain comment\n    val show: fn(self) -> string\n}\n",
+        );
+        stable(
+            Interface,
+            "trait T {\n  val m: fn(self) -> i64 = |s| {\n    // why\n    use a::b;\n    b(s)\n  }\n}",
+        );
+    }
+
+    #[test]
+    fn a_decorated_tree_has_no_single_line_form() {
+        use SourceKind::*;
+        formats_to(
+            Program,
+            "let y = select x {\n // c\n `A => 1,\n _ => 2\n}",
+            "let y = select x {\n    // c\n    `A => 1,\n    _ => 2\n}\n",
+        );
+        formats_to(
+            Interface,
+            "trait Eq {\n/// true if equal\nval eq: fn(self, other: self) -> bool }",
+            "trait Eq {\n    /// true if equal\n    val eq: fn(self, other: self) -> bool\n}\n",
+        );
+    }
+
+    #[test]
+    fn broken_layouts_fit_and_close_where_they_open() {
+        use SourceKind::Program;
+        let fmt = |src: &str| {
+            let out = format_source(Program, src, &FormatConfig::default()).unwrap();
+            fits(&out, DEFAULT_WIDTH);
+            stable(Program, src);
+            out.to_string()
+        };
+        let long = "alpha_beta_gamma + delta_epsilon_zeta + eta_theta_iota + kappa_lambda_mu + nu_xi";
+        let sum = fmt(&format!("let s = {long} + nu_xi_omicron + pi_rho + sigma_tau"));
+        assert!(sum.lines().count() > 2, "{sum}");
+        let call = "some_function_with_long_name(argument_number_one, argument_number_two, argument_three)";
+        let field = fmt(&format!("let v = {call}.field"));
+        assert_eq!(field.lines().last().map(str::trim), Some(").field"), "{field}");
+        let map = fmt(&format!("let m = {{\"alpha\" => {call}, \"beta\" => 2}}"));
+        assert!(map.contains("\"alpha\" =>"), "{map}");
+        assert_eq!(
+            fmt(&format!("let e = Counter({long})")),
+            format!("let e = Counter(\n    {long}\n)\n")
+        );
+        assert_eq!(
+            fmt(
+                "let v = *f(alpha_beta_gamma, delta_epsilon_zeta, eta_theta_iota, kappa_lambda, mu_nu_xi_omicron_pi)"
+            ),
+            "let v = *f(\n    alpha_beta_gamma,\n    delta_epsilon_zeta,\n    eta_theta_iota,\n    kappa_lambda,\n    mu_nu_xi_omicron_pi\n)\n"
+        );
+        let caught = fmt(&format!("{{ catch(e) {{ println(e); {call} }}; x }}"));
+        assert!(caught.lines().all(|l| !l.ends_with(' ')), "{caught:?}");
+        let sandbox = fmt(
+            "let m = mod m dynamic { sandbox whitelist [core, array, str, map, sys, http, toml, re, rand, pack, gui, tui, xls, net, fs, time, io, tcp, tls, dirs]; sig { val x: i64 }; source \"let x = 1\" }",
+        );
+        assert!(
+            sandbox.contains("sandbox whitelist [\n") && !sandbox.contains(", \n"),
+            "{sandbox}"
+        );
+    }
+
+    #[test]
+    fn a_use_breaks_at_one_width_in_programs_and_interfaces() {
+        // 90 columns, 91 with the `;`
+        let names = "aaaaaaaaaa, bbbbbbbbbb, cccccccccc, dddddddddd, eeeeeeeeee, ffffffffff, ggggggg";
+        let src = format!("use pkg::{{{names}}};\nval x: i64");
+        let gxi =
+            format_source(SourceKind::Interface, &src, &FormatConfig::default()).unwrap();
+        fits(&gxi, DEFAULT_WIDTH);
+        let src = format!("use pkg::{{{names}}};\nx");
+        let gx =
+            format_source(SourceKind::Program, &src, &FormatConfig::default()).unwrap();
+        fits(&gx, DEFAULT_WIDTH);
+        assert_eq!(gxi.lines().next(), gx.lines().next());
+    }
+
+    #[test]
+    fn an_empty_statement_is_its_semicolon() {
+        use SourceKind::Program;
+        formats_to(Program, "{ a; b; }", "{ a; b; }\n");
+        formats_to(Program, "x;", "x;\n");
+        let cfg = FormatConfig { width: 12, ..FormatConfig::default() };
+        let out = format_source(Program, "let f = { alpha; beta; }", &cfg).unwrap();
+        assert_eq!(&*out, "let f = {\n    alpha;\n    beta;\n}\n");
+    }
+
+    #[test]
+    fn a_deep_nest_formats_once_per_level() {
+        let deep = format!("let s = {}1{}", "{ f: ".repeat(60), " }".repeat(60));
+        stable(SourceKind::Program, &deep);
+    }
+
+    #[test]
+    fn quantifiers_stand_apart_from_the_bar() {
+        formats_to(
+            SourceKind::Program,
+            "let add = 'a: Int |a: 'a, b: 'a| a + b",
+            "let add = 'a: Int |a: 'a, b: 'a| a + b\n",
+        );
     }
 }

@@ -2633,6 +2633,6 @@ const PATTERN_ERROR_SITE: &str = r#"select 1 {
 run!(pattern_error_site, PATTERN_ERROR_SITE, |v: Result<&Value>| match v {
     Err(e) => e
         .downcast_ref::<graphix_compiler::expr::ErrorSite>()
-        .is_some_and(|site| (site.0.0.pos.line, site.0.0.pos.column) == (2, 13)),
+        .is_some_and(|site| (site.expr().pos.line, site.expr().pos.column) == (2, 13)),
     Ok(_) => false,
 }; graphix_package_core::testing::FuseExpect::None);

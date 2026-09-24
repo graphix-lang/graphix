@@ -1,15 +1,12 @@
-// CR claude for eric: [style] `super::Sig` is `crate::expr::Sig`: one group with
-// the rest. `fmt::Write` is imported at the top and again inside `fmt_flat`, and
-// `Write`/`fmt::Write`, `Formatter`/`fmt::Formatter` are mixed through the file.
-use super::Sig;
 use crate::{
     expr::{
-        ApplyExpr, Arg, Attr, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind,
-        ImplExpr, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqTrigger, SigItem,
+        ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind,
+        ImplExpr, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqTrigger, Sig, SigItem,
         SigKind, StrForm, StructExpr, StructWithExpr, TraitExpr, TraitMethod,
-        TypeDefBody, TypeDefExpr, UseItem, parser,
+        TypeDefBody, TypeDefExpr, UseItem, format::FormatConfig, parser,
     },
     print_as_written,
+    stack::ensure_sufficient,
     typ::Type,
 };
 use arcstr::ArcStr;
@@ -22,6 +19,7 @@ use std::{
     cmp::Ordering,
     fmt::{self, Formatter, Write},
 };
+use triomphe::Arc;
 
 /// The `let pattern[: type] = ` of a bound seq trigger; the value
 /// follows under the trigger's own parenthesization.
@@ -30,38 +28,6 @@ fn write_seq_let(f: &mut impl Write, b: &BindExpr) -> fmt::Result {
     match &b.typ {
         None => write!(f, "let{rec} {} = ", b.pattern),
         Some(typ) => write!(f, "let{rec} {}: {typ} = ", b.pattern),
-    }
-}
-
-// CR claude for eric: [structure] The twenty binary operators are listed three
-// times: here, in `fmt_inner`'s arms and in `fmt_pretty_inner`'s `binop!` arms.
-// One `fn binop(&ExprKind) -> Option<(&str, &Expr, &Expr)>` that also returns
-// the symbol would serve all three.
-/// The operands of a binary operator, `None` for any other kind.
-fn binop_operands(e: &ExprKind) -> Option<(&Expr, &Expr)> {
-    use ExprKind::*;
-    match e {
-        Eq { lhs, rhs }
-        | Ne { lhs, rhs }
-        | Lt { lhs, rhs }
-        | Gt { lhs, rhs }
-        | Lte { lhs, rhs }
-        | Gte { lhs, rhs }
-        | And { lhs, rhs }
-        | Or { lhs, rhs }
-        | Add { lhs, rhs }
-        | CheckedAdd { lhs, rhs }
-        | Sub { lhs, rhs }
-        | CheckedSub { lhs, rhs }
-        | Mul { lhs, rhs }
-        | CheckedMul { lhs, rhs }
-        | Div { lhs, rhs }
-        | CheckedDiv { lhs, rhs }
-        | Mod { lhs, rhs }
-        | CheckedMod { lhs, rhs }
-        | Sample { lhs, rhs }
-        | StrictSample { lhs, rhs } => Some((lhs, rhs)),
-        _ => None,
     }
 }
 
@@ -90,8 +56,8 @@ fn trigger_needs_parens(t: &Expr) -> bool {
     // the expression whose first token the head parser meets first, and
     // whether an argument list follows it directly
     fn leftmost(e: &Expr, called: bool) -> (&Expr, bool) {
-        match (binop_operands(&e.kind), bare_postfix_source(&e.kind)) {
-            (Some((lhs, _)), _) => leftmost(lhs, false),
+        match (BinOp::of(&e.kind), bare_postfix_source(&e.kind)) {
+            (Some((_, lhs, _)), _) => leftmost(lhs, false),
             (None, Some(source)) => leftmost(source, matches!(&e.kind, Apply(_))),
             (None, None) => (e, called),
         }
@@ -117,8 +83,8 @@ fn trigger_needs_parens(t: &Expr) -> bool {
             | Never { .. }
             | Any { .. }
             | StringInterpolate { .. } => true,
-            k => match (binop_operands(k), bare_postfix_source(k)) {
-                (Some((lhs, rhs)), _) => reads_bare(lhs) && reads_bare(rhs),
+            k => match (BinOp::of(k), bare_postfix_source(k)) {
+                (Some((_, lhs, rhs)), _) => reads_bare(lhs) && reads_bare(rhs),
                 (None, Some(source)) => reads_bare(source),
                 (None, None) => matches!(
                     k,
@@ -140,69 +106,51 @@ fn trigger_needs_parens(t: &Expr) -> bool {
     reads_as_body_or_clause || !reads_bare(t)
 }
 
-// CR claude for eric: [structure] The projection `F` is only ever the identity
-// (`pretty_print_exprs` is the one caller), and hugging is switched on by
-// comparing `close` to ")". Take `&[Expr]` and say `hug: bool`.
-fn pretty_print_exprs_int<'a, A, F: Fn(&'a A) -> &'a Expr>(
-    buf: &mut PrettyBuf,
-    exprs: &'a [A],
-    open: &str,
-    close: &str,
-    sep: &str,
-    f: F,
-) -> fmt::Result {
-    if exprs.is_empty() {
-        return writeln!(buf, "{open}{close}");
-    }
-    if let ([e], ")") = (exprs, close)
-        && hugs_parens(f(e))
-    {
-        write!(buf, "{open}")?;
-        f(e).fmt_pretty(buf)?;
-        buf.kill_newline();
-        return writeln!(buf, "{close}");
-    }
-    writeln!(buf, "{}", open)?;
-    buf.nested::<fmt::Result, _>(|buf| {
-        for i in 0..exprs.len() {
-            f(&exprs[i]).fmt_pretty(buf)?;
-            if i < exprs.len() - 1 {
-                buf.kill_newline();
-                writeln!(buf, "{}", sep)?
-            }
-        }
-        Ok(())
-    })?;
-    writeln!(buf, "{}", close)
-}
-
+/// `exprs` between `open` and `close`, one to a line; a lone expression
+/// that opens with a bracket hugs the brackets when `hug` says so.
 fn pretty_print_exprs(
     buf: &mut PrettyBuf,
     exprs: &[Expr],
     open: &str,
     close: &str,
     sep: &str,
+    hug: bool,
 ) -> fmt::Result {
-    pretty_print_exprs_int(buf, exprs, open, close, sep, |a| a)
+    if exprs.is_empty() {
+        return writeln!(buf, "{open}{close}");
+    }
+    if let ([e], true) = (exprs, hug)
+        && hugs_parens(e)
+    {
+        write!(buf, "{open}")?;
+        e.fmt_pretty(buf)?;
+        buf.kill_newline();
+        return writeln!(buf, "{close}");
+    }
+    writeln!(buf, "{open}")?;
+    buf.nested(|buf| pretty_items(buf, exprs, sep))?;
+    writeln!(buf, "{close}")
 }
 
-/// A body laid out inline after its head (`|x| {`, `=> {`, `catch(e) {`).
-/// The body's own decorations are the caller's to place.
-fn pretty_body(
-    buf: &mut PrettyBuf,
-    body: &Expr,
-    open: &str,
-    close: &str,
-    sep: &str,
-) -> fmt::Result {
-    match &body.kind {
-        ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, open, close, sep),
-        _ => Bare(body).fmt_pretty(buf),
+/// Each of `exprs` on its own line, `sep` after all but the last. The
+/// empty statement a trailing `;` leaves is that `;` and nothing more.
+fn pretty_items(buf: &mut PrettyBuf, exprs: &[Expr], sep: &str) -> fmt::Result {
+    for (i, e) in exprs.iter().enumerate() {
+        if i > 0 {
+            buf.kill_newline();
+            writeln!(buf, "{sep}")?
+        }
+        if !matches!(e.kind, ExprKind::NoOp) {
+            e.fmt_pretty(buf)?
+        }
     }
+    Ok(())
 }
 
 /// The `;`-separated items of a file: a blank line stands on both sides
 /// of every item that spans lines, and runs of one-line items stay tight.
+/// An item that prints nothing (a trailing `;`'s empty statement) is its
+/// separator alone.
 pub(crate) fn pretty_file_items<T>(
     buf: &mut PrettyBuf,
     items: &[T],
@@ -210,11 +158,11 @@ pub(crate) fn pretty_file_items<T>(
 ) -> fmt::Result {
     let mut prev_spans_lines = false;
     for (i, it) in items.iter().enumerate() {
-        let start = buf.len();
+        let start = buf.mark();
         item(buf, it)?;
-        let spans_lines = buf.buf[start..].trim_end_matches('\n').contains('\n');
+        let spans_lines = buf.since(start).trim_end_matches('\n').contains('\n');
         if i > 0 && (spans_lines || prev_spans_lines) {
-            buf.buf.insert(start, '\n')
+            buf.insert_newline(start)
         }
         prev_spans_lines = spans_lines;
         if i < items.len() - 1 {
@@ -228,9 +176,6 @@ pub(crate) fn pretty_file_items<T>(
 /// Whether the multi-line layout of `e` opens with a short head and a
 /// bracket, closing at its own indent: it can sit on the line of
 /// whatever introduces it.
-// CR claude for eric: [style] A dynamic module (`mod m dynamic {`) opens with a
-// bracket too but is missing, so `let s = mod m dynamic {` moves under its head
-// (probed).
 fn opens_with_bracket(e: &ExprKind) -> bool {
     use ExprKind::*;
     match e {
@@ -250,13 +195,56 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | Never { .. }
         | Construct { .. }
         | TypeCast { .. }
-        | ExplicitParens(_) => true,
+        | ExplicitParens(_)
+        | Module { value: ModuleKind::Dynamic { .. }, .. } => true,
         Variant { args, .. } => !args.is_empty(),
         Qop(e) | OrNever(e) | Rethrow(e) | ByRef(e) | Deref(e) | Neg(e) => {
             opens_with_bracket(&e.kind)
         }
         Not { expr } => opens_with_bracket(&expr.kind),
         _ => false,
+    }
+}
+
+/// The width `x` prints flat in.
+fn flat_width(x: &impl fmt::Display) -> usize {
+    struct Count(usize);
+    impl Write for Count {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            self.0 += s.chars().count();
+            Ok(())
+        }
+    }
+    let mut n = Count(0);
+    let _ = write!(n, "{x}");
+    n.0
+}
+
+/// The least the first line of `e`'s multi-line layout can take: the text
+/// in front of its bracket that no layout breaks.
+fn head_min(e: &ExprKind) -> usize {
+    use ExprKind::*;
+    match e {
+        List { .. } => 2,
+        TryWith(_) => "try {".len(),
+        Seq { queued: true, .. } => "seqq {".len(),
+        Seq { queued: false, .. } => "seq {".len(),
+        Select(_) => "select _ {".len(),
+        StructWith(_) => "{ _ with".len(),
+        Any { .. } => "any(".len(),
+        Never { typ: None, .. } => "never(".len(),
+        Never { typ: Some(t), .. } => "never<>(".len() + flat_width(t),
+        TypeCast { typ, .. } => "cast<>(".len() + flat_width(typ),
+        Construct { name, .. } => flat_width(name) + 1,
+        Variant { tag, .. } => tag.chars().count() + 2,
+        Apply(a) => match &a.function.kind {
+            Ref { name } => flat_width(name) + 1,
+            _ => 1,
+        },
+        Module { name, .. } => "mod  dynamic {".len() + name.chars().count(),
+        Qop(e) | OrNever(e) | Rethrow(e) => head_min(&e.kind),
+        ByRef(e) | Deref(e) | Neg(e) | Not { expr: e } => 1 + head_min(&e.kind),
+        _ => 1,
     }
 }
 
@@ -280,27 +268,23 @@ fn pretty_tail(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
 
 /// `pretty_tail` for an expression whose decorations the caller placed.
 fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
+    let head = buf.mark();
     write!(buf, " ")?;
     if Bare(e).fmt_flat(buf)? {
         return Ok(());
     }
-    // CR claude for eric: [perf] Exponential. The whole multi-line layout is
-    // rendered only to measure its first line, then thrown away and rendered
-    // again nested; once the indent passes the width every level fails and
-    // doubles the work. probe: `let s = { f: { f: .. 1 .. } }` 38 deep formats
-    // in 0.66s, 42 deep in 10.6s (`graphix fmt`; the LSP's formatting request
-    // too). Measure the head (`{`, `f(`, `|a| {`) without rendering the body.
-    if opens_with_bracket(&e.kind) {
-        let start = buf.len();
+    // the first line is measured by laying it out, so a head that cannot
+    // fit is not tried: that would lay out the body twice at every level
+    if opens_with_bracket(&e.kind) && buf.col() + head_min(&e.kind) <= buf.limit {
+        let start = buf.mark();
         let col = buf.col();
         Bare(e).fmt_pretty_inner(buf)?;
-        let first = buf.buf[start..].lines().next().map_or(0, |l| l.chars().count());
-        if col + first <= buf.limit {
+        if col + buf.first_line_width(start) <= buf.limit {
             return Ok(());
         }
-        buf.buf.truncate(start);
+        buf.rollback(start);
     }
-    buf.buf.pop();
+    buf.rollback(head);
     writeln!(buf)?;
     buf.nested(|buf| Bare(e).fmt_pretty(buf))
 }
@@ -309,12 +293,10 @@ fn pretty_tail_bare(buf: &mut PrettyBuf, e: &Expr) -> fmt::Result {
 /// attributes.
 pub(crate) fn write_leading(
     f: &mut impl fmt::Write,
-    dec: &Option<Box<Decorations>>,
+    dec: &Option<Arc<Decorations>>,
 ) -> fmt::Result {
     if let Some(dec) = dec {
-        for c in dec.comments.iter() {
-            writeln!(f, "//{c}")?;
-        }
+        write_comments(f, &dec.comments)?;
         for a in dec.attrs.iter() {
             writeln!(f, "{a}")?;
         }
@@ -322,45 +304,75 @@ pub(crate) fn write_leading(
     Ok(())
 }
 
+fn write_comments(f: &mut impl fmt::Write, lines: &[ArcStr]) -> fmt::Result {
+    for c in lines {
+        writeln!(f, "//{c}")?;
+    }
+    Ok(())
+}
+
+/// Whether anything in `e`, `e` included, prints on lines of its own
+/// above what it decorates: a comment, an attribute, a doc. Such a tree
+/// has no single-line form.
+pub(crate) fn decorated(e: &Expr) -> bool {
+    e.dec.is_some() || kind_decorated(&e.kind)
+}
+
+fn kind_decorated(k: &ExprKind) -> bool {
+    ensure_sufficient(|| {
+        let mut any = match k {
+            ExprKind::Trait(t) => t.decorated(),
+            ExprKind::Module { value: ModuleKind::Dynamic { sig, .. }, .. } => {
+                sig.decorated()
+            }
+            _ => false,
+        };
+        k.for_each_child(&mut |c| any = any || decorated(c));
+        any
+    })
+}
+
+fn sig_item_decorated(si: &SigItem) -> bool {
+    si.doc.0.is_some()
+        || !si.comments.lines().is_empty()
+        || matches!(&si.kind, SigKind::Trait(t) if t.decorated())
+}
+
 /// A literal as source text: `i64` and `f64`, the types an unprefixed
-/// number reads as, print bare.
+/// number reads as, print bare, an `f64` always with a point or an
+/// exponent; a string escapes as an expression's does.
 pub(crate) struct Literal<'a>(pub &'a Value);
 
 impl fmt::Display for Literal<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0 {
             Value::I64(v) => write!(f, "{v}"),
-            // CR claude for eric: [readability] `{v}` never uses an exponent:
-            // `1e300` formats to a 303-character literal, `6.02e23` to
-            // `602000000000000000000000.0` (probed). `{v:?}` prints `1e300`,
-            // `1000.0` and `0.5`, and makes the `fract` arm unnecessary.
-            Value::F64(v) if v.is_finite() && v.fract() == 0. => write!(f, "{v}.0"),
-            Value::F64(v) if v.is_finite() => write!(f, "{v}"),
+            Value::F64(v) if v.is_finite() => write!(f, "{v:?}"),
+            v @ Value::String(_) => v.fmt_ext(f, &parser::GRAPHIX_ESC, true),
             v => v.fmt_ext(f, &VAL_ESC, true),
         }
     }
 }
 
-/// The spaces one level of nesting indents by, unless configured.
-pub const DEFAULT_INDENT: usize = 4;
+/// A position in a [`PrettyBuf`] to measure from or roll back to.
+#[derive(Debug, Clone, Copy)]
+pub struct Mark(usize);
 
-// CR claude for eric: [structure] Every field is public and callers edit the raw
-// string: the `truncate`/`pop`/`insert` in `pretty_file_items`, `pretty_tail_bare`,
-// `fmt_flat`, SigItem's use, BindExpr, LambdaExpr, `pretty_group` and
-// typ/print.rs are one idiom, try then roll back. A `mark()`/`rollback(mark)`
-// pair would name it and keep the buffer private.
+/// Text being laid out to a width. Every multi-line layout
+/// (`fmt_pretty_inner`) ends with a newline, which a caller that continues
+/// the line takes back with `kill_newline`.
 #[derive(Debug)]
 pub struct PrettyBuf {
-    pub indent: usize,
+    indent: usize,
     /// what `nested` adds to `indent`
-    pub step: usize,
-    pub limit: usize,
-    pub buf: LPooled<String>,
+    step: usize,
+    limit: usize,
+    buf: LPooled<String>,
 }
 
 impl PrettyBuf {
-    pub fn new(limit: usize) -> Self {
-        Self { indent: 0, step: DEFAULT_INDENT, limit, buf: LPooled::take() }
+    pub fn new(cfg: FormatConfig) -> Self {
+        Self { indent: 0, step: cfg.indent, limit: cfg.width, buf: LPooled::take() }
     }
 
     /// Run `f` one level of nesting deeper.
@@ -368,17 +380,13 @@ impl PrettyBuf {
         self.with_indent(self.step, f)
     }
 
-    pub fn len(&self) -> usize {
-        self.buf.len()
-    }
-
-    pub fn newline(&self) -> bool {
+    fn at_line_start(&self) -> bool {
         self.buf.chars().next_back().map(|c| c == '\n').unwrap_or(true)
     }
 
-    pub fn push_indent(&mut self) {
-        if self.newline() {
-            self.buf.extend((0..self.indent).into_iter().map(|_| ' '));
+    fn push_indent(&mut self) {
+        if self.at_line_start() {
+            self.buf.extend((0..self.indent).map(|_| ' '));
         }
     }
 
@@ -391,18 +399,50 @@ impl PrettyBuf {
 
     /// The width of the line being written.
     pub fn col(&self) -> usize {
-        self.width_from(self.buf.rfind('\n').map_or(0, |i| i + 1))
+        self.buf[self.buf.rfind('\n').map_or(0, |i| i + 1)..].chars().count()
     }
 
-    /// The width, in characters, of what was written from `start` on.
-    pub fn width_from(&self, start: usize) -> usize {
-        self.buf[start..].chars().count()
+    pub fn mark(&self) -> Mark {
+        Mark(self.buf.len())
+    }
+
+    /// Forget everything written since `m`.
+    pub fn rollback(&mut self, m: Mark) {
+        self.buf.truncate(m.0)
+    }
+
+    /// What was written since `m`.
+    pub fn since(&self, m: Mark) -> &str {
+        &self.buf[m.0..]
+    }
+
+    /// The width, in characters, of what was written since `m`.
+    pub fn width_since(&self, m: Mark) -> usize {
+        self.since(m).chars().count()
+    }
+
+    /// The width of the first line written since `m`.
+    pub fn first_line_width(&self, m: Mark) -> usize {
+        self.since(m).lines().next().map_or(0, |l| l.chars().count())
+    }
+
+    /// Put an empty line in front of what was written since `m`.
+    pub fn insert_newline(&mut self, m: Mark) {
+        self.buf.insert(m.0, '\n')
     }
 
     pub fn kill_newline(&mut self) {
         if let Some('\n') = self.buf.chars().next_back() {
             self.buf.pop();
         }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.buf
+    }
+
+    pub fn into_string(self) -> LPooled<String> {
+        self.buf
     }
 }
 
@@ -423,57 +463,50 @@ impl fmt::Write for PrettyBuf {
     }
 }
 
-// CR claude for eric: [structure] Two printers, not one: each node has a flat
-// `Display` and a hand-written multi-line twin that must agree token for token
-// (Struct, StructWith, Apply, Select, Seq, TryWith, Trait, Impl, Sig, Sandbox,
-// Doc, the `let` head in `write_seq_let` and BindExpr, `write_returns` and
-// `pretty_returns`). The Construct, Deref, Sandbox and catch layout bugs below
-// are drift between twins. Describing each node once (text, group, break) and
-// rendering it flat or broken would remove the twins, the three fits tests and
-// the re-render in `pretty_tail_bare`.
+// XCR claude for eric: agreed that a flat `Display` beside a hand-written broken twin
+// drifts (the Construct, Deref, Sandbox and catch bugs were drift); describing each
+// node once as a group and rendering it flat or broken is a printer rewrite, its own
+// change, gated by the corpus harness. This change fixes the drifted twins in place.
 pub trait PrettyDisplay: fmt::Display {
-    // CR claude for eric: [risk] The multi-line recursion (`fmt_pretty` ->
-    // `fmt_pretty_inner` -> a child's `fmt_pretty`) is not under
-    // `ensure_sufficient`; only the flat `Display` is, and CLAUDE.md counts
-    // printing as guarded. No overflow today (990-deep arrays format on a
-    // 256K stack); `StructurePattern`'s Display (pattern.rs) is unguarded too.
     /// The multi-line layout; `fmt_pretty` calls it when the single-line
-    /// form does not fit.
+    /// form does not fit. It ends with a newline.
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result;
 
-    // CR claude for eric: [bug] A flat form holding a comment, doc or attribute
-    // is accepted: `write_leading` puts a newline inside it, so the comment
-    // trails the token before it and the next line starts unindented. probe:
-    // `let y = select x {\n // c\n `A => 1,\n _ => 2\n}` formats to
-    // `let y = select x { // c\n`A => 1, _ => 2 };`, and stdlib core/mod.gxi to
-    // `trait Eq { /// true if ..`. A node with a decorated descendant must take
-    // the multi-line layout.
+    /// Whether something inside prints on a line of its own (a comment,
+    /// an attribute, a doc), so there is no single-line form.
+    fn decorated(&self) -> bool {
+        false
+    }
+
     /// Write the single-line form and a newline if it fits the rest of
     /// the line, else write nothing.
     fn fmt_flat(&self, buf: &mut PrettyBuf) -> Result<bool, fmt::Error> {
-        use fmt::Write;
-        let start = buf.len();
+        if self.decorated() {
+            return Ok(false);
+        }
+        let start = buf.mark();
         let col = buf.col();
         writeln!(buf, "{}", self)?;
-        // Best-effort: embedded newlines overcount and a long token can
-        // exceed any limit. The newline counts as the column kept for
-        // the `;` or `,` that follows.
-        let fits = col + buf.width_from(start) <= buf.limit;
+        // Best-effort: a multi-line string overcounts and a long token can
+        // exceed any limit. The newline counts as the column kept for the
+        // `;` or `,` that follows.
+        let fits = col + buf.width_since(start) <= buf.limit;
         if !fits {
-            buf.buf.truncate(start);
+            buf.rollback(start);
         }
         Ok(fits)
     }
 
-    // CR claude for eric: [readability] Stale: `pretty_fmt` is `fmt_pretty_inner`.
-    /// Format on a single line when it fits, else via `pretty_fmt`.
+    /// Format on a single line when it fits, else via `fmt_pretty_inner`.
     fn fmt_pretty(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        if self.fmt_flat(buf)? { Ok(()) } else { self.fmt_pretty_inner(buf) }
+        ensure_sufficient(|| {
+            if self.fmt_flat(buf)? { Ok(()) } else { self.fmt_pretty_inner(buf) }
+        })
     }
 
     /// Pretty print to a pooled string
     fn to_string_pretty(&self, limit: usize) -> LPooled<String> {
-        let mut buf = PrettyBuf::new(limit);
+        let mut buf = PrettyBuf::new(FormatConfig { width: limit, ..Default::default() });
         self.fmt_pretty(&mut buf).unwrap();
         buf.buf
     }
@@ -561,7 +594,7 @@ impl PrettyDisplay for TypeDefExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         self.write_name_and_params(buf)?;
         match &self.body {
-            TypeDefBody::Abstract(None) => Ok(()),
+            TypeDefBody::Abstract(None) => writeln!(buf),
             TypeDefBody::Abstract(Some(rep)) => {
                 write!(buf, " = Abstract<")?;
                 rep.fmt_pretty(buf)?;
@@ -578,6 +611,7 @@ impl PrettyDisplay for TypeDefExpr {
 
 impl fmt::Display for TraitMethod {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write_comments(f, self.comments.lines())?;
         write!(f, "{}val {}: {}", self.doc, self.name, self.typ)?;
         match &self.default {
             None => Ok(()),
@@ -588,6 +622,7 @@ impl fmt::Display for TraitMethod {
 
 impl PrettyDisplay for TraitMethod {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        write_comments(buf, self.comments.lines())?;
         self.doc.fmt_pretty_inner(buf)?;
         write!(buf, "val {}: ", self.name)?;
         self.typ.fmt_pretty(buf)?;
@@ -616,6 +651,14 @@ impl fmt::Display for TraitExpr {
 }
 
 impl PrettyDisplay for TraitExpr {
+    fn decorated(&self) -> bool {
+        self.methods.iter().any(|m| {
+            m.doc.0.is_some()
+                || !m.comments.lines().is_empty()
+                || m.default.as_ref().is_some_and(decorated)
+        })
+    }
+
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         writeln!(buf, "trait {} {{", self.name)?;
         buf.nested(|buf| {
@@ -674,6 +717,10 @@ impl fmt::Display for ImplExpr {
 }
 
 impl PrettyDisplay for ImplExpr {
+    fn decorated(&self) -> bool {
+        self.methods.iter().any(decorated)
+    }
+
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         self.write_head(buf)?;
         if self.methods.is_empty() {
@@ -694,56 +741,49 @@ impl PrettyDisplay for ImplExpr {
     }
 }
 
-impl fmt::Display for Sandbox {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        macro_rules! write_sandbox {
-            ($kind:literal, $l:expr) => {{
-                write!(f, "sandbox {} [ ", $kind)?;
-                for (i, p) in $l.iter().enumerate() {
-                    if i < $l.len() - 1 {
-                        write!(f, "{}, ", p)?
-                    } else {
-                        write!(f, "{}", p)?
-                    }
-                }
-                write!(f, " ]")
-            }};
-        }
+impl Sandbox {
+    fn kind_and_list(&self) -> Option<(&str, &[crate::expr::ModPath])> {
         match self {
-            Sandbox::Unrestricted => write!(f, "sandbox unrestricted"),
-            Sandbox::Blacklist(l) => write_sandbox!("blacklist", l),
-            Sandbox::Whitelist(l) => write_sandbox!("whitelist", l),
+            Sandbox::Unrestricted => None,
+            Sandbox::Blacklist(l) => Some(("blacklist", l)),
+            Sandbox::Whitelist(l) => Some(("whitelist", l)),
         }
     }
 }
 
-// CR claude for eric: [bug] Writes a trailing space after `[` and after every
-// `,`, closes with ` ]` one column right of the line that opened it, and ends
-// without the newline the other layouts end with. probe: a long whitelist prints
-// `sandbox whitelist [ `, `core, `, .., `         ];`. The flat `[ a, b ]`
-// spacing differs from every other bracket list as well.
+impl fmt::Display for Sandbox {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.kind_and_list() {
+            None => write!(f, "sandbox unrestricted"),
+            Some((kind, l)) => {
+                write!(f, "sandbox {kind} [")?;
+                for (i, p) in l.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?
+                    }
+                    write!(f, "{p}")?
+                }
+                write!(f, "]")
+            }
+        }
+    }
+}
+
 impl PrettyDisplay for Sandbox {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        macro_rules! write_sandbox {
-            ($kind:literal, $l:expr) => {{
-                writeln!(buf, "sandbox {} [ ", $kind)?;
-                buf.nested::<fmt::Result, _>(|buf| {
-                    for (i, p) in $l.iter().enumerate() {
-                        if i < $l.len() - 1 {
-                            writeln!(buf, "{}, ", p)?
-                        } else {
-                            writeln!(buf, "{}", p)?
-                        }
+        match self.kind_and_list() {
+            None => writeln!(buf, "sandbox unrestricted"),
+            Some((kind, l)) => {
+                writeln!(buf, "sandbox {kind} [")?;
+                buf.nested(|buf| {
+                    for (i, p) in l.iter().enumerate() {
+                        let sep = if i + 1 < l.len() { "," } else { "" };
+                        writeln!(buf, "{p}{sep}")?
                     }
                     Ok(())
                 })?;
-                write!(buf, " ]")
-            }};
-        }
-        match self {
-            Sandbox::Blacklist(l) => write_sandbox!("blacklist", l),
-            Sandbox::Whitelist(l) => write_sandbox!("whitelist", l),
-            Sandbox::Unrestricted => writeln!(buf, "sandbox unrestricted"),
+                writeln!(buf, "]")
+            }
         }
     }
 }
@@ -763,6 +803,7 @@ impl PrettyDisplay for BindSig {
 
 impl fmt::Display for SigItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write_comments(f, self.comments.lines())?;
         write!(f, "{}", self.doc)?;
         match &self.kind {
             SigKind::TypeDef(td) => write!(f, "{td}"),
@@ -770,13 +811,16 @@ impl fmt::Display for SigItem {
             SigKind::Impl(i) => write!(f, "{i}"),
             SigKind::Bind(bind) => write!(f, "{bind}"),
             SigKind::Module(name) => write!(f, "mod {name}"),
-            SigKind::Use { reexport, names } => write_use_names(f, *reexport, names),
+            SigKind::Use { reexport, names } => {
+                write!(f, "{}", UseStmt(*reexport, names))
+            }
         }
     }
 }
 
 impl PrettyDisplay for SigItem {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        write_comments(buf, self.comments.lines())?;
         self.doc.fmt_pretty_inner(buf)?;
         match &self.kind {
             SigKind::Bind(b) => b.fmt_pretty(buf),
@@ -784,21 +828,7 @@ impl PrettyDisplay for SigItem {
             SigKind::Trait(t) => t.fmt_pretty(buf),
             SigKind::Impl(i) => i.fmt_pretty(buf),
             SigKind::Module(name) => writeln!(buf, "mod {name}"),
-            // CR claude for eric: [bug] A second fits test for a use statement,
-            // `> limit` without the column the `;` takes, where `ExprKind::Use`
-            // goes through `fmt_flat`. probe: a 90-column `use` (91 with its `;`)
-            // breaks in a .gx and stays one 91-column line in a .gxi. Route both
-            // through one printer.
-            SigKind::Use { reexport, names } => {
-                let start = buf.len();
-                write_use_names(buf, *reexport, names)?;
-                if buf.width_from(start) > buf.limit {
-                    buf.buf.truncate(start);
-                    pretty_use_names(buf, *reexport, names)
-                } else {
-                    writeln!(buf)
-                }
-            }
+            SigKind::Use { reexport, names } => UseStmt(*reexport, names).fmt_pretty(buf),
         }
     }
 }
@@ -822,6 +852,10 @@ impl fmt::Display for Sig {
 }
 
 impl PrettyDisplay for Sig {
+    fn decorated(&self) -> bool {
+        self.items.iter().any(sig_item_decorated)
+    }
+
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         if !self.toplevel {
             writeln!(buf, "sig {{")?;
@@ -865,10 +899,10 @@ impl PrettyDisplay for BindExpr {
         write!(buf, "let{rec} {pattern}")?;
         if let Some(typ) = typ {
             write!(buf, ": ")?;
-            let start = buf.len();
+            let start = buf.mark();
             write!(buf, "{typ} =")?;
             if buf.col() > buf.limit {
-                buf.buf.truncate(start);
+                buf.rollback(start);
                 typ.fmt_pretty_inner(buf)?;
                 buf.kill_newline();
                 write!(buf, " =")?;
@@ -880,124 +914,88 @@ impl PrettyDisplay for BindExpr {
     }
 }
 
+/// Whether the field or labeled argument `name: e` is written `name`
+/// alone.
+fn puns(name: &str, e: &Expr) -> bool {
+    matches!(&e.kind, ExprKind::Ref { name: n } if *n == [name])
+        && !parser::is_reserved_binding(name)
+}
+
+/// The fields of a struct literal or a functional update, flat.
+fn write_fields(f: &mut Formatter<'_>, fields: &[(ArcStr, Expr)]) -> fmt::Result {
+    for (i, (name, e)) in as_written(fields).into_iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?
+        }
+        write_leading(f, &e.dec)?;
+        match puns(name, e) {
+            true => write!(f, "{name}")?,
+            false => write!(f, "{name}: {}", Bare(e))?,
+        }
+    }
+    Ok(())
+}
+
+/// The fields of a struct literal or a functional update, one to a line.
+fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result {
+    buf.nested(|buf| {
+        for (i, (name, e)) in as_written(fields).into_iter().enumerate() {
+            if i > 0 {
+                buf.kill_newline();
+                writeln!(buf, ",")?
+            }
+            write_leading(buf, &e.dec)?;
+            match puns(name, e) {
+                true => writeln!(buf, "{name}")?,
+                false => {
+                    write!(buf, "{name}:")?;
+                    pretty_tail_bare(buf, e)?
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+impl StructWithExpr {
+    fn write_head(&self, f: &mut impl Write) -> fmt::Result {
+        match &self.source.kind {
+            ExprKind::Ref { .. } => write!(f, "{{ {} with", self.source),
+            _ => write!(f, "{{ ({}) with", self.source),
+        }
+    }
+}
+
 impl fmt::Display for StructWithExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let Self { source, replace } = self;
-        match &source.kind {
-            ExprKind::Ref { .. } => write!(f, "{{ {source} with ")?,
-            _ => write!(f, "{{ ({source}) with ")?,
-        }
-        for (i, (name, e)) in as_written(replace).into_iter().enumerate() {
-            write_leading(f, &e.dec)?;
-            // CR claude for eric: [structure] The field-pun test (a one-segment
-            // ref equal to the name, not reserved) is written four times (here,
-            // StructWith's pretty, StructExpr's Display and pretty), twice more
-            // for labeled arguments in ApplyExpr (without the reserved check) and
-            // once in pattern.rs. One `fn puns(name, &Expr) -> bool`; `ModPath`
-            // already compares to `[&str; 1]`.
-            match &e.kind {
-                ExprKind::Ref { name: n }
-                    if Path::dirname(&**n).is_none()
-                        && Path::basename(&**n) == Some(&**name)
-                        && !parser::RESERVED_BINDING.contains(&name.as_str()) =>
-                {
-                    write!(f, "{name}")?
-                }
-                _ => write!(f, "{name}: {}", Bare(e))?,
-            }
-            if i < replace.len() - 1 {
-                write!(f, ", ")?
-            }
-        }
+        self.write_head(f)?;
+        write!(f, " ")?;
+        write_fields(f, &self.replace)?;
         write!(f, " }}")
     }
 }
 
 impl PrettyDisplay for StructWithExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let Self { source, replace } = self;
-        match &source.kind {
-            ExprKind::Ref { .. } => writeln!(buf, "{{ {source} with")?,
-            _ => writeln!(buf, "{{ ({source}) with")?,
-        }
-        buf.nested::<fmt::Result, _>(|buf| {
-            for (i, (name, e)) in as_written(replace).into_iter().enumerate() {
-                write_leading(buf, &e.dec)?;
-                match &e.kind {
-                    ExprKind::Ref { name: n }
-                        if Path::dirname(&**n).is_none()
-                            && Path::basename(&**n) == Some(&**name)
-                            && !parser::RESERVED_BINDING.contains(&name.as_str()) =>
-                    {
-                        writeln!(buf, "{name}")?
-                    }
-                    _ => {
-                        write!(buf, "{name}:")?;
-                        pretty_tail_bare(buf, e)?
-                    }
-                }
-                if i < replace.len() - 1 {
-                    buf.kill_newline();
-                    writeln!(buf, ",")?
-                }
-            }
-            Ok(())
-        })?;
+        self.write_head(buf)?;
+        writeln!(buf)?;
+        pretty_fields(buf, &self.replace)?;
         writeln!(buf, "}}")
     }
 }
 
 impl fmt::Display for StructExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let Self { args } = self;
         write!(f, "{{ ")?;
-        for (i, (n, e)) in as_written(args).into_iter().enumerate() {
-            write_leading(f, &e.dec)?;
-            match &e.kind {
-                ExprKind::Ref { name }
-                    if Path::dirname(&**name).is_none()
-                        && Path::basename(&**name) == Some(&**n)
-                        && !parser::RESERVED_BINDING.contains(&n.as_str()) =>
-                {
-                    write!(f, "{n}")?
-                }
-                _ => write!(f, "{n}: {}", Bare(e))?,
-            }
-            if i < args.len() - 1 {
-                write!(f, ", ")?
-            }
-        }
+        write_fields(f, &self.args)?;
         write!(f, " }}")
     }
 }
 
 impl PrettyDisplay for StructExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let Self { args } = self;
         writeln!(buf, "{{")?;
-        buf.nested::<fmt::Result, _>(|buf| {
-            for (i, (n, e)) in as_written(args).into_iter().enumerate() {
-                write_leading(buf, &e.dec)?;
-                match &e.kind {
-                    ExprKind::Ref { name }
-                        if Path::dirname(&**name).is_none()
-                            && Path::basename(&**name) == Some(&**n)
-                            && !parser::RESERVED_BINDING.contains(&n.as_str()) =>
-                    {
-                        writeln!(buf, "{n}")?
-                    }
-                    _ => {
-                        write!(buf, "{n}:")?;
-                        pretty_tail_bare(buf, e)?;
-                    }
-                }
-                if i < args.len() - 1 {
-                    buf.kill_newline();
-                    writeln!(buf, ",")?
-                }
-            }
-            Ok(())
-        })?;
+        pretty_fields(buf, &self.args)?;
         writeln!(buf, "}}")
     }
 }
@@ -1034,27 +1032,15 @@ pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
 impl fmt::Display for ApplyExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let Self { args, function } = self;
-        if prints_as_bare_postfix(function) {
-            write!(f, "{function}")?
-        } else {
-            write!(f, "({function})")?
-        }
-        write!(f, "(")?;
-        for i in 0..args.len() {
-            match &args[i].0 {
-                None => write!(f, "{}", &args[i].1)?,
-                Some(name) => match &args[i].1.kind {
-                    ExprKind::Ref { name: n }
-                        if Path::dirname(&n.0).is_none()
-                            && Path::basename(&n.0) == Some(name.as_str()) =>
-                    {
-                        write!(f, "#{name}")?
-                    }
-                    _ => write!(f, "#{name}: {}", &args[i].1)?,
-                },
-            }
-            if i < args.len() - 1 {
+        write!(f, "{}(", Postfix(function))?;
+        for (i, (name, e)) in args.iter().enumerate() {
+            if i > 0 {
                 write!(f, ", ")?
+            }
+            match name {
+                None => write!(f, "{e}")?,
+                Some(name) if puns(name, e) => write!(f, "#{name}")?,
+                Some(name) => write!(f, "#{name}: {e}")?,
             }
         }
         write!(f, ")")
@@ -1082,26 +1068,19 @@ impl PrettyDisplay for ApplyExpr {
             return writeln!(buf, ")");
         }
         writeln!(buf, "(")?;
-        buf.nested::<fmt::Result, _>(|buf| {
-            for i in 0..args.len() {
-                match &args[i].0 {
-                    None => args[i].1.fmt_pretty(buf)?,
-                    Some(name) => match &args[i].1.kind {
-                        ExprKind::Ref { name: n }
-                            if Path::dirname(&n.0).is_none()
-                                && Path::basename(&n.0) == Some(name.as_str()) =>
-                        {
-                            writeln!(buf, "#{name}")?
-                        }
-                        _ => {
-                            write!(buf, "#{name}:")?;
-                            pretty_tail(buf, &args[i].1)?
-                        }
-                    },
-                }
-                if i < args.len() - 1 {
+        buf.nested(|buf| {
+            for (i, (name, e)) in args.iter().enumerate() {
+                if i > 0 {
                     buf.kill_newline();
                     writeln!(buf, ",")?
+                }
+                match name {
+                    None => e.fmt_pretty(buf)?,
+                    Some(name) if puns(name, e) => writeln!(buf, "#{name}")?,
+                    Some(name) => {
+                        write!(buf, "#{name}:")?;
+                        pretty_tail(buf, e)?
+                    }
                 }
             }
             Ok(())
@@ -1127,16 +1106,12 @@ impl fmt::Display for Arg {
 }
 
 impl LambdaExpr {
-    // CR claude for eric: [style] No space between the quantifiers and the bar:
-    // `'a: Int |a: 'a, b: 'a|` (stdlib core, the book) formats to
-    // `'a: Int|a: 'a, b: 'a|` (probed).
-    /// The quantifiers in front of the opening bar.
+    /// The quantifiers in front of the opening bar, and the space
+    /// between them and it.
     fn write_constraints(&self, f: &mut impl Write) -> fmt::Result {
         for (i, (tvar, typ)) in self.constraints.iter().enumerate() {
-            write!(f, "{tvar}: {typ}")?;
-            if i < self.constraints.len() - 1 {
-                write!(f, ", ")?;
-            }
+            let sep = if i + 1 < self.constraints.len() { ", " } else { " " };
+            write!(f, "{tvar}: {typ}{sep}")?;
         }
         Ok(())
     }
@@ -1218,7 +1193,7 @@ impl LambdaExpr {
 /// laid out over lines.
 impl PrettyDisplay for LambdaExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        let start = buf.len();
+        let start = buf.mark();
         self.write_constraints(buf)?;
         write!(buf, "|")?;
         self.write_args(buf, ", ", "")?;
@@ -1230,15 +1205,15 @@ impl PrettyDisplay for LambdaExpr {
         };
         let has_args = !self.args.is_empty() || self.vargs.is_some();
         if buf.col() + opener > buf.limit && has_args {
-            buf.buf.truncate(start);
+            buf.rollback(start);
             self.write_constraints(buf)?;
             writeln!(buf, "|")?;
             buf.nested(|buf| self.write_args(buf, ",\n", "\n"))?;
-            let closing = buf.len();
+            let closing = buf.mark();
             write!(buf, "|")?;
             self.write_returns(buf)?;
             if buf.col() > buf.limit && self.rtype.is_some() {
-                buf.buf.truncate(closing);
+                buf.rollback(closing);
                 write!(buf, "|")?;
                 self.pretty_returns(buf)?;
             }
@@ -1309,48 +1284,81 @@ impl PrettyDisplay for SelectExpr {
     }
 }
 
+/// `e`, then `suffix` on the line `e` ends on: flat when both fit, else
+/// `e` laid out over lines.
+fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
+    if decorated(e) {
+        e.fmt_pretty(buf)?
+    } else {
+        let start = buf.mark();
+        let col = buf.col();
+        write!(buf, "{}{suffix}", Bare(e))?;
+        if col + buf.width_since(start) <= buf.limit {
+            return writeln!(buf);
+        }
+        buf.rollback(start);
+        Bare(e).fmt_pretty_inner(buf)?
+    }
+    buf.kill_newline();
+    writeln!(buf, "{suffix}")
+}
+
+/// A postfix form: its source, parenthesized unless it reads bare, and
+/// then the suffix.
+fn pretty_postfix(buf: &mut PrettyBuf, source: &Expr, suffix: &str) -> fmt::Result {
+    if prints_as_bare_postfix(source) {
+        pretty_then(buf, source, suffix)
+    } else {
+        write!(buf, "(")?;
+        pretty_then(buf, source, &format_compact!("){suffix}"))
+    }
+}
+
 impl PrettyDisplay for ExprKind {
+    fn decorated(&self) -> bool {
+        kind_decorated(self)
+    }
+
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        // CR claude for eric: [bug] The left operand is always written flat, so a
-        // left-leaning chain (`a + b + c`, the parser's shape) breaks only before
-        // its last operand. probe: a six-term sum of long names prints a
-        // 101-column line, then `sigma_tau;`. Break a chain at each operator.
-        macro_rules! binop {
-            ($sep:literal, $lhs:expr, $rhs:expr) => {{
-                writeln!(buf, "{} {}", $lhs, $sep)?;
-                $rhs.fmt_pretty(buf)
-            }};
+        use ExprKind::*;
+        if let Some((op, lhs, rhs)) = BinOp::of(self) {
+            pretty_then(buf, lhs, &format_compact!(" {}", op.token()))?;
+            return rhs.fmt_pretty(buf);
         }
         match self {
-            ExprKind::Use { reexport, names } => pretty_use_names(buf, *reexport, names),
-            // CR claude for eric: [bug] A field, index, slice or map access never
-            // breaks, so neither does the call in front of it. probe: `let v =
-            // some_function_with_long_name(argument_number_one,
-            // argument_number_two, argument_three).field` prints a 97-column
-            // line, where the same call with `?` breaks. Lay the source out with
-            // `fmt_pretty` and append the suffix, as `Qop` does.
-            ExprKind::Constant(_)
-            | ExprKind::NoOp
-            | ExprKind::Ref { .. }
-            | ExprKind::StructRef { .. }
-            | ExprKind::TupleRef { .. }
-            | ExprKind::ArrayRef { .. }
-            | ExprKind::MapRef { .. }
-            | ExprKind::ArraySlice { .. }
-            | ExprKind::StringInterpolate { .. }
-            | ExprKind::Module {
-                name: _,
+            NoOp => Ok(()),
+            Use { reexport, names } => UseStmt(*reexport, names).fmt_pretty_inner(buf),
+            Constant(_)
+            | Ref { .. }
+            | StringInterpolate { .. }
+            | Module {
                 value: ModuleKind::Unresolved { .. } | ModuleKind::Resolved { .. },
+                ..
             } => {
                 writeln!(buf, "{self}")
             }
-            ExprKind::ExplicitParens(e) => {
+            StructRef { source, field } => {
+                pretty_postfix(buf, source, &format_compact!(".{field}"))
+            }
+            TupleRef { source, field } => {
+                pretty_postfix(buf, source, &format_compact!(".{field}"))
+            }
+            ArrayRef { source, i } => {
+                pretty_postfix(buf, source, &format_compact!("[{i}]"))
+            }
+            MapRef { source, key } => {
+                pretty_postfix(buf, source, &format_compact!("{{{key}}}"))
+            }
+            ArraySlice { source, start, end } => {
+                pretty_postfix(buf, source, &format_compact!("{}", Slice(start, end)))
+            }
+            ExplicitParens(e) => {
                 writeln!(buf, "(")?;
                 buf.nested(|buf| e.fmt_pretty(buf))?;
                 writeln!(buf, ")")
             }
-            ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";"),
-            ExprKind::Seq { queued, trigger, abort, flush, body } => {
+            Do { exprs } => pretty_print_exprs(buf, exprs, "{", "}", ";", false),
+            Seq { queued, trigger, abort, flush, body } => {
                 write!(buf, "{} ", if *queued { "seqq" } else { "seq" })?;
                 if let Some(t) = trigger {
                     if let SeqTrigger::Bind(b) = t {
@@ -1380,33 +1388,30 @@ impl PrettyDisplay for ExprKind {
                 if !first {
                     write!(buf, " ")?;
                 }
-                pretty_print_exprs(buf, body, "{", "}", ";")
+                pretty_print_exprs(buf, body, "{", "}", ";", false)
             }
-            ExprKind::Until(e) => {
+            Until(e) => {
                 write!(buf, "until ")?;
                 e.fmt_pretty(buf)
             }
-            ExprKind::TryWith(t) => {
-                pretty_print_exprs(buf, &t.body, "try {", "}", ";")?;
+            TryWith(t) => {
+                pretty_print_exprs(buf, &t.body, "try {", "}", ";", false)?;
                 buf.kill_newline();
                 match &t.constraint {
                     None => write!(buf, " with({}) ", t.bind)?,
                     Some(ty) => write!(buf, " with({}: {ty}) ", t.bind)?,
                 }
-                pretty_print_exprs(buf, &t.handler, "{", "}", ";")
+                pretty_print_exprs(buf, &t.handler, "{", "}", ";", false)
             }
-            ExprKind::Array { args } => pretty_print_exprs(buf, args, "[", "]", ","),
-            ExprKind::List { args } => pretty_print_exprs(buf, args, "[<", ">]", ","),
-            ExprKind::Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ","),
-            ExprKind::Bind(b) => b.fmt_pretty(buf),
-            ExprKind::TypeDef(td) => td.fmt_pretty(buf),
-            ExprKind::Trait(t) => t.fmt_pretty(buf),
-            ExprKind::Impl(i) => i.fmt_pretty(buf),
-            ExprKind::StructWith(sw) => sw.fmt_pretty(buf),
-            ExprKind::Module {
-                name,
-                value: ModuleKind::Dynamic { sandbox, sig, source },
-            } => {
+            Array { args } => pretty_print_exprs(buf, args, "[", "]", ",", false),
+            List { args } => pretty_print_exprs(buf, args, "[<", ">]", ",", false),
+            Tuple { args } => pretty_print_exprs(buf, args, "(", ")", ",", true),
+            Bind(b) => b.fmt_pretty_inner(buf),
+            TypeDef(td) => td.fmt_pretty_inner(buf),
+            Trait(t) => t.fmt_pretty_inner(buf),
+            Impl(i) => i.fmt_pretty_inner(buf),
+            StructWith(sw) => sw.fmt_pretty_inner(buf),
+            Module { name, value: ModuleKind::Dynamic { sandbox, sig, source } } => {
                 writeln!(buf, "mod {name} dynamic {{")?;
                 buf.nested(|buf| {
                     sandbox.fmt_pretty(buf)?;
@@ -1422,138 +1427,106 @@ impl PrettyDisplay for ExprKind {
                 })?;
                 writeln!(buf, "}}")
             }
-            ExprKind::Connect { name, value, deref } => {
+            Connect { name, value, deref } => {
                 let deref = if *deref { "*" } else { "" };
                 write!(buf, "{deref}{name} <-")?;
                 pretty_tail(buf, value)
             }
-            ExprKind::TypeCast { expr, typ } => {
+            TypeCast { expr, typ } => {
                 writeln!(buf, "cast<{typ}>(")?;
                 buf.nested(|buf| expr.fmt_pretty(buf))?;
                 writeln!(buf, ")")
             }
-            // CR claude for eric: [bug] Entries are written flat (`{k} => {v}`)
-            // whatever their width. probe: `{"alpha" => f(long, args, ..),
-            // "beta" => 2}` prints a 104-column entry. The value should take
-            // `pretty_tail` as a struct field's does.
-            ExprKind::Map { args } => {
+            Map { args } => {
                 writeln!(buf, "{{")?;
-                buf.nested::<fmt::Result, _>(|buf| {
+                buf.nested(|buf| {
                     for (i, (k, v)) in args.iter().enumerate() {
-                        writeln!(buf, "{k} => {v}")?;
-                        if i < args.len() - 1 {
+                        if i > 0 {
                             buf.kill_newline();
                             writeln!(buf, ",")?
                         }
+                        write_leading(buf, &k.dec)?;
+                        write!(buf, "{} =>", Bare(k))?;
+                        pretty_tail(buf, v)?
                     }
                     Ok(())
                 })?;
                 writeln!(buf, "}}")
             }
-            ExprKind::Any { args } => {
+            Any { args } => {
                 write!(buf, "any")?;
-                pretty_print_exprs(buf, args, "(", ")", ",")
+                pretty_print_exprs(buf, args, "(", ")", ",", true)
             }
-            ExprKind::Never { typ, args } => {
+            Never { typ, args } => {
                 match typ {
                     Some(t) => write!(buf, "never<{t}>")?,
                     None => write!(buf, "never")?,
                 }
-                pretty_print_exprs(buf, args, "(", ")", ",")
+                pretty_print_exprs(buf, args, "(", ")", ",", true)
             }
-            // CR claude for eric: [structure] Ends without the newline every other
-            // layout ends with (Sandbox's lists too). That contract is unstated,
-            // and the ~40 `kill_newline` calls in this file exist to cope with
-            // either. State it on `fmt_pretty_inner` and keep it. `is_empty()`.
-            ExprKind::Variant { tag: _, args } if args.len() == 0 => {
-                write!(buf, "{self}")
-            }
-            ExprKind::Variant { tag, args } => {
+            Variant { tag, args } if args.is_empty() => writeln!(buf, "`{tag}"),
+            Variant { tag, args } => {
                 write!(buf, "`{tag}")?;
-                pretty_print_exprs(buf, args, "(", ")", ",")
+                pretty_print_exprs(buf, args, "(", ")", ",", true)
             }
-            // CR claude for eric: [bug] `writeln!` puts the argument on the next
-            // line. probe: a `Counter(a + b + ..)` too long for its line prints
-            // `let e = Counter\n(\n    alpha_beta_gamma + ..\n);` and a hugged
-            // call as `Counter\n(f(..));` at column 0. Use `write!`.
-            ExprKind::Construct { name, arg } => {
-                writeln!(buf, "{name}")?;
-                pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",")
+            Construct { name, arg } => {
+                write!(buf, "{name}")?;
+                pretty_print_exprs(buf, std::slice::from_ref(&**arg), "(", ")", ",", true)
             }
-            ExprKind::Struct(st) => st.fmt_pretty(buf),
-            ExprKind::Qop(e) | ExprKind::Rethrow(e) => {
-                e.fmt_pretty(buf)?;
-                buf.kill_newline();
-                writeln!(buf, "?")
-            }
-            ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => e.fmt_pretty(buf),
-            ExprKind::OrNever(e) => {
-                e.fmt_pretty(buf)?;
-                buf.kill_newline();
-                writeln!(buf, "$")
-            }
-            // CR claude for eric: [bug] The `"; "` separator leaves a trailing
-            // space on every broken handler statement (probed: `println(msg); `
-            // then newline); every other statement list passes ";".
-            // `pretty_body` has this one caller: inline it.
-            ExprKind::Catch(c) => {
+            Struct(st) => st.fmt_pretty_inner(buf),
+            Qop(e) | Rethrow(e) => pretty_then(buf, e, "?"),
+            SeqGuard(e) | SeqAbort(e) => e.fmt_pretty(buf),
+            OrNever(e) => pretty_then(buf, e, "$"),
+            Catch(c) => {
                 match &c.constraint {
-                    None => write!(buf, "catch({}) ", c.bind)?,
-                    Some(t) => write!(buf, "catch({}: {t}) ", c.bind)?,
+                    None => write!(buf, "catch({})", c.bind)?,
+                    Some(t) => write!(buf, "catch({}: {t})", c.bind)?,
                 }
-                write_leading(buf, &c.handler.dec)?;
-                pretty_body(buf, &c.handler, "{", "}", "; ")
+                pretty_tail(buf, &c.handler)
             }
-            ExprKind::Apply(ae) => ae.fmt_pretty(buf),
-            ExprKind::Lambda(l) => l.fmt_pretty(buf),
-            ExprKind::Eq { lhs, rhs } => binop!("==", lhs, rhs),
-            ExprKind::Ne { lhs, rhs } => binop!("!=", lhs, rhs),
-            ExprKind::Lt { lhs, rhs } => binop!("<", lhs, rhs),
-            ExprKind::Gt { lhs, rhs } => binop!(">", lhs, rhs),
-            ExprKind::Lte { lhs, rhs } => binop!("<=", lhs, rhs),
-            ExprKind::Gte { lhs, rhs } => binop!(">=", lhs, rhs),
-            ExprKind::And { lhs, rhs } => binop!("&&", lhs, rhs),
-            ExprKind::Or { lhs, rhs } => binop!("||", lhs, rhs),
-            ExprKind::Add { lhs, rhs } => binop!("+", lhs, rhs),
-            ExprKind::CheckedAdd { lhs, rhs } => binop!("+?", lhs, rhs),
-            ExprKind::Sub { lhs, rhs } => binop!("-", lhs, rhs),
-            ExprKind::CheckedSub { lhs, rhs } => binop!("-?", lhs, rhs),
-            ExprKind::Mul { lhs, rhs } => binop!("*", lhs, rhs),
-            ExprKind::CheckedMul { lhs, rhs } => binop!("*?", lhs, rhs),
-            ExprKind::Div { lhs, rhs } => binop!("/", lhs, rhs),
-            ExprKind::CheckedDiv { lhs, rhs } => binop!("/?", lhs, rhs),
-            ExprKind::Mod { lhs, rhs } => binop!("%", lhs, rhs),
-            ExprKind::CheckedMod { lhs, rhs } => binop!("%?", lhs, rhs),
-            ExprKind::Sample { lhs, rhs } => binop!("~", lhs, rhs),
-            ExprKind::StrictSample { lhs, rhs } => binop!("~!", lhs, rhs),
-            ExprKind::Not { expr } => match &expr.kind {
-                ExprKind::Do { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";"),
+            Apply(ae) => ae.fmt_pretty_inner(buf),
+            Lambda(l) => l.fmt_pretty_inner(buf),
+            Not { expr } => match &expr.kind {
+                Do { exprs } => pretty_print_exprs(buf, exprs, "!{", "}", ";", false),
                 _ => {
                     write!(buf, "!")?;
                     expr.fmt_pretty(buf)
                 }
             },
-            ExprKind::ByRef(e) => {
+            ByRef(e) => {
                 write!(buf, "&")?;
                 e.fmt_pretty(buf)
             }
-            // CR claude for eric: [bug] `nested` indents the operand's inner lines
-            // one step too far and closes its bracket a step right of the line
-            // that opened it. probe: `let v = *f(a, b, c, d)` too long prints the
-            // arguments at 8 and `);` at 4, where `&f(..)` and `!f(..)` print 4
-            // and 0. Drop `nested`, as ByRef does.
-            ExprKind::Deref(e) => {
+            Deref(e) => {
                 write!(buf, "*")?;
-                buf.nested(|buf| e.fmt_pretty(buf))
+                e.fmt_pretty(buf)
             }
-            ExprKind::Neg(e) if matches!(e.kind, ExprKind::Constant(_)) => {
-                writeln!(buf, "{self}")
-            }
-            ExprKind::Neg(e) => {
+            Neg(e) if matches!(e.kind, Constant(_)) => writeln!(buf, "{self}"),
+            Neg(e) => {
                 write!(buf, "-")?;
                 e.fmt_pretty(buf)
             }
-            ExprKind::Select(se) => se.fmt_pretty(buf),
+            Select(se) => se.fmt_pretty_inner(buf),
+            Eq { .. }
+            | Ne { .. }
+            | Lt { .. }
+            | Gt { .. }
+            | Lte { .. }
+            | Gte { .. }
+            | And { .. }
+            | Or { .. }
+            | Add { .. }
+            | CheckedAdd { .. }
+            | Sub { .. }
+            | CheckedSub { .. }
+            | Mul { .. }
+            | CheckedMul { .. }
+            | Div { .. }
+            | CheckedDiv { .. }
+            | Mod { .. }
+            | CheckedMod { .. }
+            | Sample { .. }
+            | StrictSample { .. } => unreachable!("BinOp::of matched it"),
         }
     }
 }
@@ -1683,10 +1656,10 @@ impl<'a> UseNames<'a> {
         buf.nested::<fmt::Result, _>(|buf| {
             let n = self.entries().count();
             for (i, e) in self.entries().enumerate() {
-                let start = buf.len();
+                let start = buf.mark();
                 e.write_entry(buf)?;
-                if buf.width_from(start) >= buf.limit {
-                    buf.buf.truncate(start);
+                if buf.width_since(start) >= buf.limit {
+                    buf.rollback(start);
                     if let Some(group) = e.write_path(buf)? {
                         group.pretty_group(buf)?;
                         buf.kill_newline();
@@ -1697,6 +1670,21 @@ impl<'a> UseNames<'a> {
             Ok(())
         })?;
         writeln!(buf, "}}")
+    }
+}
+
+/// A use statement: whether it reexports, and its names.
+struct UseStmt<'a>(bool, &'a [UseItem]);
+
+impl fmt::Display for UseStmt<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write_use_names(f, self.0, self.1)
+    }
+}
+
+impl PrettyDisplay for UseStmt<'_> {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        pretty_use_names(buf, self.0, self.1)
     }
 }
 
@@ -1904,6 +1892,10 @@ impl fmt::Display for Bare<'_> {
 }
 
 impl PrettyDisplay for Bare<'_> {
+    fn decorated(&self) -> bool {
+        kind_decorated(&self.0.kind)
+    }
+
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         match &self.0.kind {
             ExprKind::Constant(Value::String(_)) | ExprKind::StringInterpolate { .. } => {
@@ -1922,6 +1914,8 @@ impl fmt::Display for ExprKind {
 
 impl ExprKind {
     fn fmt_inner(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        /// `exprs` separated by `sep`; the empty statement a trailing `;`
+        /// leaves is that `;` and nothing more.
         fn print_exprs(
             f: &mut fmt::Formatter,
             exprs: &[Expr],
@@ -1930,23 +1924,22 @@ impl ExprKind {
             sep: &str,
         ) -> fmt::Result {
             write!(f, "{open}")?;
-            for i in 0..exprs.len() {
-                write!(f, "{}", &exprs[i])?;
-                if i < exprs.len() - 1 {
-                    write!(f, "{sep}")?
+            for (i, e) in exprs.iter().enumerate() {
+                match (i, &e.kind) {
+                    (0, _) => write!(f, "{e}")?,
+                    (_, ExprKind::NoOp) => write!(f, "{}", sep.trim_end())?,
+                    _ => write!(f, "{sep}{e}")?,
                 }
             }
             write!(f, "{close}")
+        }
+        if let Some((op, lhs, rhs)) = BinOp::of(self) {
+            return write!(f, "{lhs} {} {rhs}", op.token());
         }
         match self {
             ExprKind::Constant(v @ Value::String(s)) => {
                 write_str_constant(f, v, s, StrForm::Quoted)
             }
-            // CR claude for eric: [bug] An empty statement (a trailing `;`) prints
-            // as nothing and leaves debris in every layout: `{ a; b;  }` flat, a
-            // line of indent spaces in a broken block (book gui/data_table_*.gx),
-            // a blank last line when a file ends in `;`. Print it as part of the
-            // `;` that precedes it.
             ExprKind::NoOp => Ok(()),
             ExprKind::ExplicitParens(e) => write!(f, "({e})"),
             ExprKind::Constant(v) => write!(f, "{}", Literal(v)),
@@ -1956,23 +1949,17 @@ impl ExprKind {
                 let deref = if *deref { "*" } else { "" };
                 write!(f, "{deref}{name} <- {value}")
             }
-            ExprKind::Use { reexport, names } => write_use_names(f, *reexport, names),
+            ExprKind::Use { reexport, names } => {
+                write!(f, "{}", UseStmt(*reexport, names))
+            }
             ExprKind::Ref { name } => {
                 write!(f, "{name}")
             }
             ExprKind::StructRef { source, field } => {
-                if prints_as_bare_postfix(source) {
-                    write!(f, "{source}.{field}")
-                } else {
-                    write!(f, "({source}).{field}")
-                }
+                write!(f, "{}.{field}", Postfix(source))
             }
             ExprKind::TupleRef { source, field } => {
-                if prints_as_bare_postfix(source) {
-                    write!(f, "{source}.{field}")
-                } else {
-                    write!(f, "({source}).{field}")
-                }
+                write!(f, "{}.{field}", Postfix(source))
             }
             ExprKind::Module {
                 value:
@@ -2043,13 +2030,7 @@ impl ExprKind {
                 }
                 write!(f, "}}")
             }
-            ExprKind::MapRef { source, key } => {
-                if prints_as_bare_postfix(source) {
-                    write!(f, "{source}{{{key}}}")
-                } else {
-                    write!(f, "({source}){{{key}}}")
-                }
-            }
+            ExprKind::MapRef { source, key } => write!(f, "{}{{{key}}}", Postfix(source)),
             ExprKind::Any { args } => {
                 write!(f, "any")?;
                 print_exprs(f, args, "(", ")", ", ")
@@ -2081,72 +2062,69 @@ impl ExprKind {
             ExprKind::StringInterpolate { args } => {
                 write_interpolation(f, args, StrForm::Quoted)
             }
-            ExprKind::ArrayRef { source, i } => {
-                if prints_as_bare_postfix(source) {
-                    write!(f, "{}[{}]", source, i)
-                } else {
-                    write!(f, "({})[{}]", &source, &i)
-                }
-            }
-            // CR claude for eric: [perf] Formats both bounds into temporary
-            // strings only to write them again: write the source, `[`, the
-            // bounds and `..` straight to `f`. The bare-or-parenthesized source
-            // test is also repeated for StructRef, TupleRef, MapRef, ArrayRef
-            // and ApplyExpr; one `Postfix(source)` Display would hold it.
+            ExprKind::ArrayRef { source, i } => write!(f, "{}[{i}]", Postfix(source)),
             ExprKind::ArraySlice { source, start, end } => {
-                let s = match start.as_ref() {
-                    None => "",
-                    Some(e) => &format_compact!("{e}"),
-                };
-                let e = match &end.as_ref() {
-                    None => "",
-                    Some(e) => &format_compact!("{e}"),
-                };
-                if prints_as_bare_postfix(source) {
-                    write!(f, "{}[{}..{}]", source, s, e)
-                } else {
-                    write!(f, "({})[{}..{}]", source, s, e)
-                }
+                write!(f, "{}{}", Postfix(source), Slice(start, end))
             }
             ExprKind::Apply(ap) => write!(f, "{ap}"),
             ExprKind::Select(se) => write!(f, "{se}"),
-            ExprKind::Eq { lhs, rhs } => write!(f, "{lhs} == {rhs}"),
-            ExprKind::Ne { lhs, rhs } => write!(f, "{lhs} != {rhs}"),
-            ExprKind::Gt { lhs, rhs } => write!(f, "{lhs} > {rhs}"),
-            ExprKind::Lt { lhs, rhs } => write!(f, "{lhs} < {rhs}"),
-            ExprKind::Gte { lhs, rhs } => write!(f, "{lhs} >= {rhs}"),
-            ExprKind::Lte { lhs, rhs } => write!(f, "{lhs} <= {rhs}"),
-            ExprKind::And { lhs, rhs } => write!(f, "{lhs} && {rhs}"),
-            ExprKind::Or { lhs, rhs } => write!(f, "{lhs} || {rhs}"),
-            ExprKind::Add { lhs, rhs } => write!(f, "{lhs} + {rhs}"),
-            ExprKind::CheckedAdd { lhs, rhs } => write!(f, "{lhs} +? {rhs}"),
-            ExprKind::Sub { lhs, rhs } => write!(f, "{lhs} - {rhs}"),
-            ExprKind::CheckedSub { lhs, rhs } => write!(f, "{lhs} -? {rhs}"),
-            ExprKind::Mul { lhs, rhs } => write!(f, "{lhs} * {rhs}"),
-            ExprKind::CheckedMul { lhs, rhs } => write!(f, "{lhs} *? {rhs}"),
-            ExprKind::Div { lhs, rhs } => write!(f, "{lhs} / {rhs}"),
-            ExprKind::CheckedDiv { lhs, rhs } => write!(f, "{lhs} /? {rhs}"),
-            ExprKind::Mod { lhs, rhs } => write!(f, "{lhs} % {rhs}"),
-            ExprKind::CheckedMod { lhs, rhs } => write!(f, "{lhs} %? {rhs}"),
-            ExprKind::Sample { lhs, rhs } => write!(f, "{lhs} ~ {rhs}"),
-            ExprKind::StrictSample { lhs, rhs } => write!(f, "{lhs} ~! {rhs}"),
+            ExprKind::Eq { .. }
+            | ExprKind::Ne { .. }
+            | ExprKind::Lt { .. }
+            | ExprKind::Gt { .. }
+            | ExprKind::Lte { .. }
+            | ExprKind::Gte { .. }
+            | ExprKind::And { .. }
+            | ExprKind::Or { .. }
+            | ExprKind::Add { .. }
+            | ExprKind::CheckedAdd { .. }
+            | ExprKind::Sub { .. }
+            | ExprKind::CheckedSub { .. }
+            | ExprKind::Mul { .. }
+            | ExprKind::CheckedMul { .. }
+            | ExprKind::Div { .. }
+            | ExprKind::CheckedDiv { .. }
+            | ExprKind::Mod { .. }
+            | ExprKind::CheckedMod { .. }
+            | ExprKind::Sample { .. }
+            | ExprKind::StrictSample { .. } => unreachable!("BinOp::of matched it"),
             ExprKind::ByRef(e) => write!(f, "&{e}"),
             ExprKind::Deref(e) => write!(f, "*{e}"),
-            // CR claude for eric: [readability] A negated literal prints its type
-            // prefix: `- 8` formats to `-i64:8` and `- 1.5` to `-f64:1.5`, against
-            // the rule that i64 and f64 print bare. `- 8` (with the space) reads
-            // back as the negation too.
-            // `-1` reads back as the literal, so a negated one keeps its type
+            // `-1` reads back as the literal: a negated one keeps the space
             ExprKind::Neg(e) => match &e.kind {
-                ExprKind::Constant(v @ (Value::I64(0..) | Value::F64(_)))
-                    if e.dec.is_none() =>
-                {
-                    write!(f, "-")?;
-                    v.fmt_ext(f, &VAL_ESC, true)
-                }
+                ExprKind::Constant(_) if e.dec.is_none() => write!(f, "- {}", Bare(e)),
                 _ => write!(f, "-{e}"),
             },
             ExprKind::Not { expr } => write!(f, "!{expr}"),
         }
+    }
+}
+
+/// The source of a postfix form, parenthesized unless it reads bare.
+struct Postfix<'a>(&'a Expr);
+
+impl fmt::Display for Postfix<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match prints_as_bare_postfix(self.0) {
+            true => write!(f, "{}", self.0),
+            false => write!(f, "({})", self.0),
+        }
+    }
+}
+
+/// The `[start..end]` of a slice.
+struct Slice<'a>(&'a Option<Arc<Expr>>, &'a Option<Arc<Expr>>);
+
+impl fmt::Display for Slice<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        if let Some(e) = self.0 {
+            write!(f, "{e}")?
+        }
+        write!(f, "..")?;
+        if let Some(e) = self.1 {
+            write!(f, "{e}")?
+        }
+        write!(f, "]")
     }
 }

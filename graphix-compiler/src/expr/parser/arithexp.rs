@@ -1,11 +1,12 @@
 use crate::expr::{
-    ApplyExpr, Expr, ExprKind, Name,
+    ApplyExpr, BinOp, Expr, ExprKind, Name,
     parser::{
-        any, apply_args, array, array_index_suffix, cast, construct, csep, do_block,
-        expr, fldname,
+        any, apply_args, array, array_index_suffix,
+        arrayexp::Index,
+        brace, cast, construct, csep, expr, fldname,
         grow::{grow, max_nesting, note_refused},
-        interpolated, list_lit, literal, map, never_expr, raw_string, reference, select,
-        seq, spaces, sptoken, structure, structwith, variant,
+        interpolated, list_lit, literal, never_expr, raw_string, reference, select,
+        sep_by1_tok, seq, spaces, sptoken, variant,
     },
 };
 use arcstr::ArcStr;
@@ -14,69 +15,46 @@ use combine::{
     error::StreamError,
     many, not_followed_by,
     parser::char::string,
-    position,
+    position, satisfy,
     stream::{Range, StreamErrorFor, position::SourcePosition},
-    token,
+    token, unexpected_any,
 };
-use netidx_core::utils::Either;
-use netidx_value::parser::{int, sep_by1_tok};
+use netidx_value::parser::int;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-// CR claude for eric: [bug] The prefix forms (`&`, `*`, `-` here and both `!`s
-// in primary) recurse with `arith_term(true)`, dropping the seq head's `key =
-// false`: `seq *r { .. }`, `seq !b { .. }` and `seq -n { .. }` read the body as
-// a map access and fail at EOF (probes); only `seq (*r) {` works. Thread `key`.
-fn byref_arith<I>() -> impl Parser<I, Output = Expr>
+/// A prefix operator: `&e`, `*e`, `-e`, `!e`. The operand is an
+/// `arith_term`, so a prefix binds looser than the postfix operators.
+fn prefix<I>(
+    op: char,
+    key: bool,
+    mk: fn(Arc<Expr>) -> ExprKind,
+) -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), token('&').with(arith_term(true)))
-        .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
-}
-
-fn deref_arith<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), token('*').with(arith_term(true)))
-        .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
-}
-
-// Tried after `literal()` so a signed numeric literal stays a `Constant`.
-fn neg_arith<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), token('-').with(arith_term(true)))
-        .map(|(pos, expr)| ExprKind::Neg(Arc::new(expr)).to_expr(pos))
+    (position(), token(op).with(arith_term(key)))
+        .map(move |(pos, e)| mk(Arc::new(e)).to_expr(pos))
 }
 
 /// A postfix operator applied to a primary in `arith_term`'s postfix loop.
 enum Post {
-    Field(Name),                                       // `.name`  -> StructRef
-    Index(usize),                                      // `.0`     -> TupleRef
-    Array(Either<(Option<Expr>, Option<Expr>), Expr>), // `[i]`/`[a..b]`
-    Key(Expr),                                         // `{k}`    -> MapRef
-    Call(LPooled<Vec<(Option<ArcStr>, Expr)>>),        // `(args)` -> Apply
-    Qop(QopSuffix),                                    // `?`/`$`  -> Qop/OrNever
-}
-
-pub(super) enum QopSuffix {
-    Qop,
-    OrNever,
+    Field(Name),                                // `.name`  -> StructRef
+    Index(usize),                               // `.0`     -> TupleRef
+    Array(Index),                               // `[i]`/`[a..b]`
+    Key(Expr),                                  // `{k}`    -> MapRef
+    Call(LPooled<Vec<(Option<ArcStr>, Expr)>>), // `(args)` -> Apply
+    Qop,                                        // `?`      -> Qop
+    OrNever,                                    // `$`      -> OrNever
 }
 
 // Each alternative is `attempt`-wrapped so a partial parse (the `{` of a
 // map access that is really a block) ends the postfix loop cleanly.
-// `key` admits `{k}`; the head of a `seq` refuses it so that its body
-// is not read as a map access of the trigger.
+// `key` admits `{k}`, written against its source like a call's `(`; the
+// head of a `seq` refuses it so that its body is not read as a map access
+// of the trigger.
 fn postfix_op<I>(key: bool) -> impl Parser<I, Output = Post>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -93,43 +71,18 @@ where
             ))),
         ),
         attempt(array_index_suffix()).map(Post::Array),
-        // CR claude for eric: [perf] With `key` false the `{..}` is still parsed
-        // in full before `and_then` refuses it, then the seq body parses it again:
-        // a seq whose first statement holds the next seq doubles per level (14
-        // nested: 3.3s to --check, probe). Do not offer this arm when `key` is off.
-        attempt(between(sptoken('{'), sptoken('}'), expr()).and_then(move |k| {
-            if key {
-                Ok(Post::Key(k))
-            } else {
-                Err(<StreamErrorFor<I>>::message_static_message(
-                    "a seq trigger takes no map access",
-                ))
-            }
+        attempt(combine::value(()).then(move |()| match key {
+            true => between(token('{'), sptoken('}'), expr()).map(Post::Key).left(),
+            false => unexpected_any("a seq trigger takes no map access").right(),
         })),
         attempt(apply_args()).map(Post::Call),
-        qop_suffix().map(Post::Qop),
+        // `?`/`$` chain innermost first: `x?$` takes the errors off `x`,
+        // then the null
+        attempt(spaces().with(choice((
+            token('?').map(|_| Post::Qop),
+            token('$').map(|_| Post::OrNever),
+        )))),
     ))
-}
-
-/// One `?`/`$`. They chain innermost first: `x?$` takes the errors off
-/// `x`, then the null.
-pub(super) fn qop_suffix<I>() -> impl Parser<I, Output = QopSuffix>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    attempt(spaces().with(choice((
-        token('?').map(|_| QopSuffix::Qop),
-        token('$').map(|_| QopSuffix::OrNever),
-    ))))
-}
-
-pub(super) fn apply_qop(pos: SourcePosition, e: Expr, qop: QopSuffix) -> Expr {
-    match qop {
-        QopSuffix::Qop => ExprKind::Qop(Arc::new(e)).to_expr(pos),
-        QopSuffix::OrNever => ExprKind::OrNever(Arc::new(e)).to_expr(pos),
-    }
 }
 
 fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
@@ -140,10 +93,10 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
         Post::Index(field) => {
             ExprKind::TupleRef { source: Arc::new(src), field }.to_expr(pos)
         }
-        Post::Array(Either::Right(i)) => {
+        Post::Array(Index::At(i)) => {
             ExprKind::ArrayRef { source: Arc::new(src), i: Arc::new(i) }.to_expr(pos)
         }
-        Post::Array(Either::Left((start, end))) => ExprKind::ArraySlice {
+        Post::Array(Index::Slice(start, end)) => ExprKind::ArraySlice {
             source: Arc::new(src),
             start: start.map(Arc::new),
             end: end.map(Arc::new),
@@ -157,7 +110,8 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
             args: Arc::from_iter(args.drain(..)),
         })
         .to_expr(pos),
-        Post::Qop(qop) => apply_qop(pos, src, qop),
+        Post::Qop => ExprKind::Qop(Arc::new(src)).to_expr(pos),
+        Post::OrNever => ExprKind::OrNever(Arc::new(src)).to_expr(pos),
     }
 }
 
@@ -165,11 +119,6 @@ fn apply_post(pos: SourcePosition, src: Expr, op: Post) -> Expr {
 /// else the bare postfix source.
 struct Parenthesized;
 
-// CR claude for eric: [bug] `sep_by1_tok` also accepts an empty list, so `()` is
-// a 0-tuple expression and (typexp::tupletyp) a 0-tuple type, though tuples have
-// 2+ elements and a tuple pattern refuses fewer: probe `let x = ();
-// println(x)` prints `()`. `` `A() ``, `T<>`, `{s with }` and a `{}` struct
-// pattern parse too (probes). The root is netidx_value's sep_by1_tok.
 fn paren_group<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -193,22 +142,19 @@ where
         })
 }
 
-// The prefix-operator forms recurse into `arith_term`, so they bind looser
-// than the postfix operators.
-fn primary<I>() -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
+fn primary<I>(key: bool) -> impl Parser<I, Output = (Expr, Option<Parenthesized>)>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
     choice((
-        (position(), token('!').with(arith_term(true)))
-            .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
+        prefix('!', key, |expr| ExprKind::Not { expr }).map(|e| (e, None)),
         raw_string().map(|e| (e, None)),
         list_lit().map(|e| (e, None)),
         array().map(|e| (e, None)),
-        byref_arith().map(|e| (e, None)),
-        deref_arith().map(|e| (e, None)),
+        prefix('&', key, ExprKind::ByRef).map(|e| (e, None)),
+        prefix('*', key, ExprKind::Deref).map(|e| (e, None)),
         select().map(|e| (e, None)),
         seq().map(|e| (e, None)),
         variant().map(|e| (e, None)),
@@ -216,22 +162,11 @@ where
         never_expr().map(|e| (e, None)),
         any().map(|e| (e, None)),
         interpolated().map(|e| (e, None)),
-        // CR claude for eric: [dead] Unreachable: the first alternative owns a
-        // leading `!` and commits once it is consumed.
-        (position(), token('!').with(arith(true)))
-            .map(|(pos, e)| (ExprKind::Not { expr: Arc::new(e) }.to_expr(pos), None)),
-        // CR claude for eric: [perf] map() parses a block's first statement before
-        // failing at its `;`, then do_block() parses it again, so a block whose
-        // first statement holds a block doubles per level: 16 nested `{ let x =
-        // { .. }; x }` take 10s to --check (probe). Parse `{` and the first item
-        // once, then branch on `=>`, `,`/`:`/`}`, `with` or `;`.
-        attempt(map()).map(|e| (e, None)),
-        attempt(structure()).map(|e| (e, None)),
-        attempt(structwith()).map(|e| (e, None)),
-        do_block().map(|e| (e, None)),
+        brace().map(|e| (e, None)),
         paren_group(),
         attempt(literal()).map(|e| (e, None)),
-        neg_arith().map(|e| (e, None)),
+        // after `literal()`, so that a signed numeric literal is a constant
+        prefix('-', key, ExprKind::Neg).map(|e| (e, None)),
         construct().map(|e| (e, None)),
         reference().map(|e| (e, None)),
     ))
@@ -245,19 +180,20 @@ parser! {
             .with(
                 (
                     position(),
-                    primary(),
+                    primary(*key),
                     position(),
                     many::<LPooled<Vec<(Post, SourcePosition)>>, _, _>((
                         postfix_op(*key),
                         position(),
                     )),
+                    position(),
                 )
-                    .and_then(|(pos, (base, paren), end, mut ops)| {
+                    .and_then(|(pos, (base, paren), end, mut ops, chain_end)| {
                         let base = base.ending(end);
                         // The iterative postfix loop escapes `grow`'s depth
                         // counter, but the fold builds an N-deep AST.
                         if ops.len() > max_nesting() {
-                            note_refused();
+                            note_refused(chain_end);
                             return Err(<StreamErrorFor<I>>::message_static_message(
                                 "expression nesting too deep",
                             ));
@@ -265,7 +201,7 @@ parser! {
                         // `?`/`$` print their operand bare, so a
                         // parenthesized one keeps its parens
                         let base = match (paren, ops.first()) {
-                            (Some(Parenthesized), None | Some((Post::Qop(_), _))) => {
+                            (Some(Parenthesized), None | Some((Post::Qop | Post::OrNever, _))) => {
                                 ExprKind::ExplicitParens(Arc::new(base)).to_expr(pos).ending(end)
                             }
                             _ => base,
@@ -275,98 +211,50 @@ parser! {
                             .fold(base, |acc, (op, end)| apply_post(pos, acc, op).ending(end)))
                     }),
             ))
-        // CR claude for eric: [readability] Wrong: postfix_op reads the `{` with
-        // `sptoken`, so `m {"k"}` IS a map access (probe: `println(m {"k"})`
-        // parses). Make the `{` adjacent-only or fix the comment.
-        // arith_term must not skip trailing spaces: `m{"k"}` is a map
-        // access and `m {"k"}` is not, so the postfix loop must see them.
     }
 }
 
-// CR claude for eric: [structure] Operators travel as `&'static str` and are
-// matched three times (arith's choice, mke, precedence) with `unreachable!()`
-// for any other string; a BinOp enum carrying its token, precedence and
-// constructor makes an unknown operator unrepresentable.
-fn mke(lhs: Expr, op: &'static str, rhs: Expr) -> Expr {
-    macro_rules! mk {
-        ($ctor:ident) => {{
-            let (pos, end) = (lhs.pos, rhs.end.0);
-            ExprKind::$ctor { lhs: Arc::new(lhs), rhs: Arc::new(rhs) }
-                .to_expr(pos)
-                .ending(end)
-        }};
+/// Shunting-yard: build the tree the operators' precedence says.
+fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(BinOp, Expr)>>) -> Expr {
+    fn reduce(output: &mut Vec<Expr>, op: BinOp) {
+        let rhs = output.pop().unwrap();
+        let lhs = output.pop().unwrap();
+        let (pos, end) = (lhs.pos, rhs.end.0);
+        output.push(op.build(Arc::new(lhs), Arc::new(rhs)).to_expr(pos).ending(end));
     }
-    match op {
-        "+" => mk!(Add),
-        "+?" => mk!(CheckedAdd),
-        "-" => mk!(Sub),
-        "-?" => mk!(CheckedSub),
-        "*" => mk!(Mul),
-        "*?" => mk!(CheckedMul),
-        "/" => mk!(Div),
-        "/?" => mk!(CheckedDiv),
-        "%" => mk!(Mod),
-        "%?" => mk!(CheckedMod),
-        "==" => mk!(Eq),
-        "!=" => mk!(Ne),
-        ">" => mk!(Gt),
-        "<" => mk!(Lt),
-        ">=" => mk!(Gte),
-        "<=" => mk!(Lte),
-        "&&" => mk!(And),
-        "||" => mk!(Or),
-        "~" => mk!(Sample),
-        "~!" => mk!(StrictSample),
-        _ => unreachable!(),
-    }
-}
-
-// CR claude for eric: [bug] `*` binds tighter than `/` and `%`, so `8 / 2 * 2`
-// is 8 / (2 * 2) = 2 and `7 % 4 * 2` is 7 (probe; expected 8 and 6); the
-// graphix-lang reference and C-family languages put the three at one level.
-// A fix changes the meaning of existing `a / b * c`. The bool is always true.
-/// Returns (precedence, left_associative) for an operator.
-/// Higher precedence binds tighter.
-pub(crate) fn precedence(op: &str) -> (u8, bool) {
-    match op {
-        "~" | "~!" => (0, true),
-        "||" => (1, true),
-        "&&" => (2, true),
-        "==" | "!=" => (3, true),
-        "<" | ">" | "<=" | ">=" => (4, true),
-        "+" | "+?" | "-" | "-?" => (5, true),
-        "/" | "/?" | "%" | "%?" => (6, true),
-        "*" | "*?" => (7, true),
-        _ => unreachable!(),
-    }
-}
-
-/// Shunting-yard algorithm to build an expression tree respecting precedence.
-fn shunting_yard(first: Expr, mut rest: LPooled<Vec<(&'static str, Expr)>>) -> Expr {
     let mut output: LPooled<Vec<Expr>> = LPooled::take();
-    let mut ops: LPooled<Vec<&'static str>> = LPooled::take();
+    let mut ops: LPooled<Vec<BinOp>> = LPooled::take();
     output.push(first);
     for (op, expr) in rest.drain(..) {
-        let (prec, left_assoc) = precedence(op);
-        while let Some(&top) = ops.last() {
-            let (top_prec, _) = precedence(top);
-            if top_prec > prec || (top_prec == prec && left_assoc) {
-                let rhs = output.pop().unwrap();
-                let lhs = output.pop().unwrap();
-                output.push(mke(lhs, ops.pop().unwrap(), rhs));
-            } else {
-                break;
-            }
+        while let Some(&top) = ops.last()
+            && top.precedence() >= op.precedence()
+        {
+            ops.pop();
+            reduce(&mut output, top);
         }
         ops.push(op);
         output.push(expr);
     }
     while let Some(op) = ops.pop() {
-        let rhs = output.pop().unwrap();
-        let lhs = output.pop().unwrap();
-        output.push(mke(lhs, op, rhs));
+        reduce(&mut output, op);
     }
     output.pop().unwrap()
+}
+
+/// A binary operator token.
+fn binop<I>() -> impl Parser<I, Output = BinOp>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    choice(BinOp::ALL.map(|op| {
+        attempt(
+            string(op.token())
+                .skip(not_followed_by(satisfy(move |c| op.not_before() == Some(c))))
+                .map(move |_| op),
+        )
+    }))
 }
 
 parser! {
@@ -375,37 +263,12 @@ parser! {
     {
         grow((
             arith_term(*key),
-            many((
-                attempt(spaces().with(choice((
-                    attempt(string("==")),
-                    attempt(string("!=")),
-                    attempt(string(">=")),
-                    attempt(string("<=")),
-                    attempt(string("&&")),
-                    attempt(string("||")),
-                    // `>` must not swallow a list literal's `>]` closer.
-                    attempt(string(">").skip(not_followed_by(token(']')))),
-                    // `<` must not swallow the `<-` of a connect.
-                    attempt(string("<").skip(not_followed_by(token('-')))),
-                    attempt(string("+?")),
-                    attempt(string("+")),
-                    attempt(string("-?")),
-                    attempt(string("-")),
-                    attempt(string("*?")),
-                    attempt(string("*")),
-                    attempt(string("/?")),
-                    attempt(string("/")),
-                    attempt(string("%?")),
-                    attempt(string("%")),
-                    attempt(string("~!")),
-                    string("~"),
-                )))),
-                arith_term(*key),
-            )),
-        ).and_then(|(e, exprs): (Expr, LPooled<Vec<(&'static str, Expr)>>)| {
+            many((attempt(spaces().with(binop())), arith_term(*key))),
+            position(),
+        ).and_then(|(e, exprs, end): (Expr, LPooled<Vec<(BinOp, Expr)>>, _)| {
             // The iterative operator chain builds one AST level per operator.
             if exprs.len() > max_nesting() {
-                note_refused();
+                note_refused(end);
                 return Err(<StreamErrorFor<I>>::message_static_message(
                     "expression nesting too deep",
                 ));

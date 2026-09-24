@@ -693,7 +693,7 @@ impl Machine<'_> {
         let handler: SmallVec<[&Expr; 8]> =
             t.handler.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).collect();
         let with_entry = self.fresh();
-        let e_cell = self.cells[&(spec.id, t.bind.clone())].name.clone();
+        let e_cell = self.cells[&(spec.id, t.bind.name.clone())].name.clone();
         let mark = self.arms.len();
         self.lower_stmts(&body, entry, next.clone(), sink, visible)?;
         let caught = ArcStr::from(format_compact!("seqtry{}", spec.id.inner()).as_str());
@@ -716,7 +716,7 @@ impl Machine<'_> {
             *arm = block(pos, [jump, inner]);
         }
         let mut wvis = scope(visible);
-        wvis.insert(t.bind.clone(), Redirect::Cell(e_cell));
+        wvis.insert(t.bind.name.clone(), Redirect::Cell(e_cell));
         self.lower_stmts(&handler, with_entry, next, sink, &wvis)
     }
 
@@ -1170,7 +1170,10 @@ fn collect_step_binds(e: &Expr, cells: &mut CarriedBinds) -> Result<()> {
     ensure_sufficient(|| match &e.kind {
         ExprKind::TryWith(t) => {
             let name = ArcStr::from(format_compact!("seqe{}", e.id.inner()).as_str());
-            cells.insert((e.id, t.bind.clone()), Cell { name, pos: e.pos, typ: None });
+            cells.insert(
+                (e.id, t.bind.name.clone()),
+                Cell { name, pos: e.pos, typ: None },
+            );
             for s in t.body.iter().chain(t.handler.iter()) {
                 collect_step_binds(s, cells)?;
             }
@@ -1235,7 +1238,7 @@ fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
             labeled: None,
             pattern: StructurePattern::Bind(x.clone().into()),
             constraint: None,
-            pos,
+            pos: WrittenAt(pos),
         }]),
         vargs: None,
         rtype: None,
@@ -1472,7 +1475,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         }
         ExprKind::TryWith(t) => {
             let mut with_map = scope(map);
-            with_map.remove(&t.bind);
+            with_map.remove(&t.bind.name);
             ExprKind::TryWith(Arc::new(TryWithExpr {
                 body: rewrite_stmts(&t.body, map, mode),
                 bind: t.bind.clone(),

@@ -3,9 +3,9 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, Effect, Event, ExecCtx, InitFn, LambdaId, Node,
-    Refs, Rt, Scope, SourcePosition, TagValue, UserEvent,
+    Refs, Rt, Scope, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
-    expr::{Arg, ExprId, StructurePattern},
+    expr::{Arg, ExprId, StructurePattern, WrittenAt},
     image::{self, ImageBuf},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
@@ -265,7 +265,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
                     labeled: a.is_labeled().then_some(None),
                     pattern: StructurePattern::Bind(name.into()),
                     constraint: Some(a.typ.clone()),
-                    pos: SourcePosition::default(),
+                    pos: WrittenAt::NOWHERE,
                 }
             })
             .collect::<Vec<_>>()

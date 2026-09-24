@@ -1,53 +1,23 @@
+use anyhow::{Context, Result};
 use graphix_compiler::expr::format::{
     FormatConfig, Refused, SourceKind, format_source, format_source_unchecked,
 };
 use std::{env, fs, path::Path, process::ExitCode};
 
-/// Round trip + idempotence over every file given (one file: print it).
-/// Exits non-zero when any file was unreadable or exposed a formatter
-/// bug; a file the formatter merely declines is not a failure.
+/// Round trip + idempotence over every file given (one file: print it),
+/// each under the configuration `graphix fmt` would find for it.
+/// `GXFMT_UNCHECKED=1` skips the reparse. Exits non-zero when any file was
+/// unreadable or exposed a formatter bug; a file the formatter merely
+/// declines is not a failure.
 fn main() -> ExitCode {
-    let cfg = FormatConfig::default();
-    let mut bad = 0;
     let args: Vec<String> = env::args().skip(1).collect();
     let quiet = args.len() > 1;
+    let unchecked = env::var("GXFMT_UNCHECKED").is_ok();
+    let mut bad = 0;
     for f in &args {
-        let text = match fs::read_to_string(f) {
-            Ok(t) => t,
-            Err(e) => {
-                bad += 1;
-                eprintln!("{f}: {e}");
-                continue;
-            }
-        };
-        // CR claude for eric: [style] The unchecked path unwraps (a file that does
-        // not parse panics the run) and prints every file even when many are
-        // given; `SourceKind::of_path` is computed three times; and the harness
-        // uses the default config where `graphix fmt` uses `FormatConfig::discover`.
-        if env::var("GXFMT_UNCHECKED").is_ok() {
-            let kind = SourceKind::of_path(Path::new(f));
-            print!("{}", &*format_source_unchecked(kind, &text, &cfg).unwrap());
-            continue;
-        }
-        match format_source(SourceKind::of_path(Path::new(f)), &text, &cfg) {
-            Ok(s) if !quiet => print!("{}", &*s),
-            Ok(s) => match format_source(SourceKind::of_path(Path::new(f)), &s, &cfg) {
-                Ok(s2) if *s2 == *s => (),
-                Ok(_) => {
-                    bad += 1;
-                    eprintln!("{f}: NOT IDEMPOTENT")
-                }
-                Err(e) => {
-                    bad += 1;
-                    eprintln!("{f}: second pass: {e:#}")
-                }
-            },
-            Err(e) => {
-                if e.is::<Refused>() {
-                    bad += 1;
-                    eprintln!("{f}: {e:#}")
-                }
-            }
+        if let Err(e) = check(Path::new(f), quiet, unchecked) {
+            bad += 1;
+            eprintln!("{f}: {e:#}")
         }
     }
     if bad > 0 {
@@ -55,4 +25,30 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn check(path: &Path, quiet: bool, unchecked: bool) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    let kind = SourceKind::of_path(path);
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+    let cfg = FormatConfig::discover(dir.unwrap_or(Path::new(".")))?;
+    if unchecked {
+        let s = format_source_unchecked(kind, &text, &cfg)?;
+        if !quiet {
+            print!("{}", &*s)
+        }
+        return Ok(());
+    }
+    let once = match format_source(kind, &text, &cfg) {
+        Ok(s) => s,
+        Err(e) if e.is::<Refused>() => return Err(e),
+        Err(_) => return Ok(()),
+    };
+    if !quiet {
+        print!("{}", &*once);
+        return Ok(());
+    }
+    let twice = format_source(kind, &once, &cfg).context("second pass")?;
+    anyhow::ensure!(*twice == *once, "NOT IDEMPOTENT");
+    Ok(())
 }

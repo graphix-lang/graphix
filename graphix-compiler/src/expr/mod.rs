@@ -3,9 +3,10 @@ use crate::{
     expr::print::{PrettyBuf, PrettyDisplay},
     typ::{FnType, TVar, Type},
 };
-use anyhow::{Context as _, Result};
 use arcstr::{ArcStr, literal};
+pub use binop::BinOp;
 use combine::stream::position::SourcePosition;
+pub use context::{At, ErrorContext, ErrorSite, ParserContext};
 pub use modpath::ModPath;
 use netidx_core::{pack::PackError, path::Path, utils::Either};
 use netidx_derive::Pack;
@@ -13,15 +14,10 @@ use netidx_value::Value;
 pub(crate) use pattern::union_members;
 pub use pattern::{Pattern, StructurePattern};
 use poolshark::local::LPooled;
-use regex::Regex;
 pub use resolver::{
     BufferOverrides, FilesResolver, ModuleResolver, Resolution, ResolverFactory,
     ResolverRef, Resolvers, RootFile, VfsEntry, VfsResolver, add_interface_modules,
-    parse_modpath,
-};
-use serde::{
-    Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, Visitor},
+    parse_modpath, read_optional, read_to_arcstr,
 };
 use smallvec::SmallVec;
 use std::{
@@ -36,6 +32,8 @@ use std::{
 };
 use triomphe::Arc;
 
+mod binop;
+mod context;
 pub mod format;
 mod modpath;
 pub mod parser;
@@ -46,12 +44,6 @@ pub(crate) mod seq;
 pub mod serialize;
 #[cfg(test)]
 mod test;
-
-// CR claude for eric: [dead] VNAME has no user in the workspace, and as a
-// `const` every use would build a fresh LazyLock and recompile the regex (a
-// `static` was meant). Delete it (and the `regex` import it alone needs).
-pub const VNAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new("^[a-z][a-z0-9_]*$").unwrap());
 
 image_id!(ExprId);
 
@@ -87,34 +79,6 @@ pub(crate) fn get_origin() -> Arc<Origin> {
     })
 }
 
-// CR claude for eric: [structure] expr/mod.rs mixes the AST with async file IO
-// (read_to_arcstr/read_optional, used only by resolver.rs) and the error
-// reporting types (ErrorContext, ErrorSite, At, ParserContext). Move the IO to
-// resolver.rs and the error types to a module of their own.
-/// utility to read a file to an ArcStr with minimal allocation
-pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr> {
-    let path = path.as_ref();
-    read_optional(path)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("{}: no such file", path.display()))
-}
-
-/// Read a file that may not exist: `None` when it does not, an error
-/// for any other failure (unreadable, not UTF-8).
-pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<ArcStr>> {
-    use tokio::io::AsyncReadExt;
-    let path = path.as_ref();
-    let mut f = match tokio::fs::File::open(path).await {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(anyhow::Error::from(e).context(path.display().to_string())),
-    };
-    let mut buf: LPooled<Vec<u8>> = LPooled::take();
-    f.read_to_end(&mut *buf).await.with_context(|| path.display().to_string())?;
-    let s = str::from_utf8(&*buf).with_context(|| path.display().to_string())?;
-    Ok(Some(ArcStr::from(s)))
-}
-
 #[derive(Debug)]
 pub struct CouldNotResolve(ArcStr);
 
@@ -124,47 +88,17 @@ impl fmt::Display for CouldNotResolve {
     }
 }
 
-// CR claude for eric: [readability] Three-state fields are spelled as nested
-// Option/Either: `labeled: Option<Option<Expr>>` (positional / labeled /
-// labeled with default), LambdaExpr's `vargs: Option<Option<Type>>` and
-// `body: Either<Expr, ArcStr>` (a body or a builtin name). Named enums
-// (`ArgKind::{Positional, Labeled, Default(Expr)}`, `LambdaBody::{Expr,
-// BuiltIn}`) say at each match what `Some(None)` / `Right` mean.
-#[derive(Debug, Clone, Pack)]
+// XCR claude for eric: [readability] `labeled: Option<Option<Expr>>`, LambdaExpr's
+// `vargs` and `body: Either<Expr, ArcStr>` as named enums would touch lambda.rs,
+// callsite.rs, traits.rs, fusion/lowering.rs, seq.rs and stdlib core (calls, fusion-b,
+// seq-ops): worth one mechanical pass after the merge, not nine parallel ones.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Arg {
     pub labeled: Option<Option<Expr>>,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
-    // CR claude for eric: [structure] `pos` is a SourcePosition kept out of
-    // equality by the hand-written PartialEq/PartialOrd below and out of the
-    // wire by `#[pack(skip)]`; that is exactly what `WrittenAt` is for. As a
-    // WrittenAt, Arg derives both impls and the comment goes.
-    // IDE metadata: excluded from equality and from the packed form.
-    #[pack(skip)]
-    pub pos: SourcePosition,
-}
-
-impl PartialEq for Arg {
-    fn eq(&self, rhs: &Self) -> bool {
-        self.labeled == rhs.labeled
-            && self.pattern == rhs.pattern
-            && self.constraint == rhs.constraint
-    }
-}
-
-impl PartialOrd for Arg {
-    fn partial_cmp(&self, rhs: &Self) -> Option<std::cmp::Ordering> {
-        match self.labeled.partial_cmp(&rhs.labeled)? {
-            std::cmp::Ordering::Equal => (),
-            o => return Some(o),
-        }
-        match self.pattern.partial_cmp(&rhs.pattern)? {
-            std::cmp::Ordering::Equal => (),
-            o => return Some(o),
-        }
-        self.constraint.partial_cmp(&rhs.constraint)
-    }
+    pub pos: WrittenAt,
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -177,6 +111,47 @@ pub struct Doc(pub Option<ArcStr>);
 pub struct Attr {
     pub name: ArcStr,
     pub args: Arc<[Expr]>,
+}
+
+/// The `//` lines above an interface item or a trait method. Like an
+/// expression's comments they decide nothing: equal to every other.
+#[derive(Debug, Clone, Default)]
+pub struct Comments(Option<Arc<[ArcStr]>>);
+
+impl Comments {
+    pub fn of(lines: impl ExactSizeIterator<Item = ArcStr>) -> Self {
+        Self((lines.len() > 0).then(|| Arc::from_iter(lines)))
+    }
+
+    pub fn lines(&self) -> &[ArcStr] {
+        self.0.as_deref().unwrap_or(&[])
+    }
+}
+
+impl PartialEq for Comments {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl PartialOrd for Comments {
+    fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
+        Some(Ordering::Equal)
+    }
+}
+
+impl netidx_core::pack::Pack for Comments {
+    fn encoded_len(&self) -> usize {
+        self.0.encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        self.0.encode(buf)
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self(netidx_core::pack::Pack::decode(buf)?))
+    }
 }
 
 /// The `//` comment lines and `#[..]` attributes on their own line directly
@@ -221,6 +196,7 @@ pub struct TraitExpr {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct TraitMethod {
+    pub comments: Comments,
     pub doc: Doc,
     pub name: Name,
     pub typ: Arc<FnType>,
@@ -243,10 +219,10 @@ pub struct ImplExpr {
     pub params: Arc<[TVar]>,
     pub constraints: Arc<[(TVar, Type)]>,
     pub target: Type,
-    // CR claude for eric: [structure] the parser admits only `let name = value`
-    // here, but the type says any Expr, so Impl::compile re-matches each method
-    // with `unreachable!()` (node/traits.rs). A method struct (name + value) makes
-    // the other shapes unrepresentable.
+    // XCR claude for eric: a method is an Expr in all but name: Impl::compile needs
+    // its id, pos and decorations (a core trait's gets `#[sync]`) and the bind's
+    // rec and type, so a method struct would copy Expr's fields. The parser refuses
+    // every other shape; traits.rs's two `unreachable!`s are the whole cost.
     pub methods: Arc<[Expr]>,
 }
 
@@ -265,7 +241,7 @@ pub struct BindSig {
 #[pack(unwrapped)]
 pub struct UseItem {
     pub path: ModPath,
-    pub rename: Option<ArcStr>,
+    pub rename: Option<Name>,
     /// Where each segment of `path` stands in the use tree.
     pub at: WrittenPath,
 }
@@ -319,6 +295,7 @@ pub enum SigKind {
 #[derive(Debug, Clone, Pack)]
 #[pack(unwrapped)]
 pub struct SigItem {
+    pub comments: Comments,
     pub doc: Doc,
     pub kind: SigKind,
     // IDE metadata: excluded from equality and from the packed form.
@@ -426,12 +403,10 @@ pub struct LambdaExpr {
     pub body: Either<Expr, ArcStr>,
 }
 
-// CR claude for eric: [structure] Four compiler-only Options encode three roles
-// with fixed shapes: a user catch (all None), the seq machine's handler
-// (seq_abort + seq_pc, seq_manual optional) and a try's jump (seq_abort +
-// seq_capture). Every other combination is representable and meaningless. An
-// enum `role: CatchRole { User, SeqMachine { abort, manual, pc }, SeqJump {
-// jump, capture } }` makes them unrepresentable.
+// XCR claude for eric: agreed, but the roles are built in seq.rs, read in node/error.rs,
+// fusion/mod.rs and node_shape.rs (seq-ops, fusion-b, core-misc): a `CatchRole` enum is
+// one pass across those after the merge. Recommend `role: CatchRole { User,
+// SeqMachine { abort, manual, pc }, SeqJump { jump, capture } }`.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct CatchExpr {
@@ -458,7 +433,7 @@ pub struct CatchExpr {
 #[pack(unwrapped)]
 pub struct TryWithExpr {
     pub body: Arc<[Expr]>,
-    pub bind: ArcStr,
+    pub bind: Name,
     pub constraint: Option<Type>,
     pub handler: Arc<[Expr]>,
 }
@@ -500,9 +475,9 @@ pub enum ExprKind {
         value: ModuleKind,
     },
     ExplicitParens(Arc<Expr>),
-    // CR claude for eric: [readability] `Do` is the `{ a; b }` block; the `do`
-    // keyword it is named after is gone (seq_blocks.md). `Block` says what it
-    // is, and seq.rs's `lower_block`/`block()` already call it that.
+    // XCR claude for eric: agreed; the rename touches node/bind.rs, node/compiler.rs,
+    // seq.rs, graphix-rt and graphix-fuzz besides this package, so it is a one-line
+    // sed (`ExprKind::Do` -> `ExprKind::Block`, `Do {` under the globs) after the merge.
     Do {
         exprs: Arc<[Expr]>,
     },
@@ -588,11 +563,9 @@ pub enum ExprKind {
     Select(SelectExpr),
     /// `seq [trigger] { stmts }` — a straight-line ceremony lowered to
     /// a select over a step variable.
-    // CR claude for eric: [structure] `queued: bool` beside `flush: Option<..>`
-    // represents a `seq` with a flush, which lowering refuses (seq.rs desugar);
-    // likewise SeqTrigger::Bind carries a `rec` that lowering refuses.
-    // `kind: SeqKind { Plain, Queued { flush } }` makes the first
-    // unrepresentable; the parser could refuse both where they are written.
+    // XCR claude for eric: the parser now refuses both where written (a `flush` in a
+    // `seq` head, a `let rec` trigger); `SeqKind { Plain, Queued { flush } }` would also
+    // reshape seq.rs's desugar (seq-ops), so it is left for that package.
     Seq {
         queued: bool,
         trigger: Option<SeqTrigger>,
@@ -707,561 +680,20 @@ pub enum ExprKind {
     },
 }
 
-// CR claude for eric: [structure] One constructor is spelled three ways with
-// the same struct literal: `to_expr(pos)`, `to_expr_nopos()` and `Expr::new`
-// (in a third `impl Expr` block below); seq.rs rewrite_with_inner, map_children
-// and serialize.rs syntax_decode repeat the literal again. Keep `Expr::new`
-// (plus an `Expr::with_kind(&self, kind)` for the rebuild-with-fresh-id case)
-// and route the rest through it.
 impl ExprKind {
     pub fn to_expr(self, pos: SourcePosition) -> Expr {
-        Expr {
-            id: ExprId::new(),
-            ori: get_origin(),
-            pos,
-            kind: self,
-            dec: None,
-            str_form: Default::default(),
-            end: Default::default(),
-        }
+        Expr::new(self, pos)
     }
 
-    /// does not provide any position information or comment
+    /// An expression written nowhere.
     pub fn to_expr_nopos(self) -> Expr {
-        Expr {
-            id: ExprId::new(),
-            ori: get_origin(),
-            pos: Default::default(),
-            kind: self,
-            dec: None,
-            str_form: Default::default(),
-            end: Default::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub enum Source {
-    File(PathBuf),
-    Netidx(Path),
-    Internal(ArcStr),
-    Unspecified,
-}
-
-impl Default for Source {
-    fn default() -> Self {
-        Self::Unspecified
-    }
-}
-
-impl Source {
-    pub fn has_filename(&self, name: &str) -> bool {
-        match self {
-            Self::File(buf) => match buf.file_name() {
-                None => false,
-                Some(os) => match os.to_str() {
-                    None => false,
-                    Some(s) => s == name,
-                },
-            },
-            Self::Netidx(_) | Self::Internal(_) | Self::Unspecified => false,
-        }
+        Expr::new(self, Default::default())
     }
 
-    pub fn is_file(&self) -> bool {
-        match self {
-            Self::File(_) => true,
-            Self::Netidx(_) | Self::Internal(_) | Self::Unspecified => false,
-        }
-    }
-
-    pub fn to_value(&self) -> Value {
-        match self {
-            Self::File(pb) => {
-                let s = pb.as_os_str().to_string_lossy();
-                (literal!("File"), ArcStr::from(s)).into()
-            }
-            Self::Netidx(p) => (literal!("Netidx"), p.clone()).into(),
-            Self::Internal(s) => (literal!("Internal"), s.clone()).into(),
-            Self::Unspecified => literal!("Unspecified").into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
-pub struct Origin {
-    pub parent: Option<Arc<Origin>>,
-    pub source: Source,
-    pub text: ArcStr,
-}
-
-// CR claude for eric: [structure] The `match source { File, Netidx, Internal,
-// Unspecified }` wording is written four times (here twice, ParserContext and
-// ErrorContext) and disagrees: a file prints `{n:?}` (quoted) here and
-// `p.display()` there, so one error reads `in file "/a.gx"` above `in file
-// /a.gx`. One `Display for Source` serves all four; `Default for Source` can
-// be derived.
-impl fmt::Display for Origin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let flags = PRINT_FLAGS.with(|f| f.get());
-        match &self.source {
-            Source::Unspecified => {
-                if flags.contains(PrintFlag::NoSource) {
-                    write!(f, "in expr")?
-                } else {
-                    write!(f, "in expr {}", self.text)?
-                }
-            }
-            Source::File(n) => write!(f, "in file {n:?}")?,
-            Source::Netidx(n) => write!(f, "in netidx {n}")?,
-            Source::Internal(n) => write!(f, "in module {n}")?,
-        }
-        let mut p = &self.parent;
-        if flags.contains(PrintFlag::NoParents) {
-            Ok(())
-        } else {
-            loop {
-                match p {
-                    None => break Ok(()),
-                    Some(parent) => {
-                        writeln!(f, "")?;
-                        write!(f, "    ")?;
-                        match &parent.source {
-                            Source::Unspecified => {
-                                if flags.contains(PrintFlag::NoSource) {
-                                    write!(f, "included from expr")?
-                                } else {
-                                    write!(f, "included from expr {}", parent.text)?
-                                }
-                            }
-                            Source::File(n) => write!(f, "included from file {n:?}")?,
-                            Source::Netidx(n) => write!(f, "included from netidx {n}")?,
-                            Source::Internal(n) => write!(f, "included from module {n}")?,
-                        }
-                        p = &parent.parent;
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl Origin {
-    pub fn to_value(&self) -> Value {
-        let p = Value::from(self.parent.as_ref().map(|p| p.to_value()));
-        [
-            (literal!("parent"), p),
-            (literal!("source"), self.source.to_value()),
-            (literal!("text"), Value::from(self.text.clone())),
-        ]
-        .into()
-    }
-
-    // CR claude for eric: [style] An inherent `from_str` that is not
-    // `FromStr` (and cannot fail) reads like the trait at its seven call
-    // sites; `Origin::unspecified(text)` or `From<&str>` says what it builds.
-    pub fn from_str(s: &str) -> Self {
-        Self { parent: None, source: Source::Unspecified, text: ArcStr::from(s) }
-    }
-}
-
-/// Where in its source something was written, for the IDE and the
-/// formatter. It never decides anything: every `WrittenAt` is equal to
-/// every other, hashes to nothing and packs to nothing, so a type that
-/// holds one derives its own comparisons as if it did not.
-// CR claude for eric: [risk] Because every WrittenAt equals every other,
-// `at == WrittenAt::NOWHERE` compiles and is always true; the seven real tests
-// reach through `.0` (Name::pos_or, Expr::ending, patternexp.rs:316,
-// lambda.rs:1190, expr_spans.rs, lsp diagnostics.rs, typ/print.rs via
-// order()). An `is_written()` / `get() -> Option<SourcePosition>` removes the
-// trap and the repetition. Also `order()`'s doc is off: a stable sort moves
-// the unwritten (0, 0) keys to the FRONT, it does not leave them in place.
-#[derive(Debug, Clone, Copy)]
-pub struct WrittenAt(pub SourcePosition);
-
-impl Default for WrittenAt {
-    fn default() -> Self {
-        Self::NOWHERE
-    }
-}
-
-impl WrittenAt {
-    /// Not written: built by the compiler.
-    pub const NOWHERE: Self = Self(SourcePosition { line: 0, column: 0 });
-
-    /// The key that sorts things into the order they were written in;
-    /// a stable sort leaves what was never written where it stood.
-    pub fn order(&self) -> (i32, i32) {
-        (self.0.line, self.0.column)
-    }
-}
-
-impl PartialEq for WrittenAt {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl Eq for WrittenAt {}
-
-impl PartialOrd for WrittenAt {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for WrittenAt {
-    fn cmp(&self, _: &Self) -> Ordering {
-        Ordering::Equal
-    }
-}
-
-impl std::hash::Hash for WrittenAt {
-    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
-}
-
-impl netidx_core::pack::Pack for WrittenAt {
-    fn encoded_len(&self) -> usize {
-        0
-    }
-
-    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
-        Ok(())
-    }
-
-    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
-        Ok(Self::NOWHERE)
-    }
-}
-
-/// Where each segment of a path was written. Like [`WrittenAt`], it
-/// decides nothing: equal to every other, hashes and packs to nothing.
-#[derive(Debug, Clone, Default)]
-pub struct WrittenPath(pub SmallVec<[SourcePosition; 4]>);
-
-impl PartialEq for WrittenPath {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl Eq for WrittenPath {}
-
-impl PartialOrd for WrittenPath {
-    fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
-        Some(Ordering::Equal)
-    }
-}
-
-impl std::hash::Hash for WrittenPath {
-    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
-}
-
-impl netidx_core::pack::Pack for WrittenPath {
-    fn encoded_len(&self) -> usize {
-        0
-    }
-
-    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
-        Ok(())
-    }
-
-    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
-        Ok(Self::default())
-    }
-}
-
-/// A name where it is declared or selected: the identifier and where it
-/// was written. A `Name` is its identifier to every comparison, hash
-/// and encoding (see [`WrittenAt`]).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Name {
-    pub name: ArcStr,
-    pub at: WrittenAt,
-}
-
-impl Name {
-    pub fn written(name: ArcStr, at: SourcePosition) -> Self {
-        Self { name, at: WrittenAt(at) }
-    }
-
-    /// Where the name was written, else `enclosing` for a name the
-    /// compiler built or unpacked.
-    pub fn pos_or(&self, enclosing: SourcePosition) -> SourcePosition {
-        if self.at.0 == WrittenAt::NOWHERE.0 { enclosing } else { self.at.0 }
-    }
-}
-
-impl<T: Into<ArcStr>> From<T> for Name {
-    fn from(name: T) -> Self {
-        Self { name: name.into(), at: WrittenAt::NOWHERE }
-    }
-}
-
-impl Deref for Name {
-    type Target = ArcStr;
-
-    fn deref(&self) -> &ArcStr {
-        &self.name
-    }
-}
-
-impl AsRef<str> for Name {
-    fn as_ref(&self) -> &str {
-        &self.name
-    }
-}
-
-impl std::borrow::Borrow<str> for Name {
-    fn borrow(&self) -> &str {
-        &self.name
-    }
-}
-
-impl fmt::Display for Name {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.name, f)
-    }
-}
-
-impl PartialEq<str> for Name {
-    fn eq(&self, other: &str) -> bool {
-        &*self.name == other
-    }
-}
-
-impl netidx_core::pack::Pack for Name {
-    fn encoded_len(&self) -> usize {
-        self.name.encoded_len()
-    }
-
-    fn encode(&self, buf: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
-        self.name.encode(buf)
-    }
-
-    fn decode(buf: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
-        Ok(Self::from(ArcStr::decode(buf)?))
-    }
-}
-
-/// The delimiters a string literal was written between.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StrForm {
-    /// `"text [splice]"`
-    #[default]
-    Quoted,
-    /// `r"text"`, `r#"text"#`
-    Raw,
-    /// `"""text \[splice]"""`
-    Template,
-}
-
-#[derive(Clone)]
-pub struct Expr {
-    pub id: ExprId,
-    pub ori: Arc<Origin>,
-    pub pos: SourcePosition,
-    pub kind: ExprKind,
-    /// Comments/attributes on their own line directly above this
-    /// expression. `None` unless the expression was decorated; not
-    /// compared by equality.
-    // CR claude for eric: [perf] Every clone of a decorated Expr (each node's
-    // spec, each `.at()` context, every map_children/rewrite rebuild) allocates
-    // a new Box for two Arcs. `Option<Arc<Decorations>>` (triomphe) makes the
-    // clone a refcount bump.
-    pub dec: Option<Box<Decorations>>,
-    /// How a string literal was delimited, so that it prints as written;
-    /// not compared by equality, and not part of the packed form.
-    pub str_form: StrForm,
-    /// Where the expression's text ends (exclusive), if it was parsed.
-    pub end: WrittenAt,
-}
-
-/// Field drop glue runs after `drop` returns and cannot be stack-guarded,
-/// so `kind` is taken out and dropped under the guard here; the glue then
-/// drops a trivial `NoOp`.
-impl Drop for Expr {
-    fn drop(&mut self) {
-        let kind = std::mem::replace(&mut self.kind, ExprKind::NoOp);
-        crate::stack::ensure_sufficient(move || drop(kind))
-    }
-}
-
-impl fmt::Debug for Expr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.kind)
-    }
-}
-
-impl fmt::Display for Expr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        print::write_leading(f, &self.dec)?;
-        // Printing descends the whole tree, including arbitrary user
-        // subexpressions on error paths.
-        crate::stack::ensure_sufficient(|| write!(f, "{}", print::Bare(self)))
-    }
-}
-
-impl PrettyDisplay for Expr {
-    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        print::write_leading(buf, &self.dec)?;
-        print::Bare(self).fmt_pretty(buf)
-    }
-}
-
-impl PartialOrd for Expr {
-    fn partial_cmp(&self, rhs: &Expr) -> Option<Ordering> {
-        self.kind.partial_cmp(&rhs.kind)
-    }
-}
-
-impl PartialEq for Expr {
-    fn eq(&self, rhs: &Expr) -> bool {
-        self.kind.eq(&rhs.kind)
-    }
-}
-
-impl Expr {
-    /// Record where the expression's text ends. The first writer is the
-    /// parser nearest the node, so it wins.
-    pub fn ending(mut self, end: SourcePosition) -> Self {
-        if self.end.0 == WrittenAt::NOWHERE.0 {
-            self.end = WrittenAt(end);
-        }
-        self
-    }
-
-    /// Whether `other` is a clone of this expression: the same id,
-    /// origin and position over equal syntax (shared children compare
-    /// by pointer).
-    pub(crate) fn same_tree(&self, other: &Expr) -> bool {
-        self.id == other.id
-            && self.pos == other.pos
-            && Arc::ptr_eq(&self.ori, &other.ori)
-            && self.kind == other.kind
-    }
-}
-
-impl Eq for Expr {}
-
-// CR claude for eric: [dead] Nothing in the workspace serializes or
-// deserializes an Expr through serde (the only serde derive in the crate is
-// FormatConfig), and printing a lowered expression would not reparse anyway
-// (compiler-only nodes). ExprVisitor's visit_borrowed_str/visit_string also
-// repeat serde's defaults. Drop Serialize/Deserialize/ExprVisitor unless an
-// embedder needs them.
-impl Serialize for Expr {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl Default for Expr {
-    fn default() -> Self {
-        let mut e = ExprKind::Constant(Value::Null).to_expr(Default::default());
-        e.ori = DEFAULT_ORIGIN.clone();
-        e
-    }
-}
-
-impl FromStr for Expr {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> result::Result<Self, Self::Err> {
-        parser::parse_one(s)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ExprVisitor;
-
-impl<'de> Visitor<'de> for ExprVisitor {
-    type Value = Expr;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "expected expression")
-    }
-
-    fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Expr::from_str(s).map_err(de::Error::custom)
-    }
-
-    fn visit_borrowed_str<E>(self, s: &'de str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Expr::from_str(s).map_err(de::Error::custom)
-    }
-
-    fn visit_string<E>(self, s: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Expr::from_str(&s).map_err(de::Error::custom)
-    }
-}
-
-impl<'de> Deserialize<'de> for Expr {
-    fn deserialize<D>(de: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        de.deserialize_str(ExprVisitor)
-    }
-}
-
-impl Expr {
-    /// This string literal, recorded as written between `form`'s delimiters.
-    pub(crate) fn written_as(mut self, form: StrForm) -> Self {
-        self.str_form = form;
-        self
-    }
-
-    pub fn new(kind: ExprKind, pos: SourcePosition) -> Self {
-        Expr {
-            id: ExprId::new(),
-            ori: get_origin(),
-            pos,
-            kind,
-            dec: None,
-            str_form: Default::default(),
-            end: Default::default(),
-        }
-    }
-
-    /// fold over self and all of self's sub expressions
-    pub fn fold<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
-        crate::stack::ensure_sufficient(|| self.fold_inner(init, f))
-    }
-
-    fn fold_inner<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
-        let mut acc = Some(f(init, self));
-        self.for_each_child(&mut |c| {
-            let v = acc.take().unwrap();
-            acc = Some(c.fold(v, f));
-        });
-        acc.unwrap()
-    }
-
-    // CR claude for eric: [risk] The doc overstates: map_children is a second
-    // hand-written enumeration that must agree in membership and order, and
-    // the seq rewrite a third (for ten kinds). A new child field on an
-    // existing kind (say on CatchExpr) fails to compile in map_children's
-    // struct literal but is silently skipped here (field access). No test
-    // checks the two agree; one over expr/test.rs's generator (ids seen by
-    // for_each_child == children passed to map_children, in order) would.
-    /// Visit each direct sub-expression in the one canonical child order,
-    /// shared by `fold` and `map_children`. A new `ExprKind` child is
-    /// added here and nowhere else.
+    /// The direct sub-expressions, in [`Expr::for_each_child`]'s order.
     pub fn for_each_child<'a>(&'a self, f: &mut impl FnMut(&'a Expr)) {
         use ExprKind::*;
-        match &self.kind {
+        match self {
             NoOp | Constant(_) | Use { .. } | Ref { .. } | TypeDef(_) => (),
             Module { value: ModuleKind::Resolved { exprs, .. }, .. } => {
                 exprs.iter().for_each(|e| f(e))
@@ -1380,7 +812,461 @@ impl Expr {
             }
         }
     }
+}
 
+#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
+pub enum Source {
+    File(PathBuf),
+    Netidx(Path),
+    Internal(ArcStr),
+    #[default]
+    Unspecified,
+}
+
+/// Where the source is, as `in <source>` reads it; `Unspecified` says
+/// nothing.
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Source::File(p) => write!(f, "file {}", p.display()),
+            Source::Netidx(p) => write!(f, "netidx {p}"),
+            Source::Internal(m) => write!(f, "module {m}"),
+            Source::Unspecified => write!(f, "expr"),
+        }
+    }
+}
+
+impl Source {
+    pub fn has_filename(&self, name: &str) -> bool {
+        match self {
+            Self::File(buf) => match buf.file_name() {
+                None => false,
+                Some(os) => match os.to_str() {
+                    None => false,
+                    Some(s) => s == name,
+                },
+            },
+            Self::Netidx(_) | Self::Internal(_) | Self::Unspecified => false,
+        }
+    }
+
+    pub fn is_file(&self) -> bool {
+        match self {
+            Self::File(_) => true,
+            Self::Netidx(_) | Self::Internal(_) | Self::Unspecified => false,
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            Self::File(pb) => {
+                let s = pb.as_os_str().to_string_lossy();
+                (literal!("File"), ArcStr::from(s)).into()
+            }
+            Self::Netidx(p) => (literal!("Netidx"), p.clone()).into(),
+            Self::Internal(s) => (literal!("Internal"), s.clone()).into(),
+            Self::Unspecified => literal!("Unspecified").into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Default)]
+pub struct Origin {
+    pub parent: Option<Arc<Origin>>,
+    pub source: Source,
+    pub text: ArcStr,
+}
+
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let flags = PRINT_FLAGS.with(|f| f.get());
+        let write = |f: &mut fmt::Formatter<'_>, o: &Origin| {
+            write!(f, "{}", o.source)?;
+            match o.source {
+                Source::Unspecified if !flags.contains(PrintFlag::NoSource) => {
+                    write!(f, " {}", o.text)
+                }
+                _ => Ok(()),
+            }
+        };
+        write!(f, "in ")?;
+        write(f, self)?;
+        if !flags.contains(PrintFlag::NoParents) {
+            let mut p = &self.parent;
+            while let Some(parent) = p {
+                write!(f, "\n    included from ")?;
+                write(f, parent)?;
+                p = &parent.parent;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Origin {
+    pub fn to_value(&self) -> Value {
+        let p = Value::from(self.parent.as_ref().map(|p| p.to_value()));
+        [
+            (literal!("parent"), p),
+            (literal!("source"), self.source.to_value()),
+            (literal!("text"), Value::from(self.text.clone())),
+        ]
+        .into()
+    }
+
+    /// The origin of source text that came from nowhere in particular.
+    pub fn unspecified(s: &str) -> Self {
+        Self { parent: None, source: Source::Unspecified, text: ArcStr::from(s) }
+    }
+}
+
+/// Where in its source something was written, for the IDE and the
+/// formatter. It never decides anything: every `WrittenAt` is equal to
+/// every other, hashes to nothing and packs to nothing, so a type that
+/// holds one derives its own comparisons as if it did not. So
+/// `at == WrittenAt::NOWHERE` is always true: ask [`WrittenAt::get`].
+#[derive(Debug, Clone, Copy)]
+pub struct WrittenAt(pub SourcePosition);
+
+impl Default for WrittenAt {
+    fn default() -> Self {
+        Self::NOWHERE
+    }
+}
+
+impl WrittenAt {
+    /// Not written: built by the compiler.
+    pub const NOWHERE: Self = Self(SourcePosition { line: 0, column: 0 });
+
+    /// Where it was written; `None` for what the compiler built or
+    /// unpacked.
+    pub fn get(&self) -> Option<SourcePosition> {
+        (self.0 != Self::NOWHERE.0).then_some(self.0)
+    }
+
+    /// The key that sorts things into the order they were written in;
+    /// what was never written sorts first.
+    pub fn order(&self) -> (i32, i32) {
+        (self.0.line, self.0.column)
+    }
+}
+
+impl PartialEq for WrittenAt {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WrittenAt {}
+
+impl PartialOrd for WrittenAt {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for WrittenAt {
+    fn cmp(&self, _: &Self) -> Ordering {
+        Ordering::Equal
+    }
+}
+
+impl std::hash::Hash for WrittenAt {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl netidx_core::pack::Pack for WrittenAt {
+    fn encoded_len(&self) -> usize {
+        0
+    }
+
+    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        Ok(())
+    }
+
+    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self::NOWHERE)
+    }
+}
+
+/// Where each segment of a path was written. Like [`WrittenAt`], it
+/// decides nothing: equal to every other, hashes and packs to nothing.
+#[derive(Debug, Clone, Default)]
+pub struct WrittenPath(pub SmallVec<[SourcePosition; 4]>);
+
+impl PartialEq for WrittenPath {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WrittenPath {}
+
+impl PartialOrd for WrittenPath {
+    fn partial_cmp(&self, _: &Self) -> Option<Ordering> {
+        Some(Ordering::Equal)
+    }
+}
+
+impl std::hash::Hash for WrittenPath {
+    fn hash<H: std::hash::Hasher>(&self, _: &mut H) {}
+}
+
+impl netidx_core::pack::Pack for WrittenPath {
+    fn encoded_len(&self) -> usize {
+        0
+    }
+
+    fn encode(&self, _: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        Ok(())
+    }
+
+    fn decode(_: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self::default())
+    }
+}
+
+/// A name where it is declared or selected: the identifier and where it
+/// was written. A `Name` is its identifier to every comparison, hash
+/// and encoding (see [`WrittenAt`]).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Name {
+    pub name: ArcStr,
+    pub at: WrittenAt,
+}
+
+impl Name {
+    pub fn written(name: ArcStr, at: SourcePosition) -> Self {
+        Self { name, at: WrittenAt(at) }
+    }
+
+    /// Where the name was written, else `enclosing` for a name the
+    /// compiler built or unpacked.
+    pub fn pos_or(&self, enclosing: SourcePosition) -> SourcePosition {
+        self.at.get().unwrap_or(enclosing)
+    }
+}
+
+impl<T: Into<ArcStr>> From<T> for Name {
+    fn from(name: T) -> Self {
+        Self { name: name.into(), at: WrittenAt::NOWHERE }
+    }
+}
+
+impl Deref for Name {
+    type Target = ArcStr;
+
+    fn deref(&self) -> &ArcStr {
+        &self.name
+    }
+}
+
+impl AsRef<str> for Name {
+    fn as_ref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::borrow::Borrow<str> for Name {
+    fn borrow(&self) -> &str {
+        &self.name
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.name, f)
+    }
+}
+
+impl PartialEq<str> for Name {
+    fn eq(&self, other: &str) -> bool {
+        &*self.name == other
+    }
+}
+
+impl netidx_core::pack::Pack for Name {
+    fn encoded_len(&self) -> usize {
+        self.name.encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl bytes::BufMut) -> result::Result<(), PackError> {
+        self.name.encode(buf)
+    }
+
+    fn decode(buf: &mut impl bytes::Buf) -> result::Result<Self, PackError> {
+        Ok(Self::from(ArcStr::decode(buf)?))
+    }
+}
+
+/// The delimiters a string literal was written between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrForm {
+    /// `"text [splice]"`
+    #[default]
+    Quoted,
+    /// `r"text"`, `r#"text"#`
+    Raw,
+    /// `"""text \[splice]"""`
+    Template,
+}
+
+#[derive(Clone)]
+pub struct Expr {
+    pub id: ExprId,
+    pub ori: Arc<Origin>,
+    pub pos: SourcePosition,
+    pub kind: ExprKind,
+    /// Comments/attributes on their own line directly above this
+    /// expression. `None` unless the expression was decorated; not
+    /// compared by equality.
+    pub dec: Option<Arc<Decorations>>,
+    /// How a string literal was delimited, so that it prints as written;
+    /// not compared by equality, and not part of the packed form.
+    pub str_form: StrForm,
+    /// Where the expression's text ends (exclusive), if it was parsed.
+    pub end: WrittenAt,
+}
+
+/// Field drop glue runs after `drop` returns and cannot be stack-guarded,
+/// so `kind` is taken out and dropped under the guard here; the glue then
+/// drops a trivial `NoOp`.
+impl Drop for Expr {
+    fn drop(&mut self) {
+        let kind = std::mem::replace(&mut self.kind, ExprKind::NoOp);
+        crate::stack::ensure_sufficient(move || drop(kind))
+    }
+}
+
+impl fmt::Debug for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.kind)
+    }
+}
+
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        print::write_leading(f, &self.dec)?;
+        // Printing descends the whole tree, including arbitrary user
+        // subexpressions on error paths.
+        crate::stack::ensure_sufficient(|| write!(f, "{}", print::Bare(self)))
+    }
+}
+
+impl PrettyDisplay for Expr {
+    fn decorated(&self) -> bool {
+        print::decorated(self)
+    }
+
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        print::write_leading(buf, &self.dec)?;
+        print::Bare(self).fmt_pretty(buf)
+    }
+}
+
+impl PartialOrd for Expr {
+    fn partial_cmp(&self, rhs: &Expr) -> Option<Ordering> {
+        self.kind.partial_cmp(&rhs.kind)
+    }
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, rhs: &Expr) -> bool {
+        self.kind.eq(&rhs.kind)
+    }
+}
+
+impl Expr {
+    /// Record where the expression's text ends. The first writer is the
+    /// parser nearest the node, so it wins.
+    pub fn ending(mut self, end: SourcePosition) -> Self {
+        if self.end.get().is_none() {
+            self.end = WrittenAt(end);
+        }
+        self
+    }
+
+    /// Whether `other` is a clone of this expression: the same id,
+    /// origin and position over equal syntax (shared children compare
+    /// by pointer).
+    pub(crate) fn same_tree(&self, other: &Expr) -> bool {
+        self.id == other.id
+            && self.pos == other.pos
+            && Arc::ptr_eq(&self.ori, &other.ori)
+            && self.kind == other.kind
+    }
+}
+
+impl Eq for Expr {}
+
+impl Default for Expr {
+    fn default() -> Self {
+        let mut e = ExprKind::Constant(Value::Null).to_expr(Default::default());
+        e.ori = DEFAULT_ORIGIN.clone();
+        e
+    }
+}
+
+impl FromStr for Expr {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> result::Result<Self, Self::Err> {
+        parser::parse_one(s)
+    }
+}
+
+impl Expr {
+    /// This string literal, recorded as written between `form`'s delimiters.
+    pub(crate) fn written_as(mut self, form: StrForm) -> Self {
+        self.str_form = form;
+        self
+    }
+
+    pub fn new(kind: ExprKind, pos: SourcePosition) -> Self {
+        Expr {
+            id: ExprId::new(),
+            ori: get_origin(),
+            pos,
+            kind,
+            dec: None,
+            str_form: Default::default(),
+            end: Default::default(),
+        }
+    }
+
+    /// This expression with `kind` in place of its own, under a fresh id.
+    pub fn with_kind(&self, kind: ExprKind) -> Self {
+        Expr {
+            id: ExprId::new(),
+            ori: self.ori.clone(),
+            pos: self.pos,
+            kind,
+            dec: self.dec.clone(),
+            str_form: self.str_form,
+            end: self.end,
+        }
+    }
+
+    /// fold over self and all of self's sub expressions
+    pub fn fold<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
+        crate::stack::ensure_sufficient(|| self.fold_inner(init, f))
+    }
+
+    fn fold_inner<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
+        let mut acc = Some(f(init, self));
+        self.for_each_child(&mut |c| {
+            let v = acc.take().unwrap();
+            acc = Some(c.fold(v, f));
+        });
+        acc.unwrap()
+    }
+
+    /// Visit each direct sub-expression in the one canonical child order,
+    /// shared by `fold` and, in agreement (a test holds them to it),
+    /// `map_children`.
+    pub fn for_each_child<'a>(&'a self, f: &mut impl FnMut(&'a Expr)) {
+        self.kind.for_each_child(f)
+    }
     /// This node rebuilt with each direct sub-expression replaced by
     /// `f(child)`, in `for_each_child`'s order, with a fresh id.
     pub fn map_children(&self, f: &mut impl FnMut(&Expr) -> Expr) -> Expr {
@@ -1500,6 +1386,7 @@ impl Expr {
             Trait(t) => Trait(Arc::new(TraitExpr {
                 name: t.name.clone(),
                 methods: Arc::from_iter(t.methods.iter().map(|m| TraitMethod {
+                    comments: m.comments.clone(),
                     doc: m.doc.clone(),
                     name: m.name.clone(),
                     typ: m.typ.clone(),
@@ -1565,144 +1452,6 @@ impl Expr {
             Sample { lhs, rhs } => Sample { lhs: a(f, lhs), rhs: a(f, rhs) },
             StrictSample { lhs, rhs } => StrictSample { lhs: a(f, lhs), rhs: a(f, rhs) },
         };
-        Expr {
-            id: ExprId::new(),
-            ori: self.ori.clone(),
-            pos: self.pos,
-            kind,
-            dec: self.dec.clone(),
-            str_form: self.str_form,
-            end: self.end,
-        }
-    }
-}
-
-// CR claude for eric: [risk] Both tuple fields are `pub`, so the CLAUDE.md
-// rule "contexts are attached with `.at(&spec)`, never `ErrorContext(..)` by
-// hand" is unenforced: a hand-built context skips ErrorSite and the LSP loses
-// the error's position. Keep the constructors private to `At` and expose a
-// `fn expr(&self) -> &Expr` for the tooling that downcasts.
-/// An expression an error passed through on its way out.
-pub struct ErrorContext(pub Expr);
-
-impl fmt::Debug for ErrorContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl std::error::Error for ErrorContext {}
-
-/// The first expression an error passed through: where it arose. An
-/// error chain holds one, under every [`ErrorContext`]; tooling
-/// downcasts to it for the error's position.
-pub struct ErrorSite(pub ErrorContext);
-
-impl fmt::Debug for ErrorSite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl fmt::Display for ErrorSite {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl std::error::Error for ErrorSite {}
-
-/// Record that an error passed through the expression `spec`.
-pub trait At {
-    fn at(self, spec: &Expr) -> Self;
-}
-
-impl At for anyhow::Error {
-    fn at(self, spec: &Expr) -> Self {
-        let cx = ErrorContext(spec.clone());
-        match self.downcast_ref::<ErrorSite>() {
-            Some(_) => self.context(cx),
-            None => self.context(ErrorSite(cx)),
-        }
-    }
-}
-
-impl<T> At for Result<T> {
-    fn at(self, spec: &Expr) -> Self {
-        self.map_err(|e| e.at(spec))
-    }
-}
-
-pub struct ParserContext {
-    pub ori: Arc<Origin>,
-    pub pos: SourcePosition,
-}
-
-impl fmt::Debug for ParserContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl fmt::Display for ParserContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.ori.source {
-            Source::File(p) => {
-                write!(f, "parse error at {} in file {}", self.pos, p.display())
-            }
-            Source::Netidx(p) => {
-                write!(f, "parse error at {} in netidx {p}", self.pos)
-            }
-            Source::Internal(_) | Source::Unspecified => {
-                write!(f, "parse error at {}", self.pos)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ParserContext {}
-
-// CR claude for eric: [perf] To show 38 bytes this prints the context's WHOLE
-// subtree, once per context in the chain: a chain of k contexts over a
-// lowered seq machine or a module prints O(k * size) text (a type error in a
-// seqq step: 16 contexts, five of them over the whole machine). Write through a
-// truncating fmt::Write that stops at MAX (and handle its early Err rather
-// than `.unwrap()`). The `thread_local! RefCell<String>` is the pattern Eric's
-// rules replace with `LPooled<String>`.
-impl fmt::Display for ErrorContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use std::fmt::Write;
-        const MAX: usize = 38;
-        thread_local! {
-            static BUF: RefCell<String> = RefCell::new(String::new());
-        }
-        BUF.with_borrow_mut(|buf| {
-            buf.clear();
-            write!(buf, "{}", self.0).unwrap();
-            let snippet: &str = if buf.len() <= MAX {
-                &buf
-            } else {
-                let mut end = MAX;
-                while !buf.is_char_boundary(end) {
-                    end += 1
-                }
-                &buf[0..end]
-            };
-            let suffix = if buf.len() > MAX { ".." } else { "" };
-            match &self.0.ori.source {
-                Source::File(p) => write!(
-                    f,
-                    "at: {} in file {}, in: {snippet}{suffix}",
-                    self.0.pos,
-                    p.display()
-                ),
-                Source::Netidx(p) => {
-                    write!(f, "at: {} in netidx {p}, in: {snippet}{suffix}", self.0.pos)
-                }
-                Source::Internal(_) | Source::Unspecified => {
-                    write!(f, "at: {}, in: {snippet}{suffix}", self.0.pos)
-                }
-            }
-        })
+        self.with_kind(kind)
     }
 }

@@ -527,8 +527,7 @@ impl StructurePattern {
                 for (i, (name, pat, _)) in written.iter().enumerate() {
                     match pat {
                         StructurePattern::Bind(n)
-                            if n.name == *name
-                                && !parser::RESERVED_BINDING.contains(&name.as_str()) =>
+                            if n.name == *name && !parser::is_reserved_binding(name) =>
                         {
                             write!(f, "{name}")?
                         }

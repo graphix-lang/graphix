@@ -1,9 +1,9 @@
 use super::*;
-use crate::expr::WrittenAt;
 use crate::{
     expr::{
-        ApplyExpr, Arg, BindExpr, Doc, ExprKind, LambdaExpr, ModuleKind, SelectExpr,
-        StructExpr, StructurePattern, UseItem, print::PrettyDisplay,
+        ApplyExpr, Arg, BinOp, BindExpr, Doc, ExprKind, LambdaExpr, ModuleKind,
+        SelectExpr, SigKind, StructExpr, StructurePattern, UseItem, WrittenAt,
+        print::PrettyDisplay,
     },
     typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
@@ -24,16 +24,6 @@ fn parse_typexpr(s: &str) -> anyhow::Result<Type> {
 #[allow(unused)]
 fn parse_doc(s: &str) -> anyhow::Result<Doc> {
     doc_comment()
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(s))
-        .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{}", e)))
-}
-
-#[allow(unused)]
-fn parse_typath(s: &str) -> anyhow::Result<ModPath> {
-    modpath()
         .skip(spaces())
         .skip(eof())
         .easy_parse(position::Stream::new(s))
@@ -670,134 +660,48 @@ fn nested_apply() {
     assert_eq!(src, parse_one(s).unwrap());
 }
 
-#[test]
-fn arith_eq() {
-    let exp = ExprKind::Eq {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
+/// An expression's operator structure, every binary operation
+/// parenthesized, written parens dropped.
+fn shape(e: &Expr) -> String {
+    match &e.kind {
+        ExprKind::ExplicitParens(e) => shape(e),
+        ExprKind::Not { expr } => format!("!{}", shape(expr)),
+        k => match BinOp::of(k) {
+            Some((op, l, r)) => format!("({} {} {})", shape(l), op.token(), shape(r)),
+            None => format!("{e}"),
+        },
     }
-    .to_expr_nopos();
-    let s = r#"a == b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
 }
 
 #[test]
-fn arith_ne() {
-    let exp = ExprKind::Ne {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
+fn arith_precedence() {
+    for (src, want) in [
+        ("a == b", "(a == b)"),
+        ("a != b", "(a != b)"),
+        ("a > b", "(a > b)"),
+        ("a < b", "(a < b)"),
+        ("a >= b", "(a >= b)"),
+        ("a <= b", "(a <= b)"),
+        ("a + b + c", "((a + b) + c)"),
+        ("a - b", "(a - b)"),
+        ("a * b", "(a * b)"),
+        ("a / b", "(a / b)"),
+        ("a % b", "(a % b)"),
+        ("8 / 2 * 2", "((8 / 2) * 2)"),
+        ("7 % 4 * 2", "((7 % 4) * 2)"),
+        ("a * b / c % d", "(((a * b) / c) % d)"),
+        ("a /? b *? c", "((a /? b) *? c)"),
+        ("a + b * c", "(a + (b * c))"),
+        ("a - b / c - d", "((a - (b / c)) - d)"),
+        ("(a + b) * c", "((a + b) * c)"),
+        ("a / (b * c)", "(a / (b * c))"),
+        ("a < b + c == d", "((a < (b + c)) == d)"),
+        ("a || b && c", "(a || (b && c))"),
+        ("t ~ a + b", "(t ~ (a + b))"),
+        ("t ~! a || b", "(t ~! (a || b))"),
+    ] {
+        assert_eq!(shape(&parse_one(src).unwrap()), want, "{src}")
     }
-    .to_expr_nopos();
-    let s = r#"a != b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_gt() {
-    let exp = ExprKind::Gt {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a > b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_lt() {
-    let exp = ExprKind::Lt {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a < b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_gte() {
-    let exp = ExprKind::Gte {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a >= b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_lte() {
-    let exp = ExprKind::Lte {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a <= b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_add() {
-    let exp = ExprKind::Add {
-        lhs: Arc::new(
-            ExprKind::Add {
-                lhs: Arc::new(ExprKind::Ref { name: ["a"].into() }.to_expr_nopos()),
-                rhs: Arc::new(ExprKind::Ref { name: ["b"].into() }.to_expr_nopos()),
-            }
-            .to_expr_nopos(),
-        ),
-        rhs: Arc::new(ExprKind::Ref { name: ["c"].into() }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a + b + c"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_sub() {
-    let exp = ExprKind::Sub {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a - b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_mul() {
-    let exp = ExprKind::Mul {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a * b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-#[test]
-fn arith_div() {
-    let exp = ExprKind::Div {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a / b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
-}
-
-// CR claude for eric: [bug] A copy of arith_div: it parses `a / b` and tests no
-// parentheses. arith_eq..arith_div are ten copies of one table-driven test, and
-// none mixes `*` with `/` or `%`, where arithexp::precedence is wrong.
-#[test]
-fn arith_paren() {
-    let exp = ExprKind::Div {
-        lhs: Arc::new(ExprKind::Ref { name: ModPath::from(["a"]) }.to_expr_nopos()),
-        rhs: Arc::new(ExprKind::Ref { name: ModPath::from(["b"]) }.to_expr_nopos()),
-    }
-    .to_expr_nopos();
-    let s = r#"a / b"#;
-    assert_eq!(exp, parse_one(s).unwrap());
 }
 
 #[test]
@@ -1726,16 +1630,27 @@ fn paren_no_postfix_is_explicit() {
     assert_eq!(pa, parse_one("(a)").unwrap());
 }
 
-// CR claude for eric: [readability] The name promises linear parsing; it checks
-// one 4-deep AST. Failing nested parens, and valid nested blocks, index
-// expressions and seqs, parse in exponential time; nothing here times a parse.
 #[test]
-fn nested_parens_linear() {
+fn nested_parens() {
     let mut e = ExprKind::Constant(Value::I64(1)).to_expr_nopos();
     for _ in 0..4 {
         e = ExprKind::ExplicitParens(Arc::new(e)).to_expr_nopos();
     }
     assert_eq!(e, parse_one("((((1))))").unwrap());
+}
+
+/// Forty levels of each nest that once parsed its inside twice per level:
+/// in linear time they return at once, doubling they would never return.
+#[test]
+fn nests_parse_once_per_level() {
+    let nest = |open: &str, inner: &str, close: &str| {
+        format!("{}{inner}{}", open.repeat(40), close.repeat(40))
+    };
+    assert!(parse_one(&nest("(", "1 +", ")")).is_err());
+    parse_one(&nest("{ let x = ", "1", "; x }")).unwrap();
+    parse_one(&nest("a[", "0", "]")).unwrap();
+    parse_one(&nest("seq t { ", "1", " }")).unwrap();
+    parse_one(&nest("{ ({ x; ", "1", " }); 2 }")).unwrap();
 }
 
 #[test]
@@ -1765,24 +1680,6 @@ fn print_bare_chains_round_trip() {
         assert_eq!(printed, expect, "printing {src}");
         assert_eq!(e, parse_one(&printed).unwrap(), "round-trip {src}");
     }
-}
-
-#[allow(unused)]
-fn parse_prop0(s: &str) -> anyhow::Result<Type> {
-    crate::expr::parser::typ()
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(s))
-        .map(|(r, _)| r)
-        .map_err(|e| anyhow::anyhow!(format!("{}", e)))
-}
-
-// CR claude for eric: [dead] Asserts nothing (a `dbg!`); parse_prop0 above is
-// parse_typexpr again, and parse_typath at the top parses a modpath.
-#[test]
-fn prop0() {
-    let s = r#"println(click ~ (target_power - 50)?)"#;
-    dbg!(parse_one(s).unwrap());
 }
 
 #[test]
@@ -2119,7 +2016,7 @@ fn use_new_grammar() {
         assert_eq!(names.len(), want.len(), "case: {src}");
         for (n, (wp, wr)) in names.iter().zip(want.iter()) {
             assert_eq!(&n.path, *wp, "case: {src}");
-            assert_eq!(n.rename.as_deref(), *wr, "case: {src}");
+            assert_eq!(n.rename.as_ref().map(|r| r.as_str()), *wr, "case: {src}");
         }
         let printed = e.to_string();
         let e2 = parse_one(&printed).unwrap();
@@ -2370,4 +2267,137 @@ fn an_integer_before_dots_is_a_slice_bound() {
     assert_eq!(slice("a[-2..f(x)]"), ("-2".into(), "f(x)".into()));
     assert_eq!(slice("a[0.5..n]"), ("0.5".into(), "n".into()));
     assert_eq!(slice("a[1..]"), ("1".into(), "".into()));
+}
+
+#[test]
+fn a_prefix_trigger_leaves_the_body_alone() {
+    for (src, trigger) in [
+        ("seq *r { a }", "*r"),
+        ("seq !b { a }", "!b"),
+        ("seq -n { a }", "-n"),
+        ("seq &x { a }", "&x"),
+    ] {
+        let e = parse_one(src).unwrap();
+        let ExprKind::Seq { trigger: Some(t), body, .. } = &e.kind else {
+            panic!("{e:?}")
+        };
+        assert_eq!(t.expr().to_string(), trigger, "{src}");
+        assert_eq!(body.len(), 1, "{src}");
+    }
+}
+
+#[test]
+fn a_list_of_one_or_more_refuses_none() {
+    for src in
+        ["()", "`A()", "{ s with }", "let x: T<> = y", "let f: fn<>(x: i64) -> i64 = g"]
+    {
+        assert!(parse_one(src).is_err(), "{src}");
+    }
+    assert!(parse_one("select x { {} => 1 }").is_err());
+    assert!(parse_one("select x { `A() => 1 }").is_err());
+    assert!(parse_one("impl<> T for X").is_err());
+    assert!(parse_one("use a::{}").is_err());
+}
+
+#[test]
+fn a_refusal_says_why() {
+    let msg = parse_program("let s = {x: 1, x: 2}");
+    assert!(msg.contains("struct fields must be unique"), "{msg}");
+    for body in ["{}", "{ }", "{\n}"] {
+        let msg = parse_program(&format!("let r = seq t {body}"));
+        assert!(msg.contains("at least one step"), "{body}: {msg}");
+    }
+    let msg = parse_program("let r = seq t; flush(t); abort(t) { x }");
+    assert!(msg.contains("a seq head is"), "{msg}");
+    let msg = parse_program("let r = seq t; flush(t) { x }");
+    assert!(msg.contains("a seq has none"), "{msg}");
+    let msg = parse_program("let r = seq let rec x = t { x }");
+    assert!(msg.contains("cannot be rec"), "{msg}");
+    let msg = parse_program("let s = { f(x) }");
+    assert!(msg.contains("at least 2 expressions"), "{msg}");
+}
+
+#[test]
+fn a_caseless_name_is_a_value_name() {
+    parse_one("{ let 名 = 1; 名 + 1 }").unwrap();
+    parse_one("|名| 名").unwrap();
+    assert!(parse_one("let x: 名 = 1").is_err());
+}
+
+#[test]
+fn a_qop_chain_counts_against_the_nesting_limit() {
+    let src = format!("x{}", "$".repeat(max_nesting() + 1));
+    let msg = format!("{:#}", parse_one(&src).unwrap_err());
+    assert!(msg.contains("nesting too deep"), "{msg}");
+    let src = format!("x{}", "$".repeat(3 * max_nesting()));
+    assert!(parse_one(&src).is_err());
+}
+
+#[test]
+fn a_seq_statement_carries_what_stands_above_it() {
+    let e = parse_one("seq t {\n  // wait\n  #[native]\n  until ready;\n  x\n}").unwrap();
+    let ExprKind::Seq { body, .. } = &e.kind else { panic!("{e:?}") };
+    let dec = body[0].dec.as_ref().expect("until lost its decorations");
+    assert_eq!(&dec.comments[..], &[literal!(" wait")]);
+    assert_eq!(&dec.attrs[0].name, "native");
+    assert!(matches!(body[0].kind, ExprKind::Until(_)));
+    assert!(body[0].end.get().is_some());
+}
+
+#[test]
+fn whitespace_alone_is_an_empty_file() {
+    let ori = |s: &str| crate::expr::Origin::unspecified(s);
+    for text in ["", "\n", "\n\n", "  \n\t\n"] {
+        parse(ori(text)).unwrap();
+        assert!(parse_sig(ori(text)).unwrap().items.is_empty(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_pattern_string_lexes_as_an_expression_string() {
+    let e = parse_one(r#"select s { "a\[b" => 1, r"c\d" => 2, """e"f""" => 3, _ => 4 }"#)
+        .unwrap();
+    let ExprKind::Select(SelectExpr { arms, .. }) = &e.kind else { panic!("{e:?}") };
+    let lit = |i: usize| match &arms[i].0.structure_predicate {
+        StructurePattern::Literal(Value::String(s)) => s.clone(),
+        p => panic!("{p:?}"),
+    };
+    assert_eq!(lit(0), "a[b");
+    assert_eq!(lit(1), r"c\d");
+    assert_eq!(lit(2), "e\"f");
+    assert_eq!(parse_one(&e.to_string()).unwrap(), e);
+    assert!(parse_one(r#"select s { "a[x]" => 1, _ => 2 }"#).is_err());
+}
+
+#[test]
+fn comments_above_trait_methods_are_kept() {
+    let e =
+        parse_one("trait T {\n  // a plain comment\n  val show: fn(self) -> string\n}")
+            .unwrap();
+    let ExprKind::Trait(t) = &e.kind else { panic!("{e:?}") };
+    assert_eq!(t.methods[0].comments.lines(), &[literal!(" a plain comment")]);
+    // a doc comment belongs in an interface
+    let msg = parse_program("trait T {\n  /// a doc\n  val show: fn(self) -> string\n}");
+    assert!(msg.contains("`///` is a doc comment"), "{msg}");
+    let sig = parse_sig(crate::expr::Origin::unspecified(
+        "// above\n/// the doc\nval x: i64;\ntrait T {\n  // c\n  /// d\n  val m: fn(self) -> i64\n}",
+    ))
+    .unwrap();
+    assert_eq!(sig.items[0].comments.lines(), &[literal!(" above")]);
+    let SigKind::Trait(t) = &sig.items[1].kind else { panic!() };
+    assert_eq!(t.methods[0].comments.lines(), &[literal!(" c")]);
+    assert_eq!(t.methods[0].doc.0.as_deref(), Some(" d"));
+}
+
+#[test]
+fn a_reference_to_a_lambda_parses() {
+    let e = parse_one("&|x| x + 1").unwrap();
+    let ExprKind::ByRef(inner) = &e.kind else { panic!("{e:?}") };
+    assert!(matches!(inner.kind, ExprKind::Lambda(_)));
+}
+
+#[test]
+fn a_map_access_is_written_against_its_source() {
+    assert!(matches!(parse_one("m{\"k\"}").unwrap().kind, ExprKind::MapRef { .. }));
+    assert!(parse_one("m {\"k\"}").is_err());
 }

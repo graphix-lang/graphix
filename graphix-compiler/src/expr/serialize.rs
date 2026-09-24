@@ -27,29 +27,38 @@ use netidx_core::{
     path::Path,
 };
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
+use std::cell::RefCell;
 use triomphe::Arc;
 
 /// Magic header on every packed blob.
 const MAGIC: &[u8; 4] = b"GXAS";
 
-// CR claude for eric: [structure] The Pack impls of AbstractId, TraitId, TVar
-// and FnType live here while Type's lives in typ/mod.rs beside the type; the
-// AbstractId and TraitId impls are identical, and a varint of a uuid-derived
-// u64 costs ~10 bytes where a fixed u64 costs 8. Move each impl next to its
-// type (typ/mod.rs, tvar.rs, fntyp.rs) and share the id codec.
-impl Pack for AbstractId {
-    fn encoded_len(&self) -> usize {
-        pack::varint_len(self.inner())
-    }
+// XCR claude for eric: the impls stay here for now: typ/mod.rs, tvar.rs and fntyp.rs
+// are the types package's in this review, and moving code into them in parallel
+// invites conflicts. The id codec is shared (`uuid_id_codec!`) and fixed-width.
+/// An id that is the low 64 bits of a uuid: a fixed eight bytes, where a
+/// varint would take ten.
+macro_rules! uuid_id_codec {
+    ($id:ty) => {
+        impl Pack for $id {
+            fn encoded_len(&self) -> usize {
+                self.inner().encoded_len()
+            }
 
-    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        Ok(pack::encode_varint(self.inner(), buf))
-    }
+            fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+                self.inner().encode(buf)
+            }
 
-    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        Ok(AbstractId::from_inner(pack::decode_varint(buf)?))
-    }
+            fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+                Ok(<$id>::from_inner(u64::decode(buf)?))
+            }
+        }
+    };
 }
+
+uuid_id_codec!(AbstractId);
+uuid_id_codec!(TraitId);
 
 /// Under an image session the id and origin travel with the
 /// expression; the syntax codec mints a fresh id and takes the unit's
@@ -77,7 +86,7 @@ impl Expr {
         let line = <i32 as Pack>::decode(buf)?;
         let column = <i32 as Pack>::decode(buf)?;
         let kind = <ExprKind as Pack>::decode(buf)?;
-        let dec = <Option<Box<Decorations>> as Pack>::decode(buf)?;
+        let dec = <Option<Arc<Decorations>> as Pack>::decode(buf)?;
         Ok(Expr {
             id,
             ori,
@@ -148,42 +157,51 @@ impl Pack for Expr {
     }
 }
 
-impl Pack for TraitId {
-    fn encoded_len(&self) -> usize {
-        pack::varint_len(self.inner())
-    }
+thread_local! {
+    /// The cells whose contents the syntax codec is writing, innermost
+    /// last.
+    static WRITING: RefCell<SmallVec<[usize; 8]>> = RefCell::new(SmallVec::new());
+}
 
-    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        Ok(pack::encode_varint(self.inner(), buf))
+/// What the syntax codec writes of `tv`'s cell: its bound and constraints,
+/// or nothing inside that cell's own contents, where a quantifier that
+/// its constraint names (`'a: [i64, Array<'a>]`) is the name alone and the
+/// typechecker re-aliases it.
+fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> R {
+    struct Writing;
+    impl Drop for Writing {
+        fn drop(&mut self) {
+            WRITING.with_borrow_mut(|w| w.pop());
+        }
     }
-
-    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        Ok(TraitId::from_inner(pack::decode_varint(buf)?))
+    let cell = tv.read().typ.clone();
+    let key = Arc::as_ptr(&cell) as usize;
+    if WRITING.with_borrow(|w| w.contains(&key)) {
+        return f(None, &[]);
     }
+    WRITING.with_borrow_mut(|w| w.push(key));
+    let _writing = Writing;
+    let cell = cell.read();
+    f(cell.typ.as_ref(), &cell.constraints)
 }
 
 /// Under an image session the wrapper and its cell are shared objects
 /// ([`image::tvar_encode`]); the syntax codec writes the cell's
-/// contents and mints a fresh variable.
-// CR claude for eric: [bug] suspected: the syntax path writes the cell's
-// constraints inline with no cycle guard, and the parser aliases a quantifier's
-// own name inside its constraint to the same cell (typexp.rs:263). So a fn
-// type `fn<'a: [i64, Array<'a>]>(x: 'a) -> 'a` (accepted: the same constraint
-// on a lambda runs) in a package .gx/.gxi makes pack_module/pack_sig recurse
-// until the build script overflows its stack. Only the image path shares
-// cells. Also: encoded_len and encode each clone the bound and `to_vec()` the
-// constraints; one borrowed helper serves both.
+/// contents (`Option<Type>`, then `Vec<Type>`) and mints a fresh variable.
 impl Pack for TVar {
     fn encoded_len(&self) -> usize {
         if image::is_encoding() {
             return image::tvar_len(self);
         }
-        let (bound, constraints): (Option<Type>, Vec<Type>) = {
-            let cell = self.read().typ.clone();
-            let cell = cell.read();
-            (cell.typ.clone(), cell.constraints.to_vec())
-        };
-        self.name.encoded_len() + bound.encoded_len() + constraints.encoded_len()
+        self.name.encoded_len()
+            + cell_contents(self, |bound, constraints| {
+                1 + bound.map_or(0, |t| t.encoded_len())
+                    + constraints
+                        .iter()
+                        .fold(pack::varint_len(constraints.len() as u64), |n, t| {
+                            n + t.encoded_len()
+                        })
+            })
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -191,13 +209,17 @@ impl Pack for TVar {
             return image::tvar_encode(self, buf);
         }
         self.name.encode(buf)?;
-        let (bound, constraints): (Option<Type>, Vec<Type>) = {
-            let cell = self.read().typ.clone();
-            let cell = cell.read();
-            (cell.typ.clone(), cell.constraints.to_vec())
-        };
-        bound.encode(buf)?;
-        constraints.encode(buf)
+        cell_contents(self, |bound, constraints| {
+            match bound {
+                None => buf.put_u8(0),
+                Some(t) => {
+                    buf.put_u8(1);
+                    t.encode(buf)?
+                }
+            }
+            pack::encode_varint(constraints.len() as u64, buf);
+            constraints.iter().try_for_each(|t| t.encode(buf))
+        })
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
@@ -237,6 +259,7 @@ impl FnType {
             + <Vec<(TVar, Type)> as Pack>::encoded_len(&constraints)
             + self.throws.encoded_len()
             + self.explicit_throws.encoded_len()
+            + self.quantifiers.encoded_len()
     }
 
     fn shape_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -246,7 +269,8 @@ impl FnType {
         let constraints = self.cell_constraint_pairs();
         <Vec<(TVar, Type)> as Pack>::encode(&constraints, buf)?;
         self.throws.encode(buf)?;
-        self.explicit_throws.encode(buf)
+        self.explicit_throws.encode(buf)?;
+        self.quantifiers.encode(buf)
     }
 
     fn shape_decode(
@@ -259,21 +283,7 @@ impl FnType {
         let constraints = <Vec<(TVar, Type)> as Pack>::decode(buf)?;
         let throws = <Type as Pack>::decode(buf)?;
         let explicit_throws = <bool as Pack>::decode(buf)?;
-        // CR claude for eric: [risk] `quantifiers` is not on the wire; it is
-        // guessed from the single-conjunct cell pairs by name. That is wrong
-        // three ways: an inner fn type naming an outer constrained quantifier
-        // (`fn<'a: Number>(g: fn(x: 'a) -> 'a) -> 'a`) decodes with `['a]` where
-        // it had none, so its constraint_view (Eq, Hash, contains, printing)
-        // differs from the parsed type; a `+` (multi-conjunct) or unbounded
-        // quantifier is dropped; source order becomes name order. Encode it.
-        // Named pairs are the declared quantifiers; anonymous '_N pairs are
-        // inference facts, re-seeded below.
-        let quantifiers = Arc::from_iter(
-            constraints
-                .iter()
-                .filter(|(tv, _)| !tv.name.starts_with('_'))
-                .map(|(tv, _)| tv.name.clone()),
-        );
+        let quantifiers = <Arc<[ArcStr]> as Pack>::decode(buf)?;
         for (tv, tc) in constraints {
             tv.add_cell_constraint(tc);
         }
@@ -336,9 +346,7 @@ impl Pack for FnType {
     }
 }
 
-// CR claude for eric: [readability] A free fn named `map_err`, used as
-// `.map_err(map_err)`, reads as a typo; `codec_error` says what it builds.
-fn map_err(e: PackError) -> anyhow::Error {
+fn codec_error(e: PackError) -> anyhow::Error {
     anyhow::anyhow!("packed AST codec error: {e:?}")
 }
 
@@ -356,7 +364,7 @@ pub fn pack_module(exprs: &[Expr]) -> Result<Bytes> {
     buf.put_slice(MAGIC);
     pack::encode_varint(exprs.len() as u64, &mut buf);
     for e in exprs {
-        e.encode(&mut buf).map_err(map_err)?;
+        e.encode(&mut buf).map_err(codec_error)?;
     }
     Ok(buf.freeze())
 }
@@ -368,10 +376,10 @@ pub fn unpack_module(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Arc<[Expr]>> 
     let _profile = profile::phase(Phase::Decode);
     check_magic(&mut bytes)?;
     let _unit = OriginScope::enter(ori);
-    let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
+    let n = pack::decode_varint(&mut bytes).map_err(codec_error)? as usize;
     let mut v: LPooled<Vec<Expr>> = LPooled::take();
     for _ in 0..n {
-        v.push(Expr::decode(&mut bytes).map_err(map_err)?);
+        v.push(Expr::decode(&mut bytes).map_err(codec_error)?);
     }
     Ok(Arc::from_iter(v.drain(..)))
 }
@@ -380,7 +388,7 @@ pub fn unpack_module(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Arc<[Expr]>> 
 pub fn pack_sig(sig: &Sig) -> Result<Bytes> {
     let mut buf = BytesMut::new();
     buf.put_slice(MAGIC);
-    sig.encode(&mut buf).map_err(map_err)?;
+    sig.encode(&mut buf).map_err(codec_error)?;
     Ok(buf.freeze())
 }
 
@@ -389,7 +397,7 @@ pub fn unpack_sig(mut bytes: &[u8], ori: Arc<Origin>) -> Result<Sig> {
     let _profile = profile::phase(Phase::Decode);
     check_magic(&mut bytes)?;
     let _unit = OriginScope::enter(ori);
-    Sig::decode(&mut bytes).map_err(map_err)
+    Sig::decode(&mut bytes).map_err(codec_error)
 }
 
 /// Serialize a whole package's modules as one blob: a list of
@@ -400,8 +408,8 @@ pub fn pack_index(entries: &[(ArcStr, ArcStr, Bytes)]) -> Result<Bytes> {
     buf.put_slice(MAGIC);
     pack::encode_varint(entries.len() as u64, &mut buf);
     for (path, source, ast) in entries {
-        path.encode(&mut buf).map_err(map_err)?;
-        source.encode(&mut buf).map_err(map_err)?;
+        path.encode(&mut buf).map_err(codec_error)?;
+        source.encode(&mut buf).map_err(codec_error)?;
         pack::encode_varint(ast.len() as u64, &mut buf);
         buf.put_slice(ast);
     }
@@ -410,40 +418,32 @@ pub fn pack_index(entries: &[(ArcStr, ArcStr, Bytes)]) -> Result<Bytes> {
 
 /// Decode a package index blob (see [`pack_index`]) into `(Path, VfsEntry)`
 /// pairs; each entry's AST stays packed in `VfsEntry.packed`.
-// CR claude for eric: [perf] The only caller (defpackage!'s register) passes an
-// `include_bytes!` blob, yet every module's AST is copied out of it
-// (`Bytes::copy_from_slice`) on every start, for every package. Taking
-// `&'static [u8]` and `Bytes::from_static(..)` slices keeps them zero-copy.
-pub fn unpack_index(mut bytes: &[u8]) -> Result<Vec<(Path, VfsEntry)>> {
+/// The blob is a compiled-in static, so each AST is a view into it.
+pub fn unpack_index(mut bytes: &'static [u8]) -> Result<Vec<(Path, VfsEntry)>> {
     check_magic(&mut bytes)?;
-    let n = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
+    let n = pack::decode_varint(&mut bytes).map_err(codec_error)? as usize;
     let mut result = Vec::with_capacity(n);
     for _ in 0..n {
-        let path = ArcStr::decode(&mut bytes).map_err(map_err)?;
-        let source = ArcStr::decode(&mut bytes).map_err(map_err)?;
-        let ast_len = pack::decode_varint(&mut bytes).map_err(map_err)? as usize;
+        let path = ArcStr::decode(&mut bytes).map_err(codec_error)?;
+        let source = ArcStr::decode(&mut bytes).map_err(codec_error)?;
+        let ast_len = pack::decode_varint(&mut bytes).map_err(codec_error)? as usize;
         if bytes.len() < ast_len {
             bail!("packed index: truncated module AST");
         }
-        let ast = Bytes::copy_from_slice(&bytes[..ast_len]);
+        let ast = Bytes::from_static(&bytes[..ast_len]);
         bytes.advance(ast_len);
         result.push((Path::from(path), VfsEntry { source, packed: Some(ast) }));
     }
     Ok(result)
 }
 
-// CR claude for eric: [risk] The round trips compare `kind` only (Expr
-// equality), so `pos`, which IS packed, is never checked; pack_sig/unpack_sig,
-// pack_index/unpack_index and FnType quantifiers have no test; and the inputs
-// are 47 hand-picked strings while expr/test.rs has a generator over every
-// kind and a `check` comparator. A proptest pack -> unpack -> `check` (plus
-// pos) over that generator would have caught the quantifier guess above.
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::expr::{Source, parser};
 
-    fn rt(src: &str) {
+    /// `src` parsed, and its package round trip.
+    fn packed(src: &str) -> (Arc<[Expr]>, Arc<[Expr]>) {
         let ori = Origin {
             parent: None,
             source: Source::Internal(ArcStr::from("test")),
@@ -456,9 +456,41 @@ mod test {
             source: Source::Internal(ArcStr::from("decoded")),
             text: ArcStr::new(),
         });
-        let unpacked = unpack_module(&packed, dummy).expect("unpack");
+        (exprs, unpack_module(&packed, dummy).expect("unpack"))
+    }
+
+    fn rt(src: &str) {
+        let (exprs, unpacked) = packed(src);
         // `Expr` equality is kind-only, so this checks structure.
         assert_eq!(&exprs[..], &unpacked[..], "round-trip mismatch for: {src}");
+    }
+
+    /// A fn type's declared quantifiers, in source order, and those of the
+    /// fn types inside it (none).
+    #[test]
+    fn quantifiers_cross_the_wire() {
+        for src in [
+            "let f: fn<'a: Number>(g: fn(x: 'a) -> 'a) -> 'a = h",
+            "let f: fn<'b: Int, 'a: Number>(x: 'a, y: 'b) -> 'a = h",
+        ] {
+            let (exprs, unpacked) = packed(src);
+            assert_eq!(exprs[0].to_string(), unpacked[0].to_string(), "{src}");
+            let quantifiers = |e: &Expr| match &e.kind {
+                ExprKind::Bind(b) => match &b.typ {
+                    Some(Type::Fn(ft)) => ft.quantifiers.clone(),
+                    t => panic!("{t:?}"),
+                },
+                k => panic!("{k:?}"),
+            };
+            assert_eq!(quantifiers(&exprs[0]), quantifiers(&unpacked[0]), "{src}");
+        }
+    }
+
+    /// A quantifier its own constraint names packs without recursing
+    /// forever.
+    #[test]
+    fn a_self_constrained_quantifier_packs() {
+        rt("let f: fn<'a: [i64, Array<'a>]>(x: 'a) -> 'a = g");
     }
 
     #[test]

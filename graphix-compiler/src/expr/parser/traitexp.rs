@@ -1,96 +1,104 @@
 use super::{
-    csep, doc_comment, expr, leading_comments, name, semisep, spaces, spaces1, sptoken,
-    typexp::{bound, tvar, typ, typath},
+    csep, doc_comment, expr,
+    grow::refuse,
+    leading_comments, name, semisep, sep_by_tok, sep_by1_tok, spaces, spaces1, sptoken,
+    typexp::{flatten_bounds, tvar_opt_bound, typ, typath},
     typname,
 };
 use crate::{
-    expr::{Expr, ExprKind, ImplExpr, Name, StructurePattern, TraitExpr, TraitMethod},
+    expr::{
+        Comments, Doc, Expr, ExprKind, ImplExpr, Name, StructurePattern, TraitExpr,
+        TraitMethod,
+    },
     typ::{FnArgKind, TVar, Type},
 };
-use ahash::AHashSet;
 use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, optional,
     parser::char::string,
     position,
     stream::{Range, position::SourcePosition},
-    token, unexpected_any, value,
+    token, value,
 };
-use netidx_value::parser::{not_prefix, sep_by_tok, sep_by1_tok};
+use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
 /// One trait item: `val name: fn(self, ..) -> T` with an optional
 /// `= default` body. The signature must be a function type with a
-/// positional `self` parameter.
-fn trait_method<I>() -> impl Parser<I, Output = TraitMethod>
+/// positional `self` parameter. The `//` lines above it are kept; in an
+/// interface (`sig`) the `///` doc lines below those are its doc.
+fn trait_method<I>(sig: bool) -> impl Parser<I, Output = TraitMethod>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    let doc = move || match sig {
+        true => doc_comment().left(),
+        false => value(Doc(None)).right(),
+    };
     (
-        // CR claude for eric: [bug] `leading_comments()` discards `//` lines above
-        // a trait method, so `graphix fmt` deletes them (probe: `// a plain
-        // comment` above `val show` is gone from the output), and `///` is
-        // accepted here in a .gx though comment_line refuses it elsewhere. Keep
-        // the comments on TraitMethod or refuse them.
-        leading_comments().with(doc_comment()).skip(spaces()),
+        leading_comments(),
+        doc().skip(spaces()),
         attempt(string("val").skip(spaces1())).with(name()).skip(sptoken(':')),
         typ(),
         optional(attempt(sptoken('=')).with(expr())),
+        position(),
     )
-        .then(|(doc, name, typ, default)| match typ {
+        .then(|(mut comments, doc, name, typ, default, end)| match typ {
             Type::Fn(ft) => {
                 let self_index = ft.args.iter().position(|a| {
                     matches!(&a.kind, FnArgKind::Positional { name: Some(n) } if &**n == "self")
                 });
                 match self_index {
-                    None => unexpected_any(
+                    None => refuse(
+                        end,
                         "a trait method needs a `self` parameter (`fn(self, ..)`)",
                     )
-                    .left(),
+                    .right(),
                     Some(self_index) => {
-                        value(TraitMethod { doc, name, typ: ft, self_index, default })
-                            .right()
+                        let comments = Comments::of(comments.drain(..));
+                        value(TraitMethod { comments, doc, name, typ: ft, self_index, default })
+                            .left()
                     }
                 }
             }
-            _ => unexpected_any("a trait method must have a function type").left(),
+            _ => refuse(end, "a trait method must have a function type").right(),
         })
 }
 
-pub(super) fn trait_decl<I>() -> impl Parser<I, Output = Expr>
+/// A trait declaration; `sig` in an interface, where methods carry docs.
+pub(super) fn trait_decl<I>(sig: bool) -> impl Parser<I, Output = TraitExpr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
     (
-        position(),
         attempt(string("trait").skip(spaces1())).with((position(), typname())),
         spaces().with(between(
             token('{'),
             sptoken('}'),
-            spaces().with(sep_by_tok(trait_method(), semisep(), token('}'))),
+            spaces().with(sep_by_tok(trait_method(sig), semisep(), token('}'))),
         )),
+        position(),
     )
         .then(
-            |(pos, (at, name), mut methods): (
-                _,
+            |((at, name), mut methods, end): (
                 (_, ArcStr),
                 LPooled<Vec<TraitMethod>>,
+                _,
             )| {
                 let name = Name::written(name, at);
-                let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
-                for m in methods.iter() {
-                    if !seen.insert(m.name.name.clone()) {
-                        return unexpected_any("duplicate trait method").left();
-                    }
+                let dup = |(i, m): (usize, &TraitMethod)| {
+                    methods[..i].iter().any(|p| p.name.name == m.name.name)
+                };
+                if methods.iter().enumerate().any(dup) {
+                    return refuse(end, "duplicate trait method").right();
                 }
                 let methods = Arc::from_iter(methods.drain(..));
-                value(ExprKind::Trait(Arc::new(TraitExpr { name, methods })).to_expr(pos))
-                    .right()
+                value(TraitExpr { name, methods }).left()
             },
         )
 }
@@ -98,28 +106,21 @@ where
 /// `impl<'a: C, ..> Trait for Target { let m = ..; .. }` — the body is
 /// optional (`impl Trait for Target;` declares the implementation in an
 /// interface, or implements a trait whose methods all have defaults).
-pub(super) fn impl_decl<I>() -> impl Parser<I, Output = Expr>
+pub(super) fn impl_decl<I>() -> impl Parser<I, Output = ImplExpr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
     (
-        position(),
         attempt(string("impl").skip(not_prefix())).with(spaces()).with(optional(
             between(
                 token('<'),
                 sptoken('>'),
-                sep_by1_tok(
-                    (
-                        spaces().with(tvar()),
-                        spaces().then(|_| optional(token(':').with(bound()))),
-                    ),
-                    csep(),
-                    token('>'),
-                ),
+                sep_by1_tok(tvar_opt_bound(), csep(), token('>')),
             ),
         )),
+        position(),
         typath(),
         spaces1().with(string("for")).with(spaces1()).with(typ()),
         // A following `{` may belong to an enclosing form: commit only
@@ -129,57 +130,50 @@ where
             sptoken('}'),
             spaces().with(sep_by_tok(expr(), semisep(), token('}'))),
         )))),
+        position(),
     )
         .then(
-            |(pos, params, trait_name, target, methods): (
-                _,
+            |(params, at_params, trait_name, target, methods, end): (
                 Option<LPooled<Vec<(TVar, Option<LPooled<Vec<Type>>>)>>>,
                 _,
                 _,
+                _,
                 Option<LPooled<Vec<Expr>>>,
+                _,
             )| {
-                let mut tvs: LPooled<Vec<TVar>> = LPooled::take();
-                let mut constraints: LPooled<Vec<(TVar, Type)>> = LPooled::take();
-                let mut seen: LPooled<AHashSet<ArcStr>> = LPooled::take();
-                // CR claude for eric: [structure] Four grammars for a type-variable
-                // list: here (optional `+` bound, duplicate check), typexp::typedef
-                // (optional single-type bound, no `+`), typexp::fnconstraints and
-                // lambda (required bound); this loop also re-implements
-                // typexp::flatten_bounds. One tvar-list parser.
-                if let Some(mut params) = params {
-                    for (tv, bounds) in params.drain(..) {
-                        if !seen.insert(tv.name.clone()) {
-                            return unexpected_any("duplicate impl type variable").left();
-                        }
-                        if let Some(mut bounds) = bounds {
-                            for b in bounds.drain(..) {
-                                constraints.push((tv.clone(), b));
-                            }
-                        }
-                        tvs.push(tv);
-                    }
+                let mut params = params.unwrap_or_else(LPooled::take);
+                let tvs: Arc<[TVar]> =
+                    Arc::from_iter(params.iter().map(|(tv, _)| tv.clone()));
+                if tvs
+                    .iter()
+                    .enumerate()
+                    .any(|(i, tv)| tvs[..i].iter().any(|p| p.name == tv.name))
+                {
+                    return refuse(at_params, "duplicate impl type variable").right();
                 }
+                let mut constraints = flatten_bounds(
+                    params.drain(..).filter_map(|(tv, b)| b.map(|b| (tv, b))),
+                );
                 let mut ms: LPooled<Vec<Expr>> = methods.unwrap_or_else(LPooled::take);
-                for m in ms.iter() {
-                    match &m.kind {
-                        ExprKind::Bind(b)
-                            if matches!(b.pattern, StructurePattern::Bind(_)) => {}
-                        _ => {
-                            return unexpected_any(
-                                "an impl body holds only `let name = ..` methods",
-                            )
-                            .left();
-                        }
-                    }
+                let simple = |m: &Expr| {
+                    matches!(&m.kind, ExprKind::Bind(b)
+                        if matches!(b.pattern, StructurePattern::Bind(_)))
+                };
+                if !ms.iter().all(simple) {
+                    return refuse(
+                        end,
+                        "an impl body holds only `let name = ..` methods",
+                    )
+                    .right();
                 }
-                let im = ImplExpr {
+                value(ImplExpr {
                     trait_name,
-                    params: Arc::from_iter(tvs.drain(..)),
+                    params: tvs,
                     constraints: Arc::from_iter(constraints.drain(..)),
                     target,
                     methods: Arc::from_iter(ms.drain(..)),
-                };
-                value(ExprKind::Impl(Arc::new(im)).to_expr(pos)).right()
+                })
+                .left()
             },
         )
 }

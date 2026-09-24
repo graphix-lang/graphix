@@ -2,8 +2,7 @@ use crate::{
     PrintFlag,
     expr::{
         CouldNotResolve, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, Sig,
-        SigItem, SigKind, Source, UseItem, parser, read_optional, read_to_arcstr,
-        serialize,
+        SigItem, SigKind, Source, UseItem, parser, serialize,
     },
     format_with_flags,
 };
@@ -831,6 +830,30 @@ impl LoadChain {
             prev: chain.clone(),
         }))
     }
+}
+
+/// Read a file to an ArcStr with minimal allocation.
+pub async fn read_to_arcstr(path: impl AsRef<std::path::Path>) -> Result<ArcStr> {
+    let path = path.as_ref();
+    read_optional(path)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("{}: no such file", path.display()))
+}
+
+/// Read a file that may not exist: `None` when it does not, an error
+/// for any other failure (unreadable, not UTF-8).
+pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<ArcStr>> {
+    use tokio::io::AsyncReadExt;
+    let path = path.as_ref();
+    let mut f = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(anyhow::Error::from(e).context(path.display().to_string())),
+    };
+    let mut buf: LPooled<Vec<u8>> = LPooled::take();
+    f.read_to_end(&mut *buf).await.with_context(|| path.display().to_string())?;
+    let s = str::from_utf8(&*buf).with_context(|| path.display().to_string())?;
+    Ok(Some(ArcStr::from(s)))
 }
 
 #[cfg(test)]

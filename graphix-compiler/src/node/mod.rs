@@ -544,7 +544,7 @@ pub(crate) fn compile_use_item(
         }
         return Ok(());
     }
-    let key: &str = item.rename.as_deref().unwrap_or(base);
+    let key: &str = item.rename.as_ref().map_or(base, |n| n.as_str());
     let entry = match anchor {
         Some(Anchor::Chain(a)) => ImportEntry {
             scope: ModPath(Path::from(ArcStr::from(a))),

@@ -46,7 +46,6 @@ netidx-value = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }
 rand = { workspace = true }
-regex = { workspace = true }
 serde_derive = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }

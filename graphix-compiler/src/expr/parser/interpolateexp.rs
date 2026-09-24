@@ -3,20 +3,17 @@ use super::{
     grow::{grow, note_reason},
     sptoken,
 };
-use crate::expr::{Expr, ExprId, ExprKind, StrForm, WrittenAt, get_origin};
+use crate::expr::{Expr, ExprKind, StrForm};
+use arcstr::ArcStr;
 use combine::{
-    RangeStream, attempt, between, choice, many, not_followed_by, optional,
+    RangeStream, attempt, between, choice, many, many1, not_followed_by, optional,
     parser::char::string,
-    position,
+    position, satisfy,
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
 };
 use compact_str::CompactString;
-// CR claude for eric: [style] `netidx_value` in two statements; and
-// `combine::many1`/`combine::satisfy` are spelled out in triple_run while the
-// other combinators are imported.
-use netidx_value::Value;
-use netidx_value::parser::escaped_string;
+use netidx_value::{Value, parser::escaped_string};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
@@ -27,23 +24,16 @@ parser! {
         #[derive(Debug, Clone)]
         enum Intp {
             // a run of text: where it starts and ends
-            Lit(SourcePosition, SourcePosition, String),
+            Lit(SourcePosition, SourcePosition, CompactString),
             Expr(Expr),
         }
+        fn text(s: &str) -> ExprKind {
+            ExprKind::Constant(Value::String(ArcStr::from(s)))
+        }
         impl Intp {
-            // CR claude for eric: [style] Hand-builds an Expr field by field;
-            // this is `ExprKind::Constant(..).to_expr(pos).ending(end)`.
             fn to_expr(self) -> Expr {
                 match self {
-                    Intp::Lit(pos, end, s) => Expr {
-                        id: ExprId::new(),
-                        ori: get_origin(),
-                        pos,
-                        kind: ExprKind::Constant(Value::from(s)),
-                        dec: None,
-                        str_form: Default::default(),
-                        end: WrittenAt(end),
-                    },
+                    Intp::Lit(pos, end, s) => text(&s).to_expr(pos).ending(end),
                     Intp::Expr(s) => s,
                 }
             }
@@ -62,13 +52,13 @@ parser! {
                 }
             }
             // a string with no splice is one constant, quotes and all
-            let whole = match &mut merged[..] {
-                [] => Some(String::new()),
-                [Intp::Lit(_, _, s)] => Some(std::mem::take(s)),
+            let whole = match &merged[..] {
+                [] => Some(""),
+                [Intp::Lit(_, _, s)] => Some(s.as_str()),
                 _ => None,
             };
             match whole {
-                Some(s) => ExprKind::Constant(Value::from(s)).to_expr(pos),
+                Some(s) => text(s).to_expr(pos),
                 None => ExprKind::StringInterpolate {
                     args: Arc::from_iter(merged.drain(..).map(Intp::to_expr)),
                 }
@@ -101,7 +91,7 @@ parser! {
                 if s.is_empty() {
                     unexpected_any("empty string").right()
                 } else {
-                    value(Intp::Lit(pos, end, s)).left()
+                    value(Intp::Lit(pos, end, CompactString::from(s))).left()
                 }
             });
         // Template form: brackets are content and the splice is marked
@@ -113,9 +103,7 @@ parser! {
             .map(Intp::Expr);
         let triple_run = || (
             position(),
-            combine::many1::<String, _, _>(combine::satisfy(|c| {
-                c != '"' && c != '\\'
-            })),
+            many1::<CompactString, _, _>(satisfy(|c| c != '"' && c != '\\')),
             position(),
         )
             .map(|(pos, s, end)| Intp::Lit(pos, end, s));
@@ -127,7 +115,7 @@ parser! {
             token('"').map(|_| '"'),
             token('\\').map(|_| '\\'),
         )))), position())
-            .map(|(pos, c, end)| Intp::Lit(pos, end, String::from(c)));
+            .map(|(pos, c, end)| Intp::Lit(pos, end, CompactString::from_iter([c])));
         let triple = (
             position(),
             between(
@@ -144,7 +132,7 @@ parser! {
                             token('"').skip(not_followed_by(string("\"\""))),
                             position(),
                         ))
-                        .map(|(pos, _, end)| Intp::Lit(pos, end, String::from("\""))),
+                        .map(|(pos, _, end)| Intp::Lit(pos, end, CompactString::const_new("\""))),
                     ))),
                 )
                     .map(|(_, toks)| toks),
