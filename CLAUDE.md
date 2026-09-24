@@ -427,8 +427,9 @@ node graph IS the IR — there is no parallel typed IR
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
 - **JIT memory**: one JITModule + 256MB arena per ExecCtx; on exhaustion
-  the module retires whole and the region rebuilds in a fresh one; the
-  reclamation unit is the ExecCtx. Kernel ABI: kind-grouped params from
+  the module retires whole and the region rebuilds in a fresh one; a
+  module's code is freed when the module and every kernel compiled into
+  it have dropped (each `WrappedKernel` holds its code). Kernel ABI: kind-grouped params from
   `KernelSig::abi_params`; recursive types and abstract types are opaque
   2-word values (`design/unified_value_abi.md`).
 
@@ -571,6 +572,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DBG_INVOKE=1` | each fused-kernel invocation with per-input fired/present |
 | `GRAPHIX_DBG_REGION=1` / `_FREEZE=1` | fused-region input wiring / freeze outcomes |
 | `GRAPHIX_DUMP_CLIF=1` | every kernel's CLIF (`u0:N` = helper registration order in `emit_helpers.rs`) |
+| `GXDBG_CALLRET=1` | from inside JIT code (debug builds): each kernel's entry init word (tag 4) and return disc (2) and scrutinee accumulator (3) |
 | `GRAPHIX_DBG_VARS=1` | runtime variable events (ref/unref, set, same-cycle notify) — graphix-rt |
 | `GRAPHIX_DBG_PERF=1` | interp lazy-bind phase counters every 250ms |
 | `GRAPHIX_PROFILE=1` | nested compiler phase accounting per root (`bench/profile.py` reads it; `design/jit_startup.md`) |

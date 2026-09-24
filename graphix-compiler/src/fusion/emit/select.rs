@@ -3,7 +3,6 @@
 
 use crate::{
     BindId, Node, NodeView, Rt, Update, UserEvent,
-    expr::ExprId,
     fusion::{
         self,
         kernel_abi::{self, AbiKind, PrimType},
@@ -13,35 +12,31 @@ use crate::{
         pattern::{PatternNode, SliceKind, StructPatternNode},
         select::Select,
     },
+    stack,
     typ::Type,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
 };
 use netidx_value::Value;
-use poolshark::local::LPooled;
+use smallvec::SmallVec;
 
-// CR claude for eric: [style] `super::flow::emit_scope_drops` (x5),
-// `super::flow::emit_discard_result`, `super::nodes::emit_bottom_of_kind` and
-// `smallvec::SmallVec` (x24) are spelled out at their uses; import them here.
 use super::{
     abi::{
         CompiledExpr, LocalKind, STALE, TAINT, ValueVar, bind_local, clean_disc,
-        const_stale_gate, is_tainted, is_untainted, local_payload_ty, prim_to_value_disc,
-        propagate_flags, propagate_stale, propagate_taint, scalar_disc, value_disc,
+        is_tainted, is_untainted, local_payload_ty, propagate_flags, propagate_stale,
+        propagate_taint, scalar_disc, value_disc,
     },
-    body::{
-        BodyCx, ensure_owned_composite_src, ensure_owned_value_src, fold_stale,
-        node_composite_source,
-    },
-    call::CompositeSource,
+    body::{BodyCx, ensure_owned_composite_src, fold_stale, node_composite_source},
+    call::{CompositeSource, emit_drop_local},
+    flow::{emit_discard_result, emit_scope_drops},
     lower::resolve_node_typ,
+    nodes::{emit_bottom_of_kind, emit_owned_value_operand_node},
     scalar::{
-        cast_u64_to_prim, compile_cmp, compile_const, prim_to_clif,
-        scalar_to_payload_i64, struct_get_helper, valarray_get_helper,
-        variant_payload_helper, zero_const,
+        cast_u64_to_prim, compile_cmp, compile_const, prim_to_clif, struct_get_helper,
+        valarray_get_helper, variant_payload_helper,
     },
 };
 
@@ -54,6 +49,17 @@ enum SelectMerge {
     Value,
     Composite,
     String,
+}
+
+impl SelectMerge {
+    fn abi_kind(self) -> AbiKind {
+        match self {
+            SelectMerge::Scalar(p) => AbiKind::Scalar(p),
+            SelectMerge::Value => AbiKind::Value,
+            SelectMerge::Composite => AbiKind::Tuple,
+            SelectMerge::String => AbiKind::String,
+        }
+    }
 }
 
 /// The select scrutinee, emitted once up front; every arm condition
@@ -106,17 +112,9 @@ enum ElemIdx {
     StructField(usize),
 }
 
-// CR claude for eric: [readability] Stale: every element, field and payload read
-// helper is total (emit_helpers.rs module doc: out of range reads the default), and
-// the guard prologue already installs these binds outside the proven region. The
-// same "unchecked" claim sits on SelectArmBind::Payload and ::Elem,
-// emit_composite_pattern_cond's doc and staging comment, and the Elem install; the
-// literal-leaf comment in emit_composite_pattern_cond says the opposite. The
-// staged fail-edge plumbing exists only for this, so with total reads the
-// structure condition can be a plain AND of per-leaf conditions.
-/// Read one scalar pattern leaf off the composite scrutinee. The read
-/// is unchecked: callers must have proven the arm's length test first
-/// (a tainted scrutinee's placeholder is an empty array).
+/// Read one scalar pattern leaf off the composite scrutinee. Total: an
+/// out-of-range or mismatched slot reads 0 (a tainted scrutinee's
+/// placeholder is an empty array).
 fn read_scrut_elem(
     cx: &mut BodyCx,
     ptr: ClifValue,
@@ -148,9 +146,8 @@ enum SelectArmBind {
     /// `T as n` over a `[T, null]` scrutinee — bind the matched
     /// non-null scalar payload after the type-predicate branch.
     NullableScalar { id: BindId, prim: PrimType },
-    /// `` `Tag(n) `` — bind one scalar variant payload. The read is
-    /// unchecked on a wrong tag, so it must be emitted inside the
-    /// matched region, never in the fall-through chain.
+    /// `` `Tag(n) `` — bind one scalar variant payload; a wrong-tag read
+    /// yields 0.
     Payload { id: BindId, idx: usize, prim: PrimType },
     /// `` `Tag(xs) `` — bind one non-scalar variant payload, cloned out
     /// as an owned local of `kind` and dropped at the arm's scope exit.
@@ -164,34 +161,8 @@ enum SelectArmBind {
     ListTail { id: BindId, k: usize },
     /// `(x, y)` / `{f, ..}` / `[h, ..]` — bind one scalar leaf of a
     /// composite scrutinee (the scrutinee, or a borrowed interior pointer
-    /// for a nested pattern). Emitted inside
-    /// the matched region: the length tests gate the unchecked read.
+    /// for a nested pattern).
     Elem { id: BindId, idx: ElemIdx, prim: PrimType, parent_ptr: ClifValue },
-}
-
-// CR claude for eric: [structure] This is about scaffold loops and collection
-// callsites, not select; it belongs in scaffold.rs beside open_slot_tables' other
-// inputs.
-/// Collect the per-slot state sites in a scaffold-loop body: the
-/// callsite `ExprId` of every nested collection HOF call, each of which
-/// claims one per-slot state chain (see [`BodyCx::open_slot_tables`]).
-/// A nested callback body lives behind its own lambda def and anchors
-/// its sites in the chain its own loop opens.
-pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-) -> LPooled<Vec<ExprId>> {
-    let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
-    fusion::for_each_node(node, &mut |n| match n.view() {
-        NodeView::CallSite(cs) => {
-            if let Some(crate::ApplyView::Lambda(l)) = cs.resolved_apply()
-                && l.inline_callback_body().is_some()
-            {
-                ids.push(n.spec().id);
-            }
-        }
-        _ => {}
-    });
-    ids
 }
 
 /// `select` at expression position. Canonical semantics are
@@ -225,15 +196,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
             ));
         }
     };
-    let (scrut, scrut_kind, scrut_typ, scrut_drop) =
-        classify_select_scrutinee(cx, sel, true)?;
-    let scrut_bfired = {
-        let d = scrut.disc();
-        let ts = cx.b.ins().band_imm(d, TAINT | STALE);
-        Some(cx.b.ins().icmp_imm(IntCC::Equal, ts, TAINT))
-    };
-    // A tainted scrutinee makes no selection: the arm chain routes it
-    // to the miss trap, which bottoms the merge.
+    let (scrut, scrut_kind, scrut_typ, scrut_drop) = classify_select_scrutinee(cx, sel)?;
     let merge = cx.b.create_block();
     cx.b.append_block_param(merge, types::I64);
     let payload_ty = match merge_shape {
@@ -250,11 +213,14 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
         scrut,
         scrut_kind,
         &scrut_typ,
-        scrut_bfired,
         &mut |cx, body, mark, fires| {
             emit_select_value_arm(cx, body, mark, merge_shape, merge, scrut_disc, fires)
         },
-        &mut |cx| emit_select_miss_value(cx, merge_shape, merge, scrut_disc),
+        // A standing bottom scrutinee does not re-fire the select.
+        &mut |cx| {
+            let s = cx.b.ins().band_imm(scrut_disc, STALE);
+            emit_select_bottom_value(cx, merge_shape, merge, s)
+        },
         &mut |cx, stale_bits| {
             emit_select_bottom_value(cx, merge_shape, merge, stale_bits)
         },
@@ -268,52 +234,13 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
     // Every normal path crosses the merge, so an owned scrutinee drops
     // exactly once here; unbinding it keeps a later pending exit from
     // double-dropping it.
-    // CR claude for eric: [structure] This per-kind drop repeats
-    // call::emit_drop_local ("the single per-kind drop dispatch"); call it.
     if let Some(ScrutDrop { kind, vv, mark }) = scrut_drop {
-        match kind {
-            LocalKind::Composite => {
-                let drop = cx.helper("graphix_valarray_drop")?;
-                let p = cx.b.use_var(vv.payload);
-                cx.b.ins().call(drop, &[p]);
-            }
-            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
-                let drop = cx.helper("graphix_value_drop")?;
-                let d = cx.b.use_var(vv.disc);
-                let p = cx.b.use_var(vv.payload);
-                cx.b.ins().call(drop, &[d, p]);
-            }
-            LocalKind::Scalar(_) | LocalKind::String => {
-                return Err(anyhow!(
-                    "emit_clif: scrutinee drop obligation of shape {kind:?} — \
-                     classify bug"
-                ));
-            }
-        }
+        emit_drop_local(cx.b, cx.ctx, kind, vv)?;
         cx.env.truncate(mark);
     }
     Ok(CompiledExpr::new(rdisc, rpayload))
 }
 
-/// The final-arm fail block of a value-position select, reached only
-/// when a tainted scrutinee misses every conditional arm: jump to the
-/// merge with a drop-safe tainted bottom whose freshness is the
-/// scrutinee's, so a standing bottom does not re-fire.
-fn emit_select_miss_value(
-    cx: &mut BodyCx,
-    merge_shape: SelectMerge,
-    merge: Block,
-    scrut_disc: ClifValue,
-) -> Result<()> {
-    let s = cx.b.ins().band_imm(scrut_disc, STALE);
-    emit_select_bottom_value(cx, merge_shape, merge, s)
-}
-
-// CR claude for eric: [structure] A third placeholder builder beside
-// nodes::emit_bottom_of_kind and placeholder_for_kind below, and it builds empties
-// the long way (buf_new + finalize) where the others call `_empty`.
-// emit_select_value_arm already maps SelectMerge to an AbiKind for
-// emit_bottom_of_kind; do that here and OR the stale bits on.
 /// Jump to the merge with a drop-safe tainted bottom whose freshness
 /// is `stale_bits` (0 = fresh).
 fn emit_select_bottom_value(
@@ -322,42 +249,9 @@ fn emit_select_bottom_value(
     merge: Block,
     stale_bits: ClifValue,
 ) -> Result<()> {
-    let (disc, payload) = match merge_shape {
-        SelectMerge::Scalar(p) => {
-            let d = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT);
-            // `iconst` of a float type is invalid CLIF.
-            let z = zero_const(cx.b, p);
-            (d, z)
-        }
-        SelectMerge::Value => {
-            let d = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT);
-            let z = cx.b.ins().iconst(types::I64, 0);
-            (d, z)
-        }
-        SelectMerge::Composite => {
-            let buf_new = cx.helper("graphix_value_buf_new")?;
-            let zero = cx.b.ins().iconst(types::I64, 0);
-            let call = cx.b.ins().call(buf_new, &[zero]);
-            let buf = cx.b.inst_results(call)[0];
-            let fin = cx.helper("graphix_valarray_finalize")?;
-            let call = cx.b.ins().call(fin, &[buf]);
-            let arr = cx.b.inst_results(call)[0];
-            let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT);
-            (d, arr)
-        }
-        SelectMerge::String => {
-            let buf_new = cx.helper("graphix_string_buf_new")?;
-            let call = cx.b.ins().call(buf_new, &[]);
-            let buf = cx.b.inst_results(call)[0];
-            let fin = cx.helper("graphix_string_buf_finalize")?;
-            let call = cx.b.ins().call(fin, &[buf]);
-            let s = cx.b.inst_results(call)[0];
-            let d = cx.b.ins().iconst(types::I64, value_disc::STRING | TAINT);
-            (d, s)
-        }
-    };
-    let disc = cx.b.ins().bor(disc, stale_bits);
-    cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(payload)]);
+    let cv = emit_bottom_of_kind(cx, merge_shape.abi_kind())?;
+    let disc = cx.b.ins().bor(cv.disc, stale_bits);
+    cx.b.ins().jump(merge, &[BlockArg::Value(disc), BlockArg::Value(cv.payload)]);
     Ok(())
 }
 
@@ -370,14 +264,13 @@ pub(super) struct ScrutDrop {
     mark: usize,
 }
 
-/// Classify and emit the read of a select scrutinee. `allow_owned`: the
-/// value-position caller has one merge point to discharge a
-/// [`ScrutDrop`] at; the tail-position caller's arms terminate
-/// individually, so an owned scrutinee refuses there.
+/// Classify and emit the read of a select scrutinee. An owned one is
+/// adopted as an env local, the returned [`ScrutDrop`]: every
+/// terminator drops the env, and a value-position select drops it at
+/// its merge.
 pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
-    allow_owned: bool,
 ) -> Result<(SelectScrut, AbiKind, Type, Option<ScrutDrop>)> {
     let scrut_typ = kernel_abi::freeze_for_abi_normalized(sel.arg.node.typ())
         .ok_or_else(|| {
@@ -389,74 +282,49 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
         })?;
     let scrut_kind = kernel_abi::abi_kind(&scrut_typ)
         .ok_or_else(|| anyhow!("emit_clif: select scrutinee shape not classifiable"))?;
+    let owned = node_composite_source(&sel.arg.node) == CompositeSource::Owned;
     let mut drop_ob: Option<ScrutDrop> = None;
-    let adopt = |cx: &mut BodyCx,
-                 kind: LocalKind,
-                 disc: ClifValue,
-                 payload: ClifValue|
-     -> Option<ScrutDrop> {
-        let mark = cx.env.mark();
-        let name: ArcStr = compact_str::format_compact!("__scrut{}", sel.spec.id.inner())
-            .as_str()
-            .into();
-        let vv = bind_local(cx, name, disc, payload, kind, None);
-        Some(ScrutDrop { kind, vv, mark })
-    };
+    let mut adopt =
+        |cx: &mut BodyCx, kind: LocalKind, disc: ClifValue, payload: ClifValue| {
+            if owned {
+                let mark = cx.env.mark();
+                let name: ArcStr =
+                    compact_str::format_compact!("__scrut{}", sel.spec.id.inner())
+                        .as_str()
+                        .into();
+                let vv = bind_local(cx, name, disc, payload, kind, None);
+                drop_ob = Some(ScrutDrop { kind, vv, mark });
+            }
+        };
     let scrut = match scrut_kind {
         AbiKind::Scalar(p) => {
             let cv = sel.arg.node.emit_clif(cx)?;
             SelectScrut::Scalar { disc: cv.disc, value: cv.payload, prim: p }
         }
         AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
-            let owned = node_composite_source(&sel.arg.node) != CompositeSource::Borrowed;
-            if owned && !allow_owned {
-                return Err(anyhow!(
-                    "emit_clif: owned value-shape select scrutinee in tail \
-                     position — no merge point to drop at"
-                ));
-            }
             let cv = sel.arg.node.emit_clif(cx)?;
-            if owned {
-                let kind = match scrut_kind {
-                    AbiKind::Variant => LocalKind::Variant,
-                    AbiKind::Nullable => LocalKind::Nullable,
-                    _ => LocalKind::Value,
-                };
-                drop_ob = adopt(cx, kind, cv.disc, cv.payload);
-            }
+            let kind = match scrut_kind {
+                AbiKind::Variant => LocalKind::Variant,
+                AbiKind::Nullable => LocalKind::Nullable,
+                _ => LocalKind::Value,
+            };
+            adopt(cx, kind, cv.disc, cv.payload);
             SelectScrut::Value { disc: cv.disc, payload: cv.payload }
         }
-        // CR claude for eric: [perf] The tail refusal (here and for value shapes
-        // above) loses fusion for no reason: every tail terminator already drops
-        // the env (emit_kernel_return drops all locals, the rebind jump drops every
-        // non-slot local above the param mark), so an adopted scrutinee is covered.
-        // Probe: `let rec f = |n: i64, acc: i64| -> i64 select (n, acc) { (0, a) =>
-        // a, (m, a) => f(m - 1, a + m) }; #[native] f(10, 0)` is refused with
-        // "owned composite select scrutinee in tail position".
         AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
-            let owned = node_composite_source(&sel.arg.node) != CompositeSource::Borrowed;
-            if owned && !allow_owned {
-                return Err(anyhow!(
-                    "emit_clif: owned composite select scrutinee in tail \
-                     position — no merge point to drop at"
-                ));
-            }
             let cv = sel.arg.node.emit_clif(cx)?;
-            if owned {
-                drop_ob = adopt(cx, LocalKind::Composite, cv.disc, cv.payload);
-            }
+            adopt(cx, LocalKind::Composite, cv.disc, cv.payload);
             SelectScrut::Composite { disc: cv.disc, ptr: cv.payload }
         }
         // A string scrutinee supports only Ignore / guard arms, so only
         // its disc is kept; the read is an owned ArcStr either way.
         AbiKind::String => {
             let cv = sel.arg.node.emit_clif(cx)?;
-            let drop = cx.helper("graphix_arcstr_drop")?;
-            cx.b.ins().call(drop, &[cv.payload]);
+            cx.call_helper("graphix_arcstr_drop", &[cv.payload])?;
             SelectScrut::Opaque { disc: cv.disc }
         }
         AbiKind::Unit | AbiKind::Null => {
-            return Err(anyhow!("emit_clif: select scrutinee of shape {scrut_kind:?}"));
+            bail!("emit_clif: select scrutinee of shape {scrut_kind:?}");
         }
     };
     Ok((scrut, scrut_kind, scrut_typ, drop_ob))
@@ -468,18 +336,28 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 /// SlicePrefix/SliceSuffix/Struct `len >= N`; suffix leaves index from
 /// the end, struct leaves read `a[i][1]`.
 ///
-/// The length test is also the taint gate: a tainted composite is an
-/// empty placeholder array, so the unchecked element reads (emitted
-/// after the test) never touch it. `@` bindings, rest bindings,
-/// non-scalar leaves and nested variant leaves refuse (the select
-/// de-fuses).
+/// Element reads are total, so the condition is the AND of the length
+/// test and every leaf's own test, in one block. `@` bindings, rest
+/// bindings, non-scalar leaves and nested variant leaves refuse (the
+/// select de-fuses).
 fn emit_composite_pattern_cond(
     cx: &mut BodyCx,
     ptr: ClifValue,
     scrut_typ: &Type,
     pat: &StructPatternNode,
-    fail: Block,
-    binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
+) -> Result<ClifValue> {
+    stack::ensure_sufficient(|| {
+        emit_composite_pattern_cond_inner(cx, ptr, scrut_typ, pat, binds)
+    })
+}
+
+fn emit_composite_pattern_cond_inner(
+    cx: &mut BodyCx,
+    ptr: ClifValue,
+    scrut_typ: &Type,
+    pat: &StructPatternNode,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
     let len_helper = cx.helper("graphix_valarray_len")?;
     let call = cx.b.ins().call(len_helper, &[ptr]);
@@ -490,8 +368,7 @@ fn emit_composite_pattern_cond(
         sub: &'p StructPatternNode,
         typ: Type,
     }
-    let (leaves, len_cc, n): (smallvec::SmallVec<[LeafSpec; 8]>, IntCC, usize) = match pat
-    {
+    let (leaves, len_cc, n): (SmallVec<[LeafSpec; 8]>, IntCC, usize) = match pat {
         StructPatternNode::Slice { kind, all, binds: pbinds } => {
             if matches!(kind, SliceKind::List) {
                 return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
@@ -529,7 +406,7 @@ fn emit_composite_pattern_cond(
                 .map(|(j, sub)| {
                     Ok(LeafSpec { idx: ElemIdx::FromStart(j), sub, typ: elt(j)? })
                 })
-                .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
+                .collect::<Result<SmallVec<[_; 8]>>>()?;
             (leaves, IntCC::Equal, pbinds.len())
         }
         StructPatternNode::SlicePrefix { list, all, prefix, tail } => {
@@ -615,15 +492,13 @@ fn emit_composite_pattern_cond(
                         })?;
                     Ok(LeafSpec { idx: ElemIdx::StructField(*i), sub, typ })
                 })
-                .collect::<Result<smallvec::SmallVec<[_; 8]>>>()?;
+                .collect::<Result<SmallVec<[_; 8]>>>()?;
             (leaves, IntCC::SignedGreaterThanOrEqual, sbinds.len())
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
     };
-    let mut lit_leaves: smallvec::SmallVec<[(ElemIdx, PrimType, &Value); 8]> =
-        smallvec::SmallVec::new();
-    let mut nested: smallvec::SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> =
-        smallvec::SmallVec::new();
+    let mut lit_leaves: SmallVec<[(ElemIdx, PrimType, &Value); 8]> = SmallVec::new();
+    let mut nested: SmallVec<[(ElemIdx, &StructPatternNode, Type); 8]> = SmallVec::new();
     for leaf in &leaves {
         match leaf.sub {
             StructPatternNode::Abstract { .. } => {
@@ -690,31 +565,13 @@ fn emit_composite_pattern_cond(
         }
     }
     let n_c = cx.b.ins().iconst(types::I64, n as i64);
-    let len_ok = cx.b.ins().icmp(len_cc, len, n_c);
-    if lit_leaves.is_empty() && nested.is_empty() {
-        return Ok(len_ok);
-    }
-    // The reads below are unchecked, so the length is proven first.
-    let stage = cx.b.create_block();
-    cx.b.ins().brif(len_ok, stage, &[], fail, &[]);
-    cx.b.switch_to_block(stage);
-    cx.b.seal_block(stage);
-    let mut cond: Option<ClifValue> = None;
-    let mut fold = |cx: &mut BodyCx, c: ClifValue| {
-        cond = Some(match cond {
-            None => c,
-            Some(p) => cx.b.ins().band(p, c),
-        });
-    };
+    let mut cond = cx.b.ins().icmp(len_cc, len, n_c);
     for (idx, prim, v) in lit_leaves {
         let elem = read_scrut_elem(cx, ptr, idx, prim)?;
         let lit = compile_const(cx.b, v, prim)?;
         let c = compile_cmp(cx.b, CmpOp::Eq, prim, elem, lit);
-        fold(cx, c);
+        cond = cx.b.ins().band(cond, c);
     }
-    // CR claude for eric: [risk] This recursion follows the program's pattern
-    // nesting with no `stack::ensure_sufficient`, and each frame holds three 8-slot
-    // SmallVecs of Types; CLAUDE.md requires the guard on pattern walks.
     for (idx, sub, typ) in nested {
         // A borrowed interior pointer: the root is a pinned borrowed
         // slot and values are immutable, so no ownership or drops.
@@ -732,260 +589,168 @@ fn emit_composite_pattern_cond(
                 cx.b.ins().iconst(types::I64, i as i64),
             ),
         };
-        let helper = cx.helper(helper_name)?;
-        let call = cx.b.ins().call(helper, &[ptr, idx_v]);
+        let call = cx.call_helper(helper_name, &[ptr, idx_v])?;
         let child_ptr = cx.b.inst_results(call)[0];
-        let c = emit_composite_pattern_cond(cx, child_ptr, &typ, sub, fail, binds)?;
-        fold(cx, c);
+        let c = emit_composite_pattern_cond(cx, child_ptr, &typ, sub, binds)?;
+        cond = cx.b.ins().band(cond, c);
     }
-    Ok(cond.expect("staged composite pattern with no conditions"))
+    Ok(cond)
 }
 
-// CR claude for eric: [dead] Both fields are always Some (both callers pass
-// Some), and `bfired` is false wherever it is read: an arm body runs only on an
-// untainted scrutinee (the tdrop branch here, the early return in
-// emit_select_node_tail), and in the undet fold bf=1 implies the scrutinee's STALE
-// bit is already 0. So scrut_bfired (here and in emit_select_node_tail) and the
-// bottom-out block in emit_select_value_arm, a copy of emit_kernel_return's, can
-// go; they predate "a bottom scrutinee bottoms the select".
-/// The select's own-fire summary handed to each arm emitter.
-/// `sound_stale`: the AND of the consulted guards' sound-plane STALE
-/// bits at this arm's point (structure-failed arms and arms below the
-/// taken one contribute nothing). `bfired` (i8 bool): the scrutinee
-/// delivery was a fresh bottom.
-#[derive(Clone, Copy)]
-pub(super) struct SelFires {
-    pub(super) sound_stale: Option<ClifValue>,
-    pub(super) bfired: Option<ClifValue>,
-}
-
-// CR claude for eric: [dead] `gs_sound` equals `gfire` wherever acc_sound is read:
-// a consulted guard with gbot set branches to the undet block, which reads only
-// acc_fires, so the TAINT>>1 fold (which also leans on bits 62/61 being adjacent)
-// never reaches an arm. One plane, `gs`, is enough.
-/// One prologue-evaluated guard's planes.
+/// One prologue-evaluated guard.
 #[derive(Clone, Copy)]
 struct GuardPlanes {
     /// The sound-true verdict.
     eff: ClifValue,
     /// The channel is bottom.
     gbot: ClifValue,
-    /// Sound-plane STALE.
-    gs_sound: ClifValue,
-    /// Fired-plane STALE.
-    gfire: ClifValue,
+    /// The guard's STALE bit.
+    gs: ClifValue,
+}
+
+/// Arm `pat`'s pattern condition against `scrut`, pushing its binds
+/// onto `binds`; `None` when the arm matches unconditionally. An
+/// or-pattern installs its shared binds itself, in the chain's done
+/// block (`nomatch` as for [`emit_or_chain`]).
+fn emit_arm_condition<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    pat: &PatternNode<R, E>,
+    scrut: SelectScrut,
+    scrut_kind: AbiKind,
+    scrut_typ: &Type,
+    nomatch: Option<Block>,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
+) -> Result<Option<ClifValue>> {
+    if let StructPatternNode::Or { alts } = &pat.structure_predicate {
+        if pat.explicit_type_predicate {
+            bail!(
+                "emit_clif: explicit type predicate on an or-pattern arm not lowerable"
+            );
+        }
+        let m = emit_or_chain(
+            cx,
+            alts,
+            &pat.type_predicate,
+            scrut,
+            scrut_kind,
+            scrut_typ,
+            nomatch,
+        )?;
+        return Ok(Some(m));
+    }
+    let (tcond, scond) = emit_arm_cond(cx, pat, scrut, scrut_kind, scrut_typ, binds)?;
+    Ok(match (tcond, scond) {
+        (None, None) => None,
+        (Some(c), None) | (None, Some(c)) => Some(c),
+        (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
+    })
 }
 
 /// The shared arm chain: pattern conditions, per-arm binds and the
 /// fail-block plumbing, identical between value and tail position.
 /// `emit_arm` runs in the matched block with the arm's binds installed
-/// and must leave it terminated; `mark` is the env mark to truncate to.
-/// `emit_miss` handles the final-arm miss (a tainted scrutinee);
-/// `emit_undet` the undecidable outcome (a bottom consulted guard),
-/// given the outcome's STALE bits (0 = fresh).
+/// and must leave it terminated; it gets the env mark to truncate to
+/// and the AND of the consulted guards' STALE bits at its point
+/// (structure-failed arms and arms below the taken one contribute
+/// nothing). `emit_miss` handles a tainted scrutinee, which makes no
+/// selection and consults no guard; `emit_undet` the undecidable
+/// outcome (a bottom consulted guard), given its STALE bits (0 = fresh).
 pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     sel: &Select<R, E>,
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    scrut_bfired: Option<ClifValue>,
-    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, SelFires) -> Result<()>,
+    emit_arm: &mut dyn FnMut(&mut BodyCx, &Node<R, E>, usize, ClifValue) -> Result<()>,
     emit_miss: &mut dyn FnMut(&mut BodyCx) -> Result<()>,
     emit_undet: &mut dyn FnMut(&mut BodyCx, ClifValue) -> Result<()>,
 ) -> Result<()> {
-    // A tainted scrutinee makes no selection and runs no arm body:
-    // every matched path re-checks the scrutinee disc before its body
-    // and routes a tainted take to the shared miss block.
     let sdisc = scrut.disc();
     let miss_bl = cx.b.create_block();
     let n = sel.arms.len();
     // The guard prologue: the node-walk ticks every arm's guard every
     // cycle before matching, so every guard that is not pure in its
     // binds is evaluated here once per invocation and the chain reads
-    // it; the consulted folds happen along the chain into
-    // acc_sound/acc_fires.
-    let mut guard_vals: smallvec::SmallVec<[Option<GuardPlanes>; 8]> =
-        smallvec::smallvec![None; n];
+    // it; the consulted folds happen along the chain into `acc`.
+    let mut guard_vals: SmallVec<[Option<GuardPlanes>; 8]> = smallvec::smallvec![None; n];
     for (i, (pat, _)) in sel.arms.iter().enumerate() {
         let Some(g) = &pat.guard else { continue };
         if guard_is_pure_of_binds(pat, &g.node) {
             continue;
         }
         let gmark = cx.env.mark();
-        let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
-        let pcond = if let StructPatternNode::Or { alts } = &pat.structure_predicate {
-            // The or-chain binds the shared BindIds itself, so `binds`
-            // stays empty.
-            if pat.explicit_type_predicate {
-                return Err(anyhow!(
-                    "emit_clif: explicit type predicate on an or-pattern arm \
-                     not lowerable"
-                ));
-            }
-            Some(emit_or_chain(
-                cx,
-                alts,
-                &pat.type_predicate,
-                scrut,
-                scrut_kind,
-                scrut_typ,
-                None,
-            )?)
-        } else if composite_structural_arm(pat, scrut) {
-            // CR claude for eric: [bug] The binds are installed below in `done`,
-            // which fail_bl also reaches, but a nested pattern's Elem binds read
-            // through `child_ptr` (and FromEnd `len`) defined in a staged block
-            // that does not dominate `done`: the verifier rejects the kernel and
-            // the select de-fuses. Probe: `let a = ((7, 1), 2); let limit = 5;
-            // #[native] select a { ((x, y), z) if x > limit => x + y + z, _ => 0 }`
-            // fails with "shared body: compile: Verifier errors"; the flat
-            // `(x, y, z) if x > limit` fuses. Total reads make the staging
-            // unnecessary here.
-            let fail_bl = cx.b.create_block();
-            let done = cx.b.create_block();
-            cx.b.append_block_param(done, types::I8);
-            let (tcond, scond) = emit_arm_cond(
-                cx,
-                pat,
-                scrut,
-                scrut_kind,
-                scrut_typ,
-                Some(fail_bl),
-                &mut binds,
-            )?;
-            debug_assert!(tcond.is_none());
-            let c = scond.expect("composite arm without a structure condition");
-            cx.b.ins().jump(done, &[c.into()]);
-            cx.b.switch_to_block(fail_bl);
-            cx.b.seal_block(fail_bl);
-            let z = cx.b.ins().iconst(types::I8, 0);
-            cx.b.ins().jump(done, &[z.into()]);
-            cx.b.switch_to_block(done);
-            cx.b.seal_block(done);
-            Some(cx.b.block_params(done)[0])
-        } else {
-            let (tcond, scond) =
-                emit_arm_cond(cx, pat, scrut, scrut_kind, scrut_typ, None, &mut binds)?;
-            match (tcond, scond) {
-                (None, None) => None,
-                (Some(c), None) | (None, Some(c)) => Some(c),
-                (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
-            }
-        };
+        let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+        let pcond =
+            emit_arm_condition(cx, pat, scrut, scrut_kind, scrut_typ, None, &mut binds)?;
         install_arm_binds(cx, &binds, scrut, pcond)?;
         let gcv = g.node.emit_clif(cx)?;
-        // gs_sound stales tainted productions (TAINT >> 1 == STALE);
-        // gfire is the fired plane, sound or bottom.
         let gs = cx.b.ins().band_imm(gcv.disc, STALE);
-        let gt = cx.b.ins().band_imm(gcv.disc, TAINT);
-        let gts = cx.b.ins().ushr_imm(gt, 1);
-        let gs_sound = cx.b.ins().bor(gs, gts);
         let gbot = is_tainted(cx.b, gcv.disc);
         let valid = is_untainted(cx.b, gcv.disc);
         let eff = cx.b.ins().band(gcv.payload, valid);
         // The masked installs clone owned payload binds per invocation;
         // drop them before the truncate.
-        super::flow::emit_scope_drops(cx, gmark)?;
+        emit_scope_drops(cx, gmark)?;
         cx.env.truncate(gmark);
-        guard_vals[i] = Some(GuardPlanes { eff, gbot, gs_sound, gfire: gs });
+        guard_vals[i] = Some(GuardPlanes { eff, gbot, gs });
     }
-    // At any read these hold the fold over exactly the consultation
+    // At any read this holds the fold over exactly the consultation
     // points control flow executed.
-    let (acc_sound, acc_fires) = {
-        let sv = cx.b.declare_var(types::I64);
-        let fv = cx.b.declare_var(types::I64);
-        let init = cx.b.ins().iconst(types::I64, STALE);
-        cx.b.def_var(sv, init);
-        cx.b.def_var(fv, init);
-        (sv, fv)
-    };
+    let acc = cx.b.declare_var(types::I64);
+    let init = cx.b.ins().iconst(types::I64, STALE);
+    cx.b.def_var(acc, init);
+    let chain_bl = cx.b.create_block();
+    let clean = is_untainted(cx.b, sdisc);
+    cx.b.ins().brif(clean, chain_bl, &[], miss_bl, &[]);
+    cx.b.switch_to_block(chain_bl);
+    cx.b.seal_block(chain_bl);
     let mut undet_bl: Option<Block> = None;
     for (i, (pat, body)) in sel.arms.iter().enumerate() {
         let is_last = i == n - 1;
-        // A composite or or-pattern condition stages across blocks, so
-        // its fail edge must exist before emission.
-        let is_or = matches!(&pat.structure_predicate, StructPatternNode::Or { .. });
-        let early_fail = if is_or || composite_structural_arm(pat, scrut) {
-            Some(cx.b.create_block())
-        } else {
-            None
-        };
-        // An or-chain binds the shared BindIds in its done block, so the
-        // env mark is taken before it and the arm-exit drops cover them.
-        let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
-        let mut or_mark: Option<usize> = None;
-        // CR claude for eric: [structure] This or/explicit-predicate refusal and
-        // the (tcond, scond) -> pcond combine repeat the guard prologue's above
-        // nearly line for line; one `arm_condition(.., nomatch)` helper would serve
-        // both.
-        let (tcond, scond) = if let StructPatternNode::Or { alts } =
-            &pat.structure_predicate
-        {
-            if pat.explicit_type_predicate {
-                return Err(anyhow!(
-                    "emit_clif: explicit type predicate on an or-pattern arm \
-                     not lowerable"
-                ));
-            }
-            or_mark = Some(cx.env.mark());
-            let m = emit_or_chain(
-                cx,
-                alts,
-                &pat.type_predicate,
-                scrut,
-                scrut_kind,
-                scrut_typ,
-                Some(early_fail.unwrap()),
-            )?;
-            (None, Some(m))
-        } else {
-            emit_arm_cond(cx, pat, scrut, scrut_kind, scrut_typ, early_fail, &mut binds)?
-        };
-        let pcond = match (tcond, scond) {
-            (None, None) => None,
-            (Some(c), None) | (None, Some(c)) => Some(c),
-            (Some(a), Some(b)) => Some(cx.b.ins().band(a, b)),
-        };
         let has_guard = pat.guard.is_some();
         // The final-arm miss trap is sound only when a miss is
         // impossible; typecheck forbids a guarded final arm.
         if is_last && has_guard {
-            return Err(anyhow!(
-                "emit_clif: guard on the final select arm — the chain \
-                 could miss every arm"
-            ));
+            bail!(
+                "emit_clif: guard on the final select arm — the chain could miss \
+                 every arm"
+            );
         }
+        // An or-chain binds the shared BindIds in its done block, so the
+        // mark is taken before it and the arm-exit drops cover them.
+        let mark = cx.env.mark();
+        let or_fail = matches!(&pat.structure_predicate, StructPatternNode::Or { .. })
+            .then(|| cx.b.create_block());
+        let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
+        let pcond = emit_arm_condition(
+            cx, pat, scrut, scrut_kind, scrut_typ, or_fail, &mut binds,
+        )?;
         let matched = cx.b.create_block();
-        let fail: Option<Block> = match early_fail {
+        let fail: Option<Block> = match or_fail {
             Some(f) => Some(f),
             None if pcond.is_some() || has_guard => Some(cx.b.create_block()),
             None => None,
         };
-        match pcond {
-            Some(c) => {
-                cx.b.ins().brif(c, matched, &[], fail.unwrap(), &[]);
+        match (pcond, fail) {
+            (Some(c), Some(f)) => {
+                cx.b.ins().brif(c, matched, &[], f, &[]);
             }
-            None => {
+            _ => {
                 cx.b.ins().jump(matched, &[]);
             }
         }
         cx.b.switch_to_block(matched);
         cx.b.seal_block(matched);
-        let mark = or_mark.unwrap_or_else(|| cx.env.mark());
         install_arm_binds(cx, &binds, scrut, None)?;
-        if let Some(g) = &pat.guard {
+        if let (Some(g), Some(fail)) = (&pat.guard, fail) {
             let eff = match guard_vals[i] {
-                // The consultation point: fold the guard's planes into
-                // the accumulators; a bottom channel makes the selection
+                // The consultation point: fold the guard's STALE into the
+                // accumulator; a bottom channel makes the selection
                 // undecidable and the chain stops here.
-                Some(GuardPlanes { eff, gbot, gs_sound, gfire }) => {
-                    let cur = cx.b.use_var(acc_sound);
-                    let n = cx.b.ins().band(cur, gs_sound);
-                    cx.b.def_var(acc_sound, n);
-                    let cur = cx.b.use_var(acc_fires);
-                    let n = cx.b.ins().band(cur, gfire);
-                    cx.b.def_var(acc_fires, n);
+                Some(GuardPlanes { eff, gbot, gs }) => {
+                    let cur = cx.b.use_var(acc);
+                    let n = cx.b.ins().band(cur, gs);
+                    cx.b.def_var(acc, n);
                     let ub = *undet_bl.get_or_insert_with(|| cx.b.create_block());
                     let cont = cx.b.create_block();
                     // Drop this arm's owned binds before the shared undet block.
@@ -993,7 +758,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                     cx.b.ins().brif(gbot, ubdrop, &[], cont, &[]);
                     cx.b.switch_to_block(ubdrop);
                     cx.b.seal_block(ubdrop);
-                    super::flow::emit_scope_drops(cx, mark)?;
+                    emit_scope_drops(cx, mark)?;
                     cx.b.ins().jump(ub, &[]);
                     cx.b.switch_to_block(cont);
                     cx.b.seal_block(cont);
@@ -1014,34 +779,20 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
             cx.b.ins().brif(eff, body_blk, &[], gfail, &[]);
             cx.b.switch_to_block(gfail);
             cx.b.seal_block(gfail);
-            super::flow::emit_scope_drops(cx, mark)?;
-            cx.b.ins().jump(fail.unwrap(), &[]);
+            emit_scope_drops(cx, mark)?;
+            cx.b.ins().jump(fail, &[]);
             cx.b.switch_to_block(body_blk);
             cx.b.seal_block(body_blk);
         }
-        // A matched arm under a tainted scrutinee must not run its body:
-        // route to the miss trap, dropping the arm's owned binds first.
-        let body_ok = cx.b.create_block();
-        let clean = is_untainted(cx.b, sdisc);
-        let tdrop = cx.b.create_block();
-        cx.b.ins().brif(clean, body_ok, &[], tdrop, &[]);
-        cx.b.switch_to_block(tdrop);
-        cx.b.seal_block(tdrop);
-        super::flow::emit_scope_drops(cx, mark)?;
-        cx.b.ins().jump(miss_bl, &[]);
-        cx.b.switch_to_block(body_ok);
-        cx.b.seal_block(body_ok);
-        // Read here, the sound accumulator holds exactly the consulted
-        // guards up to and including this arm.
-        let fires =
-            SelFires { sound_stale: Some(cx.b.use_var(acc_sound)), bfired: scrut_bfired };
+        let fires = cx.b.use_var(acc);
         emit_arm(cx, body, mark, fires)?;
         match fail {
             Some(f) => {
                 cx.b.switch_to_block(f);
                 cx.b.seal_block(f);
                 if is_last {
-                    // Reached only under a tainted scrutinee: every arm missed.
+                    // Unreachable: a valid scrutinee matches an exhaustive
+                    // chain; a terminator is still required.
                     cx.b.ins().jump(miss_bl, &[]);
                 }
             }
@@ -1055,32 +806,11 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
     if let Some(ub) = undet_bl {
         cx.b.switch_to_block(ub);
         cx.b.seal_block(ub);
-        // CR claude for eric: [bug] In value position a tainted scrutinee still
-        // runs the chain on its placeholder, so a matching arm consults its guard
-        // and a bottom guard lands here, fresh when the guard fired. The node-walk
-        // (and activation_state.md: "a settled bottom stays quiet on unrelated
-        // guard fires") consults no guard under a bottom scrutinee and emits
-        // set_bottom(scrutinee triggers). Probe: `let x: i64 = never(); let g = (t
-        // ~ 1) / 0; select x { v if g > 0 => v, _ => 0 }` with t a timer:
-        // GRAPHIX_DBG_INVOKE shows tag=Tag(64) on each g fire, the node-walk's
-        // is STALE_BOTTOM. Branch a tainted scrutinee to the miss block before
-        // the chain, as emit_select_node_tail does.
         // The undecidable outcome is fresh iff a consumed input fired:
-        // the scrutinee, a consulted guard, or a fresh-bottom delivery.
-        let undet_stale = {
-            let ss = cx.b.ins().band_imm(sdisc, STALE);
-            let af = cx.b.use_var(acc_fires);
-            let st = cx.b.ins().band(ss, af);
-            match scrut_bfired {
-                Some(bf) => {
-                    let z = cx.b.ins().iconst(types::I64, 0);
-                    let stale = cx.b.ins().iconst(types::I64, STALE);
-                    let bfs = cx.b.ins().select(bf, z, stale);
-                    cx.b.ins().band(st, bfs)
-                }
-                None => st,
-            }
-        };
+        // the scrutinee or a consulted guard.
+        let ss = cx.b.ins().band_imm(sdisc, STALE);
+        let af = cx.b.use_var(acc);
+        let undet_stale = cx.b.ins().band(ss, af);
         emit_undet(cx, undet_stale)?;
     }
     Ok(())
@@ -1094,7 +824,7 @@ fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
     pat: &PatternNode<R, E>,
     guard: &Node<R, E>,
 ) -> bool {
-    let mut bind_ids: smallvec::SmallVec<[BindId; 8]> = smallvec::SmallVec::new();
+    let mut bind_ids: SmallVec<[BindId; 8]> = SmallVec::new();
     pat.structure_predicate.ids(&mut |id| bind_ids.push(id));
     let mut ok = true;
     fusion::for_each_node(guard, &mut |n| match n.view() {
@@ -1122,34 +852,16 @@ fn guard_is_pure_of_binds<R: Rt, E: UserEvent>(
     ok
 }
 
-/// True when `pat` is a composite structural pattern over a composite
-/// scrutinee: its condition stages across blocks and needs a
-/// pre-created fail edge before [`emit_arm_cond`] runs.
-fn composite_structural_arm<R: Rt, E: UserEvent>(
-    pat: &PatternNode<R, E>,
-    scrut: SelectScrut,
-) -> bool {
-    matches!(
-        &pat.structure_predicate,
-        StructPatternNode::Slice { .. }
-            | StructPatternNode::SlicePrefix { .. }
-            | StructPatternNode::SliceSuffix { .. }
-            | StructPatternNode::Struct { .. }
-    ) && matches!(scrut, SelectScrut::Composite { .. })
-}
-
 /// Emit arm `pat`'s pattern condition against `scrut`: the type
 /// predicate (`tcond`) and the structure condition (`scond`), pushing
-/// the pattern's binds onto `binds`. Composite structural patterns
-/// stage across blocks with fail edges into `early_fail`.
+/// the pattern's binds onto `binds`.
 fn emit_arm_cond<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     pat: &PatternNode<R, E>,
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    early_fail: Option<Block>,
-    binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
     // The node-walk tests the type predicate only when it is explicit.
     let tcond: Option<ClifValue> = if !pat.explicit_type_predicate {
@@ -1266,7 +978,6 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
         scrut,
         scrut_kind,
         scrut_typ,
-        early_fail,
         binds,
     )?;
     Ok((tcond, scond))
@@ -1300,7 +1011,7 @@ fn emit_list_pattern_cond(
     pat: &StructPatternNode,
     scrut: SelectScrut,
     scrut_typ: &Type,
-    binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<ClifValue> {
     let (disc, payload) = match scrut {
         SelectScrut::Value { disc, payload } => (disc, payload),
@@ -1379,189 +1090,124 @@ fn payload_local_kind(t: &Type) -> Option<LocalKind> {
 /// `mask` is the arm's pattern condition when the caller has NOT
 /// branched on it (the guard prologue); the take chain installs
 /// inside the matched block and passes `None`.
-// CR claude for eric: [structure] The seven arms repeat one tail: build the
-// `__pat` name with format_compact! (pat_bind_name exists and is unused here; the
-// ArcStr is allocated per bind though lookup is by BindId), propagate_flags,
-// mask_unmatched, bind_local. Let each arm produce (disc, payload, kind) and share
-// the tail; `binds` can be a plain slice.
 fn install_arm_binds(
     cx: &mut BodyCx,
-    binds: &smallvec::SmallVec<[SelectArmBind; 8]>,
+    binds: &[SelectArmBind],
     scrut: SelectScrut,
     mask: Option<ClifValue>,
 ) -> Result<()> {
     for bind in binds {
-        match bind {
+        let (sdisc, spayload) = match scrut {
+            SelectScrut::Value { disc, payload } => (disc, Some(payload)),
+            s => (s.disc(), None),
+        };
+        let value_payload = || {
+            spayload.ok_or_else(|| {
+                anyhow!("emit_clif: a variant, nullable or list bind without a value scrutinee")
+            })
+        };
+        // The bound (disc, payload, kind); the disc takes the
+        // scrutinee's flags below.
+        let (id, disc, payload, kind) = match bind {
             SelectArmBind::Scrut(id) => {
-                let SelectScrut::Scalar { disc, value, prim } = scrut else {
-                    return Err(anyhow!(
-                        "emit_clif: scrutinee bind without a scalar \
-                             scrutinee"
-                    ));
+                let SelectScrut::Scalar { value, prim, .. } = scrut else {
+                    bail!("emit_clif: scrutinee bind without a scalar scrutinee");
                 };
-                let name: ArcStr =
-                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                let disc = mask_unmatched(cx, disc, mask);
-                bind_local(cx, name, disc, value, LocalKind::Scalar(prim), Some(*id));
+                (*id, scalar_disc(cx.b, prim), value, LocalKind::Scalar(prim))
             }
             SelectArmBind::NullableScalar { id, prim } => {
-                let SelectScrut::Value { disc, payload } = scrut else {
-                    return Err(anyhow!(
-                        "emit_clif: nullable scalar bind without a value scrutinee"
-                    ));
-                };
-                let name: ArcStr =
-                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                let value = cast_u64_to_prim(cx.b, payload, *prim);
-                let base = scalar_disc(cx.b, *prim);
-                let bound_disc = propagate_flags(cx.b, base, &[disc]);
-                let bound_disc = mask_unmatched(cx, bound_disc, mask);
-                bind_local(
-                    cx,
-                    name,
-                    bound_disc,
-                    value,
-                    LocalKind::Scalar(*prim),
-                    Some(*id),
-                );
+                let value = cast_u64_to_prim(cx.b, value_payload()?, *prim);
+                (*id, scalar_disc(cx.b, *prim), value, LocalKind::Scalar(*prim))
             }
             SelectArmBind::Payload { id, idx, prim } => {
-                let SelectScrut::Value { disc, payload } = scrut else {
-                    return Err(anyhow!(
-                        "emit_clif: payload bind without a variant \
-                             scrutinee"
-                    ));
-                };
-                let helper = cx.helper(variant_payload_helper(*prim)?)?;
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
+                let call = cx.call_helper(
+                    variant_payload_helper(*prim)?,
+                    &[sdisc, value_payload()?, idx_c],
+                )?;
                 let v = cx.b.inst_results(call)[0];
-                let name: ArcStr =
-                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                let base = scalar_disc(cx.b, *prim);
-                let pdisc = propagate_flags(cx.b, base, &[disc]);
-                let pdisc = mask_unmatched(cx, pdisc, mask);
-                bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
+                (*id, scalar_disc(cx.b, *prim), v, LocalKind::Scalar(*prim))
             }
             SelectArmBind::PayloadValue { id, idx, kind } => {
-                let SelectScrut::Value { disc, payload } = scrut else {
-                    return Err(anyhow!(
-                        "emit_clif: payload bind without a variant \
-                             scrutinee"
-                    ));
-                };
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let (vdisc, vpayload) = match kind {
+                let args = [sdisc, value_payload()?, idx_c];
+                let (d, p) = match kind {
                     LocalKind::Composite => {
-                        let h = cx.helper("graphix_variant_payload_array")?;
-                        let call = cx.b.ins().call(h, &[disc, payload, idx_c]);
+                        let call =
+                            cx.call_helper("graphix_variant_payload_array", &args)?;
                         let bits = cx.b.inst_results(call)[0];
                         (cx.b.ins().iconst(types::I64, value_disc::ARRAY), bits)
                     }
                     LocalKind::String => {
-                        let h = cx.helper("graphix_variant_payload_string")?;
-                        let call = cx.b.ins().call(h, &[disc, payload, idx_c]);
+                        let call =
+                            cx.call_helper("graphix_variant_payload_string", &args)?;
                         let bits = cx.b.inst_results(call)[0];
                         (cx.b.ins().iconst(types::I64, value_disc::STRING), bits)
                     }
                     LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
-                        let h = cx.helper("graphix_variant_payload_value")?;
-                        let call = cx.b.ins().call(h, &[disc, payload, idx_c]);
+                        let call =
+                            cx.call_helper("graphix_variant_payload_value", &args)?;
                         let rs = cx.b.inst_results(call);
                         (rs[0], rs[1])
                     }
                     LocalKind::Scalar(_) => {
-                        return Err(anyhow!(
-                            "emit_clif: scalar payload routed to the \
-                                 value bind path"
-                        ));
+                        bail!("emit_clif: scalar payload routed to the value bind path")
                     }
                 };
-                let name: ArcStr =
-                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
-                let pdisc = mask_unmatched(cx, pdisc, mask);
-                bind_local(cx, name, pdisc, vpayload, *kind, Some(*id));
+                (*id, d, p, *kind)
             }
             SelectArmBind::ListHead { id, idx, kind } => {
-                let SelectScrut::Value { disc, payload } = scrut else {
-                    return Err(anyhow!(
-                        "emit_clif: list head bind without a value scrutinee"
-                    ));
-                };
                 let j = cx.b.ins().iconst(types::I64, *idx as i64);
-                let (vdisc, vpayload) = match kind {
+                let args = [sdisc, value_payload()?, j];
+                let (d, p) = match kind {
                     LocalKind::Composite => {
-                        let h = cx.helper("graphix_list_get_array")?;
-                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let call = cx.call_helper("graphix_list_get_array", &args)?;
                         let bits = cx.b.inst_results(call)[0];
                         (cx.b.ins().iconst(types::I64, value_disc::ARRAY), bits)
                     }
                     LocalKind::String => {
-                        let h = cx.helper("graphix_list_get_string")?;
-                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let call = cx.call_helper("graphix_list_get_string", &args)?;
                         let bits = cx.b.inst_results(call)[0];
                         (cx.b.ins().iconst(types::I64, value_disc::STRING), bits)
                     }
                     LocalKind::Scalar(p) => {
-                        let h = cx.helper("graphix_list_get_value")?;
-                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let call = cx.call_helper("graphix_list_get_value", &args)?;
                         let raw = cx.b.inst_results(call)[1];
                         (scalar_disc(cx.b, *p), cast_u64_to_prim(cx.b, raw, *p))
                     }
                     LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
-                        let h = cx.helper("graphix_list_get_value")?;
-                        let call = cx.b.ins().call(h, &[disc, payload, j]);
+                        let call = cx.call_helper("graphix_list_get_value", &args)?;
                         let rs = cx.b.inst_results(call);
                         (rs[0], rs[1])
                     }
                 };
-                let name: ArcStr =
-                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
-                let pdisc = mask_unmatched(cx, pdisc, mask);
-                bind_local(cx, name, pdisc, vpayload, *kind, Some(*id));
+                (*id, d, p, *kind)
             }
             SelectArmBind::ListTail { id, k } => {
-                let SelectScrut::Value { disc, payload } = scrut else {
-                    return Err(anyhow!(
-                        "emit_clif: list tail bind without a value scrutinee"
-                    ));
-                };
                 let kc = cx.b.ins().iconst(types::I64, *k as i64);
-                let h = cx.helper("graphix_list_tail")?;
-                let call = cx.b.ins().call(h, &[disc, payload, kc]);
+                let call =
+                    cx.call_helper("graphix_list_tail", &[sdisc, value_payload()?, kc])?;
                 let rs = cx.b.inst_results(call);
-                let (vdisc, vpayload) = (rs[0], rs[1]);
-                let name: ArcStr =
-                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                let pdisc = propagate_flags(cx.b, vdisc, &[disc]);
-                let pdisc = mask_unmatched(cx, pdisc, mask);
-                bind_local(cx, name, pdisc, vpayload, LocalKind::Value, Some(*id));
+                (*id, rs[0], rs[1], LocalKind::Value)
             }
             SelectArmBind::Elem { id, idx, prim, parent_ptr } => {
-                let SelectScrut::Composite { disc, .. } = scrut else {
-                    return Err(anyhow!(
-                        "emit_clif: element bind without a composite \
-                             scrutinee"
-                    ));
-                };
-                // The arm's length tests proved the element exists.
+                if !matches!(scrut, SelectScrut::Composite { .. }) {
+                    bail!("emit_clif: element bind without a composite scrutinee");
+                }
                 let v = read_scrut_elem(cx, *parent_ptr, *idx, *prim)?;
-                let name: ArcStr =
-                    compact_str::format_compact!("__pat{}", id.inner()).as_str().into();
-                let base = scalar_disc(cx.b, *prim);
-                let pdisc = propagate_flags(cx.b, base, &[disc]);
-                let pdisc = mask_unmatched(cx, pdisc, mask);
-                bind_local(cx, name, pdisc, v, LocalKind::Scalar(*prim), Some(*id));
+                (*id, scalar_disc(cx.b, *prim), v, LocalKind::Scalar(*prim))
             }
-        }
+        };
+        let disc = propagate_flags(cx.b, disc, &[sdisc]);
+        let disc = mask_unmatched(cx, disc, mask);
+        bind_local(cx, PAT_BIND_NAME, disc, payload, kind, Some(id));
     }
     Ok(())
 }
 
 /// Value-position arm-body emission: widen the arm's result to the
-/// select's merge shape and jump to the merge block.
+/// select's merge shape and jump to the merge block. `guards_stale` is
+/// the consulted guards' STALE fold at this arm.
 fn emit_select_value_arm<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     body: &Node<R, E>,
@@ -1569,9 +1215,8 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     merge_shape: SelectMerge,
     merge: Block,
     scrut_disc: ClifValue,
-    fires: SelFires,
+    guards_stale: ClifValue,
 ) -> Result<()> {
-    use NodeView;
     let body_frozen =
         kernel_abi::freeze_for_abi_normalized(body.typ()).ok_or_else(|| {
             anyhow!("emit_clif: select arm type {:?} doesn't freeze concrete", body.typ())
@@ -1585,25 +1230,20 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
         NodeView::Never(n) => Some(&n.n),
         _ => None,
     };
-    let is_never = never_args.is_some();
-    let bottom_arm = is_never || matches!(body_frozen, Type::Bottom);
-    let (disc, payload) = if bottom_arm {
-        let kind = match merge_shape {
-            SelectMerge::Scalar(rp) => AbiKind::Scalar(rp),
-            SelectMerge::Value => AbiKind::Value,
-            SelectMerge::Composite => AbiKind::Tuple,
-            SelectMerge::String => AbiKind::String,
-        };
-        let cv = super::nodes::emit_bottom_of_kind(cx, kind)?;
-        let disc = if let Some(args) = never_args {
-            for arg in args.iter() {
-                let av = arg.emit_clif(cx)?;
-                super::flow::emit_discard_result(cx, arg, av)?;
+    let (disc, payload) = if never_args.is_some() || matches!(body_frozen, Type::Bottom) {
+        let cv = emit_bottom_of_kind(cx, merge_shape.abi_kind())?;
+        let disc = match never_args {
+            Some(args) => {
+                for arg in args.iter() {
+                    let av = arg.emit_clif(cx)?;
+                    emit_discard_result(cx, arg, av)?;
+                }
+                cx.b.ins().bor_imm(cv.disc, STALE)
             }
-            cx.b.ins().bor_imm(cv.disc, STALE)
-        } else {
-            let produced = body.emit_clif(cx)?;
-            propagate_flags(cx.b, cv.disc, &[produced.disc])
+            None => {
+                let produced = body.emit_clif(cx)?;
+                propagate_flags(cx.b, cv.disc, &[produced.disc])
+            }
         };
         (disc, cv.payload)
     } else {
@@ -1617,37 +1257,15 @@ fn emit_select_value_arm<R: Rt, E: UserEvent>(
     let d = propagate_stale(cx.b, d, &[disc]);
     let scrut_stale = cx.b.ins().band_imm(scrut_disc, STALE);
     let d = fold_stale(cx.b, d, scrut_stale);
-    let d = match fires.sound_stale {
-        Some(gs) => fold_stale(cx.b, d, gs),
-        None => d,
-    };
-    // When every fired consumed input was a bottom (stale after the
-    // sound folds, but a fresh-bottom fire happened) emit a fresh
-    // TAINT; the payload stays valid and owned.
-    let d = match fires.bfired {
-        Some(bf) => {
-            let sbit = cx.b.ins().band_imm(d, STALE);
-            let quiet = cx.b.ins().icmp_imm(IntCC::NotEqual, sbit, 0);
-            let ov = cx.b.ins().band(quiet, bf);
-            let d_bot = cx.b.ins().band_imm(d, !STALE);
-            let d_bot = cx.b.ins().bor_imm(d_bot, TAINT);
-            cx.b.ins().select(ov, d_bot, d)
-        }
-        None => d,
-    };
+    let d = fold_stale(cx.b, d, guards_stale);
     // Drop the arm's owned pattern binds; the widening above made the
     // result independently owned.
-    super::flow::emit_scope_drops(cx, mark)?;
+    emit_scope_drops(cx, mark)?;
     cx.env.truncate(mark);
     cx.b.ins().jump(merge, &[BlockArg::Value(d), BlockArg::Value(payload)]);
     Ok(())
 }
 
-// CR claude for eric: [perf] The Value branch re-implements part of
-// nodes::emit_owned_value_operand_node and refuses the String and composite arms
-// that function widens. Probe: `let x = 0; #[native] select x { 0 => "a", _ =>
-// null }` is refused ("select arm of shape Some(String) can't widen to the Value
-// merge"), and so is `0 => [1, 2], _ => null`. Call emit_owned_value_operand_node.
 /// An ordinary arm's result widened to the select's merge shape.
 fn emit_select_arm_value<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
@@ -1655,70 +1273,31 @@ fn emit_select_arm_value<R: Rt, E: UserEvent>(
     body_frozen: &Type,
     merge_shape: SelectMerge,
 ) -> Result<(ClifValue, ClifValue)> {
-    use NodeView;
+    let body_kind = kernel_abi::abi_kind(body_frozen);
     Ok(match merge_shape {
         SelectMerge::Scalar(rp) => {
-            if kernel_abi::scalar_prim(&body_frozen) != Some(rp) {
-                return Err(anyhow!(
-                    "emit_clif: select arm type {body_frozen:?} doesn't \
-                     match the scalar merge {rp:?}"
-                ));
+            if kernel_abi::scalar_prim(body_frozen) != Some(rp) {
+                bail!(
+                    "emit_clif: select arm type {body_frozen:?} doesn't match the \
+                     scalar merge {rp:?}"
+                );
             }
             let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
         }
         SelectMerge::Value => {
-            match kernel_abi::abi_kind(&body_frozen) {
-                Some(AbiKind::Null) => {
-                    // Only the literal null constant is recognized as a
-                    // bare-null arm body.
-                    match body.view() {
-                        NodeView::Constant(c) if matches!(c.value, Value::Null) => {}
-                        _ => {
-                            return Err(anyhow!(
-                                "emit_clif: null-typed select arm isn't \
-                                 a null literal"
-                            ));
-                        }
-                    }
-                    // Same STALE gate as `emit_const_node`: a literal
-                    // fires only at init.
-                    let init = cx.init_flag();
-                    let d = cx.b.ins().iconst(types::I64, value_disc::NULL);
-                    let d = const_stale_gate(cx.b, init, d);
-                    let p = cx.b.ins().iconst(types::I64, 0);
-                    (d, p)
-                }
-                Some(AbiKind::Scalar(p)) => {
-                    let cv = body.emit_clif(cx)?;
-                    (cv.disc, scalar_to_payload_i64(cx.b, p, cv.payload))
-                }
-                Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-                    let cv = body.emit_clif(cx)?;
-                    ensure_owned_value_src(
-                        cx,
-                        node_composite_source(body),
-                        cv.disc,
-                        cv.payload,
-                    )?
-                }
-                other => {
-                    return Err(anyhow!(
-                        "emit_clif: select arm of shape {other:?} can't \
-                         widen to the Value merge"
-                    ));
-                }
-            }
+            let cv = emit_owned_value_operand_node(cx, body)?;
+            (cv.disc, cv.payload)
         }
         SelectMerge::Composite => {
             if !matches!(
-                kernel_abi::abi_kind(&body_frozen),
+                body_kind,
                 Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct)
             ) {
-                return Err(anyhow!(
-                    "emit_clif: select arm type {body_frozen:?} doesn't \
-                     match the composite merge"
-                ));
+                bail!(
+                    "emit_clif: select arm type {body_frozen:?} doesn't match the \
+                     composite merge"
+                );
             }
             let cv = body.emit_clif(cx)?;
             let v =
@@ -1726,11 +1305,11 @@ fn emit_select_arm_value<R: Rt, E: UserEvent>(
             (cv.disc, v)
         }
         SelectMerge::String => {
-            if !matches!(kernel_abi::abi_kind(&body_frozen), Some(AbiKind::String)) {
-                return Err(anyhow!(
-                    "emit_clif: select arm type {body_frozen:?} doesn't \
-                     match the string merge"
-                ));
+            if body_kind != Some(AbiKind::String) {
+                bail!(
+                    "emit_clif: select arm type {body_frozen:?} doesn't match the \
+                     string merge"
+                );
             }
             let cv = body.emit_clif(cx)?;
             (cv.disc, cv.payload)
@@ -1751,8 +1330,7 @@ fn emit_structure_cond(
     scrut: SelectScrut,
     scrut_kind: AbiKind,
     scrut_typ: &Type,
-    early_fail: Option<Block>,
-    binds: &mut smallvec::SmallVec<[SelectArmBind; 8]>,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<Option<ClifValue>> {
     let scond: Option<ClifValue> = match sp {
         StructPatternNode::Abstract { .. } => {
@@ -1920,14 +1498,7 @@ fn emit_structure_cond(
                              structural composite pattern not lowerable"
                     ));
                 }
-                Some(emit_composite_pattern_cond(
-                    cx,
-                    ptr,
-                    scrut_typ,
-                    p,
-                    early_fail.unwrap(),
-                    binds,
-                )?)
+                Some(emit_composite_pattern_cond(cx, ptr, scrut_typ, p, binds)?)
             }
             _ => {
                 return Err(anyhow!(
@@ -1940,10 +1511,9 @@ fn emit_structure_cond(
     Ok(scond)
 }
 
-/// The arm-local name a pattern bind installs under.
-fn pat_bind_name(id: BindId) -> ArcStr {
-    compact_str::format_compact!("__pat{}", id.inner()).as_str().into()
-}
+/// The name every pattern bind installs under; binds resolve by
+/// BindId, so the name is never looked up.
+const PAT_BIND_NAME: ArcStr = arcstr::literal!("__pat");
 
 /// The `BindId` a [`SelectArmBind`] installs.
 fn select_bind_id(b: &SelectArmBind) -> BindId {
@@ -1958,8 +1528,6 @@ fn select_bind_id(b: &SelectArmBind) -> BindId {
     }
 }
 
-// CR claude for eric: [structure] nodes::emit_bottom_of_kind keyed by LocalKind
-// instead of AbiKind, plus STALE; derive it from that one.
 /// A drop-safe TAINT|STALE placeholder pair for a local of `kind`: the
 /// or-chain's no-match binds. Standing unconditionally, unlike
 /// `nodes::emit_bottom_placeholder`: a delivery that never happened is
@@ -1968,31 +1536,14 @@ fn placeholder_for_kind(
     cx: &mut BodyCx,
     kind: LocalKind,
 ) -> Result<(ClifValue, ClifValue)> {
-    Ok(match kind {
-        LocalKind::Scalar(p) => {
-            let d = cx.b.ins().iconst(types::I64, prim_to_value_disc(p) | TAINT | STALE);
-            (d, zero_const(cx.b, p))
-        }
-        LocalKind::String => {
-            let h = cx.helper("graphix_arcstr_empty")?;
-            let call = cx.b.ins().call(h, &[]);
-            let sp = cx.b.inst_results(call)[0];
-            let d = cx.b.ins().iconst(types::I64, value_disc::STRING | TAINT | STALE);
-            (d, sp)
-        }
-        LocalKind::Composite => {
-            let h = cx.helper("graphix_valarray_empty")?;
-            let call = cx.b.ins().call(h, &[]);
-            let a = cx.b.inst_results(call)[0];
-            let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT | STALE);
-            (d, a)
-        }
-        LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
-            let d = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT | STALE);
-            let z = cx.b.ins().iconst(types::I64, 0);
-            (d, z)
-        }
-    })
+    let abi = match kind {
+        LocalKind::Scalar(p) => AbiKind::Scalar(p),
+        LocalKind::String => AbiKind::String,
+        LocalKind::Composite => AbiKind::Array,
+        LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => AbiKind::Value,
+    };
+    let cv = emit_bottom_of_kind(cx, abi)?;
+    Ok((cx.b.ins().bor_imm(cv.disc, STALE), cv.payload))
 }
 
 /// Emit an or-pattern arm's alternative chain: alternatives test left
@@ -2019,7 +1570,7 @@ fn emit_or_chain(
         Some(Type::Set(ts)) if ts.len() == alts.len() => Some(ts.clone()),
         _ => None,
     });
-    let tests: smallvec::SmallVec<[Block; 4]> =
+    let tests: SmallVec<[Block; 4]> =
         (0..alts.len()).map(|_| cx.b.create_block()).collect();
     let ph_bl = match nomatch {
         None => Some(cx.b.create_block()),
@@ -2027,8 +1578,7 @@ fn emit_or_chain(
     };
     cx.b.ins().jump(tests[0], &[]);
     let mut done: Option<Block> = None;
-    let mut layout: smallvec::SmallVec<[(BindId, LocalKind); 8]> =
-        smallvec::SmallVec::new();
+    let mut layout: SmallVec<[(BindId, LocalKind); 8]> = SmallVec::new();
     for (k, alt) in alts.iter().enumerate() {
         cx.b.switch_to_block(tests[k]);
         cx.b.seal_block(tests[k]);
@@ -2045,18 +1595,9 @@ fn emit_or_chain(
             Some(ts) => &ts[k],
             None => pred_typ,
         };
-        let mut binds: smallvec::SmallVec<[SelectArmBind; 8]> = smallvec::SmallVec::new();
+        let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
         let scond = emit_structure_cond(
-            cx,
-            alt,
-            at,
-            false,
-            false,
-            scrut,
-            scrut_kind,
-            scrut_typ,
-            Some(fail_to),
-            &mut binds,
+            cx, alt, at, false, false, scrut, scrut_kind, scrut_typ, &mut binds,
         )?;
         let mk = cx.b.create_block();
         match scond {
@@ -2072,8 +1613,7 @@ fn emit_or_chain(
         cx.b.seal_block(mk);
         let amark = cx.env.mark();
         install_arm_binds(cx, &binds, scrut, None)?;
-        let mut ids: smallvec::SmallVec<[BindId; 8]> =
-            binds.iter().map(select_bind_id).collect();
+        let mut ids: SmallVec<[BindId; 8]> = binds.iter().map(select_bind_id).collect();
         ids.sort_by_key(|id| id.inner());
         if k == 0 {
             for id in ids.iter() {
@@ -2097,7 +1637,7 @@ fn emit_or_chain(
             ));
         }
         let one = cx.b.ins().iconst(types::I8, 1);
-        let mut args: smallvec::SmallVec<[BlockArg; 20]> = smallvec::SmallVec::new();
+        let mut args: SmallVec<[BlockArg; 20]> = SmallVec::new();
         args.push(one.into());
         for (id, kind) in layout.iter() {
             let l = cx.env.lookup_id(*id).ok_or_else(|| {
@@ -2122,7 +1662,7 @@ fn emit_or_chain(
         cx.b.switch_to_block(ph);
         cx.b.seal_block(ph);
         let zero = cx.b.ins().iconst(types::I8, 0);
-        let mut args: smallvec::SmallVec<[BlockArg; 20]> = smallvec::SmallVec::new();
+        let mut args: SmallVec<[BlockArg; 20]> = SmallVec::new();
         args.push(zero.into());
         for (_, kind) in layout.iter() {
             let (d, pv) = placeholder_for_kind(cx, *kind)?;
@@ -2134,13 +1674,13 @@ fn emit_or_chain(
     let d = done.ok_or_else(|| anyhow!("emit_clif: empty or-pattern chain"))?;
     cx.b.switch_to_block(d);
     cx.b.seal_block(d);
-    let params: smallvec::SmallVec<[ClifValue; 20]> =
+    let params: SmallVec<[ClifValue; 20]> =
         cx.b.block_params(d).iter().copied().collect();
     let matched = params[0];
     for (i, (id, kind)) in layout.iter().enumerate() {
         bind_local(
             cx,
-            pat_bind_name(*id),
+            PAT_BIND_NAME,
             params[1 + 2 * i],
             params[2 + 2 * i],
             *kind,

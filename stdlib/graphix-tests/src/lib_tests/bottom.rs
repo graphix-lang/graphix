@@ -232,3 +232,81 @@ async fn strict_sample_interp() -> Result<()> {
 async fn strict_sample_jit() -> Result<()> {
     strict_sample(false).await
 }
+
+/// A bottom scrutinee makes no selection and consults no guard: the
+/// select is the scrutinee's bottom, fresh only when the scrutinee
+/// fired, whatever a guard's channel does.
+async fn bottom_scrutinee_consults_no_guard(fusion_disabled: bool) -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let flags =
+        if fusion_disabled { CFlag::FusionDisabled.into() } else { Default::default() };
+    let ctx = init_with_flags_and_setup(tx, crate::TEST_REGISTER, vec![], flags, |_| {})
+        .await?;
+    let result = ctx
+        .rt
+        .with_ctx(move |ctx| -> Result<()> {
+            let scope = Scope::root().append("bottom_scrutinee");
+            let mut bindings = Vec::new();
+            for name in ["x", "g"] {
+                let node = compile(
+                    ctx,
+                    flags,
+                    &scope,
+                    parse_one(&format!("let {name}: i64 = never()"))?,
+                )?;
+                let id = ctx
+                    .env
+                    .lookup_bind(&scope.lexical, &ModPath::from([name]))?
+                    .context("test binding")?
+                    .1
+                    .id;
+                bindings.push((node, id));
+            }
+            let code = "select x { v if g > 0 => v, _ => 0 }";
+            let spec = if fusion_disabled {
+                parse_one(code)?
+            } else {
+                parse_one(&format!("#[native]\n{code}"))?
+            };
+            let mut node = compile(ctx, flags, &scope, spec)?;
+            for (i, (x_tag, g_tag, expected)) in [
+                (Tag::FRESH_BOTTOM, Tag::FRESH_BOTTOM, Tag::FRESH_BOTTOM),
+                (Tag::STALE_BOTTOM, Tag::FRESH_BOTTOM, Tag::STALE_BOTTOM),
+                (Tag::STALE_BOTTOM, Tag::FIRED, Tag::STALE_BOTTOM),
+                (Tag::STALE_BOTTOM, Tag::FRESH_BOTTOM, Tag::STALE_BOTTOM),
+                (Tag::FRESH_BOTTOM, Tag::STALE, Tag::FRESH_BOTTOM),
+                (Tag::STALE_BOTTOM, Tag::STALE_BOTTOM, Tag::STALE_BOTTOM),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut event = Event::new(NoUserEvent);
+                event.init = i == 0;
+                event
+                    .variables
+                    .insert(bindings[0].1, TagValue::tagged(Value::Null, x_tag));
+                let g = if g_tag.is_bottom() { Value::Null } else { Value::I64(1) };
+                event.variables.insert(bindings[1].1, TagValue::tagged(g, g_tag));
+                let actual = node.update(ctx, &mut event);
+                assert_eq!(actual.tag(), expected, "step {i}: {actual:?}");
+            }
+            node.delete(ctx);
+            for (mut node, _) in bindings {
+                node.delete(ctx);
+            }
+            Ok(())
+        })
+        .await?;
+    ctx.shutdown().await;
+    result
+}
+
+#[tokio::test]
+async fn bottom_scrutinee_consults_no_guard_interp() -> Result<()> {
+    bottom_scrutinee_consults_no_guard(true).await
+}
+
+#[tokio::test]
+async fn bottom_scrutinee_consults_no_guard_jit() -> Result<()> {
+    bottom_scrutinee_consults_no_guard(false).await
+}

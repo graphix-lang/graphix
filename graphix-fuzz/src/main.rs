@@ -1088,4 +1088,51 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
              [<>] => i64:0\n\
          }\n",
     ),
+    (
+        // a tail loop's body let shadowing a formal, dropped per pass
+        "tail-rebind-shadowed-formal",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let rec f = |n: i64, a: Array<i64>| -> Array<i64> {\n\
+             let a = [n, n, n, n, n, n, n, n];\n\
+             select n { i64:0 => a, n => f(n - i64:1, a) }\n\
+         };\n\
+         array::len(f(x % i64:100 + i64:100, [x]))\n",
+    ),
+    (
+        // a string read into a value-shaped formal, owned by the call
+        "string-into-value-formal",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let g = |v: [string, null]| -> i64 select v { null as _ => i64:0, _ => i64:1 };\n\
+         let rec f = |n: i64, acc: i64| -> i64 {\n\
+             let s = \"abcdefghijklmnop[n]\";\n\
+             select n { i64:0 => acc, n => f(n - i64:1, acc + g(s)) }\n\
+         };\n\
+         f(x % i64:100 + i64:100, i64:0)\n",
+    ),
+    (
+        // shed activations of a recursion owning a nested loop's chain
+        "shed-activation-chains",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let rec f = |k: i64, a: Array<Array<i64>>| -> i64 select k {\n\
+             i64:0 => i64:0,\n\
+             _ => array::len(array::map(a, |r| array::map(r, |y| y + k))) + f(k - i64:1, a)\n\
+         };\n\
+         f(select x % i64:2 { i64:0 => i64:50, _ => i64:1 }, [[i64:1, i64:2], [i64:3, i64:4]])\n",
+    ),
+    (
+        // dropped loop slots owning a recursive callee's activation trees
+        "dropped-slot-trees",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let rec f = |k: i64| -> i64 select k { i64:0 => i64:0, _ => k + f(k - i64:1) };\n\
+         let src = select x % i64:2 { i64:0 => array::init(i64:50, |i| i), _ => [i64:1] };\n\
+         array::len(array::map(src, |y| f(y % i64:20)))\n",
+    ),
 ];

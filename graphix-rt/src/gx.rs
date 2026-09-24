@@ -434,8 +434,6 @@ impl<X: GXExt> GX<X> {
         if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.event) {
             error!("could not marshall user events {e:?}")
         }
-        // The cycle may run on a migrated worker thread.
-        graphix_compiler::fusion::emit_helpers::set_interrupt_ptr(&self.ctx.control);
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.event.variables.is_empty()
             || !self.event.custom.is_empty();
@@ -446,6 +444,11 @@ impl<X: GXExt> GX<X> {
         // it is set: one that arrived while idle must not poison this cycle.
         self.ctx.control.clear_interrupt();
         let mut run_nodes = || {
+            // On the thread that runs the nodes: the task may migrate
+            // between cycles.
+            let _interrupt = graphix_compiler::fusion::emit_helpers::InterruptScope::new(
+                &self.ctx.control,
+            );
             for (id, n) in self.nodes.iter_mut() {
                 if let Some(init) = self.ctx.rt.updated.get(id) {
                     self.event.init = *init;

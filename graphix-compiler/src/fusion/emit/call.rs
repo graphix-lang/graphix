@@ -32,6 +32,7 @@ use super::{
         emit_untainted_i64, is_tainted, scalar_disc, value_disc,
     },
     body::{BodyCx, node_composite_source, node_is_bottom, pending_exit_block},
+    flow::emit_scope_drops,
     lower::{LowerCtx, SelWord},
     nodes::{call_result_needs_value_widening, emit_bottom_placeholder},
     scalar::{cast_u64_to_prim, prim_to_clif, scalar_to_payload_i64},
@@ -89,6 +90,11 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             "emit_clif: call with bare Null / non-fusable return — \
              should have widened to Nullable<T> at construction"
         ));
+    }
+    // An argument-less call fires like a constant, which the fast
+    // fn's arg-derived tag cannot express.
+    if args.is_empty() {
+        return Err(anyhow!("emit_clif: a fast fn called with no arguments"));
     }
     if args.len() > 64 {
         return Err(anyhow!(
@@ -459,7 +465,7 @@ fn emit_site_block(
     // CR claude for eric: [structure] the state branch and the site branch below
     // are the same claim-run-then-rebase code over two channels (claims,
     // self_blocks, anchors); one fn taking the channel removes the copy.
-    if cx.ctx.loop_depth.get() == 0 {
+    if cx.env.loop_depth == 0 {
         if let Some(first) = cx.claim_state_word() {
             for _ in 1..layout.words {
                 cx.claim_state_word()
@@ -469,8 +475,7 @@ fn emit_site_block(
             for b in layout.self_blocks.iter() {
                 cx.ctx.state.self_blocks.borrow_mut().push(kernel_abi::SelfBlock {
                     rel: base_idx + b.rel,
-                    words: b.words,
-                    slots: b.slots.clone(),
+                    layout: b.layout.clone(),
                 });
             }
             for a in layout.anchors.iter() {
@@ -491,8 +496,7 @@ fn emit_site_block(
             for b in layout.self_blocks.iter() {
                 cx.ctx.site.self_blocks.borrow_mut().push(kernel_abi::SelfBlock {
                     rel: base_idx + b.rel,
-                    words: b.words,
-                    slots: b.slots.clone(),
+                    layout: b.layout.clone(),
                 });
             }
             for a in layout.anchors.iter() {
@@ -517,19 +521,20 @@ fn emit_site_block(
         let fs = cx.ctx.slot_tables.borrow();
         debug_assert_eq!(
             fs.len(),
-            cx.ctx.loop_depth.get() as usize,
+            cx.env.loop_depth as usize,
             "slot-table frames out of sync with loop depth"
         );
         fs.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
     };
     let n_dirs = frames.len() - 1;
     let (dirs, leaf_frame) = (&frames[..n_dirs], frames[n_dirs]);
-    let leaf_rt = if layout.anchors.is_empty() {
+    let leaf_rt = if layout.anchors.is_empty() && layout.self_blocks.is_empty() {
         None
     } else {
         Some(std::sync::Arc::new(kernel_abi::SiteLeaf {
             stride: layout.words,
             anchors: layout.anchors.clone(),
+            self_blocks: layout.self_blocks.clone(),
         }))
     };
     // This chain's per-iteration ensure never runs on a len-0 epoch, so
@@ -580,18 +585,8 @@ fn emit_site_block(
             None => cx.b.ins().iconst(types::I64, 0),
             Some(l) => cx.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
         };
+        let word_addr = cx.emit_dir_walk(word_addr, dirs, n_dirs, leaf_ptr)?;
         let table_helper = cx.helper("graphix_slot_state_table")?;
-        let mut word_addr = word_addr;
-        for (k, (flen, fdisc, fidx)) in dirs.iter().enumerate() {
-            let fvalid = emit_untainted_i64(cx.b, *fdisc);
-            let own = cx.b.ins().iconst(types::I64, (n_dirs - k) as i64);
-            let call =
-                cx.b.ins().call(table_helper, &[word_addr, *flen, fvalid, own, leaf_ptr]);
-            let dir = cx.b.inst_results(call)[0];
-            let i = cx.b.use_var(*fidx);
-            let o = cx.b.ins().ishl_imm(i, 3);
-            word_addr = cx.b.ins().iadd(dir, o);
-        }
         let (llen, ldisc, lidx) = leaf_frame;
         let lvalid = emit_untainted_i64(cx.b, ldisc);
         let table = match &leaf_rt {
@@ -974,7 +969,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let disc = cx.b.block_params(dmerge)[0];
     let payload = cx.b.block_params(dmerge)[1];
     #[cfg(debug_assertions)]
-    if std::env::var_os("GXDBG_CALLRET").is_some() {
+    if crate::dbgenv::gxdbg_callret() {
         let f = cx.helper("graphix_dbg_disc")?;
         let t = cx.b.ins().iconst(types::I64, 1);
         cx.b.ins().call(f, &[t, disc]);
@@ -1019,22 +1014,6 @@ fn emit_call_arg_drops(
     Ok(())
 }
 
-/// Drop every owned local currently in scope; called at every return
-/// point. `emit_kernel_return` makes the result independently owned
-/// before calling this, so the returned pointer never aliases a dropped slot.
-pub(super) fn drop_owned_composites(
-    b: &mut FunctionBuilder,
-    env: &mut JitEnv,
-    ctx: &LowerCtx,
-) -> Result<()> {
-    let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> =
-        env.locals_above(0).collect();
-    for (kind, vv) in drops {
-        emit_drop_local(b, ctx, kind, vv)?;
-    }
-    Ok(())
-}
-
 /// Emit the runtime drop for one owned local of `kind` held in `vv`;
 /// the single per-kind drop dispatch (scalars own nothing).
 pub(super) fn emit_drop_local(
@@ -1069,7 +1048,7 @@ pub(super) fn emit_drop_local(
 
 /// Emit drops for everything the kernel currently owns, for a
 /// whole-kernel abort path: the in-flight value bufs, the owned HOF
-/// inputs, then `drop_owned_composites`.
+/// inputs, then every owned local.
 pub(super) fn emit_pending_cleanup(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
@@ -1092,5 +1071,5 @@ pub(super) fn emit_pending_cleanup(
         let ptr = b.use_var(*arr_var);
         b.ins().call(arr_drop, &[ptr]);
     }
-    drop_owned_composites(b, env, ctx)
+    emit_scope_drops(&mut BodyCx { b, env, ctx }, 0)
 }

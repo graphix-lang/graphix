@@ -114,9 +114,9 @@ pub struct FusionStats {
     /// Per-failure source identity and compile error. Compile-time only;
     /// bounded by program size.
     pub failed: Vec<FusionFailure>,
-    /// JIT module rotations (see `FusionCtx::retired_jits`). Each leaves
-    /// one ~256MB arena resident until the ExecCtx is dropped; embedders
-    /// that recompile heavily can poll this and recycle the ExecCtx.
+    /// JIT module rotations: an exhausted module is replaced by a fresh
+    /// one, and its ~256MB arena is freed when the last kernel compiled
+    /// into it drops.
     pub jit_generations: usize,
     /// Region roots that fused. Distinguishes a structural `failed`
     /// entry (a block whose value fused in a sub-region) from a real
@@ -154,15 +154,6 @@ pub struct FusionCtx {
     /// mutex is interior mutability for `ExecCtx`'s `Sync` bound; JIT
     /// ops are compile-time only.
     pub jit: parking_lot::Mutex<emit::Jit>,
-    /// JIT generations retired when the active arena exhausted. Their
-    /// kernels stay mapped and executing; generations never link (a
-    /// region builds atomically within one). Freed by ExecCtx drop or
-    /// [`Self::reset_jit_for_check`].
-    // CR claude for eric: [bug] "Freed by ExecCtx drop" is false: nothing frees
-    // JIT memory (CR at emit/jit.rs `Jit`), so every fused ExecCtx, rotation and
-    // reset_jit_for_check leaks a 256MB reservation plus its code pages. Fix this
-    // doc, FusionStats::jit_generations and the rotation warning with it.
-    pub retired_jits: parking_lot::Mutex<Vec<emit::Jit>>,
     /// Monomorphized lambda-kernel cache. Catch coverage and fn
     /// resolutions are part of the key because the kernel bakes them.
     /// The cached `Arc<KernelSig>` is the callable handle: the JIT's
@@ -211,7 +202,6 @@ impl FusionCtx {
             // ~152 helper declarations, a 256MB arena reservation) even with fusion off
             // (UIs, LSP checks, --no-fusion). Build it on first use.
             jit: parking_lot::Mutex::new(emit::Jit::new()?),
-            retired_jits: parking_lot::Mutex::new(Vec::new()),
             kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
             building: triomphe::Arc::new(parking_lot::Mutex::new(
                 nohash::IntSet::default(),
@@ -223,22 +213,15 @@ impl FusionCtx {
         })
     }
 
-    /// Reset the JIT to an empty module, discarding every compiled
-    /// kernel. The lambda-kernel signature cache survives: it holds
-    /// module-independent descriptors that re-declare into the fresh
-    /// module on next use.
+    /// Reset the JIT to an empty module. The lambda-kernel signature
+    /// cache survives: it holds module-independent descriptors that
+    /// re-declare into the fresh module on next use. The old module's
+    /// code is freed once no kernel compiled into it is left.
     ///
-    /// For the check/LSP path only, which never executes a kernel and
-    /// would otherwise accumulate every checked file's kernels in one
-    /// module. Must not be called on a runtime with live kernels: it
-    /// frees their code.
-    // CR claude for eric: [risk] A safe `pub fn` whose misuse is a
-    // use-after-free of live kernel code (today it only leaks, see the
-    // `retired_jits` CR; once memory is really freed it is UB). Make it
-    // `unsafe`, or refuse when any Kernel still holds this module.
+    /// For the check/LSP path, which would otherwise accumulate every
+    /// checked file's kernels in one module.
     pub fn reset_jit_for_check(&self) -> anyhow::Result<()> {
         *self.jit.lock() = emit::Jit::new()?;
-        self.retired_jits.lock().clear();
         Ok(())
     }
 }
@@ -648,8 +631,8 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
 ) -> (
     LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
-    LPooled<Vec<(usize, std::sync::Arc<KernelSig>)>>,
-    std::collections::BTreeMap<usize, CalleeBody<'n, R, E>>,
+    LPooled<Vec<(kernel_abi::KernelKey, std::sync::Arc<KernelSig>)>>,
+    std::collections::BTreeMap<kernel_abi::KernelKey, CalleeBody<'n, R, E>>,
     LPooled<nohash::IntSet<ExprId>>,
 ) {
     // Decorated nodes seen by this walk are exactly the nodes a
@@ -659,18 +642,23 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     // Keyed by kernel identity (names shadow, monomorphizations share a
     // name); a Vec in discovery order so fn indices and the region
     // layout are stable across processes.
-    let mut callees: LPooled<Vec<(usize, std::sync::Arc<KernelSig>)>> = LPooled::take();
-    let mut bodies: std::collections::BTreeMap<usize, CalleeBody<'n, R, E>> =
-        std::collections::BTreeMap::new();
+    let mut callees: LPooled<Vec<(kernel_abi::KernelKey, std::sync::Arc<KernelSig>)>> =
+        LPooled::take();
+    let mut bodies: std::collections::BTreeMap<
+        kernel_abi::KernelKey,
+        CalleeBody<'n, R, E>,
+    > = std::collections::BTreeMap::new();
     // The second field says where a body's discovered sites land:
     // `None` = the root, `Some(ptr)` = that callee's `CalleeBody.sites`.
-    let mut worklist: LPooled<Vec<(&'n Node<R, E>, Option<usize>)>> = LPooled::take();
+    let mut worklist: LPooled<Vec<(&'n Node<R, E>, Option<kernel_abi::KernelKey>)>> =
+        LPooled::take();
     worklist.push((root, None));
     let mut root_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> = LPooled::take();
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
-        let mut enqueue: LPooled<Vec<(&'n Node<R, E>, usize)>> = LPooled::take();
+        let mut enqueue: LPooled<Vec<(&'n Node<R, E>, kernel_abi::KernelKey)>> =
+            LPooled::take();
         for_each_emitted_node(body, &mut |n| {
             if collect_decorated
                 && n.spec().dec.as_ref().is_some_and(|d| !d.attrs.is_empty())
@@ -935,46 +923,33 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             &discovery.apply_sites,
             &lambda_sites,
             &callee_bodies,
-            None,
             &ctx.env,
         )
     };
     let phase = profile::phase(Phase::Emit);
     let mut result = build(ctx);
     // An exhausted arena retires the whole active `Jit` (its kernels
-    // stay mapped) and the build retries once in a fresh module; the
-    // retry recompiles the whole callee set, so generations never link.
-    // CR claude for eric: [risk] Exhaustion is detected by substring-matching
-    // cranelift's io::Error text, formatted into a fresh String on every failed
-    // build (every de-fused region), then formatted again by `refuse`. A reworded
-    // message silently stops rotation and every later region de-fuses. Downcast
-    // to `cranelift_module::ModuleError::Allocation` instead.
-    if let Err(e) = &result {
-        if format!("{e:#}").contains("memory region exhausted") {
-            match emit::Jit::new() {
-                Ok(fresh) => {
-                    let old = std::mem::replace(&mut *ctx.fusion.jit.lock(), fresh);
-                    ctx.fusion.retired_jits.lock().push(old);
-                    ctx.fusion.stats.jit_generations += 1;
-                    log::warn!(
-                        "JIT code arena exhausted: retired generation {} (its \
-                         kernels stay resident and running) and retrying this \
-                         region in a fresh module. Recompile-heavy sessions \
-                         (hot-reloading dynamic modules, long REPL/plugin \
-                         sessions) accumulate one resident ~256MB arena per \
-                         rotation — recycle the runtime/ExecCtx to reclaim \
-                         them all.",
-                        ctx.fusion.stats.jit_generations
-                    );
-                    result = build(ctx);
-                }
-                Err(e2) => {
-                    log::warn!(
-                        "JIT code arena exhausted and a fresh module could \
-                         not be created ({e2:#}) — the region will run \
-                         interpreted"
-                    );
-                }
+    // keep its code alive) and the build retries once in a fresh module;
+    // the retry recompiles the whole callee set, so generations never link.
+    if let Err(e) = &result
+        && e.chain().any(|c| c.is::<emit::ArenaExhausted>())
+    {
+        match emit::Jit::new() {
+            Ok(fresh) => {
+                *ctx.fusion.jit.lock() = fresh;
+                ctx.fusion.stats.jit_generations += 1;
+                log::warn!(
+                    "JIT code arena exhausted: retired generation {} (freed when its \
+                     last kernel drops) and retrying this region in a fresh module",
+                    ctx.fusion.stats.jit_generations
+                );
+                result = build(ctx);
+            }
+            Err(e2) => {
+                log::warn!(
+                    "JIT code arena exhausted and a fresh module could not be created \
+                     ({e2:#}) — the region will run interpreted"
+                );
             }
         }
     }

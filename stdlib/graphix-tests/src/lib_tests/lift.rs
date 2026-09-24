@@ -61,9 +61,9 @@ fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
 }
 
 /// Like [`collect_n`] but samples the live per-activation `SelfBlock`
-/// count after each collected cycle.
+/// count after each collected cycle; the caller runs on a current-thread
+/// runtime, so the runtime's kernels count on this thread.
 async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
-    use std::sync::atomic::Ordering::Relaxed;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
     let gx = format!("let result = {code}");
     let tbl = ahash::AHashMap::from_iter([(
@@ -91,10 +91,7 @@ async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
             if let GXEvent::Updated(id, _) = e
                 && id == eid
             {
-                blocks.push(
-                    graphix_compiler::fusion::emit_helpers::LIVE_SELF_BLOCKS
-                        .load(Relaxed),
-                );
+                blocks.push(graphix_compiler::fusion::emit_helpers::live_self_blocks());
             }
         }
     }
@@ -102,7 +99,7 @@ async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
     Ok(blocks)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn fused_recursion_sheds_unreached_blocks() -> Result<()> {
     // A fused recursion that goes deep then shallow frees the activation
     // blocks it no longer reaches: `deep` ends at depth 50 (~50 live),

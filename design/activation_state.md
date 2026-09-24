@@ -71,12 +71,12 @@ out.**
 - **Nesting composes through arm productions**: an inner select whose
   only fires were bottoms emits FreshBottom, which the outer consumes as
   a fired-bottom arm production; the outer's own sound fires do not
-  resurrect it. In the kernel's flattened tail spine this needs a
-  compile-time scope stack (`LowerCtx::sel_fires`, applied
-  innermost-first at every `emit_kernel_return`) because a single
-  loop-carried accumulator conflated the two selects' scopes. Bottom
-  fires are per-current-iteration (SSA values recompute each pass),
-  never loop-carried.
+  resurrect it. In the kernel's flattened tail spine a bottom return
+  carries its own freshness, and one loop-carried accumulator
+  (`TailCtx::tail_scrut_stale_acc`, the AND of every scrutinee and
+  consulted guard on the executed path, in any pass) folds into every
+  return. Bottom fires are per-current-iteration (SSA values recompute
+  each pass), never loop-carried.
 
 Rejected: giving the kernel per-instance entry-history storage to
 reproduce the interpreter's fourth value — the ride's two motivating

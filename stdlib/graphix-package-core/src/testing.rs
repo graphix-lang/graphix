@@ -522,7 +522,6 @@ macro_rules! run {
                     {
                         ::graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
                         ::graphix_compiler::fusion::emit_helpers::reset_fusion_invocations();
-                        ::graphix_compiler::fusion::emit_helpers::reset_fuse_bails();
                     }
                 }
                 let bs = &ctx.rt;
@@ -628,20 +627,6 @@ macro_rules! run {
                         module_path!(),
                         if fusion > 0 { "Fuses" } else { "None" },
                     );
-                    {
-                        let bails =
-                            ::graphix_compiler::fusion::emit_helpers::take_fuse_bails();
-                        let joined = bails
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        eprintln!(
-                            "FUSEBAIL\t{}\t{}",
-                            module_path!(),
-                            joined,
-                        );
-                    }
                     eprintln!(
                         "FUSEMAPJ\t{}\t{}",
                         module_path!(),

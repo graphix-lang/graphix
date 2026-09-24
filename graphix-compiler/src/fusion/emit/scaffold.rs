@@ -13,8 +13,12 @@
 //! preserve instruction, block-creation and variable-declaration order.
 
 use crate::{
+    ApplyView, Node, NodeView, Rt, UserEvent,
     expr::ExprId,
-    fusion::kernel_abi::{self, AbiKind, PrimType},
+    fusion::{
+        self,
+        kernel_abi::{self, AbiKind, PrimType},
+    },
     typ::Type,
 };
 use anyhow::{Result, anyhow};
@@ -23,6 +27,7 @@ use cranelift_codegen::ir::{
     Block, BlockArg, InstBuilder, MemFlags, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
+use poolshark::local::LPooled;
 
 use super::{
     abi::{
@@ -622,7 +627,7 @@ impl SlotFlags {
                         // A call-site word is exact only when the length
                         // is per-instance; a variant length under enclosing
                         // loops would alias iterations.
-                        None if cx.ctx.loop_depth.get() == 0 || self.src_invariant => {
+                        None if cx.env.loop_depth == 0 || self.src_invariant => {
                             cx.claim_site_word().map(PrevLen::Site)
                         }
                         None => None,
@@ -1563,4 +1568,26 @@ where
     let payload = cx.b.use_var(result_payload_var);
     drop_owned_src(cx, &arr)?;
     Ok(((disc, payload), flags))
+}
+
+/// Collect the per-slot state sites in a scaffold-loop body: the
+/// callsite `ExprId` of every nested collection HOF call, each of which
+/// claims one per-slot state chain (see [`BodyCx::open_slot_tables`]).
+/// A nested callback body lives behind its own lambda def and anchors
+/// its sites in the chain its own loop opens.
+pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+) -> LPooled<Vec<ExprId>> {
+    let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
+    fusion::for_each_node(node, &mut |n| match n.view() {
+        NodeView::CallSite(cs) => {
+            if let Some(ApplyView::Lambda(l)) = cs.resolved_apply()
+                && l.inline_callback_body().is_some()
+            {
+                ids.push(n.spec().id);
+            }
+        }
+        _ => {}
+    });
+    ids
 }

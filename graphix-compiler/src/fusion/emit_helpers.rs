@@ -1,12 +1,16 @@
 #![allow(improper_ctypes_definitions)]
 //! `extern "C"` entry points the JIT calls for ops that cannot be
 //! lowered in CLIF. Every helper is declared through [`jit_helpers!`],
-//! which derives its CLIF wire signature from the Rust types; `emit.rs`
-//! registers each symbol by pointer from [`all_helpers`].
+//! which derives its CLIF wire signature from the Rust types;
+//! `emit/jit.rs` registers each symbol by pointer from [`all_helpers`]
+//! and `emit/lower.rs` declares its signature.
 //!
-//! `Value` is `#[repr(u64)]`, two 8-byte words `(disc, payload)`, passed
-//! in two integer registers; `improper_ctypes_definitions` is suppressed
-//! because the outer layout is stable even where a payload is not `repr(C)`.
+//! `Value` is `#[repr(u64)]`, two 8-byte words `(disc, payload)`. A
+//! [`TagValue`] crosses the seam by value, as two integer registers:
+//! true under System V x86_64 and AAPCS64, false under Win64, where
+//! fusion is off (`design/helper_abi_portability.md`).
+//! `improper_ctypes_definitions` is suppressed because the outer layout
+//! is stable even where a payload is not `repr(C)`.
 //!
 //! Pointer arguments must stay valid for the call. Element/field reads
 //! are total: an out-of-bounds index or an unexpected slot shape reads
@@ -14,7 +18,7 @@
 //! because tainted placeholders are `Value::Null` in composite slots.
 
 use crate::{
-    fusion::kernel_abi::SiteLeaf,
+    fusion::kernel_abi::{ActivationLayout, SiteLeaf},
     node::{
         array::{array_index, array_slice_i64, bytes_index},
         map::map_get,
@@ -23,7 +27,12 @@ use crate::{
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
-use std::{cell::RefCell, mem::MaybeUninit};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    mem::MaybeUninit,
+    panic::AssertUnwindSafe,
+};
 
 /// The Value ABI the helpers' two-`I64` signatures depend on: two
 /// 8-byte words, and every externally-defined payload fits the second.
@@ -101,14 +110,11 @@ impl_helper_arg! {
     f64 => &[AbiTy::F64];
     f32 => &[AbiTy::F32];
     arcstr::ArcStr => &[AbiTy::I64];
-    // CR claude for eric: [risk] Still the SysV-only seam
-    // design/helper_abi_portability.md rules out: a 16-byte struct by value is
-    // two registers only on SysV/AAPCS64, so the ten pair helpers stay wrong on
-    // Win64 and AArch64 works by coincidence. The module doc repeats the
-    // SysV claim and names `emit.rs`, now emit/jit.rs + emit/lower.rs. Apply the
-    // doc's plan: pairs in as two u64, out through an out-pointer.
+    // XCR claude for eric: module doc fixed; the plan deferred: no Win64 host runs a
+    // kernel (`compile` gates fusion off there), and it spans ~55 pair-taking and
+    // ~29 pair-returning helpers (not the doc's 10) plus their call sites across
+    // emit/, which only the doc's wine run verifies. Its own change, not a review fix.
     TagValue => &[AbiTy::I64, AbiTy::I64];
-    DynCallRet => &[AbiTy::I64, AbiTy::I64];
 }
 
 impl<T> HelperArg for *mut T {
@@ -182,11 +188,18 @@ macro_rules! jit_helpers {
 pub(crate) fn all_helpers() -> Vec<HelperSpec> {
     let mut v = Vec::new();
     buf_helpers(&mut v);
+    value_buf_push_helpers(&mut v);
     control_helpers(&mut v);
     value_helpers(&mut v);
+    variant_payload_helpers(&mut v);
+    abstract_get_helpers(&mut v);
     string_helpers(&mut v);
+    string_buf_push_helpers(&mut v);
+    string_bool_helpers(&mut v);
     collection_helpers(&mut v);
     elem_helpers(&mut v);
+    valarray_get_helpers(&mut v);
+    struct_get_helpers(&mut v);
     #[cfg(debug_assertions)]
     debug_helpers(&mut v);
     v
@@ -283,51 +296,6 @@ jit_helpers! { registry = buf_helpers;
 
 unsafe fn graphix_value_buf_new(cap: usize) -> *mut LPooled<Vec<Value>> {
     buf_take(cap)
-}
-
-unsafe fn graphix_value_buf_push_i64(buf: *mut LPooled<Vec<Value>>, v: i64) {
-    unsafe { (*buf).push(Value::I64(v)) }
-}
-
-unsafe fn graphix_value_buf_push_f64(buf: *mut LPooled<Vec<Value>>, v: f64) {
-    unsafe { (*buf).push(Value::F64(v)) }
-}
-
-unsafe fn graphix_value_buf_push_i32(buf: *mut LPooled<Vec<Value>>, v: i32) {
-    unsafe { (*buf).push(Value::I32(v)) }
-}
-
-unsafe fn graphix_value_buf_push_u32(buf: *mut LPooled<Vec<Value>>, v: u32) {
-    unsafe { (*buf).push(Value::U32(v)) }
-}
-
-unsafe fn graphix_value_buf_push_f32(buf: *mut LPooled<Vec<Value>>, v: f32) {
-    unsafe { (*buf).push(Value::F32(v)) }
-}
-
-/// Push a bool; any nonzero is true.
-unsafe fn graphix_value_buf_push_bool(buf: *mut LPooled<Vec<Value>>, v: u8) {
-    unsafe { (*buf).push(Value::Bool(v != 0)) }
-}
-
-unsafe fn graphix_value_buf_push_i8(buf: *mut LPooled<Vec<Value>>, v: i8) {
-    unsafe { (*buf).push(Value::I8(v)) }
-}
-
-unsafe fn graphix_value_buf_push_i16(buf: *mut LPooled<Vec<Value>>, v: i16) {
-    unsafe { (*buf).push(Value::I16(v)) }
-}
-
-unsafe fn graphix_value_buf_push_u8(buf: *mut LPooled<Vec<Value>>, v: u8) {
-    unsafe { (*buf).push(Value::U8(v)) }
-}
-
-unsafe fn graphix_value_buf_push_u16(buf: *mut LPooled<Vec<Value>>, v: u16) {
-    unsafe { (*buf).push(Value::U16(v)) }
-}
-
-unsafe fn graphix_value_buf_push_u64(buf: *mut LPooled<Vec<Value>>, v: u64) {
-    unsafe { (*buf).push(Value::U64(v)) }
 }
 
 /// Push a `Value::Array` slot, taking ownership of `inner`.
@@ -554,19 +522,13 @@ unsafe fn graphix_grow_stack(thunk: i64, args: i64, out: i64) {
 /// Call a builtin's registered `FastFn` directly. `args`/`n` is the
 /// call site's stack buffer of (disc, payload) pairs, borrowed. See
 /// [`fast_dispatch`] for the tag rules.
-// CR claude for eric: [risk] Runs arbitrary builtin code, external packages'
-// included, inside `extern "C"`: a panic there aborts the whole process under
-// fusion, while the same `fast_eval` on the node-walk unwinds into the runtime
-// task. One engine-dependent failure mode for any buggy fast fn. Wrap the call
-// in `catch_unwind` in `fast_dispatch` and turn a panic into a logged bottom
-// (or abort in both engines, deliberately).
 unsafe fn graphix_fastcall(
     fn_ptr: u64,
     args: u64,
     n: u64,
     taint_mask: u64,
     stale_mask: u64,
-) -> DynCallRet {
+) -> TagValue {
     // SAFETY: `fn_ptr` is the `FastFn` constant the kernel's record names.
     let f: crate::FastFn =
         unsafe { std::mem::transmute::<usize, crate::FastFn>(fn_ptr as usize) };
@@ -583,7 +545,7 @@ unsafe fn graphix_typedcall(
     n: u64,
     taint_mask: u64,
     stale_mask: u64,
-) -> DynCallRet {
+) -> TagValue {
     // SAFETY: `fn_ptr` and `typ` are constants of the kernel's record,
     // which outlives its code.
     let f: crate::TypedFastFn =
@@ -606,7 +568,10 @@ unsafe fn graphix_typedcall(
 
 /// The trampoline core. The argument discs decide the tag: a tainted
 /// argument bottoms the result without calling, all-stale arguments
-/// make it STALE, and `None` from the fn is this cycle's bottom.
+/// make it STALE, and `None` from the fn is this cycle's bottom. A
+/// panic in the fn cannot unwind through the kernel: it aborts the
+/// kernel and `Kernel::update` resumes it ([`resume_kernel_panic`]), as
+/// the node-walk's call would have unwound.
 ///
 /// SAFETY: `args` is `n` valid clean `Value`s on the call site's stack,
 /// viewed and never owned; the site releases what it owned afterwards.
@@ -616,27 +581,28 @@ unsafe fn fast_dispatch(
     n: u64,
     taint_mask: u64,
     stale_mask: u64,
-) -> DynCallRet {
+) -> TagValue {
     let args_vec: &[Value] =
         unsafe { std::slice::from_raw_parts(args as *const Value, n as usize) };
     let n = n as usize;
-    // CR claude for eric: [risk] With no args `all_stale` is false, so a
-    // zero-argument fast fn reports FIRED on every kernel run, where the node-walk
-    // treats an argument-less call like a constant (fires at init only). None
-    // exists today (the zero-arg sys builtins are Async); make n == 0 follow the
-    // init flag, or refuse it at discovery.
+    // A zero-argument call site is refused at emission.
     let all_stale = n > 0 && stale_mask == u64::MAX >> (64 - n);
     let bottom =
         if all_stale { crate::Tag::STALE_BOTTOM } else { crate::Tag::FRESH_BOTTOM };
     let tv = if taint_mask != 0 {
-        crate::TagValue::tagged(Value::Null, bottom)
+        TagValue::tagged(Value::Null, bottom)
     } else {
-        match call(args_vec) {
-            Some(v) => crate::TagValue::tagged(
+        match std::panic::catch_unwind(AssertUnwindSafe(|| call(args_vec))) {
+            Ok(Some(v)) => TagValue::tagged(
                 v,
                 if all_stale { crate::Tag::STALE } else { crate::Tag::FIRED },
             ),
-            None => crate::TagValue::tagged(Value::Null, bottom),
+            Ok(None) => TagValue::tagged(Value::Null, bottom),
+            Err(payload) => {
+                KERNEL_PANIC.with(|p| *p.borrow_mut() = Some(payload));
+                KERNEL_ABORT.with(|c| c.set(true));
+                TagValue::tagged(Value::Null, bottom)
+            }
         }
     };
     if crate::dbgenv::gxdbg_dync() {
@@ -645,11 +611,7 @@ unsafe fn fast_dispatch(
             tv.tag()
         );
     }
-    // SAFETY: TagValue is `#[repr(C)]` (disc, payload); ownership of the
-    // bits transfers to the caller.
-    let tv = std::mem::ManuallyDrop::new(tv);
-    let words: [u64; 2] = unsafe { std::mem::transmute_copy(&*tv) };
-    DynCallRet { word0: words[0], word1: words[1] }
+    tv
 }
 
 // Value-shaped helpers take and return `Value` by value in two registers.
@@ -764,50 +726,6 @@ unsafe fn graphix_abstract_wrap(
     TagValue::clean(crate::abstract_value::wrap(id, name, params, tv.value()))
 }
 
-safe fn graphix_abstract_get_i64(tv: TagValue) -> i64 {
-    abstract_payload_read(tv, read_slot_i64)
-}
-
-safe fn graphix_abstract_get_u64(tv: TagValue) -> u64 {
-    abstract_payload_read(tv, read_slot_u64)
-}
-
-safe fn graphix_abstract_get_i32(tv: TagValue) -> i32 {
-    abstract_payload_read(tv, read_slot_i32)
-}
-
-safe fn graphix_abstract_get_u32(tv: TagValue) -> u32 {
-    abstract_payload_read(tv, read_slot_u32)
-}
-
-safe fn graphix_abstract_get_i16(tv: TagValue) -> i16 {
-    abstract_payload_read(tv, read_slot_i16)
-}
-
-safe fn graphix_abstract_get_u16(tv: TagValue) -> u16 {
-    abstract_payload_read(tv, read_slot_u16)
-}
-
-safe fn graphix_abstract_get_i8(tv: TagValue) -> i8 {
-    abstract_payload_read(tv, read_slot_i8)
-}
-
-safe fn graphix_abstract_get_u8(tv: TagValue) -> u8 {
-    abstract_payload_read(tv, read_slot_u8)
-}
-
-safe fn graphix_abstract_get_f64(tv: TagValue) -> f64 {
-    abstract_payload_read(tv, read_slot_f64)
-}
-
-safe fn graphix_abstract_get_f32(tv: TagValue) -> f32 {
-    abstract_payload_read(tv, read_slot_f32)
-}
-
-safe fn graphix_abstract_get_bool(tv: TagValue) -> u8 {
-    abstract_payload_read(tv, read_slot_bool)
-}
-
 safe fn graphix_abstract_get_arcstr(tv: TagValue) -> arcstr::ArcStr {
     let r = tv.with_value(|v| slot_arcstr(crate::abstract_value::payload(v)));
     std::mem::forget(tv);
@@ -901,18 +819,6 @@ safe fn graphix_array_slice(src: TagValue, start: i64, end: i64, flags: i64) -> 
     TagValue::clean(array_slice_i64(&src.value(), s, e))
 }
 
-/// Borrowed `Value::Null` test. Lowering inlines the disc compare; the
-/// helper stays registered for direct callers.
-// CR claude for eric: [dead] No caller emits it (there are no "direct callers"),
-// nor `graphix_string_buf_drop`. The latter is a hint of a leak: tuple/struct
-// literal and string-interpolation bufs are never put on `value_buf_stack`,
-// so an abort in a part (a callee's interrupt exit) leaks the buf (emit/nodes.rs).
-safe fn graphix_value_is_null(v: TagValue) -> u8 {
-    let r = v.with_value(|v| matches!(v, Value::Null) as u8);
-    std::mem::forget(v);
-    r
-}
-
 /// Borrowed test of a variant's tag AND arity against `expected`. As
 /// in `StructurePattern::is_match`, arity selects the representation
 /// (`String(tag)` at 0, else an array of arity + 1 with the tag at
@@ -937,38 +843,6 @@ unsafe fn graphix_variant_tag_eq(
     });
     std::mem::forget(v);
     r
-}
-
-safe fn graphix_variant_payload_i64(v: TagValue, payload_idx: usize) -> i64 {
-    variant_payload_read(v, payload_idx, read_slot_i64)
-}
-
-safe fn graphix_variant_payload_f64(v: TagValue, payload_idx: usize) -> f64 {
-    variant_payload_read(v, payload_idx, read_slot_f64)
-}
-
-safe fn graphix_variant_payload_i32(v: TagValue, payload_idx: usize) -> i32 {
-    variant_payload_read(v, payload_idx, read_slot_i32)
-}
-
-safe fn graphix_variant_payload_u32(v: TagValue, payload_idx: usize) -> u32 {
-    variant_payload_read(v, payload_idx, read_slot_u32)
-}
-
-safe fn graphix_variant_payload_f32(v: TagValue, payload_idx: usize) -> f32 {
-    variant_payload_read(v, payload_idx, read_slot_f32)
-}
-
-safe fn graphix_variant_payload_i8(v: TagValue, payload_idx: usize) -> i8 {
-    variant_payload_read(v, payload_idx, read_slot_i8)
-}
-
-safe fn graphix_variant_payload_i16(v: TagValue, payload_idx: usize) -> i16 {
-    variant_payload_read(v, payload_idx, read_slot_i16)
-}
-
-safe fn graphix_variant_payload_u8(v: TagValue, payload_idx: usize) -> u8 {
-    variant_payload_read(v, payload_idx, read_slot_u8)
 }
 
 /// Owned clone of a variant payload slot as a Value; a shape mismatch
@@ -1073,18 +947,6 @@ safe fn graphix_variant_payload_array(v: TagValue, payload_idx: usize) -> u64 {
     va_bits(r)
 }
 
-safe fn graphix_variant_payload_u16(v: TagValue, payload_idx: usize) -> u16 {
-    variant_payload_read(v, payload_idx, read_slot_u16)
-}
-
-safe fn graphix_variant_payload_u64(v: TagValue, payload_idx: usize) -> u64 {
-    variant_payload_read(v, payload_idx, read_slot_u64)
-}
-
-safe fn graphix_variant_payload_bool(v: TagValue, payload_idx: usize) -> u8 {
-    variant_payload_read(v, payload_idx, read_slot_bool)
-}
-
 }
 
 // A String SSA value is the raw `ArcStr` pointer; every owned one is
@@ -1139,6 +1001,10 @@ unsafe fn graphix_string_buf_new() -> *mut StringBuf {
     STRING_SHELLS.with(|s| s.take(LPooled::take()))
 }
 
+// XCR claude for eric: graphix_value_is_null is deleted. This one stays: it is
+// the abort-edge drop a string-interpolation buf needs once it is registered
+// for cleanup, the leak the CR at emit/nodes.rs:669 (literal bufs off
+// value_buf_stack) is about; that CR decides whether bufs register.
 /// Drop a string buf without finalizing.
 unsafe fn graphix_string_buf_drop(buf: *mut StringBuf) {
     assert!(!buf.is_null(), "graphix_string_buf_drop: null buf — JIT codegen bug");
@@ -1155,50 +1021,6 @@ unsafe fn graphix_string_buf_finalize(buf: *mut StringBuf) -> arcstr::ArcStr {
 /// Append an ArcStr's contents to the buf, consuming the ArcStr.
 unsafe fn graphix_string_buf_push_arcstr(buf: *mut StringBuf, s: arcstr::ArcStr) {
     unsafe { &mut *buf }.push_str(&s);
-}
-
-unsafe fn graphix_string_buf_push_i64(buf: *mut StringBuf, v: i64) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_u64(buf: *mut StringBuf, v: u64) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_i32(buf: *mut StringBuf, v: i32) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_u32(buf: *mut StringBuf, v: u32) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_i16(buf: *mut StringBuf, v: i16) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_u16(buf: *mut StringBuf, v: u16) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_i8(buf: *mut StringBuf, v: i8) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_u8(buf: *mut StringBuf, v: u8) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_f64(buf: *mut StringBuf, v: f64) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_f32(buf: *mut StringBuf, v: f32) {
-    push_display(buf, v)
-}
-
-unsafe fn graphix_string_buf_push_bool(buf: *mut StringBuf, v: u8) {
-    push_display(buf, v != 0)
 }
 
 }
@@ -1324,69 +1146,71 @@ pub unsafe fn free_slot_chain(word: u64, own_levels: u64, leaf: Option<&SiteLeaf
     }
 }
 
-/// Free a per-activation block tree rooted at `vecptr` (one
-/// `Box<Vec<u64>>` per activation, children at `slots`). Iterative:
-/// the tree is as deep as the recursion was. Returns the blocks freed.
-// CR claude for eric: [bug] Frees each activation's Vec but not what the block
-// owns: the slot chains anchored in it (the body's `SiteLayout::anchors`) and
-// callee self-block trees rooted in it; `SelfBlock` carries neither. Every shed
-// or dropped activation of a recursive kernel with a nested loop leaks its
-// chain. Probe: `let rec f = |k, a| select k { 0 => 0, _ =>
-// array::len(array::map(a, |r| array::map(r, |x| x + k))) + f(k - 1, a) }`
-// fused, depth alternating 200/1 per 1ms tick: VmRSS +29MB over 3500 ticks;
-// constant depth, or a single map, stays flat. Describe a block once (anchors +
-// self roots) and walk that here, in reclaim and in `free_blocks`.
-pub unsafe fn free_self_block_tree(vecptr: u64, slots: &[u32]) -> u64 {
+/// Free the per-activation block tree rooted at `root` (one
+/// `Box<Vec<u64>>` per activation) whose blocks have `layout`: each
+/// block's chains, the trees nested in it and its child activations.
+/// Iterative: the tree is as deep as the recursion was. Returns the
+/// blocks freed.
+///
+/// SAFETY: `root` is 0 or the sole owner of a tree laid out by `layout`;
+/// it is not read again.
+pub unsafe fn free_self_block_tree(root: u64, layout: &ActivationLayout) -> u64 {
     let mut freed = 0u64;
-    let mut work: poolshark::local::LPooled<Vec<u64>> = poolshark::local::LPooled::take();
-    work.push(vecptr);
-    while let Some(p) = work.pop() {
+    let mut work: LPooled<Vec<(u64, &ActivationLayout)>> = LPooled::take();
+    work.push((root, layout));
+    while let Some((p, l)) = work.pop() {
         if p == 0 {
             continue;
         }
         let v = unsafe { Box::from_raw(p as *mut Vec<u64>) };
         freed += 1;
-        LIVE_SELF_BLOCKS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        work.extend(slots.iter().filter_map(|s| v.get(*s as usize).copied()));
+        LIVE_SELF_BLOCKS.with(|c| c.set(c.get() - 1));
+        let word = |rel: u32| v.get(rel as usize).copied().unwrap_or(0);
+        for a in l.anchors.iter() {
+            unsafe {
+                free_slot_chain(word(a.rel), a.own_levels as u64, a.leaf.as_deref())
+            };
+        }
+        work.extend(l.nested.iter().map(|n| (word(n.rel), &*n.layout)));
+        work.extend(l.slots.iter().map(|s| (word(*s), l)));
     }
     freed
 }
 
-/// Live per-activation `SelfBlock` count (a test instrument for the
-/// reclaim).
-// CR claude for eric: [risk] A process-wide counter bumped on every activation
-// alloc/free in production, read by one test (lib_tests/lift.rs
-// `fused_recursion_sheds_unreached_blocks`) while other tests run in parallel
-// and move it too: a flaky pin with absolute thresholds. Count per Kernel (or
-// behind cfg(test)) and let the test read its own kernel's count.
-pub static LIVE_SELF_BLOCKS: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(0);
-
 thread_local! {
+    /// This thread's live per-activation blocks, a test instrument for
+    /// the reclaim: a runtime's kernels run on its task's thread.
+    static LIVE_SELF_BLOCKS: Cell<i64> = const { Cell::new(0) };
     /// The reach generation of the running kernel invocation; every
     /// activation block reached is stamped with it and the reclaim
     /// frees the rest. Saved/restored around every kernel invocation.
-    pub(crate) static SELF_BLOCK_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static SELF_BLOCK_GEN: Cell<u64> = const { Cell::new(0) };
     /// Activation reaches this invocation; the reclaim runs only when
     /// it is below the tree size. Saved/restored like [`SELF_BLOCK_GEN`].
-    pub(crate) static SELF_BLOCK_REACHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static SELF_BLOCK_REACHED: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Free the subtrees of a per-activation block tree not stamped with
-/// `generation`, nulling each freed subtree's root word. `root` is the
-/// address of the tree's root word; the stamp lives at index `words`,
-/// one past the block's emitted layout. Returns the blocks freed.
+/// This thread's live per-activation block count.
+pub fn live_self_blocks() -> i64 {
+    LIVE_SELF_BLOCKS.with(|c| c.get())
+}
+
+/// Free the subtrees of the per-activation block tree at `root` not
+/// stamped with `generation`, nulling each freed subtree's root word;
+/// the trees nested in a kept block are reclaimed the same way.
+/// `root` is the address of the tree's root word. Returns the blocks
+/// freed.
+///
+/// SAFETY: `*root` is 0 or the owner of a tree laid out by `layout`.
 pub unsafe fn reclaim_self_block_tree(
     root: *mut u64,
-    words: usize,
-    slots: &[u32],
+    layout: &ActivationLayout,
     generation: u64,
 ) -> u64 {
     let mut freed = 0u64;
-    let mut work: poolshark::local::LPooled<Vec<*mut u64>> =
-        poolshark::local::LPooled::take();
-    work.push(root);
-    while let Some(wp) = work.pop() {
+    let mut work: LPooled<Vec<(*mut u64, &ActivationLayout)>> = LPooled::take();
+    work.push((root, layout));
+    while let Some((wp, l)) = work.pop() {
         let p = unsafe { *wp };
         if p == 0 {
             continue;
@@ -1394,31 +1218,29 @@ pub unsafe fn reclaim_self_block_tree(
         let v: &mut Vec<u64> = unsafe { &mut *(p as *mut Vec<u64>) };
         // A block with no stamp word counts as reached: never free what
         // is not proven shed.
-        let stamp = v.get(words).copied().unwrap_or(generation);
+        let stamp = v.get(l.words as usize).copied().unwrap_or(generation);
         if stamp != generation {
             unsafe { *wp = 0 };
-            freed += unsafe { free_self_block_tree(p, slots) };
+            freed += unsafe { free_self_block_tree(p, l) };
         } else {
+            let len = v.len();
             let base = v.as_mut_ptr();
-            for s in slots.iter() {
-                work.push(unsafe { base.add(*s as usize) });
+            let at = |rel: u32| (rel as usize) < len;
+            for n in l.nested.iter().filter(|n| at(n.rel)) {
+                work.push((unsafe { base.add(n.rel as usize) }, &*n.layout));
+            }
+            for s in l.slots.iter().filter(|s| at(**s)) {
+                work.push((unsafe { base.add(*s as usize) }, l));
             }
         }
     }
     freed
 }
 
-/// Free the anchor-owned chains inside a run of call-site blocks.
+/// Free what a run of call-site blocks owns: the chains its anchors
+/// root and the activation trees its self blocks root.
 ///
-/// SAFETY: `words` are blocks laid out by `leaf`, whose anchors own
-/// their chains.
-// CR claude for eric: [bug] A per-slot block of a recursive callee also roots
-// that callee's activation trees, but `SiteLeaf` lists only anchors, so a
-// shrinking loop (and `Kernel::drop`) leaks every dropped slot's tree. Probe:
-// `let rec f = |k: i64| -> i64 select k { 0 => 0, _ => k + f(k - 1) }`;
-// `#[native] array::map(src, |x| f(x % 20))` with `src` alternating 50 and 1
-// elements per 1ms tick: VmRSS 62MB -> 97MB over 2500 ticks, flat when `src`
-// stays at 50. Same fix as `free_self_block_tree`.
+/// SAFETY: `words` are blocks laid out by `leaf`, which own what it names.
 unsafe fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
     for block in words.chunks_exact(leaf.stride as usize) {
         for a in leaf.anchors.iter() {
@@ -1429,6 +1251,9 @@ unsafe fn free_blocks(words: &[u64], leaf: &SiteLeaf) {
                     a.leaf.as_deref(),
                 )
             };
+        }
+        for b in leaf.self_blocks.iter() {
+            unsafe { free_self_block_tree(block[b.rel as usize], &b.layout) };
         }
     }
 }
@@ -1460,57 +1285,148 @@ fn slot_arcstr(v: Option<&Value>) -> arcstr::ArcStr {
 // Element reads return an owned clone (except the `_borrowed` variants),
 // so the source array keeps its own ref.
 
-// CR claude for eric: [structure] Six families of eleven near-identical per-prim
-// helpers (valarray_get_*, struct_get_*, variant_payload_*, abstract_get_*,
-// value_buf_push_*, string_buf_push_*), each differing only in the reader or
-// the Value ctor. One helper per family returning the widened u64 payload word
-// (the CLIF narrows, as the wrapper already does) removes ~55 fns, or a macro
-// per family at least stops the copy-paste.
+/// The per-prim helper families: one helper per scalar prim, the
+/// family fixing the shape. Scalar reads are total (`slot_readers!`);
+/// a bool travels as a `u8`.
+macro_rules! prim_family {
+    (valarray_get $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
+        jit_helpers! { registry = $registry;
+            $(unsafe fn $name(bits: u64, idx: usize) -> $t {
+                unsafe { va_ref(&bits) }.get(idx).map($read).unwrap_or_default()
+            })*
+        }
+    };
+    (struct_get $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
+        jit_helpers! { registry = $registry;
+            $(unsafe fn $name(bits: u64, sorted_idx: usize) -> $t {
+                struct_field(unsafe { va_ref(&bits) }, sorted_idx)
+                    .map($read)
+                    .unwrap_or_default()
+            })*
+        }
+    };
+    (variant_payload $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
+        jit_helpers! { registry = $registry;
+            $(safe fn $name(v: TagValue, payload_idx: usize) -> $t {
+                variant_payload_read(v, payload_idx, $read)
+            })*
+        }
+    };
+    (abstract_get $registry:ident: $($name:ident, $t:ty, $read:ident;)*) => {
+        jit_helpers! { registry = $registry;
+            $(safe fn $name(tv: TagValue) -> $t {
+                abstract_payload_read(tv, $read)
+            })*
+        }
+    };
+    (value_buf_push $registry:ident: $($name:ident, $t:ty, $ctor:expr;)*) => {
+        jit_helpers! { registry = $registry;
+            $(unsafe fn $name(buf: *mut LPooled<Vec<Value>>, v: $t) {
+                unsafe { (*buf).push($ctor(v)) }
+            })*
+        }
+    };
+    (string_buf_push $registry:ident: $($name:ident, $t:ty;)*) => {
+        jit_helpers! { registry = $registry;
+            $(unsafe fn $name(buf: *mut StringBuf, v: $t) {
+                push_display(buf, v)
+            })*
+        }
+    };
+}
+
+prim_family! { valarray_get valarray_get_helpers:
+    graphix_valarray_get_i64, i64, read_slot_i64;
+    graphix_valarray_get_u64, u64, read_slot_u64;
+    graphix_valarray_get_i32, i32, read_slot_i32;
+    graphix_valarray_get_u32, u32, read_slot_u32;
+    graphix_valarray_get_i16, i16, read_slot_i16;
+    graphix_valarray_get_u16, u16, read_slot_u16;
+    graphix_valarray_get_i8, i8, read_slot_i8;
+    graphix_valarray_get_u8, u8, read_slot_u8;
+    graphix_valarray_get_f64, f64, read_slot_f64;
+    graphix_valarray_get_f32, f32, read_slot_f32;
+    graphix_valarray_get_bool, u8, read_slot_bool;
+}
+
+prim_family! { struct_get struct_get_helpers:
+    graphix_struct_get_i64, i64, read_slot_i64;
+    graphix_struct_get_u64, u64, read_slot_u64;
+    graphix_struct_get_i32, i32, read_slot_i32;
+    graphix_struct_get_u32, u32, read_slot_u32;
+    graphix_struct_get_i16, i16, read_slot_i16;
+    graphix_struct_get_u16, u16, read_slot_u16;
+    graphix_struct_get_i8, i8, read_slot_i8;
+    graphix_struct_get_u8, u8, read_slot_u8;
+    graphix_struct_get_f64, f64, read_slot_f64;
+    graphix_struct_get_f32, f32, read_slot_f32;
+    graphix_struct_get_bool, u8, read_slot_bool;
+}
+
+prim_family! { variant_payload variant_payload_helpers:
+    graphix_variant_payload_i64, i64, read_slot_i64;
+    graphix_variant_payload_u64, u64, read_slot_u64;
+    graphix_variant_payload_i32, i32, read_slot_i32;
+    graphix_variant_payload_u32, u32, read_slot_u32;
+    graphix_variant_payload_i16, i16, read_slot_i16;
+    graphix_variant_payload_u16, u16, read_slot_u16;
+    graphix_variant_payload_i8, i8, read_slot_i8;
+    graphix_variant_payload_u8, u8, read_slot_u8;
+    graphix_variant_payload_f64, f64, read_slot_f64;
+    graphix_variant_payload_f32, f32, read_slot_f32;
+    graphix_variant_payload_bool, u8, read_slot_bool;
+}
+
+prim_family! { abstract_get abstract_get_helpers:
+    graphix_abstract_get_i64, i64, read_slot_i64;
+    graphix_abstract_get_u64, u64, read_slot_u64;
+    graphix_abstract_get_i32, i32, read_slot_i32;
+    graphix_abstract_get_u32, u32, read_slot_u32;
+    graphix_abstract_get_i16, i16, read_slot_i16;
+    graphix_abstract_get_u16, u16, read_slot_u16;
+    graphix_abstract_get_i8, i8, read_slot_i8;
+    graphix_abstract_get_u8, u8, read_slot_u8;
+    graphix_abstract_get_f64, f64, read_slot_f64;
+    graphix_abstract_get_f32, f32, read_slot_f32;
+    graphix_abstract_get_bool, u8, read_slot_bool;
+}
+
+prim_family! { value_buf_push value_buf_push_helpers:
+    graphix_value_buf_push_i64, i64, Value::I64;
+    graphix_value_buf_push_u64, u64, Value::U64;
+    graphix_value_buf_push_i32, i32, Value::I32;
+    graphix_value_buf_push_u32, u32, Value::U32;
+    graphix_value_buf_push_i16, i16, Value::I16;
+    graphix_value_buf_push_u16, u16, Value::U16;
+    graphix_value_buf_push_i8, i8, Value::I8;
+    graphix_value_buf_push_u8, u8, Value::U8;
+    graphix_value_buf_push_f64, f64, Value::F64;
+    graphix_value_buf_push_f32, f32, Value::F32;
+    graphix_value_buf_push_bool, u8, |v: u8| Value::Bool(v != 0);
+}
+
+prim_family! { string_buf_push string_buf_push_helpers:
+    graphix_string_buf_push_i64, i64;
+    graphix_string_buf_push_u64, u64;
+    graphix_string_buf_push_i32, i32;
+    graphix_string_buf_push_u32, u32;
+    graphix_string_buf_push_i16, i16;
+    graphix_string_buf_push_u16, u16;
+    graphix_string_buf_push_i8, i8;
+    graphix_string_buf_push_u8, u8;
+    graphix_string_buf_push_f64, f64;
+    graphix_string_buf_push_f32, f32;
+}
+
+jit_helpers! { registry = string_bool_helpers;
+
+unsafe fn graphix_string_buf_push_bool(buf: *mut StringBuf, v: u8) {
+    push_display(buf, v != 0)
+}
+
+}
+
 jit_helpers! { registry = elem_helpers;
-
-unsafe fn graphix_valarray_get_i64(bits: u64, idx: usize) -> i64 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i64).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_f64(bits: u64, idx: usize) -> f64 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_f64).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_i32(bits: u64, idx: usize) -> i32 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i32).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_u32(bits: u64, idx: usize) -> u32 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u32).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_f32(bits: u64, idx: usize) -> f32 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_f32).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_bool(bits: u64, idx: usize) -> u8 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_bool).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_i8(bits: u64, idx: usize) -> i8 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i8).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_i16(bits: u64, idx: usize) -> i16 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_i16).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_u8(bits: u64, idx: usize) -> u8 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u8).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_u16(bits: u64, idx: usize) -> u16 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u16).unwrap_or_default()
-}
-
-unsafe fn graphix_valarray_get_u64(bits: u64, idx: usize) -> u64 {
-    unsafe { va_ref(&bits) }.get(idx).map(read_slot_u64).unwrap_or_default()
-}
 
 unsafe fn graphix_valarray_len(bits: u64) -> usize {
     unsafe { va_ref(&bits) }.len()
@@ -1576,7 +1492,7 @@ unsafe fn graphix_site_child_block(
     if *word == 0 {
         // Index `words`, past the emitted layout, holds the generation stamp.
         *word = Box::into_raw(Box::new(vec![0u64; words + 1])) as u64;
-        LIVE_SELF_BLOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        LIVE_SELF_BLOCKS.with(|c| c.set(c.get() + 1));
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     v[words] = SELF_BLOCK_GEN.get();
@@ -1607,50 +1523,6 @@ unsafe fn graphix_slot_state_blocks(
         v.resize(len, 0)
     }
     v.as_mut_ptr()
-}
-
-unsafe fn graphix_struct_get_i64(bits: u64, sorted_idx: usize) -> i64 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i64).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_f64(bits: u64, sorted_idx: usize) -> f64 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_f64).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_i32(bits: u64, sorted_idx: usize) -> i32 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i32).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_u32(bits: u64, sorted_idx: usize) -> u32 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u32).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_f32(bits: u64, sorted_idx: usize) -> f32 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_f32).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_bool(bits: u64, sorted_idx: usize) -> u8 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_bool).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_i8(bits: u64, sorted_idx: usize) -> i8 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i8).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_i16(bits: u64, sorted_idx: usize) -> i16 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_i16).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_u8(bits: u64, sorted_idx: usize) -> u8 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u8).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_u16(bits: u64, sorted_idx: usize) -> u16 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u16).unwrap_or_default()
-}
-
-unsafe fn graphix_struct_get_u64(bits: u64, sorted_idx: usize) -> u64 {
-    struct_field(unsafe { va_ref(&bits) }, sorted_idx).map(read_slot_u64).unwrap_or_default()
 }
 
 /// `arr[idx]` as owned ValArray bits.
@@ -1712,25 +1584,19 @@ safe fn graphix_record_jit_invocation() {
 
 }
 
-use std::cell::Cell;
-
-/// The trampolines' return: `word0` = the Value disc (tag in-band),
-/// `word1` = the Value payload word for every return type; the call
-/// site adapts it to its static type.
-// CR claude for eric: [readability] Named for the deleted DynCall dispatcher
-// (as is `GXDBG_DYNC`); it is a `TagValue`'s two words. Return `TagValue` (or
-// the out-pointer pair the portability plan wants) and drop the type.
-#[repr(C)]
-pub struct DynCallRet {
-    pub word0: u64,
-    pub word1: u64,
-}
+/// One `?` raise a kernel queued: the site's interned `QopSite` and the
+/// error.
+pub(crate) type QopRaise = (*const crate::node::error::QopSite, Value);
 
 thread_local! {
     /// Sticky abort flag: set on a whole-kernel abort path, reset by
     /// `Kernel::update` before each wrapper call and read after; set
     /// means the result is the abort sentinel.
     pub static KERNEL_ABORT: Cell<bool> = const { Cell::new(false) };
+
+    /// A panic a fast fn raised inside the running kernel, for
+    /// [`resume_kernel_panic`].
+    static KERNEL_PANIC: RefCell<Option<Box<dyn Any + Send>>> = const { RefCell::new(None) };
 
     /// The invoking kernel's type environment, loaned for one wrapper
     /// call ([`with_kernel_env`]); null when no kernel is in flight.
@@ -1740,18 +1606,11 @@ thread_local! {
     /// The invocation's `?` delivery queue, in execution order, drained
     /// after the wrapper returns ([`with_qop_raises`]); a kernel never
     /// delivers mid-run.
-    pub static QOP_RAISES: std::cell::RefCell<Vec<(*const crate::node::error::QopSite, Value)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    static QOP_RAISES: RefCell<LPooled<Vec<QopRaise>>> = RefCell::new(LPooled::take());
 
-    /// The active runtime's [`crate::Control`], set per cycle by
-    /// `do_cycle`; null when no cycle is in flight.
-    // CR claude for eric: [risk] Suspected use-after-free: nothing resets it, so
-    // "null when no cycle is in flight" is false. After a runtime drops, the
-    // thread keeps a dangling `*const Control`, and a kernel run outside a cycle
-    // (`compile_callable` updates a freshly fused node in graphix-rt/src/gx.rs)
-    // reads it at its first loop head, or reads another live runtime's flag.
-    // Make it a scoped restoring guard around the cycle (or hold an Arc).
-    pub static INTERRUPT_PTR: Cell<*const crate::Control> =
+    /// The [`crate::Control`] of the runtime whose cycle is running on
+    /// this thread ([`InterruptScope`]); null outside a cycle.
+    static INTERRUPT_PTR: Cell<*const crate::Control> =
         const { Cell::new(std::ptr::null()) };
 
     /// Per-thread count of JIT'd wrapper runs; the test harness's `jit`
@@ -1765,10 +1624,33 @@ thread_local! {
     pub static FUSION_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Point `graphix_interrupted` at `control` on the current thread;
-/// called at the start of each cycle since the task may migrate.
-pub fn set_interrupt_ptr(control: &crate::Control) {
-    INTERRUPT_PTR.with(|c| c.set(control as *const crate::Control));
+/// Resume the unwind of a panic a fast fn raised in the kernel run that
+/// just returned.
+pub(crate) fn resume_kernel_panic() {
+    if let Some(payload) = KERNEL_PANIC.with(|p| p.borrow_mut().take()) {
+        std::panic::resume_unwind(payload)
+    }
+}
+
+/// Points `graphix_interrupted` at a runtime's [`crate::Control`] on
+/// this thread while its cycle's nodes run; dropping it restores the
+/// enclosing runtime's. Create it on the thread that runs the nodes and
+/// drop it there, before the task can migrate, while `control` lives.
+pub struct InterruptScope {
+    prev: *const crate::Control,
+}
+
+impl InterruptScope {
+    pub fn new(control: &crate::Control) -> Self {
+        let prev = INTERRUPT_PTR.with(|c| c.replace(control as *const crate::Control));
+        Self { prev }
+    }
+}
+
+impl Drop for InterruptScope {
+    fn drop(&mut self) {
+        INTERRUPT_PTR.with(|c| c.set(self.prev));
+    }
 }
 
 /// Abort the runtime this thread is running under (the stack budget's
@@ -1812,40 +1694,6 @@ pub fn jit_invocations() -> u64 {
 #[cfg(debug_assertions)]
 pub fn reset_jit_invocations() {
     JIT_INVOCATIONS.with(|c| c.set(0));
-}
-
-// CR claude for eric: [dead] `record_fuse_bail` has no caller, so this log is
-// always empty and `run!`'s FUSEBAIL line always prints nothing;
-// `FusionStats::failed` replaced it. Delete the log and the harness line.
-#[cfg(debug_assertions)]
-thread_local! {
-    /// Per-thread log of fusion-bail tags (e.g. `node:Sample`,
-    /// `call:json::read`), capped; harvested per fixture by `run!`.
-    static FUSE_BAILS: std::cell::RefCell<Vec<arcstr::ArcStr>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// Record a fusion-bail reason.
-#[cfg(debug_assertions)]
-pub fn record_fuse_bail(reason: arcstr::ArcStr) {
-    FUSE_BAILS.with(|b| {
-        let mut v = b.borrow_mut();
-        if v.len() < 128 {
-            v.push(reason);
-        }
-    });
-}
-
-/// Drain and return the current thread's recorded fusion-bail tags.
-#[cfg(debug_assertions)]
-pub fn take_fuse_bails() -> Vec<arcstr::ArcStr> {
-    FUSE_BAILS.with(|b| std::mem::take(&mut *b.borrow_mut()))
-}
-
-/// Clear the current thread's fusion-bail log.
-#[cfg(debug_assertions)]
-pub fn reset_fuse_bails() {
-    FUSE_BAILS.with(|b| b.borrow_mut().clear());
 }
 
 #[cfg(test)]
@@ -1904,21 +1752,18 @@ mod tests {
         let args = vec![arr];
         let (ap, n) = (args.as_ptr() as u64, args.len() as u64);
         let fp = len as *const () as u64;
-        let decode =
-            |r: DynCallRet| unsafe { crate::TagValue::from_raw(r.word0, r.word1) };
-        let tv = decode(unsafe { graphix_fastcall(fp, ap, n, 0, 0) });
+        let tv = unsafe { graphix_fastcall(fp, ap, n, 0, 0) };
         assert_eq!(tv.tag(), crate::Tag::FIRED);
         assert_eq!(tv.value_cloned(), Value::I64(3));
-        let tv = decode(unsafe { graphix_fastcall(fp, ap, n, 0, 0b1) });
+        let tv = unsafe { graphix_fastcall(fp, ap, n, 0, 0b1) };
         assert_eq!(tv.tag(), crate::Tag::STALE);
         assert_eq!(tv.value_cloned(), Value::I64(3));
         let never_p = never as *const () as u64;
-        let tv = decode(unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0) });
+        let tv = unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0) };
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
-        let tv = decode(unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0b1) });
+        let tv = unsafe { graphix_fastcall(never_p, ap, n, 0b1, 0b1) };
         assert_eq!(tv.tag(), crate::Tag::STALE_BOTTOM);
-        let tv =
-            decode(unsafe { graphix_fastcall(none as *const () as u64, ap, n, 0, 0) });
+        let tv = unsafe { graphix_fastcall(none as *const () as u64, ap, n, 0, 0) };
         assert_eq!(tv.tag(), crate::Tag::FRESH_BOTTOM);
         assert_eq!(args.len(), 1);
     }
@@ -1935,13 +1780,9 @@ pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -
 
 /// Run `f` against a fresh `?` delivery queue and return what it raised,
 /// in order; an enclosing invocation's queue is set aside and restored.
-// CR claude for eric: [perf] `mem::take` leaves a capacity-less Vec, so every
-// raising invocation allocates a fresh queue that `Kernel::update` then drops.
-// Hand back an `LPooled<Vec<..>>` (or reuse the outer's buffer).
-pub(crate) fn with_qop_raises<T>(
-    f: impl FnOnce() -> T,
-) -> (T, Vec<(*const crate::node::error::QopSite, Value)>) {
-    let outer = QOP_RAISES.with(|q| std::mem::take(&mut *q.borrow_mut()));
+pub(crate) fn with_qop_raises<T>(f: impl FnOnce() -> T) -> (T, LPooled<Vec<QopRaise>>) {
+    let outer =
+        QOP_RAISES.with(|q| std::mem::replace(&mut *q.borrow_mut(), LPooled::take()));
     let r = f();
     let mine = QOP_RAISES.with(|q| std::mem::replace(&mut *q.borrow_mut(), outer));
     (r, mine)
