@@ -512,10 +512,9 @@ fn try_of(e: &Expr) -> Option<(&Expr, &TryWithExpr)> {
 /// a name the arm bound starts the next arm, where the name is its
 /// carried cell. An arm lowers to nested selects, so a run is cut at
 /// the parser's nesting limit.
-// XCR claude for eric: the `&b` half is fixed (above). A closure writing a variable it
-// captured (`put(5); let s = b`) stays invisible: design §5 makes a call a reader
-// only, and a writer rule would split every call from the next statement (a cycle
-// each). Recommend keeping it, documenting that the write should be a connect.
+// XCR claude for eric: a closure's write to a variable it captured (`put(5); let s =
+// b`) and a write through a reference held in a variable are invisible here. The fix
+// is a post-resolution summary and a machine node: design/dependency_summaries.md.
 fn split_arms(stmts: &[&Expr]) -> LPooled<Vec<usize>> {
     let mut ends: LPooled<Vec<usize>> = LPooled::take();
     let mut pending: LPooled<AHashSet<ArcStr>> = LPooled::take();
