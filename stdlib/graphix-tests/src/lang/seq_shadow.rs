@@ -90,6 +90,31 @@ async fn sampled_closure(fusion_disabled: bool) -> Result<()> {
         .await
 }
 
+// A `let rec` binds its name in its own value: the recursive call is
+// the function being defined, not a carried cell or a capture outside.
+async fn let_rec_scopes_its_value(fusion_disabled: bool) -> Result<()> {
+    for form in ["seq", "seqq"] {
+        let code = format!(
+            r#"{{
+                let k = 5;
+                {form} {{
+                    let f = |n| n * 100;
+                    until true;
+                    let r = {{
+                        let rec f = |n| select n {{ 0 => 0, n => f(n - 1) + 1 }};
+                        let rec k = |n| select n {{ 0 => 0, n => k(n - 1) + 2 }};
+                        f(3) + k(1)
+                    }};
+                    r + k
+                }}
+            }}"#
+        );
+        let (values, _) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(as_i64s(&values), [10], "{form}");
+    }
+    Ok(())
+}
+
 macro_rules! modes {
     ($($test:ident),+ $(,)?) => {$ (
         mod $test {
@@ -111,5 +136,6 @@ modes!(
     initializers_and_patterns,
     writes,
     trigger_shadowing,
-    sampled_closure
+    sampled_closure,
+    let_rec_scopes_its_value
 );

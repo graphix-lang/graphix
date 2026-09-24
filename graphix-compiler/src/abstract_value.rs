@@ -4,8 +4,7 @@
 
 use crate::typ::{AbstractId, Type};
 use arcstr::ArcStr;
-use bytes::{Buf, BufMut};
-use netidx_core::pack::{Pack, PackError};
+use netidx_derive::Pack;
 use netidx_value::{Abstract, Value, abstract_type::AbstractWrapper};
 use std::{
     cell::Cell,
@@ -23,70 +22,63 @@ use triomphe::Arc;
 /// for the duration of an operation (`node::coretraits::
 /// with_hooks`); with no loan installed the structural case
 /// applies.
-// CR claude for eric: [style] Only `node::coretraits` builds one, yet the struct
-// and its raw-pointer fields are `pub` API. `pub(crate)`.
 #[repr(C)]
-pub struct ValueHookDispatch {
+pub(crate) struct ValueHookDispatch {
     /// Type-erased pointer to the monomorphized dispatch state
     /// (`node::coretraits::HookState<R, E>`).
-    pub state: *mut u8,
+    pub(crate) state: *mut u8,
     /// `None` means no implementation: take the structural case.
     /// `Some` is always a definite answer.
-    pub eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
-    pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
-    pub fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
+    pub(crate) eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
+    pub(crate) cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
+    pub(crate) fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
 }
 
 thread_local! {
     static VALUE_HOOKS: Cell<*const ValueHookDispatch> = const { Cell::new(ptr::null()) };
 }
 
-/// Install `h` as the thread's value-hook dispatch until the guard
-/// drops (loans nest). The caller must keep the handle and its state
-/// alive and unmoved for the guard's lifetime.
-// CR claude for eric: [risk] A safe fn with a liveness contract on a raw
-// pointer, returning a guard that `mem::forget` can leak, after which any `==`
-// on an abstract value dereferences a dead frame. Take `(&ValueHookDispatch, f:
-// impl FnOnce() -> T)` and restore inside, so the one caller's closure-scoped
-// use is the only possible use.
-pub(crate) fn arm_value_hooks(h: *const ValueHookDispatch) -> ValueHookGuard {
-    ValueHookGuard { prev: VALUE_HOOKS.with(|c| c.replace(h)) }
+/// Run `f` with `h` as the thread's value-hook dispatch (loans nest);
+/// the previous dispatch is back when `f` returns or unwinds. `h.state`
+/// must stay valid while `f` runs.
+pub(crate) fn with_value_hooks<T>(h: &ValueHookDispatch, f: impl FnOnce() -> T) -> T {
+    let _restore = Restore(VALUE_HOOKS.with(|c| c.replace(h)));
+    f()
 }
 
-pub(crate) struct ValueHookGuard {
-    prev: *const ValueHookDispatch,
-}
+struct Restore(*const ValueHookDispatch);
 
-impl Drop for ValueHookGuard {
+impl Drop for Restore {
     fn drop(&mut self) {
-        VALUE_HOOKS.with(|c| c.set(self.prev));
+        VALUE_HOOKS.with(|c| c.set(self.0));
     }
 }
 
 /// Dispatch through the installed handle, which is suspended for the
 /// dispatch's duration: the code an implementation runs sees no loan
 /// but one it arms itself, so nothing inherits a context it was not
-/// lent. The guard restores the handle on return and on unwind.
+/// lent. The handle is restored on return and on unwind.
 fn hooked<T>(f: impl FnOnce(&ValueHookDispatch) -> Option<T>) -> Option<T> {
     let p = VALUE_HOOKS.with(|c| c.replace(ptr::null()));
     if p.is_null() {
         return None;
     }
-    let _restore = ValueHookGuard { prev: p };
-    // SAFETY: the pointer was installed by `arm_value_hooks`, whose
-    // guard is alive in a caller frame that owns the handle.
+    let _restore = Restore(p);
+    // SAFETY: only `with_value_hooks` installs a pointer, and it is the
+    // borrow of a handle alive for the whole of that call's `f`.
     f(unsafe { &*p })
 }
 
-#[derive(Clone)]
+#[derive(Clone, Pack)]
+#[pack(unwrapped)]
 pub struct GxAbstract {
-    pub id: AbstractId,
+    pub(crate) id: AbstractId,
     /// The type's name, for rendering (`Counter(5)`); identity is `id`.
-    pub name: ArcStr,
+    pub(crate) name: ArcStr,
     /// The type arguments the value was constructed at, so a core-trait
     /// implementation for one instantiation is told from another's.
-    pub params: Arc<[Type]>,
-    pub payload: Value,
+    pub(crate) params: Arc<[Type]>,
+    pub(crate) payload: Value,
 }
 
 impl GxAbstract {
@@ -144,44 +136,11 @@ impl Ord for GxAbstract {
     }
 }
 
-// CR claude for eric: [bug] Hashes the payload structurally while `eq` consults a
-// user `Eq` impl, so values that are `==` hash apart. probe: with `impl Eq for
-// Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) }`,
-// `array::dedup([Key("Foo"), Key("FOO"), Key("foo")])` keeps all three while
-// `Key("Foo") == Key("FOO")` is true (both engines). Hash only `id` when the
-// type may carry an `Eq` impl, or route hashing through the hooks too.
+// Only the id: `eq` may consult a user `Eq` impl, which no hash of the
+// payload can agree with.
 impl Hash for GxAbstract {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
-        self.payload.hash(state);
-    }
-}
-
-// CR claude for eric: [style] Hand-written, and asymmetric: encode goes through
-// `image::slice_*`, decode through `Vec<Type>` plus a copy into the `Arc`.
-// netidx already implements `Pack` for `triomphe::Arc<[T]>` with this layout;
-// `#[derive(Pack)]` on the struct gives the same bytes.
-impl Pack for GxAbstract {
-    fn encoded_len(&self) -> usize {
-        Pack::encoded_len(&self.id)
-            + Pack::encoded_len(&self.name)
-            + crate::image::slice_len(&self.params)
-            + Pack::encoded_len(&self.payload)
-    }
-
-    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        Pack::encode(&self.id, buf)?;
-        Pack::encode(&self.name, buf)?;
-        crate::image::slice_encode(&self.params, buf)?;
-        Pack::encode(&self.payload, buf)
-    }
-
-    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let id = Pack::decode(buf)?;
-        let name = Pack::decode(buf)?;
-        let params = Arc::from(Vec::<Type>::decode(buf)?);
-        let payload = Pack::decode(buf)?;
-        Ok(GxAbstract { id, name, params, payload })
     }
 }
 
@@ -194,11 +153,12 @@ static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
 });
 
 /// Mint a value of the abstract type `id<params>` around `payload`.
-// CR claude for eric: [risk] The module doc says a value is "minted only by the
-// constructor `T(..)`", but `wrap` and every `GxAbstract` field are `pub`, so
-// any package can mint or rewrite a value of any Graphix abstract type. Only
-// this crate calls `wrap`: make it `pub(crate)` and the fields read-only.
-pub fn wrap(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Value {
+pub(crate) fn wrap(
+    id: AbstractId,
+    name: ArcStr,
+    params: Arc<[Type]>,
+    payload: Value,
+) -> Value {
     WRAPPER.wrap(GxAbstract { id, name, params, payload })
 }
 
@@ -214,19 +174,4 @@ pub fn get(v: &Value) -> Option<&GxAbstract> {
 /// that consumes a type whose constructor lives in Graphix.
 pub fn payload(v: &Value) -> Option<&Value> {
     get(v).map(|g| &g.payload)
-}
-
-/// Is `v` a value of the abstract type `id`? A Graphix-minted box
-/// answers by its tag; a Rust-backed value by its registered wrapper
-/// UUID ([`crate::typ::abstract_uuid`] of the type's path).
-// CR claude for eric: [dead] No caller in the workspace (the runtime test is
-// `Type::is_a`'s `Abstract` arm, which duplicates this logic).
-pub fn is_instance(v: &Value, id: AbstractId) -> bool {
-    match v {
-        Value::Abstract(a) => match a.downcast_ref::<GxAbstract>() {
-            Some(g) => g.id == id,
-            None => a.id().as_u64_pair().1 == id.inner(),
-        },
-        _ => false,
-    }
 }

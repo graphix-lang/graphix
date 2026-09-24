@@ -234,6 +234,13 @@ fn a_diagnostic_underlines_the_expression() {
     assert_eq!(c.underlined("a.gx"), ["str::len(\"four\") == 4"]);
 }
 
+#[test]
+fn a_constructor_error_is_reported_at_the_constructor() {
+    let mut c = Client::start(&[("a.gx", "type C = i64;\nlet c = C(5);\nc\n")]);
+    c.open("a.gx");
+    assert_eq!(c.underlined("a.gx"), ["C(5)"]);
+}
+
 /// A package under development declares builtins this binary was not
 /// built with: they are warnings, and everything else is still checked.
 #[test]

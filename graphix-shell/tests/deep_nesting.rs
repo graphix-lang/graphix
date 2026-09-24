@@ -93,6 +93,7 @@ fn program(shape: &str, d: usize) -> String {
             let body = std::iter::repeat("1").take(d).collect::<Vec<_>>().join("; ");
             format!("seq {{ {body} }}")
         }
+        "seqblock" => format!("seq {{ {}1{} }}", "{ 1; ".repeat(d), " }".repeat(d)),
         "seqabort" => {
             let mut s = String::from("1");
             for _ in 0..d {
@@ -128,6 +129,7 @@ const SHAPES: &[&str] = &[
     "not",
     "modnest",
     "seqarm",
+    "seqblock",
     "seqabort",
 ];
 

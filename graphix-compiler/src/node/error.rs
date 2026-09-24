@@ -1,35 +1,34 @@
-// CR claude for eric: [style] `crate::image` is imported twice outside the
-// `crate::{..}` group; `crate::fusion::fuse` (4 uses), `super::read_var` and
-// `super::VarRead` are spelled out at their uses. Merge and import.
-use crate::image::ImageBuf;
-use crate::image::{
-    self,
-    nodes::{
-        NodeTag, decode_node, opt_node_decode, opt_node_encode, opt_node_len, put_tag,
-        tag_len,
-    },
-};
+use super::{VarRead, read_var};
 use crate::{
     BindId, CFlag, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Tag, TagValue, Update, UserEvent,
+    Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     defetyp, deref_typ,
     env::Env,
     expr::{self, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     format_with_flags,
-    fusion::emit::{BodyCx, CompiledExpr, QopSink, emit_qop_node},
+    fusion::{
+        emit::{BodyCx, CompiledExpr, QopSink, emit_qop_node},
+        fuse,
+    },
+    image::{
+        self, ImageBuf,
+        nodes::{
+            NodeTag, decode_node, opt_node_decode, opt_node_encode, opt_node_len,
+            put_tag, tag_len,
+        },
+    },
     typ::{Type, TypeRef},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
-use cranelift_codegen::ir::Value as ClifValue;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{collections::hash_map::Entry, sync::LazyLock};
+use std::{collections::hash_map::Entry, fmt, sync::LazyLock};
 use triomphe::Arc;
 
 pub(super) static ECHAIN: LazyLock<ModPath> =
@@ -52,51 +51,32 @@ fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
 }
 
 pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
-    // CR claude for eric: [risk] a process-wide static `TypeRef` carries a
-    // write-once resolution cell: the first ExecCtx whose `is_a` resolves
-    // `ErrChain` fills it with that env's typedef, and every other context in the
-    // process reuses it (the rule: statics never cache what can differ between
-    // contexts). Build the ref per call or keep it in the context. Below,
-    // `error[1]` relies on the sorted field order without saying so.
-    static ERRCHAIN: LazyLock<Type> = LazyLock::new(|| typ_echain(Type::empty_tvar()));
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
-    if ERRCHAIN.is_a(env, &e) {
-        let error = e.clone().cast_to::<[(ArcStr, Value); 4]>().unwrap();
-        let error = error[1].1.clone();
-        [
-            (literal!("cause"), e.clone()),
-            (literal!("error"), error),
-            (literal!("ori"), spec.ori.to_value()),
-            (literal!("pos"), pos),
-        ]
-        .into()
+    let (cause, error) = if typ_echain(Type::empty_tvar()).is_a(env, &e) {
+        let fields = e.clone().cast_to::<[(ArcStr, Value); 4]>().unwrap();
+        let error = fields.into_iter().find(|(n, _)| n == "error").unwrap().1;
+        (e, error)
     } else {
-        [
-            (literal!("cause"), Value::Null),
-            (literal!("error"), e.clone()),
-            (literal!("ori"), spec.ori.to_value()),
-            (literal!("pos"), pos),
-        ]
-        .into()
-    }
+        (Value::Null, e)
+    };
+    [
+        (literal!("cause"), cause),
+        (literal!("error"), error),
+        (literal!("ori"), spec.ori.to_value()),
+        (literal!("pos"), pos),
+    ]
+    .into()
 }
 
-// CR claude for eric: [structure] `seq_abort`, `capture` and `received` are one
-// seq-only concern spread over three independent fields: `capture` is only read
-// when `seq_abort` is `Some` (`first`), so `(capture: Some, seq_abort: None)` is
-// representable and inert. Fold them into one `Option<SeqCatch>`. `typ` is
-// always `Type::Bottom` yet stored and imaged; return `&Type::Bottom` as
-// `Connect` does.
 #[derive(Debug)]
 pub struct Catch<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub handler: Node<R, E>,
     pub(crate) seq_abort: Option<SeqAbort<R, E>>,
-    /// A seq `try`'s capture cell (§7.9): receives the first error of
-    /// each failure and the union of this handler's inferred throws.
-    capture: Option<BindId>,
     own_handler: ErrorHandler,
+    /// Raises of `own_handler` acknowledged: delivered, a seq's abort
+    /// event, or given up when the catch sleeps or goes away.
     received: u64,
     last_cycle: Option<u64>,
     constraint: Option<Type>,
@@ -105,9 +85,10 @@ pub struct Catch<R: Rt, E: UserEvent> {
     thrown: Option<Type>,
     bind_id: BindId,
     top_id: ExprId,
-    typ: Type,
 }
 
+/// A seq machine's handler, or a `try` body arm's jump: the action run
+/// once every error of a failure has arrived.
 #[derive(Debug)]
 pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
     pub(crate) node: Node<R, E>,
@@ -117,6 +98,9 @@ pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
     pub(crate) manual: Option<Node<R, E>>,
     /// A machine's step variable, written idle when the machine sleeps.
     pc: Option<BindId>,
+    /// A `try`'s capture cell (§7.3): receives the first error of each
+    /// failure and the union of this handler's inferred throws.
+    capture: Option<BindId>,
     pending: bool,
 }
 
@@ -133,22 +117,20 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 node,
                 manual: opt_node_decode(ctx, buf)?,
                 pc: Option::<BindId>::decode(buf)?,
+                capture: Option::<BindId>::decode(buf)?,
                 pending: false,
             }),
         };
-        let capture = Option::<BindId>::decode(buf)?;
         let own_handler = image::handler_decode(buf)?;
         let constraint = Option::<Type>::decode(buf)?;
         let thrown = Option::<Type>::decode(buf)?;
         let bind_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let typ = Type::decode(buf)?;
         ctx.rt.ref_var(bind_id, top_id);
         Ok(Node::new(Self {
             spec,
             handler,
             seq_abort,
-            capture,
             own_handler,
             received: 0,
             last_cycle: None,
@@ -156,7 +138,6 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             thrown,
             bind_id,
             top_id,
-            typ,
         }))
     }
 
@@ -200,8 +181,11 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             }
         };
         let seq_abort = match &c.seq_abort {
-            None if c.seq_manual.is_some() || c.seq_pc.is_some() => {
-                bail!("BUG: a seq abort event without an abort action")
+            None if c.seq_manual.is_some()
+                || c.seq_pc.is_some()
+                || c.seq_capture.is_some() =>
+            {
+                bail!("BUG: a seq catch without an abort action")
             }
             None => None,
             Some(e) => Some(SeqAbort {
@@ -212,16 +196,15 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                     .map(|e| compile(ctx, flags, (**e).clone(), scope, top_id))
                     .transpose()?,
                 pc: c.seq_pc.as_ref().map(|n| lookup(ctx, n)).transpose()?,
+                capture: c.seq_capture.as_ref().map(|n| lookup(ctx, n)).transpose()?,
                 pending: false,
             }),
         };
-        let capture = c.seq_capture.as_ref().map(|n| lookup(ctx, n)).transpose()?;
         ctx.rt.ref_var(bind_id, top_id);
         let node = Node::new(Self {
             spec,
             handler,
             seq_abort,
-            capture,
             own_handler: covered.dynamic.handler().unwrap(),
             received: 0,
             last_cycle: None,
@@ -229,9 +212,17 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             thrown: None,
             bind_id,
             top_id,
-            typ: Type::Bottom,
         });
         Ok((node, covered))
+    }
+
+    /// Acknowledge the raises whose deliveries this catch will not see,
+    /// so no enclosing handler waits on them.
+    fn give_up_in_flight(&mut self) {
+        while self.received != self.own_handler.generation() {
+            self.received = self.received.wrapping_add(1);
+            self.own_handler.handled();
+        }
     }
 }
 
@@ -241,17 +232,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             + self.spec.encoded_len()
             + self.handler.image_len()
             + opt_node_len(self.seq_abort.as_ref().map(|a| &a.node))
-            + self
-                .seq_abort
-                .as_ref()
-                .map_or(0, |a| opt_node_len(a.manual.as_ref()) + a.pc.encoded_len())
-            + self.capture.encoded_len()
+            + self.seq_abort.as_ref().map_or(0, |a| {
+                opt_node_len(a.manual.as_ref())
+                    + a.pc.encoded_len()
+                    + a.capture.encoded_len()
+            })
             + image::handler_len(&self.own_handler)
             + self.constraint.encoded_len()
             + self.thrown.encoded_len()
             + self.bind_id.encoded_len()
             + self.top_id.encoded_len()
-            + self.typ.encoded_len()
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -262,25 +252,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         if let Some(a) = &self.seq_abort {
             opt_node_encode(a.manual.as_ref(), buf)?;
             a.pc.encode(buf)?;
+            a.capture.encode(buf)?;
         }
-        self.capture.encode(buf)?;
         image::handler_encode(&self.own_handler, buf)?;
         self.constraint.encode(buf)?;
         self.thrown.encode(buf)?;
         self.bind_id.encode(buf)?;
-        self.top_id.encode(buf)?;
-        self.typ.encode(buf)
+        self.top_id.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let _ = self.handler.update(ctx, event);
         let cycle = ctx.rt.cycle();
-        let first = self.seq_abort.as_ref().is_some_and(|a| !a.pending);
-        let delivered = match super::read_var(ctx, event, &self.bind_id) {
-            Some(super::VarRead::Delivered(tv))
-                if self.last_cycle != Some(cycle) && tv.tag().is_fired() =>
+        let capture =
+            self.seq_abort.as_ref().and_then(|a| a.capture.filter(|_| !a.pending));
+        // a delivery whose raise was given up while asleep is not counted again
+        let delivered = match read_var(ctx, event, &self.bind_id) {
+            Some(VarRead::Delivered(tv))
+                if self.last_cycle != Some(cycle)
+                    && tv.tag().is_fired()
+                    && self.received != self.own_handler.generation() =>
             {
-                Some((first && self.capture.is_some()).then(|| tv.value_cloned()))
+                Some(capture.map(|cap| (cap, tv.value_cloned())))
             }
             _ => None,
         };
@@ -288,7 +281,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             self.last_cycle = Some(cycle);
             self.received = self.received.wrapping_add(1);
             self.own_handler.handled();
-            if let (Some(cap), Some(v)) = (self.capture, captured) {
+            if let Some((cap, v)) = captured {
                 ctx.rt.set_var(cap, v);
             }
             if let Some(abort) = &mut self.seq_abort {
@@ -318,6 +311,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.give_up_in_flight();
         ctx.rt.unref_var(self.bind_id, self.top_id);
         self.handler.delete(ctx);
         if let Some(abort) = &mut self.seq_abort {
@@ -326,14 +320,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
-    // CR claude for eric: [risk] suspected: `handled()` runs only when an awake
-    // catch sees a delivery. A delivery still in flight when the catch sleeps or
-    // is deleted (the second same-cycle error, queued by `deliver_error`'s
-    // `Occupied` arm, or a cross-top one) is never acknowledged, so every
-    // ancestor's `nested` count stays raised for its lifetime and an enclosing
-    // seq guard answers bottom from then on. Reconcile outstanding raises
-    // (`generation` vs handled) here and in `delete`.
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.give_up_in_flight();
         self.handler.sleep(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.sleep(ctx);
@@ -375,15 +363,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             tv.read().typ.write().typ = Some(t);
         }
         wrap!(self.handler, self.handler.typecheck0(ctx))?;
-        if let Some(abort) = &mut self.seq_abort {
-            wrap!(abort.node, abort.node.typecheck0(ctx))?;
-            if let Some(manual) = &mut abort.manual {
-                wrap!(manual, manual.typecheck0(ctx))?;
-            }
+        let Some(abort) = &mut self.seq_abort else { return Ok(()) };
+        wrap!(abort.node, abort.node.typecheck0(ctx))?;
+        if let Some(manual) = &mut abort.manual {
+            wrap!(manual, manual.typecheck0(ctx))?;
         }
         // the capture cell's type is the union of every covering
         // handler's throws
-        if let Some(cap) = self.capture {
+        if let Some(cap) = abort.capture {
             let etyp = ctx
                 .env
                 .by_id
@@ -442,7 +429,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &self.typ
+        &Type::Bottom
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -460,11 +447,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // a catch is a fusion boundary; the handler's own subtrees fuse
-        crate::fusion::fuse(&mut self.handler, ctx)?;
+        fuse(&mut self.handler, ctx)?;
         if let Some(abort) = &mut self.seq_abort {
-            crate::fusion::fuse(&mut abort.node, ctx)?;
+            fuse(&mut abort.node, ctx)?;
             if let Some(manual) = &mut abort.manual {
-                crate::fusion::fuse(manual, ctx)?;
+                fuse(manual, ctx)?;
             }
         }
         Ok(None)
@@ -525,6 +512,38 @@ impl Strip {
     }
 }
 
+/// The typing `?` and `$` share: what `op` strips from `operand`, and
+/// the result type, `operand` less it. With no member left the result
+/// never produces: bottom, which a select absorbs, not an empty union
+/// no pattern could match.
+fn strip_typ<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    op: char,
+    operand: &Type,
+) -> Result<(Strip, Type)> {
+    let strip = Strip::of(ctx, op, operand)?;
+    let rtyp = operand.diff(&ctx.env, &strip.removed())?;
+    Ok((strip, if rtyp.is_uninhabited() { Type::Bottom } else { rtyp }))
+}
+
+/// The production `?` and `$` share: a bottom or a kept value passes
+/// through; a stripped one is a bottom, and a fresh one goes to `sink`.
+fn strip_production<'a>(
+    strip: Strip,
+    tv: &'a TagValue,
+    resident: &'a mut TagValue,
+    sink: impl FnOnce(&Value),
+) -> &'a TagValue {
+    if tv.tag().is_bottom() || !tv.with_value(|v| strip.strips(v)) {
+        return tv;
+    }
+    if !tv.tag().is_fired() {
+        return resident.ride();
+    }
+    tv.with_value(sink);
+    resident.set_bottom(true)
+}
+
 /// The payload a `?` raises for a null operand: `NullError` naming the
 /// operand.
 pub(crate) fn null_error(spec: &Expr) -> Value {
@@ -536,15 +555,37 @@ pub(crate) fn null_error(spec: &Expr) -> Value {
     Value::Array(ValArray::from_iter([tag, Value::from(operand)]))
 }
 
-// CR claude for eric: [readability] `spec.ori` renders as "in file ...", so the
-// message reads "unhandled error in in file ..." (probed, both engines; the JIT
-// helper `graphix_swallowed_error` re-spells the same format, as does
-// `OrNever`'s "ignored error in {} at {}"). Drop the literal "in" and keep one
-// formatter for both engines.
-/// What a handler-less `?` reports for the error payload `e` it raised.
-pub(crate) fn unhandled_msg(spec: &Expr, e: &Value) -> ArcStr {
-    format_compact!("unhandled error in {} at {} {e}", spec.ori, spec.pos).as_str().into()
+/// Where a swallowed error or a failed operator reports itself, in both
+/// engines: the origin (`in file ..`), then the position.
+pub(crate) fn diagnostic_site(spec: &Expr) -> ArcStr {
+    format_compact!("{} at {}", spec.ori, spec.pos).as_str().into()
 }
+
+/// What a handler-less `?` at `site` reports for the error payload `e`.
+pub(crate) fn unhandled_msg(site: &str, e: &dyn fmt::Display) -> ArcStr {
+    format_compact!("unhandled error {site} {e}").as_str().into()
+}
+
+/// An error nothing handles, or a hot operator's failure: logged from
+/// the calling module, so the log tells the engines apart, and written
+/// to stderr, which a shell without a log still shows.
+macro_rules! report_failure {
+    ($msg:expr) => {{
+        let msg: &str = $msg;
+        log::error!("{msg}");
+        eprintln!("{msg}");
+    }};
+}
+pub(crate) use report_failure;
+
+/// A `$` at `site` dropping the error payload `e`, logged from the
+/// calling module.
+macro_rules! report_ignored {
+    ($site:expr, $e:expr) => {
+        log::warn!("ignored error {} {}", $site, $e)
+    };
+}
+pub(crate) use report_ignored;
 
 /// Deliver a `?`'s raw error payload `e` to `handler` on behalf of the
 /// `?` at `spec` under `own_top`. The one handler path, shared by
@@ -577,10 +618,59 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     }
 }
 
-/// The interned "origin at position" a fused `$` or handler-less `?`
-/// names when it logs a swallowed error.
-fn diagnostic_site(cx: &mut BodyCx, spec: &Expr) -> Result<ClifValue> {
-    cx.interned_str(&format_compact!("{} at {}", spec.ori, spec.pos).as_str().into())
+/// The error type a `?` delivers for `etyp`: the payload wrapped in an
+/// `ErrChain`, once. `wrap_error` chains a caught error rather than
+/// nesting it, so a chain arriving from a callee's throws keeps its type.
+fn fix_echain_typ<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, etyp: &Type) -> Result<Type> {
+    deref_typ!("error", ctx, etyp,
+        Some(Type::Primitive(p)) => {
+            if !p.contains(Typ::Error) {
+                bail!("expected error not {}", Type::Primitive(*p))
+            }
+            if *p == BitFlags::from(Typ::Error) {
+                Ok(Type::Error(Arc::new(typ_echain(Type::Any))))
+            } else {
+                let mut p = *p;
+                p.remove(Typ::Error);
+                Ok(Type::Set(Arc::from_iter([
+                    Type::Error(Arc::new(typ_echain(Type::Any))),
+                    Type::Primitive(p)
+                ])))
+            }
+        },
+        Some(Type::Error(et)) => et.with_deref(|et| match et {
+            None => bail!("type must be known"),
+            Some(Type::Ref (TypeRef { scope, name, .. }))
+                if scope == &ModPath::root() && name == &*ECHAIN =>
+            {
+                Ok(etyp.clone())
+            }
+            Some(Type::Struct(fields)) if is_echain_shape(fields) => Ok(etyp.clone()),
+            Some(et) => {
+                // the chain may arrive as a Ref from another scope
+                let expanded = match et {
+                    Type::Ref(_) => Some(et.lookup_ref(&ctx.env)?),
+                    _ => None,
+                };
+                let chain = matches!(
+                    expanded.as_ref().unwrap_or(et),
+                    Type::Struct(fields) if is_echain_shape(fields)
+                );
+                if chain {
+                    Ok(etyp.clone())
+                } else {
+                    Ok(Type::Error(Arc::new(typ_echain(et.clone()))))
+                }
+            }
+        }),
+        Some(Type::Set(elts)) => {
+            let mut res = elts
+                .iter()
+                .map(|et| fix_echain_typ(ctx, et))
+                .collect::<Result<LPooled<Vec<Type>>>>()?;
+            Ok(Type::Set(Arc::from_iter(res.drain(..))))
+        }
+    )
 }
 
 /// A fused handler-ful `?` site: what the kernel's delivery drain needs
@@ -659,20 +749,12 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }))
     }
 
-    // CR claude for eric: [readability] the error is a string with the origin
-    // and position printed into it (and an "ERROR:" prefix) rather than a
-    // `bailat!(spec, ..)`, so it carries no `ErrorSite` and the LSP cannot place
-    // it on the `?`.
     fn check_unhandled(env: &Env, flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
+        let msg = "error raised by ? will not be caught";
         if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
-            bail!(
-                "ERROR: {} at {} error raised by ? will not be caught",
-                spec.ori,
-                spec.pos
-            )
+            bailat!(spec, "{msg}")
         }
         if flags.contains(CFlag::WarnUnhandled) {
-            let msg = "error raised by ? will not be caught";
             env.warn(&spec.ori, spec.pos, spec.end.0, msg);
         }
         Ok(())
@@ -706,43 +788,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         image::flags_encode(self.flags, buf)
     }
 
-    // CR claude for eric: [structure] `Qop` and `OrNever` repeat one skeleton
-    // (bottom passes, strip test, stale strip rides, fired strip bottoms) and one
-    // typecheck (`Strip::of` + `diff`), differing only in the sink. The copies
-    // have already drifted: `?` turns an uninhabited result into `Bottom`, `$`
-    // leaves the empty union (probe: `let x: Error<`E> = error(`E); select x$ {
-    // i64 as n => n, _ => 0 }` reports "pattern i64 will never match '_: []",
-    // the `?` form "unreachable arm"). Share the skeleton and the typing.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
-        if tv.tag().is_bottom() {
-            // a bottom is not an error value
-            return tv;
-        }
-        let strip = self.strip;
-        let err = tv.with_value(|v| match v {
-            Value::Error(e) if strip == Strip::Error => Some((**e).clone()),
-            Value::Null if strip == Strip::Null => Some(null_error(&self.spec)),
-            _ => None,
-        });
-        let fired = tv.tag().is_fired();
-        match err {
-            None => tv,
-            Some(_) if !fired => self.resident.ride(),
-            Some(e) => match &self.handler {
+        strip_production(self.strip, tv, &mut self.resident, |v| {
+            let e = match v {
+                Value::Error(e) => (**e).clone(),
+                _ => null_error(&self.spec),
+            };
+            match &self.handler {
                 Some(handler) => {
                     handler.raise();
                     deliver_error(ctx, event, handler, self.top_id, &self.spec, e);
-                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
                 }
-                None => {
-                    let msg = unhandled_msg(&self.spec, &e);
-                    log::error!("{msg}");
-                    eprintln!("{msg}");
-                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                }
-            },
-        }
+                None => report_failure!(&unhandled_msg(&diagnostic_site(&self.spec), &e)),
+            }
+        })
     }
 
     fn typ(&self) -> &Type {
@@ -769,72 +829,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.reset_replay(ctx);
     }
 
-    // CR claude for eric: [structure] a 55-line recursive helper nested inside
-    // `typecheck0`: `fix_echain_typ` is the ErrChain typing rule and belongs
-    // beside `wrap_error`/`typ_echain` at module level, where its pairing with
-    // `wrap_error`'s chaining is visible.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        fn fix_echain_typ<R: Rt, E: UserEvent>(
-            ctx: &ExecCtx<R, E>,
-            etyp: &Type,
-        ) -> Result<Type> {
-            deref_typ!("error", ctx, etyp,
-                Some(Type::Primitive(p)) => {
-                    if !p.contains(Typ::Error) {
-                        bail!("expected error not {}", Type::Primitive(*p))
-                    }
-                    if *p == BitFlags::from(Typ::Error) {
-                        Ok(Type::Error(Arc::new(typ_echain(Type::Any))))
-                    } else {
-                        let mut p = *p;
-                        p.remove(Typ::Error);
-                        Ok(Type::Set(Arc::from_iter([
-                            Type::Error(Arc::new(typ_echain(Type::Any))),
-                            Type::Primitive(p)
-                        ])))
-                    }
-                },
-                Some(Type::Error(et)) => et.with_deref(|et| match et {
-                    None => bail!("type must be known"),
-                    Some(Type::Ref (TypeRef { scope, name, .. }))
-                        if scope == &ModPath::root() && name == &*ECHAIN =>
-                    {
-                        Ok(etyp.clone())
-                    }
-                    // a chain arriving expanded through a call site's
-                    // throws is the same chain: `wrap_error` chains the
-                    // value rather than nesting it, so the type must not nest
-                    Some(Type::Struct(fields)) if is_echain_shape(fields) => {
-                        Ok(etyp.clone())
-                    }
-                    Some(et) => {
-                        // the chain may arrive as a Ref from another scope
-                        let expanded = match et {
-                            Type::Ref(_) => Some(et.lookup_ref(&ctx.env)?),
-                            _ => None,
-                        };
-                        let chain = matches!(
-                            expanded.as_ref().unwrap_or(et),
-                            Type::Struct(fields) if is_echain_shape(fields)
-                        );
-                        if chain {
-                            Ok(etyp.clone())
-                        } else {
-                            Ok(Type::Error(Arc::new(typ_echain(et.clone()))))
-                        }
-                    }
-                }),
-                Some(Type::Set(elts)) => {
-                    let mut res = elts
-                        .iter()
-                        .map(|et| fix_echain_typ(ctx, et))
-                        .collect::<Result<LPooled<Vec<Type>>>>()?;
-                    Ok(Type::Set(Arc::from_iter(res.drain(..))))
-                }
-            )
-        }
         wrap!(self.n, self.n.typecheck0(ctx))?;
-        if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+        let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
+        if rethrow {
             if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
                 return self.typ.check_contains(&ctx.env, &Type::Bottom);
             }
@@ -842,11 +840,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 Self::check_unhandled(&ctx.env, self.flags, &self.spec)?;
             }
         }
-        self.strip = wrap!(self, Strip::of(ctx, '?', self.n.typ()))?;
-        let rtyp = self.n.typ().diff(&ctx.env, &self.strip.removed())?;
-        // a `?` with no member left never produces: bottom, which a
-        // select absorbs, not an empty union no pattern could match
-        let rtyp = if rtyp.is_uninhabited() { Type::Bottom } else { rtyp };
+        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ()))?;
+        self.strip = strip;
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         if let Some(handler) = &self.handler {
             let (id, _) = handler.id();
@@ -854,11 +849,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
                 Strip::Null => NULL_ERR.clone(),
             };
-            let etyp = if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
-                etyp
-            } else {
-                wrap!(self, fix_echain_typ(&ctx, &etyp))?
-            };
+            let etyp =
+                if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
             let bind = ctx.env.by_id.get(&id).ok_or_else(|| anyhow!("BUG: catch"))?;
             match &bind.typ {
                 Type::TVar(tv) => {
@@ -886,12 +878,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         let sink = match (self.handler.as_ref(), self.strip) {
-            (None, Strip::Error) => {
-                QopSink::Log { site: diagnostic_site(cx, &self.spec)?, unhandled: true }
+            (None, Strip::Error) => QopSink::Log {
+                site: cx.interned_str(&diagnostic_site(&self.spec))?,
+                unhandled: true,
+            },
+            (None, Strip::Null) => {
+                let e = null_error(&self.spec);
+                let msg = unhandled_msg(&diagnostic_site(&self.spec), &e);
+                QopSink::UnhandledNull(cx.interned_str(&msg)?)
             }
-            (None, Strip::Null) => QopSink::UnhandledNull(
-                cx.interned_str(&unhandled_msg(&self.spec, &null_error(&self.spec)))?,
-            ),
             (Some(handler), strip) => {
                 let site = cx.interned_qop_site(QopSite {
                     handler: handler.clone(),
@@ -912,10 +907,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
 enum GuardState {
     Sleeping,
     /// Entered under this handler generation; before a fired production
-    /// has passed, a standing value is the previous run's answer.
+    /// has passed, a standing value is the previous run's answer. `owed`:
+    /// a fire arrived while nested catches drained, passed once they have.
     Running {
         generation: (u64, u64),
-        fired_since_entry: bool,
+        passed: bool,
+        owed: bool,
     },
     Failed,
 }
@@ -993,20 +990,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let current = (self.handler.generation(), self.machine.generation());
-        let (generation, fired_since_entry) = match self.state {
+        let (generation, passed, owed) = match self.state {
             GuardState::Sleeping if self.machine.aborted_in(ctx.rt.cycle()) => {
                 self.state = GuardState::Failed;
-                return self
-                    .resident
-                    .set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
+                return self.resident.set_bottom(true);
             }
             GuardState::Sleeping => {
-                let generation = current;
-                self.state = GuardState::Running { generation, fired_since_entry: false };
-                (generation, false)
+                self.state = GuardState::Running {
+                    generation: current,
+                    passed: false,
+                    owed: false,
+                };
+                (current, false, false)
             }
-            GuardState::Running { generation, fired_since_entry } => {
-                (generation, fired_since_entry)
+            GuardState::Running { generation, passed, owed } => {
+                (generation, passed, owed)
             }
             GuardState::Failed => {
                 if self.handler.has_nested_errors() {
@@ -1015,35 +1013,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
                 return self.resident.ride();
             }
         };
-        // CR claude for eric: [bug] a FIRED production that arrives while a nested
-        // catch still has an error in flight falls through to FRESH_BOTTOM and is
-        // forgotten (`fired_since_entry` stays false); once the nested count
-        // drains the value is stale and the guard answers bottom forever, so the
-        // run never completes. Probe: a callee with `catch(e) ..` and two `?`
-        // raising in one cycle (the second queues via `set_var`) called as `seq
-        // let k = n { f(k) }` wedges the seq for good; with one `?` it proceeds
-        // (both engines). design/seq_blocks.md §7.4 says a nested catch may
-        // consume its errors without aborting. Remember the suppressed fire and
-        // pass the value when the count drains.
         if generation == current || self.handler.has_nested_errors() {
             let value = self.n.update(ctx, event);
-            let current = (self.handler.generation(), self.machine.generation());
-            if generation == current && !self.handler.has_nested_errors() {
-                if fired_since_entry || value.tag().is_bottom() {
+            if generation == (self.handler.generation(), self.machine.generation()) {
+                if self.handler.has_nested_errors() {
+                    if value.is_fired() {
+                        self.state =
+                            GuardState::Running { generation, passed, owed: true };
+                    }
+                } else if value.tag().is_bottom() {
+                    self.state = GuardState::Running { generation, passed, owed: false };
                     return value;
-                }
-                if value.is_fired() {
+                } else if value.is_fired() || owed {
                     self.state =
-                        GuardState::Running { generation, fired_since_entry: true };
+                        GuardState::Running { generation, passed: true, owed: false };
+                    if value.is_fired() {
+                        return value;
+                    }
+                    return self
+                        .resident
+                        .set(TagValue::tagged(value.value_cloned(), Tag::FIRED));
+                } else if passed {
                     return value;
+                } else {
+                    return TagValue::bottom_null(false);
                 }
-                return TagValue::bottom_null(false);
             }
         }
         if generation != (self.handler.generation(), self.machine.generation()) {
             self.state = GuardState::Failed;
         }
-        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+        self.resident.set_bottom(true)
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1085,7 +1085,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        crate::fusion::fuse(&mut self.n, ctx)?;
+        fuse(&mut self.n, ctx)?;
         Ok(None)
     }
 }
@@ -1189,7 +1189,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        crate::fusion::fuse(&mut self.n, ctx)?;
+        fuse(&mut self.n, ctx)?;
         Ok(None)
     }
 }
@@ -1249,23 +1249,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
-        if tv.tag().is_bottom() {
-            return tv;
-        }
-        let strip = self.strip;
-        if !tv.with_value(|v| strip.strips(v)) {
-            return tv;
-        }
-        if !tv.tag().is_fired() {
-            return self.resident.ride();
-        }
-        // only a fresh error logs; a null is not a failure
-        tv.with_value(|v| {
+        strip_production(self.strip, tv, &mut self.resident, |v| {
+            // a null is not a failure
             if let Value::Error(e) = v {
-                log::warn!("ignored error in {} at {} {e}", self.spec.ori, self.spec.pos)
+                report_ignored!(&diagnostic_site(&self.spec), e)
             }
-        });
-        self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
+        })
     }
 
     fn typ(&self) -> &Type {
@@ -1294,10 +1283,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
-        self.strip = wrap!(self, Strip::of(ctx, '$', self.n.typ()))?;
-        let rtyp = self.n.typ().diff(&ctx.env, &self.strip.removed())?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
-        Ok(())
+        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ()))?;
+        self.strip = strip;
+        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -1311,9 +1299,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         let sink = match self.strip {
-            Strip::Error => {
-                QopSink::Log { site: diagnostic_site(cx, &self.spec)?, unhandled: false }
-            }
+            Strip::Error => QopSink::Log {
+                site: cx.interned_str(&diagnostic_site(&self.spec))?,
+                unhandled: false,
+            },
             Strip::Null => QopSink::DropNull,
         };
         emit_qop_node(cx, self.spec.id, &self.n, &self.typ, sink)

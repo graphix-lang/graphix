@@ -228,3 +228,25 @@ run!(wrap_overflow, WRAP_OVERFLOW, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// The compact integer types keep their type through every operator,
+// checked and unchecked.
+const COMPACT_INT_OPS: &str = r#"
+{
+    let a: v32 = v32:7;
+    let b: v32 = v32:2;
+    let z: z64 = z64:-7;
+    let w: z64 = z64:2;
+    let q = select a / b { v32 as n => n == v32:3 };
+    let m = select a % b { v32 as n => n == v32:1 };
+    let c = select a +? b { v32 as n => n == v32:9, error as _ => false };
+    let d = select z / w { z64 as n => n == z64:-3 };
+    let e = select z *? w { z64 as n => n == z64:-14, error as _ => false };
+    q && m && c && d && e
+}
+"#;
+
+run!(compact_int_ops, COMPACT_INT_OPS, |v: Result<&Value>| match v {
+    Ok(Value::Bool(true)) => true,
+    _ => false,
+});

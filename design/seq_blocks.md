@@ -118,10 +118,13 @@ stmt := let pat = expr ;
 `trigger` is any expression that does not begin with `{`, and its
 postfix chain admits no map access `{k}`: `seq t { f(t) }` is a trigger
 and a body, never `t{f(t)}`. Parenthesize a trigger that needs either.
-`seq let pat = e { .. }` lowers to `{ let pat = e; seq name { .. } }`
-before the machine is built: the trigger is a level bound outside the
-machine, so naming it costs no step, and a pattern that is not one name
-is destructured beside the level. `rec` is refused there.
+`seq let pat = e { .. }` names the run's snapshot of the trigger: the
+start event writes the value, destructured when `pat` is not one name,
+into a cell per name, so naming it costs no step, a busy-dropped trigger
+leaves the names alone, and they are the body's own (a write goes to the
+cell, as for a `let`). `seqq let pat = e { .. }` lowers to `{ let name =
+e; let pat = name; seqq name { .. } }` and the request's captures are the
+snapshot. `rec` is refused there.
 The head is a `;`-separated list like a block's statements, so a clause
 that comes first takes no `;`: `seq abort(e) { .. }`.
 `abort` is a reserved word; `flush` is not (it is an io method), so a
@@ -145,7 +148,8 @@ step.
 **Run.** A run starts when the trigger fires while no run is in
 progress; a trigger during a run is dropped (`seqq` queues instead,
 §8). A bare-variable trigger is snapshotted: the body's reads of that
-name see the value the run started with.
+name see the value the run started with; a write or a `&` of it reaches
+the variable.
 
 **Steps evaluate in order, once per entry.** A step's leaves —
 constants and reads of variables outside the step — are taken as they
@@ -166,8 +170,10 @@ one cycle and binds `s` the next; `n <- n + 1; n <- n + 1` is two
 cycles and `n + 2`. The analysis is by name and cannot see into a call
 (a closure may read anything), a read through a reference, or a nested
 seq; such a statement is taken to read every pending write, so
-`a <- f(x); b <- g(y)` issues `g` after `f` has produced. A block is
-the override.
+`a <- f(x); b <- g(y)` issues `g` after `f` has produced, and to write
+every variable the arm took a reference to, so `set(&b, 5); let s = b`
+reads the new `b`. A closure's own writes to what it captured are not
+seen. A block is the override.
 
 **A block `{ … }` issues its statements together.** Every statement
 of a block is issued at the block's entry: `{ a <- f(x); b <- g(y) }`
@@ -349,7 +355,8 @@ than only when a catch-up fire happens to deliver it.
 `split_arms` cuts a statement list into arms: `until` and `try` stand
 alone; other statements share an arm until one reads or rewrites a
 variable an earlier statement of the arm wrote, or is opaque (a call, a
-deref, a nested seq) while such a write is pending; a write through a
+deref, a nested seq) while such a write is pending; an opaque statement
+also writes every variable the arm took `&` of, and a write through a
 reference ends its arm, its target being unknown. The last statement
 of an arm writes the carried cells and the transition, `pc`-sampled so
 they land with the arm's writes. Inside an arm each statement's
@@ -498,7 +505,11 @@ first FIRED production after activation, then passes every production
 (an arm's nested continuation must keep routing on stale cycles). A
 generation change produces bottom and latches failure until sleep; the
 failed child keeps updating only while nested catches still have
-pending errors to drain, its output suppressed. So a failed step cannot
+pending errors to drain, its output suppressed. While a nested catch
+drains, a running guard holds its output too, and a fire in that time
+passes, as fired, once the drain ends with the generations unchanged. A
+catch that sleeps or is deleted gives up the raises it has not received,
+so no enclosing guard waits on them. So a failed step cannot
 schedule the next pc, write its carried cells, issue a generated
 connect or publish the block result, and the handler's reset never
 competes with a queued advance. In a try-body arm the nearest handler
@@ -585,7 +596,9 @@ wake catch-up re-raises at entry), belong to no run and are dropped;
 there is nothing to bank. The expression reads everything live except
 the trigger's name, which is this run's trigger: the snapshot cell
 under `seq` (so a busy-dropped trigger does not restart an
-`after_idle` over it), the dequeued request under `seqq`.
+`after_idle` over it), the dequeued request under `seqq`. A nested seq's
+clauses are its own machine's: a call in them is not issued with the
+enclosing step, whose issue covers only the nested trigger.
 
 **An abort is silent.** The run stops where it is, the block's value
 does not fire, nothing is raised to an enclosing handler, and a `try`

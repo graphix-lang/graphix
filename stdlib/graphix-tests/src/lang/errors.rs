@@ -35,7 +35,7 @@ const CHECKED_DIV0: &str = r#"
 "#;
 
 run!(checked_div0, CHECKED_DIV0, |v: Result<&Value>| match v {
-    Ok(Value::String(_)) => true,
+    Ok(Value::String(s)) => s == "arithmetic error",
     _ => false,
 });
 

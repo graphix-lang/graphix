@@ -348,6 +348,17 @@ run!(
     "##
 );
 
+// Values an implementation calls equal hash equal: a dedup keeps one.
+run!(
+    core_eq_hash_agrees,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1))),
+    "/test.gx" => r##"
+        type Key = Abstract<string>;
+        impl Eq for Key { let eq = |a, b| str::to_lower(a.0) == str::to_lower(b.0) };
+        let result = array::len(array::dedup([Key("Foo"), Key("FOO"), Key("foo")]))
+    "##
+);
+
 // Inside a composite the walk calls it per element; the structural
 // parts compare as values.
 run!(
