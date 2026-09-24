@@ -1,10 +1,10 @@
 use crate::stack::ensure_sufficient;
-// CR claude for eric: [style] Two `use combine` statements; one group.
-use combine::stream::position::SourcePosition;
 use combine::{
     ErrorOffset, ParseError, Parser, Stream, StreamOnce,
     error::{ParseResult, StreamError, Tracked},
     parser::ParseMode,
+    stream::{StreamErrorFor, position::SourcePosition},
+    unexpected_any,
 };
 use compact_str::CompactString;
 use std::{
@@ -30,33 +30,23 @@ pub fn set_max_nesting(depth: usize) {
     MAX_NESTING.store(depth, Ordering::Relaxed)
 }
 
-// CR claude for eric: [bug] REFUSED stays set when the refusing branch is
-// backtracked and another succeeds, so a later unrelated error is reported as
-// "nesting too deep": probe `let y = x$$…` (1001 `$`, parses via qop) then
-// `let z = (1 +;` reports nesting at line 3. DEPTH is not restored if a parser
-// panics on a reused thread, and `parsing()` does not reset it.
 thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
-    /// Set when a refusal happens. combine merges a committed error into
-    /// the surrounding alternatives' expectations, so the refusal's own
-    /// message is lost; the entry points check this flag instead.
-    static REFUSED: Cell<bool> = const { Cell::new(false) };
+    /// The furthest point a nesting refusal happened at. combine merges a
+    /// committed error into the surrounding alternatives' expectations, so
+    /// the refusal's own message is lost; [`parsing`] reads this instead.
+    static REFUSED: Cell<Option<SourcePosition>> = const { Cell::new(None) };
 }
 
-/// Call before a parse; [`refused`] reads the result afterwards.
-pub(super) fn clear_refused() {
-    REFUSED.with(|r| r.set(false))
-}
-
-/// Did the last parse stop because it hit [`max_nesting`]?
-pub(super) fn refused() -> bool {
-    REFUSED.with(|r| r.get())
-}
-
-/// Record a refusal. Also called by the caps on the parser loops that
-/// build a nested AST iteratively, which `GrowStack` cannot see.
-pub(super) fn note_refused() {
-    REFUSED.with(|r| r.set(true))
+/// Record a nesting refusal at `pos`. Also called by the caps on the
+/// parser loops that build a nested AST iteratively, which `GrowStack`
+/// cannot see.
+pub(super) fn note_refused(pos: SourcePosition) {
+    REFUSED.with(|r| {
+        if r.get().is_none_or(|p| key(p) < key(pos)) {
+            r.set(Some(pos))
+        }
+    })
 }
 
 thread_local! {
@@ -115,6 +105,30 @@ pub(super) fn note_reason(
     })
 }
 
+/// Refuse what was parsed up to `pos`, saying why: combine keeps a
+/// refusal's own message only when no other branch got further, so the
+/// reason is also noted for the report.
+pub(super) fn refuse<I, T>(
+    pos: SourcePosition,
+    reason: &'static str,
+) -> impl Parser<I, Output = T>
+where
+    I: Stream,
+{
+    note_reason(pos, None, CompactString::const_new(reason));
+    unexpected_any(reason)
+}
+
+/// [`refuse`] as the error of an `and_then`.
+pub(super) fn refusal<I>(pos: SourcePosition, reason: &'static str) -> StreamErrorFor<I>
+where
+    I: StreamOnce,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+{
+    note_reason(pos, None, CompactString::const_new(reason));
+    StreamErrorFor::<I>::message_static_message(reason)
+}
+
 /// Record where the parse failed.
 pub(super) fn note_error_pos(pos: SourcePosition) {
     ERROR_POS.with(|p| p.set(Some(pos)))
@@ -163,12 +177,22 @@ fn snippet(text: &str, pos: SourcePosition) -> String {
     format!("    {lead}{shown}{trail}\n    {}{pad}^", if start > 0 { " " } else { "" })
 }
 
-// CR claude for eric: [bug] A refusal raised with `unexpected_any` in a `.then`
-// keeps its message only when no other branch got further; otherwise this
-// prints "could not continue past this point" with no reason: probes `{x: 1,
-// x: 2}` (duplicate field), `seq t {}` (empty body) and a misordered seq head
-// all lose theirs. Route refusals through note_reason (a `refuse(pos, msg)`
-// helper), as fname and duration_unit_note already do.
+/// The nesting depth of the parse in progress, restored when it ends
+/// however it ends.
+struct DepthScope(usize);
+
+impl DepthScope {
+    fn enter() -> Self {
+        Self(DEPTH.with(|d| d.replace(0)))
+    }
+}
+
+impl Drop for DepthScope {
+    fn drop(&mut self) {
+        DEPTH.with(|d| d.set(self.0))
+    }
+}
+
 /// Wrap a parse of `text`: clears the flags, then reports the nesting
 /// limit when that stopped the parse, otherwise the furthest point any
 /// branch reached with the source line, a caret and any recorded reason.
@@ -176,13 +200,17 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
     text: &str,
     f: impl FnOnce() -> Result<T, E>,
 ) -> Result<T, ParseFailure> {
-    clear_refused();
+    let _depth = DepthScope::enter();
+    REFUSED.with(|r| r.set(None));
     REASON.with(|r| *r.borrow_mut() = None);
     ERROR_POS.with(|p| p.set(None));
     FURTHEST.with(|p| p.set(None));
     f().map_err(|e| {
         let err_pos = ERROR_POS.with(|p| p.get()).unwrap_or_default();
-        if refused() {
+        let furthest = FURTHEST.with(|p| p.get()).unwrap_or(err_pos);
+        // a refusal is the failure only when no branch got past it
+        let refused = REFUSED.with(|r| r.get()).filter(|r| key(*r) >= key(furthest));
+        if refused.is_some() {
             return ParseFailure {
                 pos: err_pos,
                 msg: format!(
@@ -192,7 +220,6 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
                 ),
             };
         }
-        let furthest = FURTHEST.with(|p| p.get()).unwrap_or(err_pos);
         let pos = if key(furthest) > key(err_pos) { furthest } else { err_pos };
         let mut msg = if pos == err_pos {
             format!("{e}")
@@ -254,7 +281,7 @@ where
             n
         });
         let r = if depth > max_nesting() {
-            note_refused();
+            note_refused(input.position());
             ParseResult::CommitErr(<Input as StreamOnce>::Error::from_error(
                 input.position(),
                 StreamError::message_static_message("expression nesting too deep"),
@@ -293,5 +320,41 @@ where
     #[inline]
     fn parser_count(&self) -> ErrorOffset {
         self.0.parser_count()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use combine::{
+        EasyParser, attempt, choice, easy, parser::char::string, position,
+        stream::position::Stream as Positioned,
+    };
+
+    type Input<'a> = easy::Stream<Positioned<&'a str, SourcePosition>>;
+
+    /// A refusal that another branch parsed past did not stop the parse.
+    #[test]
+    fn a_refusal_passed_by_another_branch_is_not_the_failure() {
+        let text = "aab";
+        let refused = |(_, pos): (&str, SourcePosition)| -> Result<(), StreamErrorFor<Input>> {
+            note_refused(pos);
+            Err(StreamErrorFor::<Input>::message_static_message("expression nesting too deep"))
+        };
+        let e = parsing(text, || {
+            choice((
+                attempt(grow((string("a"), position()).and_then(refused))),
+                grow(string("aa")).map(|_| ()),
+            ))
+            .skip(grow(string("c")))
+            .easy_parse(Positioned::new(text))
+            .map_err(|e| {
+                note_error_pos(e.position);
+                e
+            })
+        })
+        .unwrap_err();
+        assert!(!e.msg.contains("nesting too deep (limit"), "{}", e.msg);
+        assert_eq!(e.pos.column, 3, "{}", e.msg);
     }
 }

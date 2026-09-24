@@ -228,3 +228,22 @@ run!(wrap_overflow, WRAP_OVERFLOW, |v: Result<&Value>| match v {
     Ok(Value::Bool(true)) => true,
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// `*`, `/` and `%` are one precedence level, left-associative.
+const MUL_DIV_MOD_LEFT: &str = r#"
+{
+    let x = 8;
+    let a = x / 2 * 2;
+    let b = 7 % 4 * 2;
+    let c = x * 3 / 4 % 5;
+    select (a, b, c) {
+        (8, 6, 1) => true,
+        _ => false
+    }
+}
+"#;
+
+run!(mul_div_mod_left, MUL_DIV_MOD_LEFT, |v: Result<&Value>| match v {
+    Ok(Value::Bool(true)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);

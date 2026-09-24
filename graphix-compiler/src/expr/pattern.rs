@@ -640,7 +640,7 @@ impl fmt::Display for StructurePattern {
                     match pat {
                         StructurePattern::Bind(n)
                             if n.name == *name
-                                && !parser::RESERVED_BINDING.contains(&name.as_str()) =>
+                                && !parser::is_reserved_binding(name) =>
                         {
                             write!(f, "{name}")?
                         }

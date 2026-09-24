@@ -1,125 +1,42 @@
 use crate::{
     expr::{
-        Expr, Name, Pattern, StructurePattern, WrittenAt,
+        Expr, ExprKind, Name, Pattern, StructurePattern, WrittenAt,
         parser::{
-            RESERVED_BINDING, csep, expr, fldname, ident, name, sep_by_tok, sep_by1_tok,
-            spaces, spaces1, spstring, sptoken, typ,
+            csep, expr, fldname,
+            grow::{grow, refuse},
+            ident, interpolated, is_reserved_binding, name, not_prefix, raw_string,
+            sep_by_tok, sep_by1_tok, spaces, spaces1, spstring, sptoken, typ,
         },
     },
     typ::Type,
 };
-use ahash::AHashSet;
-use arcstr::{ArcStr, literal};
+use arcstr::ArcStr;
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, many, optional,
+    error::StreamError,
     parser::char::string,
     position,
-    stream::{Range, position::SourcePosition},
-    token, unexpected_any, value,
+    stream::{Range, StreamErrorFor, position::SourcePosition},
+    token, value,
 };
-use netidx_core::utils::Either;
-use netidx_value::parser::{VAL_ESC, VAL_MUST_ESC, value as parse_value};
+use netidx_value::{
+    Value,
+    parser::{VAL_ESC, VAL_MUST_ESC, value as parse_value},
+};
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-// CR claude for eric: [style] A second `use` of this module apart from the
-// `crate::expr::parser` group above; list_slice_pattern also spells out
-// `combine::parser::char::string` though `string` is imported.
-use super::{grow::grow, not_prefix};
-
-// CR claude for eric: [structure] slice_pattern and list_slice_pattern are the
-// same ~80 lines (the all_left! macro twice) differing in delimiters, the `list`
-// flag and the suffix refusal; one function taking `list: bool`.
-/// Classify a slice-shaped pattern's element/rest mix into Slice /
-/// SlicePrefix / SliceSuffix. `list` selects the native-list flavor,
-/// which refuses the suffix form (a list's front is an O(n) walk).
-pub(super) fn slice_pattern<I>(
-    all: Option<Name>,
-) -> impl Parser<I, Output = StructurePattern>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    macro_rules! all_left {
-        ($pats:expr) => {{
-            let mut err = false;
-            let pats: Arc<[StructurePattern]> =
-                Arc::from_iter($pats.drain(..).map(|s| match s {
-                    Either::Left(s) => s,
-                    Either::Right(_) => {
-                        err = true;
-                        StructurePattern::Ignore
-                    }
-                }));
-            if err {
-                return unexpected_any("invalid pattern").left();
-            }
-            pats
-        }};
-    }
-    between(
-        token('['),
-        sptoken(']'),
-        sep_by_tok(
-            spaces().with(choice((
-                string("..").map(|_| Either::Right(None)),
-                attempt(name().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
-                structure_pattern_or().map(|p| Either::Left(p)),
-            ))),
-            csep(),
-            attempt(sptoken(']')),
-        ),
-    )
-    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<Name>>>>| {
-        let all = all.clone();
-        if pats.len() == 0 {
-            value(StructurePattern::Slice { list: false, all, binds: Arc::from_iter([]) })
-                .right()
-        } else if pats.len() == 1 {
-            match pats.pop().unwrap() {
-                Either::Left(s) => value(StructurePattern::Slice {
-                    list: false,
-                    all,
-                    binds: Arc::from_iter([s]),
-                })
-                .right(),
-                Either::Right(_) => unexpected_any("invalid singular range match").left(),
-            }
-        } else {
-            match (&pats[0], &pats[pats.len() - 1]) {
-                (Either::Right(_), Either::Right(_)) => {
-                    unexpected_any("invalid pattern").left()
-                }
-                (Either::Right(_), Either::Left(_)) => {
-                    let head = pats.remove(0).right().unwrap();
-                    let suffix = all_left!(pats);
-                    value(StructurePattern::SliceSuffix { all, head, suffix }).right()
-                }
-                (Either::Left(_), Either::Right(_)) => {
-                    let tail = pats.pop().unwrap().right().unwrap();
-                    let prefix = all_left!(pats);
-                    value(StructurePattern::SlicePrefix {
-                        list: false,
-                        all,
-                        tail,
-                        prefix,
-                    })
-                    .right()
-                }
-                (Either::Left(_), Either::Left(_)) => value(StructurePattern::Slice {
-                    list: false,
-                    all,
-                    binds: all_left!(pats),
-                })
-                .right(),
-            }
-        }
-    })
+/// One element of a slice pattern: a pattern, or the rest `..` / `name..`.
+enum SliceItem {
+    Pat(StructurePattern),
+    Rest(Option<Name>),
 }
 
-/// The native-list pattern `[<..>]` — the list-flavored slice grammar.
-pub(super) fn list_slice_pattern<I>(
+/// Classify a slice-shaped pattern's element/rest mix into Slice /
+/// SlicePrefix / SliceSuffix. `list` selects the native-list flavor
+/// `[<..>]`, which refuses the suffix form (a list's front is an O(n) walk).
+pub(super) fn slice_pattern<I>(
+    list: bool,
     all: Option<Name>,
 ) -> impl Parser<I, Output = StructurePattern>
 where
@@ -127,74 +44,58 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    macro_rules! all_left {
-        ($pats:expr) => {{
-            let mut err = false;
-            let pats: Arc<[StructurePattern]> =
-                Arc::from_iter($pats.drain(..).map(|s| match s {
-                    Either::Left(s) => s,
-                    Either::Right(_) => {
-                        err = true;
-                        StructurePattern::Ignore
-                    }
-                }));
-            if err {
-                return unexpected_any("invalid pattern").left();
-            }
-            pats
-        }};
-    }
-    between(
-        attempt(combine::parser::char::string("[<")),
-        spstring(">]"),
-        sep_by_tok(
-            spaces().with(choice((
-                string("..").map(|_| Either::Right(None)),
-                attempt(name().skip(spstring(".."))).map(|n| Either::Right(Some(n))),
-                structure_pattern_or().map(|p| Either::Left(p)),
-            ))),
-            csep(),
-            attempt(spstring(">]")),
+    let (open, close) = if list { ("[<", ">]") } else { ("[", "]") };
+    let item = spaces().with(choice((
+        string("..").map(|_| SliceItem::Rest(None)),
+        attempt(name().skip(spstring(".."))).map(|n| SliceItem::Rest(Some(n))),
+        structure_pattern_or().map(SliceItem::Pat),
+    )));
+    (
+        between(
+            attempt(string(open)),
+            spstring(close),
+            sep_by_tok(item, csep(), attempt(spstring(close))),
         ),
+        position(),
     )
-    .then(move |mut pats: LPooled<Vec<Either<StructurePattern, Option<Name>>>>| {
-        let all = all.clone();
-        if pats.len() == 0 {
-            value(StructurePattern::Slice { list: true, all, binds: Arc::from_iter([]) })
-                .right()
-        } else if pats.len() == 1 {
-            match pats.pop().unwrap() {
-                Either::Left(s) => value(StructurePattern::Slice {
-                    list: true,
-                    all,
-                    binds: Arc::from_iter([s]),
-                })
-                .right(),
-                Either::Right(_) => unexpected_any("invalid singular range match").left(),
-            }
-        } else {
-            match (&pats[0], &pats[pats.len() - 1]) {
-                (Either::Right(_), _) => unexpected_any(
-                    "list patterns have no suffix form (the tail is O(1), the front is not)",
-                )
-                .left(),
-                (Either::Left(_), Either::Right(_)) => {
-                    let tail = pats.pop().unwrap().right().unwrap();
-                    let prefix = all_left!(pats);
-                    value(StructurePattern::SlicePrefix { list: true, all, tail, prefix })
-                        .right()
-                }
-                (Either::Left(_), Either::Left(_)) => {
-                    value(StructurePattern::Slice {
-                        list: true,
-                        all,
-                        binds: all_left!(pats),
-                    })
-                    .right()
+        .then(move |(mut items, end): (LPooled<Vec<SliceItem>>, _)| {
+            let mut rest: Option<(usize, Option<Name>)> = None;
+            let mut pats: LPooled<Vec<StructurePattern>> = LPooled::take();
+            for (i, item) in items.drain(..).enumerate() {
+                match item {
+                    SliceItem::Pat(p) => pats.push(p),
+                    SliceItem::Rest(n) if rest.is_none() => rest = Some((i, n)),
+                    SliceItem::Rest(_) => {
+                        return refuse(end, "a slice pattern has one rest (`..`)").right();
+                    }
                 }
             }
-        }
-    })
+            let n = pats.len();
+            let pats = Arc::from_iter(pats.drain(..));
+            let all = all.clone();
+            let pat = match rest {
+                None => StructurePattern::Slice { list, all, binds: pats },
+                Some((0, _)) if n == 0 => {
+                    return refuse(end, "a rest (`..`) alone is not a slice pattern").right();
+                }
+                Some((0, _)) if list => {
+                    return refuse(
+                        end,
+                        "list patterns have no suffix form (the tail is O(1), the front is not)",
+                    )
+                    .right();
+                }
+                Some((0, head)) => StructurePattern::SliceSuffix { all, head, suffix: pats },
+                Some((i, tail)) if i == n => {
+                    StructurePattern::SlicePrefix { list, all, tail, prefix: pats }
+                }
+                Some(_) => {
+                    return refuse(end, "a slice pattern's rest (`..`) is first or last")
+                        .right();
+                }
+            };
+            value(pat).left()
+        })
 }
 
 fn tuple_pattern<I>(all: Option<Name>) -> impl Parser<I, Output = StructurePattern>
@@ -203,20 +104,23 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(
-        token('('),
-        sptoken(')'),
-        sep_by1_tok(structure_pattern_or(), csep(), token(')')),
+    (
+        between(
+            token('('),
+            sptoken(')'),
+            sep_by1_tok(structure_pattern_or(), csep(), token(')')),
+        ),
+        position(),
     )
-    .then(move |mut binds: LPooled<Vec<StructurePattern>>| {
-        if binds.len() < 2 {
-            unexpected_any("tuples must have at least 2 elements").left()
-        } else {
-            let all = all.clone();
-            value(StructurePattern::Tuple { all, binds: Arc::from_iter(binds.drain(..)) })
-                .right()
-        }
-    })
+        .then(move |(mut binds, end): (LPooled<Vec<StructurePattern>>, _)| {
+            if binds.len() < 2 {
+                refuse(end, "tuples must have at least 2 elements").right()
+            } else {
+                let all = all.clone();
+                let binds = Arc::from_iter(binds.drain(..));
+                value(StructurePattern::Tuple { all, binds }).left()
+            }
+        })
 }
 
 fn variant_pattern<I>(all: Option<Name>) -> impl Parser<I, Output = StructurePattern>
@@ -275,116 +179,83 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    between(
-        token('{'),
-        sptoken('}'),
-        spaces().with(sep_by1_tok(
-            // CR claude for eric: [readability] `..` is encoded as a fake field ("",
-            // Ignore, false) that `retain` strips while folding `exhaustive`, and a
-            // shorthand bind is found later by its NOWHERE position; an enum
-            // { Field(name, pat, shorthand), Rest } says both.
-            (position(), choice((
-                string("..").map(|_| (literal!(""), StructurePattern::Ignore, false)),
-                fldname()
-                    .skip(spaces())
-                    .then(|name| {
-                        optional(token(':').with(structure_pattern_or()))
-                            .map(move |pat| (name.clone(), pat))
-                    })
-                    .then(|(name, pat)| match pat {
-                        Some(pat) => value((name, pat, true)).left(),
-                        None if RESERVED_BINDING.contains(&name.as_str()) => unexpected_any(
+    /// One entry between the braces.
+    enum Field {
+        /// `name: pattern`, or the shorthand `name` binding the field
+        Named(ArcStr, StructurePattern, WrittenAt),
+        /// `..`: the pattern is not exhaustive
+        Rest,
+    }
+    let field = choice((
+        string("..").map(|_| Field::Rest),
+        (position(), fldname().skip(spaces()), optional(token(':').with(structure_pattern_or())))
+            .and_then(|(pos, name, pat)| {
+                let at = WrittenAt(pos);
+                match pat {
+                    Some(pat) => Ok(Field::Named(name, pat, at)),
+                    None if is_reserved_binding(&name) => {
+                        Err(StreamErrorFor::<I>::message_static_message(
                             "a reserved word field needs the explicit `name: pattern` form",
-                        )
-                        .right(),
-                        None => {
-                            let pat = StructurePattern::Bind(name.clone().into());
-                            value((name, pat, true)).left()
-                        }
-                    }),
-            ))),
-            csep(),
-            token('}'),
-        )),
-    )
-    .then(move |mut binds: LPooled<Vec<(SourcePosition, (ArcStr, StructurePattern, bool))>>| {
-        let mut exhaustive = true;
-        binds.retain(|(_, (_, _, ex))| {
-            exhaustive &= *ex;
-            *ex
-        });
-        binds.sort_by_key(|(_, (s, _, _))| s.clone());
-        let s = binds.iter().map(|(_, (s, _, _))| s).collect::<LPooled<AHashSet<_>>>();
-        if s.len() < binds.len() {
-            unexpected_any("struct fields must be unique").left()
-        } else {
-            drop(s);
-            let all = all.clone();
-            // a shorthand field `{x}` binds `x` where the field stands
-            let binds = Arc::from_iter(binds.drain(..).map(|(pos, (s, p, _))| {
-                let p = match p {
-                    StructurePattern::Bind(n) if n.at.0 == WrittenAt::NOWHERE.0 => {
-                        StructurePattern::Bind(Name::written(n.name, pos))
+                        ))
                     }
-                    p => p,
-                };
-                (s, p, WrittenAt(pos))
-            }));
-            value(StructurePattern::Struct { all, exhaustive, binds }).right()
-        }
-    })
+                    None => {
+                        let bind = StructurePattern::Bind(Name::written(name.clone(), pos));
+                        Ok(Field::Named(name, bind, at))
+                    }
+                }
+            }),
+    ));
+    (
+        between(
+            token('{'),
+            sptoken('}'),
+            spaces().with(sep_by1_tok(field, csep(), token('}'))),
+        ),
+        position(),
+    )
+        .then(move |(mut fields, end): (LPooled<Vec<Field>>, _)| {
+            let exhaustive = !fields.iter().any(|f| matches!(f, Field::Rest));
+            let mut binds: LPooled<Vec<(ArcStr, StructurePattern, WrittenAt)>> = fields
+                .drain(..)
+                .filter_map(|f| match f {
+                    Field::Named(n, p, at) => Some((n, p, at)),
+                    Field::Rest => None,
+                })
+                .collect();
+            if super::sort_unique(&mut binds, |(n, _, _)| n) {
+                let all = all.clone();
+                let binds = Arc::from_iter(binds.drain(..));
+                value(StructurePattern::Struct { all, exhaustive, binds }).left()
+            } else {
+                refuse(end, "struct fields must be unique").right()
+            }
+        })
 }
 
-// CR claude for eric: [structure] underbar, bind and literal each take `all`
-// only to refuse it with the same message; refuse a capture on a leaf once in
-// structure_pattern.
-fn underbar_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
+/// A string pattern, lexed as an expression's string is.
+fn string_pattern<I>() -> impl Parser<I, Output = Value>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    token('_').then(move |_| {
-        if all {
-            unexpected_any("all patterns are not supported by _").left()
-        } else {
-            value(StructurePattern::Ignore).right()
+    (choice((raw_string(), interpolated())), position()).then(|(e, end): (Expr, _)| {
+        match &e.kind {
+            ExprKind::Constant(v @ Value::String(_)) => value(v.clone()).left(),
+            _ => refuse(end, "a string pattern cannot interpolate").right(),
         }
     })
 }
 
-fn bind_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
+fn literal_pattern<I>() -> impl Parser<I, Output = StructurePattern>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    name().then(move |name| {
-        if all {
-            unexpected_any("all patterns are not supported by bind").left()
-        } else {
-            value(StructurePattern::Bind(name)).right()
-        }
-    })
-}
-
-fn literal_pattern<I>(all: bool) -> impl Parser<I, Output = StructurePattern>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    // CR claude for eric: [bug] a pattern string is lexed by netidx's value parser,
-    // not the expression string lexer, so the two disagree: the string `a[b` is
-    // written `"a\[b"` in an expression but `"a[b"` in a pattern, and `"a\[b"` (or
-    // an r"..." string) does not parse as a pattern (probed). Share one string lexer.
-    attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC)).skip(not_prefix()).then(move |v| {
-        if all {
-            unexpected_any("all patterns are not supported by literals").left()
-        } else {
-            value(StructurePattern::Literal(v)).right()
-        }
-    })
+    choice((string_pattern(), attempt(parse_value(&VAL_MUST_ESC, &VAL_ESC))))
+        .skip(not_prefix())
+        .map(StructurePattern::Literal)
 }
 
 fn all_pattern<I>() -> impl Parser<I, Output = Name>
@@ -400,17 +271,33 @@ parser! {
     pub(crate) fn structure_pattern[I]()(I) -> StructurePattern
     where [I: RangeStream<Token = char, Position = SourcePosition>, I::Range: Range]
     {
-        grow(spaces().with(optional(attempt(all_pattern()))).then(|all| choice((
-            list_slice_pattern(all.clone()),
-            slice_pattern(all.clone()),
-            tuple_pattern(all.clone()),
-            struct_pattern(all.clone()),
-            variant_pattern(all.clone()),
-            abstract_pattern(all.clone()),
-            underbar_pattern(all.is_some()),
-            literal_pattern(all.is_some()),
-            bind_pattern(all.is_some()),
-        ))))
+        grow(spaces().with(optional(attempt(all_pattern()))).then(|all| {
+            let captures = all.is_some();
+            (
+                choice((
+                    slice_pattern(true, all.clone()),
+                    slice_pattern(false, all.clone()),
+                    tuple_pattern(all.clone()),
+                    struct_pattern(all.clone()),
+                    variant_pattern(all.clone()),
+                    abstract_pattern(all.clone()),
+                    token('_').map(|_| StructurePattern::Ignore),
+                    literal_pattern(),
+                    name().map(StructurePattern::Bind),
+                )),
+                position(),
+            )
+                .then(move |(pat, end)| match pat {
+                    StructurePattern::Ignore
+                    | StructurePattern::Literal(_)
+                    | StructurePattern::Bind(_)
+                        if captures =>
+                    {
+                        refuse(end, "a capture `name@` takes a structure pattern").right()
+                    }
+                    pat => value(pat).left(),
+                })
+        }))
     }
 }
 

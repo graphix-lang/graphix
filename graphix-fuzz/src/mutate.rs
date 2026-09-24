@@ -459,7 +459,7 @@ pub fn parse(s: &str) -> Option<Expr> {
 /// Returned as a `Do` so one set of reduction machinery serves both;
 /// render it back with [`render_items`], not `to_string`.
 pub fn parse_items(s: &str) -> Option<Expr> {
-    let items = parser::parse(Origin::from_str(s)).ok()?;
+    let items = parser::parse(Origin::unspecified(s)).ok()?;
     let pos = items.first()?.pos;
     Some(Expr::new(ExprKind::Do { exprs: items }, pos))
 }

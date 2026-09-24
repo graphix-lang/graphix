@@ -7,16 +7,16 @@ use crate::{
     profile::{self, Phase},
     typ::{FnType, Type},
 };
-use ahash::AHashSet;
+use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
 use combine::{
     EasyParser, ParseError, Parser, RangeStream, attempt, between, choice, count_min_max,
-    eof, look_ahead, many, many1, none_of, not_followed_by, optional,
-    parser::token::produce,
+    easy, eof, look_ahead, many, many1, none_of, not_followed_by, optional,
     parser::{
         char::{space, string},
         combinator::recognize,
         range::{take_while, take_while1},
+        token::produce,
     },
     position, satisfy, sep_by1,
     stream::{
@@ -24,20 +24,20 @@ use combine::{
         position::{self, SourcePosition},
     },
     token, unexpected_any, value,
+    error::StreamError,
+    stream::StreamErrorFor,
 };
-// CR claude for eric: [style] `CompactString` is imported yet spelled
-// `compact_str::CompactString` in comment_line; `compact_str::format_compact!`
-// (fname, duration_unit_note) wants an import; `combine::parser::char::spaces()`
-// is written out 7 times though the local `spaces()` is the same parser; and
-// `netidx_value` is imported in two statements below.
-use compact_str::CompactString;
+use compact_str::{CompactString, format_compact};
 use escaping::Escape;
 use netidx_core::path::Path;
-use netidx_value::Value;
-use netidx_value::parser::{
-    VAL_ESC, VAL_MUST_ESC, not_prefix, sep_by_tok, sep_by1_tok, value as parse_value,
+use netidx_value::{
+    Value,
+    parser::{
+        VAL_ESC, VAL_MUST_ESC, not_prefix, sep_by_tok, value as parse_value,
+    },
 };
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::sync::LazyLock;
 use triomphe::Arc;
 
@@ -53,6 +53,8 @@ use modexp::{module, sig_item, use_module};
 
 mod typexp;
 pub(crate) use typexp::quantifier_names;
+#[cfg(test)]
+pub(crate) use typexp::declared_fn_type;
 use typexp::{fntype, typ, typedef};
 
 mod traitexp;
@@ -73,73 +75,106 @@ mod test;
 mod patternexp;
 use patternexp::{pattern, structure_pattern};
 
-// CR claude for eric: [style] A one-line wrapper used only by GRAPHIX_ESC
-// (`Some(char::is_control)`), and GRAPHIX_ESC's escape list repeats
-// GRAPHIX_MUST_ESC's four chars; derive one from the other.
-pub(super) fn escape_generic(c: char) -> bool {
-    c.is_control()
-}
-
 pub const GRAPHIX_MUST_ESC: [char; 4] = ['"', '\\', '[', ']'];
 pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
-    Escape::new(
-        '\\',
-        &['"', '\\', '[', ']', '\n', '\r', '\t', '\0'],
-        &[('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")],
-        Some(escape_generic),
-    )
-    .unwrap()
-});
-/// The primitive type-name keywords legal as binding names; every place
-/// they mean a type is disambiguated by position or a following `:`/`as`.
-/// `bytes` is excluded: `let bytes: T = v` is ambiguous with a base64
-/// literal pattern. It stays in [`RESERVED`] as a type name.
-pub static TYPE_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
-    AHashSet::from_iter([
-        "i8", "u8", "i16", "u16", "i32", "u32", "v32", "z32", "i64", "u64", "v64", "z64",
-        "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
-    ])
+    const NAMED: [(char, &str); 4] = [('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")];
+    let esc: SmallVec<[char; 8]> =
+        GRAPHIX_MUST_ESC.into_iter().chain(NAMED.map(|(c, _)| c)).collect();
+    Escape::new('\\', &esc, &NAMED, Some(char::is_control)).unwrap()
 });
 
-// CR claude for eric: [dead] PATH_KEYWORDS is never read, and "?" and "_" here
-// can never reach a lookup: `ident` only yields words that start with a letter.
-// Five overlapping keyword sets are hard to audit; one (word, class) table
-// could derive them.
-pub static RESERVED: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
-    AHashSet::from_iter(
-        [
-            "true", "false", "ok", "null", "mod", "let", "select", "type", "fn", "cast",
-            "never", "bytes", "if", "_", "?", "Array", "Map", "List", "any", "Any",
-            "use", "rec", "catch", "try", "self", "super", "package", "pub", "trait",
-            "impl", "seq", "seqq", "until", "abort",
-        ]
-        .into_iter()
-        .chain(TYPE_KEYWORDS.iter().copied()),
-    )
-});
+/// How a reserved word may be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Keyword {
+    /// begins a construct: refusing it as a name is routine and reports
+    /// nothing
+    Construct,
+    /// never a name
+    Reserved,
+    /// a primitive type name, legal as a binding name: every place it
+    /// means a type is disambiguated by position or a following `:`/`as`
+    Type,
+}
 
-/// The path-root keywords: legal only as the leading segment(s) of a path.
-/// `super` may repeat as a prefix; `self` and `package` may not.
-pub static PATH_KEYWORDS: LazyLock<AHashSet<&str>> =
-    LazyLock::new(|| AHashSet::from_iter(["self", "super", "package"]));
-
-/// The reserved words that begin a construct; their refusal as a name is
-/// routine and reports nothing.
-pub static CONSTRUCT_KEYWORDS: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
-    AHashSet::from_iter([
+/// `bytes` is not a [`Keyword::Type`]: `let bytes: T = v` is ambiguous
+/// with a base64 literal pattern.
+static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
+    use Keyword::*;
+    let construct = [
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
         "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until",
-    ])
+    ];
+    let reserved = [
+        "true", "false", "ok", "null", "bytes", "Array", "Map", "List", "any", "Any",
+        "self", "super", "package", "abort",
+    ];
+    let typ = [
+        "i8", "u8", "i16", "u16", "i32", "u32", "v32", "z32", "i64", "u64", "v64", "z64",
+        "f32", "f64", "decimal", "datetime", "duration", "bool", "string",
+    ];
+    construct
+        .map(|w| (w, Construct))
+        .into_iter()
+        .chain(reserved.map(|w| (w, Reserved)))
+        .chain(typ.map(|w| (w, Type)))
+        .collect()
 });
 
-/// The words refused in BINDING positions (`let`, params, labeled args,
-/// pattern binds, module/val names): everything reserved except the
-/// type-name keywords.
-pub static RESERVED_BINDING: LazyLock<AHashSet<&str>> = LazyLock::new(|| {
-    RESERVED.iter().copied().filter(|s| !TYPE_KEYWORDS.contains(s)).collect()
-});
+/// A reserved word: never a type name, and a name only if a type keyword.
+pub fn is_reserved(s: &str) -> bool {
+    KEYWORDS.contains_key(s)
+}
 
-// sep_by1 but a separator terminator is allowed and mapped to an output value
+/// A word refused in BINDING positions (`let`, params, labeled args,
+/// pattern binds, module/val names): every reserved word but the
+/// primitive type names.
+pub fn is_reserved_binding(s: &str) -> bool {
+    matches!(KEYWORDS.get(s), Some(Keyword::Construct | Keyword::Reserved))
+}
+
+/// A letter that can begin a value name: any but an uppercase one, which
+/// begins a type name, so a caseless script names values.
+fn is_value_initial(c: char) -> bool {
+    c.is_alphabetic() && !c.is_uppercase()
+}
+
+/// A terminator ahead, past any whitespace; consumes nothing.
+fn ahead<I, P>(term: P) -> impl Parser<I, Output = ()>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    P: Parser<I>,
+{
+    look_ahead(attempt(spaces().with(term))).map(|_| ())
+}
+
+/// One or more `p` separated by `sep`, a trailing `sep` before `term`
+/// allowed.
+fn sep_by1_tok<I, O, OC, EP, SP, TP>(p: EP, sep: SP, term: TP) -> impl Parser<I, Output = OC>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+    OC: Extend<O> + Default,
+    SP: Parser<I>,
+    EP: Parser<I, Output = O>,
+    TP: Parser<I>,
+{
+    sep_by1(choice((ahead(term).map(|_| None::<O>), p.map(Some))), sep).and_then(
+        |mut items: LPooled<Vec<Option<O>>>| match items.first() {
+            Some(Some(_)) => {
+                let mut res = OC::default();
+                res.extend(items.drain(..).flatten());
+                Ok(res)
+            }
+            _ => Err(<StreamErrorFor<I>>::message_static_message("expected an item")),
+        },
+    )
+}
+
+/// `sep_by1` of statements, an empty one standing for what `f` makes of
+/// its position: a list may end with its separator, and be empty.
 pub fn sep_by1_tok_exp<I, O, OC, F, EP, SP, TP>(
     p: EP,
     sep: SP,
@@ -156,7 +191,7 @@ where
     TP: Parser<I>,
     F: Fn(I::Position) -> O,
 {
-    sep_by1((position(), choice((look_ahead(term).map(|_| None::<O>), p.map(Some)))), sep)
+    sep_by1((position(), choice((ahead(term).map(|_| None::<O>), p.map(Some)))), sep)
         .map(move |mut e: LPooled<Vec<(_, Option<O>)>>| {
             let mut res = OC::default();
             res.extend(e.drain(..).map(|(pos, e)| match e {
@@ -178,10 +213,16 @@ where
     combine::parser::char::spaces()
 }
 
-// CR claude for eric: [perf] Builds a String char by char, then copies it into
-// an ArcStr; on a RangeStream `take_while(|c| c != '\n')` yields the &str for
-// one allocation. Same in doc_comment (plus a `join`), raw_string (content and
-// a String just to count `#`s) and interpolateexp's triple_run.
+/// The rest of the line.
+fn line_text<I>() -> impl Parser<I, Output = CompactString>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    many(none_of(['\n']))
+}
+
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`.
 fn comment_line<I>() -> impl Parser<I, Output = ArcStr>
@@ -197,7 +238,7 @@ where
                     grow::note_reason(
                         pos,
                         None,
-                        compact_str::CompactString::const_new(
+                        CompactString::const_new(
                             "`///` is a doc comment, legal only in a .gxi interface \
                              file; a .gx file comments with `//`",
                         ),
@@ -206,10 +247,10 @@ where
                 }
                 None => value(()).right(),
             })
-            .with(many::<String, _, _>(none_of(['\n']))),
+            .with(line_text()),
     )
-    .skip(combine::parser::char::spaces())
-    .map(|s: String| ArcStr::from(s.as_str()))
+    .skip(spaces())
+    .map(|s| ArcStr::from(s.as_str()))
 }
 
 fn leading_comments<I>() -> impl Parser<I, Output = LPooled<Vec<ArcStr>>>
@@ -218,7 +259,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    combine::parser::char::spaces().with(many(comment_line()))
+    spaces().with(many(comment_line()))
 }
 
 // `#[name]` or `#[name(arg, ...)]`; the args are full expressions. The
@@ -256,10 +297,10 @@ where
         Comment(ArcStr),
         Attr(Attr),
     }
-    combine::parser::char::spaces()
+    spaces()
         .with(many::<LPooled<Vec<Dec>>, _, _>(choice((
             comment_line().map(Dec::Comment),
-            attribute().skip(combine::parser::char::spaces()).map(Dec::Attr),
+            attribute().skip(spaces()).map(Dec::Attr),
         ))))
         .map(|mut items: LPooled<Vec<Dec>>| {
             let mut comments: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -286,11 +327,10 @@ fn decorate(mut e: Expr, (mut comments, mut attrs): Leading) -> Expr {
         return e;
     }
     if let Some(own) = e.dec.take() {
-        let Decorations { comments: c, attrs: a } = *own;
-        comments.extend(c.iter().cloned());
-        attrs.extend(a.iter().cloned());
+        comments.extend(own.comments.iter().cloned());
+        attrs.extend(own.attrs.iter().cloned());
     }
-    e.dec = Some(Box::new(Decorations {
+    e.dec = Some(Arc::new(Decorations {
         comments: Arc::from_iter(comments.drain(..)),
         attrs: Arc::from_iter(attrs.drain(..)),
     }));
@@ -312,19 +352,25 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    combine::parser::char::spaces()
-        .with(many(
-            string("///")
-                .with(many(none_of(['\n'])))
-                .skip(combine::parser::char::spaces()),
-        ))
-        .map(|lines: LPooled<Vec<String>>| {
-            if lines.len() == 0 {
-                Doc(None)
-            } else {
-                Doc(Some(ArcStr::from(lines.join("\n"))))
+    /// Doc lines joined by newlines.
+    #[derive(Default)]
+    struct Lines(Option<String>);
+    impl Extend<CompactString> for Lines {
+        fn extend<T: IntoIterator<Item = CompactString>>(&mut self, lines: T) {
+            for l in lines {
+                match &mut self.0 {
+                    None => self.0 = Some(String::from(l.as_str())),
+                    Some(s) => {
+                        s.push('\n');
+                        s.push_str(&l)
+                    }
+                }
             }
-        })
+        }
+    }
+    spaces()
+        .with(many(string("///").with(line_text()).skip(spaces())))
+        .map(|Lines(doc)| Doc(doc.map(ArcStr::from)))
 }
 
 fn spstring<'a, I>(s: &'static str) -> impl Parser<I, Output = &'a str>
@@ -343,7 +389,10 @@ where
     I::Range: Range,
 {
     recognize((
-        take_while1(move |c: char| c.is_alphabetic() && cap == c.is_uppercase()),
+        take_while1(move |c: char| match cap {
+            true => c.is_uppercase(),
+            false => is_value_initial(c),
+        }),
         take_while(|c: char| c.is_alphanumeric() || c == '_'),
     ))
     .map(|s: CompactString| ArcStr::from(s.as_str()))
@@ -356,16 +405,14 @@ where
     I::Range: Range,
 {
     (position(), ident(false)).then(|(pos, s): (SourcePosition, ArcStr)| {
-        if RESERVED_BINDING.contains(&s.as_str()) {
+        if is_reserved_binding(&s) {
             // Probing a statement's first token as a name is ordinary
             // parsing; only words that never begin a construct earn a note.
-            if !CONSTRUCT_KEYWORDS.contains(&s.as_str()) {
+            if KEYWORDS.get(s.as_str()) != Some(&Keyword::Construct) {
                 grow::note_reason(
                     pos,
                     Some(s.chars().count()),
-                    compact_str::format_compact!(
-                        "`{s}` is a reserved word and cannot be used as a name"
-                    ),
+                    format_compact!("`{s}` is a reserved word and cannot be used as a name"),
                 );
             }
             unexpected_any("can't use keyword as a function or variable name").left()
@@ -410,7 +457,7 @@ where
     I::Range: Range,
 {
     ident(true).then(|s| {
-        if RESERVED.contains(&s.as_str()) {
+        if is_reserved(&s) {
             unexpected_any("can't use keyword as a type name").left()
         } else {
             value(s).right()
@@ -493,44 +540,6 @@ where
     I::Range: Range,
 {
     spaces().with(token(t))
-}
-
-fn do_block<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(
-            token('{'),
-            sptoken('}'),
-            sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
-                ExprKind::NoOp.to_expr(pos).ending(pos)
-            }),
-        ),
-    )
-        .then(|(pos, mut args): (_, LPooled<Vec<Expr>>)| {
-            if args.len() < 2 {
-                unexpected_any("do must contain at least 2 expressions").left()
-            } else {
-                let exprs = Arc::from_iter(args.drain(..));
-                value(ExprKind::Do { exprs }.to_expr(pos)).right()
-            }
-        })
-}
-
-fn ref_pexp<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    choice((
-        between(attempt(sptoken('(')), sptoken(')'), expr()),
-        spaces().with(qop(reference())),
-    ))
 }
 
 /// `never<T>(args…)` / `never(args…)`: the value that never arrives.
@@ -698,16 +707,8 @@ where
             .map(|_| ModPath::from([literal!("self")])),
         (path_root(), sep_by1(choice((fname(), typname())), string("::"))).then(
             |(mut root, mut v): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
-                // CR claude for eric: [bug] `ident` classes a caseless letter (CJK)
-                // as lowercase but this test needs `is_lowercase()`, so a name that
-                // binds cannot be read: probe `let 名 = 1; println(名)` binds, then
-                // fails to parse at `名`. One "value name" predicate; typexp::typath
-                // has the mirror test.
-                let terminal_is_value = v
-                    .last()
-                    .and_then(|s| s.chars().next())
-                    .map(|c| c.is_lowercase())
-                    .unwrap_or(false);
+                let terminal_is_value =
+                    v.last().and_then(|s| s.chars().next()).is_some_and(is_value_initial);
                 if !terminal_is_value {
                     return unexpected_any("expected a value name").left();
                 }
@@ -727,30 +728,6 @@ where
     (position(), valpath()).map(|(pos, name)| ExprKind::Ref { name }.to_expr(pos))
 }
 
-// CR claude for eric: [bug] This fold is not capped by max_nesting, and it runs
-// whenever `attempt(arith(true))` in expr() fails, including when arith refused
-// an over-deep postfix chain: `x$$…` (1001 `$`) parses though `x.0.0…` (1001)
-// is refused, and 3000 `$` aborts `--check` with a stack overflow (probes).
-fn qop<I, P>(p: P) -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-    P: Parser<I, Output = Expr>,
-{
-    (
-        position(),
-        p,
-        position(),
-        many::<LPooled<Vec<_>>, _, _>((arithexp::qop_suffix(), position())),
-    )
-        .map(|(pos, e, end, mut qops)| {
-            qops.drain(..).fold(e.ending(end), |e, (qop, end)| {
-                arithexp::apply_qop(pos, e, qop).ending(end)
-            })
-        })
-}
-
 /// Rust-style raw strings: `r"…"`, `r#"…"#`, `r##"…"##`, … No escapes,
 /// no interpolation, no newline stripping; the content ends at the first
 /// `"` followed by the opener's hash count.
@@ -760,11 +737,11 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), attempt((token('r'), many::<String, _, _>(token('#')), token('"'))))
-        .then(|(pos, (_, hashes, _)): (_, (_, String, _))| {
+    (position(), attempt((token('r'), many::<CompactString, _, _>(token('#')), token('"'))))
+        .then(|(pos, (_, hashes, _)): (_, (_, CompactString, _))| {
             let n = hashes.len();
             (
-                many::<String, _, _>(choice((
+                many::<CompactString, _, _>(choice((
                     satisfy(|c| c != '"'),
                     attempt(
                         token('"').skip(not_followed_by(
@@ -776,43 +753,34 @@ where
                 token('"'),
                 count_min_max::<Vec<char>, _, _>(n, n, token('#')),
             )
-                .map(move |(s, _, _): (String, _, _)| (pos, s))
+                .map(move |(s, _, _): (CompactString, _, _)| (pos, s))
         })
         .map(|(pos, s)| {
-            ExprKind::Constant(Value::String(s.into()))
+            ExprKind::Constant(Value::String(ArcStr::from(s.as_str())))
                 .to_expr(pos)
                 .written_as(StrForm::Raw)
         })
 }
 
-// CR claude for eric: [bug] `Until` is built outside expr(), so it never gets
-// its end (NOWHERE; the expr_spans corpus has no `until`) and nothing above it
-// is captured: a `// comment` or `#[attr]` line above `until x;` in a seq body
-// is a parse error at `until` (probe), though comments above a seq statement
-// are legal. Run it under leading_decorations and give it `.ending`.
 fn until_expr<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    // `attempt` covers the leading spaces so a non-until body item
-    // backtracks into `expr()`.
-    attempt(
-        spaces().with(
-            (position(), string("until").skip(not_prefix()).with(spaces1()).with(expr()))
-                .map(|(pos, e)| ExprKind::Until(Arc::new(e)).to_expr(pos)),
-        ),
-    )
+    (position(), attempt(string("until").skip(not_prefix()).with(spaces1())).with(expr()))
+        .map(|(pos, e)| ExprKind::Until(Arc::new(e)).to_expr(pos))
 }
 
+/// A seq statement: an expression, or `until e`, with what stands above it.
 fn seq_body_item<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((until_expr(), expr()))
+    (leading_decorations(), choice((until_expr(), expr())), position())
+        .map(|(dec, e, end): (Leading, Expr, _)| decorate(e.ending(end), dec))
 }
 
 /// A brace-delimited seq statement list (the body of `seq`, `try`
@@ -832,54 +800,76 @@ where
     )
 }
 
-enum SeqHead {
-    Trigger(SeqTrigger),
-    Abort(Arc<Expr>),
-    Flush(Arc<Expr>),
-}
-
-/// `abort(e)` or `flush(e)`. `flush` is not a reserved word, so a trigger
-/// that calls a function of that name is parenthesized.
-fn seq_clause<I>(name: &'static str) -> impl Parser<I, Output = Arc<Expr>>
+/// `abort(e)` or `flush(e)`, after a `;` unless it opens the head.
+/// `flush` is not a reserved word, so a trigger that calls a function of
+/// that name is parenthesized.
+fn seq_clause<I>(name: &'static str, first: bool) -> impl Parser<I, Output = Arc<Expr>>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    attempt(spaces().with(string(name)).skip(spaces()).skip(token('(')))
+    let semi = move || match first {
+        true => value(()).left(),
+        false => spaces().with(token(';')).map(|_| ()).right(),
+    };
+    attempt((semi(), spaces(), string(name), spaces(), token('(')))
         .with(expr())
         .skip(sptoken(')'))
         .map(Arc::new)
 }
 
-// CR claude for eric: [structure] The head takes any `;`-list of triggers,
-// aborts and flushes and `seq()` checks the order after the body parsed, so a
-// misordered head loses its message (probe `seq t; flush(t); abort(t) { .. }`
-// says "could not continue" at the closing brace) and a head with no body
-// slurps every following statement as a trigger (the error lands at EOF).
-// Parse `[trigger] [; abort(..)] [; flush(..)]` in order; SeqHead goes.
-/// The `;`-separated head of a seq: `[trigger][; abort(e)][; flush(e)]`.
-fn seq_head<I>() -> impl Parser<I, Output = LPooled<Vec<SeqHead>>>
+/// A seq's trigger: an operator expression, bare (a `{` ahead is the
+/// body), or `let pattern = ` one.
+fn seq_trigger<I>() -> impl Parser<I, Output = SeqTrigger>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    combine::sep_by(
+    let clause = attempt(
+        choice((string("abort"), string("flush"))).skip(spaces()).skip(token('(')),
+    );
+    attempt(spaces().skip(not_followed_by(token('{'))).skip(not_followed_by(clause)).with(
         choice((
-            seq_clause("abort").map(SeqHead::Abort),
-            seq_clause("flush").map(SeqHead::Flush),
-            attempt(
-                spaces().with(not_followed_by(token('{'))).with(choice((
-                    letbind_with(arithexp::arith(false))
-                        .map(|b| SeqHead::Trigger(SeqTrigger::Bind(Arc::new(b)))),
-                    arithexp::arith(false)
-                        .map(|e| SeqHead::Trigger(SeqTrigger::Expr(Arc::new(e)))),
-                ))),
-            ),
+            (letbind_with(arithexp::arith(false)), position()).then(|(b, pos)| match b.rec {
+                true => grow::refuse(pos, "a seq trigger's `let` cannot be `rec`").right(),
+                false => value(SeqTrigger::Bind(Arc::new(b))).left(),
+            }),
+            arithexp::arith(false).map(|e| SeqTrigger::Expr(Arc::new(e))),
         )),
-        attempt(spaces().with(token(';'))),
-    )
+    ))
+}
+
+/// The head of a seq, in order: `[trigger][; abort(e)][; flush(e)]`.
+fn seq_head<I>(
+    queued: bool,
+) -> impl Parser<I, Output = (Option<SeqTrigger>, Option<Arc<Expr>>, Option<Arc<Expr>>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    optional(seq_trigger()).then(move |trigger| {
+        let first = trigger.is_none();
+        optional(seq_clause("abort", first)).then(move |abort| {
+            let trigger = trigger.clone();
+            let flush = seq_clause("flush", first && abort.is_none());
+            (optional(flush), position(), optional(attempt(sptoken(';'))), position()).then(
+                move |(flush, at_flush, semi, at_semi)| {
+                    if semi.is_some() {
+                        grow::refuse(at_semi, "a seq head is `[trigger][; abort(..)][; flush(..)]`")
+                            .right()
+                    } else if flush.is_some() && !queued {
+                        grow::refuse(at_flush, "`flush(..)` is legal only in a seqq head")
+                            .right()
+                    } else {
+                        value((trigger.clone(), abort.clone(), flush)).left()
+                    }
+                },
+            )
+        })
+    })
 }
 
 pub(super) fn seq<I>() -> impl Parser<I, Output = Expr>
@@ -893,47 +883,20 @@ where
         choice((
             attempt(string("seqq").skip(not_prefix())).map(|_| true),
             attempt(string("seq").skip(not_prefix())).map(|_| false),
-        )),
-        seq_head(),
+        ))
+        .then(|queued| seq_head(queued).map(move |head| (queued, head))),
         seq_stmts(),
+        position(),
     )
-        .then(
-            |(pos, queued, mut head, mut body): (
-                _,
-                _,
-                LPooled<Vec<SeqHead>>,
-                LPooled<Vec<Expr>>,
-            )| {
-                let (mut trigger, mut abort, mut flush) = (None, None, None);
-                for (i, item) in head.drain(..).enumerate() {
-                    let in_order = match item {
-                        SeqHead::Trigger(t) => i == 0 && trigger.replace(t).is_none(),
-                        SeqHead::Abort(e) => {
-                            flush.is_none() && abort.replace(e).is_none()
-                        }
-                        SeqHead::Flush(e) => flush.replace(e).is_none(),
-                    };
-                    if !in_order {
-                        return unexpected_any(
-                            "a seq head is [trigger][; abort(..)][; flush(..)]",
-                        )
-                        .left();
-                    }
-                }
-                if body.is_empty()
-                    || (body.len() == 1 && matches!(body[0].kind, ExprKind::NoOp))
-                {
-                    unexpected_any("a seq block must contain at least one step").left()
-                } else {
-                    let body = Arc::from_iter(body.drain(..));
-                    value(
-                        ExprKind::Seq { queued, trigger, abort, flush, body }
-                            .to_expr(pos),
-                    )
-                    .right()
-                }
-            },
-        )
+        .then(|(pos, (queued, (trigger, abort, flush)), mut body, end)| {
+            if body.iter().all(|e: &Expr| matches!(e.kind, ExprKind::NoOp)) {
+                grow::refuse(end, "a seq block must contain at least one step").right()
+            } else {
+                let body = Arc::from_iter(body.drain(..));
+                value(ExprKind::Seq { queued, trigger, abort, flush, body }.to_expr(pos))
+                    .left()
+            }
+        })
 }
 
 fn select<I>() -> impl Parser<I, Output = Expr>
@@ -985,10 +948,12 @@ where
         .map(|(pos, typ, e)| ExprKind::TypeCast { expr: Arc::new(e), typ }.to_expr(pos))
 }
 
-// CR claude for eric: [structure] "unique names, sorted by name" is written three
-// times (here, typexp::structtyp, patternexp::struct_pattern), each building an
-// AHashSet and sorting with `sort_by_key(|..| n.clone())`, an ArcStr clone per
-// comparison. One helper: `sort_by` on the name, then a `windows(2)` check.
+/// Sort `items` by name; false when a name repeats.
+fn sort_unique<T>(items: &mut [T], name: impl Fn(&T) -> &str) -> bool {
+    items.sort_by(|a, b| name(a).cmp(name(b)));
+    items.windows(2).all(|w| name(&w[0]) != name(&w[1]))
+}
+
 /// The `name: value, name, ..` field list of a struct literal or a
 /// functional update: names unique, sorted by name; decorations above a
 /// field attach to its value.
@@ -1008,7 +973,8 @@ where
         .then(|(dec, pos, name, end, v): (Leading, _, ArcStr, _, Option<Expr>)| {
             let v = match v {
                 Some(v) => v,
-                None if RESERVED_BINDING.contains(&name.as_str()) => {
+                // routine: a block's first statement may begin with a keyword
+                None if is_reserved_binding(&name) => {
                     return unexpected_any(
                         "a reserved word field needs the explicit `name: value` form",
                     )
@@ -1021,15 +987,12 @@ where
             };
             value((name, decorate(v, dec))).right()
         });
-    sep_by1_tok(field, csep(), token('}')).then(
-        |mut fields: LPooled<Vec<(ArcStr, Expr)>>| {
-            let names = fields.iter().map(|(n, _)| n).collect::<LPooled<AHashSet<_>>>();
-            if names.len() < fields.len() {
-                return unexpected_any("struct fields must be unique").left();
+    (sep_by1_tok(field, csep(), token('}')), position()).and_then(
+        |(mut fields, end): (LPooled<Vec<(ArcStr, Expr)>>, _)| {
+            match sort_unique(&mut fields, |(n, _)| n) {
+                true => Ok(fields),
+                false => Err(grow::refusal::<I>(end, "struct fields must be unique")),
             }
-            drop(names);
-            fields.sort_by_key(|(n, _)| n.clone());
-            value(fields).right()
         },
     )
 }
@@ -1048,27 +1011,95 @@ where
     )
 }
 
-fn map<I>() -> impl Parser<I, Output = Expr>
+/// A struct literal, else a form that shares a first item parsed once: the
+/// empty map `{}`, a map literal, a functional update `{ s with f: v }`,
+/// or a block.
+pub(super) fn brace<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (
-        position(),
-        between(
-            token('{'),
+    /// What follows the first item.
+    enum Tail {
+        Map(Expr, LPooled<Vec<(Expr, Expr)>>),
+        With(LPooled<Vec<(ArcStr, Expr)>>),
+        Block(LPooled<Vec<Expr>>),
+        One,
+    }
+    let entry = || (expr(), spstring("=>").with(expr()));
+    let tail = choice((
+        attempt(spstring("=>"))
+            .with((
+                expr(),
+                optional(csep().with(sep_by_tok(entry(), csep(), attempt(sptoken('}'))))),
+            ))
+            .map(|(v, rest)| Tail::Map(v, rest.unwrap_or_else(LPooled::take))),
+        attempt(spaces1().with(string("with")).skip(space()))
+            .with(struct_fields())
+            .map(Tail::With),
+        semisep()
+            .with(sep_by1_tok_exp(expr(), semisep(), token('}'), |pos| {
+                ExprKind::NoOp.to_expr(pos).ending(pos)
+            }))
+            .map(Tail::Block),
+        produce(|| Tail::One),
+    ));
+    /// The source of a functional update: a name, a `?`/`$` chain on one,
+    /// or anything parenthesized.
+    fn with_source(e: &Expr) -> Option<Expr> {
+        fn chain_on_name(e: &Expr) -> bool {
+            match &e.kind {
+                ExprKind::Ref { .. } => true,
+                ExprKind::Qop(s) | ExprKind::OrNever(s) => chain_on_name(s),
+                _ => false,
+            }
+        }
+        match &e.kind {
+            _ if e.dec.is_some() => None,
+            ExprKind::ExplicitParens(e) => Some((**e).clone()),
+            _ if chain_on_name(e) => Some(e.clone()),
+            _ => None,
+        }
+    }
+    choice((
+        attempt(structure()),
+        (
+            position(),
+            token('{').skip(spaces()).with(optional((expr(), tail))),
+            position(),
             sptoken('}'),
-            sep_by_tok(
-                (expr(), spstring("=>").with(expr())),
-                csep(),
-                attempt(sptoken('}')),
-            ),
-        ),
-    )
-        .map(|(pos, mut args): (_, LPooled<Vec<(Expr, Expr)>>)| {
-            ExprKind::Map { args: Arc::from_iter(args.drain(..)) }.to_expr(pos)
-        })
+        )
+            .then(|(pos, body, end, _)| {
+                let kind = match body {
+                    None => ExprKind::Map { args: Arc::from_iter([]) },
+                    Some((k, Tail::Map(v, mut rest))) => ExprKind::Map {
+                        args: Arc::from_iter(std::iter::once((k, v)).chain(rest.drain(..))),
+                    },
+                    Some((source, Tail::With(mut fields))) => match with_source(&source) {
+                        None => {
+                            return grow::refuse(
+                                end,
+                                "a functional update's source is a name or parenthesized",
+                            )
+                            .right();
+                        }
+                        Some(source) => ExprKind::StructWith(StructWithExpr {
+                            source: Arc::new(source),
+                            replace: Arc::from_iter(fields.drain(..)),
+                        }),
+                    },
+                    Some((first, Tail::Block(mut rest))) => ExprKind::Do {
+                        exprs: Arc::from_iter(std::iter::once(first).chain(rest.drain(..))),
+                    },
+                    Some((_, Tail::One)) => {
+                        return grow::refuse(end, "a block must contain at least 2 expressions")
+                            .right();
+                    }
+                };
+                value(kind.to_expr(pos)).left()
+            }),
+    ))
 }
 
 fn variant<I>() -> impl Parser<I, Output = Expr>
@@ -1114,34 +1145,6 @@ where
         })
 }
 
-fn structwith<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (
-        position(),
-        between(
-            token('{'),
-            sptoken('}'),
-            (
-                ref_pexp().skip(space()).skip(spstring("with")).skip(space()),
-                struct_fields(),
-            ),
-        ),
-    )
-        .map(
-            |(pos, (source, mut fields)): (_, (Expr, LPooled<Vec<(ArcStr, Expr)>>))| {
-                ExprKind::StructWith(StructWithExpr {
-                    source: Arc::new(source),
-                    replace: Arc::from_iter(fields.drain(..)),
-                })
-                .to_expr(pos)
-            },
-        )
-}
-
 fn catch_stmt<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
@@ -1180,9 +1183,18 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
+    fn empty(b: &[Expr]) -> bool {
+        b.iter().all(|e| matches!(e.kind, ExprKind::NoOp))
+    }
+    let block = |what: &'static str| {
+        (spaces().with(seq_stmts()), position()).then(move |(b, end)| match empty(&b) {
+            true => grow::refuse(end, what).right(),
+            false => value(b).left(),
+        })
+    };
     (
         position().skip(attempt(string("try").skip(not_prefix()))),
-        spaces().with(seq_stmts()),
+        block("a try body must contain at least one step"),
         spaces().skip(string("with").skip(not_prefix())),
         between(
             sptoken('('),
@@ -1190,21 +1202,18 @@ where
             (
                 spaces().with(choice((
                     attempt(
-                        token('_').skip(look_ahead(choice((sptoken(')'), sptoken(':'))))),
+                        (position(), token('_'))
+                            .skip(look_ahead(choice((sptoken(')'), sptoken(':'))))),
                     )
-                    // CR claude for eric: [structure] The `with(e)` bind is a bare
-                    // ArcStr (and `ArcStr::from("_")` allocates for a literal) where
-                    // `catch(e)` binds a `Name`: a declared name with no position, so
-                    // the LSP cannot place it. TryWithExpr.bind wants a Name.
-                    .map(|_| ArcStr::from("_")),
-                    fname(),
+                    .map(|(pos, _)| Name::written(literal!("_"), pos)),
+                    name(),
                 ))),
                 spaces().with(optional(token(':').with(typ()))),
             ),
         ),
-        spaces().with(seq_stmts()),
+        block("a with body must contain at least one step"),
     )
-        .then(
+        .map(
             |(pos, mut body, _, (bind, constraint), mut handler): (
                 _,
                 LPooled<Vec<Expr>>,
@@ -1212,47 +1221,26 @@ where
                 _,
                 LPooled<Vec<Expr>>,
             )| {
-                let empty = |b: &LPooled<Vec<Expr>>| {
-                    b.iter().all(|e| matches!(e.kind, ExprKind::NoOp))
-                };
-                if empty(&body) {
-                    unexpected_any("a try body must contain at least one step").left()
-                } else if empty(&handler) {
-                    unexpected_any("a with body must contain at least one step").left()
-                } else {
-                    value(
-                        ExprKind::TryWith(Arc::new(TryWithExpr {
-                            body: Arc::from_iter(body.drain(..)),
-                            bind,
-                            constraint,
-                            handler: Arc::from_iter(handler.drain(..)),
-                        }))
-                        .to_expr(pos),
-                    )
-                    .right()
-                }
+                ExprKind::TryWith(Arc::new(TryWithExpr {
+                    body: Arc::from_iter(body.drain(..)),
+                    bind,
+                    constraint,
+                    handler: Arc::from_iter(handler.drain(..)),
+                }))
+                .to_expr(pos)
             },
         )
 }
 
-fn byref<I>() -> impl Parser<I, Output = Expr>
+/// `&|x| ..`: the one reference `arith` cannot read, a lambda's.
+fn byref_lambda<I>() -> impl Parser<I, Output = Expr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (position(), token('&').with(expr()))
+    (position(), token('&').with(lambda()))
         .map(|(pos, expr)| ExprKind::ByRef(Arc::new(expr)).to_expr(pos))
-}
-
-fn deref<I>() -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-{
-    (position(), token('*').with(expr()))
-        .map(|(pos, expr)| ExprKind::Deref(Arc::new(expr)).to_expr(pos))
 }
 
 parser! {
@@ -1266,27 +1254,15 @@ parser! {
                 use_module(),
                 catch_stmt(),
                 try_with(),
-                typedef(),
-                trait_decl(),
-                impl_decl(),
+                (position(), typedef()).map(|(pos, td)| ExprKind::TypeDef(td).to_expr(pos)),
+                (position(), trait_decl(false))
+                    .map(|(pos, t)| ExprKind::Trait(Arc::new(t)).to_expr(pos)),
+                (position(), impl_decl()).map(|(pos, i)| ExprKind::Impl(Arc::new(i)).to_expr(pos)),
                 letbind(),
                 attempt(lambda()),
                 attempt(connect()),
                 attempt(arith(true)),
-                // CR claude for eric: [perf] Everything below re-lists a form arith
-                // already covers (`&`, `*`, parens, literal, reference), so it runs
-                // only after arith failed and re-parses its input: a failing paren
-                // nest parses its inside twice per level, `((…(1 +)…))` 16 deep
-                // takes 8s to fail (probe, doubling per level; 20 deep is minutes
-                // in the LSP). Keep only the cases arith cannot parse (`&|x| ..`),
-                // named; byref/deref duplicate arithexp's byref_arith/deref_arith.
-                byref(),
-                qop(deref()),
-                qop((position(), between(token('('), sptoken(')'), expr())).map(|(pos, e)| {
-                    ExprKind::ExplicitParens(Arc::new(e)).to_expr(pos)
-                })),
-                attempt(literal()),
-                qop(reference()),
+                byref_lambda(),
             )),
             position(),
         )
@@ -1294,50 +1270,21 @@ parser! {
     }
 }
 
-// CR claude for eric: [structure] Six entry points (parse, parse_sig, parse_one,
-// parse_fn_type, parse_type, parse_modpath) repeat one easy_parse /
-// note_error_pos / ParserContext block; only parse and parse_sig enter an
-// OriginScope and only three record the Parse phase. One generic runner.
-// parse_modpath also shares its name with resolver::parse_modpath.
-/// Parse one or more expressions followed by optional whitespace and eof.
-pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
+/// Run `p` over all of `text`, trailing whitespace allowed; a failure is
+/// reported against `ori()`.
+fn parse_all<'a, T, P>(
+    text: &'a str,
+    ori: impl FnOnce() -> Arc<Origin>,
+    p: P,
+) -> anyhow::Result<T>
+where
+    P: Parser<easy::Stream<position::Stream<&'a str, SourcePosition>>, Output = T>,
+{
     let _profile = profile::phase(Phase::Parse);
-    let ori = Arc::new(ori);
-    let _scope = OriginScope::enter(ori.clone());
-    let mut r: LPooled<Vec<Expr>> = grow::parsing(&ori.text, || {
-        // CR claude for eric: [bug] The terminator is looked for before whitespace
-        // is skipped, so an empty file parses but "\n\n" is a parse error, and so
-        // is a .gxi holding one newline (parse_sig; probes). seq_stmts and
-        // do_block share it: `seq t {}` and `seq t { }` fail differently.
-        sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
-            ExprKind::NoOp.to_expr(pos).ending(pos)
-        })
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(&*ori.text))
-        .map(|(r, _)| r)
-        .map_err(|e| {
-            grow::note_error_pos(e.position);
-            e
-        })
-    })
-    .map_err(|e| {
-        let pos = e.pos;
-        anyhow::Error::msg(e).context(ParserContext { ori: ori.clone(), pos })
-    })?;
-    Ok(Arc::from_iter(r.drain(..)))
-}
-
-/// Parse one or more signature items followed by optional whitespace and eof.
-pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
-    let _profile = profile::phase(Phase::Parse);
-    let ori = Arc::new(ori);
-    let _scope = OriginScope::enter(ori.clone());
-    let mut r: LPooled<Vec<SigItem>> = grow::parsing(&ori.text, || {
-        sep_by1_tok(sig_item(), semisep(), eof())
-            .skip(spaces())
+    grow::parsing(text, || {
+        p.skip(spaces())
             .skip(eof())
-            .easy_parse(position::Stream::new(&*ori.text))
+            .easy_parse(position::Stream::new(text))
             .map(|(r, _)| r)
             .map_err(|e| {
                 grow::note_error_pos(e.position);
@@ -1346,102 +1293,54 @@ pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
     })
     .map_err(|e| {
         let pos = e.pos;
-        anyhow::Error::msg(e).context(ParserContext { ori: ori.clone(), pos })
-    })?;
+        anyhow::Error::msg(e).context(ParserContext { ori: ori(), pos })
+    })
+}
+
+/// Parse the expressions of a file.
+pub fn parse(ori: Origin) -> anyhow::Result<Arc<[Expr]>> {
+    let ori = Arc::new(ori);
+    let _scope = OriginScope::enter(ori.clone());
+    let items = sep_by1_tok_exp(expr(), semisep(), eof(), |pos| {
+        ExprKind::NoOp.to_expr(pos).ending(pos)
+    });
+    let mut r: LPooled<Vec<Expr>> = parse_all(&ori.text, || ori.clone(), items)?;
+    Ok(Arc::from_iter(r.drain(..)))
+}
+
+/// Parse the items of an interface file, which may have none.
+pub fn parse_sig(ori: Origin) -> anyhow::Result<Sig> {
+    let ori = Arc::new(ori);
+    let _scope = OriginScope::enter(ori.clone());
+    let items = sep_by_tok(sig_item(), semisep(), attempt(spaces().with(eof())));
+    let mut r: LPooled<Vec<SigItem>> = parse_all(&ori.text, || ori.clone(), items)?;
     Ok(Sig { toplevel: true, items: Arc::from_iter(r.drain(..)) })
+}
+
+fn text_origin(s: &str) -> impl FnOnce() -> Arc<Origin> + '_ {
+    move || Arc::new(Origin::unspecified(s))
 }
 
 /// Parse one and only one expression.
 pub fn parse_one(s: &str) -> anyhow::Result<Expr> {
-    let _profile = profile::phase(Phase::Parse);
-    grow::parsing(s, || {
-        expr()
-            .skip(spaces())
-            .skip(eof())
-            .easy_parse(position::Stream::new(s))
-            .map(|(r, _)| r)
-            .map_err(|e| {
-                grow::note_error_pos(e.position);
-                e
-            })
-    })
-    .map_err(|e| {
-        let pos = e.pos;
-        anyhow::Error::msg(e)
-            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
-    })
+    parse_all(s, text_origin(s), expr())
 }
 
 #[cfg(test)]
 pub fn test_parse_mapref(s: &str) -> anyhow::Result<Expr> {
-    arithexp::arith_term(true)
-        .skip(spaces())
-        .skip(eof())
-        .easy_parse(position::Stream::new(&*s))
-        .map(|(r, _)| r)
-        .map_err(|e| {
-            anyhow::anyhow!("{e}").context(ParserContext {
-                ori: Arc::new(Origin::from_str(s)),
-                pos: e.position,
-            })
-        })
+    parse_all(s, text_origin(s), arithexp::arith_term(true))
 }
 
 /// Parse one fntype expression
 pub fn parse_fn_type(s: &str) -> anyhow::Result<FnType> {
-    grow::parsing(s, || {
-        fntype()
-            .skip(spaces())
-            .skip(eof())
-            .easy_parse(position::Stream::new(s))
-            .map(|(r, _)| r)
-            .map_err(|e| {
-                grow::note_error_pos(e.position);
-                e
-            })
-    })
-    .map_err(|e| {
-        let pos = e.pos;
-        anyhow::Error::msg(e)
-            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
-    })
+    parse_all(s, text_origin(s), fntype())
 }
 
 /// Parse one type expression
 pub fn parse_type(s: &str) -> anyhow::Result<Type> {
-    grow::parsing(s, || {
-        typ()
-            .skip(spaces())
-            .skip(eof())
-            .easy_parse(position::Stream::new(s))
-            .map(|(r, _)| r)
-            .map_err(|e| {
-                grow::note_error_pos(e.position);
-                e
-            })
-    })
-    .map_err(|e| {
-        let pos = e.pos;
-        anyhow::Error::msg(e)
-            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
-    })
+    parse_all(s, text_origin(s), typ())
 }
 
-pub(super) fn parse_modpath(s: &str) -> anyhow::Result<ModPath> {
-    grow::parsing(s, || {
-        modpath()
-            .skip(spaces())
-            .skip(eof())
-            .easy_parse(position::Stream::new(s))
-            .map(|(r, _)| r)
-            .map_err(|e| {
-                grow::note_error_pos(e.position);
-                e
-            })
-    })
-    .map_err(|e| {
-        let pos = e.pos;
-        anyhow::Error::msg(e)
-            .context(ParserContext { ori: Arc::new(Origin::from_str(s)), pos })
-    })
+pub(super) fn parse_path(s: &str) -> anyhow::Result<ModPath> {
+    parse_all(s, text_origin(s), modpath())
 }

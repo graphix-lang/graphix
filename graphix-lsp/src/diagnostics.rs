@@ -25,9 +25,9 @@ pub fn error_location(err: &anyhow::Error) -> ErrorLocation {
     if let Some(pc) = err.downcast_ref::<ParserContext>() {
         return location(&pc.ori.source, pc.pos, WrittenAt::NOWHERE);
     }
-    let site = err.downcast_ref::<ErrorSite>().map(|s| &s.0);
-    match site.or_else(|| err.downcast_ref::<ErrorContext>()) {
-        Some(ec) => location(&ec.0.ori.source, ec.0.pos, ec.0.end),
+    let site = err.downcast_ref::<ErrorSite>().map(|s| s.expr());
+    match site.or_else(|| err.downcast_ref::<ErrorContext>().map(|c| c.expr())) {
+        Some(e) => location(&e.ori.source, e.pos, e.end),
         None => ErrorLocation::default(),
     }
 }
@@ -37,7 +37,7 @@ fn location(source: &Source, pos: SourcePosition, end: WrittenAt) -> ErrorLocati
         Source::File(p) => Some(p.clone()),
         _ => None,
     };
-    let end = (end.0 != WrittenAt::NOWHERE.0).then(|| zero_based(end.0));
+    let end = end.get().map(zero_based);
     ErrorLocation { position: Some(zero_based(pos)), end, file }
 }
 

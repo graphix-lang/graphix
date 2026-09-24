@@ -1,17 +1,23 @@
 use super::{
-    csep, fldname, fname, grow::grow, ident, not_prefix, path_root, sep_by_tok,
-    sep_by1_tok, spaces, spaces1, spstring, sptoken, typname,
+    csep, fldname, fname,
+    grow::{grow, refuse},
+    ident,
+    lambdaexp::{LABELED_FIRST, labeled_first},
+    not_prefix, path_root, sep_by_tok, sep_by1_tok, sort_unique, spaces, spaces1,
+    spstring, sptoken, typname,
 };
 use crate::{
-    expr::{Expr, ExprKind, ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt},
+    expr::{
+        ModPath, Name, TypeDefBody, TypeDefExpr, WrittenAt, get_origin,
+    },
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, TypeRef},
 };
-use ahash::AHashSet;
+use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
 use combine::{
     ParseError, Parser, RangeStream, attempt, between, choice, look_ahead,
     not_followed_by, optional,
-    parser::char::{alpha_num, string},
+    parser::char::string,
     position, sep_by1,
     stream::{Range, position::SourcePosition},
     token, unexpected_any, value,
@@ -19,6 +25,7 @@ use combine::{
 use netidx_core::utils::Either;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
+use std::str::FromStr;
 use triomphe::Arc;
 
 pub(super) fn typath<I>() -> impl Parser<I, Output = ModPath>
@@ -33,62 +40,33 @@ where
     )
         .then(
             |(mut root, mut parts): (LPooled<Vec<ArcStr>>, LPooled<Vec<ArcStr>>)| {
-                // CR claude for eric: [dead] `sep_by1` never yields zero parts and
-                // `ident` never an empty name: both refusals are unreachable.
-                if parts.len() == 0 {
-                    unexpected_any("empty type path").left()
+                let capitalized = parts
+                    .last()
+                    .and_then(|p| p.chars().next())
+                    .is_some_and(char::is_uppercase);
+                if capitalized {
+                    root.extend(parts.drain(..));
+                    value(ModPath::from(root.drain(..))).right()
                 } else {
-                    match parts.last().unwrap().chars().next() {
-                        None => unexpected_any("empty name").left(),
-                        Some(c) if c.is_lowercase() => {
-                            unexpected_any("type names must be capitalized").left()
-                        }
-                        Some(_) => {
-                            root.extend(parts.drain(..));
-                            value(ModPath::from(root.drain(..))).right()
-                        }
-                    }
+                    unexpected_any("type names must be capitalized").left()
                 }
             },
         )
 }
 
-// CR claude for eric: [structure] A third spelling of the primitive names
-// (after mod.rs TYPE_KEYWORDS and netidx's `Typ::name`), with `attempt`s placed
-// by shared prefix; `ident(false)` then `Typ::from_str` over the lowercase names
-// says it once.
+/// A primitive type's name. `map` and `abstract` name no type here.
 fn typeprim<I>() -> impl Parser<I, Output = Typ>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    choice((
-        string("string").map(|_| Typ::String),
-        string("error").map(|_| Typ::Error),
-        string("array").map(|_| Typ::Array),
-        string("null").map(|_| Typ::Null),
-        attempt(string("i8")).map(|_| Typ::I8),
-        attempt(string("i16")).map(|_| Typ::I16),
-        attempt(string("i32")).map(|_| Typ::I32),
-        string("i64").map(|_| Typ::I64),
-        attempt(string("u8")).map(|_| Typ::U8),
-        attempt(string("u16")).map(|_| Typ::U16),
-        attempt(string("u32")).map(|_| Typ::U32),
-        string("u64").map(|_| Typ::U64),
-        attempt(string("v32")).map(|_| Typ::V32),
-        string("v64").map(|_| Typ::V64),
-        attempt(string("z32")).map(|_| Typ::Z32),
-        string("z64").map(|_| Typ::Z64),
-        attempt(string("f32")).map(|_| Typ::F32),
-        string("f64").map(|_| Typ::F64),
-        attempt(string("decimal")).map(|_| Typ::Decimal),
-        attempt(string("datetime")).map(|_| Typ::DateTime),
-        string("duration").map(|_| Typ::Duration),
-        attempt(string("bytes")).map(|_| Typ::Bytes),
-        string("bool").map(|_| Typ::Bool),
-    ))
-    .skip(not_prefix())
+    ident(false).then(|s| match Typ::from_str(&s) {
+        Ok(t) if t.name() == s && !matches!(t, Typ::Map | Typ::Abstract) => {
+            value(t).left()
+        }
+        _ => unexpected_any("a primitive type").right(),
+    })
 }
 
 /// A type variable's bound: one type, or a `+`-joined conjunction of
@@ -105,15 +83,34 @@ where
 /// Flatten `(tvar, bounds)` pairs into one `(tvar, type)` pair per
 /// conjunct, the shape every constraint consumer takes.
 pub(super) fn flatten_bounds(
-    mut cs: LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>,
+    cs: impl IntoIterator<Item = (TVar, LPooled<Vec<Type>>)>,
 ) -> LPooled<Vec<(TVar, Type)>> {
     let mut out: LPooled<Vec<(TVar, Type)>> = LPooled::take();
-    for (tv, mut bs) in cs.drain(..) {
-        for b in bs.drain(..) {
-            out.push((tv.clone(), b));
-        }
+    for (tv, mut bs) in cs {
+        out.extend(bs.drain(..).map(|b| (tv.clone(), b)));
     }
     out
+}
+
+/// `'a: A + B`: a type variable and its bound.
+pub(super) fn tvar_bound<I>() -> impl Parser<I, Output = (TVar, LPooled<Vec<Type>>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (spaces().with(tvar()).skip(sptoken(':')), bound())
+}
+
+/// `'a`, or `'a: A + B`.
+pub(super) fn tvar_opt_bound<I>()
+-> impl Parser<I, Output = (TVar, Option<LPooled<Vec<Type>>>)>
+where
+    I: RangeStream<Token = char, Position = SourcePosition>,
+    I::Error: ParseError<I::Token, I::Range, I::Position>,
+    I::Range: Range,
+{
+    (spaces().with(tvar()), optional(attempt(sptoken(':')).with(bound())))
 }
 
 fn fnconstraints<I>() -> impl Parser<I, Output = LPooled<Vec<(TVar, Type)>>>
@@ -126,14 +123,11 @@ where
         .with(optional(between(
             token('<'),
             sptoken('>'),
-            sep_by1_tok(
-                (spaces().with(tvar()).skip(sptoken(':')), bound()),
-                csep(),
-                token('>'),
-            ),
+            sep_by1_tok(tvar_bound(), csep(), token('>')),
         )))
-        .map(|cs: Option<LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>>| {
-            flatten_bounds(cs.unwrap_or_else(LPooled::take))
+        .map(|cs: Option<LPooled<Vec<(TVar, LPooled<Vec<Type>>)>>>| match cs {
+            Some(mut cs) => flatten_bounds(cs.drain(..)),
+            None => LPooled::take(),
         })
 }
 
@@ -190,13 +184,11 @@ where
         token('('),
         sptoken(')'),
         sep_by_tok(
-            spaces().then(|_| {
-                choice((
-                    string("@args:").with(typ()).map(|e| Either::Right(e)),
-                    fnlabeled().map(Either::Left),
-                    fnpositional().map(Either::Left),
-                ))
-            }),
+            spaces().with(choice((
+                string("@args:").with(typ()).map(|e| Either::Right(e)),
+                fnlabeled().map(Either::Left),
+                fnpositional().map(Either::Left),
+            ))),
             csep(),
             attempt(sptoken(')')),
         ),
@@ -209,11 +201,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    // CR claude for eric: [style] This is `not_prefix()` spelled out; also
-    // `ahash::AHashMap` and `crate::expr::get_origin()` (typref) are written in
-    // full, and `spaces().then(|_| ..)` (fnargs, typedef, traitexp::impl_decl)
-    // is `spaces().with(..)`.
-    attempt(string("fn").skip(not_followed_by(choice((token('_'), alpha_num())))))
+    attempt(string("fn").skip(not_prefix()))
         .with((
             fnconstraints(),
             fnargs(),
@@ -239,49 +227,36 @@ where
                 Either::Left(t) => t,
                 Either::Right(_) => unreachable!(),
             }));
-            let mut anon = false;
-            for a in args.iter() {
-                if anon && a.is_labeled() {
-                    return unexpected_any(
-                        "anonymous args must appear after labeled args",
-                    )
-                    .left();
-                }
-                anon |= a.is_positional();
+            if !labeled_first(args.iter().map(|a| a.is_labeled())) {
+                return unexpected_any(LABELED_FIRST).left();
             }
             let explicit_throws = throws.is_some();
             let throws = throws.unwrap_or(Type::Bottom);
-            let ft = FnType {
-                args,
-                vargs,
-                rtype,
-                throws,
-                explicit_throws,
-                quantifiers: quantifier_names(constraints.iter().map(|(tv, _)| tv)),
-                ..Default::default()
-            };
-            // Alias the signature's same-named tvars to the quantifier tvars
-            // first so each conjunct lands in the one cell every occurrence
-            // shares.
-            {
-                let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
-                for (tv, _) in constraints.iter() {
-                    known.insert(tv.name.clone(), tv.clone());
-                }
-                ft.alias_tvars(&mut known);
-                for (tv, tc) in constraints.iter() {
-                    // CR claude for eric: [risk] a constraint that names its own quantifier (`'a:
-                    // [i64, Array<'a>]`) is aliased here into a cell whose constraint contains the
-                    // cell itself. Every walk over cell constraints must then carry a cycle guard;
-                    // the syntax codec does not (CR at expr/serialize.rs:168). Either refuse the
-                    // self-reference here or state the invariant where cells are walked.
-                    tc.alias_tvars(&mut known);
-                    tv.add_cell_constraint(tc.clone());
-                }
-            }
-            value(ft).right()
+            let ft = FnType { args, vargs, rtype, throws, explicit_throws, ..Default::default() };
+            value(declared_fn_type(ft, &constraints)).right()
         })
 }
+
+/// `ft` declaring `constraints`: its quantifiers are their names in source
+/// order, and every same-named tvar of the signature and of a conjunct is
+/// the quantifier's, whose cell holds the conjuncts.
+pub(crate) fn declared_fn_type(mut ft: FnType, constraints: &[(TVar, Type)]) -> FnType {
+    ft.quantifiers = quantifier_names(constraints.iter().map(|(tv, _)| tv));
+    let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    for (tv, _) in constraints.iter() {
+        known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
+    }
+    ft.alias_tvars(&mut known);
+    for (tv, tc) in constraints.iter() {
+        // a conjunct may name its own quantifier (`'a: [i64, Array<'a>]`), so
+        // the cell holds a type holding the cell: a walk over cell
+        // constraints guards the cycle
+        tc.alias_tvars(&mut known);
+        known[&tv.name].add_cell_constraint(tc.clone());
+    }
+    ft
+}
+
 
 /// The declared quantifier names of a signature, in source order,
 /// deduplicated: a `+`-bound variable appears once per conjunct in the
@@ -344,13 +319,11 @@ where
             token('}'),
         ),
     )
-    .then(|mut exps: LPooled<Vec<(SourcePosition, ArcStr, Type)>>| {
-        let s = exps.iter().map(|(_, n, _)| n).collect::<LPooled<AHashSet<_>>>();
-        if s.len() < exps.len() {
-            return unexpected_any("struct field names must be unique").left();
+    .and(position())
+    .then(|(mut exps, end): (LPooled<Vec<(SourcePosition, ArcStr, Type)>>, _)| {
+        if !sort_unique(&mut exps, |(_, n, _)| n) {
+            return refuse(end, "struct field names must be unique").left();
         }
-        drop(s);
-        exps.sort_by_key(|(_, n, _)| n.clone());
         let fields = exps.drain(..).map(|(pos, n, t)| (n, t, WrittenAt(pos)));
         value(Type::Struct(Arc::from_iter(fields))).right()
     })
@@ -403,7 +376,7 @@ where
                     n,
                     params,
                     Some(pos),
-                    Some(crate::expr::get_origin()),
+                    Some(get_origin()),
                 ))
             },
         )
@@ -458,27 +431,27 @@ parser! {
     }
 }
 
-pub(super) fn typedef<I>() -> impl Parser<I, Output = Expr>
+pub(super) fn typedef<I>() -> impl Parser<I, Output = TypeDefExpr>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    (
+    let params = (
+        between(token('<'), sptoken('>'), sep_by1_tok(tvar_opt_bound(), csep(), token('>'))),
         position(),
+    )
+        .then(|(mut ps, end): (LPooled<Vec<(TVar, Option<LPooled<Vec<Type>>>)>>, _)| {
+            let one = |b: &Option<LPooled<Vec<Type>>>| b.as_ref().is_none_or(|b| b.len() == 1);
+            if !ps.iter().all(|(_, b)| one(b)) {
+                return refuse(end, "a type parameter's bound is one type").right();
+            }
+            let ps = ps.drain(..).map(|(tv, b)| (tv, b.and_then(|mut b| b.pop())));
+            value(Arc::<[(TVar, Option<Type>)]>::from_iter(ps)).left()
+        });
+    (
         attempt(string("type").skip(spaces1())).with((position(), typname())),
-        spaces().with(optional(between(
-            token('<'),
-            sptoken('>'),
-            sep_by1_tok(
-                (
-                    spaces().with(tvar()),
-                    spaces().then(|_| optional(token(':').with(typ()))),
-                ),
-                csep(),
-                token('>'),
-            ),
-        ))),
+        spaces().with(optional(params)),
         spaces().with(optional(
             attempt(token('=').skip(not_followed_by(token('>')))).with(choice((
                 attempt(spaces().with(string("Abstract")).skip(not_prefix()))
@@ -488,14 +461,10 @@ where
             ))),
         )),
     )
-        .map(|(pos, (at, name), params, body)| {
+        .map(|((at, name), params, body)| {
             let name = Name::written(name, at);
-            let params = params
-                .map(|mut ps: LPooled<Vec<(TVar, Option<Type>)>>| {
-                    Arc::from_iter(ps.drain(..))
-                })
-                .unwrap_or_else(|| Arc::<[(TVar, Option<Type>)]>::from_iter([]));
+            let params = params.unwrap_or_else(|| Arc::from_iter([]));
             let body = body.unwrap_or(TypeDefBody::Abstract(None));
-            ExprKind::TypeDef(TypeDefExpr { name, params, body }).to_expr(pos)
+            TypeDefExpr { name, params, body }
         })
 }

@@ -3,15 +3,14 @@ use crate::expr::{
     parser::{csep, expr, sep_by_tok, spaces, spstring, sptoken},
 };
 use combine::{
-    ParseError, Parser, RangeStream, attempt, between, choice, look_ahead, many1,
-    optional,
+    ParseError, Parser, RangeStream, attempt, between, many1, optional,
+    error::StreamError,
     parser::char::{digit, string},
     position,
-    stream::{Range, position::SourcePosition},
+    stream::{Range, StreamErrorFor, position::SourcePosition},
     token, unexpected_any, value,
 };
 use compact_str::CompactString;
-use netidx_core::utils::Either;
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -77,29 +76,16 @@ where
     )
 }
 
-/// A constant with its span.
-fn at<I, P>(value: P) -> impl Parser<I, Output = Expr>
-where
-    I: RangeStream<Token = char, Position = SourcePosition>,
-    I::Error: ParseError<I::Token, I::Range, I::Position>,
-    I::Range: Range,
-    P: Parser<I, Output = Value>,
-{
-    (position(), value, position())
-        .map(|(pos, v, end)| ExprKind::Constant(v).to_expr(pos).ending(end))
+/// What `[..]` after an expression selects.
+pub(super) enum Index {
+    /// `[i]`
+    At(Expr),
+    /// `[start..end]`, either bound optional
+    Slice(Option<Expr>, Option<Expr>),
 }
 
-// CR claude for eric: [perf] For a non-literal index the third arm parses the
-// whole expression, fails at the missing `..`, and the fourth parses it again:
-// `a[a[…a[0]…]]` 16 deep takes 4.4s to `graphix fmt` (probe, doubling per
-// level). Parse `optional(expr())` once and branch on `..`.
-// CR claude for eric: [readability] `Either` with Left = slice and Right =
-// index (here and in arithexp's Post::Array) needs this doc to be read; a
-// two-variant enum names the cases.
-/// The `[ idx ]` / `[ start..end ]` postfix suffix. `Right(e)` is a
-/// single-index `ArrayRef`; `Left((start, end))` is an `ArraySlice`.
-pub(super) fn array_index_suffix<I>()
--> impl Parser<I, Output = Either<(Option<Expr>, Option<Expr>), Expr>>
+/// The `[ idx ]` / `[ start..end ]` postfix suffix.
+pub(super) fn array_index_suffix<I>() -> impl Parser<I, Output = Index>
 where
     I: RangeStream<Token = char, Position = SourcePosition>,
     I::Error: ParseError<I::Token, I::Range, I::Position>,
@@ -108,22 +94,11 @@ where
     between(
         token('['),
         sptoken(']'),
-        spaces().with(choice((
-            attempt(at(idx()).skip(look_ahead(sptoken(']')))).map(Either::Right),
-            attempt(
-                (
-                    optional(at(idx())).skip(spstring("..")),
-                    spaces().with(optional(at(idx()))),
-                )
-                    .skip(look_ahead(sptoken(']'))),
-            )
-            .map(Either::Left),
-            attempt((
-                optional(attempt(expr())).skip(spstring("..")),
-                optional(attempt(expr())),
-            ))
-            .map(|(start, end)| Either::Left((start, end))),
-            attempt(expr()).map(|e| Either::Right(e)),
-        ))),
+        (spaces().with(optional(expr())), optional(spstring("..").with(optional(expr())))),
     )
+    .and_then(|(start, range)| match (start, range) {
+        (Some(i), None) => Ok(Index::At(i)),
+        (start, Some(end)) => Ok(Index::Slice(start, end)),
+        (None, None) => Err(StreamErrorFor::<I>::message_static_message("expected an index")),
+    })
 }

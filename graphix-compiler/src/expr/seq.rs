@@ -646,7 +646,7 @@ impl Machine<'_> {
         let handler: SmallVec<[&Expr; 8]> =
             t.handler.iter().filter(|e| !matches!(e.kind, ExprKind::NoOp)).collect();
         let with_entry = self.fresh();
-        let e_cell = self.cells[&(spec.id, t.bind.clone())].0.clone();
+        let e_cell = self.cells[&(spec.id, t.bind.name.clone())].0.clone();
         let mark = self.arms.len();
         self.lower_stmts(&body, entry, next.clone(), sink, visible)?;
         let caught = ArcStr::from(format_compact!("seqtry{}", spec.id.inner()).as_str());
@@ -669,7 +669,7 @@ impl Machine<'_> {
             *arm = block(pos, [jump, inner]);
         }
         let mut wvis = scope(visible);
-        wvis.insert(t.bind.clone(), e_cell);
+        wvis.insert(t.bind.name.clone(), e_cell);
         self.lower_stmts(&handler, with_entry, next, sink, &wvis)
     }
 }
@@ -966,7 +966,7 @@ fn collect_step_binds(e: &Expr, cells: &mut CarriedBinds) -> Result<()> {
     ensure_sufficient(|| match &e.kind {
         ExprKind::TryWith(t) => {
             let cell = ArcStr::from(format_compact!("seqe{}", e.id.inner()).as_str());
-            cells.insert((e.id, t.bind.clone()), (cell, e.pos, None));
+            cells.insert((e.id, t.bind.name.clone()), (cell, e.pos, None));
             for s in t.body.iter().chain(t.handler.iter()) {
                 collect_step_binds(s, cells)?;
             }
@@ -1226,7 +1226,7 @@ fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
             labeled: None,
             pattern: StructurePattern::Bind(x.clone().into()),
             constraint: None,
-            pos,
+            pos: WrittenAt(pos),
         }]),
         vargs: None,
         rtype: None,
@@ -1457,7 +1457,7 @@ fn rewrite_with_inner(
                 }))
             };
             let mut with_map = scope(map);
-            with_map.remove(&t.bind);
+            with_map.remove(&t.bind.name);
             ExprKind::TryWith(Arc::new(TryWithExpr {
                 body: stmts(&t.body, scope(map)),
                 bind: t.bind.clone(),

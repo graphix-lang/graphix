@@ -192,13 +192,16 @@ chose rides beside it as metadata that decides nothing: `WrittenAt` (a
 position that is always equal, hashes to nothing, packs to nothing) on
 struct pattern binds, struct type fields, variant types, every declared
 name (`Name`) and every expression's end, `Expr::pos`
-for struct literal fields, `Expr::str_form` for a string's delimiters.
+for struct literal fields, `Expr::str_form` for a string's delimiters,
+`Comments` (always equal) for the `//` lines above an interface item or
+a trait method.
 **Printing is canonical unless `PrintFlag::AsWritten` is set, and only
 the formatter sets it**: printed types and expressions reach
 program-visible values (a cast error, a null error); `WrittenAt` and
 `str_form` are not part of a session image (`Expr::pos` and comments
 are), and a type is shared by content, so whose written order it carries
-is incidental. What the formatter
+is incidental. A tree holding a comment,
+an attribute or a doc has no single-line form. What the formatter
 does normalize: `i64`/`f64` literals print bare; a run of adjacent
 undecorated `use` statements merges into one per root and visibility, a
 sorted tree with every shared prefix written once; a blank line stands
@@ -540,8 +543,13 @@ blocker profile, not a gap count.
   `sleep()`: a run does not survive its arm's sleep. `--expand` prints the machine. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
 - **Comments** are legal only above an expression, a select arm, an impl
-  method or a struct-literal field; parse errors report the furthest
-  point reached with the source line and a caret.
+  or trait method, a struct-literal field or an interface item; `///`
+  docs only in an interface. Parse errors report the furthest point
+  reached with the source line and a caret, and a refusal its reason.
+- **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
+  comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is
+  left-associative (`8 / 2 * 2` is 8). `BinOp` (`expr/binop.rs`) is the
+  one table.
 
 ## Stack discipline
 
