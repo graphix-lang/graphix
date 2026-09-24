@@ -2,13 +2,9 @@
 //! flags. Each flag is read once per process because several gate
 //! prints on hot paths; set them at launch.
 
-// CR claude for eric: [structure] Several debug flags bypass this module and
-// re-read the environment: GXDBG_CALLRET on every emit (fusion/emit/call.rs:940,
-// lower.rs:82, body.rs:1000), GXDBG_TYPEREF (typ/mod.rs:1470), GRAPHIX_DUMP_CLIF
-// (fusion/emit/jit.rs:252), GRAPHIX_DBG_PERF (perfdbg.rs), GRAPHIX_PROFILE and
-// GRAPHIX_PROFILE_INSTANCES (profile.rs). Declare them all here.
 macro_rules! dbg_flag {
-    ($name:ident, $env:literal) => {
+    ($(#[$m:meta])* $name:ident, $env:literal) => {
+        $(#[$m])*
         pub(crate) fn $name() -> bool {
             static F: std::sync::LazyLock<bool> =
                 std::sync::LazyLock::new(|| std::env::var_os($env).is_some());
@@ -18,15 +14,23 @@ macro_rules! dbg_flag {
 }
 
 dbg_flag!(graphix_dbg_bind, "GRAPHIX_DBG_BIND");
-dbg_flag!(graphix_dbg_bind_bt, "GRAPHIX_DBG_BIND_BT");
 dbg_flag!(graphix_dbg_cycle_bt, "GRAPHIX_DBG_CYCLE_BT");
 dbg_flag!(graphix_dbg_freeze, "GRAPHIX_DBG_FREEZE");
 dbg_flag!(graphix_dbg_invoke, "GRAPHIX_DBG_INVOKE");
 dbg_flag!(graphix_dbg_kernels, "GRAPHIX_DBG_KERNELS");
+dbg_flag!(graphix_dbg_perf, "GRAPHIX_DBG_PERF");
 dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
 dbg_flag!(graphix_dbg_tval, "GRAPHIX_DBG_TVAL");
+dbg_flag!(graphix_dump_clif, "GRAPHIX_DUMP_CLIF");
+dbg_flag!(graphix_profile, "GRAPHIX_PROFILE");
+dbg_flag!(graphix_profile_instances, "GRAPHIX_PROFILE_INSTANCES");
 dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
+dbg_flag!(
+    #[cfg(debug_assertions)]
+    gxdbg_callret,
+    "GXDBG_CALLRET"
+);
 dbg_flag!(gxdbg_cs, "GXDBG_CS");
 dbg_flag!(gxdbg_dync, "GXDBG_DYNC");
 dbg_flag!(gxdbg_ref, "GXDBG_REF");
@@ -45,9 +49,6 @@ dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");
 dbg_flag!(gxdbg_tail, "GXDBG_TAIL");
 dbg_flag!(gxdbg_typeref, "GXDBG_TYPEREF");
 
-// CR claude for eric: [structure] GRAPHIX_DBG_BIND_BT is read into two statics:
-// `graphix_dbg_bind_bt()` is `graphix_dbg_bind_bt_id().is_some()`.
-// Keep only this one.
 /// The value of GRAPHIX_DBG_BIND_BT: a target TVarId for per-cell
 /// write backtraces.
 pub(crate) fn graphix_dbg_bind_bt_id() -> Option<&'static str> {

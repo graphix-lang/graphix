@@ -9,8 +9,8 @@ use super::{
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, Event, ExecCtx, FnArgIdentity, LambdaId,
-    LambdaInstanceId, Node, NodeView, PendingTailCall, PrintFlag, Refs, ResolvingLambda,
-    Rt, Scope, Tag, TagValue, Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
+    LambdaInstanceId, Node, NodeView, PendingTailCall, Refs, ResolvingLambda, Rt, Scope,
+    Tag, TagValue, Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     fusion::{
         self,
@@ -77,7 +77,7 @@ fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
     };
     if info.typ.vargs.is_none()
         || info.typ.args.iter().any(|a| a.is_positional())
-        || !ctx.builtin_effect(info.name.as_str()).is_sync()
+        || !ctx.builtin_effect(info.name.as_str()).kind().is_sync()
     {
         return Ok(());
     }
@@ -1854,12 +1854,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 Type::TVar(tv) => Some(tv.clone()),
                 _ => None,
             };
-            ctx.pending_settles.last_mut().expect("root settle frame").push((
-                ftype.clone(),
-                rtc,
-                defaulted,
-                self.spec.clone(),
-            ));
+            ctx.pending_settles.last_mut().expect("root settle frame").push(
+                crate::PendingSettle {
+                    ftype: ftype.clone(),
+                    rtype: rtc,
+                    defaulted,
+                    spec: self.spec.clone(),
+                },
+            );
         }
         Ok(())
     }

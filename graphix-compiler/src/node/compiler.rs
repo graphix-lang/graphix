@@ -30,6 +30,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use enumflags2::BitFlags;
+use netidx_value::Typ;
 use smallvec::SmallVec;
 
 /// Every per-kind `compile` recurses back through here or through
@@ -229,7 +230,11 @@ fn compile_kind<R: Rt, E: UserEvent>(
             scope,
             top_id,
         ),
-        ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
+        ExprKind::Constant(v) => Ok(Constant::new(
+            v.clone(),
+            Type::Primitive(Typ::get(v).into()),
+            spec.clone(),
+        )),
         ExprKind::Do { exprs } => {
             let scope = scope.append_block("do", spec.id.inner());
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)

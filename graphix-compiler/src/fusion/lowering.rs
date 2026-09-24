@@ -271,7 +271,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         Some(i) => i.clone(),
         None => return None,
     };
-    let fastcall = match ctx.builtin_fastcall(info.name.as_str()) {
+    let fastcall = match ctx.builtin_effect(info.name.as_str()).fastcall() {
         Some(fastcall) => fastcall,
         None => {
             return Some(FusionBlocker {

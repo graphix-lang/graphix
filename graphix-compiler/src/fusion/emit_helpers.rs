@@ -1730,12 +1730,6 @@ thread_local! {
 
     /// The active runtime's [`crate::Control`], set per cycle by
     /// `do_cycle`; null when no cycle is in flight.
-    // CR claude for eric: [risk] Suspected use-after-free: nothing resets it, so
-    // "null when no cycle is in flight" is false. After a runtime drops, the
-    // thread keeps a dangling `*const Control`, and a kernel run outside a cycle
-    // (`compile_callable` updates a freshly fused node in graphix-rt/src/gx.rs)
-    // reads it at its first loop head, or reads another live runtime's flag.
-    // Make it a scoped restoring guard around the cycle (or hold an Arc).
     pub static INTERRUPT_PTR: Cell<*const crate::Control> =
         const { Cell::new(std::ptr::null()) };
 
@@ -1750,10 +1744,33 @@ thread_local! {
     pub static FUSION_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Point `graphix_interrupted` at `control` on the current thread;
-/// called at the start of each cycle since the task may migrate.
-pub fn set_interrupt_ptr(control: &crate::Control) {
-    INTERRUPT_PTR.with(|c| c.set(control as *const crate::Control));
+/// Point the interrupt and stack-budget checks on this thread at
+/// `control` until the guard drops, which restores the previous one. The
+/// caller keeps `control` alive and runs the guarded work on this thread.
+pub fn enter_control(control: &crate::Control) -> ControlGuard {
+    ControlGuard(INTERRUPT_PTR.with(|c| c.replace(control as *const crate::Control)))
+}
+
+pub struct ControlGuard(*const crate::Control);
+
+impl Drop for ControlGuard {
+    fn drop(&mut self) {
+        INTERRUPT_PTR.with(|c| c.set(self.0))
+    }
+}
+
+/// The stack budget of the runtime whose cycle this thread is running;
+/// the default budget outside a cycle.
+pub(crate) fn current_stack_budget() -> usize {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        // SAFETY: see `graphix_interrupted`.
+        if p.is_null() {
+            crate::stack::default_budget()
+        } else {
+            unsafe { (*p).stack_budget() }
+        }
+    })
 }
 
 /// Abort the runtime this thread is running under (the stack budget's

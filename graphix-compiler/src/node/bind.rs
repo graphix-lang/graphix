@@ -103,7 +103,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
         },
     );
     children.push(body);
-    Ok(super::Block::new(false, children.into_boxed_slice(), bspec, scope))
+    Ok(super::Block::new(false, children.into_boxed_slice(), bspec))
 }
 
 /// What `let name = |..| 'builtin` records of the builtin it binds;

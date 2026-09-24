@@ -614,11 +614,9 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         if self.n.is_empty() {
             return produce_constant(ctx, event, &mut self.resident, K::empty);
         }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = K::build(vals.drain(..));
+        let (tag, prods) = gather(ctx, event, &mut self.n);
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let v = K::build(prods.into_iter().map(|tv| tv.value_cloned()));
         self.resident.set(TagValue::tagged(v, tag))
     }
 

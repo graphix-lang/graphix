@@ -4,7 +4,7 @@
 
 use crate::{
     PrintFlag,
-    dbgenv::{graphix_dbg_bind, graphix_dbg_bind_bt},
+    dbgenv::{graphix_dbg_bind, graphix_dbg_bind_bt_id},
     env::Env,
     format_with_flags,
     typ::{
@@ -107,7 +107,7 @@ impl TVar {
                 if graphix_dbg_bind() {
                     eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
                 }
-                if graphix_dbg_bind_bt() {
+                if graphix_dbg_bind_bt_id().is_some() {
                     eprintln!("{}", std::backtrace::Backtrace::force_capture());
                 }
                 cell.binding = Some(Type::Bottom);

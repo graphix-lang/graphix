@@ -264,9 +264,7 @@ fn push_abi_returns(sig: &mut Signature, kernel: &KernelSig) -> Result<()> {
 
 /// Print the CLIF to stderr when `GRAPHIX_DUMP_CLIF` is set.
 fn maybe_dump_clif(func: &cranelift_codegen::ir::Function, label: &str) {
-    static DUMP: std::sync::LazyLock<bool> =
-        std::sync::LazyLock::new(|| std::env::var_os("GRAPHIX_DUMP_CLIF").is_some());
-    if *DUMP {
+    if crate::dbgenv::graphix_dump_clif() {
         eprintln!(";; clif {label}\n{}", func.display());
     }
 }

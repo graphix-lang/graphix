@@ -1188,6 +1188,71 @@ async fn env_accounting_grow_shrink() -> Result<()> {
     Ok(())
 }
 
+// A statement that builds and then fails its typecheck releases what it
+// registered: the REPL keeps running after it.
+#[tokio::test(flavor = "current_thread")]
+async fn failed_statement_releases_refs() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = init(tx).await?;
+    let _x = ctx.rt.compile(ArcStr::from("let x = 1;")).await?;
+    let base = ctx.rt.env_stats().await?;
+    for _ in 0..4 {
+        let r = ctx.rt.compile(ArcStr::from(r#"{ let y = x + 1; y + "a" }"#)).await;
+        if r.is_ok() {
+            bail!("the ill-typed statement compiled")
+        }
+    }
+    let after = ctx.rt.env_stats().await?;
+    ctx.shutdown().await;
+    if after != base {
+        bail!("failed statements leaked: {base:?} -> {after:?}")
+    }
+    Ok(())
+}
+
+// A `~` that paid banked debt through its private variable takes that
+// variable's store entry with it when its slot is deleted: two triggers
+// bank before `v` arrives, one is answered, the other is paid.
+#[tokio::test(flavor = "current_thread")]
+async fn deleted_sample_releases_store() -> Result<()> {
+    use graphix_compiler::{Scope, expr::ModPath};
+
+    let (tx, mut rx) = mpsc::channel(64);
+    let ctx = init(tx).await?;
+    let _first = ctx.rt.compile(ArcStr::from("let arr: Array<i64> = [];")).await?;
+    let res = ctx
+        .rt
+        .compile(ArcStr::from(
+            "array::map(arr, |x| { let v = never(); v <- x; let t = never(); \
+             t <- x; any(x, t) ~ v })",
+        ))
+        .await?;
+    let eid = res.exprs[0].id;
+    let env = ctx.rt.get_env().await?;
+    let arr_id = env
+        .lookup_bind(&Scope::root().lexical, &ModPath::from_iter(["arr"]))?
+        .ok_or_else(|| anyhow::anyhow!("arr not in scope"))?
+        .1
+        .id;
+    let mut bottoms = Vec::new();
+    for _ in 0..3 {
+        ctx.rt.set(arr_id, iota(4))?;
+        await_map_len(&mut rx, eid, 4).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        ctx.rt.set(
+            arr_id,
+            Value::Array(netidx_value::ValArray::from_iter_exact(std::iter::empty())),
+        )?;
+        await_map_len(&mut rx, eid, 0).await?;
+        bottoms.push(ctx.rt.env_stats().await?.store_len);
+    }
+    ctx.shutdown().await;
+    if bottoms.iter().any(|b| *b != bottoms[0]) {
+        bail!("deleted slots leaked store entries: {bottoms:?}")
+    }
+    Ok(())
+}
+
 // Env/reference nodes (TryCatch, Sample, ByRef/Deref, ...) inside an
 // impure callback that captures the outer `k`: each slot must resolve
 // the capture without contaminating a sibling slot.
@@ -1329,6 +1394,33 @@ async fn node_shape_external_scalar() -> Result<()> {
         "root is Fused, a Block spec should not match"
     );
 
+    ctx.shutdown().await;
+    Ok(())
+}
+
+// Every node kind is matched by its own name (fusion off, so the root
+// is the node itself, not the kernel that would replace it).
+#[tokio::test(flavor = "current_thread")]
+async fn node_shape_names_every_kind() -> Result<()> {
+    use graphix_compiler::{CFlag, node_shape::NodeShape};
+    use graphix_package_core::testing::init_with_flags_and_setup;
+
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = init_with_flags_and_setup(
+        tx,
+        crate::TEST_REGISTER,
+        vec![],
+        CFlag::FusionDisabled.into(),
+        |_| {},
+    )
+    .await?;
+    let res = ctx.rt.compile(ArcStr::from(r#""a""#)).await?;
+    let eid = res.exprs[0].id;
+    ctx.rt.match_shape(eid, NodeShape::node("Constant")).await?;
+    assert!(
+        ctx.rt.match_shape(eid, NodeShape::node("Other")).await.is_err(),
+        "a Constant matched the kind Other"
+    );
     ctx.shutdown().await;
     Ok(())
 }

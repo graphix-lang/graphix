@@ -997,7 +997,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                 })
             }
             DefBody::BuiltIn(name) => {
-                let init = match ctx.builtins.get(&**name).copied() {
+                let init = match ctx.builtins.get(&**name).map(|b| b.init) {
                     Some(init) => init,
                     None if ctx.env.lsp_mode => UnknownBuiltIn::init as _,
                     None => bail!("unknown builtin function {name}"),
@@ -1215,7 +1215,8 @@ impl Lambda {
         let (intrinsic_effect, stateless) = match &body {
             DefBody::Expr(_) | DefBody::Collection(_) => (EffectKind::Sync, true),
             DefBody::BuiltIn(name) => {
-                (ctx.builtin_effect(name), ctx.builtin_stateless(name))
+                let effect = ctx.builtin_effect(name);
+                (effect.kind(), effect.is_stateless())
             }
         };
         // No signature ref seeding here: the module tree is mid-registration

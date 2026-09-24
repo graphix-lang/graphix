@@ -327,6 +327,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.give_up_in_flight();
         ctx.rt.unref_var(self.bind_id, self.top_id);
+        ctx.rt.store_remove(&self.bind_id);
         self.handler.delete(ctx);
         if let Some(abort) = &mut self.seq_abort {
             abort.node.delete(ctx);

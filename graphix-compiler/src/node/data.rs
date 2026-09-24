@@ -1,7 +1,7 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather, read_prod};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent, abstract_value, bailat, deref_typ,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    UserEvent, abstract_value, bailat, deref_typ,
     expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
@@ -71,16 +71,15 @@ macro_rules! composite_plumbing {
 
 /// A composite's children gathered and gated: returns from the caller
 /// with `$empty` for a childless one, a bottom, or a ride; otherwise
-/// the values and the tag of the result.
+/// the children's values and the tag of the result.
 macro_rules! gathered {
     ($self:ident, $ctx:ident, $event:ident, $empty:expr) => {{
         if $self.n.is_empty() {
             return super::produce_constant($ctx, $event, &mut $self.resident, || $empty);
         }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather($ctx, $event, &mut $self.n, &mut vals);
-        dense_gate!($self, $ctx, trig, bottom);
-        (vals, if fired { Tag::FIRED } else { Tag::STALE })
+        let (tag, prods) = gather($ctx, $event, &mut $self.n);
+        dense_gate!($self, $ctx, tag.triggers(), tag.is_bottom());
+        (prods.into_iter().map(|tv| tv.value_cloned()), tag)
     }};
 }
 
@@ -166,9 +165,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     composite_plumbing!(Struct);
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (mut vals, tag) =
-            gathered!(self, ctx, event, Value::Array(ValArray::from([])));
-        let iter = self.names.iter().zip(vals.drain(..)).map(|(name, v)| {
+        let (vals, tag) = gathered!(self, ctx, event, Value::Array(ValArray::from([])));
+        let iter = self.names.iter().zip(vals).map(|(name, v)| {
             let name = Value::String(name.clone());
             Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
         });
@@ -653,9 +651,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     composite_plumbing!(Tuple);
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (mut vals, tag) =
-            gathered!(self, ctx, event, Value::Array(ValArray::from([])));
-        let v = Value::Array(ValArray::from_iter_exact(vals.drain(..)));
+        let (vals, tag) = gathered!(self, ctx, event, Value::Array(ValArray::from([])));
+        let v = Value::Array(ValArray::from_iter_exact(vals));
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -760,9 +757,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     composite_plumbing!(Variant);
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (mut vals, tag) =
-            gathered!(self, ctx, event, Value::String(self.tag.clone()));
-        let a = iter::once(Value::String(self.tag.clone())).chain(vals.drain(..));
+        let (vals, tag) = gathered!(self, ctx, event, Value::String(self.tag.clone()));
+        let a = iter::once(Value::String(self.tag.clone())).chain(vals);
         let v = Value::Array(ValArray::from_iter(a));
         self.resident.set(TagValue::tagged(v, tag))
     }

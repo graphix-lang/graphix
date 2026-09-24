@@ -199,9 +199,6 @@ pub struct FusionCtx {
     /// register under it: `Rt::ref_var` is keyed `(BindId, top_id)`, and
     /// a region's interior id would strand the top expression at count 0.
     pub(crate) top_id: Option<ExprId>,
-    /// Declared facts of each registered builtin, keyed by name (from
-    /// `T::EFFECT`). An absent builtin is treated as `Async` + stateful.
-    pub builtin_facts: ahash::AHashMap<&'static str, crate::effects::BuiltinFacts>,
 }
 
 impl FusionCtx {
@@ -219,7 +216,6 @@ impl FusionCtx {
             enabled: true,
             stats: FusionStats::default(),
             top_id: None,
-            builtin_facts: ahash::AHashMap::default(),
         })
     }
 
@@ -307,9 +303,9 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
 }
 
 /// The single definition of "tail position". A body root is a tail
-/// position; tailness propagates through a `Block`'s last child, an
-/// `ExplicitParens`' inner node and every `Select` arm body, and stops
-/// at a `Leaf`. The analysis walks and the kernel emitter must agree on
+/// position; tailness propagates through a `Block`'s last child (unless
+/// a `catch` covers it), an `ExplicitParens`' inner node and every
+/// `Select` arm body, and stops at a `Leaf`. The analysis walks and the kernel emitter must agree on
 /// this set, so all of them match on this enum.
 pub(crate) enum TailPosition<'a, R: Rt, E: UserEvent> {
     Block(&'a node::Block<R, E>),
@@ -322,7 +318,7 @@ pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
     node: &'a Node<R, E>,
 ) -> TailPosition<'a, R, E> {
     match node.view() {
-        NodeView::Block(b) => TailPosition::Block(b),
+        NodeView::Block(b) if !b.value_is_caught() => TailPosition::Block(b),
         NodeView::ExplicitParens(ep) => TailPosition::Parens(ep),
         NodeView::Select(s) => TailPosition::Select(s),
         _ => TailPosition::Leaf(node),
@@ -332,10 +328,10 @@ pub(crate) fn tail_position<'a, R: Rt, E: UserEvent>(
 /// Call `f` on each tail-position leaf of `node`; returns whether any
 /// call returned true. Every Select arm is visited (no short-circuit),
 /// and `on_select` fires for each Select on the tail spine with a true leaf.
-pub(crate) fn for_each_tail_leaf<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    f: &mut impl FnMut(&Node<R, E>) -> bool,
-    on_select: &mut impl FnMut(&node::select::Select<R, E>),
+pub(crate) fn for_each_tail_leaf<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+    f: &mut impl FnMut(&'a Node<R, E>) -> bool,
+    on_select: &mut impl FnMut(&'a node::select::Select<R, E>),
 ) -> bool {
     match tail_position(node) {
         TailPosition::Block(b) => {

@@ -191,3 +191,40 @@ run!(
     tail_recursive_pure_instances,
     TAIL_RECURSIVE_PURE_INSTANCES,
     |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:6, i64:12]"; graphix_package_core::testing::FuseExpect::Jit);
+
+// A labeled formal keeps the self-call off the loop, so the recursion
+// is not constant-space although every self-call is in tail position.
+const TAIL_RECURSIVE_LABELED: &str = r#"
+{
+  #[tail_recursive]
+  let rec f = |#acc: i64 = 0, n: i64| -> i64 select n { 0 => acc, _ => f(#acc: acc + 1, n - 1) };
+  f(10)
+}
+"#;
+
+run!(tail_recursive_labeled, TAIL_RECURSIVE_LABELED, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
+// The instance `h` recurses through is mutually recursive; the tail
+// instance over `|x| x` does not stand in for it.
+const TAIL_RECURSIVE_MUTUAL_INSTANCE: &str = r#"
+{
+  #[tail_recursive]
+  let rec f = |g: fn(x: i64) -> i64, n: i64| -> i64 select n { 0 => g(0), _ => f(g, n - 1) };
+  let rec h = |x: i64| -> i64 select x { 0 => 0, _ => f(h, x - 1) + 1 };
+  (f(h, 10), f(|x| x, 10))
+}
+"#;
+
+run!(tail_recursive_mutual_instance, TAIL_RECURSIVE_MUTUAL_INSTANCE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
+// A lambda literal called in place is an instance like any other: its
+// async body makes the enclosing function async.
+const SYNC_ON_ASYNC_LITERAL_CALL: &str = r#"
+{
+  #[sync]
+  let h = |n: i64| (|m: i64| throttle(#rate: duration:0.001s, m))(n);
+  h(1)
+}
+"#;
+
+run!(sync_on_async_literal_call, SYNC_ON_ASYNC_LITERAL_CALL, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);

@@ -1,21 +1,11 @@
-// CR claude for eric: [style] `crate::image` is imported in two statements apart
-// from the `crate::{..}` group, and paths used more than once stay spelled out:
-// `crate::image::{slice_len, slice_encode, scope_*}` (Block) although `image` is
-// imported, `crate::fusion::fuse` (ExplicitParens) although `fuse` is imported,
-// `crate::expr::UseItem` x2, `std::sync::OnceLock` x2, and `super::node::read_var`
-// (ConnectDeref::update) for this module's own `read_var`. Merge into one group.
-use crate::image::ImageBuf;
-use crate::image::{
-    self,
-    nodes::{
-        NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-    },
-};
 use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
-    env::{Env, ImportEntry},
-    expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, TypeDefBody},
+    env::{self, Env, ImportEntry, UseAnchor},
+    expr::{
+        At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody,
+        UseItem,
+    },
     fusion::{
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_const_node,
@@ -24,17 +14,26 @@ use crate::{
         fuse,
     },
     ide::{ModuleRefSite, ReferenceSite},
+    image::{
+        self, ImageBuf,
+        nodes::{
+            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+        },
+    },
     typ::{TVal, TVar, Type},
 };
 use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
-use bytes::{Buf, BufMut};
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::{
+    pack::{Pack, PackError},
+    path::Path,
+};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
-use std::sync::LazyLock;
+use smallvec::SmallVec;
+use std::{mem, sync::LazyLock};
 use triomphe::Arc;
 
 pub(crate) mod array;
@@ -150,9 +149,6 @@ macro_rules! bailat {
 /// typedef.
 pub const MAX_ALIAS_DEPTH: usize = 64;
 
-// CR claude for eric: [style] the exported macro names `PrintFlag::DerefTVars`
-// unqualified, so every caller must import `PrintFlag` for it to expand. Use
-// `$crate::PrintFlag`.
 #[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
@@ -166,7 +162,7 @@ macro_rules! deref_typ {
                     Some(rt @ $crate::typ::Type::Ref($crate::typ::TypeRef { .. })) => {
                         depth += 1;
                         if depth > $crate::node::MAX_ALIAS_DEPTH {
-                            $crate::format_with_flags(PrintFlag::DerefTVars, || {
+                            $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                                 anyhow::bail!(
                                     "cyclic type alias while dereferencing {rt} \
                                      (expected {})",
@@ -181,13 +177,13 @@ macro_rules! deref_typ {
                     Some(t @ $crate::typ::Type::Set(_)) => {
                         let nt = t.normalize();
                         if matches!(nt, $crate::typ::Type::Set(_)) {
-                            $crate::format_with_flags(PrintFlag::DerefTVars, || {
+                            $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                                 anyhow::bail!("expected {} not {nt}", $name)
                             })?
                         }
                         typ = Some(nt);
                     }
-                    Some(t) => $crate::format_with_flags(PrintFlag::DerefTVars, || {
+                    Some(t) => $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                         anyhow::bail!("expected {} not {t}", $name)
                     })?,
                     None => anyhow::bail!("type must be known, annotations needed")
@@ -325,7 +321,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // parens are a fusion boundary: the interior gets its own region pass
-        crate::fusion::fuse(&mut self.n, ctx)?;
+        fuse(&mut self.n, ctx)?;
         Ok(None)
     }
 
@@ -380,12 +376,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 /// the readers that must read history a production cannot carry: the
 /// select scrutinee, a pattern guard's truth, and `~`'s held arg.
 /// Everything else reads its children's productions directly.
-// CR claude for eric: [structure] `value: Option<Value>` and `tag: Tag` start
-// (and reset to) `(None, FIRED)`: a child that never produced reads as not bottom,
-// so every reader must check both fields. One field (e.g. a `TagValue` resident
-// plus a "had a value" state) would make that state unrepresentable. `invariant`
-// is a `OnceLock` (atomic) although it is only touched through `&mut self`; an
-// `Option<bool>` does.
+// XCR claude for eric: `invariant` is an `Option<bool>` now. The four
+// (value, bottom) pairs are all live states: never produced, present, bottom
+// before any value, bottom over a held value (what `~` banking and the wake read),
+// so no invalid state to remove; an accessor would only shorten select.rs/pattern.rs.
 #[derive(Debug)]
 pub struct Held<R: Rt, E: UserEvent> {
     /// The last value-bearing production (`Some` = there was once a
@@ -399,7 +393,7 @@ pub struct Held<R: Rt, E: UserEvent> {
     /// Lazily computed: the subtree references no bindings at all, so
     /// its value is identical in every evaluation frame — see
     /// [`Self::reset_replay`].
-    invariant: std::sync::OnceLock<bool>,
+    invariant: Option<bool>,
 }
 
 impl<R: Rt, E: UserEvent> Held<R, E> {
@@ -419,7 +413,7 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     }
 
     pub fn new(node: Node<R, E>) -> Self {
-        Self { value: None, tag: Tag::FIRED, node, invariant: std::sync::OnceLock::new() }
+        Self { value: None, tag: Tag::FIRED, node, invariant: None }
     }
 
     /// Update the node, returning the production's tag. A bottom
@@ -434,19 +428,6 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
         tag
     }
 
-    // CR claude for eric: [dead] `update_triggers` has no caller anywhere in the
-    // workspace.
-    /// [`Self::update`], reduced to whether the production triggers
-    /// evaluation: true for fired and fresh-bottom productions, false
-    /// for the stale states. Bottomness is read back off [`Self::tag`].
-    pub fn update_triggers(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> bool {
-        self.update(ctx, event).triggers()
-    }
-
     /// Sleep is pause, not reset: the held value and its at-rest taint
     /// survive. Contrast [`Self::reset_replay`].
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -457,7 +438,7 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     /// bindings: such a value is identical in every frame and the
     /// subtree cannot re-produce it without an init view.
     pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let invariant = *self.invariant.get_or_init(|| {
+        let invariant = *self.invariant.get_or_insert_with(|| {
             let mut refs = Refs::default();
             self.node.refs(&mut refs);
             refs.refed.is_empty()
@@ -470,37 +451,26 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     }
 }
 
-// CR claude for eric: [structure] the `fired` output is redundant: once `bottom`
-// is excluded (every caller runs `dense_gate!` first, which returns on bottom) no
-// input was FreshBottom, so `fired == trig`. The three-bool accumulator re-derives
-// `Tag::join`; returning one joined `Tag` would do. `read_prod!` is the same
-// accumulator for one child, and `StringInterpolate::update` inlines a verbatim
-// copy of this loop instead of calling `gather`.
-// CR claude for eric: [perf] values are cloned before `dense_gate!` decides, so
-// on a quiet cycle every composite clones all its children's values and then
-// rides (same in `read_prod!`). Join the tags first; clone only past the gate.
-/// Update every child of a composite, join the tags, and clone the
-/// values. Returns `(trig, fired, bottom)`; `vals` receives the element
-/// values in order and is meaningful only when `bottom` is false.
-pub(crate) fn gather<R: Rt, E: UserEvent>(
+/// Update every child of a composite and join their tags
+/// ([`Tag::join`]): the join triggers when a child did and is bottom
+/// when a child is; past the caller's [`dense_gate!`] it is the
+/// composite's own tag. The productions stay borrowed, so a value is
+/// cloned only once the gate let it through.
+pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
-    nodes: &mut [Node<R, E>],
-    vals: &mut Vec<Value>,
-) -> (bool, bool, bool) {
-    let (mut trig, mut fired, mut bottom) = (false, false, false);
-    for c in nodes.iter_mut() {
-        let tv = c.update(ctx, event);
-        let t = tv.tag();
-        trig |= t.triggers();
-        fired |= t.is_fired();
-        if t.is_bottom() {
-            bottom = true
-        } else if !bottom {
-            vals.push(tv.value_cloned())
-        }
-    }
-    (trig, fired, bottom)
+    nodes: &'a mut [Node<R, E>],
+) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
+    let mut tag = Tag::STALE;
+    let prods = nodes
+        .iter_mut()
+        .map(|c| {
+            let tv = c.update(ctx, event);
+            tag = tag.join(tv.tag());
+            tv
+        })
+        .collect();
+    (tag, prods)
 }
 
 /// A strict computation propagates consumed bottom before considering
@@ -524,6 +494,10 @@ pub(crate) use dense_gate;
 /// Read one child's dense production into the caller's join
 /// accumulators, yielding `Some(value)` for the value-bearing states
 /// and `None` for a bottom (which also sets `$bottom`).
+// XCR claude for eric: still clones before the gate. Its callers are
+// ArrayRef/ArraySlice/MapRef::update, which select-coll rewrites this round for
+// the index CRs; after the merge they take `gather`'s shape (one `Tag` join,
+// borrowed productions) and this macro goes.
 macro_rules! read_prod {
     ($n:expr, $ctx:ident, $event:ident, $trig:ident, $fired:ident, $bottom:ident) => {{
         let tv = $n.update($ctx, $event);
@@ -540,12 +514,9 @@ macro_rules! read_prod {
 }
 pub(crate) use read_prod;
 
-// CR claude for eric: [structure] namespace-table logic, not a node: it takes only
-// `&mut Env` and is also called from `module.rs`; it belongs with the module
-// system. Inside, the three `ImportEntry` literals differ only in `scope` and
-// `keyword_anchored` (build `pos`/`ori`/`name` once), `ModPath(Path::from(
-// ArcStr::from(..)))` is spelled four times, and two `use` statements sit
-// mid-body.
+// XCR claude for eric: agreed it belongs with the module system (module.rs calls
+// it too); not moved this round because modules-image is rewriting module.rs's
+// `bind_sig` loop around it. The body cleanup is done.
 /// Compile one `use` item into the scope's namespace table
 /// ([`crate::env::Env::names`]): resolve its module prefix, then
 /// install a glob source or an explicit [`ImportEntry`].
@@ -553,75 +524,59 @@ pub(crate) fn compile_use_item(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
     pos: combine::stream::position::SourcePosition,
-    ori: &Arc<crate::expr::Origin>,
+    ori: &Arc<Origin>,
     scope: &Scope,
     replace: bool,
-    item: &crate::expr::UseItem,
+    item: &UseItem,
 ) -> Result<()> {
-    use netidx_core::path::Path;
+    let modpath = |p: &str| ModPath(Path::from(ArcStr::from(p)));
     let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
     let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
-    use crate::env::UseAnchor as Anchor;
     let anchor = env.use_anchor(&scope.lexical, prefix)?;
     if item.is_glob() {
         let scope_l = &scope.lexical;
         match anchor {
             None => bail!("a glob needs a path prefix"),
-            Some(Anchor::Chain(a)) => {
+            Some(UseAnchor::Chain(a)) => {
                 // a `super::*` anchor may span block levels: capture
                 // each level as its own glob source
-                let levels: LPooled<Vec<ModPath>> = crate::env::chain_levels(a)
-                    .map(|l| ModPath(Path::from(ArcStr::from(l))))
-                    .collect();
+                let levels: LPooled<Vec<ModPath>> =
+                    env::chain_levels(a).map(modpath).collect();
                 for l in levels.iter() {
                     env.import_glob(scope_l, l.clone());
                 }
             }
-            Some(Anchor::Module(m)) => env.import_glob(scope_l, m),
+            Some(UseAnchor::Module(m)) => env.import_glob(scope_l, m),
         }
         return Ok(());
     }
     let key: &str = item.rename.as_ref().map_or(base, |n| n.as_str());
-    let entry = match anchor {
-        Some(Anchor::Chain(a)) => ImportEntry {
-            scope: ModPath(Path::from(ArcStr::from(a))),
-            name: base.into(),
-            keyword_anchored: true,
-            pos,
-            ori: ori.clone(),
-        },
-        Some(Anchor::Module(m)) => ImportEntry {
-            scope: m,
-            name: base.into(),
-            keyword_anchored: false,
-            pos,
-            ori: ori.clone(),
-        },
+    let (target, keyword_anchored) = match anchor {
+        Some(UseAnchor::Chain(a)) => (modpath(a), true),
+        Some(UseAnchor::Module(m)) => (m, false),
         None => {
             // `use m;` — a single segment names a module; importing
             // it means importing the name from its parent
             let p = ModPath(Path::from_iter([base]));
             match env.canonical_modpath(&scope.lexical, &p)? {
-                Some(m) => ImportEntry {
-                    scope: ModPath(Path::from(ArcStr::from(
-                        Path::dirname(&*m).unwrap_or("/"),
-                    ))),
-                    name: base.into(),
-                    keyword_anchored: false,
-                    pos,
-                    ori: ori.clone(),
-                },
+                Some(m) => (modpath(Path::dirname(&*m).unwrap_or("/")), false),
                 None => bail!("use: no module `{base}` in scope"),
             }
         }
+    };
+    let entry = ImportEntry {
+        scope: target,
+        name: base.into(),
+        keyword_anchored,
+        pos,
+        ori: ori.clone(),
     };
     // the prelude already provides every package name as a path root
     if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {
         return Ok(());
     }
     if env.lsp_mode {
-        let canonical =
-            ModPath(Path::from(ArcStr::from(&**entry.scope)).append(&entry.name));
+        let canonical = ModPath(entry.scope.append(&entry.name));
         env.push_module_reference(ModuleRefSite {
             pos,
             ori: ori.clone(),
@@ -642,6 +597,27 @@ pub(crate) fn compile_use_item(
     env.import(&scope.lexical, key, entry, replace)
 }
 
+/// Compile the items of a `use` statement, or of a signature's `use`,
+/// into the namespace table.
+pub(crate) fn compile_use_items(
+    env: &mut Env,
+    pending: &mut Vec<PendingImport>,
+    pos: combine::stream::position::SourcePosition,
+    ori: &Arc<Origin>,
+    scope: &Scope,
+    replace: bool,
+    reexport: bool,
+    items: &[UseItem],
+) -> Result<()> {
+    if reexport {
+        bail!("re-exports (`pub use`) are not yet supported")
+    }
+    for item in items {
+        compile_use_item(env, pending, pos, ori, scope, replace, item)?;
+    }
+    Ok(())
+}
+
 /// Compile a `use` statement: every item registers in the namespace
 /// table; the graph gets a [`Nop`].
 pub(crate) fn compile_use<R: Rt, E: UserEvent>(
@@ -650,27 +626,19 @@ pub(crate) fn compile_use<R: Rt, E: UserEvent>(
     spec: Expr,
     scope: &Scope,
     reexport: bool,
-    items: &Arc<[crate::expr::UseItem]>,
+    items: &Arc<[UseItem]>,
 ) -> Result<Node<R, E>> {
-    if reexport {
-        // CR claude for eric: [style] this refusal is written again in module.rs
-        // bind_sig, and both `bail!` without a site (no position for the LSP). One
-        // refusal inside the shared use-compile path, raised with `.at(&spec)`.
-        bail!("re-exports (`pub use`) are not yet supported")
-    }
-    let replace = flags.contains(CFlag::ReplaceImports);
-    for item in items.iter() {
-        compile_use_item(
-            &mut ctx.env,
-            &mut ctx.pending_imports,
-            spec.pos,
-            &spec.ori,
-            scope,
-            replace,
-            item,
-        )
-        .at(&spec)?;
-    }
+    compile_use_items(
+        &mut ctx.env,
+        &mut ctx.pending_imports,
+        spec.pos,
+        &spec.ori,
+        scope,
+        flags.contains(CFlag::ReplaceImports),
+        reexport,
+        items,
+    )
+    .at(&spec)?;
     Ok(Nop::new(Type::Bottom))
 }
 
@@ -690,11 +658,6 @@ impl TypeDef {
         params: &Arc<[(TVar, Option<Type>)]>,
         body: &TypeDefBody,
     ) -> Result<Node<R, E>> {
-        // CR claude for eric: [readability] the position goes into the message
-        // text (`format!("in typedef at {}")`) instead of an `ErrorSite`
-        // (`.at(&spec)`), so the LSP places the error at whatever encloses the
-        // typedef. Same in `TypeCast::compile` (`bail!("in cast at {} {e}")`,
-        // which also flattens `e`'s context chain into one string).
         ctx.env
             .deftype(
                 &scope.lexical,
@@ -706,7 +669,7 @@ impl TypeDef {
                 name.pos_or(spec.pos),
                 spec.ori.clone(),
             )
-            .with_context(|| format!("in typedef at {}", spec.pos))?;
+            .at(&spec)?;
         let name = name.name.clone();
         Ok(Node::new(Self { spec, scope: scope.lexical.clone(), name }))
     }
@@ -789,22 +752,6 @@ impl Constant {
         // view still computes; firing stays init-gated
         let resident = TagValue::stale(value.clone());
         Node::new(Self { spec: Arc::new(spec), value, typ, resident })
-    }
-
-    // CR claude for eric: [structure] three constructors build a `Constant`:
-    // `new`, this infallible `compile` returning `Result`, and `genn::constant`,
-    // which starts its resident phantom instead of stale (the invariant `new`'s
-    // comment states). Keep `new`, derive `typ` here from it, and have
-    // `genn::constant` call it.
-    pub(crate) fn compile<R: Rt, E: UserEvent>(
-        spec: Expr,
-        value: &Value,
-    ) -> Result<Node<R, E>> {
-        let spec = Arc::new(spec);
-        let value = value.clone();
-        let typ = Type::Primitive(Typ::get(&value).into());
-        let resident = TagValue::stale(value.clone());
-        Ok(Node::new(Self { spec, value, typ, resident }))
     }
 }
 
@@ -908,30 +855,17 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// Production slot for the catch-bearing path: the last covered
     /// child's borrow can't be held across the catches pass.
     resident: TagValue,
-    // CR claude for eric: [dead] nothing reads `scope` (hence the allow), yet
-    // every image writes it (a DynScope handler chain per block). Drop the field
-    // and its codec.
-    /// Scope at the block's declaration point: the containing scope for
-    /// a module, the lexical scope for a `do` block.
-    #[allow(dead_code)]
-    pub(crate) scope: Scope,
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
     /// Build a `Block` from compiled children. A module produces no
     /// value; a `do` block's value is its last child's.
-    pub fn new(
-        module: bool,
-        children: Box<[Node<R, E>]>,
-        spec: Expr,
-        scope: Scope,
-    ) -> Node<R, E> {
+    pub fn new(module: bool, children: Box<[Node<R, E>]>, spec: Expr) -> Node<R, E> {
         Node::new(Self {
             module,
             spec,
             children,
             catches: Box::default(),
-            scope,
             resident: TagValue::phantom(),
         })
     }
@@ -952,7 +886,6 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             spec,
             children,
             catches,
-            scope: scope.clone(),
             resident: TagValue::phantom(),
         }))
     }
@@ -988,52 +921,75 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
     let mut catches: LPooled<Vec<usize>> = LPooled::take();
     let n = exprs.len();
     for (i, e) in exprs.iter().copied().enumerate() {
-        // `mod`/`use` are declarations: legal everywhere but a `do`
-        // block's value slot, and compiled directly only here
-        let value_position = !module && i + 1 == n;
-        match &e.kind {
-            ExprKind::Catch(c) => {
-                let (node, advanced) =
-                    error::Catch::compile(ctx, flags, e.clone(), &scope, top_id, c)?;
-                scope = advanced;
-                catches.push(i);
-                children.push(node);
-            }
-            ExprKind::Use { reexport, names } if !value_position => children
-                .push(compile_use(ctx, flags, e.clone(), &scope, *reexport, names)?),
-            ExprKind::Module { name, value }
-                if !value_position || matches!(value, ModuleKind::Dynamic { .. }) =>
-            {
-                children.push(compile_module(
-                    ctx,
-                    flags,
-                    e.clone(),
-                    &scope,
-                    top_id,
-                    name,
-                    value,
-                    true,
-                )?)
-            }
-            ExprKind::TypeDef(td) if !value_position => children.push(TypeDef::compile(
-                ctx,
-                e.clone(),
-                &scope,
-                &td.name,
-                &td.params,
-                &td.body,
-            )?),
-            ExprKind::Trait(t) if !value_position => children
-                .push(traits::Trait::compile(ctx, flags, e.clone(), &scope, t, top_id)?),
-            ExprKind::Impl(im) if !value_position => children
-                .push(traits::Impl::compile(ctx, flags, e.clone(), &scope, im, top_id)?),
-            _ => children.push(compile(ctx, flags, e.clone(), &scope, top_id)?),
+        if matches!(e.kind, ExprKind::Catch(_)) {
+            catches.push(i);
         }
+        let at = StmtAt::Block { value: !module && i + 1 == n };
+        let (node, next) = compile_statement(ctx, flags, e, &scope, top_id, at)?;
+        scope = next;
+        children.push(node);
     }
     Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
 }
 
+/// Where a statement stands: a top-level statement, or one of a block's,
+/// `value` when it is the block's value (not a module block's).
+#[derive(Clone, Copy)]
+pub(crate) enum StmtAt {
+    TopLevel,
+    Block { value: bool },
+}
+
+/// Compile one statement of a block or a top level: a declaration
+/// (`catch`, `use`, `mod`, `type`, `trait`, `impl`) or an expression.
+/// Returns the scope the statements after it compile in, which a
+/// `catch` covers. In a block's value slot a declaration compiles as an
+/// expression, which refuses it; a dynamic module is an expression.
+pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    e: &Expr,
+    scope: &Scope,
+    top_id: ExprId,
+    at: StmtAt,
+) -> Result<(Node<R, E>, Scope)> {
+    let predeclared = matches!(at, StmtAt::Block { .. });
+    let node = match &e.kind {
+        ExprKind::Catch(c) => {
+            return error::Catch::compile(ctx, flags, e.clone(), scope, top_id, c);
+        }
+        ExprKind::Module { name, value: value @ ModuleKind::Dynamic { .. } } => {
+            compile_module(ctx, flags, e.clone(), scope, top_id, name, value, predeclared)
+        }
+        _ if matches!(at, StmtAt::Block { value: true }) => {
+            compile(ctx, flags, e.clone(), scope, top_id)
+        }
+        ExprKind::Use { reexport, names } => {
+            compile_use(ctx, flags, e.clone(), scope, *reexport, names)
+        }
+        ExprKind::Module { name, value } => {
+            compile_module(ctx, flags, e.clone(), scope, top_id, name, value, predeclared)
+        }
+        ExprKind::TypeDef(td) => {
+            TypeDef::compile(ctx, e.clone(), scope, &td.name, &td.params, &td.body)
+        }
+        ExprKind::Trait(t) => {
+            traits::Trait::compile(ctx, flags, e.clone(), scope, t, top_id)
+        }
+        ExprKind::Impl(im) => {
+            traits::Impl::compile(ctx, flags, e.clone(), scope, im, top_id)
+        }
+        _ => compile(ctx, flags, e.clone(), scope, top_id),
+    }?;
+    Ok((node, scope.clone()))
+}
+
 impl<R: Rt, E: UserEvent> Block<R, E> {
+    /// Whether a `catch` covers the block's value, its last child.
+    pub(crate) fn value_is_caught(&self) -> bool {
+        self.catches.first().is_some_and(|i| i + 1 < self.children.len())
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<R, E>,
         buf: &mut &[u8],
@@ -1042,13 +998,11 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
         let spec = Expr::decode(buf)?;
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
-        let scope = crate::image::scope_decode(buf)?;
         Ok(Node::new(Self {
             module,
             spec,
             children,
             catches,
-            scope,
             resident: TagValue::phantom(),
         }))
     }
@@ -1060,8 +1014,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
             + self.module.encoded_len()
             + self.spec.encoded_len()
             + nodes_len(&self.children)
-            + crate::image::slice_len(&self.catches)
-            + crate::image::scope_len(&self.scope)
+            + image::slice_len(&self.catches)
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1069,8 +1022,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.module.encode(buf)?;
         self.spec.encode(buf)?;
         encode_nodes(&self.children, buf)?;
-        crate::image::slice_encode(&self.catches, buf)?;
-        crate::image::scope_encode(&self.scope, buf)
+        image::slice_encode(&self.catches, buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -1134,11 +1086,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.children.last().map(|n| n.typ()).unwrap_or(Type::BOTTOM)
     }
 
-    // CR claude for eric: [structure] the "covered children in order, then
-    // catches in reverse" walk is spelled three times (update, typecheck0,
-    // typecheck1) and the module/non-module `wrap!` branch four times. One
-    // iterator over the evaluation order plus one `wrap_child` helper would carry
-    // the ordering rule in one place.
+    // XCR claude for eric: agreed; not this round: the `wrap!` branches are where
+    // modules-image fixes the module-origin bug below, so the evaluation-order
+    // iterator and a `wrap_child` helper should land on that fix.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         // catches typecheck after the covered children so a handler sees
         // the complete error-type accumulation
@@ -1293,36 +1243,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         use std::fmt::Write;
         // rendered under the value-hook loan so a core `Display` impl on
         // an abstract part applies (`coretraits::with_display_hooks`)
-        let woke = self.slept.take();
-        let (args, typs, resident) = (&mut self.args, &self.typs, &mut self.resident);
-        let mut trig = false;
-        let mut fired = false;
-        let mut bottom = false;
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        for c in args.iter_mut() {
-            let tv = c.update(ctx, event);
-            let t = tv.tag();
-            trig |= t.triggers();
-            fired |= t.is_fired();
-            if t.is_bottom() {
-                bottom = true
-            } else if !bottom {
-                vals.push(tv.value_cloned())
-            }
-        }
-        dense_gate!(resident, ctx, trig, bottom, woke);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let (tag, prods) = gather(ctx, event, &mut self.args);
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
         let mut buf: LPooled<String> = LPooled::take();
         coretraits::with_display_hooks(ctx, event, |env| {
-            for (typ, v) in typs.iter().zip(vals.iter()) {
-                match v {
+            for (typ, tv) in self.typs.iter().zip(prods.iter()) {
+                tv.with_value(|v| match v {
                     Value::String(s) => write!(buf, "{s}"),
                     v => write!(buf, "{}", TVal { env, typ, v }),
-                }
+                })
                 .unwrap()
             }
         });
-        resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
+        self.resident.set(TagValue::tagged(Value::String(buf.as_str().into()), tag))
     }
 
     fn spec(&self) -> &Expr {
@@ -1409,12 +1342,6 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         let node = decode_node(ctx, buf)?;
         let id = BindId::decode(buf)?;
         Ok(Node::new(Self { spec, node, id }))
-    }
-
-    /// Build a `Connect` node from an already-compiled RHS expression
-    /// and the BindId of the variable to be updated on each cycle.
-    pub fn new(id: BindId, rhs: Node<R, E>, spec: Expr) -> Node<R, E> {
-        Node::new(Self { spec, node: rhs, id })
     }
 
     pub(crate) fn compile(
@@ -1527,46 +1454,6 @@ pub(super) enum WriteTarget {
     Place(BindId, place::Path),
 }
 
-impl WriteTarget {
-    fn image_len(target: &Option<Self>) -> usize {
-        1 + match target {
-            None => 0,
-            Some(WriteTarget::Bind(id)) => id.encoded_len(),
-            Some(WriteTarget::Place(id, path)) => id.encoded_len() + path.encoded_len(),
-        }
-    }
-
-    fn image_encode(target: &Option<Self>, buf: &mut ImageBuf) -> Result<(), PackError> {
-        match target {
-            None => Ok(buf.put_u8(0)),
-            Some(WriteTarget::Bind(id)) => {
-                buf.put_u8(1);
-                id.encode(buf)
-            }
-            Some(WriteTarget::Place(id, path)) => {
-                buf.put_u8(2);
-                id.encode(buf)?;
-                path.encode(buf)
-            }
-        }
-    }
-
-    fn image_decode(buf: &mut &[u8]) -> Result<Option<Self>, PackError> {
-        if !buf.has_remaining() {
-            return Err(PackError::BufferShort);
-        }
-        match buf.get_u8() {
-            0 => Ok(None),
-            1 => Ok(Some(WriteTarget::Bind(BindId::decode(buf)?))),
-            2 => Ok(Some(WriteTarget::Place(
-                BindId::decode(buf)?,
-                place::Path::decode(buf)?,
-            ))),
-            _ => Err(PackError::UnknownTag),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct ConnectDeref<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
@@ -1584,25 +1471,9 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         let spec = Expr::decode(buf)?;
         let rhs = decode_node(ctx, buf)?;
         let src_id = BindId::decode(buf)?;
-        let target = WriteTarget::image_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         ctx.rt.ref_var(src_id, top_id);
-        Ok(Node::new(Self { spec, rhs, src_id, target, top_id }))
-    }
-
-    // CR claude for eric: [dead] `ConnectDeref::new` and `Connect::new` have no
-    // caller in the workspace.
-    /// Build a `ConnectDeref` from an already-compiled RHS node and
-    /// the source reference's BindId. The caller is responsible for
-    /// registering the reference with the runtime (via
-    /// `ctx.rt.ref_var(src_id, top_id)`).
-    pub fn new(
-        src_id: BindId,
-        rhs: Node<R, E>,
-        top_id: ExprId,
-        spec: Expr,
-    ) -> Node<R, E> {
-        Node::new(Self { spec, rhs, src_id, target: None, top_id })
+        Ok(Node::new(Self { spec, rhs, src_id, target: None, top_id }))
     }
 
     pub(crate) fn compile(
@@ -1656,21 +1527,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             + self.spec.encoded_len()
             + self.rhs.image_len()
             + self.src_id.encoded_len()
-            + WriteTarget::image_len(&self.target)
             + self.top_id.encoded_len()
     }
 
+    /// `target` is resolved at update: a resolved one is runtime state.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.target.is_some() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         put_tag(NodeTag::ConnectDeref, buf);
         self.spec.encode(buf)?;
         self.rhs.image_encode(buf)?;
         self.src_id.encode(buf)?;
-        // CR claude for eric: [structure] `target` is runtime state (resolved at
-        // update, `None` before the first cycle), yet it is written into the
-        // image while every other node's runtime state (Sample's debt, Catch's
-        // counters) is not. Refuse a `Some` with `NOT_QUIESCENT` and drop the
-        // `WriteTarget` codec, or say why it must travel.
-        WriteTarget::image_encode(&self.target, buf)?;
         self.top_id.encode(buf)
     }
 
@@ -1694,7 +1562,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         } else if self.target.is_none() {
             // an instance created after the reference value was delivered
             // finds it only in the standing store
-            if let Some(read) = super::node::read_var(ctx, event, &self.src_id) {
+            if let Some(read) = read_var(ctx, event, &self.src_id) {
                 let tv = match read {
                     VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
                 };
@@ -1764,6 +1632,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
 
 #[derive(Debug)]
 pub struct TypeCast<R: Rt, E: UserEvent> {
+    slept: WakeBit,
     pub(crate) spec: Expr,
     pub typ: Type,
     pub target: Type,
@@ -1780,7 +1649,14 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
         let typ = Type::decode(buf)?;
         let target = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
-        Ok(Node::new(Self { spec, typ, target, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            target,
+            n,
+            resident: TagValue::phantom(),
+        }))
     }
 
     pub(crate) fn compile(
@@ -1794,11 +1670,16 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, expr.clone(), scope, top_id)?;
         let target = typ.scope_refs(&scope.lexical);
-        if let Err(e) = target.check_cast(&ctx.env) {
-            bail!("in cast at {} {e}", spec.pos);
-        }
+        target.check_cast(&ctx.env).at(&spec)?;
         let typ = Type::union(&ctx.env, &[&target, &CAST_ERR])?;
-        Ok(Node::new(Self { spec, typ, target, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self {
+            slept: WakeBit::default(),
+            spec,
+            typ,
+            target,
+            n,
+            resident: TagValue::phantom(),
+        }))
     }
 }
 
@@ -1819,20 +1700,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.image_encode(buf)
     }
 
-    // CR claude for eric: [perf] no `dense_gate!`: every cycle a stale input is
-    // re-cast from scratch (`cast_value` walks the whole value), so a quiet
-    // `cast<Array<T>>(big)` costs a full conversion per cycle. Gate on `trig`
-    // like the other computing nodes (needs a `slept` bit for the wake).
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
-        if tag.is_bottom() {
-            self.resident.set(TagValue::tagged(Value::Null, tag))
-        } else {
-            let v = tv.value_cloned();
-            let v = self.target.cast_from(&ctx.env, self.n.typ(), v);
-            self.resident.set(TagValue::tagged(v, tag))
-        }
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let v = tv.value_cloned();
+        let v = self.target.cast_from(&ctx.env, self.n.typ(), v);
+        self.resident.set(TagValue::tagged(v, tag))
     }
 
     fn spec(&self) -> &Expr {
@@ -1848,6 +1722,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        self.slept.set();
         self.n.sleep(ctx);
     }
 
@@ -1886,7 +1761,6 @@ pub struct Never<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
-    resident: TagValue,
 }
 
 impl<R: Rt, E: UserEvent> Never<R, E> {
@@ -1907,7 +1781,7 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
             Some(t) => t.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical),
             None => Type::Bottom,
         };
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self { spec, typ, n }))
     }
 }
 
@@ -1919,7 +1793,7 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
         let spec = Expr::decode(buf)?;
         let typ = Type::decode(buf)?;
         let n = decode_nodes(ctx, buf)?.into_boxed_slice();
-        Ok(Node::new(Self { spec, typ, n, resident: TagValue::phantom() }))
+        Ok(Node::new(Self { spec, typ, n }))
     }
 }
 
@@ -1935,14 +1809,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         encode_nodes(&self.n, buf)
     }
 
-    // CR claude for eric: [dead] `Never::resident` is only ever `ride()`n, so it
-    // stays the phantom forever; return `TagValue::phantom_ref()` and drop the
-    // field.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         for n in self.n.iter_mut() {
             n.update(ctx, event);
         }
-        self.resident.ride()
+        TagValue::phantom_ref()
     }
 
     fn spec(&self) -> &Expr {
@@ -2058,13 +1929,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         }
         match winner {
             Some(tv) => self.resident.set(tv),
-            // CR claude for eric: [style] `resident.set(TagValue::tagged(
-            // Value::Null, Tag::FRESH_BOTTOM))` re-spells `resident.set_bottom(
-            // true)`; also Sample::update (x2) and TypeCast::update
-            // (`set_bottom(tag.triggers())`).
-            None if bottomed => {
-                self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-            }
+            None if bottomed => self.resident.set_bottom(true),
             None => self.resident.ride(),
         }
     }
@@ -2119,20 +1984,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
     }
 }
 
-// CR claude for eric: [structure] `strict: bool` beside `triggered` and `id`:
-// under `~!` the debt counter and the payment variable are meaningless, yet the
-// node still mints and refs a `BindId`. An enum (`Strict` | `Banking { triggered,
-// id }`) makes that unrepresentable. In `update`, the `held` closure's
-// `None => unreachable!()` is guarded only by the call site's `is_some()`.
+/// How `~` answers a trigger that finds its RHS absent.
+#[derive(Debug)]
+enum Banking {
+    /// `~!`: the trigger produces bottom and banks nothing.
+    Strict,
+    /// `~`: the trigger is banked and paid through the private `id` at
+    /// the RHS's first value.
+    Debt { triggered: usize, id: BindId },
+}
+
 #[derive(Debug)]
 pub struct Sample<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
-    /// `~!`: a trigger that finds the RHS bottom produces bottom and
-    /// banks nothing; `~` banks it and pays at the RHS's first value.
-    strict: bool,
-    triggered: usize,
+    banking: Banking,
     pub typ: Type,
-    id: BindId,
     top_id: ExprId,
     pub trigger: Node<R, E>,
     pub arg: Held<R, E>,
@@ -2145,19 +2011,21 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
-        let strict = bool::decode(buf)?;
         let typ = Type::decode(buf)?;
-        let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
+        let banking = match Option::<BindId>::decode(buf)? {
+            None => Banking::Strict,
+            Some(id) => {
+                ctx.rt.ref_var(id, top_id);
+                Banking::Debt { triggered: 0, id }
+            }
+        };
         let trigger = decode_node(ctx, buf)?;
         let arg = Held::image_decode(ctx, buf)?;
-        ctx.rt.ref_var(id, top_id);
         Ok(Node::new(Self {
             spec,
-            strict,
-            triggered: 0,
+            banking,
             typ,
-            id,
             top_id,
             trigger,
             arg,
@@ -2175,15 +2043,18 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         rhs: &Arc<Expr>,
         strict: bool,
     ) -> Result<Node<R, E>> {
-        let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
+        let banking = if strict {
+            Banking::Strict
+        } else {
+            let id = BindId::new();
+            ctx.rt.ref_var(id, top_id);
+            Banking::Debt { triggered: 0, id }
+        };
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
         let arg = Held::new(compile(ctx, flags, (**rhs).clone(), scope, top_id)?);
         let typ = arg.node.typ().clone();
         Ok(Node::new(Self {
-            strict,
-            triggered: 0,
-            id,
+            banking,
             top_id,
             spec,
             typ,
@@ -2192,16 +2063,23 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
             resident: TagValue::phantom(),
         }))
     }
+
+    /// The debt's payment variable; `None` under `~!`.
+    fn debt_id(&self) -> Option<BindId> {
+        match &self.banking {
+            Banking::Strict => None,
+            Banking::Debt { id, .. } => Some(*id),
+        }
+    }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn image_len(&self) -> usize {
         tag_len()
             + self.spec.encoded_len()
-            + self.strict.encoded_len()
             + self.typ.encoded_len()
-            + self.id.encoded_len()
             + self.top_id.encoded_len()
+            + self.debt_id().encoded_len()
             + self.trigger.image_len()
             + self.arg.image_len()
     }
@@ -2209,10 +2087,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Sample, buf);
         self.spec.encode(buf)?;
-        self.strict.encode(buf)?;
         self.typ.encode(buf)?;
-        self.id.encode(buf)?;
         self.top_id.encode(buf)?;
+        self.debt_id().encode(buf)?;
         self.trigger.image_encode(buf)?;
         self.arg.image_encode(buf)
     }
@@ -2222,53 +2099,51 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         let t = self.trigger.update(ctx, event);
         let fired = t.tag().is_fired();
         self.arg.update(ctx, event);
-        if self.strict {
-            return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
-                (true, Some(v), false) => self.resident.set(TagValue::fired(v.clone())),
-                (true, _, _) => {
-                    self.resident.set(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
-                }
-                (false, _, _) => self.resident.ride(),
-            };
-        }
+        let (triggered, id) = match &mut self.banking {
+            Banking::Strict => {
+                return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
+                    (true, Some(v), false) => {
+                        self.resident.set(TagValue::fired(v.clone()))
+                    }
+                    (true, _, _) => self.resident.set_bottom(true),
+                    (false, _, _) => self.resident.ride(),
+                };
+            }
+            Banking::Debt { triggered, id } => (triggered, *id),
+        };
         if fired {
-            self.triggered += 1;
+            *triggered += 1;
         }
-        let var = event.variables.get(&self.id).cloned();
-        let held = || match &self.arg.value {
-            Some(_) if self.arg.tag.is_bottom() => {
-                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
+        let var = event.variables.get(&id).cloned();
+        // a banked trigger is answered from the held arg this cycle; the
+        // rest of the debt is paid through `id`
+        let answered = match &self.arg.value {
+            Some(v) if *triggered > 0 && var.is_none() => {
+                *triggered -= 1;
+                Some(v)
             }
-            Some(v) => TagValue::fired(v.clone()),
-            None => unreachable!(),
+            _ => None,
         };
-        let res = if self.triggered > 0 && self.arg.value.is_some() && var.is_none() {
-            self.triggered -= 1;
-            Some(held())
-        } else {
-            var
-        };
-        if self.arg.value.is_some() && !self.arg.tag.is_bottom() {
-            while self.triggered > 0 {
-                self.triggered -= 1;
-                ctx.rt.set_var(self.id, self.arg.value.clone().unwrap());
+        if let Some(v) = &self.arg.value
+            && !self.arg.tag.is_bottom()
+        {
+            for _ in 0..mem::take(triggered) {
+                ctx.rt.set_var(id, v.clone());
             }
         }
-        match res {
-            Some(tv) => self.resident.set(tv),
-            None => self.resident.ride(),
+        match (answered, var) {
+            (Some(_), _) if self.arg.tag.is_bottom() => self.resident.set_bottom(true),
+            (Some(v), _) => self.resident.set(TagValue::fired(v.clone())),
+            (None, Some(tv)) => self.resident.set(tv),
+            (None, None) => self.resident.ride(),
         }
     }
 
-    // CR claude for eric: [bug] every payment of banked debt is a `set_var` on the
-    // private `self.id`, and the runtime stores each delivery (`store_insert`),
-    // but delete never `store_remove`s it (CallSite and pattern deletes do). Each
-    // deleted `~` that ever paid leaks a store entry holding its last value: a
-    // recursive body with `~` whose depth oscillates (shrink = delete, re-reach =
-    // fresh id) grows the store without bound. Same for `Catch::delete` and a
-    // cross-top error delivered to `bind_id`.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        if let Some(id) = self.debt_id() {
+            ctx.rt.unref_var(id, self.top_id);
+            ctx.rt.store_remove(&id);
+        }
         self.arg.node.delete(ctx);
         self.trigger.delete(ctx);
     }
@@ -2293,7 +2168,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     }
 
     fn refs(&self, refs: &mut Refs) {
-        refs.read(self.id);
+        if let Some(id) = self.debt_id() {
+            refs.read(id);
+        }
         refs.banked += 1;
         self.arg.node.refs(refs);
         refs.banked -= 1;

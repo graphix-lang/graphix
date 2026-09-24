@@ -5,7 +5,7 @@
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    ExecCtx, FastCall, PrintFlag, Rt, UserEvent, deref_typ,
+    ExecCtx, FastCall, Rt, UserEvent, deref_typ,
     effects::Effect,
     errf,
     typ::{FnType, Type},

@@ -66,8 +66,8 @@ vector costs for the same n live things. Space is O(n) precisely when
 there is O(n) state.
 
 **Stateless**, of a lambda body (`analysis::infer_effects` computes
-`LambdaFacts { effect, stateless }` in one fixpoint walk; the gate is
-`lambda_is_stateless` = Sync ∧ stateless):
+`LambdaFacts { effect, stateless }` by a worklist fixpoint over each
+body's calls; the gate is `LambdaFacts::is_pure` = Sync ∧ stateless):
 
 - the body is Sync (a cross-cycle node such as `~` or any async
   builtin makes it Async, so those are already out);
@@ -84,8 +84,10 @@ distinguish one activation from many, so `dbg`, `log`, `error`, `now`,
 `exit`, `hbs::render` and the like are stateless; `count`, `sum`,
 `min`, `mean`, `uniq`, `once`, `take`, `skip`, `hold`,
 `array::window`, the rand family and the http clients are not.
-`#[tail_recursive]` asserts the gate (a stateful or async body fails
-the assertion).
+`#[tail_recursive]` asserts the gate and the loop (`GXLambda::tail_loop`
+for every instance, which also needs positional formals the loop can
+rebind): a stateful or async body, or a labeled or variadic formal,
+fails the assertion.
 
 What follows for the three kinds of body:
 
@@ -209,10 +211,13 @@ stack, so it needed the JIT twin of `ensure_sufficient`:
 - The block-tree walks (`Kernel::drop`'s free, the reclaim) are
   explicit worklists — they recursed one Rust frame per activation,
   invisible under a 256 cap and a tokio-worker overflow at 20k.
-- **The stack budget**: `GRAPHIX_STACK_BUDGET` (bytes) or
-  `graphix_compiler::set_stack_budget`, unlimited by default; a
-  thread-local counts live grown segments, and a grow that would
-  exceed the budget aborts the runtime through `stack::budget_abort` —
+- **The stack budget**: per runtime, on its `Control`
+  (`Control::set_stack_budget`), starting from `GRAPHIX_STACK_BUDGET`
+  (bytes, or with a `K`/`M`/`G` suffix; a malformed value is reported
+  and ignored) or `graphix_compiler::set_stack_budget`, unlimited by
+  default; a thread-local counts live grown segments, and a grow that
+  would exceed the running runtime's budget aborts it through
+  `stack::budget_abort` —
   the ONE exit for both engines, setting `CtlFlag::Budget` beside
   `Abort` on the runtime's `Control` (the node-walk still gets that one
   segment so it unwinds at its next poll). `GXHandle::budget_aborted()`
