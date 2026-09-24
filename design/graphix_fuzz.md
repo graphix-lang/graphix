@@ -344,6 +344,21 @@ node-walk, since both engines then agree; the manifest can. A count that
 moves is a finding until the change is understood, and an intended one is
 re-recorded with `fusecheck --bless` (then rebuild: the compare reads the
 embedded copy) in the commit that made it.
+
+The corpus runs in parallel, on a runtime with a worker per core
+(`main.rs::on_all_cores`: every check compiles on its runtime's
+workers; the campaigns' runtime keeps two). A loaded run cannot vouch
+for an agreement that is not two traces: both engines contained agree
+whether the program is bottom or merely starved. So each pin's verdict
+(`Verdict`: `trace`, `contained`, `reject`, `excluded`, `unsure`) is
+recorded in `graphix-fuzz/outcome.manifest`, and a `contained` or
+`reject` agreement the manifest records for the pin is trusted; any
+other non-trace agreement is retried alone at 4x. A verdict that moves
+between the confident classes is a mismatch, like a moved fusion count;
+`unsure` (a retry-settled, slow or nondeterministic agreement, and any
+contained callable) compares equal to anything. `regress --bless`
+re-records the verdicts, retrying every untrusted pin alone, so what it
+writes is the unloaded answer.
 A finding's pin commits to cross-mode agreement, not to a value, until
 a human confirms the intended semantics — the node-walk isn't
 infallible, and only a value pin also guards against both engines

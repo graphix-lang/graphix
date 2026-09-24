@@ -5,10 +5,12 @@
 
 use anyhow::{Result, bail};
 use graphix_fuzz::{
-    CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, Outcome, check, fusecheck_mismatches, fuzz,
-    generate_campaign, minimize, regression_corpus_len, run_fusecheck, run_regression,
+    CAMPAIGN_MINIMIZE_BUDGET, Corpus, Mode, OUTCOME_MANIFEST, Outcome, Regression, check,
+    fusecheck_mismatches, fuzz, generate_campaign, minimize, outcome_mismatches,
+    regression_corpus_len, run_fusecheck, run_regression,
 };
 use std::{
+    future::Future,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -92,10 +94,30 @@ fn fusecheck_timeout() -> Duration {
     scaled(60)
 }
 
+/// Run `f` on a runtime of its own with a worker per core. The in-process
+/// gates compile on their runtime's workers; this one keeps two for the
+/// campaigns, whose work is in children.
+async fn on_all_cores<F>(f: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(std::thread::available_parallelism().map_or(4, |n| n.get()))
+            .enable_all()
+            .build()
+            .expect("the gate runtime");
+        let _ = tx.send(rt.block_on(f));
+    });
+    rx.await.expect("the gate runtime panicked")
+}
+
 /// The fusion half of `regress`: every corpus program's fused-region
 /// count against the embedded manifest. Returns the mismatch count.
 async fn print_fusecheck() -> usize {
-    let counts = run_fusecheck(fusecheck_timeout()).await;
+    let counts = on_all_cores(run_fusecheck(fusecheck_timeout())).await;
     let bad = fusecheck_mismatches(graphix_fuzz::FUSECHECK_MANIFEST, &counts);
     for l in &bad {
         println!("  {l}");
@@ -104,19 +126,31 @@ async fn print_fusecheck() -> usize {
     bad.len()
 }
 
+/// The regression corpus through the oracle, then each pin's verdict
+/// against the outcome manifest. Returns regressions plus mismatches.
 async fn print_regression() -> usize {
-    let regr = run_regression(regress_timeout()).await;
+    let r = regress(false).await;
+    let bad = outcome_mismatches(OUTCOME_MANIFEST, &r.verdicts);
+    for l in &bad {
+        println!("  {l}");
+    }
+    println!("outcome manifest: {} programs, {} mismatches", r.verdicts.len(), bad.len());
+    r.regressions.len() + bad.len()
+}
+
+async fn regress(bless: bool) -> Regression {
+    let r = on_all_cores(run_regression(regress_timeout(), bless)).await;
     println!(
         "regression corpus: {} programs, {} regressions",
         regression_corpus_len(),
-        regr.len()
+        r.regressions.len()
     );
-    for (name, d) in &regr {
+    for (name, d) in &r.regressions {
         println!("  REGRESSION {name} — {}", d.bisect());
         println!("    interp={}", render(&d.interp));
         println!("    jit=  {}", render(&d.jit));
     }
-    regr.len()
+    r
 }
 
 fn render(o: &Outcome) -> String {
@@ -299,7 +333,8 @@ async fn main() -> Result<()> {
             }
             _ => false,
         };
-    // captured before the sandbox chdir: `fusecheck --bless` writes here
+    // captured before the sandbox chdir: `fusecheck --bless` and
+    // `regress --bless` write here
     let orig_cwd = std::env::current_dir()?;
     let cwd_guard = if sandbox_cwd {
         let d = tempfile::tempdir()?;
@@ -416,6 +451,22 @@ async fn main() -> Result<()> {
             }
             if buckets.len() > 15 {
                 println!("  … {} more reject buckets", buckets.len() - 15);
+            }
+        }
+        Some("regress") if args.iter().any(|a| a == "--bless") => {
+            // records every pin's verdict, each untrusted one retried
+            // alone (rebuild afterward: the compare reads the embedded copy)
+            let r = regress(true).await;
+            let out: String =
+                r.verdicts.iter().map(|(n, v)| format!("{v}\t{n}\n")).collect();
+            let path = orig_cwd.join("graphix-fuzz/outcome.manifest");
+            std::fs::write(&path, out).unwrap_or_else(|e| {
+                panic!("writing {} (run from the repo root): {e}", path.display())
+            });
+            println!("regress: blessed {} verdicts — rebuild to embed", r.verdicts.len());
+            if !r.regressions.is_empty() {
+                drop(cwd_guard);
+                std::process::exit(1);
             }
         }
         Some("regress") => {
@@ -1020,7 +1071,8 @@ async fn main() -> Result<()> {
              graphix-fuzz <gen|gen-check> [n] [seed] [--reactive]  |  \
              graphix-fuzz reactive-check [n] [seed]  |  \
              graphix-fuzz typemorph-scan [n] [seed]  |  \
-             graphix-fuzz selfcheck [iters] [seed]  |  graphix-fuzz regress"
+             graphix-fuzz selfcheck [iters] [seed]  |  \
+             graphix-fuzz <regress|fusecheck> [--bless]"
         ),
     }
     Ok(())

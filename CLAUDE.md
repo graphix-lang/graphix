@@ -478,7 +478,13 @@ blocker profile, not a gap count.
   loud; a program whose first cycle aborts the runtime by the stack
   budget records `abort`. After an INTENDED fusion change, `fusecheck
   --bless` rewrites the manifest (rebuild to embed it) and the diff is
-  reviewed like code. `sys::`/`http::`
+  reviewed like code. `regress` also compares each pin's verdict
+  (`trace`/`contained`/`reject`/`excluded`/`unsure`) with
+  `graphix-fuzz/outcome.manifest`: the corpus runs in parallel on a
+  worker per core, and only an agreement the manifest does not vouch
+  for is retried alone at 4x; `regress --bless` records the verdicts
+  (every untrusted pin retried alone) when a pin's class changes on
+  purpose or a pin is added. `sys::`/`http::`
   programs compare settled values per epoch (`FinalValues`); the
   `Excluded` markers (`oracle_tier`) never record a divergence.
   Soaks run under `nice -n 19` from a campaign-private copy of the

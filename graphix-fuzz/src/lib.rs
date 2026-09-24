@@ -365,6 +365,9 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
                 Ok(_) => CompileOutcome::Compiled(s),
                 Err(e) => CompileOutcome::Rejected(format!("{e:?}"), s),
             },
+            // the first cycle's abort can land between the check above and
+            // the read
+            Err(_) if ctx.rt.budget_aborted() => CompileOutcome::BudgetAborted,
             Err(e) => CompileOutcome::Failed(format!("fusion stats read: {e:?}")),
         }
     };
@@ -1264,11 +1267,75 @@ pub async fn check(code: &str, timeout: Duration) -> Option<Divergence> {
 /// programs AGREED with both outcomes being runtime traces — the bar
 /// for using an agreeing mutant as a mutation ancestor (a
 /// CompileErr/Timeout agreement is a fine oracle subject but a bad
-/// seed, and a nondeterminism-cleared agreement is worse).
+/// seed, and a nondeterminism-cleared agreement is worse). Callable
+/// programs stay out of the ring.
 pub async fn check_classified(
     code: &str,
     timeout: Duration,
 ) -> (Option<Divergence>, bool) {
+    let (d, v) = check_verdict(code, timeout).await;
+    (d, v == Verdict::Ran && !callable::has_header(code))
+}
+
+/// How a check that found no divergence concluded: both engines ran to
+/// traces, both were contained, both rejected, the oracle excludes the
+/// program, or it agreed some other way (a retry, a slowness or
+/// nondeterminism drop) that says nothing stable about the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Ran,
+    Contained,
+    Rejected,
+    Excluded,
+    Unsure,
+}
+
+impl Verdict {
+    fn of(a: &Outcome, b: &Outcome) -> Self {
+        use Outcome::*;
+        match (a, b) {
+            (Trace(_), Trace(_)) => Verdict::Ran,
+            (Timeout(_), Timeout(_)) => Verdict::Contained,
+            (CompileErr(_) | RuntimeErr(_), CompileErr(_) | RuntimeErr(_)) => {
+                Verdict::Rejected
+            }
+            _ => Verdict::Unsure,
+        }
+    }
+}
+
+impl fmt::Display for Verdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Verdict::Ran => "trace",
+            Verdict::Contained => "contained",
+            Verdict::Rejected => "reject",
+            Verdict::Excluded => "excluded",
+            Verdict::Unsure => "unsure",
+        })
+    }
+}
+
+impl FromStr for Verdict {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        Ok(match s {
+            "trace" => Verdict::Ran,
+            "contained" => Verdict::Contained,
+            "reject" => Verdict::Rejected,
+            "excluded" => Verdict::Excluded,
+            "unsure" => Verdict::Unsure,
+            _ => return Err(()),
+        })
+    }
+}
+
+/// [`check`] with the [`Verdict`] of an agreement.
+pub async fn check_verdict(
+    code: &str,
+    timeout: Duration,
+) -> (Option<Divergence>, Verdict) {
     let tier = oracle_tier(code);
     if callable::has_header(code) {
         return check_callable(code, tier, timeout).await;
@@ -1279,7 +1346,7 @@ pub async fn check_classified(
         run_program(code, Mode::Jit, timeout),
     );
     if tier == OracleTier::Excluded {
-        return (None, false);
+        return (None, Verdict::Excluded);
     }
     // A twin violation is a single-run finding, checked before agreement:
     // a bug breaking both engines identically agrees on the wrong answer.
@@ -1295,17 +1362,15 @@ pub async fn check_classified(
                     tier,
                     pair: Pair::Twin,
                 };
-                return (Some(d), false);
+                return (Some(d), Verdict::Unsure);
             }
         }
     }
     if interp.agrees_with_at(&jit, tier) {
-        let ran =
-            matches!(&interp, Outcome::Trace(_)) && matches!(&jit, Outcome::Trace(_));
         if let Some(d) = check_sessions(code, tier, timeout).await {
-            return (Some(d), false);
+            return (Some(d), Verdict::Unsure);
         }
-        return (None, ran);
+        return (None, Verdict::of(&interp, &jit));
     }
     // Reference-side Timeout with a value-bearing jit trace is as likely
     // an honestly slow node-walk as a wrongly terminating JIT; a
@@ -1321,12 +1386,12 @@ pub async fn check_classified(
              unrefuted, not recorded"
         );
         eprintln!("    program: {}", code.replace('\n', "\\n"));
-        return (None, false);
+        return (None, Verdict::Unsure);
     }
     if matches!(&interp, Outcome::Timeout(_)) && jit.has_events() {
         let retry = retry_one_sided_timeout(code, Mode::Interp, timeout).await;
         if retry.outcome.agrees_with_at(&jit, tier) {
-            return (None, matches!(&retry.outcome, Outcome::Trace(_)));
+            return (None, Verdict::of(&retry.outcome, &jit));
         }
         if matches!(&retry.outcome, Outcome::Timeout(_)) && interp_made_progress(&retry) {
             eprintln!(
@@ -1337,7 +1402,7 @@ pub async fn check_classified(
                 retry.budget.as_secs_f64()
             );
             eprintln!("    program: {}", code.replace('\n', "\\n"));
-            return (None, false);
+            return (None, Verdict::Unsure);
         }
     }
     // The symmetric direction is as likely a starved jit child (both
@@ -1346,14 +1411,14 @@ pub async fn check_classified(
     if matches!(&jit, Outcome::Timeout(_)) && interp.has_events() {
         let retry = retry_one_sided_timeout(code, Mode::Jit, timeout).await;
         if interp.agrees_with_at(&retry.outcome, tier) {
-            return (None, matches!(&retry.outcome, Outcome::Trace(_)));
+            return (None, Verdict::of(&interp, &retry.outcome));
         }
     }
     // Rule out nondeterminism: re-run interp at the same tier; if it
     // disagrees with itself, the program is nondeterministic there.
     let interp2 = run_program(code, Mode::Interp, timeout).await;
     if !interp.agrees_with_at(&interp2, tier) {
-        return (None, false);
+        return (None, Verdict::Unsure);
     }
     (
         Some(Divergence {
@@ -1363,7 +1428,7 @@ pub async fn check_classified(
             tier,
             pair: Pair::Engine,
         }),
-        false,
+        Verdict::Unsure,
     )
 }
 
@@ -1400,13 +1465,14 @@ fn interp_made_progress(retry: &SlowRetry) -> bool {
 /// three comparisons — each route's engine pair at the program's tier,
 /// then the route pair (node-walk engine) at final-values strength.
 /// Records the first divergence in that order; a timeout-involved
-/// disagreement retries once at 4x and drops if unresolved. `ran` is
-/// always false: callable programs stay out of the mutation ring.
+/// disagreement retries once at 4x and drops if unresolved. The verdict
+/// is the first runs' when all four agreed without a retry; a contained
+/// callable is unsure, the retries inside deciding it.
 async fn check_callable(
     code: &str,
     tier: OracleTier,
     timeout: Duration,
-) -> (Option<Divergence>, bool) {
+) -> (Option<Divergence>, Verdict) {
     let (ia, ja, ib, jb) = tokio::join!(
         run_program_routed(code, Mode::Interp, Route::InLanguage, timeout),
         run_program_routed(code, Mode::Jit, Route::InLanguage, timeout),
@@ -1414,7 +1480,7 @@ async fn check_callable(
         run_program_routed(code, Mode::Jit, Route::Dispatch, timeout),
     );
     if tier == OracleTier::Excluded {
-        return (None, false);
+        return (None, Verdict::Excluded);
     }
     // twin violations first: single-run findings
     for (o, mode, route) in [
@@ -1433,7 +1499,7 @@ async fn check_callable(
                     tier,
                     pair: Pair::Twin,
                 };
-                return (Some(d), false);
+                return (Some(d), Verdict::Unsure);
             }
         }
     }
@@ -1497,6 +1563,14 @@ async fn check_callable(
     // number of cycles), so only settled values are contractual.
     let finals_cmp =
         |a: &Outcome, b: &Outcome| a.agrees_with_at(b, OracleTier::FinalValues);
+    let verdict =
+        match tier_cmp(&ia, &ja) && finals_cmp(&ib, &jb) && route_agrees(&ia, &ib) {
+            true => match Verdict::of(&ia, &ja) {
+                Verdict::Contained => Verdict::Unsure,
+                v => v,
+            },
+            false => Verdict::Unsure,
+        };
     if let Some((a, b)) = settle(
         code,
         Mode::Interp,
@@ -1517,7 +1591,7 @@ async fn check_callable(
             tier,
             pair: Pair::Engine,
         };
-        return (Some(d), false);
+        return (Some(d), Verdict::Unsure);
     }
     if let Some((a, b)) = settle(
         code,
@@ -1539,7 +1613,7 @@ async fn check_callable(
             tier,
             pair: Pair::EngineDispatch,
         };
-        return (Some(d), false);
+        return (Some(d), Verdict::Unsure);
     }
     if let Some((a, b)) = settle(
         code,
@@ -1561,12 +1635,12 @@ async fn check_callable(
             tier,
             pair: Pair::Route,
         };
-        return (Some(d), false);
+        return (Some(d), Verdict::Unsure);
     }
     if let Some(d) = check_sessions(code, tier, timeout).await {
-        return (Some(d), false);
+        return (Some(d), Verdict::Unsure);
     }
-    (None, false)
+    (None, verdict)
 }
 
 /// Per-subject verdict from a batch child. Only agreement is trusted
@@ -2668,20 +2742,31 @@ pub async fn typemorph_scan(
     out
 }
 
+/// What `regress` concluded: the pins that now diverge, and every pin's
+/// verdict for the outcome manifest.
+pub struct Regression {
+    pub regressions: Vec<(String, Divergence)>,
+    pub verdicts: Vec<(String, Verdict)>,
+}
+
 /// Run the embedded regression corpus (every finding under `findings/`)
-/// through the oracle and return any that now diverge. Empty means the
-/// corpus is clean.
-pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
+/// through the oracle, in parallel. An agreement a loaded run cannot vouch
+/// for (both contained or both rejected, unless the outcome manifest
+/// records that class for the pin, or unsure) is retried alone at 4x,
+/// where a still-quiet pin passes on its own character. `bless` retries
+/// every one of them, so the verdicts it records are the unloaded ones.
+pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
     use tokio::task::JoinSet;
     let par = regress_parallelism();
     let entries = corpus::REGRESSION_CORPUS;
-    let mut set: JoinSet<(usize, Option<Divergence>, bool)> = JoinSet::new();
+    let recorded = recorded_verdicts(OUTCOME_MANIFEST);
+    let mut set: JoinSet<(usize, Option<Divergence>, Verdict)> = JoinSet::new();
     let mut next = 0usize;
     let spawn_one = |set: &mut JoinSet<_>, i: usize| {
         let prog = entries[i].1.to_string();
         set.spawn(async move {
-            let (d, ran) = check_classified(&prog, timeout).await;
-            (i, d, ran)
+            let (d, v) = check_verdict(&prog, timeout).await;
+            (i, d, v)
         });
     };
     while next < entries.len() && set.len() < par {
@@ -2689,16 +2774,21 @@ pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
         next += 1;
     }
     let mut regressions = Vec::new();
+    let mut verdicts: Vec<Option<Verdict>> = vec![None; entries.len()];
     let mut suspect: Vec<usize> = Vec::new();
     while let Some(res) = set.join_next().await {
-        if let Ok((i, d, ran)) = res {
+        if let Ok((i, d, v)) = res {
+            let trusted = match v {
+                Verdict::Ran | Verdict::Excluded => true,
+                Verdict::Contained | Verdict::Rejected => {
+                    !bless && recorded.get(entries[i].0) == Some(&v)
+                }
+                Verdict::Unsure => false,
+            };
             match d {
                 Some(d) => regressions.push((entries[i].0.to_string(), d)),
-                // A non-ran agreement from the parallel pass is not
-                // trusted: both-Timeout compares equal, so a pin whose
-                // budget blew on both modes under load would pass.
-                None if !ran => suspect.push(i),
-                None => (),
+                None if trusted => verdicts[i] = Some(v),
+                None => suspect.push(i),
             }
         }
         if next < entries.len() {
@@ -2706,24 +2796,63 @@ pub async fn run_regression(timeout: Duration) -> Vec<(String, Divergence)> {
             next += 1;
         }
     }
-    // retry the untrusted agreements sequentially at 4x: alone on the
-    // box, a still-quiet pin passes on its own character
     if !suspect.is_empty() {
         eprintln!(
-            "regress: retrying {} non-ran agreement(s) sequentially at full budget",
+            "regress: retrying {} untrusted agreement(s) sequentially at full budget",
             suspect.len()
         );
         for i in suspect {
-            let (name, prog) = entries[i];
-            let (d, _) = check_classified(prog, timeout * 4).await;
-            if let Some(d) = d {
-                regressions.push((name.to_string(), d));
-            } else if let Some(d) = undeclared_rejection(prog, timeout * 4).await {
-                regressions.push((name.to_string(), d));
+            let (d, v) = check_verdict(entries[i].1, timeout * 4).await;
+            match d {
+                Some(d) => regressions.push((entries[i].0.to_string(), d)),
+                None => verdicts[i] = Some(v),
             }
         }
     }
-    regressions
+    for (i, v) in verdicts.iter().enumerate() {
+        if *v == Some(Verdict::Rejected)
+            && let Some(d) = undeclared_rejection(entries[i].1, timeout * 4).await
+        {
+            regressions.push((entries[i].0.to_string(), d));
+        }
+    }
+    let verdicts = entries
+        .iter()
+        .zip(verdicts)
+        .filter_map(|((name, _), v)| v.map(|v| (name.to_string(), v)))
+        .collect();
+    Regression { regressions, verdicts }
+}
+
+/// The checked-in outcome manifest: one `verdict<TAB>name` line per
+/// corpus program, written by `regress --bless` (then rebuild to embed).
+pub static OUTCOME_MANIFEST: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/outcome.manifest"));
+
+fn recorded_verdicts(manifest: &str) -> BTreeMap<&str, Verdict> {
+    manifest
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .filter_map(|(v, n)| v.parse().ok().map(|v| (n, v)))
+        .collect()
+}
+
+/// The live verdicts against the manifest. An `unsure` on either side
+/// compares equal: it records nothing about the program.
+pub fn outcome_mismatches(manifest: &str, verdicts: &[(String, Verdict)]) -> Vec<String> {
+    let mut recorded = recorded_verdicts(manifest);
+    let mut out = Vec::new();
+    for (n, v) in verdicts {
+        match recorded.remove(n.as_str()) {
+            Some(r) if r == *v || r == Verdict::Unsure || *v == Verdict::Unsure => (),
+            Some(r) => out.push(format!("changed outcome: {n}: {r} -> {v}")),
+            None => out.push(format!("unrecorded: {n} ({v}) — bless to record")),
+        }
+    }
+    for (n, r) in recorded {
+        out.push(format!("stale manifest row: {n} ({r}) — bless to drop"));
+    }
+    out
 }
 
 /// The marker a corpus pin carries when both engines are meant to
