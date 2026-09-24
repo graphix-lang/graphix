@@ -18,6 +18,13 @@ use netidx::{publisher::FromValue, subscriber::Value};
 use netidx_core::pack::{Pack, PackError};
 use std::{ops::SubAssign, time::Duration};
 
+/// Drop a timer's private fire id: its reference and the value the
+/// runtime stored for it, which no one else can read.
+fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, id: BindId, eid: ExprId) {
+    ctx.rt.unref_var(id, eid);
+    ctx.rt.store_remove(&id);
+}
+
 #[derive(Debug)]
 pub(crate) struct AfterIdle {
     /// The latest raw timeout value — re-cast when a delivery
@@ -121,7 +128,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         let res = self.id.and_then(|id| {
             if event.variables.contains_key(&id) {
                 self.id = None;
-                ctx.rt.unref_var(id, self.eid);
+                release(ctx, id, self.eid);
                 self.last_v.clone()
             } else {
                 None
@@ -135,14 +142,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some(id) = self.id.take() {
-            ctx.rt.unref_var(id, self.eid)
+            release(ctx, id, self.eid)
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.out = TagValue::phantom();
         if let Some(id) = self.id.take() {
-            ctx.rt.unref_var(id, self.eid);
+            release(ctx, id, self.eid);
         }
         self.timeout_v = None;
         self.last_v = None
@@ -361,7 +368,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
             .id
             .and_then(|id| event.variables.get(&id).map(|now| (id, now)))
             .map(|(id, now)| {
-                ctx.rt.unref_var(id, self.eid);
+                release(ctx, id, self.eid);
                 self.id = None;
                 self.repeat -= 1;
                 if let Some(dur) = self.timeout {
@@ -379,7 +386,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some(id) = self.id.take() {
-            ctx.rt.unref_var(id, self.eid);
+            release(ctx, id, self.eid);
         }
     }
 
@@ -389,7 +396,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         self.timeout = None;
         self.repeat = Repeat::No;
         if let Some(id) = self.id.take() {
-            ctx.rt.unref_var(id, self.eid);
+            release(ctx, id, self.eid);
         }
     }
 

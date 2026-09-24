@@ -222,9 +222,10 @@ pub struct ImageEncoder {
     /// The measured size of every deferred body, for the length bound.
     pub(crate) deferred_len: usize,
     pub(crate) instances: AHashMap<LambdaInstanceId, u64>,
-    /// Every deferred instance's reference summary (`refed`, `bound`),
-    /// walked once: the measure passes and the encode all write it.
-    pub(crate) instance_refs: AHashMap<LambdaInstanceId, (Vec<BindId>, Vec<BindId>)>,
+    /// Every deferred instance's reference summary, walked once: the
+    /// measure passes and the encode all write it.
+    pub(crate) instance_refs:
+        AHashMap<LambdaInstanceId, crate::node::callsite::RefsSummary>,
 }
 
 impl ImageEncoder {

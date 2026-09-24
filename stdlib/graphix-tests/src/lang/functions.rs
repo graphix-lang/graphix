@@ -1897,3 +1897,143 @@ const TAIL_REBIND_CARRIES_BOTTOM: &str = r#"
 run!(tail_rebind_carries_bottom, TAIL_REBIND_CARRIES_BOTTOM, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "[null, i64:7]"
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// An omitted default is checked against its own parameter, found by
+// name, when the declared type lists the labels in another order.
+const DEFAULT_CHECKED_BY_NAME: &str = r#"
+{
+  let f: fn(?#b: i64, ?#a: string, x: i64) -> string =
+    |#a: string = "s", #b: i64 = 2, x: i64| "[a] [b] [x]";
+  f(1)
+}
+"#;
+
+run!(default_checked_by_name, DEFAULT_CHECKED_BY_NAME, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "s 2 1")
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A fn-typed parameter after a labeled one resolves to its own
+// argument, not the next positional one.
+const FN_PARAM_AFTER_LABELED: &str = r#"
+{
+  let apply2 = |#k = 0, f: fn(x: i64) -> i64, g: fn(x: i64) -> i64| f(k) + g(k) * 100;
+  apply2(|x| x + 1, |x| x + 2)
+}
+"#;
+
+run!(fn_param_after_labeled, FN_PARAM_AFTER_LABELED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(201)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A call's own refusals are placed at the call.
+const DUPLICATE_LABEL_PLACED: &str = r#"
+{
+  let f = |#a: i64, y: i64| a + y;
+  f(#a: 1, #a: 2, 3)
+}
+"#;
+
+run!(duplicate_label_placed, DUPLICATE_LABEL_PLACED, |v: Result<&Value>| {
+    matches!(v, Err(e) if {
+        let e = format!("{e:#}");
+        e.contains("duplicate argument #a") && e.contains("in: f(#a: 1, #a: 2, 3)")
+    })
+}; graphix_package_core::testing::FuseExpect::None);
+
+const DEAD_VARIADIC_PLACED: &str = r#"
+str::concat()
+"#;
+
+run!(dead_variadic_placed, DEAD_VARIADIC_PLACED, |v: Result<&Value>| {
+    matches!(v, Err(e) if {
+        let e = format!("{e:#}");
+        e.contains("never fires") && e.contains("in: str::concat()")
+    })
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A function that requires `#a` cannot stand where `#a` may be omitted,
+// so a connect that would leave a call without it is refused.
+const REQUIRED_LABEL_CONNECT: &str = r#"
+{
+  let f: fn(?#a: i64, x: i64) -> i64 = |#a: i64 = 1, x: i64| a + x;
+  let g = |#a: i64, x: i64| a * x;
+  f <- sys::time::timer(duration:0.02s, false) ~ g;
+  f(10)
+}
+"#;
+
+run!(required_label_connect_refused, REQUIRED_LABEL_CONNECT, |v: Result<&Value>| {
+    matches!(v, Err(_))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A quiet bottom argument inside a tail loop's frame is bottom to the
+// callee: after `g(5)` ran and `x` went bottom, `f(2, x)` is bottom, as
+// the inline body `x + 1` is.
+const FRAME_QUIET_BOTTOM_CALL: &str = r#"{
+  let t = array::iter([0, 1, 2, 3, 4]);
+  let g = |y| y + 1;
+  let rec f = |n, x| select n { 0 => g(x), n => f(n - 1, x) };
+  let n = uniq(select t { 0 => 0, 1 => 1, 2 => 1, _ => 2 });
+  let b = uniq(select t { 0 => 1, 1 => 1, _ => 0 });
+  f(n, 5 / b)
+}"#;
+
+const FRAME_QUIET_BOTTOM_INLINE: &str = r#"{
+  let t = array::iter([0, 1, 2, 3, 4]);
+  let rec f = |n, x| select n { 0 => x + 1, n => f(n - 1, x) };
+  let n = uniq(select t { 0 => 0, 1 => 1, 2 => 1, _ => 2 });
+  let b = uniq(select t { 0 => 1, 1 => 1, _ => 0 });
+  f(n, 5 / b)
+}"#;
+
+async fn frame_quiet_bottom(code: &str, fusion_disabled: bool) -> Result<()> {
+    let (values, _) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
+    assert_eq!(super::dense_deltas::as_i64s(&values), vec![6, 6]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn frame_quiet_bottom_call_interp() -> Result<()> {
+    frame_quiet_bottom(FRAME_QUIET_BOTTOM_CALL, true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn frame_quiet_bottom_call_jit() -> Result<()> {
+    frame_quiet_bottom(FRAME_QUIET_BOTTOM_CALL, false).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn frame_quiet_bottom_inline_interp() -> Result<()> {
+    frame_quiet_bottom(FRAME_QUIET_BOTTOM_INLINE, true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn frame_quiet_bottom_inline_jit() -> Result<()> {
+    frame_quiet_bottom(FRAME_QUIET_BOTTOM_INLINE, false).await
+}
+
+// A `let rec` annotation reads a trait parameter as a bounded
+// quantifier, as a plain `let` does.
+const REC_ANNOTATION_TRAIT_PARAM: &str = r#"
+{
+  let rec f: fn(x: Display) -> string = |x| "a";
+  f(1)
+}
+"#;
+
+run!(rec_annotation_trait_param, REC_ANNOTATION_TRAIT_PARAM, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "a")
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A `let` that shadows a builtin binding is not a builtin.
+const BUILTIN_BINDING_SHADOWED: &str = r#"
+{
+  let f = |@args: [Number, Array<[Number, Array<Number>]>]| -> Number 'core_sum;
+  let f = |@args: i64| -> i64 42;
+  f()
+}
+"#;
+
+run!(builtin_binding_shadowed, BUILTIN_BINDING_SHADOWED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+}; graphix_package_core::testing::FuseExpect::Jit);

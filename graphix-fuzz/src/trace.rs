@@ -8,7 +8,12 @@
 //! across runs. Node-walk is canonical: `first_difference(interp, jit)`
 //! classifies what the JIT did wrong and is part of the bug bucket.
 
-use graphix_compiler::{NoUserEvent, expr::ExprId, node::lambda::LambdaDef};
+use arcstr::{ArcStr, literal};
+use graphix_compiler::{
+    NoUserEvent,
+    expr::ExprId,
+    node::lambda::{DefOrigin, LambdaDef},
+};
 use graphix_rt::{GXRt, NoExt, TraceEvent, TraceSegment};
 use netidx::publisher::Value;
 
@@ -63,7 +68,12 @@ fn normalize(v: &Value) -> Value {
             }
             Task::Visit(v) => {
                 out.push(match v.downcast_ref::<LambdaDef<GXRt<NoExt>, NoUserEvent>>() {
-                    Some(def) => Value::String(def.src.clone()),
+                    Some(def) => match &def.origin {
+                        DefOrigin::Source { spec, .. } => {
+                            Value::String(ArcStr::from(spec.to_string()))
+                        }
+                        DefOrigin::Runtime => Value::String(literal!("<runtime>")),
+                    },
                     None => v.clone(),
                 })
             }

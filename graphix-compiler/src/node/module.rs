@@ -252,7 +252,7 @@ fn check_sig<R: Rt, E: UserEvent>(
         {
             // every name the `let` binds, each with its own binding; a
             // single name's type is the whole pattern's
-            let single = bind.single_id();
+            let single = bind.pattern.single_bind_id();
             let mut ids: LPooled<Vec<BindId>> = LPooled::take();
             bind.pattern.ids(&mut |id| ids.push(id));
             for id in ids.drain(..) {

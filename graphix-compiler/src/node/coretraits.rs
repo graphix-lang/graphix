@@ -7,9 +7,9 @@
 //! implementation resolves per key like NaN: a bottom key sorts below
 //! every real key and equal to other bottom keys.
 
-use super::genn;
+use super::genn::SynthCall;
 use crate::{
-    BindId, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    BindId, Event, ExecCtx, Rt, Scope, TagValue, UserEvent,
     abstract_value::{self, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
     expr::{ExprId, ModPath},
@@ -95,19 +95,12 @@ fn hook_of(
     let Some(bind) = im.methods.get(t.method()).copied().or(m.default) else {
         return Err(anyhow!("impl {} for {} has no {}", def.name, im.target, m.name));
     };
-    // CR claude for eric: [structure] this lookup is `method_ftype` (below)
-    // re-spelled; call it and `replace_tvars` the result.
-    let ftype = match env.by_id.get(&bind).map(|b| &b.typ) {
-        Some(Type::Fn(ft)) => Arc::new(ft.replace_tvars(open)),
-        _ => return Err(anyhow!("core trait method {bind:?} is not a function")),
+    let Some(ftype) = method_ftype(env, bind) else {
+        return Err(anyhow!("core trait method {bind:?} is not a function"));
     };
-    Ok(Hook { bind, typ: target.clone(), ftype })
+    Ok(Hook { bind, typ: target.clone(), ftype: Arc::new(ftype.replace_tvars(open)) })
 }
 
-// CR claude for eric: [readability] two doc comments stacked on one fn; the
-// first two lines are a leftover of the second.
-/// The identity of the trait's implementation list: a registration or
-/// removal replaces it.
 /// The trait's implementation list, whose identity is the version an
 /// entry was resolved against: a registration or removal replaces it.
 fn impls_version(env: &Env, t: CoreTrait) -> Option<Arc<Vec<Arc<ImplDef>>>> {
@@ -143,25 +136,17 @@ fn impl_for(
             Type::Abstract { id: target, .. } if target == id => (),
             _ => continue,
         }
-        // CR claude for eric: [bug] the fresh variables copy their bounds
-        // verbatim, and a bound that names another declared variable still
-        // points at the impl's ORIGINAL cell (aliased in `impl_head`, settled by
-        // the body check), not the fresh one: `impl<'a, 'b: ['a, null]> Eq for
-        // Pair<'a, 'b> { let eq = |x, y| true }` is never consulted, so
-        // `q1 == q2` over `Pair<string, [string, null]>` prints false (probed,
-        // both engines); with `'b: [string, null]` it prints true. Make every
-        // fresh cell first, then `replace_tvars(&open)` each bound.
         let open: LPooled<AHashMap<ArcStr, Type>> = im
             .params
             .iter()
-            .map(|tv| {
-                let fresh = TVar::empty_named(tv.name.clone());
-                for c in tv.cell_constraints() {
-                    fresh.add_cell_constraint(c);
-                }
-                (tv.name.clone(), Type::TVar(fresh))
-            })
+            .map(|tv| (tv.name.clone(), Type::TVar(TVar::empty_named(tv.name.clone()))))
             .collect();
+        for tv in im.params.iter() {
+            let Some(Type::TVar(fresh)) = open.get(&tv.name) else { continue };
+            for c in tv.cell_constraints() {
+                fresh.add_cell_constraint(c.replace_tvars(&open));
+            }
+        }
         let head = canonical.replace_tvars(&open);
         let applies = head.contains(env, typ).unwrap_or(false)
             && typ.contains(env, &head).unwrap_or(false);
@@ -185,8 +170,7 @@ pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
 /// binding over synthesized argument bindings the dispatch writes
 /// before each call.
 struct HookSite<R: Rt, E: UserEvent> {
-    site: Node<R, E>,
-    args: SmallVec<[BindId; 2]>,
+    call: SynthCall<R, E>,
     first: bool,
 }
 
@@ -243,10 +227,8 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
 /// the ones not in a dispatch), never the caller's, so a loan needs no
 /// event from the caller and lends the context to nothing but the
 /// dispatch.
-// CR claude for eric: [style] `AHashMap` is imported, yet here and in `Default`
-// it is spelled `ahash::AHashMap`.
 pub struct CoreHookSites<R: Rt, E: UserEvent> {
-    sites: ahash::AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
+    sites: AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
     template: Option<E>,
     spare: Vec<Event<E>>,
 }
@@ -268,7 +250,7 @@ impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
 
 impl<R: Rt, E: UserEvent> Default for CoreHookSites<R, E> {
     fn default() -> Self {
-        Self { sites: ahash::AHashMap::new(), template: None, spare: Vec::new() }
+        Self { sites: AHashMap::new(), template: None, spare: Vec::new() }
     }
 }
 
@@ -278,34 +260,17 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for CoreHookSites<R, E> {
     }
 }
 
-// CR claude for eric: [bug] leak: each site binds `#seam..` names at the root
-// scope (`genn::bind`) and `call_hook_over` `store_insert`s its argument ids, but
-// deleting a site (a stale entry in `take_site`, a `return_site` version
-// mismatch) only runs `site.delete`, which neither unbinds the env names nor
-// removes the store entries. Every rebuild after an impl-list change (REPL,
-// dynamic module) leaves both behind, and the store pins the last compared
-// values. Give the site a teardown that unbinds and `store_remove`s its args.
 fn build_site<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     t: CoreTrait,
     h: &Hook,
 ) -> Result<HookSite<R, E>> {
-    let ftype = &h.ftype;
-    let scope = Scope::root();
     let top_id = ExprId::new();
-    let mut args: SmallVec<[BindId; 2]> = SmallVec::new();
-    let mut nodes: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
-    for k in 0..t.arity() {
-        let name = format_compact!("#seam{}_{k}", top_id.inner());
-        let (id, n) = genn::bind(ctx, &scope.lexical, &name, h.typ.clone(), top_id);
-        args.push(id);
-        nodes.push(n);
-    }
-    let fnode = genn::reference(ctx, h.bind, Type::Fn(ftype.clone()), top_id);
-    let mut site = genn::apply(fnode, scope, nodes, &ftype, top_id);
-    site.typecheck0(ctx)?;
-    site.typecheck1(ctx)?;
-    Ok(HookSite { site, args, first: true })
+    let prefix = format_compact!("#seam{}", top_id.inner());
+    let types = (0..t.arity()).map(|_| h.typ.clone());
+    let call =
+        SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id)?;
+    Ok(HookSite { call, first: true })
 }
 
 /// Run the implementation of `t` on `args`, values of one abstract
@@ -370,7 +335,7 @@ fn take_site<R: Rt, E: UserEvent>(
         let mut e = ctx.core_hook_sites.sites.remove(&key).unwrap();
         for (_, c) in e.by_type.iter_mut() {
             for mut s in c.iter_mut().flat_map(|c| c.pool.drain(..)) {
-                s.site.delete(ctx);
+                s.call.delete(ctx);
             }
         }
     }
@@ -408,7 +373,7 @@ fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, mut loan: Loan<R, E
         .and_then(|e| e.candidate(loan.slot, &loan.typ));
     match pool {
         Some(c) => c.pool.push(loan.site),
-        None => loan.site.site.delete(ctx),
+        None => loan.site.call.delete(ctx),
     }
 }
 
@@ -421,8 +386,8 @@ fn call_hook_over<R: Rt, E: UserEvent>(
     let mut loan = take_site(ctx, t, args)?;
     let s = &mut loan.site;
     // every dispatch is a fresh invocation
-    s.site.reset_replay(ctx);
-    for (id, g) in s.args.iter().zip(args.iter()) {
+    s.call.site.reset_replay(ctx);
+    for (id, g) in s.call.args.iter().zip(args.iter()) {
         let v = as_value(g);
         ctx.rt.store_insert(*id, TagValue::fired(v.clone()));
         event.variables.insert(*id, TagValue::fired(v));
@@ -431,7 +396,7 @@ fn call_hook_over<R: Rt, E: UserEvent>(
         s.first = false;
         event.init = true;
     }
-    let tv = s.site.update(ctx, event);
+    let tv = s.call.site.update(ctx, event);
     let r = if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) };
     event.init = false;
     return_site(ctx, loan);

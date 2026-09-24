@@ -577,3 +577,18 @@ const QOP_IN_POSTFIX_CHAIN: &str = r#"
 run!(qop_in_postfix_chain, QOP_IN_POSTFIX_CHAIN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 });
+
+// A builtin's callback raises to the caller's handler, as a Graphix
+// HOF's does.
+const BUILTIN_CALLBACK_RAISES_TO_CALLER: &str = r#"
+{
+  let c = array::iter([1, 2, 3]);
+  let r: [`Caught, null] = null;
+  { catch(e) r <- e ~ `Caught; filter(c, |v| select v { 2 => error(`Boom)?, _ => true }) };
+  any(r$, sys::time::timer(duration:0.2s, false) ~ `Timeout)
+}
+"#;
+
+run!(builtin_callback_raises_to_caller, BUILTIN_CALLBACK_RAISES_TO_CALLER, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "\"Caught\""
+}; graphix_package_core::testing::FuseExpect::None);

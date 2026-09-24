@@ -11,49 +11,48 @@ use super::{
 use crate::{
     ExecCtx, LambdaId, Rt, UserEvent,
     expr::{Arg, Expr},
-    node::lambda::{DefOrigin, LambdaDef, make_init},
+    node::lambda::{DefBody, DefOrigin, LambdaDef, make_init},
     typ::FnType,
 };
-use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use netidx_core::{
-    pack::{Pack, PackError},
-    utils::Either,
-};
+use netidx_core::pack::{Pack, PackError};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use triomphe::Arc;
 
-fn body_len(body: &Either<Expr, ArcStr>) -> usize {
+fn body_len(body: &DefBody) -> usize {
     1 + match body {
-        Either::Left(e) => e.encoded_len(),
-        Either::Right(name) => name.encoded_len(),
+        DefBody::Expr(e) => e.encoded_len(),
+        DefBody::BuiltIn(name) => name.encoded_len(),
+        DefBody::Collection(intrinsic) => intrinsic.encoded_len(),
     }
 }
 
-fn body_encode(
-    body: &Either<Expr, ArcStr>,
-    buf: &mut impl BufMut,
-) -> Result<(), PackError> {
+fn body_encode(body: &DefBody, buf: &mut impl BufMut) -> Result<(), PackError> {
     match body {
-        Either::Left(e) => {
+        DefBody::Expr(e) => {
             buf.put_u8(0);
             e.encode(buf)
         }
-        Either::Right(name) => {
+        DefBody::BuiltIn(name) => {
             buf.put_u8(1);
             name.encode(buf)
+        }
+        DefBody::Collection(intrinsic) => {
+            buf.put_u8(2);
+            intrinsic.encode(buf)
         }
     }
 }
 
-fn body_decode(buf: &mut impl Buf) -> Result<Either<Expr, ArcStr>, PackError> {
+fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
     if !buf.has_remaining() {
         return Err(PackError::BufferShort);
     }
     match buf.get_u8() {
-        0 => Ok(Either::Left(Pack::decode(buf)?)),
-        1 => Ok(Either::Right(Pack::decode(buf)?)),
+        0 => Ok(DefBody::Expr(Pack::decode(buf)?)),
+        1 => Ok(DefBody::BuiltIn(Pack::decode(buf)?)),
+        2 => Ok(DefBody::Collection(Pack::decode(buf)?)),
         _ => Err(PackError::UnknownTag),
     }
 }
@@ -61,7 +60,6 @@ fn body_decode(buf: &mut impl Buf) -> Result<Either<Expr, ArcStr>, PackError> {
 pub(crate) fn def_len<R: Rt, E: UserEvent>(def: &LambdaDef<R, E>) -> usize {
     let LambdaDef {
         id,
-        src,
         env,
         scope,
         argspec,
@@ -76,7 +74,6 @@ pub(crate) fn def_len<R: Rt, E: UserEvent>(def: &LambdaDef<R, E>) -> usize {
     } = def;
     let DefOrigin::Source { body, flags, spec } = origin else { return 0 };
     id.encoded_len()
-        + src.encoded_len()
         + lexical_len(env)
         + scope_len(scope)
         + argspec.encoded_len()
@@ -96,7 +93,6 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
 ) -> Result<(), PackError> {
     let LambdaDef {
         id,
-        src,
         env,
         scope,
         argspec,
@@ -114,7 +110,6 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         return Err(PackError::Application(super::NOT_QUIESCENT));
     };
     id.encode(buf)?;
-    src.encode(buf)?;
     lexical_encode(env, buf)?;
     scope_encode(scope, buf)?;
     argspec.encode(buf)?;
@@ -134,7 +129,6 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     buf: &mut impl Buf,
 ) -> Result<LambdaId, PackError> {
     let id = LambdaId::decode(buf)?;
-    let src = Pack::decode(buf)?;
     let env = lexical_decode(buf)?;
     let scope = scope_decode(buf)?;
     let argspec: Arc<[Arg]> = Pack::decode(buf)?;
@@ -158,7 +152,6 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     );
     ctx.wrap_lambda(LambdaDef {
         id,
-        src,
         env,
         scope,
         argspec,

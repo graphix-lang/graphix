@@ -657,7 +657,7 @@ fn mark_recursion<R: Rt, E: UserEvent>(
             .get(instance)
             .map(|f| f.effect.is_sync() && f.stateless)
             .unwrap_or_else(|| lambda_is_stateless(ctx, g.id()));
-        if structural && stateless && mark_tail_sites(g.body(), *instance, g.id()) {
+        if structural && stateless && mark_tail_sites(g.body(), *instance) {
             g.set_tail_loop(true);
         }
     }
@@ -668,7 +668,6 @@ fn mark_recursion<R: Rt, E: UserEvent>(
 fn mark_tail_sites<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     instance: LambdaInstanceId,
-    callee: LambdaId,
 ) -> bool {
     fusion::for_each_tail_leaf(
         node,
@@ -680,9 +679,7 @@ fn mark_tail_sites<R: Rt, E: UserEvent>(
                 let Some(order) = positional_arg_order(cs) else {
                     return false;
                 };
-                cs.is_self_tail_call.store(true, Ordering::Relaxed);
-                *cs.tail_arg_order.lock() = Some(order);
-                *cs.callee_lambda_id.lock() = Some(callee);
+                cs.mark_self_tail_call(order);
                 true
             }
             _ => false,

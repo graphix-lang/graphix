@@ -554,20 +554,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
-        let etyp = deref_typ!("struct", ctx, self.source.typ(),
-            Some(Type::Struct(flds)) => {
-                let typ = flds.iter().enumerate().find_map(|(i, (n, t, _))| {
-                    if &self.field_name == n {
-                        Some((i, t.clone()))
-                    } else {
-                        None
-                    }
-                });
-                match typ {
-                    Some((i, t)) => Ok((i, t)),
-                    None => bail!("in struct, unknown field {}", self.field_name),
-                }
-        });
+        let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
         let (idx, typ) = wrap!(self, etyp)?;
         self.sorted_field_idx = Some(idx);
         if let ExprKind::StructRef { field, .. } = &self.spec.kind
@@ -976,6 +963,58 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     }
 }
 
+/// The type of `.field` over `source`: a tuple's field, an error's
+/// payload, or an abstract type's payload where its definition is
+/// visible from `scope`.
+pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    scope: &ModPath,
+    source: &Type,
+    field: usize,
+) -> Result<Type> {
+    deref_typ!("tuple", ctx, source,
+        Some(Type::Tuple(flds)) => flds
+            .get(field)
+            .map(|t| t.clone())
+            .ok_or_else(|| anyhow!("in tuple, no such field {}", field)),
+        Some(Type::Error(t)) => {
+            if field != 0 {
+                bail!("no such field {}", field);
+            }
+            Ok((**t).clone())
+        },
+        Some(Type::Abstract { id, params }) => {
+            if field != 0 {
+                bail!("no such field {}: an abstract type has only its payload .0", field);
+            }
+            match ctx.env.abstract_rep(*id, scope) {
+                Some(r) => Ok(r.instantiate_with(params)),
+                None => bail!(
+                    "the definition of this abstract type is not visible here, so \
+                     its payload cannot be read"
+                ),
+            }
+        }
+    )
+}
+
+/// The sorted position and type of the field `name` over `source`, a
+/// struct.
+pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    source: &Type,
+    name: &ArcStr,
+) -> Result<(usize, Type)> {
+    deref_typ!("struct", ctx, source,
+        Some(Type::Struct(flds)) => {
+            match flds.iter().enumerate().find(|(_, (n, _, _))| n == name) {
+                Some((i, (_, t, _))) => Ok((i, t.clone())),
+                None => bail!("in struct, unknown field {name}"),
+            }
+        }
+    )
+}
+
 #[derive(Debug)]
 pub struct TupleRef<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
@@ -1107,30 +1146,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
-        let etyp = deref_typ!("tuple", ctx, self.source.typ(),
-            Some(Type::Tuple(flds)) => flds
-                .get(self.field)
-                .map(|t| t.clone())
-                .ok_or_else(|| anyhow!("in tuple, no such field {}", self.field)),
-            Some(Type::Error(t)) => {
-                if self.field != 0 {
-                    bail!("no such field {}", self.field);
-                }
-                Ok((**t).clone())
-            },
-            Some(Type::Abstract { id, params }) => {
-                if self.field != 0 {
-                    bail!("no such field {}: an abstract type has only its payload .0", self.field);
-                }
-                match ctx.env.abstract_rep(*id, &self.scope) {
-                    Some(r) => Ok(r.instantiate_with(params)),
-                    None => bail!(
-                        "the definition of this abstract type is not visible here, so \
-                         its payload cannot be read"
-                    ),
-                }
-            }
-        );
+        let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
         let etyp = wrap!(self, etyp)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
     }

@@ -1247,6 +1247,20 @@ impl Expr {
         }
     }
 
+    /// A compiler-built expression standing at `at`'s origin and position,
+    /// undecorated and with no written end.
+    pub(crate) fn synth(at: &Expr, kind: ExprKind) -> Self {
+        Expr {
+            id: ExprId::new(),
+            ori: at.ori.clone(),
+            pos: at.pos,
+            kind,
+            dec: None,
+            str_form: Default::default(),
+            end: Default::default(),
+        }
+    }
+
     /// fold over self and all of self's sub expressions
     pub fn fold<T, F: FnMut(T, &Self) -> T>(&self, init: T, f: &mut F) -> T {
         crate::stack::ensure_sufficient(|| self.fold_inner(init, f))

@@ -199,7 +199,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             ("pending settles", !self.pending_settles.iter().all(|s| s.is_empty())),
             ("an open definition gate", self.def_gate_depth != 0),
             ("lambdas resolving", !self.resolving_lambdas.lock().is_empty()),
-            ("active lambdas", !self.active_lambdas.is_empty()),
             ("core hook sites", !self.core_hook_sites.is_empty()),
         ];
         if let Some((what, _)) = busy.iter().find(|(_, b)| *b) {

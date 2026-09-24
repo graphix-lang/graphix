@@ -501,3 +501,18 @@ fn stdlib_packages_check() {
     }
     assert!(checked >= 20, "{checked}");
 }
+
+#[test]
+fn a_place_field_shows_its_type() {
+    let src = "\
+type P = { a: { b: i64 } };
+let s: P = { a: { b: 1 } };
+let r = &s.a.b;
+*r
+";
+    let mut c = Client::start(&[("main.gx", src)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "&s.a.|b", "b: i64");
+    hover_is(&mut c, "&s.|a", "a: { b: i64 }");
+}

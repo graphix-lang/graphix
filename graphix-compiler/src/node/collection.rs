@@ -33,7 +33,7 @@ use triomphe::Arc;
 
 /// A traversal that calls its callback once per element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
-pub(crate) enum MapOp {
+pub enum MapOp {
     Init,
     Map,
     Filter,
@@ -53,7 +53,7 @@ impl MapOp {
 
 /// The collection a HOF traverses and builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
-pub(crate) enum Flavor {
+pub enum Flavor {
     Array,
     List,
     CMap,
@@ -61,7 +61,7 @@ pub(crate) enum Flavor {
 
 /// A collection HOF: its traversal and its collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
-pub(crate) enum CollectionIntrinsic {
+pub enum CollectionIntrinsic {
     Map(MapOp, Flavor),
     Fold(Flavor),
 }

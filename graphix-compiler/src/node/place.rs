@@ -3,15 +3,18 @@
 //! accessors; a read applies the path to the root's value, a write
 //! rebuilds the root's value along it.
 
+use crate::abstract_value;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
-use netidx_value::{ValArray, Value};
+use netidx_value::{ValArray, ValError, Value};
 use smallvec::SmallVec;
+use std::ops::{Deref, DerefMut};
 
 /// One accessor of a path: an array or tuple index (negative from the
-/// end, as `a[-1]` reads), a struct field, or a map key.
+/// end, as `a[-1]` reads; `0` is also an error's or an abstract
+/// value's payload), a struct field, or a map key.
 #[derive(Debug, Clone, PartialEq, netidx_derive::Pack)]
 pub enum Step {
     Index(i64),
@@ -19,30 +22,58 @@ pub enum Step {
     Key(Value),
 }
 
-// CR claude for eric: [style] an alias cannot carry `Pack`, hence the free
-// path_len/path_encode/path_decode trio its callers (mod.rs, bind.rs) must
-// remember; a `Path` newtype implementing Pack is the one codec.
-pub type Path = SmallVec<[Step; 2]>;
+/// A place's accessors, from its root binding's value.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Path(SmallVec<[Step; 2]>);
 
-pub(crate) fn path_len(path: &Path) -> usize {
-    varint_len(path.len() as u64) + path.iter().map(|s| s.encoded_len()).sum::<usize>()
+impl Path {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
-pub(crate) fn path_encode(path: &Path, buf: &mut impl BufMut) -> Result<(), PackError> {
-    encode_varint(path.len() as u64, buf);
-    for s in path {
-        s.encode(buf)?;
+impl Deref for Path {
+    type Target = SmallVec<[Step; 2]>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
-    Ok(())
 }
 
-pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<Path, PackError> {
-    let n = decode_varint(buf)? as usize;
-    let mut path = Path::new();
-    for _ in 0..n {
-        path.push(Step::decode(buf)?);
+impl DerefMut for Path {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
-    Ok(path)
+}
+
+impl From<&[Step]> for Path {
+    fn from(steps: &[Step]) -> Self {
+        Self(SmallVec::from(steps))
+    }
+}
+
+impl Pack for Path {
+    fn encoded_len(&self) -> usize {
+        varint_len(self.len() as u64)
+            + self.iter().map(|s| s.encoded_len()).sum::<usize>()
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        encode_varint(self.len() as u64, buf);
+        for s in self.iter() {
+            s.encode(buf)?;
+        }
+        Ok(())
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let n = decode_varint(buf)? as usize;
+        let mut path = Path::new();
+        for _ in 0..n {
+            path.push(Step::decode(buf)?);
+        }
+        Ok(path)
+    }
 }
 
 /// A queued write to a bound variable: the whole value, or a patch
@@ -60,18 +91,18 @@ fn index_of(len: usize, i: i64) -> Result<usize> {
         .ok_or_else(|| anyhow!("index {i} out of range for length {len}"))
 }
 
-// CR claude for eric: [style] both callers re-match `pairs[j]` as a 2-array
-// with an `unreachable!()` for what this fn already checked; return the
-// pair's value (and index) so the panic arms go.
-/// A struct value is an array of `[name, value]` pairs.
-fn field_of(pairs: &ValArray, name: &str) -> Result<usize> {
+/// A struct value is an array of `[name, value]` pairs: the position
+/// and value of the pair named `name`.
+fn field_of<'a>(pairs: &'a ValArray, name: &str) -> Result<(usize, &'a Value)> {
     pairs
         .iter()
-        .position(|p| match p {
-            Value::Array(kv) if kv.len() == 2 => {
-                matches!(&kv[0], Value::String(n) if &**n == name)
-            }
-            _ => false,
+        .enumerate()
+        .find_map(|(i, p)| match p {
+            Value::Array(kv) if kv.len() == 2 => match &kv[0] {
+                Value::String(n) if &**n == name => Some((i, &kv[1])),
+                _ => None,
+            },
+            _ => None,
         })
         .ok_or_else(|| anyhow!("no field {name}"))
 }
@@ -83,12 +114,11 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
     for step in path {
         cur = match (step, cur) {
             (Step::Index(i), Value::Array(a)) => &a[index_of(a.len(), *i)?],
-            (Step::Field(name), Value::Array(pairs)) => {
-                match &pairs[field_of(pairs, name)?] {
-                    Value::Array(kv) => &kv[1],
-                    _ => unreachable!(),
-                }
+            (Step::Index(0), Value::Error(e)) => e,
+            (Step::Index(0), v) if abstract_value::get(v).is_some() => {
+                &abstract_value::get(v).unwrap().payload
             }
+            (Step::Field(name), Value::Array(pairs)) => field_of(pairs, name)?.1,
             (Step::Key(k), Value::Map(m)) => {
                 m.get(k).ok_or_else(|| anyhow!("no key {k}"))?
             }
@@ -98,12 +128,14 @@ pub fn read_path(root: &Value, path: &[Step]) -> Result<Value> {
     Ok(cur.clone())
 }
 
-// CR claude for eric: [readability] a map step here compares keys too
-// (`get`, `insert`), and the runtime's patch delivery does arm the hooks, but
-// only read_path states the invariant; say it here as well.
-/// `root` with the value at `path` replaced by `v`.
+/// `root` with the value at `path` replaced by `v`. A map step compares
+/// keys, so the caller runs this under `coretraits::with_hooks`.
 pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
     let Some((step, rest)) = path.split_first() else { return Ok(v) };
+    if let (Step::Index(0), Some(g)) = (step, abstract_value::get(root)) {
+        let payload = write_path(&g.payload, rest, v)?;
+        return Ok(abstract_value::wrap(g.id, g.name.clone(), g.params.clone(), payload));
+    }
     match (step, root) {
         (Step::Index(i), Value::Array(a)) => {
             let j = index_of(a.len(), *i)?;
@@ -114,12 +146,12 @@ pub fn write_path(root: &Value, path: &[Step], v: Value) -> Result<Value> {
                     .map(|(k, e)| if k == j { inner.clone() } else { e.clone() }),
             )))
         }
+        (Step::Index(0), Value::Error(e)) => {
+            Ok(Value::Error(ValError::new(write_path(e, rest, v)?)))
+        }
         (Step::Field(name), Value::Array(pairs)) => {
-            let j = field_of(pairs, name)?;
-            let inner = match &pairs[j] {
-                Value::Array(kv) => write_path(&kv[1], rest, v)?,
-                _ => unreachable!(),
-            };
+            let (j, cur) = field_of(pairs, name)?;
+            let inner = write_path(cur, rest, v)?;
             Ok(Value::Array(ValArray::from_iter_exact(pairs.iter().enumerate().map(
                 |(k, e)| {
                     if k == j {
