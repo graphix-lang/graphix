@@ -409,6 +409,28 @@ run!(catch_through_call, CATCH_THROUGH_CALL, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A `?` in an inline collection callback is baked into the calling
+// kernel, so two instances of `g` under different catches are two kernels.
+const CATCH_IN_INLINE_CALLBACK_PER_INSTANCE: &str = r#"
+{
+    let h = |x: [i64, Error<`E(string)>]| -> i64 x?;
+    let g = |a: Array<[i64, Error<`E(string)>]>| -> Array<i64> array::map(a, h);
+    let a1: Array<[i64, Error<`E(string)>]> = [1, error(`E("one"))];
+    let a2: Array<[i64, Error<`E(string)>]> = [2, error(`E("two"))];
+    let got1 = never();
+    let got2 = never();
+    { catch(e) got1 <- e ~ "h1"; g(a1) };
+    { catch(e) got2 <- e ~ "h2"; g(a2) };
+    (got1, got2)
+}
+"#;
+
+run!(
+    catch_in_inline_callback_per_instance,
+    CATCH_IN_INLINE_CALLBACK_PER_INSTANCE,
+    |v: Result<&Value>| { format!("{}", v.unwrap()) == r#"["h1", "h2"]"# }
+);
+
 // A connect of the catch variable into a binding over a different
 // error union is a type mismatch; the timeout turns a hang into a
 // failure.

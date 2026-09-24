@@ -1,39 +1,56 @@
-//! [`Kernel`]: the [`Apply<R, E>`] wrapper around a JIT-compiled
-//! kernel. It drives the feeders, packs their values across the JIT
-//! ABI boundary, and unpacks the result. A `Kernel` cannot exist
-//! without a compiled wrapper; a region whose JIT fails is never
-//! spliced and its nodes keep node-walking.
+//! [`FusedKernel`]: the `Update` node over a JIT-compiled region. It
+//! drives the region's input feeders, packs their values across the
+//! JIT ABI boundary, and unpacks the result. It exists only over a
+//! compiled wrapper: a region whose JIT fails is never spliced and its
+//! nodes keep node-walking.
 
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
-use crate::node::WakeBit;
 use crate::{
-    Apply, Event, ExecCtx, Node, Refs, Rt, UserEvent,
+    Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    expr::Expr,
     fusion::{
         emit::{
             STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
             record_decode, record_encode, record_len,
         },
-        emit_helpers::{KERNEL_ABORT, TagValue},
-        kernel_abi::{self, KernelSig},
+        emit_helpers::{
+            self, EMPTY_ARR, KERNEL_ABORT, SELF_BLOCK_GEN, SELF_BLOCK_REACHED, TagValue,
+            free_self_block_tree, free_slot_chain, reclaim_self_block_tree,
+        },
+        kernel_abi::{KernelSig, ParamKind},
     },
-    image::ImageBuf,
+    image::{
+        self, ImageBuf,
+        nodes::{NodeTag, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len},
+    },
+    node::WakeBit,
+    tval::{Tag, value_words},
+    typ::Type,
 };
+use anyhow::Result;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
-use netidx_value::{ValArray, Value};
+use netidx_value::Value;
 use poolshark::local::LPooled;
-use std::sync::Arc;
+use smallvec::SmallVec;
+use std::sync::LazyLock;
+use triomphe::Arc;
 
-/// Wraps a [`KernelSig`] as an [`Apply<R, E>`]: each `update` drives
-/// the input nodes, decides whether anything fired, and dispatches
-/// into the compiled wrapper.
-pub struct Kernel {
+/// The placeholder words of an absent composite input.
+static EMPTY_ARRAY: LazyLock<Value> = LazyLock::new(|| Value::Array(EMPTY_ARR.clone()));
+
+/// An `Update` node over a compiled kernel and its input feeders.
+pub struct FusedKernel<R: Rt, E: UserEvent> {
+    spec: Expr,
+    typ: Type,
+    /// One feeder Node per kernel input slot.
+    feeders: Box<[Node<R, E>]>,
     /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 2.
     slept: WakeBit,
     /// The ABI contract; the `Arc` pointer is also the kernel's identity
     /// in the JIT's `by_kernel` cache.
     kernel: Arc<KernelSig>,
-    jit: Arc<WrappedKernel>,
+    jit: WrappedKernel,
     /// Per-instance state words (wire slot 1): prev-length and first-call
     /// words. Zero means "no previous observation"; consumers store
     /// `value + 1`.
@@ -52,7 +69,7 @@ pub struct Kernel {
     tree_size: u64,
 }
 
-impl Drop for Kernel {
+impl<R: Rt, E: UserEvent> Drop for FusedKernel<R, E> {
     fn drop(&mut self) {
         // Only instance death frees the slot chains and activation trees;
         // neither `sleep` nor `reset_replay` touches them.
@@ -60,68 +77,53 @@ impl Drop for Kernel {
         // tree is freed once, by the layout the wrapper describes.
         for a in self.jit.slot_table_words.iter() {
             let p = std::mem::replace(&mut self.state[a.rel as usize], 0);
-            unsafe {
-                super::emit_helpers::free_slot_chain(
-                    p,
-                    a.own_levels as u64,
-                    a.leaf.as_deref(),
-                )
-            };
+            unsafe { free_slot_chain(p, a.own_levels as u64, a.leaf.as_deref()) };
         }
         for b in self.jit.state_self_blocks.iter() {
             let p = std::mem::replace(&mut self.state[b.rel as usize], 0);
-            unsafe { super::emit_helpers::free_self_block_tree(p, &b.slots) };
+            unsafe { free_self_block_tree(p, &b.slots) };
         }
         if let Some(l) = self.jit.own_site.as_ref() {
             for b in l.self_blocks.iter() {
                 let p = std::mem::replace(&mut self.site[b.rel as usize], 0);
-                unsafe { super::emit_helpers::free_self_block_tree(p, &b.slots) };
+                unsafe { free_self_block_tree(p, &b.slots) };
             }
-        }
-        if let Some(l) = self.jit.own_site.as_ref() {
             for a in l.anchors.iter() {
                 let p = std::mem::replace(&mut self.site[a.rel as usize], 0);
-                unsafe {
-                    super::emit_helpers::free_slot_chain(
-                        p,
-                        a.own_levels as u64,
-                        a.leaf.as_deref(),
-                    )
-                };
+                unsafe { free_slot_chain(p, a.own_levels as u64, a.leaf.as_deref()) };
             }
         }
     }
 }
 
-impl std::fmt::Debug for Kernel {
+impl<R: Rt, E: UserEvent> std::fmt::Debug for FusedKernel<R, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Kernel")
+        f.debug_struct("FusedKernel")
             .field("fn_name", &self.kernel.fn_name)
-            .field("params", &self.kernel.params.len())
+            .field("inputs", &self.feeders.len())
             .finish()
     }
 }
 
-impl Kernel {
-    /// The ABI contract this node executes.
-    pub fn kernel(&self) -> &Arc<KernelSig> {
-        &self.kernel
-    }
-
-    pub fn new(
+impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
+    pub(crate) fn new(
+        spec: Expr,
+        typ: Type,
         kernel: Arc<KernelSig>,
-        n_args: usize,
-        wrapped: Arc<WrappedKernel>,
-    ) -> ::anyhow::Result<Self> {
-        debug_assert_eq!(n_args, kernel.params.len(), "Kernel arity = param count");
-        let state = vec![0u64; wrapped.state_words].into_boxed_slice();
-        let site =
-            vec![0u64; wrapped.own_site.as_ref().map(|l| l.words as usize).unwrap_or(0)]
-                .into_boxed_slice();
-        Ok(Self {
+        jit: WrappedKernel,
+        feeders: Box<[Node<R, E>]>,
+    ) -> Node<R, E> {
+        debug_assert_eq!(feeders.len(), kernel.params.len(), "one feeder per param");
+        let state = vec![0u64; jit.state_words].into_boxed_slice();
+        let site = vec![0u64; jit.own_site.as_ref().map_or(0, |l| l.words as usize)]
+            .into_boxed_slice();
+        Node::new(Self {
+            spec,
+            typ,
+            feeders,
             slept: WakeBit::default(),
             kernel,
-            jit: wrapped,
+            jit,
             state,
             site,
             resident: TagValue::phantom(),
@@ -129,32 +131,43 @@ impl Kernel {
             tree_size: 0,
         })
     }
-}
 
-impl Kernel {
-    /// Rebuild from an image: the wrapper record installs into the
-    /// context's module and the node allocates fresh state.
-    pub(crate) fn image_decode<R: Rt, E: UserEvent>(
+    /// The kernel signature this region fused into.
+    pub fn kernel(&self) -> &Arc<KernelSig> {
+        &self.kernel
+    }
+
+    /// The feeder nodes, one per kernel input slot.
+    pub fn feeders(&self) -> &[Node<R, E>] {
+        &self.feeders
+    }
+
+    /// Rebuild a region from an image: the wrapper record installs into
+    /// the context's module and the node allocates fresh state.
+    pub(crate) fn image_decode(
         ctx: &mut ExecCtx<R, E>,
-        n_args: usize,
         buf: &mut &[u8],
-    ) -> Result<Self, PackError> {
+    ) -> Result<Node<R, E>, PackError> {
+        let spec = Expr::decode(buf)?;
+        let typ = Type::decode(buf)?;
+        let feeders = decode_nodes(ctx, buf)?.into_boxed_slice();
         let state_words = decode_varint(buf)? as usize;
         let slot_table_words = Pack::decode(buf)?;
         let own_site = Pack::decode(buf)?;
         let state_self_blocks = Pack::decode(buf)?;
         let wrapper = record_decode(buf)?;
-        let wrapped = ctx
+        let jit = ctx
             .fusion
-            .jit
-            .lock()
-            .load_wrapped(
-                &wrapper,
-                state_words,
-                slot_table_words,
-                own_site,
-                state_self_blocks,
-            )
+            .jit()
+            .and_then(|mut jit| {
+                jit.load_wrapped(
+                    &wrapper,
+                    state_words,
+                    slot_table_words,
+                    own_site,
+                    state_self_blocks,
+                )
+            })
             .map_err(|e| {
                 log::warn!(
                     "loading the kernel `{}` from the image: {e:#}",
@@ -163,32 +176,102 @@ impl Kernel {
                 PackError::InvalidFormat
             })?;
         let kernel = wrapper.kernel.clone();
-        Self::new(kernel, n_args, Arc::new(wrapped)).map_err(|_| PackError::InvalidFormat)
+        if feeders.len() != kernel.params.len() {
+            return Err(PackError::InvalidFormat);
+        }
+        Ok(Self::new(spec, typ, kernel, jit, feeders))
+    }
+
+    /// Nothing ran yet: every word the image does not carry is initial.
+    fn quiescent(&self) -> bool {
+        let mut slept = self.slept;
+        self.state.iter().chain(self.site.iter()).all(|w| *w == 0)
+            && !slept.take()
+            && self.self_gen == 0
+            && self.tree_size == 0
+            && self.resident.tag() == Tag::STALE_BOTTOM
+            && self.resident.with_value(|v| matches!(v, Value::Null))
+    }
+
+    /// The `(disc, payload)` words of one input: the Value encoding of
+    /// its production with the tag folded on, or a placeholder under
+    /// TAINT for an absent one. The words borrow the feeder's resident
+    /// (or a static): the kernel clones what it keeps on entry.
+    fn stage(p: &ParamKind, name: &str, tv: &TagValue) -> (u64, u64) {
+        let tag = tv.tag();
+        // The typechecker and the runtime disagree about this slot: a
+        // compiler bug, not a program's, and nothing downstream could be
+        // trusted past it.
+        let mismatch = |v: &Value| -> ! {
+            panic!(
+                "kernel param `{name}`: runtime {v:?} does not match the compiled {p:?} slot"
+            )
+        };
+        if tag.is_bottom() {
+            let flag = TAINT as u64 | if tag.triggers() { 0 } else { STALE as u64 };
+            let [disc, payload] = match p {
+                ParamKind::Scalar(prim) => [prim_to_value_disc(*prim) as u64, 0],
+                ParamKind::Array { .. }
+                | ParamKind::Tuple { .. }
+                | ParamKind::Struct { .. } => value_words(&EMPTY_ARRAY),
+                ParamKind::String => value_words(&Value::String(arcstr::ArcStr::new())),
+                ParamKind::Variant { .. }
+                | ParamKind::Nullable { .. }
+                | ParamKind::Value { .. } => value_words(&Value::Null),
+            };
+            return (disc | flag, payload);
+        }
+        let flag = if tag.is_fired() { 0 } else { STALE as u64 };
+        tv.with_value(|v| {
+            let [disc, payload] = match (p, v) {
+                // A narrow Value's upper payload bytes are padding.
+                (ParamKind::Scalar(prim), v) => match pack_value_to_u64(v, *prim) {
+                    Some(payload) => [prim_to_value_disc(*prim) as u64, payload],
+                    None => mismatch(v),
+                },
+                (
+                    ParamKind::Array { .. }
+                    | ParamKind::Tuple { .. }
+                    | ParamKind::Struct { .. },
+                    Value::Array(_),
+                )
+                | (ParamKind::String, Value::String(_))
+                | (
+                    ParamKind::Variant { .. }
+                    | ParamKind::Nullable { .. }
+                    | ParamKind::Value { .. },
+                    _,
+                ) => value_words(v),
+                (_, v) => mismatch(v),
+            };
+            (disc | flag, payload)
+        })
     }
 }
 
-// CR claude for eric: [structure] `Kernel` is never a CallSite's Apply: its one
-// owner is `FusedKernel`, which forwards every Update method to it. The trait
-// impl (and `delete`/`reset_replay`/`refs` no-ops, the infallible `new` returning
-// `Result`, `n_args` kept only for a debug_assert) is a layer that pays no rent;
-// fold these fields and methods into `FusedKernel`.
-impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
+impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     fn image_len(&self) -> usize {
         let w = &self.jit;
-        varint_len(w.state_words as u64)
+        tag_len()
+            + self.spec.encoded_len()
+            + self.typ.encoded_len()
+            + nodes_len(&self.feeders)
+            + varint_len(w.state_words as u64)
             + w.slot_table_words.encoded_len()
             + w.own_site.encoded_len()
             + w.state_self_blocks.encoded_len()
             + record_len(&w.wrapper)
     }
 
-    // CR claude for eric: [risk] `state`, `site`, `resident`, `slept`, `self_gen`
-    // and `tree_size` are dropped silently: a kernel imaged after it ran decodes
-    // as one that never ran (every prev-length/first-call word reads "no
-    // previous"). Refuse with NOT_QUIESCENT unless all are initial, as CallSite
-    // does for a bound dynamic callee.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if !self.quiescent() {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         let w = &self.jit;
+        put_tag(NodeTag::Fused, buf);
+        self.spec.encode(buf)?;
+        self.typ.encode(buf)?;
+        encode_nodes(&self.feeders, buf)?;
         encode_varint(w.state_words as u64, buf);
         w.slot_table_words.encode(buf)?;
         w.own_site.encode(buf)?;
@@ -196,28 +279,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         record_encode(&w.wrapper, buf)
     }
 
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut any_updated = false;
         let mut any_bottom = false;
-        // CR claude for eric: [perf] Every input is cloned into `polled` each update,
-        // even when the kernel then rides, and every composite is cloned again into
-        // `staged` below. Stage (disc, payload, keepalive) directly in this loop
-        // and move the value; one Vec, one refcount bump per input.
-        let mut polled: LPooled<Vec<TagValue>> = LPooled::take();
-        for src in from.iter_mut() {
+        let mut polled: SmallVec<[&TagValue; 8]> = SmallVec::new();
+        for src in self.feeders.iter_mut() {
             let tv = src.update(ctx, event);
             let tag = tv.tag();
-            if tag.triggers() {
-                any_updated = true;
-            }
+            any_updated |= tag.triggers();
             any_bottom |= tag.is_bottom();
-            polled.push(tv.clone());
+            polled.push(tv);
         }
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
@@ -249,121 +321,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         }
         #[cfg(debug_assertions)]
         record_fusion_invocation();
-        let k = &self.kernel;
-        debug_assert_eq!(polled.len(), k.params.len(), "one production per kernel param");
-        let wrapped = &self.jit;
-        let taint = TAINT as u64;
-        let stale = STALE as u64;
-        let bits = |v: &Value| -> (u64, u64) {
-            let [d, p] = crate::tval::value_words(v);
-            (d, p)
-        };
-        // Each staged `(disc, payload, keepalive)`: the keepalive Value
-        // holds the payload's refcount across the wrapper call. Scalars
-        // go through `pack_value_to_u64` because a narrow Value's upper
-        // payload bytes are padding.
-        use kernel_abi::ParamKind;
-        let staged: LPooled<Vec<(u64, u64, Value)>> = k
-            .params
-            .iter()
-            .zip(polled.iter())
-            .map(|(p, tv)| {
-                let ptag = tv.tag();
-                let pv = if ptag.is_bottom() { None } else { Some(tv) };
-                let flag = if ptag.is_fired() { 0 } else { stale };
-                let bflag = taint | if ptag.triggers() { 0 } else { stale };
-                // The typechecker and the runtime disagree about this slot:
-                // a compiler bug, not a program's, and nothing downstream
-                // could be trusted past it.
-                let mismatch = |v: &Value| -> ! {
-                    panic!(
-                        "kernel param `{}`: runtime {v:?} does not match the \
-                         compiled {:?} slot",
-                        p.name, p.kind,
-                    )
-                };
-                match (&p.kind, pv) {
-                    (ParamKind::Scalar(prim), Some(tv)) => {
-                        match tv.with_value(|v| pack_value_to_u64(v, *prim)) {
-                            Some(payload) => {
-                                let disc = prim_to_value_disc(*prim) as u64 | flag;
-                                (disc, payload, Value::Null)
-                            }
-                            None => tv.with_value(|v| mismatch(v)),
-                        }
-                    }
-                    (ParamKind::Scalar(prim), None) => {
-                        let disc = prim_to_value_disc(*prim) as u64 | bflag;
-                        (disc, 0, Value::Null)
-                    }
-                    (
-                        ParamKind::Array { .. }
-                        | ParamKind::Tuple { .. }
-                        | ParamKind::Struct { .. },
-                        v,
-                    ) => {
-                        let staged = v.map(|tv| {
-                            tv.with_value(|v| match v {
-                                Value::Array(_) => v.clone(),
-                                v => mismatch(v),
-                            })
-                        });
-                        match staged {
-                            Some(v) => {
-                                let (disc, payload) = bits(&v);
-                                (disc | flag, payload, v)
-                            }
-                            None => {
-                                // CR claude for eric: [style] Builds a new (pooled)
-                                // empty array where the design's placeholder is a
-                                // clone of emit_helpers' static EMPTY_ARR, which
-                                // `graphix_list_to_valarray`/`graphix_cmap_to_pairs`
-                                // also bypass. One placeholder, one spelling.
-                                let v = Value::Array(ValArray::from([]));
-                                let (disc, payload) = bits(&v);
-                                (disc | bflag, payload, v)
-                            }
-                        }
-                    }
-                    (ParamKind::String, v) => {
-                        let staged = v.map(|tv| {
-                            tv.with_value(|v| match v {
-                                Value::String(_) => v.clone(),
-                                v => mismatch(v),
-                            })
-                        });
-                        match staged {
-                            Some(v) => {
-                                let (disc, payload) = bits(&v);
-                                (disc | flag, payload, v)
-                            }
-                            None => {
-                                let v = Value::String(arcstr::ArcStr::new());
-                                let (disc, payload) = bits(&v);
-                                (disc | bflag, payload, v)
-                            }
-                        }
-                    }
-                    (
-                        ParamKind::Variant { .. }
-                        | ParamKind::Nullable { .. }
-                        | ParamKind::Value { .. },
-                        v,
-                    ) => match v {
-                        Some(tv) => {
-                            let v = tv.value_cloned();
-                            let (disc, payload) = bits(&v);
-                            (disc | flag, payload, v)
-                        }
-                        None => {
-                            let v = Value::Null;
-                            let (disc, payload) = bits(&v);
-                            (disc | bflag, payload, v)
-                        }
-                    },
-                }
-            })
-            .collect();
         let mut slots: LPooled<Vec<u64>> = LPooled::take();
         // Slot 0: bit 0 init view, bit 1 quiet frame, bit 2 wake.
         let init = if ctx.frame_depth > 0 { ctx.dispatch_init } else { event.init };
@@ -376,9 +333,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             self.state.as_mut_ptr() as u64
         });
         slots.push(if self.site.is_empty() { 0 } else { self.site.as_mut_ptr() as u64 });
-        for (disc, payload, _keepalive) in staged.iter() {
-            slots.push(*disc);
-            slots.push(*payload);
+        for (p, tv) in self.kernel.params.iter().zip(polled.drain(..)) {
+            let (disc, payload) = Self::stage(&p.kind, &p.name, tv);
+            slots.push(disc);
+            slots.push(payload);
         }
         debug_assert_eq!(
             slots.len(),
@@ -386,7 +344,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             "packed slot count must match the kernel ABI layout"
         );
         let mut out: [u64; 2] = [0, 0];
-        let f = unsafe { wrapped.fn_ptr() };
+        let f = unsafe { self.jit.fn_ptr() };
         KERNEL_ABORT.with(|c| c.set(false));
         // A nested kernel's reaches must not count toward this tree, so
         // the enclosing thread-local values are saved and restored.
@@ -394,9 +352,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             || self.jit.own_site.as_ref().is_some_and(|l| !l.self_blocks.is_empty());
         let (shrink_gen, saved_gen, saved_reached) = if has_self_blocks {
             self.self_gen = self.self_gen.wrapping_add(1);
-            let sg =
-                super::emit_helpers::SELF_BLOCK_GEN.with(|c| c.replace(self.self_gen));
-            let sr = super::emit_helpers::SELF_BLOCK_REACHED.with(|c| c.replace(0));
+            let sg = SELF_BLOCK_GEN.with(|c| c.replace(self.self_gen));
+            let sr = SELF_BLOCK_REACHED.with(|c| c.replace(0));
             (Some(self.self_gen), sg, sr)
         } else {
             (None, 0, 0)
@@ -407,8 +364,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         // and `out` is two words the wrapper fills.
         let ((), raises) =
             crate::node::coretraits::with_display_hooks(ctx, event, |env| {
-                super::emit_helpers::with_qop_raises(|| {
-                    super::emit_helpers::with_kernel_env(env, || unsafe {
+                emit_helpers::with_qop_raises(|| {
+                    emit_helpers::with_kernel_env(env, || unsafe {
                         f(slots.as_ptr(), out.as_mut_ptr());
                     })
                 })
@@ -432,16 +389,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         // Must run before the pending early return. An aborted run
         // reached only a prefix, so its reach count is not a shrink signal.
         if let Some(generation) = shrink_gen {
-            use super::emit_helpers::{
-                SELF_BLOCK_GEN, SELF_BLOCK_REACHED, reclaim_self_block_tree,
-            };
             let reached = SELF_BLOCK_REACHED.with(|c| c.get());
             if !pending {
                 if reached < self.tree_size {
-                    let jit = self.jit.clone();
                     // SAFETY: the root words are this kernel's own state,
                     // laid out as the wrapper describes.
-                    for b in jit.state_self_blocks.iter() {
+                    for b in self.jit.state_self_blocks.iter() {
                         unsafe {
                             reclaim_self_block_tree(
                                 (&mut self.state[b.rel as usize]) as *mut u64,
@@ -451,7 +404,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                             )
                         };
                     }
-                    if let Some(l) = jit.own_site.as_ref() {
+                    if let Some(l) = self.jit.own_site.as_ref() {
                         for b in l.self_blocks.iter() {
                             unsafe {
                                 reclaim_self_block_tree(
@@ -496,28 +449,64 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        for feeder in self.feeders.iter_mut() {
+            feeder.delete(ctx);
+        }
+    }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         if crate::dbgenv::gxdbg_kernel_sleep() {
-            eprintln!("KERNEL-APPLY-SLEEP {}", self.kernel.fn_name);
+            eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
         }
         // Sleep is pause: interior memory survives it.
         self.slept.set();
+        for feeder in self.feeders.iter_mut() {
+            feeder.sleep(ctx);
+        }
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
         // A kernel holds no replay caches; its interior memory is semantic.
+        for feeder in self.feeders.iter_mut() {
+            feeder.reset_replay(ctx);
+        }
     }
 
-    fn refs(&self, _refs: &mut Refs) {}
+    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        Ok(())
+    }
+
+    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        Ok(())
+    }
+
+    fn typ(&self) -> &Type {
+        &self.typ
+    }
+
+    fn refs(&self, refs: &mut Refs) {
+        for feeder in self.feeders.iter() {
+            feeder.refs(refs);
+        }
+    }
+
+    fn spec(&self) -> &Expr {
+        &self.spec
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::FusedKernel(self)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::fusion::emit::unpack_u64_to_value;
-    use kernel_abi::PrimType;
+    use crate::fusion::{
+        emit::{pack_value_to_u64, unpack_u64_to_value},
+        kernel_abi::PrimType,
+    };
+    use netidx_value::Value;
 
     #[test]
     fn value_boundary_bits_round_trip() {

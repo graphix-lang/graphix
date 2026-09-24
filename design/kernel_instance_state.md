@@ -75,7 +75,7 @@ and a new emission context only has to say which coordinates it adds.
 
 The kernel ABI's leading cycle-context words (`CTX_WIRE_SLOTS`,
 `kernel_abi.rs`) carry in slot 1 `state: *mut u64`, a pointer to a
-zeroed `Box<[u64]>` owned by the runtime `Kernel` node (null when the
+zeroed `Box<[u64]>` owned by the runtime `FusedKernel` node (null when the
 kernel claimed none). A root-body emission site claims the next index
 from a counter (`BodyCx::claim_state_word`) and emits loads/stores at
 `state + 8*idx`; the final count is `KernelSig.state_words`. Claims are
@@ -107,7 +107,7 @@ each enclosing frame contributes one directory ensure sized by that
 frame's `len`, gated by that frame's source taint, indexed by that
 frame's current ordinal; the chain ends in a leaf table with one word
 per slot. Truncation at any level frees the dropped subtrees
-(`free_slot_chain`, shared with `Kernel::drop`); regrow re-creates
+(`free_slot_chain`, shared with `FusedKernel::drop`); regrow re-creates
 fresh — ragged inner lengths for free. The chain is emitted at the
 nested preheader, once per enclosing iteration, so ensure calls follow
 the loop structure's natural cost. `BodyCx::open_slot_tables` pushes a
@@ -151,7 +151,7 @@ pointer, uniform on every kernel signature:
   stateless approximation (`SelWord::Guarded`); a callee loop's chain
   branches around its ensure calls.
 
-A region parent has no kernel caller, so the runtime `Kernel` supplies
+A region parent has no kernel caller, so the runtime `FusedKernel` supplies
 its own `site` block when the compiled body claimed site words.
 
 ### Activation: per-activation block trees
@@ -170,11 +170,11 @@ callee defined after its caller would run below a recursion with no
 interior memory.
 
 **Shrink = delete**, the JIT twin of the interp's activation delete
-(`recursive_activations.md` §2): each `Kernel` invocation bumps a
+(`recursive_activations.md` §2): each `FusedKernel` invocation bumps a
 generation and every reached activation block is stamped with it; after
 the run, if the reach count fell below the live tree size, the
 `state`/`site` `SelfBlock` trees are walked and every subtree not
-stamped current is freed, its source word nulled so `Kernel::drop`
+stamped current is freed, its source word nulled so `FusedKernel::drop`
 never double-frees. The walk is gated on the count (a stable or growing
 recursion pays only the counter) and written in safe Rust rather than
 emitted CLIF — the reclaim is transparent to the differential, so the
@@ -188,7 +188,7 @@ and depth is unbounded.
 Not a mutable-state channel for user programs (`<-` is the only
 cross-cycle mutation, and a connect node-walks), not a second
 bottom/taint channel, and not selection memory. The words carry firing
-bookkeeping only, invisible to value semantics; `Kernel::reset_replay`
+bookkeeping only, invisible to value semantics; `FusedKernel::reset_replay`
 is a no-op because there is nothing to reset. The former slot 3 (a
 derivation-changed bit) died with the organic-firing ruling — firing
 needs no recursion machinery — and the selection words, DynCall

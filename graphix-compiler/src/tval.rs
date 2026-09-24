@@ -12,7 +12,7 @@ use netidx_value::Value;
 use std::fmt;
 
 /// The reserved tag byte — the upper 8 bits of the discriminant word.
-const TAG_MASK: u64 = 0xFF00_0000_0000_0000;
+pub(crate) const TAG_MASK: u64 = 0xFF00_0000_0000_0000;
 
 /// The tag byte of a [`TagValue`]. The kernel's disc constants
 /// (`fusion/emit.rs` `STALE`/`TAINT`) are these bits `<< 56`.

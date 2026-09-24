@@ -92,6 +92,54 @@ const SYNC_ON_ASYNC: &str = r#"
 
 run!(sync_on_async, SYNC_ON_ASYNC, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
 
+// A `&` evaluates its whole expression: an async builtin two levels
+// under the reference makes the body async.
+const SYNC_ON_ASYNC_UNDER_REF: &str = r#"
+{
+  #[sync]
+  let f = |n: i64| { let r = &(throttle(#rate: duration:0.001s, n) + 1); *r };
+  f(i64:1)
+}
+"#;
+
+run!(sync_on_async_under_ref, SYNC_ON_ASYNC_UNDER_REF, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
+// A dynamic module runs code its source delivers at run time.
+const SYNC_ON_DYNAMIC_MODULE: &str = r#"
+{
+  #[sync]
+  let f = |x: i64| {
+    let s = mod t dynamic {
+      sandbox whitelist [core];
+      sig { val foo: i64 };
+      source "let foo = 42"
+    };
+    (s, x)
+  };
+  f(i64:1)
+}
+"#;
+
+run!(sync_on_dynamic_module, SYNC_ON_DYNAMIC_MODULE, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
+// An async builtin in a dynamic module's source expression.
+const ASYNC_ON_DYNAMIC_MODULE: &str = r#"
+{
+  #[async]
+  let f = |x: i64| {
+    let s = mod t dynamic {
+      sandbox whitelist [core];
+      sig { val foo: i64 };
+      source sys::time::after_idle(duration:0.001s, "let foo = 42")
+    };
+    select s { error as _ => never(), null as _ => t::foo + x }
+  };
+  f(i64:1)
+}
+"#;
+
+run!(async_on_dynamic_module, ASYNC_ON_DYNAMIC_MODULE, |v: Result<&Value>| matches!(v, Ok(Value::I64(43))); graphix_package_core::testing::FuseExpect::None);
+
 const ASYNC_OK: &str = r#"
 {
   #[async]

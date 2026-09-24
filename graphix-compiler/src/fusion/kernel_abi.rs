@@ -4,7 +4,7 @@
 //! the runtime shape classifier ([`abi_kind`] / [`AbiKind`]), the
 //! encodability gate ([`freeze_for_abi`]), and [`KernelSig`], the
 //! source-ordered parameter list every ABI site derives its wire layout
-//! from. [`KnownFusedFn`] is the caller-side cross-kernel call signature.
+//! from.
 
 use crate::{
     BindId,
@@ -144,27 +144,6 @@ pub enum AbiKind {
     Null,
 }
 
-// CR claude for eric: [dead] No callers anywhere: `to_abi_param_kind`,
-// `AbiParamKind::wire_words` (always 2), `array_scalar_prim`, `unit_type`,
-// `bytes_type`, `datetime_type`, `duration_type`, `tuple_type`, `struct_type`,
-// `variant_type_from_cases`.
-impl AbiKind {
-    /// The [`AbiParamKind`] for this shape; `None` for `Unit`/`Null`.
-    pub fn to_abi_param_kind(self) -> Option<AbiParamKind> {
-        Some(match self {
-            AbiKind::Scalar(p) => AbiParamKind::Scalar(p),
-            AbiKind::Array => AbiParamKind::Array,
-            AbiKind::Tuple => AbiParamKind::Tuple,
-            AbiKind::Struct => AbiParamKind::Struct,
-            AbiKind::String => AbiParamKind::String,
-            AbiKind::Variant => AbiParamKind::Variant,
-            AbiKind::Nullable => AbiParamKind::Nullable,
-            AbiKind::Value => AbiParamKind::Value,
-            AbiKind::Unit | AbiKind::Null => return None,
-        })
-    }
-}
-
 /// True for a `Type::Primitive` carrying exactly the single bit `which`.
 fn is_single_prim(t: &Type, which: Typ) -> bool {
     t.with_deref(|r| match r {
@@ -210,12 +189,11 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
                 };
             }
             Type::Ref(tr) => {
-                let key = ExpandKey::Ref(tr.clone());
-                if Seen::contains(seen, &key) {
+                if Seen::find(seen, tr).is_some() {
                     return None;
                 }
                 let expanded = tr.expand_cell();
-                let node = Seen::push(seen, key);
+                let node = Seen::push(seen, tr.clone());
                 return expanded.as_ref().and_then(|c| abi_kind_d(c, Some(&node)));
             }
             _ => {}
@@ -298,68 +276,48 @@ pub fn nullable_error_marked(t: &Type) -> Option<bool> {
     }
 }
 
-/// One named-type expansion on the path from the root, for cycle
-/// detection while concretizing a type. Structural nesting is not an
-/// expansion; only following a `Ref` to its definition is.
-// CR claude for eric: [structure] A one-variant enum every user destructures with
-// `let ExpandKey::Ref(tr) = key`; use `TypeRef` directly. `Seen::contains_fp`
-// and `outermost_occurrence` are the same walk twice, and the latter returns the
-// nearest match, not the outermost (they coincide only because a key never
-// repeats on the path): one `find` returning `Option<&TypeRef>`.
-#[derive(Clone, PartialEq)]
-pub(crate) enum ExpandKey {
-    Ref(TypeRef),
-}
-
-/// Stack-allocated cons-list of the [`ExpandKey`]s on the current path
-/// from the root. Only a `Ref` expansion extends it, so a recurring key
-/// means true type recursion, not structural depth.
+/// Stack-allocated cons-list of the named-type expansions on the
+/// current path from the root, for cycle detection while concretizing
+/// a type. Only following a `Ref` to its definition extends it, so a
+/// recurring key means true type recursion, not structural depth.
 pub(crate) struct Seen<'a> {
-    key: ExpandKey,
+    key: TypeRef,
     /// [`expand_key_fp`] of `key`; membership compares it before full equality.
     fp: u64,
     len: usize,
     prev: Option<&'a Seen<'a>>,
 }
 
-/// Fingerprint of an [`ExpandKey`]; a collision only costs a full-equality check.
-pub(crate) fn expand_key_fp(key: &ExpandKey) -> u64 {
+/// Fingerprint of an expansion key; a collision only costs a
+/// full-equality check.
+pub(crate) fn expand_key_fp(key: &TypeRef) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = ahash::AHasher::default();
-    let ExpandKey::Ref(tr) = key;
-    tr.scope.hash(&mut h);
-    tr.name.hash(&mut h);
-    tr.params.len().hash(&mut h);
+    key.scope.hash(&mut h);
+    key.name.hash(&mut h);
+    key.params.len().hash(&mut h);
     h.finish()
 }
 
 impl<'a> Seen<'a> {
-    pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: ExpandKey) -> Self {
+    pub(crate) fn push(prev: Option<&'a Seen<'a>>, key: TypeRef) -> Self {
         let fp = expand_key_fp(&key);
         Self { key, fp, len: Self::len(prev) + 1, prev }
     }
 
-    pub(crate) fn contains(cur: Option<&Self>, key: &ExpandKey) -> bool {
-        Self::contains_fp(cur, expand_key_fp(key), key)
+    /// The occurrence of `key` on the path. Keys compare cell-blind, so
+    /// the one found may have its resolution cell filled where `key`'s
+    /// is not; a key never repeats on one path.
+    pub(crate) fn find<'b>(cur: Option<&'b Self>, key: &TypeRef) -> Option<&'b TypeRef> {
+        Self::find_fp(cur, expand_key_fp(key), key)
     }
 
-    pub(crate) fn contains_fp(mut cur: Option<&Self>, fp: u64, key: &ExpandKey) -> bool {
-        while let Some(s) = cur {
-            if s.fp == fp && &s.key == key {
-                return true;
-            }
-            cur = s.prev;
-        }
-        false
-    }
-
-    /// The outer occurrence's resolution cell is filled where the inner
-    /// occurrence's may not be (keys compare cell-blind).
-    pub(crate) fn outermost_occurrence<'b>(
+    /// [`Self::find`] with the key's fingerprint in hand.
+    pub(crate) fn find_fp<'b>(
         mut cur: Option<&'b Self>,
-        key: &ExpandKey,
-    ) -> Option<&'b ExpandKey> {
-        let fp = expand_key_fp(key);
+        fp: u64,
+        key: &TypeRef,
+    ) -> Option<&'b TypeRef> {
         while let Some(s) = cur {
             if s.fp == fp && &s.key == key {
                 return Some(&s.key);
@@ -376,16 +334,14 @@ impl<'a> Seen<'a> {
 
 /// Bounds the expansion chain for non-regular recursion
 /// (`type T<'a> = T<Array<'a>>`), whose keys never repeat.
-const MAX_FREEZE_EXPANSIONS: usize = 256;
+pub(crate) const MAX_FREEZE_EXPANSIONS: usize = 256;
 
-/// The kernel-ABI encodability gate: the fully concrete (TVar-free)
-/// form of `t` over the fusable subset, or `None` if any part has no
-/// kernel encoding. Accept/reject matches [`abi_kind`] at each level;
-/// `Map`/`Error` stop the recursion (opaque `Value` on the wire).
-// CR claude for eric: [readability] Not TVar-free: `Map`/`Error` are returned as
-// found and an option/result's non-success member is cloned unfrozen, so
-// `[i64, Error<'e>]` freezes with the `'e` cell inside. Say which parts are
-// concrete, or freeze those members too.
+/// The kernel-ABI encodability gate: the concrete form of `t` over the
+/// fusable subset, or `None` if any part has no kernel encoding.
+/// Accept/reject matches [`abi_kind`] at each level. Every part the
+/// kernel reads structurally is TVar-free; a `Map`, an `Error` and an
+/// option/result's non-success member are kept as found (they cross
+/// as an opaque `Value`), so a TVar may survive inside them.
 ///
 /// A recursive named type freezes to an opaque leaf: the recurring
 /// `Ref` stays unexpanded, so the output is finite and the value
@@ -533,9 +489,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
             // (cell-filled) occurrence with its params frozen so the
             // leaf stays TVar-free.
             Type::Ref(tr) => {
-                let key = ExpandKey::Ref(tr.clone());
-                if let Some(matched) = Seen::outermost_occurrence(seen, &key) {
-                    let ExpandKey::Ref(outer) = matched;
+                if let Some(outer) = Seen::find(seen, tr) {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                         tr.params.iter().map(|p| freeze_for_abi_d(p, seen)).collect();
                     let mut frozen = frozen?;
@@ -547,7 +501,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                     return Err(NonCanonical);
                 }
                 let expanded = tr.expand_cell().ok_or(Unresolved)?;
-                let node = Seen::push(seen, key);
+                let node = Seen::push(seen, tr.clone());
                 freeze_for_abi_d(&expanded, Some(&node))
             }
             _ => Err(Unsupported),
@@ -649,11 +603,6 @@ pub fn scalar_prim(t: &Type) -> Option<PrimType> {
     }
 }
 
-/// The element [`PrimType`] of an `Array<P>` with a scalar element; `None` otherwise.
-pub fn array_scalar_prim(t: &Type) -> Option<PrimType> {
-    array_elem(t).and_then(|e| scalar_prim(e))
-}
-
 /// True for types whose kernel representation is a two-register `Value`:
 /// `Variant`, `Nullable`, and the [`AbiKind::Value`] group.
 pub fn is_value_shape(t: &Type) -> bool {
@@ -665,34 +614,9 @@ pub fn prim_type(p: PrimType) -> Type {
     Type::Primitive(p.to_typ().into())
 }
 
-/// The `string` type.
-pub fn string_type() -> Type {
-    Type::Primitive(Typ::String.into())
-}
-
 /// The `null` type.
 pub fn null_type() -> Type {
     Type::Primitive(Typ::Null.into())
-}
-
-/// The unit type, `Type::Bottom`.
-pub fn unit_type() -> Type {
-    Type::Bottom
-}
-
-/// The `bytes` type.
-pub fn bytes_type() -> Type {
-    Type::Primitive(Typ::Bytes.into())
-}
-
-/// The `datetime` type.
-pub fn datetime_type() -> Type {
-    Type::Primitive(Typ::DateTime.into())
-}
-
-/// The `duration` type.
-pub fn duration_type() -> Type {
-    Type::Primitive(Typ::Duration.into())
 }
 
 /// A placeholder `Map<null, null>` type; codegen only reads its
@@ -702,45 +626,6 @@ pub fn map_type() -> Type {
         key: triomphe::Arc::new(null_type()),
         value: triomphe::Arc::new(null_type()),
     }
-}
-
-/// `Array<elem>`.
-pub fn array_type(elem: Type) -> Type {
-    Type::Array(triomphe::Arc::new(elem))
-}
-
-/// `(T0, T1, ...)` from per-slot element types.
-pub fn tuple_type(elems: Vec<Type>) -> Type {
-    Type::Tuple(triomphe::Arc::from_iter(elems))
-}
-
-/// `{f0: T0, f1: T1, ...}` from a sorted field list.
-pub fn struct_type(fields: Vec<(ArcStr, Type)>) -> Type {
-    Type::Struct(triomphe::Arc::from_iter(
-        fields.into_iter().map(|(n, t)| (n, t, WrittenAt::NOWHERE)),
-    ))
-}
-
-/// A variant `Type` from a `(tag, payload-types)` case list; the inverse
-/// of [`variant_cases`].
-pub fn variant_type_from_cases(cases: &[(ArcStr, Vec<Type>)]) -> Type {
-    let mk = |(tag, payloads): &(ArcStr, Vec<Type>)| {
-        Type::Variant(
-            tag.clone(),
-            triomphe::Arc::from_iter(payloads.clone()),
-            WrittenAt::NOWHERE,
-        )
-    };
-    if cases.len() == 1 {
-        mk(&cases[0])
-    } else {
-        Type::Set(triomphe::Arc::from_iter(cases.iter().map(mk)))
-    }
-}
-
-/// The `[inner, null]` option type.
-pub fn nullable_type(inner: Type) -> Type {
-    Type::Set(triomphe::Arc::from_iter([inner, null_type()]))
 }
 
 /// One parameter of a fused kernel. The `KernelSig::params` order is
@@ -837,15 +722,8 @@ pub enum AbiParamKind {
     Value,
 }
 
-impl AbiParamKind {
-    /// Number of `u64` wire slots this param occupies.
-    pub fn wire_words(self) -> usize {
-        2
-    }
-}
-
-/// One kernel parameter at the ABI boundary. `wire_slot` is its first
-/// `u64` slot; it spans `kind.wire_words()` consecutive slots.
+/// One kernel parameter at the ABI boundary. `wire_slot` is the first
+/// of its two `u64` slots.
 #[derive(Debug, Clone, Copy)]
 pub struct AbiParamDesc<'a> {
     pub name: &'a ArcStr,
@@ -856,28 +734,14 @@ pub struct AbiParamDesc<'a> {
     pub bind_id: Option<BindId>,
 }
 
-/// The wire shape of a kernel's return value: a two-word `(disc, payload)` pair.
-// CR claude for eric: [structure] A one-variant enum, so `abi_return()` is a bool
-// spelled `Option<AbiReturn>`. The unified Value ABI made every return a pair;
-// keep only the "bare null is refused" check (where the sig is built) and drop
-// the type.
-#[derive(Debug, Clone, Copy)]
-pub enum AbiReturn {
-    Pair,
-}
-
 /// A kernel's identity: the address of its shared [`KernelSig`]. Every
 /// "which kernel" map keys on this, never on `fn_name`: names shadow, and
 /// a polymorphic lambda mints one kernel per monomorphization.
-// CR claude for eric: [style] `std::sync::Arc` for `KernelSig`, `SiteLeaf`, the
-// `SelfBlock` slots (and `WrappedKernel`, `FnType` keys in mod.rs/kernel.rs)
-// although nothing takes a `Weak` or forms a cycle: `triomphe::Arc`, which the
-// file already imports. Spelled out 17 times here besides.
 // CR claude for eric: [style] kernel identity is a bare `usize` address used as
 // a map key in jit.rs; a `KernelKey` newtype keeps it from mixing with other
 // addresses and counts (CR at emit/jit.rs).
-pub(crate) fn kernel_key(k: &std::sync::Arc<KernelSig>) -> usize {
-    std::sync::Arc::as_ptr(k) as usize
+pub(crate) fn kernel_key(k: &Arc<KernelSig>) -> usize {
+    Arc::as_ptr(k) as usize
 }
 
 /// A kernel's ABI contract, shared by `Arc` between the runtime dispatch
@@ -899,36 +763,10 @@ pub struct KernelSig {
     /// Formal positions every self-call forwards unchanged; the tail
     /// loop never rebinds them, so their kind is not loop-gated.
     pub tail_invariant: Vec<u32>,
-    /// Set once the body's CLIF define completes. Callees define before
-    /// callers, so `false` at a call site means a self/back-edge call.
-    // CR claude for eric: [dead] Written once (emit/jit.rs) and read by nothing
-    // but `Clone` and the image codec; back-edges are found by a missing
-    // `SiteLayout` instead. It is also wrong across JIT generations (stays true
-    // for a fresh module). Delete it; the hand-written `Clone` below looks
-    // unused too, and cloning a sig would mint a second kernel identity.
-    pub defined: std::sync::atomic::AtomicBool,
     /// This body's call-site block size in words, filled once the layout
     /// is final. A self-call reads it at run time because the size is
     /// unknown while the body is still being emitted.
     pub site_block_words: std::sync::atomic::AtomicU64,
-}
-
-impl Clone for KernelSig {
-    fn clone(&self) -> Self {
-        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-        KernelSig {
-            fn_name: self.fn_name.clone(),
-            params: self.params.clone(),
-            return_type: self.return_type.clone(),
-            has_tail_loop: self.has_tail_loop,
-            skipped_args: self.skipped_args.clone(),
-            tail_invariant: self.tail_invariant.clone(),
-            defined: AtomicBool::new(self.defined.load(Relaxed)),
-            site_block_words: std::sync::atomic::AtomicU64::new(
-                self.site_block_words.load(Relaxed),
-            ),
-        }
-    }
 }
 
 /// The word at `rel` holds the root of a per-activation block tree: a
@@ -941,7 +779,7 @@ impl Clone for KernelSig {
 pub struct SelfBlock {
     pub rel: u32,
     pub words: u32,
-    pub slots: std::sync::Arc<[u32]>,
+    pub slots: Arc<[u32]>,
 }
 
 /// One owner of a per-slot state chain: the word at `rel` (absolute in
@@ -954,7 +792,7 @@ pub struct SelfBlock {
 pub struct SiteAnchor {
     pub rel: u32,
     pub own_levels: u32,
-    pub leaf: Option<std::sync::Arc<SiteLeaf>>,
+    pub leaf: Option<Arc<SiteLeaf>>,
 }
 
 /// A chain leaf whose entries are per-slot call-site blocks: `stride`
@@ -962,7 +800,7 @@ pub struct SiteAnchor {
 #[derive(Debug, Clone)]
 pub struct SiteLeaf {
     pub stride: u32,
-    pub anchors: std::sync::Arc<[SiteAnchor]>,
+    pub anchors: Arc<[SiteAnchor]>,
 }
 
 /// Leading `u64` wire slots before the parameter list, present in every
@@ -1001,30 +839,6 @@ impl KernelSig {
     pub fn abi_wire_slots_total(&self) -> usize {
         CTX_WIRE_SLOTS + 2 * self.params.len()
     }
-
-    /// The wire shape of the return value; `None` for a bare `null`
-    /// return, which fusion must widen to `Nullable<T>`.
-    pub fn abi_return(&self) -> Option<AbiReturn> {
-        match abi_kind(&self.return_type)? {
-            AbiKind::Null => None,
-            _ => Some(AbiReturn::Pair),
-        }
-    }
-}
-
-/// Caller-side signature of a built lambda kernel; a cross-kernel call
-/// site marshals its args against these build-time frozen types.
-#[derive(Debug, Clone)]
-pub struct KnownFusedFn {
-    /// Flat per-input types in slot order: formal args first, then
-    /// closure-converted captures.
-    pub arg_types: Vec<Type>,
-    /// Return type.
-    pub return_type: Type,
-    /// The `let` binding this kernel was built from, when known. A call
-    /// resolves as a self-call only when its `Ref` id matches; a
-    /// shadowed same-name outer lambda must not.
-    pub self_bind: Option<crate::BindId>,
 }
 
 #[cfg(test)]
@@ -1204,9 +1018,9 @@ impl PackTrait for SiteAnchor {
 
 /// A slot-chain leaf is an image object: the anchors that own it and
 /// the code that names it share one.
-pub(crate) fn site_leaf_len(l: &std::sync::Arc<SiteLeaf>) -> usize {
+pub(crate) fn site_leaf_len(l: &Arc<SiteLeaf>) -> usize {
     crate::image::object_len(
-        &(std::sync::Arc::as_ptr(l) as usize),
+        &(Arc::as_ptr(l) as usize),
         |k| *k,
         |e| &mut e.site_leaves,
         || l.stride.encoded_len() + crate::image::slice_len(&l.anchors),
@@ -1214,11 +1028,11 @@ pub(crate) fn site_leaf_len(l: &std::sync::Arc<SiteLeaf>) -> usize {
 }
 
 pub(crate) fn site_leaf_encode(
-    l: &std::sync::Arc<SiteLeaf>,
+    l: &Arc<SiteLeaf>,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
     crate::image::object_encode(
-        &(std::sync::Arc::as_ptr(l) as usize),
+        &(Arc::as_ptr(l) as usize),
         |k| *k,
         |e| &mut e.site_leaves,
         buf,
@@ -1229,16 +1043,14 @@ pub(crate) fn site_leaf_encode(
     )
 }
 
-pub(crate) fn site_leaf_decode(
-    buf: &mut impl Buf,
-) -> Result<std::sync::Arc<SiteLeaf>, PackError> {
+pub(crate) fn site_leaf_decode(buf: &mut impl Buf) -> Result<Arc<SiteLeaf>, PackError> {
     crate::image::object_decode(
         buf,
         |d| &mut d.site_leaves,
         |buf| {
             let stride = u32::decode(buf)?;
             let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
-            Ok(std::sync::Arc::new(SiteLeaf { stride, anchors: anchors.into() }))
+            Ok(Arc::new(SiteLeaf { stride, anchors: anchors.into() }))
         },
         |b| site_leaf_decode(b),
     )
@@ -1246,10 +1058,10 @@ pub(crate) fn site_leaf_decode(
 
 /// A kernel signature is an image object shared by the node that
 /// dispatches it and the records of its bodies.
-pub(crate) fn kernel_sig_len(k: &std::sync::Arc<KernelSig>) -> usize {
+pub(crate) fn kernel_sig_len(k: &Arc<KernelSig>) -> usize {
     use std::sync::atomic::Ordering::Relaxed;
     crate::image::object_len(
-        &(std::sync::Arc::as_ptr(k) as usize),
+        &(Arc::as_ptr(k) as usize),
         |k| *k,
         |e| &mut e.kernel_sigs,
         || {
@@ -1259,19 +1071,18 @@ pub(crate) fn kernel_sig_len(k: &std::sync::Arc<KernelSig>) -> usize {
                 + 1
                 + k.skipped_args.encoded_len()
                 + k.tail_invariant.encoded_len()
-                + 1
                 + varint_len(k.site_block_words.load(Relaxed))
         },
     )
 }
 
 pub(crate) fn kernel_sig_encode(
-    k: &std::sync::Arc<KernelSig>,
+    k: &Arc<KernelSig>,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
     use std::sync::atomic::Ordering::Relaxed;
     crate::image::object_encode(
-        &(std::sync::Arc::as_ptr(k) as usize),
+        &(Arc::as_ptr(k) as usize),
         |k| *k,
         |e| &mut e.kernel_sigs,
         buf,
@@ -1282,16 +1093,13 @@ pub(crate) fn kernel_sig_encode(
             k.has_tail_loop.encode(buf)?;
             k.skipped_args.encode(buf)?;
             k.tail_invariant.encode(buf)?;
-            k.defined.load(Relaxed).encode(buf)?;
             Ok(netidx_core::pack::encode_varint(k.site_block_words.load(Relaxed), buf))
         },
     )
 }
 
-pub(crate) fn kernel_sig_decode(
-    buf: &mut impl Buf,
-) -> Result<std::sync::Arc<KernelSig>, PackError> {
-    use std::sync::atomic::{AtomicBool, AtomicU64};
+pub(crate) fn kernel_sig_decode(buf: &mut impl Buf) -> Result<Arc<KernelSig>, PackError> {
+    use std::sync::atomic::AtomicU64;
     crate::image::object_decode(
         buf,
         |d| &mut d.kernel_sigs,
@@ -1302,16 +1110,14 @@ pub(crate) fn kernel_sig_decode(
             let has_tail_loop = bool::decode(buf)?;
             let skipped_args = Vec::<u32>::decode(buf)?;
             let tail_invariant = Vec::<u32>::decode(buf)?;
-            let defined = bool::decode(buf)?;
             let site_block_words = netidx_core::pack::decode_varint(buf)?;
-            Ok(std::sync::Arc::new(KernelSig {
+            Ok(Arc::new(KernelSig {
                 fn_name,
                 params,
                 return_type,
                 has_tail_loop,
                 skipped_args,
                 tail_invariant,
-                defined: AtomicBool::new(defined),
                 site_block_words: AtomicU64::new(site_block_words),
             }))
         },

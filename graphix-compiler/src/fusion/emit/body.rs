@@ -9,7 +9,7 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ExprKind},
     fusion::{
-        LambdaCallInfo, intern,
+        LambdaCallInfo,
         kernel_abi::{self, AbiKind},
         lowering::BuiltinCallSiteInfo,
     },
@@ -27,7 +27,7 @@ use netidx_value::Value;
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, emit_untainted_i64,
+        CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
         propagate_flags, scalar_disc, value_disc,
     },
     call::{
@@ -35,8 +35,8 @@ use super::{
     },
     flow::emit_body_tail,
     lower::{
-        ClosedFrame, LowerCtx, SelFire, SelWord, SiteLayout, SlotTable, SlotTableFrame,
-        TailSlots, TruncAnchor, TruncLeaf, TruncRec,
+        Channel, ClosedFrame, LowerCtx, SelWord, SiteLayout, SlotTable, SlotTableFrame,
+        TruncAnchor, TruncLeaf, TruncRec,
     },
     nodes::emit_owned_value_operand_node,
     scalar::scalar_to_payload_i64,
@@ -80,27 +80,11 @@ pub(super) fn emit_tail_rebind_jump(
     let head = ctx.tail.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
-    // CR claude for eric: [dead] TailSlots::Positional is chosen only when
-    // kernel.params is empty (lower.rs:163), where there is nothing to rebind, and
-    // the "hand-built test kernels" it was for no longer exist. Drop the enum and
-    // this branch, which would rebind a composite without clone or drop.
-    let TailSlots::Named(slots) = ctx.tail.call_slots else {
-        debug_assert!(rebinds.len() <= ctx.tail.param_mark);
-        for r in rebinds.iter() {
-            let vv = env.locals[r.slot].words;
-            b.def_var(vv.payload, r.val.payload);
-            b.def_var(vv.disc, r.val.disc);
-        }
-        env.truncate(ctx.tail.param_mark);
-        b.ins().jump(head, &[]);
-        return Ok(());
-    };
+    let slots = ctx.tail.call_slots;
     // Slots cover every kernel value param; a tail call rebinds only
     // the loop-carried formals.
     debug_assert!(rebinds.len() <= slots.len());
     use kernel_abi::AbiParamKind;
-    let helper =
-        |name: &str| ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing {name}"));
     // CR claude for eric: [bug] use after free. Every new value was emitted before
     // this loop, so a Borrowed one is the OLD payload of another formal; rebind i
     // drops its formal's old value before rebind j clones it. Probe:
@@ -121,23 +105,22 @@ pub(super) fn emit_tail_rebind_jump(
             // a Borrowed new value is cloned; the old slot value is dropped
             AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
                 let newp = if r.source == CompositeSource::Borrowed {
-                    let call =
-                        b.ins().call(helper("graphix_valarray_clone")?, &[r.val.payload]);
+                    let clone = ctx.helper(b, "graphix_valarray_clone")?;
+                    let call = b.ins().call(clone, &[r.val.payload]);
                     b.inst_results(call)[0]
                 } else {
                     r.val.payload
                 };
                 let old = b.use_var(vv.payload);
-                b.ins().call(helper("graphix_valarray_drop")?, &[old]);
+                let drop = ctx.helper(b, "graphix_valarray_drop")?;
+                b.ins().call(drop, &[old]);
                 b.def_var(vv.payload, newp);
                 b.def_var(vv.disc, r.val.disc);
             }
             AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
                 let (newd, newp) = if r.source == CompositeSource::Borrowed {
-                    let call = b.ins().call(
-                        helper("graphix_value_clone")?,
-                        &[r.val.disc, r.val.payload],
-                    );
+                    let clone = ctx.helper(b, "graphix_value_clone")?;
+                    let call = b.ins().call(clone, &[r.val.disc, r.val.payload]);
                     let rs = b.inst_results(call);
                     (rs[0], rs[1])
                 } else {
@@ -145,7 +128,8 @@ pub(super) fn emit_tail_rebind_jump(
                 };
                 let old_d = b.use_var(vv.disc);
                 let old_p = b.use_var(vv.payload);
-                b.ins().call(helper("graphix_value_drop")?, &[old_d, old_p]);
+                let drop = ctx.helper(b, "graphix_value_drop")?;
+                b.ins().call(drop, &[old_d, old_p]);
                 b.def_var(vv.payload, newp);
                 b.def_var(vv.disc, newd);
             }
@@ -153,7 +137,8 @@ pub(super) fn emit_tail_rebind_jump(
             // refcount-bumps)
             AbiParamKind::String => {
                 let old_p = b.use_var(vv.payload);
-                b.ins().call(helper("graphix_arcstr_drop")?, &[old_p]);
+                let drop = ctx.helper(b, "graphix_arcstr_drop")?;
+                b.ins().call(drop, &[old_p]);
                 b.def_var(vv.payload, r.val.payload);
                 b.def_var(vv.disc, r.val.disc);
             }
@@ -183,37 +168,6 @@ pub(super) fn emit_tail_rebind_jump(
     Ok(())
 }
 
-// CR claude for eric: [dead] only abi.rs's emit_or_abort_on_taint(_keep) call
-// this, and those have no callers in either repo (their re-exports in mod.rs are
-// unused). distributed_jit.md still says may-bottom HOF bodies route through it.
-/// When the I8 `valid` bit is 0, set the pending flag, run
-/// `emit_pending_cleanup` and jump to `pending_exit`; otherwise fall
-/// through to a fresh block. For a tainted scalar consumed by a site
-/// with no per-value validity channel.
-pub(super) fn emit_bottom_abort(
-    b: &mut FunctionBuilder,
-    env: &mut JitEnv,
-    ctx: &LowerCtx,
-    valid: ClifValue,
-) -> Result<()> {
-    let pending_set = ctx
-        .helper_refs
-        .get("graphix_abort_set")
-        .ok_or_else(|| anyhow!("missing graphix_abort_set"))?;
-    let pre_pending = b.create_block();
-    let continue_block = b.create_block();
-    let pending_exit = pending_exit_block(b, ctx);
-    b.ins().brif(valid, continue_block, &[], pre_pending, &[]);
-    b.switch_to_block(pre_pending);
-    b.seal_block(pre_pending);
-    b.ins().call(pending_set, &[]);
-    emit_pending_cleanup(b, env, ctx)?;
-    b.ins().jump(pending_exit, &[]);
-    b.switch_to_block(continue_block);
-    b.seal_block(continue_block);
-    Ok(())
-}
-
 // CR claude for eric: [structure] this and emit_bottom_abort write out the same
 // abort edge that emit_kernel_bottom is (abort_set, pending cleanup, jump to
 // pending_exit) plus a continue block; branch to a block that calls
@@ -227,14 +181,8 @@ pub(super) fn emit_interrupt_check(
     env: &mut JitEnv,
     ctx: &LowerCtx,
 ) -> Result<()> {
-    let interrupted = ctx
-        .helper_refs
-        .get("graphix_interrupted")
-        .ok_or_else(|| anyhow!("missing graphix_interrupted"))?;
-    let pending_set = ctx
-        .helper_refs
-        .get("graphix_abort_set")
-        .ok_or_else(|| anyhow!("missing graphix_abort_set"))?;
+    let interrupted = ctx.helper(b, "graphix_interrupted")?;
+    let pending_set = ctx.helper(b, "graphix_abort_set")?;
     let call = b.ins().call(interrupted, &[]);
     let intr = b.inst_results(call)[0];
     let pre_pending = b.create_block();
@@ -291,9 +239,9 @@ pub(super) struct BodySpec<'a> {
     /// carry `Type::Ref`s that need `env.lookup_ref` before
     /// `abi_kind`/freeze can classify them. Never for binding lookups.
     pub(super) type_env: Option<&'a Env>,
-    /// Whether this body may claim per-instance state words — `true`
-    /// only for the region parent's root body. See
-    /// [`StateChannel::enabled`].
+    /// Whether this body claims per-instance state words — `true` only
+    /// for the region parent's root body; else it claims site words
+    /// ([`Channel`]).
     pub(super) allow_state: bool,
 }
 
@@ -342,8 +290,8 @@ pub struct BodyCx<'a, 'f, 'c> {
 
 impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// FuncRef for a registered `emit_helpers` runtime helper.
-    pub fn helper(&self, name: &str) -> Result<FuncRef> {
-        self.ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing helper {name}"))
+    pub fn helper(&mut self, name: &str) -> Result<FuncRef> {
+        self.ctx.helper(self.b, name)
     }
 
     /// Look up a helper and call it, asserting the argument count
@@ -355,7 +303,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub fn call_helper(&mut self, name: &str, args: &[ClifValue]) -> Result<Inst> {
         let f = self.helper(name)?;
         debug_assert_eq!(
-            self.ctx.helper_refs.arity.get(name).copied(),
+            self.ctx.helper_refs.arity(name),
             Some(args.len()),
             "helper `{name}` called with {} args",
             args.len()
@@ -389,7 +337,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// zero-initialized per instance, so store `value + 1` and read 0
     /// as "no previous observation".
     pub fn claim_state_word(&self) -> Option<i32> {
-        if !self.ctx.state.enabled || self.ctx.loop_depth.get() > 0 {
+        if self.ctx.claims != Channel::State || self.env.loop_depth > 0 {
             return None;
         }
         let idx = self.ctx.state.next.get();
@@ -404,7 +352,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// heap chain ([`open_slot_tables`](Self::open_slot_tables)).
     /// Callee bodies still refuse.
     pub fn claim_state_word_loop_invariant(&self) -> Option<i32> {
-        if !self.ctx.state.enabled {
+        if self.ctx.claims != Channel::State {
             return None;
         }
         let idx = self.ctx.state.next.get();
@@ -432,14 +380,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             self.ctx.closed_frame.borrow().is_none(),
             "a closed frame's slot truncates were never emitted"
         );
-        let depth = self.ctx.loop_depth.get() + 1;
+        let depth = self.env.loop_depth + 1;
         // Every open loop pushed a frame, so the stack is the
         // enclosing-loop chain, outermost first.
         let enclosing: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
             let frames = self.ctx.slot_tables.borrow();
             debug_assert_eq!(
                 frames.len(),
-                self.ctx.loop_depth.get() as usize,
+                self.env.loop_depth as usize,
                 "slot-table frames out of sync with loop depth"
             );
             frames.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
@@ -462,7 +410,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                         anchor: TruncAnchor::State(off),
                         n_dirs: n_dirs as u32,
                         leaf: TruncLeaf::Table { stride: 1 },
-                        leaf_rt: None,
                     });
                     self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                         rel: (off / 8) as u32,
@@ -484,7 +431,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                             anchor: TruncAnchor::Site(off),
                             n_dirs: n_dirs as u32,
                             leaf: TruncLeaf::Table { stride: 1 },
-                            leaf_rt: None,
                         });
                         let base = self.site_ptr();
                         let word_addr = self.b.ins().iadd_imm(base, off as i64);
@@ -614,7 +560,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let table_helper = self.helper("graphix_slot_state_table")?;
         let valid = emit_untainted_i64(self.b, src_disc);
         for r in recs.iter() {
-            let leaf_ptr = match &r.leaf_rt {
+            let leaf_ptr = match r.leaf.site_leaf() {
                 None => self.b.ins().iconst(types::I64, 0),
                 Some(l) => self.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
             };
@@ -672,7 +618,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                             .ins()
                             .call(table_helper, &[word, words, valid, own0, leaf_ptr]);
                     }
-                    TruncLeaf::Blocks => {
+                    TruncLeaf::Blocks(_) => {
                         let blocks_helper = self.helper("graphix_slot_state_blocks")?;
                         self.b.ins().call(blocks_helper, &[word, len, valid, leaf_ptr]);
                     }
@@ -702,7 +648,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let (idx_var, table, guarded) = {
             let frames = self.ctx.slot_tables.borrow();
             let f = frames.last()?;
-            if f.depth != self.ctx.loop_depth.get() {
+            if f.depth != self.env.loop_depth {
                 return None;
             }
             let SlotTable { base, guarded, .. } =
@@ -727,7 +673,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// base may be 0 at runtime (a recursive back-edge), so every
     /// consumer null-guards ([`SelWord::Guarded`]).
     pub(crate) fn claim_site_word(&self) -> Option<i32> {
-        if !self.ctx.site.enabled {
+        if self.ctx.claims != Channel::Site {
             return None;
         }
         let idx = self.ctx.site.next.get();
@@ -740,7 +686,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// sibling calls at the same depth get separate trees. Refused
     /// inside scaffold loops, where the root would alias every slot.
     pub(crate) fn claim_self_block_word(&self) -> Option<i32> {
-        if self.ctx.loop_depth.get() > 0 {
+        if self.env.loop_depth > 0 {
             return None;
         }
         let off = self.claim_site_word()?;
@@ -754,7 +700,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub(crate) fn claim_site_anchor(
         &self,
         own_levels: u32,
-        leaf: Option<std::sync::Arc<kernel_abi::SiteLeaf>>,
+        leaf: Option<triomphe::Arc<kernel_abi::SiteLeaf>>,
     ) -> Option<i32> {
         let off = self.claim_site_word()?;
         self.ctx.site.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
@@ -794,20 +740,15 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.callee_layouts.get(&key)
     }
 
-    // CR claude for eric: [structure] ctx.loop_depth and env.loop_depth are two
-    // copies of one counter kept equal only by these two fns; keep one.
     /// Bracket scaffold-loop body emission, including the loop's own
     /// element/index/acc binds (their `Local::depth` stamp is what
     /// [`node_loop_invariant_ref`] keys on).
     pub fn enter_loop(&mut self) {
-        self.ctx.loop_depth.set(self.ctx.loop_depth.get() + 1);
         self.env.loop_depth += 1;
     }
 
     pub fn exit_loop(&mut self) {
-        let d = self.ctx.loop_depth.get();
-        debug_assert!(d > 0, "exit_loop without a matching enter_loop");
-        self.ctx.loop_depth.set(d.saturating_sub(1));
+        debug_assert!(self.env.loop_depth > 0, "exit_loop without a matching enter_loop");
         self.env.loop_depth = self.env.loop_depth.saturating_sub(1);
     }
 
@@ -835,7 +776,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// The address of the interned `s`, shared by every use in the body.
     pub fn interned_str(&mut self, s: &ArcStr) -> Result<ClifValue> {
-        self.const_ptr(KernelConst::Str(Box::new(intern::intern(s))))
+        self.const_ptr(KernelConst::Str(Box::new(s.clone())))
     }
 
     /// The builtin Apply-site info for `id`, if the region's discovery
@@ -892,7 +833,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 /// to its tail, everything else hands out an owned ref. Decides
 /// whether a clone is needed before the source's scope drops.
 pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> CompositeSource {
-    use NodeView;
     let mut n: &dyn Update<R, E> = &**node;
     loop {
         match n.view() {
@@ -996,7 +936,7 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
 
 /// Unconditionally bottom the kernel from the current block: set the
 /// pending flag, drop the in-flight owned set, and jump to
-/// `pending_exit` (so `Kernel::update` returns `None`). Terminates the
+/// `pending_exit` (so `FusedKernel::update` returns `None`). Terminates the
 /// block.
 pub(super) fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
     let pending_set = cx.helper("graphix_abort_set")?;
@@ -1052,41 +992,21 @@ pub(super) fn emit_kernel_return(
 ) -> Result<()> {
     // The result fires if its value chain fired or any tail-select
     // scrutinee on the executed path did (`TailCtx::tail_scrut_stale_acc`).
-    // CR claude for eric: [style] GXDBG_CALLRET is read with env::var_os at every
-    // emission (also call.rs emit_lambda_call_node) while every other switch is a
-    // cached `dbgenv` fn, and CLAUDE.md's debug table does not list it.
     #[cfg(debug_assertions)]
-    if std::env::var_os("GXDBG_CALLRET").is_some() {
+    if crate::dbgenv::gxdbg_callret() {
+        use crate::fusion::emit_helpers::CallRetTag;
         let f = cx.helper("graphix_dbg_disc")?;
-        let t = cx.b.ins().iconst(types::I64, 2);
+        let t = cx.b.ins().iconst(types::I64, CallRetTag::Return as i64);
         cx.b.ins().call(f, &[t, cv.disc]);
         let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-        let t3 = cx.b.ins().iconst(types::I64, 3);
+        let t3 = cx.b.ins().iconst(types::I64, CallRetTag::TailScrutAcc as i64);
         cx.b.ins().call(f, &[t3, acc]);
     }
-    {
-        // The bottom-out rule (design/activation_state.md): fold the
-        // enclosing tail-select scopes innermost-first; a still-stale
-        // result meeting a level's fresh-bottom fire becomes TAINT fresh.
-        let levels: smallvec::SmallVec<[SelFire; 4]> =
-            cx.ctx.sel_fires.borrow().iter().rev().copied().collect();
-        for SelFire { sound_stale: sound, bfired: bf } in levels {
-            cv.disc = fold_stale(cx.b, cv.disc, sound);
-            if let Some(bf) = bf {
-                let sbit = cx.b.ins().band_imm(cv.disc, STALE);
-                let quiet = cx.b.ins().icmp_imm(IntCC::NotEqual, sbit, 0);
-                let ov = cx.b.ins().band(quiet, bf);
-                let d_bot = cx.b.ins().band_imm(cv.disc, !STALE);
-                let d_bot = cx.b.ins().bor_imm(d_bot, TAINT);
-                cv.disc = cx.b.ins().select(ov, d_bot, cv.disc);
-            }
-        }
-        // The loop-carried accumulator (cross-ITERATION sound fires —
-        // a fired loop-head scrutinee in any pass upgrades a stale
-        // final result) folds last, outermost.
-        let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-        cv.disc = fold_stale(cx.b, cv.disc, acc);
-    }
+    // The loop-carried accumulator holds every tail-select scrutinee and
+    // consulted guard on the executed path, across iterations: a fired
+    // one upgrades a stale result.
+    let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
+    cv.disc = fold_stale(cx.b, cv.disc, acc);
     // The disc is rebased on the static return shape's Value
     // discriminant: `TagValue::from_raw` decodes these exact bits, so
     // they must be a valid one-hot discriminant plus tag bits.

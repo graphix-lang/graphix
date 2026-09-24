@@ -54,7 +54,7 @@ pub enum KernelConst {
     },
     /// The cast pseudo-site's fn.
     Cast(TypedFastFn),
-    SiteLeaf(Arc<SiteLeaf>),
+    SiteLeaf(triomphe::Arc<SiteLeaf>),
     /// The owning kernel's `site_block_words` cell.
     SiteBlockWords,
 }
@@ -69,7 +69,7 @@ impl KernelConst {
             KernelConst::QopSite(b) => &**b as *const QopSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
             KernelConst::TypedFn { f, .. } | KernelConst::Cast(f) => *f as usize,
-            KernelConst::SiteLeaf(l) => Arc::as_ptr(l) as *const u8 as usize,
+            KernelConst::SiteLeaf(l) => triomphe::Arc::as_ptr(l) as *const u8 as usize,
             KernelConst::SiteBlockWords => {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
             }
@@ -93,7 +93,9 @@ impl KernelConst {
             }
             (KernelConst::TypedFn { f: a, .. }, KernelConst::TypedFn { f: b, .. })
             | (KernelConst::Cast(a), KernelConst::Cast(b)) => *a as usize == *b as usize,
-            (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => Arc::ptr_eq(a, b),
+            (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => {
+                triomphe::Arc::ptr_eq(a, b)
+            }
             (KernelConst::SiteBlockWords, KernelConst::SiteBlockWords) => true,
             _ => false,
         }
@@ -159,7 +161,7 @@ pub struct BodyRecord {
     pub consts: Vec<KernelConst>,
     pub callees: Vec<Arc<BodyRecord>>,
     /// The kernel a body or thunk belongs to; a wrapper's is its body's.
-    pub kernel: Arc<KernelSig>,
+    pub kernel: triomphe::Arc<KernelSig>,
     pub thunk: Option<Arc<BodyRecord>>,
 }
 

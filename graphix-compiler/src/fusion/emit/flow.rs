@@ -31,7 +31,6 @@ use super::{
         ensure_owned_value_src, node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
-    lower::SelFire,
     nodes::emit_bottom_placeholder,
     scalar::cast_u64_to_prim,
     select::{classify_select_scrutinee, emit_select_arms},
@@ -299,18 +298,7 @@ fn emit_select_node_tail<R: Rt, E: UserEvent>(
                 let n = cx.b.ins().band(cur, gs);
                 cx.b.def_var(cx.ctx.tail.tail_scrut_stale_acc, n);
             }
-            // This select's own-fire scope for the returns inside its arm.
-            let sound_lvl = match fires.sound_stale {
-                Some(gs) => cx.b.ins().band(scrut_stale_bit, gs),
-                None => scrut_stale_bit,
-            };
-            cx.ctx
-                .sel_fires
-                .borrow_mut()
-                .push(SelFire { sound_stale: sound_lvl, bfired: fires.bfired });
-            let arm_res = emit_body_tail(cx, body, ret);
-            cx.ctx.sel_fires.borrow_mut().pop();
-            arm_res?;
+            emit_body_tail(cx, body, ret)?;
             // The terminator already dropped the arm's owned binds; this
             // truncate is compile-time scope only.
             cx.env.truncate(mark);
@@ -423,12 +411,7 @@ fn emit_let_node<R: Rt, E: UserEvent>(
                 cv.disc,
                 cv.payload,
             )?;
-            let kind = match ak {
-                Some(AbiKind::Variant) => LocalKind::Variant,
-                Some(AbiKind::Nullable) => LocalKind::Nullable,
-                _ => LocalKind::Value,
-            };
-            bind_local(cx, name.clone(), disc, payload, kind, bind_id);
+            bind_local(cx, name.clone(), disc, payload, LocalKind::Value, bind_id);
         }
         Some(AbiKind::String) => {
             // String reads/consts are already owned clones.
@@ -556,11 +539,9 @@ impl QopSink {
 
     /// The clean disc of the value this site strips.
     fn bad_disc(self) -> i64 {
-        // CR claude for eric: [readability] 0x2000_0000 is netidx's Error
-        // discriminant written bare; add value_disc::ERROR beside NULL.
         match self.marker() {
             Typ::Null => value_disc::NULL,
-            _ => 0x2000_0000,
+            _ => value_disc::ERROR,
         }
     }
 }

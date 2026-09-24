@@ -100,9 +100,22 @@ fn program(shape: &str, d: usize) -> String {
             }
             format!("let x = {s}")
         }
+        "letchain" => {
+            let mut s = String::from("let x0 = 1");
+            for i in 1..d {
+                s.push_str(&format!("\nlet x{i} = [x{}]", i - 1));
+            }
+            s
+        }
         _ => panic!("unknown shape {shape}"),
     }
 }
+
+/// Shapes that never nest in the source, so the parser cannot bound
+/// them: only their types nest. Run once, at [`FLAT_DEPTH`].
+const FLAT_SHAPES: &[&str] = &["letchain"];
+
+const FLAT_DEPTH: usize = 3000;
 
 const SHAPES: &[&str] = &[
     "parens",
@@ -190,6 +203,7 @@ fn deep_nesting_does_not_overflow() {
         .iter()
         .flat_map(|s| [(*s, accepted()), (*s, REJECTED)])
         .chain([("parens", REJECTED)])
+        .chain(FLAT_SHAPES.iter().map(|s| (*s, FLAT_DEPTH)))
         .collect();
     let mut codes: HashMap<(&str, usize), Option<i32>> = HashMap::new();
     for batch in cases.chunks(CONCURRENCY) {
@@ -215,6 +229,12 @@ fn deep_nesting_does_not_overflow() {
         // 100k is a flat union); only assert the child came back.
         if run(shape, REJECTED).is_none() {
             failed.push(format!("{shape}@{REJECTED}: killed by a signal"))
+        }
+    }
+    for shape in FLAT_SHAPES {
+        match run(shape, FLAT_DEPTH) {
+            Some(0) => (),
+            other => failed.push(format!("{shape}@{FLAT_DEPTH}: {other:?}")),
         }
     }
     // The limit must fire on a shape that genuinely nests.

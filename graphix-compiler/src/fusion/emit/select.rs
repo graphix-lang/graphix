@@ -125,14 +125,14 @@ fn read_scrut_elem(
 ) -> Result<ClifValue> {
     let (helper_name, idx_v) = match idx {
         ElemIdx::FromStart(j) => {
-            (valarray_get_helper(prim)?, cx.b.ins().iconst(types::I64, j as i64))
+            (valarray_get_helper(prim), cx.b.ins().iconst(types::I64, j as i64))
         }
         ElemIdx::FromEnd { back, len } => {
             let b = cx.b.ins().iconst(types::I64, back as i64);
-            (valarray_get_helper(prim)?, cx.b.ins().isub(len, b))
+            (valarray_get_helper(prim), cx.b.ins().isub(len, b))
         }
         ElemIdx::StructField(i) => {
-            (struct_get_helper(prim)?, cx.b.ins().iconst(types::I64, i as i64))
+            (struct_get_helper(prim), cx.b.ins().iconst(types::I64, i as i64))
         }
     };
     let helper = cx.helper(helper_name)?;
@@ -277,7 +277,7 @@ pub(crate) fn emit_select_node<R: Rt, E: UserEvent>(
                 let p = cx.b.use_var(vv.payload);
                 cx.b.ins().call(drop, &[p]);
             }
-            LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+            LocalKind::Value => {
                 let drop = cx.helper("graphix_value_drop")?;
                 let d = cx.b.use_var(vv.disc);
                 let p = cx.b.use_var(vv.payload);
@@ -417,12 +417,7 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
             }
             let cv = sel.arg.node.emit_clif(cx)?;
             if owned {
-                let kind = match scrut_kind {
-                    AbiKind::Variant => LocalKind::Variant,
-                    AbiKind::Nullable => LocalKind::Nullable,
-                    _ => LocalKind::Value,
-                };
-                drop_ob = adopt(cx, kind, cv.disc, cv.payload);
+                drop_ob = adopt(cx, LocalKind::Value, cv.disc, cv.payload);
             }
             SelectScrut::Value { disc: cv.disc, payload: cv.payload }
         }
@@ -1364,15 +1359,7 @@ fn emit_list_pattern_cond(
 /// by its ABI kind. `Unit`/`Null` payloads (and shapes with no kernel
 /// encoding) refuse.
 fn payload_local_kind(t: &Type) -> Option<LocalKind> {
-    match kernel_abi::abi_kind(t)? {
-        AbiKind::Scalar(p) => Some(LocalKind::Scalar(p)),
-        AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Some(LocalKind::Composite),
-        AbiKind::String => Some(LocalKind::String),
-        AbiKind::Variant => Some(LocalKind::Variant),
-        AbiKind::Nullable => Some(LocalKind::Nullable),
-        AbiKind::Value => Some(LocalKind::Value),
-        AbiKind::Unit | AbiKind::Null => None,
-    }
+    kernel_abi::abi_kind(t).and_then(LocalKind::of)
 }
 
 /// Install an arm's `binds` into the env.
@@ -1432,7 +1419,7 @@ fn install_arm_binds(
                              scrutinee"
                     ));
                 };
-                let helper = cx.helper(variant_payload_helper(*prim)?)?;
+                let helper = cx.helper(variant_payload_helper(*prim))?;
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                 let call = cx.b.ins().call(helper, &[disc, payload, idx_c]);
                 let v = cx.b.inst_results(call)[0];
@@ -1464,7 +1451,7 @@ fn install_arm_binds(
                         let bits = cx.b.inst_results(call)[0];
                         (cx.b.ins().iconst(types::I64, value_disc::STRING), bits)
                     }
-                    LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                    LocalKind::Value => {
                         let h = cx.helper("graphix_variant_payload_value")?;
                         let call = cx.b.ins().call(h, &[disc, payload, idx_c]);
                         let rs = cx.b.inst_results(call);
@@ -1509,7 +1496,7 @@ fn install_arm_binds(
                         let raw = cx.b.inst_results(call)[1];
                         (scalar_disc(cx.b, *p), cast_u64_to_prim(cx.b, raw, *p))
                     }
-                    LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                    LocalKind::Value => {
                         let h = cx.helper("graphix_list_get_value")?;
                         let call = cx.b.ins().call(h, &[disc, payload, j]);
                         let rs = cx.b.inst_results(call);
@@ -1987,7 +1974,7 @@ fn placeholder_for_kind(
             let d = cx.b.ins().iconst(types::I64, value_disc::ARRAY | TAINT | STALE);
             (d, a)
         }
-        LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+        LocalKind::Value => {
             let d = cx.b.ins().iconst(types::I64, value_disc::NULL | TAINT | STALE);
             let z = cx.b.ins().iconst(types::I64, 0);
             (d, z)

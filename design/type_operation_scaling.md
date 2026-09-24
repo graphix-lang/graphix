@@ -16,7 +16,7 @@ to diverge, and static-instance typechecking put these operations on
 the per-call-site hot path: the GUI package went from compiling in
 under a second to a 41GB OOM.
 
-It was one disease in six walks: `resolve_abstract_d` re-expanded
+It was one disease in six walks: `expand_ref_d` re-expanded
 every occurrence of the same named type; retained instance signatures
 were per-site deep copies; `normalize`/`flatten_set` re-walked shared
 subtrees per occurrence with a restart-from-zero merge sweep (cubic in
@@ -30,7 +30,7 @@ message that its caller used only as a probe.
 
 **Sharing-preserving rebuild walks (`Option<Type>` = unchanged).**
 `resolve_tvars`, `normalize`, `replace_tvars`, `reset_tvars`,
-`resolve_abstract_d` and the parallel `FnType` walks (via
+`expand_ref_d` and the parallel `FnType` walks (via
 `FnType::cow_walk`) return `None` when nothing beneath changed; the
 caller keeps the original Arc. `Type::cow_slice` is the shared
 rebuild-only-if-changed helper. TVar-free (or substitution-irrelevant)
@@ -62,8 +62,9 @@ new merge — no restart. `merge` compares nested positions via
 `flatten_set_tracked` reports whether anything changed so `normalize`
 can keep the original member slice.
 
-**`resolve_abstract_d` is memoized** (`fusion/lowering.rs`):
-- Expansion memo (`MemoEntry`) keyed by `ExpandKey`; entries carry the
+**`expand_ref_d` is memoized** (`fusion/lowering.rs`):
+- Expansion memo (`MemoEntry`) keyed by the expanded `TypeRef` (by its
+  fingerprint); entries carry the
   set of `Seen` keys their computation consulted, so they are valid on
   any path containing those deps. Only CLOSED keys are admitted
   (`key_closed`): an unbound-TVar param compares equal to any other
@@ -124,5 +125,5 @@ with mutable TVar cells.
   unless the semantics genuinely depend on the path (cycle detection).
 - Nothing formats a `Type` into an error that any caller uses as a
   probe; carry the types, format on `Display`.
-- Cache keys involving `TypeRef`/`ExpandKey` must be CLOSED (no TVars)
+- Cache keys involving a `TypeRef` must be CLOSED (no TVars)
   — `TVar::eq` treats distinct unbound cells as equal.

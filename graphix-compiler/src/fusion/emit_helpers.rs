@@ -419,13 +419,6 @@ unsafe fn graphix_value_buf_extend_from_list(
 
 jit_helpers! { registry = control_helpers;
 
-/// Read `KERNEL_ABORT` without clearing it: 1 if set, else 0. Emitted
-/// after every cross-kernel call; a set flag means the callee aborted
-/// and the caller must take its own abort exit.
-safe fn graphix_abort_peek() -> u8 {
-    KERNEL_ABORT.with(|c| if c.get() { 1 } else { 0 })
-}
-
 /// A fused call returned a Value whose shape is not its declared return
 /// type: a builtin violating its signature, or a compiler bug. Either
 /// way an invariant is gone, and a panic here aborts (the helper ABI
@@ -435,6 +428,21 @@ safe fn graphix_shape_mismatch(got_disc: u64) {
         "fused call returned a Value whose shape (disc {got_disc:#x}) does not \
          match its declared return type"
     )
+}
+
+/// Rust's float `%`, which cranelift has no instruction for.
+safe fn graphix_f64_rem(a: f64, b: f64) -> f64 {
+    a % b
+}
+
+/// Rust's float `%`, which cranelift has no instruction for.
+safe fn graphix_f32_rem(a: f32, b: f32) -> f32 {
+    a % b
+}
+
+/// A collection init count past the element limit, on the cycle it fired.
+safe fn graphix_init_oversize(n: i64) {
+    crate::node::collection::log_init_oversize(n)
 }
 
 /// Set `KERNEL_ABORT`; emitted on every whole-kernel abort path.
@@ -472,7 +480,7 @@ unsafe fn graphix_swallowed_error(
 
 /// Raise a `?` site's error onto the invocation's delivery queue
 /// (`QOP_RAISES`). `(disc, payload)` is the error Value, borrowed: the
-/// queue takes a clone. `Kernel::update` drains the queue in order.
+/// queue takes a clone. `FusedKernel::update` drains the queue in order.
 unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     // SAFETY: the words are a valid clean `Value`; viewed, never owned.
     let tv = unsafe { crate::TagValue::from_raw(disc, payload) };
@@ -592,7 +600,7 @@ unsafe fn graphix_typedcall(
     let env = KERNEL_ENV.with(|c| c.get());
     if env.is_null() {
         panic!(
-            "graphix_typedcall: no kernel env loaned — Kernel::update must \
+            "graphix_typedcall: no kernel env loaned — FusedKernel::update must \
              run the wrapper under `with_kernel_env`"
         );
     }
@@ -1218,8 +1226,15 @@ safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
         // CR claude for eric: [risk] `to_array` truncates a malformed list where
         // `list::len` says None, so this flatten and the node-walk can disagree on the
         // same value (CR at node/collection.rs `to_array`).
-        crate::node::collection::list::to_array(&v).unwrap_or_else(|| ValArray::from([]));
+        crate::node::collection::list::to_array(&v).unwrap_or_else(|| EMPTY_ARR.clone());
     va_bits(arr)
+}
+
+/// Finalize a value buf into the List of its elements, consuming the buf.
+unsafe fn graphix_list_finalize(buf: *mut LPooled<Vec<Value>>) -> TagValue {
+    let list = crate::node::collection::list::from_iter(unsafe { (*buf).drain(..) });
+    unsafe { buf_give(buf) };
+    TagValue::clean(list)
 }
 
 /// Consume finalized ValArray bits and build the List value.
@@ -1236,7 +1251,7 @@ safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
         Value::Map(m) => ValArray::from_iter(
             m.into_iter().map(|(k, v)| crate::node::collection::make_pair(k, v)),
         ),
-        _ => ValArray::from([]),
+        _ => EMPTY_ARR.clone(),
     };
     va_bits(arr)
 }
@@ -1301,7 +1316,7 @@ fn read_slot_bool(v: &Value) -> u8 {
 
 /// The placeholder a mismatched or out-of-bounds composite read returns;
 /// static so borrowed pointers into it stay valid.
-static EMPTY_ARR: std::sync::LazyLock<ValArray> =
+pub(crate) static EMPTY_ARR: std::sync::LazyLock<ValArray> =
     std::sync::LazyLock::new(|| ValArray::from_iter_exact(std::iter::empty()));
 
 /// Free a slot-state chain: `word` is 0 or a `Box<Vec<u64>>`. With
@@ -1414,7 +1429,7 @@ pub unsafe fn reclaim_self_block_tree(
 /// their chains.
 // CR claude for eric: [bug] A per-slot block of a recursive callee also roots
 // that callee's activation trees, but `SiteLeaf` lists only anchors, so a
-// shrinking loop (and `Kernel::drop`) leaks every dropped slot's tree. Probe:
+// shrinking loop (and `FusedKernel::drop`) leaks every dropped slot's tree. Probe:
 // `let rec f = |k: i64| -> i64 select k { 0 => 0, _ => k + f(k - 1) }`;
 // `#[native] array::map(src, |x| f(x % 20))` with `src` alternating 50 and 1
 // elements per 1ms tick: VmRSS 62MB -> 97MB over 2500 ticks, flat when `src`
@@ -1700,9 +1715,10 @@ unsafe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
 #[cfg(debug_assertions)]
 jit_helpers! { registry = debug_helpers;
 
-/// Print a tagged disc word from inside JIT'd code (`GXDBG_CALLRET`).
+/// Print a disc word from inside JIT'd code (`GXDBG_CALLRET`); `tag`
+/// is a [`CallRetTag`].
 safe fn graphix_dbg_disc(tag: u64, disc: u64) {
-    eprintln!("CLIF-DISC tag={tag} disc={disc:x}");
+    eprintln!("CLIF-DISC {} disc={disc:x}", CallRetTag::name(tag));
 }
 
 /// Bump `JIT_INVOCATIONS`; emitted at the start of every wrapper.
@@ -1713,6 +1729,34 @@ safe fn graphix_record_jit_invocation() {
 }
 
 use std::cell::Cell;
+
+/// What a `GXDBG_CALLRET` print shows.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy)]
+#[repr(u64)]
+pub(crate) enum CallRetTag {
+    /// A cross-kernel call's result disc.
+    CallResult = 1,
+    /// A kernel's return disc before the tail folds.
+    Return = 2,
+    /// The tail-select scrutinee STALE accumulator at a return.
+    TailScrutAcc = 3,
+    /// The init flag at kernel entry.
+    InitFlag = 4,
+}
+
+#[cfg(debug_assertions)]
+impl CallRetTag {
+    fn name(tag: u64) -> &'static str {
+        match tag {
+            1 => "call-result",
+            2 => "return",
+            3 => "tail-scrut-acc",
+            4 => "init-flag",
+            _ => "?",
+        }
+    }
+}
 
 /// The trampolines' return: `word0` = the Value disc (tag in-band),
 /// `word1` = the Value payload word for every return type; the call
@@ -1728,7 +1772,7 @@ pub struct DynCallRet {
 
 thread_local! {
     /// Sticky abort flag: set on a whole-kernel abort path, reset by
-    /// `Kernel::update` before each wrapper call and read after; set
+    /// `FusedKernel::update` before each wrapper call and read after; set
     /// means the result is the abort sentinel.
     pub static KERNEL_ABORT: Cell<bool> = const { Cell::new(false) };
 
@@ -1852,17 +1896,6 @@ pub fn reset_fuse_bails() {
 mod tests {
     use super::*;
 
-    #[test]
-    fn abort_peek_does_not_clear() {
-        KERNEL_ABORT.with(|c| c.set(false));
-        assert_eq!(graphix_abort_peek(), 0, "peek on cleared flag returns 0");
-        KERNEL_ABORT.with(|c| c.set(true));
-        assert_eq!(graphix_abort_peek(), 1, "peek on set flag returns 1");
-        assert_eq!(graphix_abort_peek(), 1, "second peek still returns 1");
-        assert!(KERNEL_ABORT.with(|c| c.get()), "flag remains set after multiple peeks");
-        KERNEL_ABORT.with(|c| c.set(false));
-    }
-
     /// A builder dropped with a large capacity leaves none of it behind
     /// for the next builder.
     #[test]
@@ -1936,7 +1969,7 @@ pub(crate) fn with_kernel_env<T>(env: &crate::env::Env, f: impl FnOnce() -> T) -
 /// Run `f` against a fresh `?` delivery queue and return what it raised,
 /// in order; an enclosing invocation's queue is set aside and restored.
 // CR claude for eric: [perf] `mem::take` leaves a capacity-less Vec, so every
-// raising invocation allocates a fresh queue that `Kernel::update` then drops.
+// raising invocation allocates a fresh queue that `FusedKernel::update` then drops.
 // Hand back an `LPooled<Vec<..>>` (or reuse the outer's buffer).
 pub(crate) fn with_qop_raises<T>(
     f: impl FnOnce() -> T,

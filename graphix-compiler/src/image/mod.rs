@@ -401,8 +401,8 @@ pub struct ImageDecoder {
     pub(crate) exprs: AHashMap<u64, Expr>,
     pub(crate) types: AHashMap<u64, Type>,
     pub(crate) fntypes: AHashMap<u64, FnType>,
-    pub(crate) kernel_sigs: AHashMap<u64, std::sync::Arc<KernelSig>>,
-    pub(crate) site_leaves: AHashMap<u64, std::sync::Arc<SiteLeaf>>,
+    pub(crate) kernel_sigs: AHashMap<u64, Arc<KernelSig>>,
+    pub(crate) site_leaves: AHashMap<u64, Arc<SiteLeaf>>,
     pub(crate) records: AHashMap<u64, std::sync::Arc<BodyRecord>>,
     /// The builtins' fast fns by name, for a kernel constant's recipe.
     fastcalls: AHashMap<&'static str, FastCall>,

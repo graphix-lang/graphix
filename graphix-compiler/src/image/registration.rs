@@ -255,7 +255,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let body_bound = measure(&mut enc) + enc.deferred_len + enc.defs_len;
         drop(p);
         let counts = enc.counts();
-        let isa = self.fusion.jit.lock().isa_description();
+        let isa = crate::fusion::emit::isa_description();
         let mut buf = ImageBuf::with_capacity(
             MAGIC.len() + 1 + counts.encoded_len() + isa.encoded_len() + 16 + body_bound,
         );
@@ -356,7 +356,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         let counts = IdCounts::decode(&mut bytes)?;
         let isa = String::decode(&mut bytes)?;
-        if isa != self.fusion.jit.lock().isa_description() {
+        if isa != crate::fusion::emit::isa_description() {
             warn!("the image was written for another isa: {isa}");
             return Err(PackError::InvalidFormat);
         }

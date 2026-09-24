@@ -762,7 +762,8 @@ impl<X: GXExt> GX<X> {
         // executes a kernel; without a reset each file's kernels accumulate
         // in the persistent JIT module until finalize fails.
         if self.ctx.env.lsp_mode {
-            self.ctx.fusion.reset_jit_for_check()?;
+            // SAFETY: an LSP runtime checks and never runs a kernel.
+            unsafe { self.ctx.fusion.reset_jit_for_check()? };
         }
         let env = self.ctx.env.clone();
         let prev_ide = if self.ctx.env.lsp_mode {

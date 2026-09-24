@@ -1501,3 +1501,53 @@ run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 }, timeout: 5; FuseExpect::Jit);
+
+// A float `%` is Rust's (`fmod`: the sign of the dividend) in both
+// engines and fuses.
+const FLOAT_REM_FUSES: &str = r#"
+{
+  let x = -7.5;
+  let y = 2.;
+  let z = f32:5.5;
+  let w = f32:2.;
+  let a = #[native] (x % y);
+  let b = #[native] (z % w);
+  (a, b)
+}
+"#;
+
+run!(float_rem_fuses, FLOAT_REM_FUSES, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => a[0] == Value::F64(-1.5) && a[1] == Value::F32(1.5),
+    _ => false,
+}; FuseExpect::Jit);
+
+// Region inputs resolve by BindId, so a capture and an argument of one
+// basename are two inputs.
+const SHADOWED_INPUTS_FUSE: &str = r#"
+{
+  let x = [1, 2, 3];
+  let f = |y: i64| y + array::len(x);
+  let x = [4, 5];
+  let r = #[native] f(array::len(x));
+  r
+}
+"#;
+
+run!(shadowed_inputs_fuse, SHADOWED_INPUTS_FUSE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(5))
+); FuseExpect::Jit);
+
+// A statically resolved call of a lambda literal has a kernel.
+const LAMBDA_LITERAL_CALL_FUSES: &str = r#"
+{
+  let n = 3;
+  let r = #[native] ((|x: i64| x * 2 + 1)(n));
+  r
+}
+"#;
+
+run!(lambda_literal_call_fuses, LAMBDA_LITERAL_CALL_FUSES, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(7))
+); FuseExpect::Jit);

@@ -10,14 +10,15 @@
 // `crate::DefAssertionKind` (3), `crate::dbgenv::gxdbg_effect` (2), plus
 // `crate::expr::Expr`, `crate::Refs`, `crate::ExprId`; import them.
 use crate::{
-    ApplyView, BindId, ExecCtx, LambdaId, LambdaInstanceId, Node, NodeView, Rt,
+    ApplyView, BindId, ExecCtx, LambdaId, LambdaInstanceId, Node, NodeView, Rt, Update,
     UserEvent,
     effects::{EffectKind, RecursionKind},
-    expr::ExprKind,
+    expr::{ExprKind, ModuleKind},
     fusion::{self, lowering},
     node::{
         callsite::{ArgKey, CallSite},
         lambda::{GXLambda, LambdaDef},
+        module::Module,
     },
     profile::{self, Phase},
 };
@@ -439,6 +440,12 @@ fn body_facts<R: Rt, E: UserEvent>(
     acc
 }
 
+/// A dynamic module runs code its source delivers at run time, whose
+/// effects nothing here can see.
+fn is_dynamic_module<R: Rt, E: UserEvent>(m: &Module<R, E>) -> bool {
+    matches!(&m.spec().kind, ExprKind::Module { value: ModuleKind::Dynamic { .. }, .. })
+}
+
 /// The intrinsic facts of a single node. A variable write is not
 /// async: the write happens this cycle and the cross-cycle boundary is
 /// the read. Exhaustive on purpose: a new node variant must decide.
@@ -472,13 +479,7 @@ fn node_facts<R: Rt, E: UserEvent>(
             LambdaFacts { effect: EffectKind::Sync, stateless: false }
         }
         NodeView::Qop(_) | NodeView::OrNever(_) => LambdaFacts::PURE,
-        // CR claude for eric: [bug] A dynamic Module is PURE here and
-        // fusion::for_each_node never visits its `source`, so an async source is
-        // invisible. Probe: `#[sync] let f = |x: i64| { let s = mod t dynamic {
-        // sandbox whitelist [core]; sig { val foo: i64 }; source
-        // sys::time::after_idle(duration:0.01s, "let foo = 42") }; (s, x) }` is
-        // accepted; the same after_idle outside the module is refused. The same
-        // hole makes arm_sleeps_on_deselect call such an arm pure.
+        NodeView::Module(m) if is_dynamic_module(m) => LambdaFacts::ASYNC,
         NodeView::Bind(_)
         | NodeView::Module(_)
         | NodeView::Block(_)
@@ -828,6 +829,7 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
         | NodeView::Connect(_)
         | NodeView::ConnectDeref(_)
         | NodeView::Catch(_) => pure = false,
+        NodeView::Module(m) if is_dynamic_module(m) => pure = false,
         NodeView::FusedKernel(_) => recurses = true,
         NodeView::CallSite(cs) => {
             if callee_lambda(cs, ctx)

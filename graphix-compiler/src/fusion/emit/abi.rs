@@ -2,43 +2,39 @@
 //! TAINT/STALE disc-tag algebra, and [`JitEnv`] (name → local
 //! binding, ownership kinds, scope truncation).
 
-use crate::{BindId, Node, Rt, UserEvent, fusion::kernel_abi::PrimType};
-use anyhow::Result;
+use crate::{
+    BindId,
+    fusion::kernel_abi::{AbiKind, PrimType},
+};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 
-use super::{
-    body::{BodyCx, emit_bottom_abort},
-    scalar::prim_to_clif,
-};
+use super::{body::BodyCx, scalar::prim_to_clif};
 
-// CR claude for eric: [risk] These are copied by hand from netidx-value and nothing
-// pins them: emit_helpers.rs asserts only the 16-byte size. A renumbered netidx
-// discriminant would miscompile every tag test silently. Pin each against the real
-// enum in a test (read the first word of `Value::Null`, `Value::I64(0)`, ...). ERROR
-// is also missing, so flow.rs's QopSink::bad_disc writes 0x2000_0000 bare.
-/// `Value` discriminants, mirroring `netidx_value::Value`'s
-/// `#[repr(u64)]` tags. A Value-shaped expression is a
-/// `(disc, payload)` pair of `I64`s; `emit_helpers.rs` pins the
-/// 16-byte layout.
+/// `Value` discriminants: netidx gives each `Typ` the bits of the
+/// matching `Value` tag (pinned by `value_disc_matches_value_layout`).
+/// A Value-shaped expression is a `(disc, payload)` pair of `I64`s.
 pub(super) mod value_disc {
-    pub const U8: i64 = 0x0000_0001;
-    pub const I8: i64 = 0x0000_0002;
-    pub const U16: i64 = 0x0000_0004;
-    pub const I16: i64 = 0x0000_0008;
-    pub const U32: i64 = 0x0000_0010;
-    pub const I32: i64 = 0x0000_0040;
-    pub const U64: i64 = 0x0000_0100;
-    pub const I64: i64 = 0x0000_0400;
-    pub const F32: i64 = 0x0000_1000;
-    pub const F64: i64 = 0x0000_2000;
-    pub const BOOL: i64 = 0x0000_4000;
-    pub const NULL: i64 = 0x0000_8000;
-    pub const STRING: i64 = 0x8000_0000;
-    pub const ARRAY: i64 = 0x1000_0000;
+    use netidx_value::Typ;
+
+    pub const U8: i64 = Typ::U8 as i64;
+    pub const I8: i64 = Typ::I8 as i64;
+    pub const U16: i64 = Typ::U16 as i64;
+    pub const I16: i64 = Typ::I16 as i64;
+    pub const U32: i64 = Typ::U32 as i64;
+    pub const I32: i64 = Typ::I32 as i64;
+    pub const U64: i64 = Typ::U64 as i64;
+    pub const I64: i64 = Typ::I64 as i64;
+    pub const F32: i64 = Typ::F32 as i64;
+    pub const F64: i64 = Typ::F64 as i64;
+    pub const BOOL: i64 = Typ::Bool as i64;
+    pub const NULL: i64 = Typ::Null as i64;
+    pub const STRING: i64 = Typ::String as i64;
+    pub const ERROR: i64 = Typ::Error as i64;
+    pub const ARRAY: i64 = Typ::Array as i64;
 }
 
 /// The `Value` discriminant for a scalar of `p`.
@@ -82,14 +78,11 @@ pub struct CompiledExpr {
 /// of [`STALE`]: a fresh bottom is an event.
 pub(crate) const TAINT: i64 = (crate::tval::Tag::TAINT_BIT as i64) << 56;
 
-// CR claude for eric: [style] TAINT is derived from `Tag::TAINT_BIT` but STALE is a
-// literal; derive it from `Tag::STALE_BIT` too so the two cannot drift. The tag
-// byte mask is likewise re-spelled as `0xFF << 56` in FoldAcc::carry_disc.
 /// Disc bit 61: the value did not fire this cycle; when it is not
 /// tainted the payload is the standing value. Leaves set it, ops
 /// AND-reduce it ([`propagate_stale`]) while [`TAINT`] ORs, and only the
 /// kernel output forces freshness.
-pub(crate) const STALE: i64 = 0x2000_0000_0000_0000;
+pub(crate) const STALE: i64 = (crate::tval::Tag::STALE_BIT as i64) << 56;
 
 impl CompiledExpr {
     pub fn new(disc: ClifValue, payload: ClifValue) -> Self {
@@ -200,7 +193,7 @@ pub(super) fn clean_disc(b: &mut FunctionBuilder, disc: ClifValue) -> ClifValue 
 /// What a [`Local`]'s `payload` word holds and how it is dropped at
 /// scope exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum LocalKind {
+pub(crate) enum LocalKind {
     /// The scalar at its natural CLIF type; nothing to drop.
     Scalar(PrimType),
     /// Owned ValArray bits, dropped via `graphix_valarray_drop`; reads
@@ -209,21 +202,23 @@ pub(super) enum LocalKind {
     /// An owned `ArcStr` pointer, dropped via `graphix_arcstr_drop`;
     /// reads clone.
     String,
-    // CR claude for eric: [structure] Variant, Nullable and Value are never told
-    // apart: every match on LocalKind (call::emit_drop_local, nodes.rs'
-    // local read, select's scrutinee drop, install_arm_binds, placeholder_for_kind)
-    // takes all three in one arm, and `IsNull`/`VariantTagEq` no longer exist. Yet
-    // the AbiKind -> LocalKind split is rewritten in compile_into_function,
-    // classify_select_scrutinee, payload_local_kind, emit_let_node, bind_leaves,
-    // bind_elem and FoldAcc::local_kind, and scaffold's ValueLeafKind exists only to
-    // carry it. One `Value` kind plus one `LocalKind::of(AbiKind) -> Option<Self>`
-    // would replace all of it.
-    /// The value word of a two-word Value, dropped via
-    /// `graphix_value_drop`; reads borrow. The three stay distinct so
-    /// consumer ops stay well-typed (`IsNull` vs `VariantTagEq`).
-    Variant,
-    Nullable,
+    /// The value word of a two-word Value (a variant, a nullable or any
+    /// other value shape), dropped via `graphix_value_drop`; reads borrow.
     Value,
+}
+
+impl LocalKind {
+    /// The kind of a local holding a value of ABI shape `k`; `None` for
+    /// `Unit` and bare `Null`, which bind no local.
+    pub(super) fn of(k: AbiKind) -> Option<Self> {
+        Some(match k {
+            AbiKind::Scalar(p) => Self::Scalar(p),
+            AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Self::Composite,
+            AbiKind::String => Self::String,
+            AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => Self::Value,
+            AbiKind::Unit | AbiKind::Null => return None,
+        })
+    }
 }
 
 /// One in-scope kernel local: a two-register Value tagged by `kind`.
@@ -232,12 +227,10 @@ pub(super) struct Local {
     pub(super) name: ArcStr,
     pub(super) words: ValueVar,
     pub(super) kind: LocalKind,
-    // CR claude for eric: [readability] Stale: pattern binds (`__pat`), HOF leaves
-    // (`__leaf`) and elements are synthetic and carry Some(id); only the adopted
-    // select scrutinee (`__scrut`) is None. Their ArcStr names are then never
-    // looked up, yet each bind formats and allocates one.
-    /// `Some` for params and lets; a `Ref` resolves BindId-first, which
-    /// is exact under shadowing. `None` for synthetic locals.
+    /// `Some` for params, lets and every bind a pattern, element or leaf
+    /// names; a `Ref` resolves BindId-first, which is exact under
+    /// shadowing. `None` for a local nothing names (an adopted select
+    /// scrutinee, a find loop's result), whose `name` goes unread.
     pub(super) bind_id: Option<BindId>,
     /// Scaffold-loop depth at bind time; 0 means loop-invariant.
     pub(super) loop_depth: u32,
@@ -248,6 +241,8 @@ pub(crate) struct JitEnv {
     /// shadows an outer one.
     pub(super) locals: Vec<Local>,
     /// Current scaffold-loop depth, stamped on each `Local` at bind time.
+    /// State claims are refused inside loops: one static word cannot
+    /// hold per-slot memory.
     pub(super) loop_depth: u32,
 }
 
@@ -345,47 +340,39 @@ pub(crate) fn bind_scalar_var_with_disc(
     cx.env.bind(name, ValueVar { disc, payload }, LocalKind::Scalar(prim), bind_id);
 }
 
-// CR claude for eric: [dead] emit_or_abort_on_taint, emit_or_abort_on_taint_keep
-// and scalar_result have no caller in the workspace or ../netidx (only the mod.rs
-// re-export); HOF bodies now fold taint into SlotFlags. With them goes
-// body::emit_bottom_abort, whose only callers are these two. Delete all four.
-/// Emit an operand and abort the kernel if it is tainted, returning the
-/// payload word. For HOF operands that have no per-value taint channel.
-pub fn emit_or_abort_on_taint<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    node: &Node<R, E>,
-) -> Result<ClifValue> {
-    let cv = node.emit_clif(cx)?;
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    Ok(cv.payload)
-}
-
 /// Wrap owned ValArray bits as a composite [`CompiledExpr`].
 pub fn array_result(cx: &mut BodyCx, ptr: ClifValue) -> CompiledExpr {
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
     CompiledExpr::new(disc, ptr)
 }
 
-/// Wrap a scalar payload as a [`CompiledExpr`] with the prim's disc.
-/// The disc must match the payload's shape: `set_var` rebuilds a
-/// `Value` from it.
-pub fn scalar_result(
-    cx: &mut BodyCx,
-    prim: PrimType,
-    payload: ClifValue,
-) -> CompiledExpr {
-    CompiledExpr::new(scalar_disc(cx.b, prim), payload)
-}
+#[cfg(test)]
+mod tests {
+    use super::value_disc;
+    use crate::tval::value_words;
+    use netidx_value::{ValArray, Value};
 
-/// [`emit_or_abort_on_taint`] returning the whole [`CompiledExpr`]; on the continue
-/// path the disc carries only the operand's [`STALE`] bit.
-pub fn emit_or_abort_on_taint_keep<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    node: &Node<R, E>,
-) -> Result<CompiledExpr> {
-    let cv = node.emit_clif(cx)?;
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    Ok(cv)
+    #[test]
+    fn value_disc_matches_value_layout() {
+        let cases = [
+            (Value::U8(0), value_disc::U8),
+            (Value::I8(0), value_disc::I8),
+            (Value::U16(0), value_disc::U16),
+            (Value::I16(0), value_disc::I16),
+            (Value::U32(0), value_disc::U32),
+            (Value::I32(0), value_disc::I32),
+            (Value::U64(0), value_disc::U64),
+            (Value::I64(0), value_disc::I64),
+            (Value::F32(0.), value_disc::F32),
+            (Value::F64(0.), value_disc::F64),
+            (Value::Bool(false), value_disc::BOOL),
+            (Value::Null, value_disc::NULL),
+            (Value::String(arcstr::ArcStr::new()), value_disc::STRING),
+            (Value::error(arcstr::ArcStr::new()), value_disc::ERROR),
+            (Value::Array(ValArray::from([])), value_disc::ARRAY),
+        ];
+        for (v, disc) in cases {
+            assert_eq!(value_words(&v)[0], disc as u64, "{v:?}");
+        }
+    }
 }

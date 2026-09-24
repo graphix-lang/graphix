@@ -27,6 +27,7 @@ dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
 dbg_flag!(graphix_dbg_tval, "GRAPHIX_DBG_TVAL");
 dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
+dbg_flag!(gxdbg_callret, "GXDBG_CALLRET");
 dbg_flag!(gxdbg_cs, "GXDBG_CS");
 dbg_flag!(gxdbg_dync, "GXDBG_DYNC");
 dbg_flag!(gxdbg_ref, "GXDBG_REF");

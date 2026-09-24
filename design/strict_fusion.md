@@ -108,7 +108,7 @@ failing handler-ful `?` calls `graphix_qop_raise(site, disc, payload)`
 the error onto the invocation's `QOP_RAISES` queue (a scoped
 thread-local like `KERNEL_ABORT`/`KERNEL_ENV`, saved and restored
 around nested invocations reached through the value hooks).
-`Kernel::update` drains the queue after the wrapper returns, in push
+`FusedKernel::update` drains the queue after the wrapper returns, in push
 (= execution) order, through `node::error::deliver_error`, the handler
 path factored out of `Qop::update` so both engines run one function:
 same-top Vacant-insert / `set_var` on an occupied entry, cross-top
@@ -141,9 +141,10 @@ view on its first call ever), and the per-call-site blocks /
 per-slot anchor chains / per-activation block trees that give those
 words per-slot and per-activation multiplicity
 (`kernel_instance_state.md`), plus the shrink reclaim of unreached
-activations. No replay caches (`Kernel::reset_replay` is a no-op —
-every word a kernel keeps is semantic), no selection memory, no inner
-`Apply`s or `Node`s (`Kernel` is not generic). The runtime loans an
+activations. No replay caches (`FusedKernel::reset_replay` resets only
+its feeders — every word a kernel keeps is semantic), no selection
+memory, no inner
+`Apply`s or `Node`s beyond its input feeders. The runtime loans an
 invocation exactly four things through scoped thread-locals:
 `KERNEL_ABORT` (the interrupt / stack-budget / bottom-abort channel),
 `KERNEL_ENV`, `QOP_RAISES` and the core-trait value hooks. Wire slot 0

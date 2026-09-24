@@ -437,6 +437,14 @@ impl MapCollection for ListCollection {
     }
 }
 
+/// The diagnostic of a collection init count past the element limit,
+/// from both engines.
+pub(crate) fn log_init_oversize(n: i64) {
+    log::error!(
+        "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
+    );
+}
+
 #[derive(Debug, Clone, Default)]
 struct IndexRange(usize);
 
@@ -459,9 +467,7 @@ impl MapCollection for IndexRange {
         // 7 errors in 3 ticks (--no-fusion), while the fused loop never logs
         // (scaffold.rs emit_init_loop). Log only when the count fired.
         if n > MAX_ARRAY_INIT_LEN {
-            log::error!(
-                "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
-            );
+            log_init_oversize(n);
             return None;
         }
         Some(Self(n.max(0) as usize))
@@ -595,7 +601,7 @@ fn callback_param<R: Rt, E: UserEvent>(
 fn bindable_array_element(
     typ: &Type,
     binds: &[(BindId, usize)],
-) -> Option<(Type, Vec<(BindId, usize, scaffold::LeafShape)>)> {
+) -> Option<(Type, scaffold::Leaves)> {
     use kernel_abi::AbiKind;
 
     let typ = kernel_abi::freeze_for_abi_normalized(typ)?;
@@ -655,7 +661,7 @@ fn finish_loop_result(
     if source_invariant {
         flags.set_src_invariant();
     }
-    flags.apply(cx, result, &[source.disc])
+    flags.apply(cx, result, source.disc)
 }
 
 /// Emit a List/Map HOF source: marshal the collection Value owned and
@@ -2285,7 +2291,7 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
         Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
         // The init and body may emit narrower members of the acc union;
         // `emit_owned_value_operand_node` normalizes them to an owned Value.
-        Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
             if acc.binds.is_empty() =>
         {
             for n in [init, body] {
@@ -2297,11 +2303,6 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
             scaffold::FoldAcc::Value {
                 init_src: CompositeSource::Owned,
                 body_src: CompositeSource::Owned,
-                kind: match k {
-                    AbiKind::Variant => scaffold::ValueLeafKind::Variant,
-                    AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
-                    _ => scaffold::ValueLeafKind::Value,
-                },
             }
         }
         _ => return Ok(None),
