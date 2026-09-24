@@ -158,6 +158,8 @@ async fn registration_restores() -> Result<()> {
     let (tx, mut warm_rx) = mpsc::channel(10);
     let warm =
         init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image)).await?;
+    assert!(!cold.rt.env_stats().await?.restored);
+    assert!(warm.rt.env_stats().await?.restored, "the warm runtime compiled cold");
     for code in [
         "{ let xs = [1, 2, 3]; array::fold(array::map(xs, |x| x * 2), 0, |a, b| a + b) }",
         "{ let s = \"hello world\"; str::len(s) + str::len(str::join(#sep: \", \", str::split(#pat: \" \", s))) }",

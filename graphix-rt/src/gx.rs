@@ -225,6 +225,8 @@ pub(super) struct GX<X: GXExt> {
     /// The program compiled or restored at construction; a compile
     /// failure is kept for the embedder to report, the runtime starts.
     program: Option<Result<ProgramRoot, String>>,
+    /// The registration was restored from an image, not compiled.
+    restored: bool,
     /// Active trace recording, if any. See [`GXHandle::trace_start`].
     trace: Option<TraceState>,
     /// The session scope for statement-at-a-time compiles: a top-level
@@ -277,6 +279,7 @@ impl<X: GXExt> GX<X> {
             trace: None,
             scope: Scope::root(),
             program: None,
+            restored: false,
         };
         info!("runtime construction before the root: {:?}", st_new.elapsed());
         t.trace = cfg
@@ -288,7 +291,7 @@ impl<X: GXExt> GX<X> {
             Some(RegistrationImage::Save(tx)) => (None, Some(tx)),
             None => (None, None),
         };
-        let restored = match image {
+        t.restored = match image {
             None => false,
             Some(bytes) => match t.restore_registration(bytes) {
                 Ok(()) => true,
@@ -298,7 +301,7 @@ impl<X: GXExt> GX<X> {
                 }
             },
         };
-        if !restored {
+        if !t.restored {
             if let Some(root) = cfg.root {
                 // The root declares packages; fusing their constants
                 // buys nothing and would put kernels in the image.
@@ -601,6 +604,7 @@ impl<X: GXExt> GX<X> {
                         ref_var_keys,
                         ref_var_total,
                         store_len: self.ctx.rt.store.len(),
+                        restored: self.restored,
                     });
                 }
                 ToGX::FusionStats { res } => {

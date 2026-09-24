@@ -340,9 +340,11 @@ pub struct ImageDecoder {
     image: Bytes,
     /// Every definition's offset by ordinal, from the trailer.
     offsets: Vec<u64>,
-    /// How many decodes of each definition are running: a valid image
-    /// re-enters a definition at most once (see [`decode_at`]).
-    active: AHashMap<u64, u8>,
+    /// How many objects the session has entered in its tables.
+    built: usize,
+    /// Each definition being decoded, by offset, with [`Self::built`] at
+    /// its latest entry (see [`decode_at`]).
+    active: AHashMap<u64, usize>,
     handlers: AHashMap<u64, ErrorHandler>,
     paths: AHashMap<u64, ModPath>,
     refcells: AHashMap<u64, RefCell>,
@@ -362,6 +364,17 @@ pub struct ImageDecoder {
 }
 
 impl ImageDecoder {
+    /// Enter the object defined at `at` in its table.
+    fn enter<T>(
+        &mut self,
+        table: impl Fn(&mut Self) -> &mut AHashMap<u64, T>,
+        at: u64,
+        v: T,
+    ) {
+        self.built += 1;
+        table(self).insert(at, v);
+    }
+
     /// Reserves a block of each id domain for the image's ids; refuses
     /// a span no block can hold.
     pub fn new(counts: IdCounts) -> Result<Self, PackError> {
@@ -378,6 +391,7 @@ impl ImageDecoder {
             maps: shared_map::DecodeTable::default(),
             image: Bytes::new(),
             offsets: Vec::new(),
+            built: 0,
             active: AHashMap::new(),
             handlers: AHashMap::new(),
             paths: AHashMap::new(),
@@ -615,7 +629,7 @@ pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
             }
             DEF => {
                 let path = ModPath(Pack::decode(sub)?);
-                decoding(|d| d.paths.insert(at, path.clone()));
+                decoding(|d| d.enter(|d| &mut d.paths, at, path.clone()));
                 Ok(path)
             }
             _ => Err(PackError::UnknownTag),
@@ -690,7 +704,7 @@ pub(crate) fn refcell_decode(
                 // Entered before its contents: the resolved type can
                 // reach this cell again.
                 let cell: RefCell = Arc::new(Mutex::new(None));
-                decoding(|d| d.refcells.insert(at, cell.clone()));
+                decoding(|d| d.enter(|d| &mut d.refcells, at, cell.clone()));
                 if !sub.has_remaining() {
                     return Err(PackError::BufferShort);
                 }
@@ -812,7 +826,7 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
                 let parent = dynscope_decode(sub)?;
                 let scope = parent.with_catch((bind, expr), machine);
                 let h = scope.handler().expect("with_catch installs a handler");
-                decoding(|d| d.handlers.insert(at, h));
+                decoding(|d| d.enter(|d| &mut d.handlers, at, h));
                 Ok(scope)
             }
             _ => Err(PackError::UnknownTag),
@@ -1002,7 +1016,7 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
                 let source = source_decode(sub)?;
                 let text = Pack::decode(sub)?;
                 let ori = Arc::new(Origin { parent, source, text });
-                decoding(|d| d.origins.insert(at, ori.clone()));
+                decoding(|d| d.enter(|d| &mut d.origins, at, ori.clone()));
                 Ok(ori)
             }
             _ => Err(PackError::UnknownTag),
@@ -1095,9 +1109,10 @@ pub(crate) fn position(sub: &[u8]) -> Result<u64, PackError> {
 
 /// Decode the object defined at `offset` with `full`, its whole codec,
 /// which enters it in its table as a side effect. A decode that meets
-/// the object it is inside builds it again from here; every such cycle
-/// passes through a kind entered before its contents, so a valid image
-/// re-enters a definition at most once, and a third entry is refused.
+/// the object it is inside builds it again from here. Every cycle of a
+/// valid image passes through a kind entered before its contents, so it
+/// enters an object before it meets a definition again; an entry with
+/// nothing entered since that definition's last is a cycle in the image.
 pub(crate) fn decode_at<T>(
     offset: u64,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
@@ -1107,22 +1122,19 @@ pub(crate) fn decode_at<T>(
         .ok()
         .filter(|at| *at < image.len())
         .ok_or(PackError::InvalidFormat)?;
-    let entered = decoding(|d| {
-        let n = d.active.entry(offset).or_default();
-        *n += 1;
-        *n <= 2
-    });
-    let r = match entered {
-        Some(true) => crate::stack::ensure_sufficient(|| full(&mut &image[at..])),
-        _ => Err(PackError::InvalidFormat),
-    };
-    decoding(|d| {
-        if let Some(n) = d.active.get_mut(&offset) {
-            *n -= 1;
-            if *n == 0 {
-                d.active.remove(&offset);
-            }
+    let prev = decoding(|d| {
+        let built = d.built;
+        match d.active.insert(offset, built) {
+            Some(prev) if prev == built => None,
+            prev => Some(prev),
         }
+    })
+    .flatten()
+    .ok_or(PackError::InvalidFormat)?;
+    let r = crate::stack::ensure_sufficient(|| full(&mut &image[at..]));
+    decoding(|d| match prev {
+        Some(p) => d.active.insert(offset, p),
+        None => d.active.remove(&offset),
     });
     r
 }
@@ -1251,7 +1263,7 @@ pub(crate) fn object_decode<T: Clone>(
             }
             DEF => {
                 let v = contents(sub)?;
-                decoding(|d| table(d).insert(at, v.clone()));
+                decoding(|d| d.enter(&table, at, v.clone()));
                 Ok(v)
             }
             _ => Err(PackError::UnknownTag),
@@ -1438,7 +1450,7 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
                 // bound type or a constraint can reach this wrapper.
                 let placeholder = Arc::new(RwLock::new(TCell::default()));
                 let tv = TVar::from_parts(name, id, frozen, placeholder);
-                decoding(|d| d.tvars.insert(at, tv.clone()));
+                decoding(|d| d.enter(|d| &mut d.tvars, at, tv.clone()));
                 let cell = cell_decode(sub)?;
                 tv.write().cell = cell;
                 Ok(tv)
@@ -1466,7 +1478,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
                 // Entered before its contents: a bound type can reach
                 // the cell again.
                 let cell = Arc::new(RwLock::new(TCell::default()));
-                decoding(|d| d.cells.insert(at, cell.clone()));
+                decoding(|d| d.enter(|d| &mut d.cells, at, cell.clone()));
                 let typ = Pack::decode(sub)?;
                 let constraints: Vec<_> = Pack::decode(sub)?;
                 let refused = bool::decode(sub)?;
