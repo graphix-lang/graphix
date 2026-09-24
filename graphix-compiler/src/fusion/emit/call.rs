@@ -974,7 +974,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let disc = cx.b.block_params(dmerge)[0];
     let payload = cx.b.block_params(dmerge)[1];
     #[cfg(debug_assertions)]
-    if std::env::var_os("GXDBG_CALLRET").is_some() {
+    if crate::dbgenv::gxdbg_callret() {
         let f = cx.helper("graphix_dbg_disc")?;
         let t = cx.b.ins().iconst(types::I64, 1);
         cx.b.ins().call(f, &[t, disc]);

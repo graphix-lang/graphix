@@ -1111,7 +1111,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                     };
                     result.map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
                 } else {
-                    let init = match ctx.builtins.get(&*builtin).copied() {
+                    let init = match ctx.builtins.get(&*builtin).map(|b| b.init) {
                         Some(init) => Some(init),
                         None if ctx.env.lsp_mode => Some(UnknownBuiltIn::init as _),
                         None => None,
@@ -1353,14 +1353,14 @@ impl Lambda {
                 Either::Right(name) if CollectionIntrinsic::from_name(name).is_some() => {
                     EffectKind::Sync
                 }
-                Either::Right(name) => ctx.builtin_effect(name),
+                Either::Right(name) => ctx.builtin_effect(name).kind(),
                 Either::Left(_) => EffectKind::Sync,
             }),
             stateless: AtomicBool::new(match &l.body {
                 Either::Right(name) if CollectionIntrinsic::from_name(name).is_some() => {
                     true
                 }
-                Either::Right(name) => ctx.builtin_stateless(name),
+                Either::Right(name) => ctx.builtin_effect(name).is_stateless(),
                 Either::Left(_) => true,
             }),
             recursion: Mutex::new(RecursionKind::NotRecursive),

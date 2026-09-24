@@ -1,5 +1,6 @@
 use crate::{
     FnArgIdentity, LambdaId, LambdaInstanceId,
+    dbgenv::{graphix_profile, graphix_profile_instances},
     expr::Expr,
     typ::{FnType, Type},
 };
@@ -11,14 +12,13 @@ use std::{
     cell::RefCell,
     marker::PhantomData,
     rc::Rc,
-    sync::LazyLock,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use triomphe::Arc;
 
 macro_rules! phases {
     ($($phase:ident),+ $(,)?) => {
-        #[derive(Clone, Copy, Debug)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Phase { $($phase),+ }
         const PHASES: &[Phase] = &[$(Phase::$phase),+];
     };
@@ -63,9 +63,6 @@ struct Census {
     signatures: LPooled<AHashMap<Arc<FnType>, usize>>,
     callbacks: LPooled<AHashMap<FnArgIdentity, usize>>,
 }
-
-static CENSUS: LazyLock<bool> =
-    LazyLock::new(|| std::env::var_os("GRAPHIX_PROFILE_INSTANCES").is_some());
 
 struct Profile {
     current: Option<Phase>,
@@ -116,21 +113,15 @@ pub struct Span {
 }
 
 pub fn phase(phase: Phase) -> Option<Span> {
-    static ENABLED: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("GRAPHIX_PROFILE").is_some());
-    if !*ENABLED {
+    if !graphix_profile() {
         return None;
     }
     PROFILE.with_borrow_mut(|p| {
-        // CR claude for eric: [readability] `p.current.is_none()` is tested twice
-        // in a row (here and for `p.origin` below); one root-span branch.
-        if p.current.is_none() {
-            p.metrics.fill(Metric::default());
-            p.census = CENSUS.then(Census::default);
-            p.epoch_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        }
         let start = Instant::now();
         if p.current.is_none() {
+            p.metrics.fill(Metric::default());
+            p.census = graphix_profile_instances().then(Census::default);
+            p.epoch_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
             p.origin = start;
         }
         let parent = p.switch(Some(phase), start);
@@ -154,7 +145,9 @@ pub(crate) fn instance(
     definition: LambdaId,
     body: &Expr,
 ) {
-    let Some(span) = span.as_mut().filter(|_| *CENSUS) else { return };
+    let Some(span) = span.as_mut().filter(|_| graphix_profile_instances()) else {
+        return;
+    };
     let cost = match span.phase {
         Phase::InstanceGraph => InstanceCost::Graph,
         Phase::InstanceCheck => InstanceCost::Check,
@@ -176,7 +169,7 @@ pub(crate) fn instance_signature(
     typ: &FnType,
     identity: Option<&FnArgIdentity>,
 ) {
-    if !*CENSUS {
+    if !graphix_profile_instances() {
         return;
     }
     let Some(_p) = phase(Phase::InstanceCensus) else { return };
@@ -206,15 +199,11 @@ pub fn failed(span: &mut Option<Span>) {
     }
 }
 
-// CR claude for eric: [risk] LIFO drop order is only a convention (the
-// PhantomData stops Send, not an early drop), and callers drop spans by hand
-// (lib.rs:1918-1928). An out-of-order drop restores the wrong parent and
-// silently corrupts every phase's self time; debug_assert that
-// `p.current == Some(self.phase)` here.
 impl Drop for Span {
     fn drop(&mut self) {
         let end = Instant::now();
         PROFILE.with_borrow_mut(|p| {
+            debug_assert_eq!(p.current, Some(self.phase), "profile span dropped out of order");
             p.switch(self.parent, end);
             let elapsed = end.duration_since(self.start).as_nanos() as u64;
             let metric = &mut p.metrics[self.phase as usize];

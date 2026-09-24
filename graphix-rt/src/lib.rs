@@ -473,7 +473,7 @@ enum ToGX<X: GXExt> {
     MatchShape {
         id: ExprId,
         spec: graphix_compiler::node_shape::NodeShape,
-        res: oneshot::Sender<Option<std::result::Result<(), String>>>,
+        res: oneshot::Sender<Option<Result<()>>>,
     },
     /// Render the compiled root node for `id` as an indented text tree.
     /// `None` if no node is registered for `id`.
@@ -567,6 +567,8 @@ pub struct EnvStats {
     pub ref_var_keys: usize,
     /// total runtime ref edges (sum of all ref counts across `by_ref`)
     pub ref_var_total: usize,
+    /// number of variables with a delivery in the runtime store
+    pub store_len: usize,
 }
 
 struct GXHandleInner<X: GXExt> {
@@ -750,7 +752,7 @@ impl<X: GXExt> GXHandle<X> {
         match self.exec(|res| ToGX::MatchShape { id, spec, res }).await? {
             None => bail!("no node registered for {id:?}"),
             Some(Ok(())) => Ok(()),
-            Some(Err(reason)) => bail!("graph shape mismatch: {reason}"),
+            Some(Err(e)) => Err(e.context("graph shape mismatch")),
         }
     }
 

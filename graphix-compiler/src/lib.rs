@@ -25,7 +25,7 @@ pub use ids::IdRelocation;
 pub mod image;
 pub mod node;
 pub mod node_shape;
-pub mod perfdbg;
+pub(crate) mod perfdbg;
 pub(crate) mod profile;
 pub mod shared_map;
 pub(crate) mod stack;
@@ -43,7 +43,6 @@ pub use fusion::FusionStats;
 pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
-    effects::EffectKind,
     env::Env,
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
@@ -77,8 +76,9 @@ use std::{
     mem,
     sync::{
         self, LazyLock,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
+    thread::LocalKey,
     time::Duration,
 };
 use tokio::{task, time::Instant};
@@ -117,12 +117,11 @@ pub enum CtlFlag {
 }
 
 /// A runtime diagnostic: a failure whose value-level outcome is bottom
-/// (nothing for `?` to catch), surfaced through the runtime's event
-/// stream. Pushed to [`ExecCtx::diagnostics`], drained every cycle.
-/// Currently no producer exists.
-// CR claude for eric: [dead] an uninhabited type with no producer, yet
-// ExecCtx::diagnostics and two drains per cycle in gx.rs exist for it. Delete the
-// channel until something produces a diagnostic.
+/// (nothing for `?` to catch), for the runtime's event stream. Nothing
+/// produces one yet.
+// XCR claude for eric: the ExecCtx channel and gx.rs's two drains per cycle are
+// gone; the type stays because `GXEvent::Diagnostic` carries it and netidx-admin
+// (e2e.rs) matches that variant. Deleting both is a netidx change too.
 #[derive(Debug, Clone)]
 pub enum RtDiagnostic {}
 
@@ -133,10 +132,13 @@ impl std::fmt::Display for RtDiagnostic {
 }
 
 /// Lock-free [`CtlFlag`] set. A loop polls [`Control::interrupted`];
-/// the run loop polls [`Control::aborted`].
+/// the run loop polls [`Control::aborted`]. Also this runtime's stack
+/// budget: the grown stack a recursion may hold before
+/// [`Control::abort_budget`].
 #[derive(Debug)]
 pub struct Control {
     flags: AtomicU32,
+    stack_budget: AtomicUsize,
 }
 
 impl Default for Control {
@@ -147,7 +149,20 @@ impl Default for Control {
 
 impl Control {
     pub fn new() -> Self {
-        Control { flags: AtomicU32::new(0) }
+        Control {
+            flags: AtomicU32::new(0),
+            stack_budget: AtomicUsize::new(stack::default_budget()),
+        }
+    }
+
+    /// The bytes of grown stack segments a thread running this runtime
+    /// may hold; `usize::MAX` is unlimited.
+    pub fn stack_budget(&self) -> usize {
+        self.stack_budget.load(Ordering::Relaxed)
+    }
+
+    pub fn set_stack_budget(&self, bytes: usize) {
+        self.stack_budget.store(bytes, Ordering::Relaxed)
     }
 
     /// Request that in-flight loops abort this cycle; cleared at the
@@ -189,48 +204,58 @@ impl Control {
     }
 }
 
-// CR claude for eric: [risk] a process-wide flag: with_trace in one ExecCtx traces
-// every other ExecCtx and thread, and a panic in `f` leaves it set. A thread-local
-// behind a restoring guard, as the other session flags are; the
-// #[allow(dead_code)]s on pub items below do nothing.
-#[allow(dead_code)]
-static TRACE: AtomicBool = AtomicBool::new(false);
-
-#[allow(dead_code)]
-pub fn set_trace(b: bool) {
-    TRACE.store(b, Ordering::Relaxed)
+/// Sets a thread-local `Cell` for a scope and puts the previous value
+/// back when dropped, by an unwind too.
+struct Restore<T: Copy + 'static> {
+    key: &'static LocalKey<Cell<T>>,
+    prev: T,
 }
 
-#[allow(dead_code)]
+impl<T: Copy + 'static> Restore<T> {
+    fn replace(key: &'static LocalKey<Cell<T>>, v: T) -> Self {
+        Self { key, prev: key.replace(v) }
+    }
+}
+
+impl<T: Copy + 'static> Drop for Restore<T> {
+    fn drop(&mut self) {
+        self.key.set(self.prev)
+    }
+}
+
+thread_local! {
+    static TRACE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Turn compiler tracing ([`tdbg!`]) on or off on this thread.
+pub fn set_trace(b: bool) {
+    TRACE.set(b)
+}
+
+/// Run `f` with compiler tracing on this thread set to `enable`.
 pub fn with_trace<F: FnOnce() -> Result<R>, R>(
     enable: bool,
     spec: &Expr,
     f: F,
 ) -> Result<R> {
-    let prev = trace();
-    set_trace(enable);
-    if !prev && enable {
+    let restore = Restore::replace(&TRACE, enable);
+    if !restore.prev && enable {
         eprintln!("trace enabled at {}, spec: {}", spec.pos, spec);
-    } else if prev && !enable {
+    } else if restore.prev && !enable {
         eprintln!("trace disabled at {}, spec: {}", spec.pos, spec);
     }
-    let r = match f() {
-        Err(e) => {
-            eprintln!("traced at {} failed with {e:?}", spec.pos);
-            Err(e)
-        }
-        r => r,
-    };
-    if prev && !enable {
+    let r = f();
+    if let Err(e) = &r {
+        eprintln!("traced at {} failed with {e:?}", spec.pos);
+    }
+    if restore.prev && !enable {
         eprintln!("trace reenabled")
     }
-    set_trace(prev);
     r
 }
 
-#[allow(dead_code)]
 pub fn trace() -> bool {
-    TRACE.load(Ordering::Relaxed)
+    TRACE.get()
 }
 
 #[macro_export]
@@ -357,18 +382,13 @@ pub(crate) fn print_as_written() -> bool {
     PRINT_FLAGS.get().contains(PrintFlag::AsWritten)
 }
 
-// CR claude for eric: [risk] no restoring guard: a panic in `f` leaves the flags
-// set on this thread for the next ExecCtx that runs on it (AsWritten would make
-// program-visible text non-canonical). Restore in a Drop.
 /// Run `f` with the given type-formatting flags on this thread.
 pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
     flags: G,
     f: F,
 ) -> R {
-    let prev = PRINT_FLAGS.replace(flags.into());
-    let res = f();
-    PRINT_FLAGS.set(prev);
-    res
+    let _restore = Restore::replace(&PRINT_FLAGS, flags.into());
+    f()
 }
 
 /// Everything that happened simultaneously in one execution cycle. At
@@ -467,14 +487,6 @@ pub struct BuiltinBindInfo {
 }
 
 impl Refs {
-    // CR claude for eric: [risk] leaves `triggering` and `banked` as they were, so a
-    // reused Refs reports stale triggering reads (select.rs:292 reads them). No
-    // caller in the workspace: clear every field or delete it.
-    pub fn clear(&mut self) {
-        self.refed.clear();
-        self.bound.clear();
-    }
-
     pub fn with_external_refs(&self, mut f: impl FnMut(BindId)) {
         for id in &*self.refed {
             if !self.bound.contains(id) {
@@ -567,9 +579,16 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.fuse(ctx))
     }
 
-    // CR claude for eric: [risk] image_len and image_encode recurse through every
-    // node but are not shadowed here, so the image write's node walk runs with no
-    // stack::ensure_sufficient (decode_node in image/nodes.rs neither).
+    pub fn image_len(&self) -> usize {
+        stack::ensure_sufficient(|| self.0.image_len())
+    }
+
+    pub fn image_encode(
+        &self,
+        buf: &mut image::ImageBuf,
+    ) -> std::result::Result<(), netidx_core::pack::PackError> {
+        stack::ensure_sufficient(|| self.0.image_encode(buf))
+    }
 }
 
 impl<R: Rt, E: UserEvent> Debug for Node<R, E> {
@@ -677,23 +696,20 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         buf: &mut image::ImageBuf,
     ) -> std::result::Result<(), netidx_core::pack::PackError>;
 
-    // CR claude for eric: [risk] every Apply without an override (Kernel and each
-    // builtin's inner Apply; GXLambda and BuiltInLambda override) shares one static
-    // FnType across the process, and its LambdaIds cell is mutable (unification
-    // links into it): state shared by every ExecCtx. Make typ() required.
+    // XCR claude for eric: a required typ() breaks the five Apply impls in
+    // netidx-admin (ops.rs, lib.rs, local.rs, ceremony.rs); until they change, the
+    // default builds a fresh type per call, so no FnType cell is shared across
+    // ExecCtxs. Nothing reaches it today: the callee wrappers override.
     /// The lambda's type; the BuiltIn wrapper implements it for builtins.
     fn typ(&self) -> Arc<FnType> {
-        static EMPTY: LazyLock<Arc<FnType>> = LazyLock::new(|| {
-            Arc::new(FnType {
-                args: Arc::from_iter([]),
-                rtype: Type::Bottom,
-                throws: Type::Bottom,
-                vargs: None,
-                explicit_throws: false,
-                ..Default::default()
-            })
-        });
-        Arc::clone(&*EMPTY)
+        Arc::new(FnType {
+            args: Arc::from_iter([]),
+            rtype: Type::Bottom,
+            throws: Type::Bottom,
+            vargs: None,
+            explicit_throws: false,
+            ..Default::default()
+        })
     }
 
     /// Record every id bound and referenced by this node. Only needed
@@ -1229,10 +1245,8 @@ impl LibState {
         self.0.contains_key(&TypeId::of::<T>())
     }
 
-    // CR claude for eric: [style] a shared read that takes &mut self, so a caller
-    // holding &ExecCtx cannot use it; &self.
     /// The library state of type `T`, if registered.
-    pub fn get<T>(&mut self) -> Option<&T>
+    pub fn get<T>(&self) -> Option<&T>
     where
         T: Any + Send + Sync,
     {
@@ -1383,14 +1397,17 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 }
 
+/// A registered builtin: how its application is built, how an image
+/// restores it, and its classification.
+struct BuiltinEntry<R: Rt, E: UserEvent> {
+    init: BuiltInInitFn<R, E>,
+    decode: BuiltInDecodeFn<R, E>,
+    effect: Effect,
+}
+
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
-    // CR claude for eric: [structure] builtins, builtin_decoders and
-    // fusion.builtin_facts are three maps keyed by one name and written together
-    // (register_builtin), and read_registration copies a fourth (fastcalls). One
-    // map of {init, decode, facts} makes a half-registered builtin unrepresentable.
-    builtins: AHashMap<&'static str, BuiltInInitFn<R, E>>,
-    builtin_decoders: AHashMap<&'static str, BuiltInDecodeFn<R, E>>,
+    builtins: AHashMap<&'static str, BuiltinEntry<R, E>>,
     attributes: AHashMap<&'static str, AttributeCheckFn<R, E>>,
     // Sandboxing.
     builtins_allowed: bool,
@@ -1435,10 +1452,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Def-gate nesting depth; a nested gate's cells are still
     /// entangled with the enclosing inference.
     pub(crate) def_gate_depth: usize,
-    // CR claude for eric: [style] the Arc is never cloned; the Mutex alone gives
-    // the &self access resolving()/push_resolving() need.
-    pub(crate) resolving_lambdas:
-        Arc<parking_lot::Mutex<nohash::IntMap<LambdaId, ResolvingStack>>>,
+    pub(crate) resolving_lambdas: Mutex<IntMap<LambdaId, ResolvingStack>>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
@@ -1447,18 +1461,8 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// call site pushes its resolved signature into the current frame;
     /// statement boundaries drain it, so a settle runs only after every
     /// writer in its scope. A re-drive's leftovers merge up to the
-    /// parent frame. Entries: (resolved sig, the site's rtype cell,
-    /// defaulted-arg cells exempt from settling, the site spec).
-    // CR claude for eric: [readability] a four-tuple read positionally in
-    // drain_pending_settles; a named struct would carry the field list above.
-    pub(crate) pending_settles: Vec<
-        Vec<(
-            typ::FnType,
-            Option<typ::TVar>,
-            ahash::AHashSet<usize>,
-            triomphe::Arc<expr::Expr>,
-        )>,
-    >,
+    /// parent frame.
+    pub(crate) pending_settles: Vec<Vec<PendingSettle>>,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
     /// See [`PendingTailCall`].
@@ -1482,9 +1486,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
-    /// Runtime diagnostics produced during the current cycle; see
-    /// [`RtDiagnostic`].
-    pub diagnostics: Vec<RtDiagnostic>,
     /// Non-zero while a tail-loop re-entry runs against a private
     /// per-frame variables map; frame-only behaviors gate on it. A
     /// counter: frames nest.
@@ -1497,11 +1498,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// deselecting: a recursive-edge `CallSite::sleep` under it deletes
     /// its callee (shrink = delete). Cleared crossing into any callee
     /// body, so a whole-recursion pause retains.
-    // CR claude for eric: [structure] deselecting_arm, tail_scrut_fired,
-    // pending_tail_call, frame_depth and dispatch_init are evaluator state on the
-    // context, and this one steers sleep; CLAUDE.md's sleep rule says "no ExecCtx
-    // globals" so a parallel evaluator stays possible. Pass them down the dispatch
-    // (sleep's arguments, the event's frames) or keep them in the nodes.
+    // XCR claude for eric: agreed in direction. The five are read and written at
+    // ~35 sites in callsite.rs, lambda.rs and select.rs (calls, select-coll) and
+    // carry tail-loop and wake semantics; threading them through the dispatch is
+    // its own change after this round, with a soak.
     pub(crate) deselecting_arm: bool,
     /// Whether any tail-spine select's scrutinee fired during the
     /// current tail-loop dispatch: the dispatch's result fires if its
@@ -1513,14 +1513,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// dispatched or absorbed by the fusion walk, or the statement errors.
     pub(crate) attr_census: Mutex<Vec<Expr>>,
     pub(crate) attr_dispatched: Mutex<IntSet<ExprId>>,
+    pub(crate) attr_absorbed: Mutex<IntSet<ExprId>>,
     /// The tables of the image this session was restored from, for
     /// anything decoded later.
-    // CR claude for eric: [structure] pub, so an embedder can replace or take the
-    // decoder CallSite::materialize takes and puts back mid-cycle; only
-    // read_registration sets it. pub(crate) (the attr_* fields also sit split
-    // around it).
-    pub image_decoder: Option<image::ImageDecoder>,
-    pub(crate) attr_absorbed: Mutex<IntSet<ExprId>>,
+    pub(crate) image_decoder: Option<image::ImageDecoder>,
     /// Variable deliveries raised inside an evaluation frame that must
     /// escape it (an error delivery to a `catch` handler); drained into
     /// the real map at `frame_depth == 0`.
@@ -1528,35 +1524,25 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
-    // CR claude for eric: [dead] no caller in the workspace, and it resets only env
-    // and rt while lambda_defs, bind_to_lambda, the image decoder and the rest
-    // stay: a half reset. Delete it or make it whole.
-    pub fn clear(&mut self) {
-        self.env.clear();
-        self.rt.clear();
-    }
-
     /// True while an evaluation frame (a tail-loop pass) is running.
     pub fn in_frame(&self) -> bool {
         self.frame_depth > 0
     }
 
-    // CR claude for eric: [readability] this doc belongs on `new` below;
-    // mark_connect_target has none of its own.
-    /// Build a new execution context. A low-level interface for custom
-    /// runtimes; most embedders want `graphix-rt`.
+    /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
     }
 
+    /// Build a new execution context. A low-level interface for custom
+    /// runtimes; most embedders want `graphix-rt`.
     pub fn new(user: R) -> Result<Self> {
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
             lambdawrap: Abstract::register(id)?,
             env: Env::default(),
             builtins: AHashMap::default(),
-            builtin_decoders: AHashMap::default(),
             attributes: AHashMap::default(),
             builtins_allowed: true,
             libstate: LibState::default(),
@@ -1571,9 +1557,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             rec_defs: nohash::IntSet::default(),
             def_gate_params: nohash::IntSet::default(),
             def_gate_depth: 0,
-            resolving_lambdas: Arc::new(parking_lot::Mutex::new(
-                nohash::IntMap::default(),
-            )),
+            resolving_lambdas: Mutex::new(IntMap::default()),
             fn_forward_resolutions: IntMap::default(),
             pending_settles: vec![Vec::new()],
             fusion: fusion::FusionCtx::new()?,
@@ -1582,7 +1566,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             predeclared_mods: AHashSet::default(),
             active_lambdas: nohash::IntMap::default(),
             control: Arc::new(Control::new()),
-            diagnostics: Vec::new(),
             frame_depth: 0,
             dispatch_init: false,
             deselecting_arm: false,
@@ -1590,8 +1573,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),
             attr_dispatched: Mutex::new(IntSet::default()),
-            image_decoder: None,
             attr_absorbed: Mutex::new(IntSet::default()),
+            image_decoder: None,
             frame_outbox: Vec::new(),
         };
         this.register_attribute::<Native>()?;
@@ -1618,18 +1601,20 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         match self.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert(T::init);
+                e.insert(BuiltinEntry {
+                    init: T::init,
+                    decode: T::image_decode,
+                    effect: T::EFFECT,
+                });
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
-        self.builtin_decoders.insert(T::NAME, T::image_decode);
-        self.fusion.builtin_facts.insert(T::NAME, effects::BuiltinFacts::from(T::EFFECT));
         Ok(())
     }
 
     /// The image decoder of a registered builtin.
     pub fn builtin_decoder(&self, name: &str) -> Option<BuiltInDecodeFn<R, E>> {
-        self.builtin_decoders.get(name).copied()
+        self.builtins.get(name).map(|b| b.decode)
     }
 
     pub fn register_attribute<T: Attribute<R, E>>(&mut self) -> Result<()> {
@@ -1649,21 +1634,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.attributes.get(name).copied()
     }
 
-    /// A registered builtin's effect; `Async` for unknown names.
-    pub fn builtin_effect(&self, name: &str) -> EffectKind {
-        self.fusion.builtin_facts.get(name).map(|f| f.effect).unwrap_or_default()
-    }
-
-    /// Whether a registered builtin is [`Effect::Stateless`]; `false`
-    /// for unknown names.
-    pub fn builtin_stateless(&self, name: &str) -> bool {
-        self.fusion.builtin_facts.get(name).map(|f| f.stateless).unwrap_or(false)
-    }
-
-    /// A registered builtin's direct-call entry, if its
-    /// [`Effect::Stateless`] carries one.
-    pub fn builtin_fastcall(&self, name: &str) -> Option<FastCall> {
-        self.fusion.builtin_facts.get(name).and_then(|f| f.fastcall)
+    /// A registered builtin's [`Effect`]; `Async` for unknown names.
+    pub fn builtin_effect(&self, name: &str) -> Effect {
+        self.builtins.get(name).map(|b| b.effect).unwrap_or_default()
     }
 
     /// Wrap a `LambdaDef` into a first-class function `Value` and
@@ -1709,6 +1682,17 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.env = self.env.restore_lexical_env(orig);
         r
     }
+}
+
+/// A call site's deferred terminal settle; see [`ExecCtx::pending_settles`].
+pub(crate) struct PendingSettle {
+    /// The site's resolved signature.
+    pub(crate) ftype: FnType,
+    /// The site's return-type cell.
+    pub(crate) rtype: Option<typ::TVar>,
+    /// Defaulted-argument cells (by address) exempt from settling.
+    pub(crate) defaulted: AHashSet<usize>,
+    pub(crate) spec: Arc<Expr>,
 }
 
 /// A deferred import-existence check; see [`ExecCtx::pending_imports`].
@@ -2000,8 +1984,8 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
-    for (ft, rtc, defaulted, spec) in pending.iter() {
-        ft.settle_terminal(&ctx.env, rtc.as_ref(), defaulted).at(&(**spec))?;
+    for s in pending.iter() {
+        s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.defaulted).at(&*s.spec)?;
     }
     Ok(())
 }
@@ -2035,46 +2019,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     let env = ctx.env.clone();
     let st = Instant::now();
     let build_profile = profile::phase(Phase::BuildGraph);
-    // CR claude for eric: [structure] this declaration dispatch (Catch, Use, Module,
-    // TypeDef, Trait, Impl, else compile) repeats compile_block_children's
-    // (node/mod.rs); one `compile_declaration_or_expr` would serve both, so a new
-    // declaration kind cannot be added to one and missed in the other.
-    let compiled = match &spec.kind {
-        expr::ExprKind::Catch(c) => {
-            let c = c.clone();
-            node::error::Catch::compile(ctx, flags, spec, scope, top_id, &c)
-        }
-        // Declarations are legal only in statement position; `compile`
-        // rejects them.
-        expr::ExprKind::Use { reexport, names } => {
-            let (reexport, names) = (*reexport, names.clone());
-            node::compile_use(ctx, flags, spec, scope, reexport, &names)
-                .map(|n| (n, scope.clone()))
-        }
-        expr::ExprKind::Module { name, value } => {
-            let (name, value) = (name.clone(), value.clone());
-            compiler::compile_module(ctx, flags, spec, scope, top_id, &name, &value)
-                .map(|n| (n, scope.clone()))
-        }
-        expr::ExprKind::TypeDef(td) => {
-            let td = td.clone();
-            node::TypeDef::compile(ctx, spec, scope, &td.name, &td.params, &td.body)
-                .map(|n| (n, scope.clone()))
-        }
-        expr::ExprKind::Trait(t) => {
-            let t = t.clone();
-            node::traits::Trait::compile(ctx, flags, spec, scope, &t, top_id)
-                .map(|n| (n, scope.clone()))
-        }
-        expr::ExprKind::Impl(im) => {
-            let im = im.clone();
-            node::traits::Impl::compile(ctx, flags, spec, scope, &im, top_id)
-                .map(|n| (n, scope.clone()))
-        }
-        _ => {
-            compiler::compile(ctx, flags, spec, scope, top_id).map(|n| (n, scope.clone()))
-        }
-    };
+    let compiled = node::compile_statement(ctx, flags, &spec, scope, top_id, false);
     drop(build_profile);
     let (mut node, out_scope) = match compiled {
         Ok(n) => n,
@@ -2099,18 +2044,11 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
                 e.scope
             )
             .context(expr::ParserContext { ori: p.ori.clone(), pos: p.pos });
-            // CR claude for eric: [bug] here and at the two error returns below
-            // only env is restored: the built node is dropped, not deleted, so its
-            // rt.ref_var registrations and bind_to_lambda/connect_targets entries
-            // stay (Bind::delete and Ref::delete remove them). Each failed REPL
-            // statement leaks them. Delete the node before returning.
-            ctx.env = env;
-            return Err(err);
+            return Err(abandon_stmt(ctx, node, env, err));
         }
     }
     if let Err(e) = check_and_fuse(ctx, &mut node) {
-        ctx.env = env;
-        return Err(e);
+        return Err(abandon_stmt(ctx, node, env, e));
     }
     // An attribute the fusion walk neither dispatched nor absorbed
     // would silently assert nothing.
@@ -2130,11 +2068,24 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
                     drop(census);
                     drop(dispatched);
                     drop(absorbed);
-                    ctx.env = env;
-                    return Err(e);
+                    return Err(abandon_stmt(ctx, node, env, e));
                 }
             }
         }
     }
     Ok((node, out_scope))
+}
+
+/// Unwind a statement that was built but failed its checks: delete what
+/// it registered (runtime refs, lambda and `<-` target entries), then
+/// restore the environment it started from.
+fn abandon_stmt<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    mut node: Node<R, E>,
+    env: Env,
+    e: anyhow::Error,
+) -> anyhow::Error {
+    node.delete(ctx);
+    ctx.env = env;
+    e
 }

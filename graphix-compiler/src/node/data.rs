@@ -8,8 +8,8 @@ use crate::image::nodes::{
 };
 use crate::image::{self, ImageBuf};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent, abstract_value, deref_typ,
+    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    UserEvent, abstract_value, deref_typ,
     expr::{Expr, ExprId, ExprKind, ModPath, StructWithExpr, WrittenAt},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
@@ -25,7 +25,6 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_core::pack::{decode_varint, encode_varint, varint_len};
 use netidx_value::{ValArray, Value};
-use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::iter;
 use triomphe::Arc;
@@ -119,13 +118,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
                 Value::Array(ValArray::from([]))
             });
         }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let iter = self.names.iter().zip(vals.drain(..)).map(|(name, v)| {
+        let (tag, prods) = gather(ctx, event, &mut self.n);
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let iter = self.names.iter().zip(prods.iter()).map(|(name, v)| {
             let name = Value::String(name.clone());
-            Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
+            Value::Array(ValArray::from_iter_exact([name, v.value_cloned()].into_iter()))
         });
         let v = Value::Array(ValArray::from_iter_exact(iter));
         self.resident.set(TagValue::tagged(v, tag))
@@ -741,11 +738,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
                 Value::Array(ValArray::from([]))
             });
         }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = Value::Array(ValArray::from_iter_exact(vals.drain(..)));
+        let (tag, prods) = gather(ctx, event, &mut self.n);
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let v = Value::Array(ValArray::from_iter_exact(
+            prods.iter().map(|tv| tv.value_cloned()),
+        ));
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -893,11 +890,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
                 Value::String(self.tag.clone())
             })
         } else {
-            let mut vals: LPooled<Vec<Value>> = LPooled::take();
-            let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-            dense_gate!(self, ctx, trig, bottom);
-            let tag = if fired { Tag::FIRED } else { Tag::STALE };
-            let a = iter::once(Value::String(self.tag.clone())).chain(vals.drain(..));
+            let (tag, prods) = gather(ctx, event, &mut self.n);
+            dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+            let a = iter::once(Value::String(self.tag.clone()))
+                .chain(prods.iter().map(|tv| tv.value_cloned()));
             let v = Value::Array(ValArray::from_iter(a));
             self.resident.set(TagValue::tagged(v, tag))
         }

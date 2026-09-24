@@ -1056,7 +1056,7 @@ pub(super) fn emit_kernel_return(
     // emission (also call.rs emit_lambda_call_node) while every other switch is a
     // cached `dbgenv` fn, and CLAUDE.md's debug table does not list it.
     #[cfg(debug_assertions)]
-    if std::env::var_os("GXDBG_CALLRET").is_some() {
+    if crate::dbgenv::gxdbg_callret() {
         let f = cx.helper("graphix_dbg_disc")?;
         let t = cx.b.ins().iconst(types::I64, 2);
         cx.b.ins().call(f, &[t, cv.disc]);

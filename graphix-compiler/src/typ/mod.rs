@@ -1522,7 +1522,7 @@ impl Type {
             Self::Ref(tr) => {
                 let TypeRef { scope, name, params, pos, ori, resolved: _ } = tr;
                 let resolved = tr.resolve_in(env).ok_or_else(|| {
-                    if std::env::var_os("GXDBG_TYPEREF").is_some() {
+                    if crate::dbgenv::gxdbg_typeref() {
                         eprintln!(
                             "TYPEREF-MISS {name} in {scope}; typedef scopes with the name:"
                         );

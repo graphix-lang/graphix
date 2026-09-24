@@ -9,29 +9,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-// CR claude for eric: [structure] A second phase timer beside profile.rs, whose
-// phases already cover these (Typecheck1, Analysis, InstanceGraph/InstanceCheck).
-// Fold the lazy-bind counters into profile phases and delete this module. It is
-// also `pub mod` with `pub static`s used only inside the crate (lib.rs:28).
-pub static BIND_CALLS: AtomicU64 = AtomicU64::new(0);
-pub static BIND_NS: AtomicU64 = AtomicU64::new(0);
-pub static SETUP_NS: AtomicU64 = AtomicU64::new(0);
-pub static TC1_NS: AtomicU64 = AtomicU64::new(0);
-pub static ANALYZE_NS: AtomicU64 = AtomicU64::new(0);
-// CR claude for eric: [dead] TBO_NS, PRIME_CALLS, PRIME_NS, REPLAY_NS,
-// CLONE_ENTRIES, DELETE_NS and REFS_NS are never incremented (the only users are
-// node/callsite.rs:721-790), yet the dumper prints them every 250ms.
-pub static TBO_NS: AtomicU64 = AtomicU64::new(0);
-pub static PRIME_CALLS: AtomicU64 = AtomicU64::new(0);
-pub static PRIME_NS: AtomicU64 = AtomicU64::new(0);
-pub static REPLAY_NS: AtomicU64 = AtomicU64::new(0);
-pub static CLONE_ENTRIES: AtomicU64 = AtomicU64::new(0);
-pub static DELETE_NS: AtomicU64 = AtomicU64::new(0);
-pub static REFS_NS: AtomicU64 = AtomicU64::new(0);
+// XCR claude for eric: kept apart from profile.rs on purpose: profile reports
+// per root span at its close, so a runtime bind (no enclosing compile) would
+// print a full PROFILE block per bind, while this sums binds across cycles.
+// Folding needs a runtime-cumulative mode in profile first; your call.
+pub(crate) static BIND_CALLS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static BIND_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SETUP_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TC1_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ANALYZE_NS: AtomicU64 = AtomicU64::new(0);
 
-pub fn enabled() -> bool {
+pub(crate) fn enabled() -> bool {
     static E: LazyLock<bool> = LazyLock::new(|| {
-        let on = std::env::var_os("GRAPHIX_DBG_PERF").is_some();
+        let on = crate::dbgenv::graphix_dbg_perf();
         if on {
             std::thread::spawn(dumper);
         }
@@ -40,7 +30,7 @@ pub fn enabled() -> bool {
     *E
 }
 
-pub struct Span {
+pub(crate) struct Span {
     start: Instant,
     ctr: &'static AtomicU64,
 }
@@ -51,7 +41,7 @@ impl Drop for Span {
     }
 }
 
-pub fn span(ctr: &'static AtomicU64) -> Option<Span> {
+pub(crate) fn span(ctr: &'static AtomicU64) -> Option<Span> {
     enabled().then(|| Span { start: Instant::now(), ctr })
 }
 
@@ -63,21 +53,12 @@ fn dumper() {
         if sum != last {
             last = sum;
             eprintln!(
-                "PERF binds={} bind_ms={} setup_ms={} tc1_ms={} analyze_ms={} \
-                 tbo_ms={} primes={} prime_ms={} replay_ms={} clone_entries={} \
-                 delete_ms={} refs_ms={}",
+                "PERF binds={} bind_ms={} setup_ms={} tc1_ms={} analyze_ms={}",
                 BIND_CALLS.load(Relaxed),
                 BIND_NS.load(Relaxed) / 1_000_000,
                 SETUP_NS.load(Relaxed) / 1_000_000,
                 TC1_NS.load(Relaxed) / 1_000_000,
                 ANALYZE_NS.load(Relaxed) / 1_000_000,
-                TBO_NS.load(Relaxed) / 1_000_000,
-                PRIME_CALLS.load(Relaxed),
-                PRIME_NS.load(Relaxed) / 1_000_000,
-                REPLAY_NS.load(Relaxed) / 1_000_000,
-                CLONE_ENTRIES.load(Relaxed),
-                DELETE_NS.load(Relaxed) / 1_000_000,
-                REFS_NS.load(Relaxed) / 1_000_000,
             );
         }
     }

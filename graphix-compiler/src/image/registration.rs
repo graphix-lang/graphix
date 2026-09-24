@@ -371,10 +371,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let mut dec = ImageDecoder::new(counts);
         dec.set_image(image.clone());
         dec.set_fastcalls(
-            self.fusion
-                .builtin_facts
+            self.builtins
                 .iter()
-                .filter_map(|(name, facts)| facts.fastcall.map(|f| (*name, f)))
+                .filter_map(|(name, b)| b.effect.fastcall().map(|f| (*name, f)))
                 .collect(),
         );
         let restored = DecodeImage::with(&mut dec, || -> Result<_, PackError> {

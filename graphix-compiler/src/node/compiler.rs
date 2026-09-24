@@ -27,6 +27,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use enumflags2::BitFlags;
+use netidx_value::Typ;
 
 // CR claude for eric: [style] `crate::DefAssertionKind` (5 uses), `crate::NodeView`
 // (3), `crate::bailat!` (3) and `smallvec::SmallVec` are spelled in full below;
@@ -225,7 +226,11 @@ fn compile_kind<R: Rt, E: UserEvent>(
             scope,
             top_id,
         ),
-        ExprKind::Constant(v) => Constant::compile(spec.clone(), v),
+        ExprKind::Constant(v) => Ok(Constant::new(
+            v.clone(),
+            Type::Primitive(Typ::get(v).into()),
+            spec.clone(),
+        )),
         ExprKind::Do { exprs } => {
             let scope = scope.append_block("do", spec.id.inner());
             Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)

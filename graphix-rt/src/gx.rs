@@ -467,10 +467,6 @@ impl<X: GXExt> GX<X> {
                         }
                         batch.push(GXEvent::Updated(*id, v))
                     }
-                    // Diagnostics the update produced, attributed to this expression.
-                    for d in self.ctx.diagnostics.drain(..) {
-                        batch.push(GXEvent::Diagnostic(Some(*id), d));
-                    }
                 }
             }
         };
@@ -481,11 +477,6 @@ impl<X: GXExt> GX<X> {
             run_nodes();
         } else {
             tokio::task::block_in_place(run_nodes);
-        }
-        // Diagnostics produced outside a node update have no expression to
-        // attribute to.
-        for d in self.ctx.diagnostics.drain(..) {
-            batch.push(GXEvent::Diagnostic(None, d));
         }
         if let Some(tr) = self.trace.as_mut() {
             tr.cycle_end(self.ctx.rt.cycle, worked);
@@ -594,6 +585,7 @@ impl<X: GXExt> GX<X> {
                         by_id_len,
                         ref_var_keys,
                         ref_var_total,
+                        store_len: self.ctx.rt.store.len(),
                     });
                 }
                 ToGX::FusionStats { res } => {

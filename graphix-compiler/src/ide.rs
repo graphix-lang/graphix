@@ -1,17 +1,13 @@
-// CR claude for eric: [readability] The sinks fill whenever `Env.ide` is Some
-// (every `Env::push_*`, `bind_variable`, `warn`); `lsp_mode` gates only some
-// recorders. The doc names the wrong knob (see the lsp_mode CR in env.rs).
-//! IDE/LSP side-channels: write-only sinks the compiler fills when
-//! [`crate::env::Env::lsp_mode`] is set, drained at the compile
-//! boundary into the check result. Nothing here is read by the
-//! compiler itself. [`Ide`] owns all of them, shared via `Env.ide`.
+//! IDE/LSP side-channels: write-only sinks the compiler fills while
+//! `Env.ide` is installed (an LSP-style check), drained at the compile
+//! boundary into the check result; a few recorders also require
+//! [`crate::env::Env::lsp_mode`]. Nothing here is read by the compiler
+//! itself. [`Ide`] owns all of them, shared via `Env.ide`.
 
-// CR claude for eric: [style] `expr::Origin` (9 uses) and `expr::ModPath` (6)
-// are spelled through the module; import them.
 use crate::{
     BindId, Scope, SourcePosition,
     env::{Bind, Env},
-    expr,
+    expr::{ModPath, Origin, WrittenPath},
     typ::Type,
 };
 use arcstr::ArcStr;
@@ -26,11 +22,11 @@ use triomphe::Arc;
 #[derive(Debug, Clone)]
 pub struct ReferenceSite {
     pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
-    pub name: expr::ModPath,
+    pub ori: Arc<Origin>,
+    pub name: ModPath,
     pub bind_id: BindId,
     pub def_pos: SourcePosition,
-    pub def_ori: Arc<expr::Origin>,
+    pub def_ori: Arc<Origin>,
 }
 
 /// A `mod foo;` declaration, at the name, or one item of a `use`, at
@@ -39,16 +35,16 @@ pub struct ReferenceSite {
 #[derive(Debug, Clone)]
 pub struct ModuleRefSite {
     pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
+    pub ori: Arc<Origin>,
     /// Module name as the user wrote it (might be relative).
-    pub name: expr::ModPath,
+    pub name: ModPath,
     /// Absolute module path the compiler resolved this reference to.
-    pub canonical: expr::ModPath,
+    pub canonical: ModPath,
     /// Origin of the module's body; `None` for `use` sites.
-    pub def_ori: Option<Arc<expr::Origin>>,
+    pub def_ori: Option<Arc<Origin>>,
     /// A `use` item: where each segment of `name` stands (a group
     /// shares its prefix's). `None` for `mod`.
-    pub segments: Option<expr::WrittenPath>,
+    pub segments: Option<WrittenPath>,
 }
 
 /// The compiler compiled the `Expr` spanning `[pos, end)` in `scope`:
@@ -57,7 +53,7 @@ pub struct ModuleRefSite {
 pub struct ScopeMapEntry {
     pub pos: SourcePosition,
     pub end: SourcePosition,
-    pub ori: Arc<expr::Origin>,
+    pub ori: Arc<Origin>,
     pub scope: Scope,
 }
 
@@ -66,13 +62,13 @@ pub struct ScopeMapEntry {
 #[derive(Debug, Clone)]
 pub struct TypeRefSite {
     pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
+    pub ori: Arc<Origin>,
     /// The name as written in source (e.g. `Result`, `array::Foo`).
-    pub name: expr::ModPath,
+    pub name: ModPath,
     /// Canonical scope of the typedef the reference resolved to.
-    pub canonical_scope: expr::ModPath,
+    pub canonical_scope: ModPath,
     pub def_pos: SourcePosition,
-    pub def_ori: Arc<expr::Origin>,
+    pub def_ori: Arc<Origin>,
 }
 
 /// A field selected from a struct (`s.f`): where the field's name
@@ -80,7 +76,7 @@ pub struct TypeRefSite {
 #[derive(Debug, Clone)]
 pub struct FieldRefSite {
     pub pos: SourcePosition,
-    pub ori: Arc<expr::Origin>,
+    pub ori: Arc<Origin>,
     pub name: ArcStr,
     pub typ: Type,
 }
@@ -91,7 +87,7 @@ pub struct FieldRefSite {
 pub struct Warning {
     pub pos: SourcePosition,
     pub end: SourcePosition,
-    pub ori: Arc<expr::Origin>,
+    pub ori: Arc<Origin>,
     pub message: ArcStr,
 }
 
@@ -99,7 +95,7 @@ pub struct Warning {
 /// implementation in the paired `.gx`.
 #[derive(Debug, Clone)]
 pub struct SigImplLink {
-    pub scope: expr::ModPath,
+    pub scope: ModPath,
     pub name: CompactString,
     pub sig_id: BindId,
     pub impl_id: BindId,
@@ -109,7 +105,7 @@ pub struct SigImplLink {
 /// bindings shadow sig proxies.
 #[derive(Debug, Clone)]
 pub struct ModuleInternalView {
-    pub scope: expr::ModPath,
+    pub scope: ModPath,
     pub env: Env,
 }
 

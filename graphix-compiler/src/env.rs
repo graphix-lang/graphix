@@ -335,42 +335,6 @@ pub struct Env {
 }
 
 impl Env {
-    // CR claude for eric: [dead] The only caller, ExecCtx::clear (lib.rs:1484),
-    // has no caller in the workspace. It also keeps `package_roots` while
-    // dropping those packages' modules, so a cleared env still resolves
-    // `sys::..` to a root with nothing under it.
-    pub(super) fn clear(&mut self) {
-        let Self {
-            by_id,
-            binds,
-            byref_chain,
-            names,
-            abstract_reps,
-            traits,
-            trait_defs,
-            trait_methods,
-            impls,
-            poly_binds,
-            package_roots: _,
-            modules,
-            typedefs,
-            lsp_mode: _,
-            ide: _,
-        } = self;
-        *by_id = Map::new();
-        *binds = Map::new();
-        *byref_chain = Map::new();
-        *names = Map::new();
-        *abstract_reps = Map::new();
-        *traits = Map::new();
-        *trait_defs = Map::new();
-        *trait_methods = Map::new();
-        *impls = Map::new();
-        *poly_binds = Set::new();
-        *modules = Set::new();
-        *typedefs = Map::new();
-    }
-
     // CR claude for eric: [structure] restore_lexical_env and _mut are two
     // copies of one 15-field list, and clear() spells the lexical/global split a
     // third time. A `Lexical { binds, modules, typedefs, traits }` sub-struct

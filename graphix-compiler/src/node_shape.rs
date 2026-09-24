@@ -5,19 +5,23 @@
 //! the first mismatch. Driven by `GXHandle::match_shape`;
 //! `GXHandle::describe_shape` renders the actual graph as an authoring aid.
 
-use crate::{Node, NodeView, Rt, UserEvent, fusion::kernel_abi::KernelSig, typ::Type};
+use crate::{
+    Node, NodeView, Rt, UserEvent, fusion::kernel_abi::KernelSig, stack, typ::Type,
+};
+use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use smallvec::SmallVec;
+use std::fmt::{self, Write};
 
 /// A declarative specification of a (sub)graph's shape.
 #[derive(Debug, Clone)]
 pub enum NodeShape {
     /// Matches any single node/subtree. Don't-care.
     Any,
-    /// A non-fused node. `kind` (a `NodeView` variant name, see
-    /// [`kind_name`]) must match when `Some`; `None` matches any kind.
-    /// `children` match the node's children positionally — use
-    /// [`NodeShape::Any`] to skip a child you don't care about.
+    /// A non-fused node. `kind` (a [`kind_name`]) must match when
+    /// `Some`; `None` matches any kind. `children` match the node's
+    /// children positionally — use [`NodeShape::Any`] to skip a child
+    /// you don't care about.
     Node { kind: Option<ArcStr>, children: Vec<NodeShape> },
     /// A fused kernel matched against partial [`KernelMatcher`] criteria.
     Fused(KernelMatcher),
@@ -90,119 +94,151 @@ impl KernelMatcher {
         self
     }
 
-    /// Check this matcher against a real kernel. `Ok` on match, `Err`
-    /// with a human reason on the first failing criterion.
-    // CR claude for eric: [style] Errors are `Result<(), String>` built with
-    // `format!` (here, match_at, match_node) rather than anyhow; `actual` is a
-    // Vec collected only to compare (`Iterator::eq` does it), and describe_at
-    // allocates `"  ".repeat(depth)` plus a `format!` per node where `write!`
-    // into `out` would do.
-    fn check(&self, k: &KernelSig) -> Result<(), String> {
-        if let Some(rt) = &self.return_type {
-            if &k.return_type != rt {
-                return Err(format!(
-                    "return type: expected {rt:?}, got {:?}",
-                    k.return_type
-                ));
-            }
+    /// The first criterion `k` fails, if any.
+    fn mismatch<'a>(&'a self, k: &'a KernelSig) -> Option<Why<'a>> {
+        if let Some(rt) = &self.return_type
+            && &k.return_type != rt
+        {
+            return Some(Why::ReturnType { expected: rt, got: &k.return_type });
         }
-        if let Some(names) = &self.param_names {
-            let actual: Vec<ArcStr> = k.params.iter().map(|p| p.name.clone()).collect();
-            if actual != *names {
-                return Err(format!("param names: expected {names:?}, got {actual:?}"));
-            }
+        if let Some(names) = &self.param_names
+            && !k.params.iter().map(|p| &p.name).eq(names.iter())
+        {
+            return Some(Why::ParamNames { expected: names, got: k });
         }
-        Ok(())
+        None
     }
 }
 
-/// Check a compiled node against a [`NodeShape`] spec. `Ok(())` on
-/// match; `Err(reason)` names the path and the first mismatch.
+/// Why a node does not match a spec.
+enum Why<'a> {
+    NotContained,
+    ExpectedFused { got: &'static str },
+    ExpectedNode { kind: Option<&'a str> },
+    Kind { expected: &'a str, got: &'static str },
+    Children { kind: &'static str, got: usize, expected: usize },
+    ReturnType { expected: &'a Type, got: &'a Type },
+    ParamNames { expected: &'a [ArcStr], got: &'a KernelSig },
+}
+
+impl fmt::Display for Why<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Why::NotContained => {
+                write!(f, "no node in the subtree matches the contained spec")
+            }
+            Why::ExpectedFused { got } => {
+                write!(f, "expected a Fused kernel, got a {got} node")
+            }
+            Why::ExpectedNode { kind } => {
+                write!(
+                    f,
+                    "expected a {} node, got a Fused kernel",
+                    kind.unwrap_or("(any)")
+                )
+            }
+            Why::Kind { expected, got } => {
+                write!(f, "expected kind {expected}, got {got}")
+            }
+            Why::Children { kind, got, expected } => {
+                write!(f, "{kind} has {got} children, spec expects {expected}")
+            }
+            Why::ReturnType { expected, got } => {
+                write!(f, "return type: expected {expected:?}, got {got:?}")
+            }
+            Why::ParamNames { expected, got } => {
+                write!(f, "param names: expected {expected:?}, got [")?;
+                for (i, p) in got.params.iter().enumerate() {
+                    let sep = if i == 0 { "" } else { ", " };
+                    write!(f, "{sep}{:?}", p.name)?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
+}
+
+/// A mismatch and where it is: child indices from the matched root.
+struct Mismatch<'a> {
+    at: SmallVec<[usize; 8]>,
+    why: Why<'a>,
+}
+
+impl<'a> Mismatch<'a> {
+    fn here(why: Why<'a>) -> Self {
+        Self { at: SmallVec::new(), why }
+    }
+}
+
+/// Check a compiled node against a [`NodeShape`] spec, naming the path
+/// and the first mismatch.
 pub fn match_node<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     spec: &NodeShape,
-) -> Result<(), String> {
-    match_at(node, spec, "root")
+) -> Result<()> {
+    match_at(node, spec).map_err(|m| {
+        let mut path = compact_str::CompactString::const_new("root");
+        for i in m.at.iter().rev() {
+            let _ = write!(path, "/{i}");
+        }
+        anyhow!("at {path}: {}", m.why)
+    })
 }
 
-fn match_at<R: Rt, E: UserEvent>(
-    node: &Node<R, E>,
-    spec: &NodeShape,
-    path: &str,
-) -> Result<(), String> {
-    match spec {
+fn match_at<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+    spec: &'a NodeShape,
+) -> std::result::Result<(), Mismatch<'a>> {
+    stack::ensure_sufficient(|| match spec {
         NodeShape::Any => Ok(()),
-        NodeShape::Contains(inner) => {
-            if find_match(node, inner) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "at {path}: no node in the subtree matches the \
-                     contained spec"
-                ))
-            }
-        }
+        NodeShape::Contains(inner) => match find_match(node, inner) {
+            true => Ok(()),
+            false => Err(Mismatch::here(Why::NotContained)),
+        },
         NodeShape::Fused(gm) => match node.view() {
-            NodeView::FusedKernel(fk) => {
-                gm.check(fk.kernel()).map_err(|e| format!("at {path}: {e}"))
-            }
-            other => Err(format!(
-                "at {path}: expected a Fused kernel, got a {} node",
-                kind_name(&other)
-            )),
+            NodeView::FusedKernel(fk) => match gm.mismatch(fk.kernel()) {
+                None => Ok(()),
+                Some(why) => Err(Mismatch::here(why)),
+            },
+            other => Err(Mismatch::here(Why::ExpectedFused { got: kind_name(&other) })),
         },
         NodeShape::Node { kind, children } => {
             let view = node.view();
             if let NodeView::FusedKernel(_) = view {
-                return Err(format!(
-                    "at {path}: expected a {} node, got a Fused kernel",
-                    kind.as_deref().unwrap_or("(any)")
-                ));
+                return Err(Mismatch::here(Why::ExpectedNode { kind: kind.as_deref() }));
             }
-            if let Some(k) = kind {
-                let actual = kind_name(&view);
-                if actual != *k {
-                    return Err(format!("at {path}: expected kind {k}, got {actual}"));
-                }
+            let got = kind_name(&view);
+            if let Some(expected) = kind
+                && got != expected.as_str()
+            {
+                return Err(Mismatch::here(Why::Kind { expected, got }));
             }
-            match node_children(&view) {
-                None => Err(format!(
-                    "at {path}: children of {} are not enumerated by \
-                     node_shape yet (add an arm to node_children)",
-                    kind_name(&view)
-                )),
-                Some(kids) => {
-                    if kids.len() != children.len() {
-                        return Err(format!(
-                            "at {path}: {} has {} children, spec expects {}",
-                            kind_name(&view),
-                            kids.len(),
-                            children.len()
-                        ));
-                    }
-                    for (i, (child, cspec)) in kids.iter().zip(children).enumerate() {
-                        match_at(child, cspec, &format!("{path}/{i}"))?;
-                    }
-                    Ok(())
-                }
+            let kids = node_children(&view);
+            if kids.len() != children.len() {
+                return Err(Mismatch::here(Why::Children {
+                    kind: got,
+                    got: kids.len(),
+                    expected: children.len(),
+                }));
             }
+            for (i, (child, cspec)) in kids.iter().zip(children).enumerate() {
+                match_at(child, cspec).map_err(|mut m| {
+                    m.at.push(i);
+                    m
+                })?;
+            }
+            Ok(())
         }
-    }
+    })
 }
 
-// CR claude for eric: [risk] match_at, find_match and describe_at recurse on
-// program-driven depth without stack::ensure_sufficient, and find_match builds
-// (then drops) an error String at every node that does not match.
 /// True if `node` or any descendant matches `spec`. Used by
 /// [`NodeShape::Contains`].
 fn find_match<R: Rt, E: UserEvent>(node: &Node<R, E>, spec: &NodeShape) -> bool {
-    if match_at(node, spec, "").is_ok() {
-        return true;
-    }
-    match node_children(&node.view()) {
-        Some(kids) => kids.iter().any(|c| find_match(c, spec)),
-        None => false,
-    }
+    stack::ensure_sufficient(|| {
+        match_at(node, spec).is_ok()
+            || node_children(&node.view()).iter().any(|c| find_match(c, spec))
+    })
 }
 
 /// Render a compiled node as an indented text tree, for writing a
@@ -214,92 +250,59 @@ pub fn describe_node<R: Rt, E: UserEvent>(node: &Node<R, E>) -> String {
 }
 
 fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut String) {
-    let pad = "  ".repeat(depth);
-    match node.view() {
-        NodeView::FusedKernel(fk) => {
+    stack::ensure_sufficient(|| {
+        let view = node.view();
+        let _ = write!(out, "{:w$}{}", "", kind_name(&view), w = depth * 2);
+        if let NodeView::FusedKernel(fk) = &view {
             let k = fk.kernel();
-            let params: Vec<&str> = k.params.iter().map(|p| p.name.as_str()).collect();
-            out.push_str(&format!(
-                "{pad}Fused(returns={:?}, params={:?})\n",
-                k.return_type, params
-            ));
-            for feeder in fk.feeders() {
-                describe_at(feeder, depth + 1, out);
+            let _ = write!(out, "(returns={:?}, params=[", k.return_type);
+            for (i, p) in k.params.iter().enumerate() {
+                let sep = if i == 0 { "" } else { ", " };
+                let _ = write!(out, "{sep}{:?}", p.name.as_str());
             }
+            out.push_str("])");
         }
-        view => {
-            out.push_str(&format!("{pad}{}\n", kind_name(&view)));
-            match node_children(&view) {
-                Some(kids) => {
-                    for c in &kids {
-                        describe_at(c, depth + 1, out);
-                    }
-                }
-                None => out.push_str(&format!("{pad}  <children not enumerated>\n")),
-            }
+        out.push('\n');
+        for c in node_children(&view) {
+            describe_at(c, depth + 1, out);
         }
-    }
+    })
 }
 
-// CR claude for eric: [structure] A second per-kind child enumeration beside
-// fusion::for_each_node (fusion/mod.rs:338), and the two disagree: Module is
-// `source()` here but `nodes` there, Select guards are skipped here, CallSite
-// puts `fnode` first here and last there. One direct-children walk on Node
-// (as Expr::for_each_child is for Expr) should serve both.
-// CR claude for eric: [dead] The second match is exhaustive, so this never
-// returns None; the None arms in match_at, find_match and describe_at are dead.
-// The binop pre-match plus the `unreachable!` arms also split one match in two.
-/// The child nodes of a view in a deterministic order; `None` for a
-/// variant whose children are not enumerated here. Leaves return
-/// `Some(empty)`.
+// XCR claude for eric: agreed, one direct-children walk should serve both: split
+// `fusion::for_each_node`'s match into a `for_each_child` it recurses through.
+// Not this round: fusion-b is changing that match (Module source, ByRef
+// recursion) and the split must land on the result, fusecheck-verified.
+/// The child nodes of a view in a deterministic order; a kernel's are
+/// its input feeders.
 fn node_children<'a, R: Rt, E: UserEvent>(
     view: &NodeView<'a, R, E>,
-) -> Option<SmallVec<[&'a Node<R, E>; 4]>> {
+) -> SmallVec<[&'a Node<R, E>; 4]> {
     use NodeView as V;
-
-    macro_rules! binop {
-        ($n:expr) => {{
-            let mut s: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
-            s.push(&$n.lhs);
-            s.push(&$n.rhs);
-            return Some(s);
-        }};
-    }
-    match view {
-        V::Add(n) => binop!(n),
-        V::Sub(n) => binop!(n),
-        V::Mul(n) => binop!(n),
-        V::Div(n) => binop!(n),
-        V::Mod(n) => binop!(n),
-        V::CheckedAdd(n) => binop!(n),
-        V::CheckedSub(n) => binop!(n),
-        V::CheckedMul(n) => binop!(n),
-        V::CheckedDiv(n) => binop!(n),
-        V::CheckedMod(n) => binop!(n),
-        V::Eq(n) => binop!(n),
-        V::Ne(n) => binop!(n),
-        V::Lt(n) => binop!(n),
-        V::Gt(n) => binop!(n),
-        V::Lte(n) => binop!(n),
-        V::Gte(n) => binop!(n),
-        V::And(n) => binop!(n),
-        V::Or(n) => binop!(n),
-        _ => {}
-    }
-
     let mut kids: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
     match view {
+        V::Add(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Sub(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Mul(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Div(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Mod(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::CheckedAdd(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::CheckedSub(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::CheckedMul(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::CheckedDiv(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::CheckedMod(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Eq(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Ne(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Lt(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Gt(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Lte(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Gte(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::And(n) => kids.extend([&n.lhs, &n.rhs]),
+        V::Or(n) => kids.extend([&n.lhs, &n.rhs]),
         V::Block(b) => kids.extend(b.children.iter()),
         V::Bind(b) => kids.push(&b.node),
-        V::MapQ(m) => {
-            kids.push(&m.source);
-            kids.push(&m.prototype);
-        }
-        V::FoldQ(m) => {
-            kids.push(&m.source);
-            kids.push(&m.init);
-            kids.push(&m.prototype);
-        }
+        V::MapQ(m) => kids.extend([&m.source, &m.prototype]),
+        V::FoldQ(m) => kids.extend([&m.source, &m.init, &m.prototype]),
         V::Module(m) => kids.push(m.source()),
         V::CallSite(cs) => {
             kids.push(cs.fnode());
@@ -326,10 +329,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Neg(n) => kids.push(&n.n),
         V::Connect(n) => kids.push(&n.node),
         V::ConnectDeref(n) => kids.push(&n.rhs),
-        V::Sample(n) => {
-            kids.push(&n.trigger);
-            kids.push(&n.arg.node);
-        }
+        V::Sample(n) => kids.extend([&n.trigger, &n.arg.node]),
         V::Catch(n) => {
             kids.push(&n.handler);
             if let Some(abort) = &n.seq_abort {
@@ -358,77 +358,87 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Never(n) => kids.extend(n.n.iter()),
         V::StructRef(n) => kids.push(&n.source),
         V::TupleRef(n) => kids.push(&n.source),
-        V::ArrayRef(n) => {
-            kids.push(&n.source);
-            kids.push(&n.i);
-        }
+        V::ArrayRef(n) => kids.extend([&n.source, &n.i]),
         V::ArraySlice(n) => {
             kids.push(&n.source);
-            if let Some(s) = &n.start {
-                kids.push(s);
-            }
-            if let Some(e) = &n.end {
-                kids.push(e);
-            }
+            kids.extend(n.start.iter());
+            kids.extend(n.end.iter());
         }
-        V::MapRef(n) => {
-            kids.push(&n.source);
-            kids.push(&n.key);
-        }
-        // A kernel's children are its input feeders.
+        V::MapRef(n) => kids.extend([&n.source, &n.key]),
         V::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
         V::Impl(i) => kids.push(&i.body),
         V::Ref(_) | V::Constant(_) | V::TypeDef(_) | V::Nop(_) | V::Lambda(_) => {}
-        V::Add(_)
-        | V::Sub(_)
-        | V::Mul(_)
-        | V::Div(_)
-        | V::Mod(_)
-        | V::CheckedAdd(_)
-        | V::CheckedSub(_)
-        | V::CheckedMul(_)
-        | V::CheckedDiv(_)
-        | V::CheckedMod(_)
-        | V::Eq(_)
-        | V::Ne(_)
-        | V::Lt(_)
-        | V::Gt(_)
-        | V::Lte(_)
-        | V::Gte(_)
-        | V::And(_)
-        | V::Or(_) => unreachable!("handled above"),
     }
-    Some(kids)
+    kids
 }
 
-// CR claude for eric: [bug] 43 of the 62 NodeView variants map to "Other", so
-// `NodeShape::node("Constant")` or `node("Add")` can never match while
-// `node("Other")` matches any of them; the `Node { kind }` doc promises a
-// variant name. Name every variant with no `_` arm (a `&'static str` suffices).
-/// The `NodeView` variant name, used as the `Node { kind }` tag.
-pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> ArcStr {
-    use arcstr::literal;
+/// The name a [`NodeShape::Node`] kind matches: the `NodeView` variant
+/// name, `ModuleBlock` for a module's block.
+pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> &'static str {
+    use NodeView as V;
     match view {
-        NodeView::FusedKernel(_) => literal!("FusedKernel"),
-        NodeView::Bind(_) => literal!("Bind"),
-        NodeView::Lambda(_) => literal!("Lambda"),
-        NodeView::Block(b) if b.module => literal!("ModuleBlock"),
-        NodeView::Block(_) => literal!("Block"),
-        NodeView::Module(_) => literal!("Module"),
-        NodeView::CallSite(_) => literal!("CallSite"),
-        NodeView::Select(_) => literal!("Select"),
-        NodeView::Ref(_) => literal!("Ref"),
-        NodeView::ByRef(_) => literal!("ByRef"),
-        NodeView::Deref(_) => literal!("Deref"),
-        NodeView::Connect(_) => literal!("Connect"),
-        NodeView::Sample(_) => literal!("Sample"),
-        NodeView::StringInterpolate(_) => literal!("StringInterpolate"),
-        NodeView::TypeCast(_) => literal!("TypeCast"),
-        NodeView::Qop(_) => literal!("Qop"),
-        NodeView::SeqGuard(_) => literal!("SeqGuard"),
-        NodeView::SeqAbort(_) => literal!("SeqAbort"),
-        NodeView::OrNever(_) => literal!("OrNever"),
-        NodeView::Catch(_) => literal!("Catch"),
-        _ => literal!("Other"),
+        V::Bind(_) => "Bind",
+        V::Lambda(_) => "Lambda",
+        V::Block(b) if b.module => "ModuleBlock",
+        V::Block(_) => "Block",
+        V::Module(_) => "Module",
+        V::CallSite(_) => "CallSite",
+        V::MapQ(_) => "MapQ",
+        V::FoldQ(_) => "FoldQ",
+        V::Select(_) => "Select",
+        V::Catch(_) => "Catch",
+        V::SeqGuard(_) => "SeqGuard",
+        V::SeqAbort(_) => "SeqAbort",
+        V::Qop(_) => "Qop",
+        V::OrNever(_) => "OrNever",
+        V::ExplicitParens(_) => "ExplicitParens",
+        V::TypeCast(_) => "TypeCast",
+        V::Connect(_) => "Connect",
+        V::ConnectDeref(_) => "ConnectDeref",
+        V::StringInterpolate(_) => "StringInterpolate",
+        V::Any(_) => "Any",
+        V::Never(_) => "Never",
+        V::Sample(_) => "Sample",
+        V::Struct(_) => "Struct",
+        V::StructWith(_) => "StructWith",
+        V::Tuple(_) => "Tuple",
+        V::Variant(_) => "Variant",
+        V::Construct(_) => "Construct",
+        V::Array(_) => "Array",
+        V::ListLit(_) => "ListLit",
+        V::Map(_) => "Map",
+        V::StructRef(_) => "StructRef",
+        V::TupleRef(_) => "TupleRef",
+        V::ArrayRef(_) => "ArrayRef",
+        V::ArraySlice(_) => "ArraySlice",
+        V::MapRef(_) => "MapRef",
+        V::Ref(_) => "Ref",
+        V::ByRef(_) => "ByRef",
+        V::Deref(_) => "Deref",
+        V::Add(_) => "Add",
+        V::Sub(_) => "Sub",
+        V::Mul(_) => "Mul",
+        V::Div(_) => "Div",
+        V::Mod(_) => "Mod",
+        V::CheckedAdd(_) => "CheckedAdd",
+        V::CheckedSub(_) => "CheckedSub",
+        V::CheckedMul(_) => "CheckedMul",
+        V::CheckedDiv(_) => "CheckedDiv",
+        V::CheckedMod(_) => "CheckedMod",
+        V::Eq(_) => "Eq",
+        V::Ne(_) => "Ne",
+        V::Lt(_) => "Lt",
+        V::Gt(_) => "Gt",
+        V::Lte(_) => "Lte",
+        V::Gte(_) => "Gte",
+        V::And(_) => "And",
+        V::Or(_) => "Or",
+        V::Not(_) => "Not",
+        V::Neg(_) => "Neg",
+        V::Constant(_) => "Constant",
+        V::TypeDef(_) => "TypeDef",
+        V::Impl(_) => "Impl",
+        V::Nop(_) => "Nop",
+        V::FusedKernel(_) => "FusedKernel",
     }
 }

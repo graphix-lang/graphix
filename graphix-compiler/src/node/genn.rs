@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     BindId, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
-    expr::{ApplyExpr, ExprId, ExprKind, ModPath, Origin},
+    expr::{ApplyExpr, Expr, ExprId, ExprKind, ModPath, Origin},
     typ::{FnType, Type},
 };
 use combine::stream::position::SourcePosition;
@@ -88,12 +88,7 @@ pub fn reference<R: Rt, E: UserEvent>(
 // `apply` supplies `ftype`; the same node under `apply_prototype` fails
 // `deref_typ!("fn", ..)`. Take the type from the caller.
 pub fn constant<R: Rt, E: UserEvent>(v: Value) -> Node<R, E> {
-    Node::new(Constant {
-        spec: NOP.clone(),
-        typ: Type::Primitive(Typ::get(&v).into()),
-        value: v,
-        resident: TagValue::phantom(),
-    })
+    Constant::new(v.clone(), Type::Primitive(Typ::get(&v).into()), Expr::clone(&NOP))
 }
 
 /// generate and return an apply node for the given lambda

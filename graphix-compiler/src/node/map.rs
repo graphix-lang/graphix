@@ -113,17 +113,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
                 Value::Map(CMap::new())
             });
         }
-        let mut kvals: LPooled<Vec<Value>> = LPooled::take();
-        let mut vvals: LPooled<Vec<Value>> = LPooled::take();
-        let (kt, kf, kb) = gather(ctx, event, &mut self.keys, &mut kvals);
-        let (vt, vf, vb) = gather(ctx, event, &mut self.vals, &mut vvals);
-        let (trig, fired, bottom) = (kt || vt, kf || vf, kb || vb);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
+        let (ktag, kprods) = gather(ctx, event, &mut self.keys);
+        let (vtag, vprods) = gather(ctx, event, &mut self.vals);
+        let tag = ktag.join(vtag);
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
         let m = super::coretraits::with_hooks(ctx, event, || {
             let mut m = CMap::new();
-            for (k, v) in kvals.drain(..).zip(vvals.drain(..)) {
-                m.insert_cow(k, v);
+            for (k, v) in kprods.iter().zip(vprods.iter()) {
+                m.insert_cow(k.value_cloned(), v.value_cloned());
             }
             m
         });

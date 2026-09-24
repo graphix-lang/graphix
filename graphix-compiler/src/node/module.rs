@@ -70,18 +70,11 @@ fn bind_sig(
                     });
                 }
             }
-            SigKind::Use { reexport, names } => {
-                if *reexport {
-                    bail!("re-exports (`pub use`) are not yet supported")
-                }
-                // `names` is a global registry keyed by scope path, so
-                // registering in the outer env covers the impl compile too
-                for item in names.iter() {
-                    super::compile_use_item(
-                        env, pending, si.pos, &si_ori, scope, false, item,
-                    )?;
-                }
-            }
+            // `names` is a global registry keyed by scope path, so
+            // registering in the outer env covers the impl compile too
+            SigKind::Use { reexport, names } => super::compile_use_items(
+                env, pending, si.pos, &si_ori, scope, false, *reexport, names,
+            )?,
             SigKind::Bind(BindSig { name, typ }) => {
                 let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
                 typ.alias_tvars(&mut LPooled::take());

@@ -31,8 +31,8 @@ Depth is bounded by memory, not by a limit: non-tail recursion nests on
 heap-allocated stack segments, in the interpreter and in compiled code
 alike. An embedder may cap it with a stack budget
 (`graphix_compiler::set_stack_budget`, or `GRAPHIX_STACK_BUDGET` in
-bytes); a program that exceeds the budget is stopped the way Ctrl-C
-stops it.
+bytes or with a `K`, `M` or `G` suffix, as in `64M`); a program that
+exceeds the budget is stopped the way Ctrl-C stops it.
 
 If you rely on a function running as a constant-space loop, assert it:
 
@@ -45,15 +45,22 @@ let rec sum_to = |n: i64, acc: i64| -> i64 select n {
 ```
 
 `#[tail_recursive]` is a compile-time check: if any recursive call is
-not in tail position, if the body is stateful or async, if the function
-does not recurse at all, or if it recurses mutually, the program does
-not compile.
+not in tail position, if the body is stateful or async, if a parameter
+is labeled or variadic (the loop rebinds positional parameters), if the
+function does not recurse at all, or if it recurses mutually, the
+program does not compile.
 
 Two related assertions document a function's timing: `#[sync]` asserts that
 every output appears on the same cycle as its trigger (the body reaches no
 timer, IO, or other async operation), and `#[async]` asserts the opposite.
 Like `#[tail_recursive]` they never change how the function compiles — they
 only fail the compile when the inference disagrees with your expectation.
+
+The check needs a call to look at. A function called only through a
+value chosen at runtime (`let g = select b { true => f, false => h };
+g(x)`) is checked when that call first reaches it; the program is
+already running then, so a failure is reported the way an unhandled
+error is, on stderr and in the log.
 
 With that out of the way, lets
 write a recursive function to add up pairs of numbers in an array,

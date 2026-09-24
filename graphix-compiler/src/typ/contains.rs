@@ -307,7 +307,7 @@ impl crate::typ::TVar {
                 if crate::dbgenv::graphix_dbg_bind() {
                     eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
                 }
-                if crate::dbgenv::graphix_dbg_bind_bt() {
+                if crate::dbgenv::graphix_dbg_bind_bt_id().is_some() {
                     eprintln!("{}", std::backtrace::Backtrace::force_capture());
                 }
                 tv.typ.write().typ = Some(Type::Bottom);

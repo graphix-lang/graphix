@@ -1771,6 +1771,16 @@ pub fn set_interrupt_ptr(control: &crate::Control) {
     INTERRUPT_PTR.with(|c| c.set(control as *const crate::Control));
 }
 
+/// The stack budget of the runtime this thread is running under;
+/// unlimited with no runtime on this thread.
+pub(crate) fn current_stack_budget() -> usize {
+    INTERRUPT_PTR.with(|c| {
+        let p = c.get();
+        // SAFETY: see `graphix_interrupted`.
+        if p.is_null() { usize::MAX } else { unsafe { (*p).stack_budget() } }
+    })
+}
+
 /// Abort the runtime this thread is running under (the stack budget's
 /// containment); a no-op with no runtime on this thread.
 pub(crate) fn abort_current_control_budget() {

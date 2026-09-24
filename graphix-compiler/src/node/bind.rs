@@ -104,7 +104,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
     // scope, not a fresh block scope as every source `{ .. }` gets: they stay in
     // `env.binds` there for good and a second lowering in that scope shadows the
     // first. `scope.append_block(..)` for the operands and body would contain them.
-    Ok(super::Block::new(false, children.into_boxed_slice(), bspec, scope.clone()))
+    Ok(super::Block::new(false, children.into_boxed_slice(), bspec))
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {

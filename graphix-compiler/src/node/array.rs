@@ -638,11 +638,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ListLit<R, E> {
         if self.n.is_empty() {
             return super::produce_constant(ctx, event, &mut self.resident, list::nil);
         }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = list::from_iter(vals.drain(..));
+        let (tag, prods) = gather(ctx, event, &mut self.n);
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let v = list::from_iter(prods.iter().map(|tv| tv.value_cloned()));
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -738,11 +736,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Array<R, E> {
                 Value::Array(ValArray::from([]))
             });
         }
-        let mut vals: LPooled<Vec<Value>> = LPooled::take();
-        let (trig, fired, bottom) = gather(ctx, event, &mut self.n, &mut vals);
-        dense_gate!(self, ctx, trig, bottom);
-        let tag = if fired { Tag::FIRED } else { Tag::STALE };
-        let v = Value::Array(ValArray::from_iter_exact(vals.drain(..)));
+        let (tag, prods) = gather(ctx, event, &mut self.n);
+        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        let v = Value::Array(ValArray::from_iter_exact(
+            prods.iter().map(|tv| tv.value_cloned()),
+        ));
         self.resident.set(TagValue::tagged(v, tag))
     }
 

@@ -91,7 +91,7 @@ pub(super) fn compile_into_function<'a>(
     // compile (also in emit_kernel_return) instead of through a dbgenv flag, is
     // missing from CLAUDE.md's debug table, and tags its output with bare 2/3/4.
     #[cfg(debug_assertions)]
-    if std::env::var_os("GXDBG_CALLRET").is_some() {
+    if crate::dbgenv::gxdbg_callret() {
         if let Some(f) = helper_refs.get("graphix_dbg_disc") {
             let t = b.ins().iconst(types::I64, 4);
             b.ins().call(f, &[t, init_flag]);

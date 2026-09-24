@@ -3,8 +3,8 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, PrintFlag, Rt, Scope,
-    TagValue, UserEvent, deref_typ,
+    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
+    UserEvent, deref_typ,
     effects::Effect,
     err, errf,
     expr::ExprId,
