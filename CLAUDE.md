@@ -134,7 +134,8 @@ registration entry (the package root compiled; key = image format +
 root; the build id covers the packages compiled in) and, for a script,
 the program entry (the program compiled too; key adds the program
 source). A warm start maps the program entry, else the registration
-entry and compiles the program, else compiles both; a missing entry is
+entry and compiles the program, else compiles both; an entry that fails
+to read leaves the session untouched and starts cold; a missing entry is
 written from the runtime that compiled it. `--no-cache` disables the
 cache, `--warm` writes and exits; the program key carries the compile
 flags and the header the ISA. A script compiles at runtime

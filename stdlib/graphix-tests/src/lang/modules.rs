@@ -493,3 +493,133 @@ let result = x::a + y::b
     "/test/x/shared.gx" => "let v = 1",
     "/test/y/shared.gx" => "let v = 1"
     ; graphix_package_core::testing::FuseExpect::Jit);
+
+// A blacklisted package takes its submodules with it.
+const DYNAMIC_MODULE_BLACKLIST_ROOT: &str = r#"
+{
+    let source = "
+        let foo = never();
+        let bar = never();
+        select foo { x => bar <- dbg(x) };
+        sys::net::publish(\"/local/test\", 42)
+    ";
+    sys::net::publish("/local/test", source)?;
+    let status = mod test dynamic {
+        sandbox blacklist [sys];
+        sig {
+            val foo: string;
+            val bar: string
+        };
+        source sys::net::subscribe("/local/test")?
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => {
+            test::foo <- dbg("hello world");
+            test::bar
+        }
+    }
+}
+"#;
+
+run!(dynamic_module_blacklist_root, DYNAMIC_MODULE_BLACKLIST_ROOT, |v: Result<&Value>| match v {
+    Ok(Value::Error(_)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A loaded body's deferred import must name something, as a file's must.
+const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
+{
+    let source = "use core::no_such_thing; let x = 42";
+    sys::net::publish("/local/imp", source)?;
+    let status = mod imp dynamic {
+        sandbox whitelist [core];
+        sig { val x: i64 };
+        source sys::net::subscribe("/local/imp")?
+    };
+    select status {
+        error as e => dbg(e),
+        null as _ => imp::x
+    }
+}
+"#;
+
+run!(dynamic_module_missing_import, DYNAMIC_MODULE_MISSING_IMPORT, |v: Result<&Value>| match v {
+    Ok(Value::Error(_)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Sleep is pause: a loaded body whose arm sleeps resumes at the wake
+// even though its source does not fire again.
+const DYNAMIC_MODULE_SLEEP: &str = r#"
+{
+    let src = "let x = 0; x <- sys::time::timer(duration:2.ms, true) ~ x + 1";
+    let n = 0;
+    n <- sys::time::timer(duration:40.ms, true) ~ n + 1;
+    let x = select n % 2 {
+        0 => {
+            let status = mod foo dynamic {
+                sandbox whitelist [core, sys::time];
+                sig { val x: i64 };
+                source src
+            };
+            select status { error as e => never(dbg(e)), null as _ => foo::x }
+        },
+        _ => never()
+    };
+    filter(x, |v| v >= 40)
+}
+"#;
+
+run!(dynamic_module_sleep_is_pause, DYNAMIC_MODULE_SLEEP, |v: Result<&Value>| match v {
+    Ok(Value::I64(n)) => *n >= 40,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+async fn compile_error(
+    files: &[(&str, &str)],
+    text: &'static str,
+) -> Result<anyhow::Error> {
+    let tbl = ahash::AHashMap::from_iter(files.iter().map(|(p, t)| {
+        (
+            netidx_core::path::Path::from(arcstr::ArcStr::from(*p)),
+            graphix_compiler::expr::VfsEntry::from(arcstr::ArcStr::from(*t)),
+        )
+    }));
+    let (tx, _rx) = tokio::sync::mpsc::channel(10);
+    let resolver = graphix_compiler::expr::VfsResolver::new(tbl);
+    let ctx = graphix_package_core::testing::init_with_setup(
+        tx,
+        &crate::TEST_REGISTER,
+        vec![resolver],
+        |_| {},
+    )
+    .await?;
+    let e = ctx.rt.compile(arcstr::ArcStr::from(text)).await.err();
+    ctx.shutdown().await;
+    e.ok_or_else(|| anyhow::anyhow!("{text} compiled"))
+}
+
+// Refusals of a statement in the wrong place carry their site.
+#[tokio::test(flavor = "current_thread")]
+async fn misplaced_statements_are_placed() -> Result<()> {
+    use graphix_compiler::expr::ErrorSite;
+    let m = [("/m.gx", "let k = 1")];
+    for text in ["let x = (use array::map)", "mod m; mod m", "let x = (type T = i64)"] {
+        let e = compile_error(&m, text).await?;
+        assert!(e.downcast_ref::<ErrorSite>().is_some(), "{text}: {e:#}");
+    }
+    Ok(())
+}
+
+// An error in a module's body is framed by the module's own file.
+#[tokio::test(flavor = "current_thread")]
+async fn module_errors_are_framed_by_the_module() -> Result<()> {
+    for inner in ["let x: i64 = \"s\"", "let x = no_such_name"] {
+        let files =
+            [("/test.gx", "mod inner; let result = 0"), ("/test/inner.gx", inner)];
+        let e = compile_error(&files, "{ mod test; test::result }").await?;
+        assert!(format!("{e:?}").contains("in module inner"), "{inner}: {e:?}");
+    }
+    Ok(())
+}

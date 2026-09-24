@@ -1,28 +1,21 @@
 use crate::{
-    BindId,
-    expr::{ModPath, Origin, Sandbox, TypeDefBody},
+    BindId, CFlag,
+    dbgenv::graphix_dbg_bind,
+    expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
-        Ide, ModuleInternalView, ModuleRefSite, ReferenceSite, ScopeMapEntry,
-        SigImplLink, TypeRefSite,
+        FieldRefSite, Ide, ModuleInternalView, ModuleRefSite, ReferenceSite,
+        ScopeMapEntry, SigImplLink, TypeRefSite, Warning,
     },
     is_do_block, mod_root,
     profile::{self, Phase},
-    typ::{AbstractId, FnType, TVar, TraitId, Type},
+    typ::{AbstractId, FnType, TVar, TraitId, Type, TypeRef},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
-use compact_str::CompactString;
-// CR claude for eric: [style] The type aliases sit between use statements; and
-// names imported or used more than once are spelled in full below:
-// `crate::mod_root` (use_anchor, though imported above), `crate::ide::Warning`,
-// `crate::ide::FieldRefSite`, `crate::typ::TypeRef`,
-// `crate::dbgenv::graphix_dbg_bind` (2), `compact_str::format_compact!`.
-// Chunk size 16: the env maps are write-heavy at compile time and a
-// COW insert clones the touched chunk.
-pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, 16>;
-pub type Set<K> = immutable_chunkmap::set::Set<K, 16>;
+use compact_str::{CompactString, format_compact};
+use enumflags2::BitFlags;
 use netidx_core::path::Path;
 use netidx_derive::Pack;
 use parking_lot::Mutex;
@@ -34,6 +27,13 @@ use std::{
 };
 use triomphe::Arc;
 
+/// The chunk size of the environment's maps: they are write-heavy at
+/// compile time and a COW insert clones the touched chunk.
+pub const CHUNK: usize = 16;
+pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, CHUNK>;
+pub type Set<K> = immutable_chunkmap::set::Set<K, CHUNK>;
+
+#[derive(Clone)]
 pub struct Bind {
     pub id: BindId,
     pub export: bool,
@@ -45,41 +45,27 @@ pub struct Bind {
     pub pos: SourcePosition,
     /// Source origin (file/buffer) where the binding was introduced.
     pub ori: Arc<Origin>,
-    // CR claude for eric: [structure] `pattern` and `facet` are exclusive (a
-    // select arm's bind vs a destructuring let's sibling, node/select.rs:259 vs
-    // node/bind.rs:197); one `Option<enum Facet { Pattern(..), Let(BindId) }>`.
+    /// What wake catch-up tracks the binding as part of, if anything.
+    pub facet: Option<Facet>,
+}
+
+/// A binding that is a facet of other inputs for wake catch-up.
+#[derive(Debug, Clone, Pack)]
+pub enum Facet {
     /// Bound by a select arm's pattern, with the inputs whose fires
     /// reach that select's scrutinee (closed over enclosing pattern
     /// binds): a facet of the scrutinee delivery, so no nested select
     /// tracks it for wake catch-up, and an arm that reads it consumes
     /// those inputs' fires.
-    pub pattern: Option<Arc<[BindId]>>,
+    Pattern(Arc<[BindId]>),
     /// Bound by a destructuring `let`: the group's representative bind,
     /// which wake catch-up tracks as one input for all siblings.
-    pub facet: Option<BindId>,
+    Let(BindId),
 }
 
 impl fmt::Debug for Bind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Bind {{ id: {:?}, export: {} }}", self.id, self.export,)
-    }
-}
-
-// CR claude for eric: [style] Field-for-field what `#[derive(Clone)]` writes.
-impl Clone for Bind {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            scope: self.scope.clone(),
-            name: self.name.clone(),
-            doc: self.doc.clone(),
-            export: self.export,
-            typ: self.typ.clone(),
-            pos: self.pos,
-            ori: self.ori.clone(),
-            pattern: self.pattern.clone(),
-            facet: self.facet,
-        }
     }
 }
 
@@ -291,6 +277,41 @@ impl UseAnchor<'_> {
 
 const MAX_IMPORT_DEPTH: usize = 32;
 
+/// One step of completion's search ([`Env::completion_levels`]).
+enum Visit<'a> {
+    Level(&'a str),
+    Import(&'a CompactString, &'a ImportEntry),
+}
+
+/// A typedef's parameters with their constraints' type references
+/// scoped to `scope`, where the definition is.
+pub(crate) fn scope_params(
+    params: &[(TVar, Option<Type>)],
+    scope: &ModPath,
+) -> Arc<[(TVar, Option<Type>)]> {
+    Arc::from_iter(
+        params
+            .iter()
+            .map(|(tv, tc)| (tv.clone(), tc.as_ref().map(|t| t.scope_refs(scope)))),
+    )
+}
+
+/// `m` without the entries `keep` refuses.
+fn retain<K: Ord + Clone, V: Clone>(
+    m: &Map<K, V>,
+    mut keep: impl FnMut(&K, &V) -> bool,
+) -> Map<K, V> {
+    let gone: LPooled<Vec<K>> =
+        m.into_iter().filter(|(k, v)| !keep(k, v)).map(|(k, _)| k.clone()).collect();
+    if gone.is_empty() { m.clone() } else { m.remove_many(gone.iter().cloned()) }
+}
+
+/// `s` without the members `keep` refuses.
+fn retain_set<K: Ord + Clone>(s: &Set<K>, mut keep: impl FnMut(&K) -> bool) -> Set<K> {
+    let gone: LPooled<Vec<K>> = s.into_iter().filter(|k| !keep(k)).cloned().collect();
+    if gone.is_empty() { s.clone() } else { s.remove_many(gone.iter().cloned()) }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: Map<BindId, Bind>,
@@ -322,10 +343,10 @@ pub struct Env {
     /// Registered package names, usable as module path roots from
     /// anywhere. Global.
     pub package_roots: Set<ArcStr>,
-    // CR claude for eric: [structure] Two fields for one mode: `lsp_mode` gates
-    // some recorders, `ide` is where every push lands. (false, Some) fills the
-    // sinks partially (binds, warnings, not references); (true, None) records
-    // into nothing. Decide which states exist and encode them in one field.
+    // XCR claude for eric: three states exist: off; lsp between checks (true,
+    // None: registration records into nothing); a check (true, Some). Only
+    // GXRt::check installs a sink, under lsp_mode. Recommend `ide: IdeMode {Off,
+    // Lsp(Option<sink>)}` after the merge: 44 `lsp_mode` reads in every package.
     /// Populate the IDE side-channels (the `ide` sink).
     pub lsp_mode: bool,
     /// The IDE side-channels ([`Ide`]); `Some` only under an LSP-style
@@ -335,165 +356,94 @@ pub struct Env {
 }
 
 impl Env {
-    // CR claude for eric: [dead] The only caller, ExecCtx::clear (lib.rs:1484),
-    // has no caller in the workspace. It also keeps `package_roots` while
-    // dropping those packages' modules, so a cleared env still resolves
-    // `sys::..` to a root with nothing under it.
-    pub(super) fn clear(&mut self) {
-        let Self {
-            by_id,
-            binds,
-            byref_chain,
-            names,
-            abstract_reps,
-            traits,
-            trait_defs,
-            trait_methods,
-            impls,
-            poly_binds,
-            package_roots: _,
-            modules,
-            typedefs,
-            lsp_mode: _,
-            ide: _,
-        } = self;
-        *by_id = Map::new();
-        *binds = Map::new();
-        *byref_chain = Map::new();
-        *names = Map::new();
-        *abstract_reps = Map::new();
-        *traits = Map::new();
-        *trait_defs = Map::new();
-        *trait_methods = Map::new();
-        *impls = Map::new();
-        *poly_binds = Set::new();
-        *modules = Set::new();
-        *typedefs = Map::new();
-    }
-
-    // CR claude for eric: [structure] restore_lexical_env and _mut are two
-    // copies of one 15-field list, and clear() spells the lexical/global split a
-    // third time. A `Lexical { binds, modules, typedefs, traits }` sub-struct
-    // makes the split a type and a restore a swap of one field.
-    // Restore the lexical environment to the snapshot `other`; the
-    // global registries and IDE sinks stay as they are on `self`.
+    // XCR claude for eric: the two restores are one now, and `clear` is gone. A
+    // `Lexical` sub-struct would rename 43 `env.binds`/`modules`/`typedefs`/
+    // `traits` reads across every package; worth it as its own change after
+    // the merge (the image's lexical codec would take the struct too).
+    /// Restore the lexical environment to the snapshot `other`; the
+    /// global registries and IDE sinks stay as they are on `self`.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
-        Self {
-            binds: other.binds,
-            modules: other.modules,
-            typedefs: other.typedefs,
-            traits: other.traits,
-            by_id: self.by_id.clone(),
-            byref_chain: self.byref_chain.clone(),
-            names: self.names.clone(),
-            abstract_reps: self.abstract_reps.clone(),
-            trait_defs: self.trait_defs.clone(),
-            trait_methods: self.trait_methods.clone(),
-            impls: self.impls.clone(),
-            poly_binds: self.poly_binds.clone(),
-            package_roots: self.package_roots.clone(),
-            lsp_mode: self.lsp_mode,
-            ide: self.ide.clone(),
-        }
+        let Self { binds, modules, typedefs, traits, .. } = other;
+        Self { binds, modules, typedefs, traits, ..self.clone() }
     }
 
+    /// [`Self::restore_lexical_env`] taking the lexical maps out of
+    /// `other`, so the restored env holds them alone and updates them
+    /// in place.
     pub(super) fn restore_lexical_env_mut(&self, other: &mut Self) -> Self {
-        Self {
+        self.restore_lexical_env(Self {
             binds: mem::take(&mut other.binds),
             modules: mem::take(&mut other.modules),
             typedefs: mem::take(&mut other.typedefs),
             traits: mem::take(&mut other.traits),
-            by_id: self.by_id.clone(),
-            byref_chain: self.byref_chain.clone(),
-            names: self.names.clone(),
-            abstract_reps: self.abstract_reps.clone(),
-            trait_defs: self.trait_defs.clone(),
-            trait_methods: self.trait_methods.clone(),
-            impls: self.impls.clone(),
-            poly_binds: self.poly_binds.clone(),
-            package_roots: self.package_roots.clone(),
-            lsp_mode: self.lsp_mode,
-            ide: self.ide.clone(),
+            ..Self::default()
+        })
+    }
+
+    /// Run `f` on the active IDE sink, if any.
+    pub fn with_ide(&self, f: impl FnOnce(&mut Ide)) {
+        if let Some(ide) = &self.ide {
+            f(&mut ide.lock())
         }
     }
 
-    // CR claude for eric: [structure] Seven copies of `if let Some(ide) =
-    // &self.ide { ide.lock().X.push(..) }` (through push_module_internal_view,
-    // and again in bind_variable/retype); one `fn with_ide(&self, f: impl
-    // FnOnce(&mut Ide))` serves them all.
-    /// Push a `ReferenceSite` into the active IDE sink, if any.
     pub fn push_reference(&self, site: ReferenceSite) {
-        if let Some(ide) = &self.ide {
-            ide.lock().references.push(site);
-        }
+        self.with_ide(|ide| ide.references.push(site))
     }
 
-    /// Push a `ModuleRefSite` into the active IDE sink, if any.
     pub fn push_module_reference(&self, site: ModuleRefSite) {
-        if let Some(ide) = &self.ide {
-            ide.lock().module_references.push(site);
-        }
+        self.with_ide(|ide| ide.module_references.push(site))
     }
 
-    // CR claude for eric: [structure] The callers decide WarningsAreErrors
-    // themselves and each hand-builds its own "ERROR: {ori} at {pos} .." bail
-    // (node/error.rs:636, node/callsite.rs:2284); taking the flags here makes
-    // this the one place. The stderr branch also bypasses the log (and
-    // --log-dir), and a runtime compile's warning lands on a TUI's screen.
-    /// Warn about the text `[pos, end)`: to the IDE sink under a check
-    /// that has one, else to stderr.
+    // XCR claude for eric: done for WarningsAreErrors: the flag is read here and the
+    // error carries the site. The stderr branch stays: without `--log-dir` the shell
+    // installs no logger, so `log::warn!` would silence every script's warnings. The
+    // fix is a warning sink the embedder installs (the Ide's, generalized).
+    /// Warn about the text `[pos, end)` of `spec`: an error under
+    /// `WarningsAreErrors`, else to the IDE sink under a check that has
+    /// one, else to stderr.
     pub fn warn(
         &self,
-        ori: &Arc<Origin>,
+        flags: BitFlags<CFlag>,
+        spec: &Expr,
         pos: SourcePosition,
         end: SourcePosition,
         message: impl fmt::Display,
-    ) {
+    ) -> Result<()> {
+        if flags.contains(CFlag::WarningsAreErrors) {
+            return Err(anyhow!("{message}").at(spec));
+        }
         match &self.ide {
-            None => eprintln!("WARNING: {ori} at {pos} {message}"),
-            Some(ide) => ide.lock().warnings.push(crate::ide::Warning {
+            None => eprintln!("WARNING: {} at {pos} {message}", spec.ori),
+            Some(ide) => ide.lock().warnings.push(Warning {
                 pos,
                 end,
-                ori: ori.clone(),
-                message: compact_str::format_compact!("{message}").as_str().into(),
+                ori: spec.ori.clone(),
+                message: format_compact!("{message}").as_str().into(),
             }),
         }
+        Ok(())
     }
 
-    /// Push a `FieldRefSite` into the active IDE sink, if any.
-    pub fn push_field_ref(&self, site: crate::ide::FieldRefSite) {
-        if let Some(ide) = &self.ide {
-            ide.lock().field_refs.push(site);
-        }
+    pub fn push_field_ref(&self, site: FieldRefSite) {
+        self.with_ide(|ide| ide.field_refs.push(site))
     }
 
-    /// Push a `ScopeMapEntry` into the active IDE sink, if any.
     pub fn push_scope_map_entry(&self, entry: ScopeMapEntry) {
-        if let Some(ide) = &self.ide {
-            ide.lock().scope_map.push(entry);
-        }
+        self.with_ide(|ide| ide.scope_map.push(entry))
     }
 
-    /// Push a `TypeRefSite` into the active IDE sink, if any.
     pub fn push_type_ref(&self, site: TypeRefSite) {
-        if let Some(ide) = &self.ide {
-            ide.lock().type_refs.push(site);
-        }
+        self.with_ide(|ide| ide.type_refs.push(site))
     }
 
-    /// Push a `SigImplLink` into the active IDE sink, if any.
     pub fn push_sig_link(&self, link: SigImplLink) {
-        if let Some(ide) = &self.ide {
-            ide.lock().sig_links.push(link);
-        }
+        self.with_ide(|ide| ide.sig_links.push(link))
     }
 
-    /// Push a per-module internal-view snapshot into the active IDE
-    /// sink, if any.
+    /// A module's internal view, for the IDE.
     pub fn push_module_internal_view(&self, view: ModuleInternalView) {
-        if let Some(ide) = &self.ide {
-            ide.lock().module_internals.push(view);
-        }
+        self.with_ide(|ide| ide.module_internals.push(view))
     }
 
     pub fn apply_sandbox(&self, spec: &Sandbox) -> Result<Self> {
@@ -504,92 +454,52 @@ impl Env {
         }
         match spec {
             Sandbox::Unrestricted => Ok(self.clone()),
-            // CR claude for eric: [bug] Blacklisting a module removes only that
-            // exact module: its submodules stay, and a package root resolves even
-            // when removed (resolve_module_seg, "the descent gates"). Probe: a
-            // dynamic module under `sandbox blacklist [sys]` whose source calls
-            // `sys::net::publish(..)` loads (status null); `blacklist [sys::net]`
-            // refuses it. Remove the whole subtree (modules, binds, typedefs,
-            // traits under `n`).
             Sandbox::Blacklist(bl) => {
                 let mut t = self.clone();
                 for n in bl.iter() {
-                    if t.modules.remove_cow(n) {
-                        t.binds.remove_cow(n);
-                        t.typedefs.remove_cow(n);
+                    if t.modules.contains(n) {
+                        t.unbind_lexical_under(n);
                     } else {
                         let (dir, k) = get_bind_name(n)?;
-                        let vals = t.binds.get_mut_cow(dir).ok_or_else(|| {
-                            anyhow!("no value {k} in module {dir} and no module {n}")
-                        })?;
-                        if let None = vals.remove_cow(&CompactString::from(k)) {
+                        let removed = t
+                            .binds
+                            .get_mut_cow(dir)
+                            .and_then(|vals| vals.remove_cow(&CompactString::from(k)));
+                        if removed.is_none() {
                             bail!("no value {k} in module {dir} and no module {n}")
                         }
                     }
                 }
                 Ok(t)
             }
-            // CR claude for eric: [style] Unpooled AHashSet/AHashMap scratch, and
-            // the same keep-if filter is written three times through
-            // `update_many(into_iter().map(clone))`; one retain helper. Also
-            // `if let None = ..` (Blacklist arm) is `.is_none()`.
             Sandbox::Whitelist(wl) => {
-                let mut t = self.clone();
-                let mut modules = AHashSet::default();
-                let mut names: AHashMap<_, AHashSet<_>> = AHashMap::default();
+                let mut modules: LPooled<AHashSet<ModPath>> = LPooled::take();
+                let mut names: LPooled<
+                    AHashMap<ModPath, LPooled<AHashSet<CompactString>>>,
+                > = LPooled::take();
                 for w in wl.iter() {
-                    if t.modules.contains(w) {
+                    if self.modules.contains(w) {
                         modules.insert(w.clone());
                     } else {
                         let (dir, n) = get_bind_name(w)?;
                         let dir = ModPath(Path::from(ArcStr::from(dir)));
                         let n = CompactString::from(n);
-                        t.binds.get(&dir).and_then(|v| v.get(&n)).ok_or_else(|| {
-                            anyhow!("no value {n} in module {dir} and no module {w}")
-                        })?;
+                        self.binds.get(&dir).and_then(|v| v.get(&n)).ok_or_else(
+                            || anyhow!("no value {n} in module {dir} and no module {w}"),
+                        )?;
                         names.entry(dir).or_default().insert(n);
                     }
                 }
-                t.typedefs = t.typedefs.update_many(
-                    t.typedefs.into_iter().map(|(k, v)| (k.clone(), v.clone())),
-                    |k, v, _| {
-                        if modules.contains(&k) || names.contains_key(&k) {
-                            Some((k, v))
-                        } else {
-                            None
-                        }
-                    },
-                );
-                t.modules =
-                    t.modules.update_many(t.modules.into_iter().cloned(), |k, _| {
-                        if modules.contains(&k) || names.contains_key(&k) {
-                            Some(k)
-                        } else {
-                            None
-                        }
-                    });
-                t.binds = t.binds.update_many(
-                    t.binds.into_iter().map(|(k, v)| (k.clone(), v.clone())),
-                    |k, v, _| {
-                        if modules.contains(&k) {
-                            Some((k, v))
-                        } else if let Some(names) = names.get(&k) {
-                            let v = v.update_many(
-                                v.into_iter().map(|(k, v)| (k.clone(), v.clone())),
-                                |kn, vn, _| {
-                                    if names.contains(&kn) {
-                                        Some((kn, vn))
-                                    } else {
-                                        None
-                                    }
-                                },
-                            );
-                            Some((k, v))
-                        } else {
-                            None
-                        }
-                    },
-                );
+                let kept = |k: &ModPath| modules.contains(k) || names.contains_key(k);
+                let mut t = self.clone();
+                t.typedefs = retain(&self.typedefs, |k, _| kept(k));
+                t.modules = retain_set(&self.modules, kept);
+                t.binds = retain(&self.binds, |k, _| kept(k));
+                for (dir, ns) in names.iter().filter(|(dir, _)| !modules.contains(*dir)) {
+                    if let Some(vals) = t.binds.get_mut_cow(dir) {
+                        *vals = retain(vals, |n, _| ns.contains(n));
+                    }
+                }
                 Ok(t)
             }
         }
@@ -697,19 +607,23 @@ impl Env {
         Ok(None)
     }
 
+    /// The module `lvl/n`, if there is one.
+    fn module_at(&self, lvl: &str, n: &str) -> Option<ModPath> {
+        let mut p: LPooled<String> = LPooled::take();
+        p.push_str(lvl);
+        if !n.is_empty() {
+            if !lvl.ends_with('/') {
+                p.push('/');
+            }
+            p.push_str(n);
+        }
+        self.modules.get(p.as_str()).cloned()
+    }
+
     /// Resolve the single segment `seg` as a module from `scope`: the
     /// lexical chain, then the package prelude, then the core prelude.
     fn resolve_module_seg(&self, scope: &str, seg: &str) -> Result<Option<ModPath>> {
-        // CR claude for eric: [structure] This "is `lvl/n` a module" closure is
-        // written four times (here, descend_step, resolve_visible,
-        // canonical_modpath; import_target_exists inlines it again), and each
-        // probe allocates an ArcStr and a joined Path per lexical level on every
-        // name lookup. One helper that looks up a stack-built &str and builds
-        // the ModPath only on a hit.
-        let mut f = |lvl: &str, n: &str| {
-            let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
-            if self.modules.contains(&p) { Some(p) } else { None }
-        };
+        let mut f = |lvl: &str, n: &str| self.module_at(lvl, n);
         if let Some(p) = self.chain_lookup(scope, scope, seg, 0, &mut f)? {
             return Ok(Some(p));
         }
@@ -718,7 +632,7 @@ impl Env {
         if self.package_roots.contains(seg) {
             return Ok(Some(ModPath(Path::root().append(seg))));
         }
-        Ok(f("/core", seg))
+        Ok(self.module_at("/core", seg))
     }
 
     /// One qualified-path descent step: `seg` as a module within `cur`
@@ -729,11 +643,7 @@ impl Env {
         cur: &str,
         seg: &str,
     ) -> Result<Option<ModPath>> {
-        let mut f = |lvl: &str, n: &str| {
-            let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
-            if self.modules.contains(&p) { Some(p) } else { None }
-        };
-        self.lookup_at(origin, cur, seg, 0, &mut f)
+        self.lookup_at(origin, cur, seg, 0, &mut |lvl, n| self.module_at(lvl, n))
     }
 
     /// Resolve `name`, written at `scope`: `f` is consulted with
@@ -797,19 +707,13 @@ impl Env {
         if interior.is_empty() {
             return self.chain_lookup(scope, anchor, base, 0, &mut f);
         }
-        let first = match self.chain_lookup(
-            scope,
-            anchor,
-            interior[0],
-            0,
-            &mut |lvl: &str, n: &str| {
-                let p = ModPath(Path::from(ArcStr::from(lvl)).append(n));
-                if self.modules.contains(&p) { Some(p) } else { None }
-            },
-        )? {
-            Some(m) => m,
-            None => bail!("no module `{}` in `{anchor}`", interior[0]),
-        };
+        let first =
+            match self.chain_lookup(scope, anchor, interior[0], 0, &mut |lvl, n| {
+                self.module_at(lvl, n)
+            })? {
+                Some(m) => m,
+                None => bail!("no module `{}` in `{anchor}`", interior[0]),
+            };
         let m = self.descend(scope, first, &interior[1..])?;
         self.lookup_at(scope, &m, base, 0, &mut f)
     }
@@ -864,7 +768,7 @@ impl Env {
 
     /// The trait a type reference names, if it names one rather than a
     /// typedef (a filled resolution cell is always a typedef).
-    pub fn trait_of_ref(&self, tr: &crate::typ::TypeRef) -> Option<TraitId> {
+    pub fn trait_of_ref(&self, tr: &TypeRef) -> Option<TraitId> {
         if tr.resolved().is_some() {
             return None;
         }
@@ -1087,14 +991,14 @@ impl Env {
                 im.target.reset_tvars()
             };
             let (hc, tc) = (head.contains(self, t)?, t.contains(self, &head)?);
-            if crate::dbgenv::graphix_dbg_bind() {
+            if graphix_dbg_bind() {
                 eprintln!("FIND-IMPL head={head:?} t={t:?} head>=t={hc} t>=head={tc}");
             }
             if hc && tc {
                 return Ok(Some(im.clone()));
             }
         }
-        if crate::dbgenv::graphix_dbg_bind() {
+        if graphix_dbg_bind() {
             eprintln!("FIND-IMPL none for {t:?}");
         }
         Ok(None)
@@ -1110,9 +1014,7 @@ impl Env {
         let n_super = prefix.iter().take_while(|s| **s == "super").count();
         Ok(match prefix.first() {
             None => None,
-            Some(&"self") if prefix.len() == 1 => {
-                Some(UseAnchor::Chain(crate::mod_root(scope)))
-            }
+            Some(&"self") if prefix.len() == 1 => Some(UseAnchor::Chain(mod_root(scope))),
             Some(&"super") if n_super == prefix.len() => {
                 Some(UseAnchor::Chain(self.super_anchor(scope, n_super)?))
             }
@@ -1134,10 +1036,35 @@ impl Env {
         scope: &ModPath,
         name: &ModPath,
     ) -> Result<Option<ModPath>> {
-        self.resolve_visible(scope, name, NameNs::Module, |scope, name| {
-            let p = ModPath(Path::from(ArcStr::from(scope)).append(name));
-            if self.modules.contains(&p) { Some(p) } else { None }
-        })
+        self.resolve_visible(scope, name, NameNs::Module, |lvl, n| self.module_at(lvl, n))
+    }
+
+    /// Completion's search from `scope` for a partial name: every scope
+    /// to scan (each lexical level, its glob sources, then `/core`) and
+    /// every explicit import of each level.
+    fn completion_levels<'a>(&'a self, scope: &'a str, mut f: impl FnMut(Visit<'a>)) {
+        for lvl in chain_levels(scope) {
+            f(Visit::Level(lvl));
+            if let Some(sn) = self.names.get(lvl) {
+                for (name, e) in &sn.imports {
+                    f(Visit::Import(name, e));
+                }
+                for g in sn.globs.iter() {
+                    f(Visit::Level(g));
+                }
+            }
+        }
+        f(Visit::Level("/core"));
+    }
+
+    /// Where an import's target lives, following the chain rule for a
+    /// keyword-anchored entry, as `find` sees it.
+    fn import_target<T>(e: &ImportEntry, find: impl Fn(&str) -> Option<T>) -> Option<T> {
+        if e.keyword_anchored {
+            chain_levels(&e.scope).find_map(find)
+        } else {
+            find(&e.scope)
+        }
     }
 
     /// Binds in scope matching a partial name (IDE/shell completion).
@@ -1150,49 +1077,29 @@ impl Env {
         let scan = |res: &mut Vec<(CompactString, BindId)>, level: &str, part: &str| {
             if let Some(vars) = self.binds.get(level) {
                 let r = vars.range::<str, _>((Bound::Included(part), Bound::Unbounded));
-                for (name, bind) in r {
-                    if name.starts_with(part) {
-                        res.push((name.clone(), *bind));
-                    }
-                }
+                let r = r.take_while(|(name, _)| name.starts_with(part));
+                res.extend(r.map(|(name, bind)| (name.clone(), *bind)));
             }
         };
         match Path::dirname(&**part) {
             None => {
                 let part = Path::basename(&**part).unwrap_or("");
-                for level in chain_levels(scope) {
-                    scan(&mut res, level, part);
-                    if let Some(sn) = self.names.get(level) {
-                        for (name, e) in &sn.imports {
-                            if name.starts_with(part) {
-                                let find = |lvl: &str| {
-                                    self.binds
-                                        .get(lvl)
-                                        .and_then(|v| v.get(&e.name))
-                                        .copied()
-                                };
-                                let id = if e.keyword_anchored {
-                                    chain_levels(&e.scope).find_map(find)
-                                } else {
-                                    find(&e.scope)
-                                };
-                                if let Some(id) = id {
-                                    res.push((name.clone(), id));
-                                }
-                            }
-                        }
-                        for g in sn.globs.iter() {
-                            scan(&mut res, g, part);
+                self.completion_levels(scope, |v| match v {
+                    Visit::Level(level) => scan(&mut res, level, part),
+                    Visit::Import(name, e) if name.starts_with(part) => {
+                        let find = |lvl: &str| {
+                            self.binds.get(lvl).and_then(|v| v.get(&e.name)).copied()
+                        };
+                        if let Some(id) = Self::import_target(e, find) {
+                            res.push((name.clone(), id));
                         }
                     }
-                }
-                scan(&mut res, "/core", part);
+                    Visit::Import(..) => (),
+                });
             }
-            Some(_) => {
+            Some(dir) => {
                 let part_base = Path::basename(&**part).unwrap_or("");
-                let prefix = ModPath(Path::from(ArcStr::from(
-                    Path::dirname(&**part).unwrap_or("/"),
-                )));
+                let prefix = ModPath(Path::from(ArcStr::from(dir)));
                 if let Ok(Some(m)) = self.canonical_modpath(scope, &prefix) {
                     scan(&mut res, &m, part_base);
                 }
@@ -1201,13 +1108,8 @@ impl Env {
         res
     }
 
-    // CR claude for eric: [bug] Suspected, IDE only: the imports loop offers
-    // every import whose name matches, values and types included, as a module;
-    // `scan` leaves "/sub" under a module level but "sub" under "/"; and both
-    // this and lookup_matching run their `range` to the end of the map instead
-    // of stopping at the first name without the prefix. The two functions also
-    // share one chain/imports/globs/core skeleton.
-    /// Modules in scope matching a partial name (IDE/shell completion).
+    /// Modules in scope matching a partial name (IDE/shell completion),
+    /// each relative to the level it was found under.
     pub fn lookup_matching_modules(
         &self,
         scope: &ModPath,
@@ -1216,38 +1118,35 @@ impl Env {
         let mut res = vec![];
         let scan = |res: &mut Vec<ModPath>, level: &str, part: &str| {
             let p = ModPath(Path::from(ArcStr::from(level)).append(part));
-            for m in self.modules.range((Bound::Included(p.clone()), Bound::Unbounded)) {
-                if m.0.starts_with(&*p.0) {
-                    if let Some(m) = m.strip_prefix(level) {
-                        if !m.trim().is_empty() {
-                            res.push(ModPath(Path::from(ArcStr::from(m))));
-                        }
-                    }
+            let r = self.modules.range((Bound::Included(p.clone()), Bound::Unbounded));
+            for m in r.take_while(|m| m.0.starts_with(&*p.0)) {
+                let rel = m.strip_prefix(level).map(|m| m.trim_start_matches('/'));
+                if let Some(rel) = rel.filter(|m| !m.trim().is_empty()) {
+                    res.push(ModPath(Path::from(ArcStr::from(rel))));
                 }
             }
         };
         match Path::dirname(&**part) {
             None => {
                 let part = Path::basename(&**part).unwrap_or("");
-                for level in chain_levels(scope) {
-                    scan(&mut res, level, part);
-                    if let Some(sn) = self.names.get(level) {
-                        for (name, _) in &sn.imports {
-                            if name.starts_with(part) {
-                                res.push(ModPath(Path::root().append(name)));
-                            }
-                        }
-                        for g in sn.globs.iter() {
-                            scan(&mut res, g, part);
-                        }
+                self.completion_levels(scope, |v| match v {
+                    Visit::Level(level) => scan(&mut res, level, part),
+                    Visit::Import(name, e)
+                        if name.starts_with(part)
+                            && Self::import_target(e, |lvl| {
+                                self.module_at(lvl, &e.name)
+                            })
+                            .is_some() =>
+                    {
+                        res.push(ModPath(Path::root().append(name)))
                     }
-                }
+                    Visit::Import(..) => (),
+                });
                 for p in self.package_roots.into_iter() {
                     if p.starts_with(part) {
                         res.push(ModPath(Path::root().append(p.as_str())));
                     }
                 }
-                scan(&mut res, "/core", part);
             }
             Some(dir) => {
                 let part_base = Path::basename(&**part).unwrap_or("");
@@ -1281,21 +1180,7 @@ impl Env {
                     e.scope
                 )
             }
-            // CR claude for eric: [structure] The "declared at this level" test
-            // (binds, typedefs, traits) is written again in
-            // import_target_exists; one `fn declares(&self, level, name)`, with
-            // `is_some_and` in place of `.map(..).unwrap_or(false)`.
-            let declared = self
-                .binds
-                .get(scope)
-                .map(|v| v.get(key).is_some())
-                .unwrap_or(false)
-                || self
-                    .typedefs
-                    .get(scope)
-                    .map(|v| v.get(key).is_some())
-                    .unwrap_or(false)
-                || self.traits.get(scope).map(|v| v.get(key).is_some()).unwrap_or(false);
+            let declared = self.declares(scope, key);
             if declared {
                 bail!("`{key}` is already defined in this scope; use `as` to rename")
             }
@@ -1315,20 +1200,19 @@ impl Env {
         }
     }
 
+    /// Whether `level` itself declares `name`: a binding, a type or a
+    /// trait.
+    fn declares(&self, level: &str, name: &str) -> bool {
+        self.binds.get(level).is_some_and(|v| v.get(name).is_some())
+            || self.typedefs.get(level).is_some_and(|v| v.get(name).is_some())
+            || self.traits.get(level).is_some_and(|v| v.get(name).is_some())
+    }
+
     /// True iff an import target currently names something (any
     /// kind), following the chain rule for keyword-anchored entries.
     pub fn import_target_exists(&self, e: &ImportEntry) -> bool {
         let check = |lvl: &str| {
-            self.binds.get(lvl).map(|v| v.get(&e.name).is_some()).unwrap_or(false)
-                || self
-                    .typedefs
-                    .get(lvl)
-                    .map(|v| v.get(&e.name).is_some())
-                    .unwrap_or(false)
-                || self.traits.get(lvl).map(|v| v.get(&e.name).is_some()).unwrap_or(false)
-                || self
-                    .modules
-                    .contains(&ModPath(Path::from(ArcStr::from(lvl)).append(&e.name)))
+            self.declares(lvl, &e.name) || self.module_at(lvl, &e.name).is_some()
         };
         if e.keyword_anchored {
             chain_levels(&e.scope).any(check)
@@ -1339,14 +1223,7 @@ impl Env {
 
     /// Drop every import table at `scope` or any descendant.
     pub fn clear_names_under(&mut self, scope: &ModPath) {
-        let stale: LPooled<Vec<ModPath>> = (&self.names)
-            .into_iter()
-            .filter(|(s, _)| scope_is_under(s, scope))
-            .map(|(s, _)| s.clone())
-            .collect();
-        for s in &*stale {
-            self.names.remove_cow(s);
-        }
+        self.names = retain(&self.names, |s, _| !scope_is_under(s, scope));
     }
 
     pub fn deftype(
@@ -1360,13 +1237,11 @@ impl Env {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> Result<()> {
-        // CR claude for eric: [bug] deftrait refuses a name that is already a
-        // type, but this does not refuse a name that is already a
-        // trait, so the outcome depends on order. Probe: `trait Foo { val show:
-        // fn(self) -> string }; type Foo = i64; let x: Foo = 1` compiles and runs;
-        // the reverse order is refused ("Foo is already defined as a type").
         if self.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined in scope {scope}")
+        }
+        if self.traits.get(scope).and_then(|m| m.get(name)).is_some() {
+            bail!("{name} is already defined as a trait in scope {scope}")
         }
         // CR claude for eric: [bug] a typedef that reaches itself only through unions
         // and refs is accepted: `type T = [i64, T]; let v: T = "hello"` checks and
@@ -1390,13 +1265,14 @@ impl Env {
                 (typ, rep)
             }
         };
-        // CR claude for eric: [bug] the body and rep are scoped with `scope_refs(scope)`
-        // above but the parameter constraints never are, so a constraint naming a type
-        // resolves from the root at the use site. Probe: in a module file `type N = i64;
-        // type T<'a: N> = Array<'a>; let x: T<i64> = [1]` fails "undefined type N in "
-        // (empty scope); the same lines at top level check. Scope `params` too.
+        let params = scope_params(&params, scope);
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut declared: LPooled<AHashSet<ArcStr>> = LPooled::take();
+        let mut used: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        typ.collect_tvars(&mut used);
+        for t in rep.iter().chain(params.iter().filter_map(|(_, tc)| tc.as_ref())) {
+            t.collect_tvars(&mut used);
+        }
         for (tv, tc) in params.iter() {
             Type::TVar(tv.clone()).alias_tvars(&mut known);
             if let Some(tc) = tc {
@@ -1417,13 +1293,8 @@ impl Env {
                 t.check_tvars_declared(&mut declared)?;
             }
         }
-        // CR claude for eric: [bug] Dead check: every parameter was aliased into
-        // `known` by the first loop above, so this never fires. Probe: `type T<'a>
-        // = i64; let x: T<string> = 1` is accepted. Collect `known` from typ and
-        // rep only (an Abstract's formals are in typ, so phantom params still
-        // pass), or delete the check if unused alias params are meant to be legal.
         for dec in declared.iter() {
-            if !known.contains_key(dec) {
+            if !used.contains_key(dec) {
                 bail!("unused type parameter {dec} in definition of {name}")
             }
         }
@@ -1493,13 +1364,8 @@ impl Env {
     /// its definition is visible from `from` (the defining scope and
     /// its subtree).
     pub fn abstract_rep(&self, id: AbstractId, from: &ModPath) -> Option<&AbstractRep> {
-        // CR claude for eric: [structure] `inside` re-implements
-        // scope_is_under(from, &r.scope). publish_abstract_rep below
-        // rebuilds the rep field by field where `..(**r).clone()` would do.
         let r = self.abstract_reps.get(&id)?;
-        let mut from_parts = Path::parts(&from.0);
-        let inside = Path::parts(&r.scope.0).all(|part| from_parts.next() == Some(part));
-        (r.public || inside).then_some(&**r)
+        (r.public || scope_is_under(from, &r.scope)).then_some(&**r)
     }
 
     /// Fill the resolution cell of every `Type::Ref` reachable from a
@@ -1528,13 +1394,7 @@ impl Env {
         if let Some(r) = self.abstract_reps.get(&id)
             && !r.public
         {
-            let r = AbstractRep {
-                scope: r.scope.clone(),
-                name: r.name.clone(),
-                params: r.params.clone(),
-                rep: r.rep.clone(),
-                public: true,
-            };
+            let r = AbstractRep { public: true, ..(**r).clone() };
             self.abstract_reps.insert_cow(id, Arc::new(r));
         }
     }
@@ -1554,92 +1414,63 @@ impl Env {
         }
     }
 
-    // CR claude for eric: [bug] The global registries are purged only through
-    // the lexical maps, so an entry the lexical maps no longer hold survives:
-    // every lambda parameter and body-local bind (compiled under
-    // `with_restored`, lib.rs:1638, which drops them from `binds`) and every
-    // shadowed bind keeps its by_id/poly_binds/byref_chain entry, and likewise
-    // an abstract rep or trait def outside `typedefs`/`traits`. The CLAUDE.md
-    // rule is "drop everything a package registers": filter each global map by
-    // its entry's own scope (Bind.scope, AbstractRep.scope, TraitDef.scope).
-    // The returned count also counts traits, which the doc omits.
+    /// Drop the lexical entries (modules, binds, typedefs, traits) at
+    /// `scope` or below; the number of names they held.
+    fn unbind_lexical_under(&mut self, scope: &str) -> usize {
+        fn drop_scopes<V: Clone>(
+            m: &mut Map<ModPath, Map<CompactString, V>>,
+            scope: &str,
+        ) -> usize {
+            let mut n = 0;
+            *m = retain(m, |s, names| {
+                let under = scope_is_under(s, scope);
+                if under {
+                    n += names.len();
+                }
+                !under
+            });
+            n
+        }
+        self.modules = retain_set(&self.modules, |s| !scope_is_under(s, scope));
+        drop_scopes(&mut self.binds, scope)
+            + drop_scopes(&mut self.typedefs, scope)
+            + drop_scopes(&mut self.traits, scope)
+    }
+
     /// Drop everything registered at `scope` or any descendant, so a
-    /// package's source can re-register under the same scope. Returns
-    /// the number of bind and typedef entries removed.
+    /// package's source can re-register under the same scope: the
+    /// lexical entries, the imports, and every global entry declared
+    /// there (bindings the lexical maps no longer name included).
+    /// Returns the number of bind, typedef and trait names removed.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
-        let mut removed = 0;
-        // CR claude for eric: [structure] "Collect the keys under `scope`, then
-        // remove them" is written five times (binds, traits, typedefs, modules
-        // here, and clear_names_under); one helper over Map/Set<ModPath>.
-        let bind_scopes: LPooled<Vec<ModPath>> = (&self.binds)
+        let under = |s: &ModPath| scope_is_under(s, scope);
+        let removed = self.unbind_lexical_under(scope);
+        self.clear_names_under(scope);
+        let binds: LPooled<Vec<BindId>> = (&self.by_id)
             .into_iter()
-            .filter(|(s, _)| scope_is_under(s, scope))
-            .map(|(s, _)| s.clone())
+            .filter(|(_, b)| under(&b.scope))
+            .map(|(id, _)| *id)
             .collect();
-        for s in &*bind_scopes {
-            if let Some(defs) = self.binds.get(s) {
-                let ids: LPooled<Vec<BindId>> =
-                    defs.into_iter().map(|(_, id)| *id).collect();
-                removed += ids.len();
-                for id in &*ids {
-                    self.by_id.remove_cow(id);
-                    self.trait_methods.remove_cow(id);
-                    self.poly_binds.remove_cow(id);
-                    self.byref_chain.remove_cow(id);
-                }
-            }
-            self.binds.remove_cow(s);
-        }
-        let trait_scopes: LPooled<Vec<ModPath>> = (&self.traits)
+        self.by_id = self.by_id.remove_many(binds.iter().copied());
+        self.trait_methods = self.trait_methods.remove_many(binds.iter().copied());
+        self.poly_binds = self.poly_binds.remove_many(binds.iter().copied());
+        self.byref_chain = self.byref_chain.remove_many(binds.iter().copied());
+        self.abstract_reps = retain(&self.abstract_reps, |_, r| !under(&r.scope));
+        let traits: LPooled<Vec<TraitId>> = (&self.trait_defs)
             .into_iter()
-            .filter(|(s, _)| scope_is_under(s, scope))
-            .map(|(s, _)| s.clone())
+            .filter(|(_, d)| under(&d.scope))
+            .map(|(id, _)| *id)
             .collect();
-        for s in &*trait_scopes {
-            if let Some(defs) = self.traits.get(s) {
-                let ids: LPooled<Vec<TraitId>> =
-                    defs.into_iter().map(|(_, id)| *id).collect();
-                removed += ids.len();
-                for id in &*ids {
-                    self.trait_defs.remove_cow(id);
-                    self.impls.remove_cow(id);
-                }
-            }
-            self.traits.remove_cow(s);
-        }
+        self.trait_defs = self.trait_defs.remove_many(traits.iter().copied());
+        self.impls = self.impls.remove_many(traits.iter().copied());
         let impls: LPooled<Vec<Arc<ImplDef>>> = (&self.impls)
             .into_iter()
             .flat_map(|(_, l)| l.iter())
-            .filter(|im| scope_is_under(&im.scope, scope))
+            .filter(|im| under(&im.scope))
             .cloned()
             .collect();
         for im in &*impls {
             self.unregister_impl(im);
-        }
-        let type_scopes: LPooled<Vec<ModPath>> = (&self.typedefs)
-            .into_iter()
-            .filter(|(s, _)| scope_is_under(s, scope))
-            .map(|(s, _)| s.clone())
-            .collect();
-        for s in &*type_scopes {
-            if let Some(defs) = self.typedefs.get(s) {
-                removed += defs.len();
-                let ids: LPooled<Vec<AbstractId>> =
-                    defs.into_iter().map(|(name, _)| AbstractId::of(s, name)).collect();
-                for id in &*ids {
-                    self.abstract_reps.remove_cow(id);
-                }
-            }
-            self.typedefs.remove_cow(s);
-        }
-        self.clear_names_under(scope);
-        let mod_scopes: LPooled<Vec<ModPath>> = (&self.modules)
-            .into_iter()
-            .filter(|s| scope_is_under(s, scope))
-            .cloned()
-            .collect();
-        for s in &*mod_scopes {
-            self.modules.remove_cow(s);
         }
         removed
     }
@@ -1653,35 +1484,24 @@ impl Env {
         pos: SourcePosition,
         ori: Arc<Origin>,
     ) -> &mut Bind {
-        // CR claude for eric: [readability] The `existing` dance always ends in
-        // a fresh id, so it is `binds.insert_cow(name, BindId::new())`; the
-        // by_id `get_or_insert_cow` can never find the fresh id, and the final
-        // `get_mut_cow(id).unwrap()` repeats the lookup just made.
-        let binds = self.binds.get_or_default_cow(scope.clone());
-        let mut existing = true;
-        let id = binds.get_or_insert_cow(CompactString::from(name), || {
-            existing = false;
-            BindId::new()
-        });
-        if existing {
-            *id = BindId::new();
-        }
-        let bind = self.by_id.get_or_insert_cow(*id, || Bind {
+        let id = BindId::new();
+        self.binds
+            .get_or_default_cow(scope.clone())
+            .insert_cow(CompactString::from(name), id);
+        let bind = Bind {
             export: true,
-            id: *id,
+            id,
             scope: scope.clone(),
             doc: None,
             name: CompactString::from(name),
             typ,
             pos,
             ori,
-            pattern: None,
             facet: None,
-        });
-        if let Some(ide) = &self.ide {
-            ide.lock().binds.push(bind.clone());
-        }
-        self.by_id.get_mut_cow(id).unwrap()
+        };
+        self.with_ide(|ide| ide.binds.push(bind.clone()));
+        self.by_id.insert_cow(id, bind);
+        self.by_id.get_mut_cow(&id).expect("just inserted")
     }
 
     /// Give the binding `id` the type `typ`. Every reference compiled
@@ -1690,9 +1510,8 @@ impl Env {
     pub fn retype(&mut self, id: BindId, typ: Type) {
         if let Some(b) = self.by_id.get_mut_cow(&id) {
             b.typ = typ;
-            if let Some(ide) = &self.ide {
-                ide.lock().binds.push(b.clone());
-            }
+            let b = b.clone();
+            self.with_ide(|ide| ide.binds.push(b));
         }
     }
 
@@ -1700,43 +1519,47 @@ impl Env {
     /// scrutinee whose fires come from `inputs`.
     pub fn mark_pattern_bind(&mut self, id: BindId, inputs: Arc<[BindId]>) {
         if let Some(b) = self.by_id.get_mut_cow(&id) {
-            b.pattern = Some(inputs);
+            b.facet = Some(Facet::Pattern(inputs));
         }
     }
 
     pub fn is_pattern_bind(&self, id: BindId) -> bool {
-        self.by_id.get(&id).is_some_and(|b| b.pattern.is_some())
+        self.pattern_inputs(id).is_some()
     }
 
     /// The inputs a pattern bind is a facet of: those whose fires reach
     /// its select's scrutinee, closed over enclosing pattern binds.
     /// `None` for any other bind.
     pub fn pattern_inputs(&self, id: BindId) -> Option<&[BindId]> {
-        self.by_id.get(&id).and_then(|b| b.pattern.as_deref())
+        match self.by_id.get(&id).and_then(|b| b.facet.as_ref()) {
+            Some(Facet::Pattern(inputs)) => Some(inputs),
+            Some(Facet::Let(_)) | None => None,
+        }
     }
 
     /// Record that `id` is one of a destructuring `let`'s siblings,
     /// represented by `rep` for wake catch-up.
     pub fn mark_facet(&mut self, id: BindId, rep: BindId) {
         if let Some(b) = self.by_id.get_mut_cow(&id) {
-            b.facet = Some(rep);
+            b.facet = Some(Facet::Let(rep));
         }
     }
 
     /// The bind wake catch-up tracks `id` under: its `let`
     /// destructuring group's representative, else itself.
     pub fn facet_of(&self, id: BindId) -> BindId {
-        self.by_id.get(&id).and_then(|b| b.facet).unwrap_or(id)
+        match self.by_id.get(&id).and_then(|b| b.facet.as_ref()) {
+            Some(Facet::Let(rep)) => *rep,
+            Some(Facet::Pattern(_)) | None => id,
+        }
     }
 
     pub fn unbind_variable(&mut self, id: BindId) {
         if let Some(b) = self.by_id.remove_cow(&id) {
             if let Some(binds) = self.binds.get_mut_cow(&b.scope) {
-                // CR claude for eric: [risk] Removes the name even when it now
-                // maps to a newer bind that shadowed `id` in the same scope, so
-                // deleting the older node unbinds the live name. Remove only if
-                // `binds.get(&b.name) == Some(&id)`.
-                binds.remove_cow(&b.name);
+                if binds.get(&b.name) == Some(&id) {
+                    binds.remove_cow(&b.name);
+                }
                 if binds.len() == 0 {
                     self.binds.remove_cow(&b.scope);
                 }
@@ -1810,6 +1633,83 @@ mod test {
         assert!(!env.abstract_minted(id));
         register(&mut env, &TypeDefBody::Abstract(None));
         assert!(!env.abstract_minted(id));
+    }
+
+    fn at(env: &mut Env, scope: &ModPath, name: &str) -> BindId {
+        let ori = Arc::new(Origin::default());
+        env.bind_variable(scope, name, Type::Any, SourcePosition::default(), ori).id
+    }
+
+    /// A blacklisted module takes its submodules with it.
+    #[test]
+    fn blacklist_removes_the_subtree() {
+        let mut env = Env::default();
+        let (sys, net) = (ModPath::from(["sys"]), ModPath::from(["sys", "net"]));
+        env.modules.insert_cow(sys.clone());
+        env.modules.insert_cow(net.clone());
+        at(&mut env, &net, "publish");
+        let t = env.apply_sandbox(&Sandbox::Blacklist(Arc::from_iter([sys]))).unwrap();
+        assert!(!t.modules.contains(&net));
+        assert!(t.binds.get(&net).is_none());
+        assert!(env.modules.contains(&net), "the original is untouched");
+    }
+
+    /// Everything bound under a package goes, including a shadowed
+    /// binding and one the lexical maps no longer name.
+    #[test]
+    fn unbind_scope_drops_what_the_lexical_maps_lost() {
+        let mut env = Env::default();
+        let pkg = ModPath::from(["pkg"]);
+        let shadowed = at(&mut env, &pkg, "x");
+        let live = at(&mut env, &pkg, "x");
+        let body = ModPath::from(["pkg", "#fn7"]);
+        let local = at(&mut env, &body, "y");
+        env.binds.remove_cow(&body);
+        env.poly_binds.insert_cow(local);
+        let other = at(&mut env, &ModPath::from(["other"]), "z");
+        env.unbind_scope_subtree(&pkg);
+        for id in [shadowed, live, local] {
+            assert!(env.by_id.get(&id).is_none(), "{id:?}");
+        }
+        assert!(!env.poly_binds.contains(&local));
+        assert!(env.by_id.get(&other).is_some());
+    }
+
+    /// Deleting a shadowed binding leaves the name to the one that
+    /// shadowed it.
+    #[test]
+    fn unbinding_a_shadowed_binding_keeps_the_name() {
+        let mut env = Env::default();
+        let m = ModPath::from(["m"]);
+        let old = at(&mut env, &m, "x");
+        let new = at(&mut env, &m, "x");
+        env.unbind_variable(old);
+        assert_eq!(env.binds.get(&m).and_then(|b| b.get("x")), Some(&new));
+    }
+
+    /// Module completion offers an import only when it names a module.
+    #[test]
+    fn module_completion_skips_value_imports() {
+        let mut env = Env::default();
+        let (m, sub) = (ModPath::from(["m"]), ModPath::from(["m", "sub"]));
+        env.modules.insert_cow(m.clone());
+        env.modules.insert_cow(sub);
+        at(&mut env, &m, "val");
+        let import = |name: &str| ImportEntry {
+            scope: m.clone(),
+            name: name.into(),
+            keyword_anchored: false,
+            pos: SourcePosition::default(),
+            ori: Arc::new(Origin::default()),
+        };
+        let root = ModPath::root();
+        env.import(&root, "mval", import("val"), false).unwrap();
+        env.import(&root, "msub", import("sub"), false).unwrap();
+        let found = env.lookup_matching_modules(&root, &ModPath::from(["m"]));
+        let found: Vec<String> = found.iter().map(|m| m.to_string()).collect();
+        assert!(found.contains(&"msub".to_string()), "{found:?}");
+        assert!(!found.contains(&"mval".to_string()), "{found:?}");
+        assert!(found.contains(&"m".to_string()), "{found:?}");
     }
 
     #[test]

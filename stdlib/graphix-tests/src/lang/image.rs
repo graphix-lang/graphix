@@ -15,7 +15,8 @@ use graphix_compiler::{
     typ::Type,
 };
 use graphix_package_core::testing::{
-    TestCtx, init_session_with_setup, init_with_registration, init_with_session,
+    TestCtx, init_lsp_with_registration, init_session_with_setup, init_with_registration,
+    init_with_session,
 };
 use graphix_rt::{GXEvent, RegistrationImage};
 use netidx::publisher::Value;
@@ -48,7 +49,7 @@ async fn environment_round_trips() -> Result<()> {
     assert!(counts.bind.len() > 100 && counts.tvar.len() > 100, "{counts:?}");
     let offsets = enc.finish(&mut buf);
     let image: Bytes = buf.freeze();
-    let mut dec = ImageDecoder::new(counts);
+    let mut dec = ImageDecoder::new(counts)?;
     dec.set_image(image.clone());
     dec.set_offsets(offsets);
     let restored = DecodeImage::with(&mut dec, || {
@@ -80,11 +81,14 @@ async fn environment_round_trips() -> Result<()> {
             assert_eq!(b.export, r.export);
             assert_eq!(b.name, r.name);
             assert_eq!(b.scope, r.scope);
-            assert_eq!(b.pattern, r.pattern);
+
             assert_eq!(b.doc, r.doc);
             assert_eq!(b.pos, r.pos);
             assert_eq!(b.ori.text, r.ori.text);
-            assert_eq!(b.facet.is_some(), r.facet.is_some());
+            let kind = |b: &graphix_compiler::env::Bind| {
+                b.facet.as_ref().map(std::mem::discriminant)
+            };
+            assert_eq!(kind(b), kind(r));
             assert_eq!(show(&b.typ), show(&r.typ), "{scope}::{name}");
             checked += 1;
         }
@@ -445,5 +449,120 @@ async fn program_package_root_is_the_script() -> Result<()> {
     let values = first_values(&mut rx).await;
     assert_eq!(values.last(), Some(&Value::I64(42)), "{values:?}");
     ctx.shutdown().await;
+    Ok(())
+}
+
+/// A registration image that cannot be read (truncated, or a trailer
+/// claiming more objects than any memory holds) fails the read, and the
+/// runtime compiles cold as if there were no image.
+#[tokio::test]
+async fn a_bad_registration_image_runs_cold() -> Result<()> {
+    use bytes::{Buf, BufMut, BytesMut};
+    use graphix_compiler::image::IdCounts;
+    let (tx, _rx) = mpsc::channel(10);
+    let (image_tx, image_rx) = oneshot::channel();
+    let cold =
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+            .await?;
+    let image = image_rx.await??;
+    cold.shutdown().await;
+    // the trailer's first count, the instance table's length, made huge
+    let table_at = {
+        let mut b = &image[5..];
+        IdCounts::decode(&mut b)?;
+        String::decode(&mut b)?;
+        b.advance(8);
+        b.get_u64() as usize
+    };
+    let mut huge = BytesMut::from(&image[..table_at]);
+    netidx_core::pack::encode_varint(1 << 62, &mut huge);
+    huge.put_slice(&image[table_at + 1..]);
+    for bad in [image.slice(..image.len() / 2), huge.freeze()] {
+        let (tx, mut rx) = mpsc::channel(10);
+        let warm =
+            init_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(bad))
+                .await?;
+        let v = eval_on(&warm, &mut rx, "{ let xs = [1, 2, 3]; array::len(xs) }").await?;
+        assert_eq!(v, Value::I64(3));
+        warm.shutdown().await;
+    }
+    Ok(())
+}
+
+/// A restored module with an interface is scheduled when its interface
+/// bindings are written, as the one compiled was.
+#[tokio::test]
+async fn a_restored_module_hears_its_interface() -> Result<()> {
+    let files = || {
+        vec![VfsResolver::new(ahash::AHashMap::from_iter([
+            (
+                netidx_core::path::Path::from("/m.gxi"),
+                VfsEntry::from(literal!("val x: i64; val y: i64")),
+            ),
+            (
+                netidx_core::path::Path::from("/m.gx"),
+                VfsEntry::from(literal!("let x = 0; let y = x + 1")),
+            ),
+        ]))]
+    };
+    let program = literal!(
+        "mod m; let n = 0; select n { k if k < 3 => n <- k + 1, _ => never() }; \
+         m::x <- n ~ n * 10; m::y"
+    );
+    let (tx, mut cold_rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let (prog_tx, prog_rx) = oneshot::channel();
+    let cold = init_session_with_setup(
+        tx,
+        TEST_REGISTER,
+        files(),
+        CFlag::FusionDisabled.into(),
+        RegistrationImage::Save(reg_tx),
+        Some(Source::Internal(program)),
+        Some(prog_tx),
+        None,
+        |_| {},
+    )
+    .await?;
+    let image = prog_rx.await??;
+    let cold_values = first_values(&mut cold_rx).await;
+    assert_eq!(cold_values.last(), Some(&Value::I64(31)), "{cold_values:?}");
+    cold.shutdown().await;
+    let (tx, mut warm_rx) = mpsc::channel(10);
+    let warm = init_session_with_setup(
+        tx,
+        TEST_REGISTER,
+        files(),
+        CFlag::FusionDisabled.into(),
+        RegistrationImage::Load(image),
+        None,
+        None,
+        None,
+        |_| {},
+    )
+    .await?;
+    warm.rt.program().await?.expect("the program restored");
+    assert_eq!(cold_values, first_values(&mut warm_rx).await);
+    warm.shutdown().await;
+    Ok(())
+}
+
+/// `lsp_mode` is the runtime's configuration: a restore keeps the
+/// runtime's own, not the writer's.
+#[tokio::test]
+async fn a_restored_env_keeps_the_runtimes_lsp_mode() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(10);
+    let (image_tx, image_rx) = oneshot::channel();
+    let cold =
+        init_with_registration(tx, TEST_REGISTER, RegistrationImage::Save(image_tx))
+            .await?;
+    let image = image_rx.await??;
+    cold.shutdown().await;
+    let (tx, _rx) = mpsc::channel(10);
+    let warm =
+        init_lsp_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image))
+            .await?;
+    assert!(warm.rt.get_env().await?.lsp_mode);
+    warm.shutdown().await;
     Ok(())
 }

@@ -282,9 +282,13 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// The LambdaDef `Value` this binding holds when its value node is
     /// a lambda; `None` otherwise.
     pub(crate) fn lambda_def_value(&self) -> Option<Value> {
-        match self.node.view() {
-            NodeView::Lambda(l) => Some(l.def_value().clone()),
-            _ => None,
+        let mut view = self.node.view();
+        loop {
+            view = match view {
+                NodeView::ExplicitParens(p) => p.n.view(),
+                NodeView::Lambda(l) => return Some(l.def_value().clone()),
+                _ => return None,
+            }
         }
     }
 

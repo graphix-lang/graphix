@@ -46,28 +46,37 @@ use triomphe::Arc;
 
 pub(crate) const REF: u8 = 0;
 pub(crate) const DEF: u8 = 1;
+/// A dynamic scope's tag for the root, beside [`REF`] and [`DEF`].
+const ROOT: u8 = 2;
 
-// CR claude for eric: [structure] IdCounts, IdSpans (a field-for-field copy of
-// this), Relocations and Bases are four hand-written structs over the same four
-// domains, each with its own per-field plumbing (each(), install/restore, the
-// Drop impls, ImageDecoder::new). One `PerDomain<T>` with map/zip would make a
-// new domain one line; the instance domain was missed (see Relocations).
-/// The span of each relocated id domain an image holds; the decoder
-/// reserves a block of each.
+/// One value per relocated id domain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct IdCounts {
-    pub bind: IdSpan,
-    pub lambda: IdSpan,
-    pub expr: IdSpan,
-    pub tvar: IdSpan,
+pub struct PerDomain<T> {
+    pub bind: T,
+    pub lambda: T,
+    pub instance: T,
+    pub expr: T,
+    pub tvar: T,
 }
 
-impl IdCounts {
-    fn each(&self) -> [IdSpan; 4] {
-        let IdCounts { bind, lambda, expr, tvar } = *self;
-        [bind, lambda, expr, tvar]
+impl<T: Copy> PerDomain<T> {
+    fn each(&self) -> [T; 5] {
+        let PerDomain { bind, lambda, instance, expr, tvar } = *self;
+        [bind, lambda, instance, expr, tvar]
+    }
+
+    fn from_each([bind, lambda, instance, expr, tvar]: [T; 5]) -> Self {
+        PerDomain { bind, lambda, instance, expr, tvar }
+    }
+
+    fn map<U: Copy>(&self, f: impl FnMut(T) -> U) -> PerDomain<U> {
+        PerDomain::from_each(self.each().map(f))
     }
 }
+
+/// The span of each relocated id domain an image holds; the decoder
+/// reserves a block of each.
+pub type IdCounts = PerDomain<IdSpan>;
 
 impl Pack for IdCounts {
     fn encoded_len(&self) -> usize {
@@ -83,27 +92,33 @@ impl Pack for IdCounts {
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let mut each = [IdSpan::default(); 4];
+        let mut each = [IdSpan::default(); 5];
         for s in each.iter_mut() {
             *s = IdSpan { floor: decode_varint(buf)?, extent: decode_varint(buf)? };
         }
-        let [bind, lambda, expr, tvar] = each;
-        Ok(IdCounts { bind, lambda, expr, tvar })
+        Ok(IdCounts::from_each(each))
     }
 }
 
-/// The span of each relocated id domain, kept between sessions so
-/// every session over one encoder counts toward one reservation.
-#[derive(Default)]
-struct IdSpans {
-    bind: IdSpan,
-    lambda: IdSpan,
-    expr: IdSpan,
-    tvar: IdSpan,
+/// Each domain's relocation on this thread.
+type Relocations = PerDomain<Option<IdRelocation>>;
+
+impl Relocations {
+    /// Install these relocations and return the ones they replace.
+    fn install(self) -> Self {
+        PerDomain {
+            bind: BindId::set_relocation(self.bind),
+            lambda: LambdaId::set_relocation(self.lambda),
+            instance: LambdaInstanceId::set_relocation(self.instance),
+            expr: ExprId::set_relocation(self.expr),
+            tvar: TVarId::set_relocation(self.tvar),
+        }
+    }
 }
 
 /// The image under construction, and the buffer an object's definition
 /// is written into before it joins the definitions area.
+#[derive(Default)]
 pub struct ImageBuf(BytesMut);
 
 impl ImageBuf {
@@ -126,10 +141,10 @@ impl ImageBuf {
     }
 }
 
-// CR claude for eric: [risk] the closure must be 'static, so callsite.rs:1986
-// transmutes a borrowed `&dyn Apply` to 'static and relies on the heap being
-// written before the session ends; nothing checks that. A lifetime on the
-// encoder (`Deferred<'a>`) would let the borrow checker hold the contract.
+// XCR claude for eric: a lifetime on the encoder cannot reach the node borrow:
+// a call site finds the encoder through the thread-local, which erases it. The
+// session now drops what it deferred when it ends (`EncodeImage::drop`), so a
+// closure lives no longer than the borrows the session contract requires.
 /// An instance body the eager part of the image skipped: written
 /// after it, in the heap, at an offset the instance table records.
 type Deferred = Box<dyn FnOnce(&mut ImageBuf) -> Result<(), PackError>>;
@@ -152,18 +167,15 @@ unsafe impl BufMut for ImageBuf {
     }
 }
 
+/// An address-keyed object's table entry holds the object (`P`), so
+/// its address names it alone for the session.
+pub(crate) type Table<K, P = ()> = AHashMap<K, Slot<P>>;
+
+#[derive(Default)]
 pub struct ImageEncoder {
-    // CR claude for eric: [structure] seven pins (map nodes, handlers, refcells,
-    // origins, tvars, cells, and KeyedNode in type_keys) do one job: keep an
-    // address-keyed object alive for the session. All but the map nodes are
-    // pushed only in encode closures, never in slot_len, so an object a length
-    // query meets first is keyed by an address nothing holds. Pin in the table
-    // entry at first sight, in both passes.
-    /// Persistent map nodes by identity; `pinned_map_nodes` keeps every
-    /// one seen alive so an identity names one node for the session.
-    pub(crate) map_nodes: AHashMap<usize, Slot>,
-    pub(crate) pinned_map_nodes: Vec<Box<dyn std::any::Any + Send + Sync>>,
-    ids: IdSpans,
+    /// Persistent map nodes by identity.
+    pub(crate) map_nodes: Table<usize, Box<dyn std::any::Any + Send + Sync>>,
+    ids: IdCounts,
     /// The next ordinal an object meets at its first sight.
     next_ordinal: u32,
     /// Every definition written, each where its offset says: appended
@@ -175,27 +187,19 @@ pub struct ImageEncoder {
     pub(crate) defs_len: usize,
     /// Buffers for definitions being written, one per nesting level.
     scratch: Vec<ImageBuf>,
-    handlers: AHashMap<usize, Slot>,
-    pinned_handlers: Vec<ErrorHandler>,
-    paths: AHashMap<ArcStr, Slot>,
-    refcells: AHashMap<usize, Slot>,
-    pinned_refcells: Vec<RefCell>,
-    origins: AHashMap<usize, Slot>,
-    pinned_origins: Vec<Arc<Origin>>,
-    tvars: AHashMap<usize, Slot>,
-    pinned_tvars: Vec<TVar>,
-    cells: AHashMap<usize, Slot>,
-    pinned_cells: Vec<Arc<RwLock<TCell>>>,
-    /// Expressions and function types by address. The session cannot
-    /// pin them (their codecs see a borrow, not the `Arc`), so everything
-    /// a session encodes must be borrowed from the context and the root
-    /// nodes for the whole session; a temporary could hand its address
-    /// to a later object.
-    pub(crate) exprs: AHashMap<usize, Slot>,
+    handlers: Table<usize, ErrorHandler>,
+    paths: Table<ArcStr>,
+    refcells: Table<usize, RefCell>,
+    origins: Table<usize, Arc<Origin>>,
+    tvars: Table<usize, TVar>,
+    cells: Table<usize, Arc<RwLock<TCell>>>,
+    /// Expressions by the address of the session's clone
+    /// ([`expr_key`]).
+    pub(crate) exprs: Table<usize>,
     /// Kernel signatures, slot-chain leaves and body records by `Arc`.
-    pub(crate) kernel_sigs: AHashMap<usize, Slot>,
-    pub(crate) site_leaves: AHashMap<usize, Slot>,
-    pub(crate) records: AHashMap<usize, Slot>,
+    pub(crate) kernel_sigs: Table<usize, std::sync::Arc<KernelSig>>,
+    pub(crate) site_leaves: Table<usize, std::sync::Arc<SiteLeaf>>,
+    pub(crate) records: Table<usize, std::sync::Arc<BodyRecord>>,
     /// The distinct trees seen with each id, as the session's own
     /// clones (a clone shares its children): an expression is keyed by
     /// the address of the clone it matches, so a caller's address is
@@ -223,63 +227,15 @@ pub struct ImageEncoder {
     pub(crate) instance_refs: AHashMap<LambdaInstanceId, (Vec<BindId>, Vec<BindId>)>,
 }
 
-impl Default for ImageEncoder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ImageEncoder {
-    // CR claude for eric: [style] a field-by-field new() plus a Default that calls
-    // it; #[derive(Default)] on ImageEncoder (with ImageBuf and IdSpans) says the
-    // same in one line. ImageDecoder::new repeats the pattern for its tables.
     pub fn new() -> Self {
-        ImageEncoder {
-            map_nodes: AHashMap::new(),
-            pinned_map_nodes: Vec::new(),
-            ids: IdSpans::default(),
-            next_ordinal: 0,
-            defs: ImageBuf::with_capacity(0),
-            offsets: Vec::new(),
-            defs_len: 0,
-            scratch: Vec::new(),
-            handlers: AHashMap::new(),
-            pinned_handlers: Vec::new(),
-            paths: AHashMap::new(),
-            refcells: AHashMap::new(),
-            pinned_refcells: Vec::new(),
-            origins: AHashMap::new(),
-            pinned_origins: Vec::new(),
-            tvars: AHashMap::new(),
-            pinned_tvars: Vec::new(),
-            cells: AHashMap::new(),
-            pinned_cells: Vec::new(),
-            exprs: AHashMap::new(),
-            kernel_sigs: AHashMap::new(),
-            site_leaves: AHashMap::new(),
-            records: AHashMap::new(),
-            exprs_by_id: AHashMap::new(),
-            types: AHashMap::new(),
-            fntypes: AHashMap::new(),
-            type_keys: AHashMap::new(),
-            key_scratch: Vec::new(),
-            defer_instances: false,
-            deferred: Vec::new(),
-            deferred_len: 0,
-            instances: AHashMap::new(),
-            instance_refs: AHashMap::new(),
-        }
+        Self::default()
     }
 
     /// The span of the ids written so far, per domain. The image
     /// writer stores these ahead of the body; read between sessions.
     pub fn counts(&self) -> IdCounts {
-        IdCounts {
-            bind: self.ids.bind,
-            lambda: self.ids.lambda,
-            expr: self.ids.expr,
-            tvar: self.ids.tvar,
-        }
+        self.ids
     }
 
     /// Append the definitions to `buf`, the image, and return each
@@ -307,11 +263,6 @@ impl ImageEncoder {
     }
 }
 
-// CR claude for eric: [readability] the first three doc lines below describe
-// ImageDecoder (line ~390, which has no doc), not ObjectCounts.
-/// The objects an image session has built, each by the offset of its
-/// definition in the image, and the image itself, so a reference to
-/// an object not built yet decodes it from there.
 /// How many objects of each kind the eager part of an image defines,
 /// so a restore sizes its tables once.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -377,21 +328,20 @@ impl Pack for ObjectCounts {
     }
 }
 
-/// What each domain's written ids are offset by: the reserved block's
-/// base less the image's floor, so `base + wire` lands in the block.
-#[derive(Clone, Copy)]
-struct Bases {
-    bind: u64,
-    lambda: u64,
-    expr: u64,
-    tvar: u64,
-}
-
+// XCR claude for eric: the encoder derives Default; the decoder keeps its
+// explicit `new`, since a defaulted decoder would decode ids unrelocated onto
+// ids this process minted.
+/// The objects an image session has built, each by the offset of its
+/// definition in the image, and the image itself, so a reference to
+/// an object not built yet decodes it from there.
 pub struct ImageDecoder {
     pub(crate) maps: shared_map::DecodeTable,
     image: Bytes,
     /// Every definition's offset by ordinal, from the trailer.
     offsets: Vec<u64>,
+    /// How many decodes of each definition are running: a valid image
+    /// re-enters a definition at most once (see [`decode_at`]).
+    active: AHashMap<u64, u8>,
     handlers: AHashMap<u64, ErrorHandler>,
     paths: AHashMap<u64, ModPath>,
     refcells: AHashMap<u64, RefCell>,
@@ -407,22 +357,27 @@ pub struct ImageDecoder {
     /// The builtins' fast fns by name, for a kernel constant's recipe.
     fastcalls: AHashMap<&'static str, FastCall>,
     instances: AHashMap<LambdaInstanceId, u64>,
-    bases: Bases,
+    relocations: Relocations,
 }
 
 impl ImageDecoder {
-    // CR claude for eric: [bug] the spans come from the image unchecked: a huge
-    // extent reserves (and can wrap) the process-wide counter every ExecCtx mints
-    // from, and a wire id outside [floor, extent) relocates outside the reserved
-    // block onto ids already minted. A corrupt image aliases live ids silently.
-    // Bound the spans, and carry the span in IdRelocation::Decode (ids.rs) so an
-    // out-of-span id is refused.
-    /// Reserves a block of each id domain for the image's ids.
-    pub fn new(counts: IdCounts) -> Self {
-        ImageDecoder {
+    /// Reserves a block of each id domain for the image's ids; refuses
+    /// a span no block can hold.
+    pub fn new(counts: IdCounts) -> Result<Self, PackError> {
+        let reserve =
+            |r: Option<IdRelocation>| r.ok_or(PackError::InvalidFormat).map(Some);
+        let relocations = PerDomain {
+            bind: reserve(BindId::reserve(counts.bind))?,
+            lambda: reserve(LambdaId::reserve(counts.lambda))?,
+            instance: reserve(LambdaInstanceId::reserve(counts.instance))?,
+            expr: reserve(ExprId::reserve(counts.expr))?,
+            tvar: reserve(TVarId::reserve(counts.tvar))?,
+        };
+        Ok(ImageDecoder {
             maps: shared_map::DecodeTable::default(),
             image: Bytes::new(),
             offsets: Vec::new(),
+            active: AHashMap::new(),
             handlers: AHashMap::new(),
             paths: AHashMap::new(),
             refcells: AHashMap::new(),
@@ -437,21 +392,8 @@ impl ImageDecoder {
             records: AHashMap::new(),
             fastcalls: AHashMap::new(),
             instances: AHashMap::new(),
-            bases: Bases {
-                bind: BindId::reserve(counts.bind.len())
-                    .inner()
-                    .wrapping_sub(counts.bind.floor),
-                lambda: LambdaId::reserve(counts.lambda.len())
-                    .inner()
-                    .wrapping_sub(counts.lambda.floor),
-                expr: ExprId::reserve(counts.expr.len())
-                    .inner()
-                    .wrapping_sub(counts.expr.floor),
-                tvar: TVarId::reserve(counts.tvar.len())
-                    .inner()
-                    .wrapping_sub(counts.tvar.floor),
-            },
-        }
+            relocations,
+        })
     }
 
     /// The image every offset in the session refers into. Set before
@@ -480,8 +422,10 @@ impl ImageDecoder {
         self.fastcalls.get(name).copied()
     }
 
-    /// Size the object tables for what the eager part defines.
+    /// Size the object tables for what the eager part defines; no
+    /// count can exceed the image's bytes, one per definition at least.
     pub fn reserve(&mut self, counts: ObjectCounts) {
+        let n = |c: u64| c.min(self.image.len() as u64) as usize;
         let ObjectCounts {
             exprs,
             types,
@@ -493,15 +437,18 @@ impl ImageDecoder {
             origins,
             handlers,
         } = counts;
-        self.exprs.reserve(exprs as usize);
-        self.types.reserve(types as usize);
-        self.fntypes.reserve(fntypes as usize);
-        self.paths.reserve(paths as usize);
-        self.tvars.reserve(tvars as usize);
-        self.cells.reserve(cells as usize);
-        self.refcells.reserve(refcells as usize);
-        self.origins.reserve(origins as usize);
-        self.handlers.reserve(handlers as usize);
+        let (exprs, types, fntypes, paths) = (n(exprs), n(types), n(fntypes), n(paths));
+        let (tvars, cells, refcells) = (n(tvars), n(cells), n(refcells));
+        let (origins, handlers) = (n(origins), n(handlers));
+        self.exprs.reserve(exprs);
+        self.types.reserve(types);
+        self.fntypes.reserve(fntypes);
+        self.paths.reserve(paths);
+        self.tvars.reserve(tvars);
+        self.cells.reserve(cells);
+        self.refcells.reserve(refcells);
+        self.origins.reserve(origins);
+        self.handlers.reserve(handlers);
     }
 
     /// Where the instance's body starts in the image, when it was
@@ -514,46 +461,6 @@ impl ImageDecoder {
 thread_local! {
     static ENCODER: Cell<Option<NonNull<ImageEncoder>>> = const { Cell::new(None) };
     static DECODER: Cell<Option<NonNull<ImageDecoder>>> = const { Cell::new(None) };
-}
-
-// CR claude for eric: [bug] LambdaInstanceId is an image_id! but no domain here
-// relocates or reserves it: restored instances keep the writer's raw ids while
-// this process mints from its own counter. A warm registration restore followed
-// by a program compile mints colliding ids, and the program image write keys
-// `instances`/`instance_refs` by id, so two sites get one heap body and one refs
-// summary (needs a call at a package root's top level; the stdlib has none).
-// Add the domain; CLAUDE.md and the design say every image_id! is relocated.
-struct Relocations {
-    bind: Option<IdRelocation>,
-    lambda: Option<IdRelocation>,
-    expr: Option<IdRelocation>,
-    tvar: Option<IdRelocation>,
-}
-
-impl Relocations {
-    fn install(
-        bind: Option<IdRelocation>,
-        lambda: Option<IdRelocation>,
-        expr: Option<IdRelocation>,
-        tvar: Option<IdRelocation>,
-    ) -> Self {
-        Relocations {
-            bind: BindId::set_relocation(bind),
-            lambda: LambdaId::set_relocation(lambda),
-            expr: ExprId::set_relocation(expr),
-            tvar: TVarId::set_relocation(tvar),
-        }
-    }
-
-    /// Restore the previous relocations, returning the ones removed.
-    fn restore(self) -> Self {
-        Relocations {
-            bind: BindId::set_relocation(self.bind),
-            lambda: LambdaId::set_relocation(self.lambda),
-            expr: ExprId::set_relocation(self.expr),
-            tvar: TVarId::set_relocation(self.tvar),
-        }
-    }
 }
 
 fn span(r: Option<IdRelocation>) -> IdSpan {
@@ -581,36 +488,22 @@ impl<'a> EncodeImage<'a> {
     }
 
     fn new(encoder: &'a mut ImageEncoder) -> Self {
-        let ids = std::mem::take(&mut encoder.ids);
-        let enc = |span: IdSpan| Some(IdRelocation::Encode(span));
+        let ids = encoder.ids.map(|s| Some(IdRelocation::Encode(s)));
         let encoder = NonNull::from(encoder);
         let prev = ENCODER.replace(Some(encoder));
-        let prev_ids = Relocations::install(
-            enc(ids.bind),
-            enc(ids.lambda),
-            enc(ids.expr),
-            enc(ids.tvar),
-        );
+        let prev_ids = ids.install();
         EncodeImage { encoder, prev, prev_ids, _encoder: PhantomData }
     }
 }
 
 impl Drop for EncodeImage<'_> {
     fn drop(&mut self) {
-        let prev = std::mem::replace(
-            &mut self.prev_ids,
-            Relocations { bind: None, lambda: None, expr: None, tvar: None },
-        );
-        let ours = prev.restore();
-        let ids = IdSpans {
-            bind: span(ours.bind),
-            lambda: span(ours.lambda),
-            expr: span(ours.expr),
-            tvar: span(ours.tvar),
-        };
-        // The guard holds the `&mut` this pointer came from.
-        unsafe { (*self.encoder.as_ptr()).ids = ids };
+        let ours = self.prev_ids.install();
         ENCODER.set(self.prev);
+        // The guard holds the `&mut` this pointer came from.
+        let encoder = unsafe { &mut *self.encoder.as_ptr() };
+        encoder.ids = ours.map(span);
+        encoder.deferred.clear();
     }
 }
 
@@ -630,40 +523,38 @@ impl<'a> DecodeImage<'a> {
     }
 
     fn new(decoder: &'a mut ImageDecoder) -> Self {
-        let b = decoder.bases;
-        let at = |base: u64| Some(IdRelocation::Decode { base });
+        let relocations = decoder.relocations;
         let prev = DECODER.replace(Some(NonNull::from(decoder)));
-        let prev_ids =
-            Relocations::install(at(b.bind), at(b.lambda), at(b.expr), at(b.tvar));
+        let prev_ids = relocations.install();
         DecodeImage { prev, prev_ids, _decoder: PhantomData }
     }
 }
 
 impl Drop for DecodeImage<'_> {
     fn drop(&mut self) {
-        let prev = std::mem::replace(
-            &mut self.prev_ids,
-            Relocations { bind: None, lambda: None, expr: None, tvar: None },
-        );
-        prev.restore();
+        self.prev_ids.install();
         DECODER.set(self.prev);
     }
 }
 
-// CR claude for eric: [risk] safe fns that hand out `&mut` from a thread-local
-// pointer: an `encoding`/`decoding` call from inside `f` makes two live `&mut` to
-// one encoder (UB). Nothing nests today, but `f` already runs caller code
-// (shared_key's `keep`, expr_key's clone, slot_len's `owned` and `table`). Take
-// the pointer out of the cell while `f` runs so a nested call panics or sees none.
 /// Run `f` against the installed encoder, or `None` outside a session.
+/// The encoder is out of its slot while `f` runs, so a nested call sees
+/// no session and never a second `&mut`.
 pub(crate) fn encoding<R>(f: impl FnOnce(&mut ImageEncoder) -> R) -> Option<R> {
+    let mut p = ENCODER.take()?;
     // The session guard holds the `&mut` that produced this pointer for
     // as long as it is installed.
-    ENCODER.get().map(|mut p| f(unsafe { p.as_mut() }))
+    let r = f(unsafe { p.as_mut() });
+    ENCODER.set(Some(p));
+    Some(r)
 }
 
+/// [`encoding`] for the installed decoder.
 pub(crate) fn decoding<R>(f: impl FnOnce(&mut ImageDecoder) -> R) -> Option<R> {
-    DECODER.get().map(|mut p| f(unsafe { p.as_mut() }))
+    let mut p = DECODER.take()?;
+    let r = f(unsafe { p.as_mut() });
+    DECODER.set(Some(p));
+    Some(r)
 }
 
 pub(crate) fn is_encoding() -> bool {
@@ -688,7 +579,7 @@ fn path_key(path: &ModPath) -> &str {
 pub(crate) fn path_len(path: &ModPath) -> usize {
     object_len(
         path_key(path),
-        |k| ArcStr::from(k),
+        |k| (ArcStr::from(k), ()),
         |e| &mut e.paths,
         || path.0.encoded_len(),
     )
@@ -700,7 +591,7 @@ pub(crate) fn path_encode(
 ) -> Result<(), PackError> {
     object_encode(
         path_key(path),
-        |k| ArcStr::from(k),
+        |k| (ArcStr::from(k), ()),
         |e| &mut e.paths,
         buf,
         |buf| path.0.encode(buf),
@@ -741,7 +632,7 @@ pub(crate) fn refcell_len(
     let key = Arc::as_ptr(cell) as usize;
     object_len(
         &key,
-        |k| *k,
+        |k| (*k, cell.clone()),
         |e| &mut e.refcells,
         || {
             // The resolved type can reach this cell again; the lock is not
@@ -760,11 +651,10 @@ pub(crate) fn refcell_encode<B: BufMut>(
     let key = Arc::as_ptr(cell) as usize;
     object_encode(
         &key,
-        |k| *k,
+        |k| (*k, cell.clone()),
         |e| &mut e.refcells,
         buf,
         |buf| {
-            encoding(|e| e.pinned_refcells.push(cell.clone()));
             let resolved = cell.lock().clone();
             match resolved {
                 None => buf.put_u8(0),
@@ -844,7 +734,7 @@ fn dynscope_len(scope: &DynScope) -> usize {
             let key = h.identity();
             object_len(
                 &key,
-                |k| *k,
+                |k| (*k, h.clone()),
                 |e| &mut e.handlers,
                 || {
                     let (bind, expr) = h.id();
@@ -877,22 +767,19 @@ pub(crate) fn handler_decode(buf: &mut impl Buf) -> Result<ErrorHandler, PackErr
 
 fn dynscope_encode(scope: &DynScope, buf: &mut impl BufMut) -> Result<(), PackError> {
     let Some(h) = scope.handler() else {
-        // CR claude for eric: [readability] the root scope's tag is a bare `2`
-        // beside the named REF/DEF (also in dynscope_decode); name it.
-        buf.put_u8(2);
+        buf.put_u8(ROOT);
         return Ok(());
     };
     let key = h.identity();
     object_encode(
         &key,
-        |k| *k,
+        |k| (*k, h.clone()),
         |e| &mut e.handlers,
         buf,
         |buf| {
             if h.generation() != 0 || h.has_nested_errors() {
                 return Err(PackError::Application(registration::NOT_QUIESCENT));
             }
-            encoding(|e| e.pinned_handlers.push(h.clone()));
             let (bind, expr) = h.id();
             bind.encode(buf)?;
             expr.encode(buf)?;
@@ -909,7 +796,7 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
             return Err(PackError::BufferShort);
         }
         match sub.get_u8() {
-            2 => Ok(DynScope::root()),
+            ROOT => Ok(DynScope::root()),
             REF => {
                 let offset = ref_offset(sub)?;
                 match decoding(|d| d.handlers.get(&offset).cloned()).flatten() {
@@ -965,12 +852,34 @@ pub(crate) fn pos_decode(buf: &mut impl Buf) -> Result<SourcePosition, PackError
     Ok(SourcePosition { line, column })
 }
 
-// CR claude for eric: [perf] builds an owned String per origin to measure a file
-// path, and source_encode builds another to write it; lossy too, so a non-UTF-8
-// path decodes to a different path. Write the Cow's bytes (or the OsStr's).
+/// A file path as its bytes, so a path that is not UTF-8 survives.
+#[cfg(unix)]
+fn path_bytes(p: &std::path::Path) -> Result<&[u8], PackError> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(p.as_os_str().as_bytes())
+}
+
+#[cfg(not(unix))]
+fn path_bytes(p: &std::path::Path) -> Result<&[u8], PackError> {
+    p.to_str().map(str::as_bytes).ok_or(PackError::InvalidFormat)
+}
+
+#[cfg(unix)]
+fn path_from_bytes(b: &[u8]) -> Result<PathBuf, PackError> {
+    use std::os::unix::ffi::OsStrExt;
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(b)))
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(b: &[u8]) -> Result<PathBuf, PackError> {
+    std::str::from_utf8(b).map(PathBuf::from).map_err(|_| PackError::InvalidFormat)
+}
+
 fn source_len(s: &Source) -> usize {
     1 + match s {
-        Source::File(p) => p.to_string_lossy().into_owned().encoded_len(),
+        Source::File(p) => {
+            path_bytes(p).map_or(0, |b| varint_len(b.len() as u64) + b.len())
+        }
         Source::Netidx(p) => p.encoded_len(),
         Source::Internal(s) => s.encoded_len(),
         Source::Unspecified => 0,
@@ -980,8 +889,11 @@ fn source_len(s: &Source) -> usize {
 fn source_encode(s: &Source, buf: &mut impl BufMut) -> Result<(), PackError> {
     match s {
         Source::File(p) => {
+            let b = path_bytes(p)?;
             buf.put_u8(0);
-            p.to_string_lossy().into_owned().encode(buf)
+            encode_varint(b.len() as u64, buf);
+            buf.put_slice(b);
+            Ok(())
         }
         Source::Netidx(p) => {
             buf.put_u8(1);
@@ -1003,7 +915,15 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
         return Err(PackError::BufferShort);
     }
     match buf.get_u8() {
-        0 => Ok(Source::File(PathBuf::from(String::decode(buf)?))),
+        0 => {
+            let n = decode_varint(buf)? as usize;
+            if buf.remaining() < n || buf.chunk().len() < n {
+                return Err(PackError::BufferShort);
+            }
+            let p = path_from_bytes(&buf.chunk()[..n])?;
+            buf.advance(n);
+            Ok(Source::File(p))
+        }
         1 => Ok(Source::Netidx(Pack::decode(buf)?)),
         2 => Ok(Source::Internal(Pack::decode(buf)?)),
         3 => Ok(Source::Unspecified),
@@ -1019,7 +939,7 @@ pub(crate) fn origin_len(ori: &Arc<Origin>) -> usize {
     let key = Arc::as_ptr(ori) as usize;
     object_len(
         &key,
-        |k| *k,
+        |k| (*k, ori.clone()),
         |e| &mut e.origins,
         || {
             let parent = match &ori.parent {
@@ -1038,11 +958,10 @@ pub(crate) fn origin_encode(
     let key = Arc::as_ptr(ori) as usize;
     object_encode(
         &key,
-        |k| *k,
+        |k| (*k, ori.clone()),
         |e| &mut e.origins,
         buf,
         |buf| {
-            encoding(|e| e.pinned_origins.push(ori.clone()));
             match &ori.parent {
                 Some(p) => {
                     buf.put_u8(1);
@@ -1098,7 +1017,7 @@ pub(crate) fn tvar_len(tv: &TVar) -> usize {
     let key = tv.wrapper_addr();
     object_len(
         &key,
-        |k| *k,
+        |k| (*k, tv.clone()),
         |e| &mut e.tvars,
         || {
             let (id, frozen, cell) = tv.parts();
@@ -1114,17 +1033,14 @@ fn cell_len(cell: &Arc<RwLock<TCell>>) -> usize {
     let key = Arc::as_ptr(cell) as usize;
     object_len(
         &key,
-        |k| *k,
+        |k| (*k, cell.clone()),
         |e| &mut e.cells,
         || {
-            // CR claude for eric: [perf] `to_vec()` heap-allocates per cell just to
-            // drop the lock (cell_encode too); a SmallVec clone stays inline for the
-            // usual zero or one constraint, and slice_len/slice_encode write it.
             let (typ, constraints, refused) = {
                 let c = cell.read();
-                (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
+                (c.typ.clone(), c.constraints.clone(), c.cycle_refused)
             };
-            typ.encoded_len() + constraints.encoded_len() + refused.encoded_len()
+            typ.encoded_len() + slice_len(&constraints) + refused.encoded_len()
         },
     )
 }
@@ -1176,44 +1092,50 @@ pub(crate) fn position(sub: &[u8]) -> Result<u64, PackError> {
     Ok((at - base) as u64)
 }
 
-// CR claude for eric: [bug] every out-of-line definition recurses through here
-// (about eight frames per expression level) with no stack::ensure_sufficient.
-// probe: `let x = 1 + 1 + ... + 1` (900 terms) under RUST_MIN_STACK=1048576 runs
-// with --no-cache and cold, and the warm (image) run aborts with a stack overflow.
-// CR claude for eric: [bug] a definition whose contents reference its own ordinal
-// recurses here until the stack overflows. probe: point one trailer offset at the
-// bytes `00 <that ordinal>`: the warm run aborts instead of failing the read.
-// Track the offsets being decoded and refuse a second re-entry of one.
 /// Decode the object defined at `offset` with `full`, its whole codec,
-/// which enters it in its table as a side effect.
+/// which enters it in its table as a side effect. A decode that meets
+/// the object it is inside builds it again from here; every such cycle
+/// passes through a kind entered before its contents, so a valid image
+/// re-enters a definition at most once, and a third entry is refused.
 pub(crate) fn decode_at<T>(
     offset: u64,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
 ) -> Result<T, PackError> {
-    let (base, len) = decoding(|d| (d.image.as_ptr(), d.image.len()))
+    let image = decoding(|d| d.image.clone()).ok_or(PackError::InvalidFormat)?;
+    let at = usize::try_from(offset)
+        .ok()
+        .filter(|at| *at < image.len())
         .ok_or(PackError::InvalidFormat)?;
-    let offset = offset as usize;
-    if offset >= len {
-        return Err(PackError::InvalidFormat);
-    }
-    // CR claude for eric: [risk] sound only while nobody calls the pub set_image
-    // mid-session, which nothing prevents. Cloning the `Bytes` (a refcount) and
-    // slicing it removes the unsafe.
-    // The installed decoder holds the image, never replaced mid-session.
-    let mut sub = unsafe { std::slice::from_raw_parts(base.add(offset), len - offset) };
-    full(&mut sub)
+    let entered = decoding(|d| {
+        let n = d.active.entry(offset).or_default();
+        *n += 1;
+        *n <= 2
+    });
+    let r = match entered {
+        Some(true) => crate::stack::ensure_sufficient(|| full(&mut &image[at..])),
+        _ => Err(PackError::InvalidFormat),
+    };
+    decoding(|d| {
+        if let Some(n) = d.active.get_mut(&offset) {
+            *n -= 1;
+            if *n == 0 {
+                d.active.remove(&offset);
+            }
+        }
+    });
+    r
 }
 
 /// An object's place in the session: the ordinal every occurrence
-/// names, assigned at first sight, and whether its definition has been
-/// written.
-#[derive(Clone, Copy)]
-pub(crate) struct Slot {
+/// names, assigned at first sight, whether its definition has been
+/// written, and what keeps the object alive for the session.
+pub(crate) struct Slot<P = ()> {
     ord: u32,
     defined: bool,
+    _pin: P,
 }
 
-pub(crate) type ContentTable = AHashMap<Box<[u8]>, Slot>;
+pub(crate) type ContentTable = Table<Box<[u8]>>;
 
 fn new_ordinal(e: &mut ImageEncoder) -> u32 {
     let ord = e.next_ordinal;
@@ -1222,14 +1144,15 @@ fn new_ordinal(e: &mut ImageEncoder) -> u32 {
     ord
 }
 
-/// What an occurrence of the object costs: a reference, always, so a
-/// length is exact whatever was measured or written before it. At first
-/// sight `contents` measures the definition, which is written
-/// elsewhere. Outside a session, the contents.
-fn slot_len<K, Q>(
+/// The image length of the object at `key`: a reference, always, so a
+/// length is exact whatever was measured or written before it. At the
+/// first sight `owned` builds the table's key and pin, and `contents`
+/// measures the definition, which is written elsewhere. An image
+/// object has no encoding outside a session.
+pub(crate) fn object_len<K, Q, P>(
     key: &Q,
-    owned: impl FnOnce(&Q) -> K,
-    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
+    owned: impl FnOnce(&Q) -> (K, P),
+    table: impl Fn(&mut ImageEncoder) -> &mut Table<K, P>,
     contents: impl FnOnce() -> usize,
 ) -> usize
 where
@@ -1240,13 +1163,14 @@ where
         Some(s) => (s.ord, false),
         None => {
             let ord = new_ordinal(e);
-            table(e).insert(owned(key), Slot { ord, defined: false });
+            let (k, _pin) = owned(key);
+            table(e).insert(k, Slot { ord, defined: false, _pin });
             (ord, true)
         }
     });
-    let Some((ord, first)) = seen else { return contents() };
+    let Some((ord, first)) = seen else { return 0 };
     if first {
-        let len = 1 + contents();
+        let len = 1 + crate::stack::ensure_sufficient(contents);
         encoding(|e| e.defs_len += len);
     }
     1 + varint_len(ord as u64)
@@ -1255,11 +1179,11 @@ where
 /// Write a reference to the object and, the first time, its definition
 /// to the definitions area. The object is defined before its contents
 /// are written, so an occurrence of it inside them is a reference too.
-/// Outside a session, the contents.
-fn slot_encode<K, Q, B: BufMut>(
+/// Outside a session, an error.
+pub(crate) fn object_encode<K, Q, P, B: BufMut>(
     key: &Q,
-    owned: impl FnOnce(&Q) -> K,
-    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
+    owned: impl FnOnce(&Q) -> (K, P),
+    table: impl Fn(&mut ImageEncoder) -> &mut Table<K, P>,
     buf: &mut B,
     contents: impl FnOnce(&mut ImageBuf) -> Result<(), PackError>,
 ) -> Result<(), PackError>
@@ -1271,30 +1195,20 @@ where
         Some(s) => (s.ord, !std::mem::replace(&mut s.defined, true)),
         None => {
             let ord = new_ordinal(e);
-            table(e).insert(owned(key), Slot { ord, defined: true });
+            let (k, _pin) = owned(key);
+            table(e).insert(k, Slot { ord, defined: true, _pin });
             (ord, true)
         }
     });
-    // CR claude for eric: [dead] every caller checks is_encoding() first, so the
-    // out-of-session branches here, in slot_len and in expr_key never run; and
-    // this one writes contents with no tag, which object_decode (session-only)
-    // cannot read. Make no session an error here, or move the callers' check in.
-    let Some((ord, first)) = seen else {
-        let mut whole = ImageBuf::with_capacity(0);
-        contents(&mut whole)?;
-        buf.put_slice(&whole.0);
-        return Ok(());
-    };
+    let (ord, first) = seen.ok_or(PackError::InvalidFormat)?;
     buf.put_u8(REF);
     encode_varint(ord as u64, buf);
     if !first {
         return Ok(());
     }
-    let mut def = encoding(|e| e.scratch.pop())
-        .flatten()
-        .unwrap_or_else(|| ImageBuf::with_capacity(0));
+    let mut def = encoding(|e| e.scratch.pop()).flatten().unwrap_or_default();
     def.put_u8(DEF);
-    let written = contents(&mut def);
+    let written = crate::stack::ensure_sufficient(|| contents(&mut def));
     encoding(|e| {
         if written.is_ok() {
             e.offsets[ord as usize] = Some(e.defs.len() as u64);
@@ -1304,59 +1218,6 @@ where
         e.scratch.push(def);
     });
     written
-}
-
-// CR claude for eric: [structure] object_len/object_encode forward to
-// slot_len/slot_encode unchanged (content_len/encode nearly so); one pair of
-// names is a layer that pays no rent.
-/// The image length of the address-keyed object at `key`: its
-/// `contents` at the first sight, a reference afterwards. `owned`
-/// builds the stored key at the first sight only.
-pub(crate) fn object_len<K, Q>(
-    key: &Q,
-    owned: impl FnOnce(&Q) -> K,
-    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
-    contents: impl FnOnce() -> usize,
-) -> usize
-where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
-    Q: std::hash::Hash + Eq + ?Sized,
-{
-    slot_len(key, owned, table, contents)
-}
-
-/// Write the address-keyed object at `key` once, its offset recorded
-/// by ordinal, and a reference to its ordinal afterwards.
-pub(crate) fn object_encode<K, Q, B: BufMut>(
-    key: &Q,
-    owned: impl FnOnce(&Q) -> K,
-    table: impl Fn(&mut ImageEncoder) -> &mut AHashMap<K, Slot>,
-    buf: &mut B,
-    contents: impl FnOnce(&mut ImageBuf) -> Result<(), PackError>,
-) -> Result<(), PackError>
-where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
-    Q: std::hash::Hash + Eq + ?Sized,
-{
-    slot_encode(key, owned, table, buf, contents)
-}
-
-/// The image length of an object keyed by its canonical bytes.
-fn content_len(
-    key: &[u8],
-    table: impl Fn(&mut ImageEncoder) -> &mut ContentTable,
-    contents: impl FnOnce() -> usize,
-) -> usize {
-    slot_len(key, |k| Box::from(k), table, contents)
-}
-
-fn content_encode<B: BufMut>(
-    key: &[u8],
-    table: impl Fn(&mut ImageEncoder) -> &mut ContentTable,
-    buf: &mut B,
-    contents: impl FnOnce(&mut ImageBuf) -> Result<(), PackError>,
-) -> Result<(), PackError> {
-    slot_encode(key, |k| Box::from(k), table, buf, contents)
 }
 
 /// The definition offset a reference names.
@@ -1429,7 +1290,7 @@ pub(crate) fn shared_key(
         return;
     }
     let start = out.len();
-    walk(out);
+    crate::stack::ensure_sufficient(|| walk(out));
     let key: Box<[u8]> = out[start..].into();
     encoding(|e| {
         e.type_keys.insert(ptr, (keep(), key));
@@ -1447,8 +1308,16 @@ fn with_key<R>(walk: impl FnOnce(&mut Vec<u8>), f: impl FnOnce(&[u8]) -> R) -> R
     r
 }
 
+/// A content table's key is its own bytes; nothing to pin.
+fn content_owned(k: &[u8]) -> (Box<[u8]>, ()) {
+    (Box::from(k), ())
+}
+
 pub(crate) fn type_len(t: &Type, contents: impl FnOnce() -> usize) -> usize {
-    with_key(|key| t.content_key(key), |key| content_len(key, |e| &mut e.types, contents))
+    with_key(
+        |key| t.content_key(key),
+        |key| object_len(key, content_owned, |e| &mut e.types, contents),
+    )
 }
 
 pub(crate) fn type_encode<B: BufMut>(
@@ -1458,14 +1327,14 @@ pub(crate) fn type_encode<B: BufMut>(
 ) -> Result<(), PackError> {
     with_key(
         |key| t.content_key(key),
-        |key| content_encode(key, |e| &mut e.types, buf, contents),
+        |key| object_encode(key, content_owned, |e| &mut e.types, buf, contents),
     )
 }
 
 pub(crate) fn fntype_len(t: &FnType, contents: impl FnOnce() -> usize) -> usize {
     with_key(
         |key| t.content_key(key),
-        |key| content_len(key, |e| &mut e.fntypes, contents),
+        |key| object_len(key, content_owned, |e| &mut e.fntypes, contents),
     )
 }
 
@@ -1476,7 +1345,7 @@ pub(crate) fn fntype_encode<B: BufMut>(
 ) -> Result<(), PackError> {
     with_key(
         |key| t.content_key(key),
-        |key| content_encode(key, |e| &mut e.fntypes, buf, contents),
+        |key| object_encode(key, content_owned, |e| &mut e.fntypes, buf, contents),
     )
 }
 
@@ -1502,11 +1371,10 @@ pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackEr
     let key = tv.wrapper_addr();
     object_encode(
         &key,
-        |k| *k,
+        |k| (*k, tv.clone()),
         |e| &mut e.tvars,
         buf,
         |buf| {
-            encoding(|e| e.pinned_tvars.push(tv.clone()));
             let (id, frozen, cell) = tv.parts();
             tv.name.encode(buf)?;
             id.encode(buf)?;
@@ -1523,11 +1391,10 @@ fn cell_encode(
     let key = Arc::as_ptr(cell) as usize;
     object_encode(
         &key,
-        |k| *k,
+        |k| (*k, cell.clone()),
         |e| &mut e.cells,
         buf,
         |buf| {
-            encoding(|e| e.pinned_cells.push(cell.clone()));
             let (typ, constraints, refused) = {
                 let c = cell.read();
                 if c.rigid_gates != 0 {
@@ -1539,10 +1406,10 @@ fn cell_encode(
                     );
                     return Err(PackError::InvalidFormat);
                 }
-                (c.typ.clone(), c.constraints.to_vec(), c.cycle_refused)
+                (c.typ.clone(), c.constraints.clone(), c.cycle_refused)
             };
             typ.encode(buf)?;
-            constraints.encode(buf)?;
+            slice_encode(&constraints, buf)?;
             refused.encode(buf)
         },
     )
@@ -1562,18 +1429,17 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
                     None => decode_at(offset, |b| tvar_decode(b)),
                 }
             }
-            // CR claude for eric: [bug] suspected: the wrapper is entered after its
-            // cell, not before as tvar_len's doc says. A cell whose bound type or
-            // constraint holds this same wrapper decodes it again from its offset:
-            // two wrappers for one ordinal, and an alias through one no longer
-            // moves the other. Enter the wrapper over a placeholder cell first.
             DEF => {
                 let name = Pack::decode(sub)?;
                 let id = TVarId::decode(sub)?;
                 let frozen = bool::decode(sub)?;
-                let cell = cell_decode(sub)?;
-                let tv = TVar::from_parts(name, id, frozen, cell);
+                // Entered over a placeholder before its cell: the cell's
+                // bound type or a constraint can reach this wrapper.
+                let placeholder = Arc::new(RwLock::new(TCell::default()));
+                let tv = TVar::from_parts(name, id, frozen, placeholder);
                 decoding(|d| d.tvars.insert(at, tv.clone()));
+                let cell = cell_decode(sub)?;
+                tv.write().typ = cell;
                 Ok(tv)
             }
             _ => Err(PackError::UnknownTag),
@@ -1642,7 +1508,7 @@ impl Packed {
     }
 
     pub(crate) fn decoder(&self, enc: &ImageEncoder) -> ImageDecoder {
-        let mut dec = ImageDecoder::new(enc.counts());
+        let mut dec = ImageDecoder::new(enc.counts()).expect("a reservable span");
         dec.set_image(self.image.clone());
         dec.set_offsets(self.offsets.clone());
         dec
@@ -1658,6 +1524,13 @@ mod tests {
     };
     use arcstr::literal;
     use netidx_value::Value;
+
+    fn expr_base(dec: &ImageDecoder) -> u64 {
+        match dec.relocations.expr {
+            Some(IdRelocation::Decode { base, .. }) => base,
+            r => panic!("{r:?}"),
+        }
+    }
 
     /// Measure `items`, then write each, asserting it is as long as it
     /// measured.
@@ -1789,7 +1662,7 @@ mod tests {
         }
         assert_eq!(&packed.image[..], &raw.freeze()[..]);
         let mut dec = packed.decoder(&enc);
-        let base = dec.bases.expr;
+        let base = expr_base(&dec);
         let after = ExprId::new();
         DecodeImage::with(&mut dec, || {
             let mut b = packed.body();
@@ -1804,10 +1677,110 @@ mod tests {
             assert!(x.inner() < after.inner() && y.inner() < after.inner());
             // the block holds the span, floor first
             assert_eq!(x.inner().min(y.inner()), base.wrapping_add(span.floor));
+            // above every id the image wrote, so a scope component minted
+            // from a relocated id never spells one the image's text holds
+            assert!(x.inner().min(y.inner()) >= span.extent);
             // a second decoder of the same image gets its own block
-            let dec2 = ImageDecoder::new(enc.counts());
-            assert!(dec2.bases.expr > base);
+            let dec2 = ImageDecoder::new(enc.counts()).unwrap();
+            assert!(expr_base(&dec2) > base);
         });
+    }
+
+    /// An id outside the span the image recorded fails the read rather
+    /// than relocating onto an id this process minted.
+    #[test]
+    fn an_id_outside_the_span_is_refused() {
+        let a = ExprId::new();
+        let mut enc = ImageEncoder::new();
+        let packed = pack_all(&[a], &mut enc);
+        let mut dec = packed.decoder(&enc);
+        let mut bad = ImageBuf::with_capacity(0);
+        encode_varint(a.inner() + 1, &mut bad);
+        let bad = bad.freeze();
+        DecodeImage::with(&mut dec, || {
+            assert!(ExprId::decode(&mut packed.body()).is_ok());
+            assert!(ExprId::decode(&mut &bad[..]).is_err());
+        });
+    }
+
+    /// A span no block can hold is refused before anything reserves.
+    #[test]
+    fn an_unreservable_span_is_refused() {
+        let huge = IdSpan { floor: 0, extent: u64::MAX };
+        assert!(
+            ImageDecoder::new(IdCounts { bind: huge, ..IdCounts::default() }).is_err()
+        );
+    }
+
+    /// Instance ids are a relocated domain like the others.
+    #[test]
+    fn instance_ids_relocate() {
+        let a = LambdaInstanceId::new();
+        let mut enc = ImageEncoder::new();
+        let packed = pack_all(&[a], &mut enc);
+        assert_eq!(enc.counts().instance.len(), 1);
+        let mut dec = packed.decoder(&enc);
+        let decoded = DecodeImage::with(&mut dec, || {
+            LambdaInstanceId::decode(&mut packed.body()).unwrap()
+        });
+        let after = LambdaInstanceId::new();
+        assert_ne!(decoded, a);
+        assert!(decoded.inner() < after.inner());
+    }
+
+    /// A definition that references its own ordinal fails the read
+    /// instead of recursing until the stack runs out.
+    #[test]
+    fn a_self_referencing_definition_is_refused() {
+        // ordinal 0 is defined at offset 0 as a reference to ordinal 0
+        let image = Bytes::from_static(&[REF, 0]);
+        let mut dec = ImageDecoder::new(IdCounts::default()).unwrap();
+        dec.set_image(image.clone());
+        dec.set_offsets(vec![0]);
+        DecodeImage::with(&mut dec, || {
+            assert!(Expr::decode(&mut &image[..]).is_err());
+        });
+    }
+
+    /// A variable whose constraint holds the variable itself decodes to
+    /// one wrapper, inside and out.
+    #[test]
+    fn a_self_constrained_tvar_is_one_wrapper() {
+        let a = TVar::empty_named(literal!("a"));
+        a.add_cell_constraint(Type::Array(Arc::new(Type::TVar(a.clone()))));
+        let mut enc = ImageEncoder::new();
+        let packed = pack_all(&[Type::TVar(a)], &mut enc);
+        let mut dec = packed.decoder(&enc);
+        DecodeImage::with(&mut dec, || {
+            let Type::TVar(outer) = Type::decode(&mut packed.body()).unwrap() else {
+                panic!("a tvar")
+            };
+            let cons = outer.cell_constraints();
+            let Some(Type::Array(elt)) = cons.first() else { panic!("{cons:?}") };
+            let Type::TVar(inner) = &**elt else { panic!("{elt:?}") };
+            assert_eq!(inner.wrapper_addr(), outer.wrapper_addr());
+        });
+    }
+
+    /// Decoding an expression nested far deeper than a small stack holds
+    /// grows the stack as the compile that built it did.
+    #[test]
+    fn a_deep_expression_decodes_on_a_small_stack() {
+        use crate::expr::parser::parse_one;
+        let text = vec!["1"; 900].join(" + ");
+        let e = parse_one(&text).unwrap();
+        let mut enc = ImageEncoder::new();
+        let packed = pack_all(&[e.clone()], &mut enc);
+        let mut dec = packed.decoder(&enc);
+        let ok = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                DecodeImage::with(&mut dec, || Expr::decode(&mut packed.body()).is_ok())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(ok);
     }
 
     #[test]
@@ -1983,7 +1956,7 @@ mod tests {
             IdSpan { floor: e1.id.inner(), extent: e2.id.inner() + 1 }
         );
         let mut dec = packed.decoder(&enc);
-        let base = dec.bases.expr;
+        let base = expr_base(&dec);
         DecodeImage::with(&mut dec, || {
             let mut b = packed.body();
             let d1 = Expr::decode(&mut b).unwrap();

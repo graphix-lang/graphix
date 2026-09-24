@@ -1207,7 +1207,7 @@ impl PackTrait for SiteAnchor {
 pub(crate) fn site_leaf_len(l: &std::sync::Arc<SiteLeaf>) -> usize {
     crate::image::object_len(
         &(std::sync::Arc::as_ptr(l) as usize),
-        |k| *k,
+        |k| (*k, l.clone()),
         |e| &mut e.site_leaves,
         || l.stride.encoded_len() + crate::image::slice_len(&l.anchors),
     )
@@ -1219,7 +1219,7 @@ pub(crate) fn site_leaf_encode(
 ) -> Result<(), PackError> {
     crate::image::object_encode(
         &(std::sync::Arc::as_ptr(l) as usize),
-        |k| *k,
+        |k| (*k, l.clone()),
         |e| &mut e.site_leaves,
         buf,
         |buf| {
@@ -1250,7 +1250,7 @@ pub(crate) fn kernel_sig_len(k: &std::sync::Arc<KernelSig>) -> usize {
     use std::sync::atomic::Ordering::Relaxed;
     crate::image::object_len(
         &(std::sync::Arc::as_ptr(k) as usize),
-        |k| *k,
+        |_| (std::sync::Arc::as_ptr(k) as usize, k.clone()),
         |e| &mut e.kernel_sigs,
         || {
             k.fn_name.encoded_len()
@@ -1272,7 +1272,7 @@ pub(crate) fn kernel_sig_encode(
     use std::sync::atomic::Ordering::Relaxed;
     crate::image::object_encode(
         &(std::sync::Arc::as_ptr(k) as usize),
-        |k| *k,
+        |_| (std::sync::Arc::as_ptr(k) as usize, k.clone()),
         |e| &mut e.kernel_sigs,
         buf,
         |buf| {

@@ -1056,8 +1056,7 @@ run!(
         let rec f = (|n: i64| -> i64 select n { i64:0 => i64:0, _ => f(n - i64:1) });
         let result = f(i64:3)
     "#;
-    // ASPIRE: the parens spelling node-walks.
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // A generalized fn-valued argument's cells bind at callback

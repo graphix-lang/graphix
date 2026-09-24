@@ -21,7 +21,6 @@ pub mod env;
 pub mod expr;
 pub mod fusion;
 pub mod ide;
-pub use ids::IdRelocation;
 pub mod image;
 pub mod node;
 pub mod node_shape;
@@ -280,12 +279,6 @@ defetyp!(CAST_ERR, CAST_ERR_TAG, "InvalidCast", "Error<`{}(string)>");
 
 image_id!(LambdaId);
 
-impl From<u64> for LambdaId {
-    fn from(v: u64) -> Self {
-        LambdaId(v)
-    }
-}
-
 image_id!(LambdaInstanceId);
 
 image_id!(BindId);
@@ -293,17 +286,6 @@ image_id!(BindId);
 impl From<u64> for BindId {
     fn from(v: u64) -> Self {
         BindId(v)
-    }
-}
-
-impl TryFrom<Value> for BindId {
-    type Error = anyhow::Error;
-
-    fn try_from(value: Value) -> Result<Self> {
-        match value {
-            Value::U64(id) => Ok(BindId(id)),
-            v => bail!("invalid bind id {v}"),
-        }
     }
 }
 
@@ -983,13 +965,18 @@ pub enum DefAssertionKind {
 }
 
 impl DefAssertionKind {
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "sync" => Some(Self::Sync),
-            "async" => Some(Self::Async),
-            "tail_recursive" => Some(Self::TailRecursive),
-            _ => None,
+    const ALL: [Self; 3] = [Self::Sync, Self::Async, Self::TailRecursive];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::Async => "async",
+            Self::TailRecursive => "tail_recursive",
         }
+    }
+
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
     }
 }
 
@@ -1467,9 +1454,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// at the end of [`compile_stmt`].
     pub(crate) pending_imports: Vec<PendingImport>,
-    /// Module names pre-registered by a block's header scan, so `mod`
-    /// declaration order does not matter.
-    pub(crate) predeclared_mods: AHashSet<ModPath>,
     // CR claude for eric: [readability] stale doc: `callsite::transient_body_ok`
     // does not exist; the only reader is the image quiescence check
     // (image/registration.rs). Say what it is for now, or delete it (the CR at
@@ -1528,14 +1512,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
-    // CR claude for eric: [dead] no caller in the workspace, and it resets only env
-    // and rt while lambda_defs, bind_to_lambda, the image decoder and the rest
-    // stay: a half reset. Delete it or make it whole.
-    pub fn clear(&mut self) {
-        self.env.clear();
-        self.rt.clear();
-    }
-
     /// True while an evaluation frame (a tail-loop pass) is running.
     pub fn in_frame(&self) -> bool {
         self.frame_depth > 0
@@ -1579,7 +1555,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion: fusion::FusionCtx::new()?,
             pending_tail_call: None,
             pending_imports: Vec::new(),
-            predeclared_mods: AHashSet::default(),
             active_lambdas: nohash::IntMap::default(),
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
@@ -2006,6 +1981,29 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// A `use` whose name did not exist at its compile position must name
+/// something by the end of the compile that deferred it.
+pub(crate) fn check_pending_imports<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<()> {
+    for p in mem::take(&mut ctx.pending_imports) {
+        let Some(e) = ctx.env.names.get(&p.scope).and_then(|sn| sn.imports.get(&p.key))
+        else {
+            continue;
+        };
+        if !ctx.env.import_target_exists(e) {
+            return Err(::anyhow::anyhow!(
+                "use: no `{}` in `{}` (checked again after the enclosing \
+                 statement finished compiling)",
+                e.name,
+                e.scope
+            )
+            .context(expr::ParserContext { ori: p.ori.clone(), pos: p.pos }));
+        }
+    }
+    Ok(())
+}
+
 /// [`compile`] for drivers that compile top-level statements one at a
 /// time (REPL, checker). A top-level `catch(e) expr` advances the scope
 /// for the statements that follow: thread the returned scope into the
@@ -2027,7 +2025,6 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     ctx.attr_dispatched.lock().clear();
     ctx.attr_absorbed.lock().clear();
     ctx.pending_imports.clear();
-    ctx.predeclared_mods.clear();
     ctx.pending_settles.clear();
     ctx.pending_settles.push(Vec::new());
     let top_id = spec.id;
@@ -2053,8 +2050,10 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         }
         expr::ExprKind::Module { name, value } => {
             let (name, value) = (name.clone(), value.clone());
-            compiler::compile_module(ctx, flags, spec, scope, top_id, &name, &value)
-                .map(|n| (n, scope.clone()))
+            compiler::compile_module(
+                ctx, flags, spec, scope, top_id, &name, &value, false,
+            )
+            .map(|n| (n, scope.clone()))
         }
         expr::ExprKind::TypeDef(td) => {
             let td = td.clone();
@@ -2084,29 +2083,14 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
         }
     };
     info!("compile time {:?}", st.elapsed());
-    // A `use` whose name did not exist at its compile position must
-    // name something by the end of the statement.
-    for p in mem::take(&mut ctx.pending_imports) {
-        let Some(e) = ctx.env.names.get(&p.scope).and_then(|sn| sn.imports.get(&p.key))
-        else {
-            continue;
-        };
-        if !ctx.env.import_target_exists(e) {
-            let err = ::anyhow::anyhow!(
-                "use: no `{}` in `{}` (checked again after the enclosing \
-                 statement finished compiling)",
-                e.name,
-                e.scope
-            )
-            .context(expr::ParserContext { ori: p.ori.clone(), pos: p.pos });
-            // CR claude for eric: [bug] here and at the two error returns below
-            // only env is restored: the built node is dropped, not deleted, so its
-            // rt.ref_var registrations and bind_to_lambda/connect_targets entries
-            // stay (Bind::delete and Ref::delete remove them). Each failed REPL
-            // statement leaks them. Delete the node before returning.
-            ctx.env = env;
-            return Err(err);
-        }
+    if let Err(err) = check_pending_imports(ctx) {
+        // CR claude for eric: [bug] here and at the two error returns below
+        // only env is restored: the built node is dropped, not deleted, so its
+        // rt.ref_var registrations and bind_to_lambda/connect_targets entries
+        // stay (Bind::delete and Ref::delete remove them). Each failed REPL
+        // statement leaks them. Delete the node before returning.
+        ctx.env = env;
+        return Err(err);
     }
     if let Err(e) = check_and_fuse(ctx, &mut node) {
         ctx.env = env;

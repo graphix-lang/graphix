@@ -81,6 +81,28 @@ const SYNC_OK: &str = r#"
 
 run!(sync_ok, SYNC_OK, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
 
+// Parentheses around the lambda do not hide it from the assertion.
+const SYNC_PARENS: &str = r#"
+{
+  #[sync]
+  let f = (|n: i64| -> i64 n * i64:2);
+  f(i64:21)
+}
+"#;
+
+run!(sync_parens, SYNC_PARENS, |v: Result<&Value>| matches!(v, Ok(Value::I64(42))));
+
+// ... nor from the check: parentheses around an async body still fail.
+const SYNC_PARENS_ON_ASYNC: &str = r#"
+{
+  #[sync]
+  let f = (|n: i64| throttle(#rate: duration:0.001s, n));
+  f(i64:1)
+}
+"#;
+
+run!(sync_parens_on_async, SYNC_PARENS_ON_ASYNC, |v: Result<&Value>| v.is_err(); graphix_package_core::testing::FuseExpect::None);
+
 // `throttle` defers deliveries across cycles: the body is async.
 const SYNC_ON_ASYNC: &str = r#"
 {

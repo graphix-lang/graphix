@@ -10,8 +10,9 @@ use super::{
 };
 use crate::{
     ExecCtx, LambdaId, Rt, UserEvent,
-    expr::Expr,
+    expr::{Arg, Expr},
     node::lambda::{DefOrigin, LambdaDef, make_init},
+    typ::FnType,
 };
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
@@ -108,11 +109,9 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         source,
         origin,
     } = def;
-    // CR claude for eric: [readability] design/program_image.md:239 says a
-    // runtime-built definition refuses the write with NOT_QUIESCENT; this is
-    // NOT_IMAGED. One is wrong (a runtime def exists only once a cycle ran).
+    // a runtime-built definition exists only once a cycle ran
     let DefOrigin::Source { body, flags, spec } = origin else {
-        return Err(PackError::Application(super::NOT_IMAGED));
+        return Err(PackError::Application(super::NOT_QUIESCENT));
     };
     id.encode(buf)?;
     src.encode(buf)?;
@@ -138,11 +137,8 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let src = Pack::decode(buf)?;
     let env = lexical_decode(buf)?;
     let scope = scope_decode(buf)?;
-    // CR claude for eric: [style] annotate argspec where it is decoded and import
-    // FnType and Arg; the rebinding two lines down exists only to name its type.
-    let argspec = Pack::decode(buf)?;
-    let typ: Arc<crate::typ::FnType> = Pack::decode(buf)?;
-    let argspec: Arc<[crate::expr::Arg]> = argspec;
+    let argspec: Arc<[Arg]> = Pack::decode(buf)?;
+    let typ: Arc<FnType> = Pack::decode(buf)?;
     let intrinsic_effect = Pack::decode(buf)?;
     let stateless = bool::decode(buf)?;
     let recursion = Pack::decode(buf)?;
@@ -154,16 +150,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         id,
         flags,
         env.clone(),
-        // CR claude for eric: [structure] repeats Lambda::compile's
-        // `append_block("fn", id)` (lambda.rs:1175); if the two drift, restored
-        // defs build instances under another scope than cold ones. make_init
-        // should derive it from `scope` and `id`.
-        // CR claude for eric: [risk] scope text is never relocated: this uses the
-        // relocated id while the restored scopes of this def's cold instances (and
-        // every #do/#ca/#sel component) keep the writer's. They agree only when the
-        // block lands at the image's floor (a fresh process); a runtime that
-        // minted ids before the restore (tests, the fuzzer's sessions) diverges.
-        scope.append_block("fn", id.inner()),
+        &scope,
         typ.clone(),
         argspec.clone(),
         spec.clone(),

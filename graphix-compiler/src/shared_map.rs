@@ -13,11 +13,10 @@
 //! / [`image::DecodeImage`] session, whose encoder and decoder hold the
 //! nodes seen (one per image, one per runtime, so an instance decoded
 //! later resolves references into nodes decoded earlier). Outside a
-//! session an encode writes every node as a definition and a decode
-//! fails with `InvalidFormat`.
+//! session an encode or a decode fails with `InvalidFormat`.
 
 use crate::{
-    env::{Map, Set},
+    env::{CHUNK, Map, Set},
     image::{self, ImageBuf},
 };
 use ahash::AHashMap;
@@ -25,10 +24,6 @@ use bytes::{Buf, BufMut};
 use immutable_chunkmap::map::{NodeHandle, NodeRef};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use std::any::{Any, TypeId};
-
-// CR claude for eric: [style] Repeats the chunk size env.rs:19 hard-codes in
-// `Map<K, V, 16>`; export one constant from env.rs and use it in both.
-const SIZE: usize = 16;
 
 /// A map packed with its sharing. The wrapped map is the environment's
 /// own (an `Arc` clone), so wrapping is free.
@@ -39,6 +34,9 @@ pub struct SharedMap<K: Ord + Clone, V: Clone>(pub Map<K, V>);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedSet<K: Ord + Clone>(pub Set<K>);
 
+/// A decoded node and its subtree's height.
+type Decoded<K, V> = (NodeHandle<K, V, CHUNK>, u32);
+
 /// The nodes a decoder has built, by the offset of their definition,
 /// across every map and set unpacked under one decoder.
 #[derive(Default)]
@@ -47,30 +45,34 @@ pub struct DecodeTable {
 }
 
 impl DecodeTable {
-    fn nodes<K, V>(&mut self) -> &mut AHashMap<u64, NodeHandle<K, V, SIZE>>
+    fn nodes<K, V>(&mut self) -> &mut AHashMap<u64, Decoded<K, V>>
     where
         K: Ord + Clone + Send + Sync + 'static,
         V: Clone + Send + Sync + 'static,
     {
         self.by_type
             .entry(TypeId::of::<(K, V)>())
-            .or_insert_with(|| Box::new(AHashMap::<u64, NodeHandle<K, V, SIZE>>::new()))
+            .or_insert_with(|| Box::new(AHashMap::<u64, Decoded<K, V>>::new()))
             .downcast_mut()
             .expect("decode table entry keyed by its own type")
     }
 }
 
-/// Keep `node` alive for the session, so its identity names it alone.
-fn pin<K, V>(node: &NodeRef<'_, K, V, SIZE>)
+/// A node's table key and pin: held for the session, so its identity
+/// names it alone.
+fn pinned<K, V>(
+    node: &NodeRef<'_, K, V, CHUNK>,
+) -> impl FnOnce(&usize) -> (usize, Box<dyn Any + Send + Sync>)
 where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    image::encoding(|e| e.pinned_map_nodes.push(Box::new(node.keep())));
+    let keep = node.keep();
+    move |k| (*k, Box::new(keep))
 }
 
 fn tree_len<K, V>(
-    node: Option<NodeRef<'_, K, V, SIZE>>,
+    node: Option<NodeRef<'_, K, V, CHUNK>>,
     pair_len: &mut impl FnMut(&K, &V) -> usize,
 ) -> usize
 where
@@ -80,14 +82,9 @@ where
     let Some(node) = node else { return 1 };
     1 + image::object_len(
         &node.identity(),
-        |k| *k,
+        pinned(&node),
         |e| &mut e.map_nodes,
         || {
-            // CR claude for eric: [perf] A node measured here and then written
-            // runs `pin` twice (again in tree_encode's definition closure, since
-            // the length pass leaves the slot undefined): two boxed keeps per
-            // map node per image. Pin once, at the slot's first sight.
-            pin(&node);
             let pairs: usize = node.pairs().map(|(k, v)| pair_len(k, v)).sum();
             varint_len(node.len() as u64)
                 + pairs
@@ -99,7 +96,7 @@ where
 
 /// A definition is its pairs, then its left and right subtrees.
 fn tree_encode<K, V, B: BufMut>(
-    node: Option<NodeRef<'_, K, V, SIZE>>,
+    node: Option<NodeRef<'_, K, V, CHUNK>>,
     buf: &mut B,
     pair_encode: &mut impl FnMut(&K, &V, &mut ImageBuf) -> Result<(), PackError>,
 ) -> Result<(), PackError>
@@ -111,11 +108,10 @@ where
     true.encode(buf)?;
     image::object_encode(
         &node.identity(),
-        |k| *k,
+        pinned(&node),
         |e| &mut e.map_nodes,
         buf,
         |buf| {
-            pin(&node);
             encode_varint(node.len() as u64, buf);
             for (k, v) in node.pairs() {
                 pair_encode(k, v, buf)?;
@@ -129,7 +125,7 @@ where
 fn tree_decode<K, V>(
     buf: &mut &[u8],
     pair_decode: &mut impl FnMut(&mut &[u8]) -> Result<(K, V), PackError>,
-) -> Result<Option<NodeHandle<K, V, SIZE>>, PackError>
+) -> Result<Option<Decoded<K, V>>, PackError>
 where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
@@ -140,10 +136,22 @@ where
     node_decode(buf, pair_decode).map(Some)
 }
 
+/// The key at the far end of a subtree: its last with `last`, else its
+/// first.
+fn end_key<'a, K: Ord + Clone, V: Clone>(
+    mut node: NodeRef<'a, K, V, CHUNK>,
+    last: bool,
+) -> Option<&'a K> {
+    while let Some(next) = if last { node.right() } else { node.left() } {
+        node = next;
+    }
+    if last { node.pairs().last() } else { node.pairs().next() }.map(|(k, _)| k)
+}
+
 fn node_decode<K, V>(
     buf: &mut &[u8],
     pair_decode: &mut impl FnMut(&mut &[u8]) -> Result<(K, V), PackError>,
-) -> Result<NodeHandle<K, V, SIZE>, PackError>
+) -> Result<Decoded<K, V>, PackError>
 where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
@@ -157,7 +165,7 @@ where
         |sub| {
             let pair_decode = &mut **pd.borrow_mut();
             let n = decode_varint(sub)? as usize;
-            if n == 0 || n > SIZE {
+            if n == 0 || n > CHUNK {
                 return Err(PackError::InvalidFormat);
             }
             let mut pairs = Vec::with_capacity(n);
@@ -166,14 +174,23 @@ where
             }
             let left = tree_decode(sub, pair_decode)?;
             let right = tree_decode(sub, pair_decode)?;
-            // The stream is the encoder's walk of a map the chunkmap
-            // built, read back in the same order.
-            // CR claude for eric: [risk] This contract rests on the image being
-            // intact, and a cache image carries no checksum (image/mod.rs): a
-            // corrupted file whose keys still decode builds a map whose lookups
-            // are silently wrong. The keys are in hand; checking strict order
-            // within `pairs` and against the subtrees' bounds is cheap.
-            Ok(unsafe { NodeHandle::create(left, pairs, right) })
+            let height = |t: &Option<Decoded<K, V>>| t.as_ref().map_or(0, |(_, h)| *h);
+            let (lh, rh) = (height(&left), height(&right));
+            let (first, last) = (&pairs[0].0, &pairs[n - 1].0);
+            let ordered = pairs.windows(2).all(|w| w[0].0 < w[1].0)
+                && left.as_ref().is_none_or(|(l, _)| {
+                    end_key(l.view(), true).is_some_and(|k| k < first)
+                })
+                && right.as_ref().is_none_or(|(r, _)| {
+                    end_key(r.view(), false).is_some_and(|k| k > last)
+                });
+            if !ordered || lh.abs_diff(rh) > 2 {
+                return Err(PackError::InvalidFormat);
+            }
+            let (left, right) = (left.map(|(l, _)| l), right.map(|(r, _)| r));
+            // Checked above: what the chunkmap built, read back in order.
+            let node = unsafe { NodeHandle::create(left, pairs, right) };
+            Ok((node, 1 + lh.max(rh)))
         },
         |sub| node_decode(sub, &mut **pd.borrow_mut()),
     )
@@ -213,7 +230,8 @@ where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    Ok(Map::from_root(image::with_slice(buf, |sub| tree_decode(sub, pair_decode))?))
+    let tree = image::with_slice(buf, |sub| tree_decode(sub, pair_decode))?;
+    Ok(Map::from_root(tree.map(|(node, _)| node)))
 }
 
 impl<K, V> Pack for SharedMap<K, V>
@@ -253,7 +271,7 @@ where
         let tree = image::with_slice(buf, |sub| {
             tree_decode(sub, &mut |b| Ok((K::decode(b)?, ())))
         })?;
-        Ok(SharedSet(Set::from_root(tree)))
+        Ok(SharedSet(Set::from_root(tree.map(|(node, _)| node))))
     }
 }
 
@@ -307,7 +325,7 @@ mod tests {
     }
 
     fn walk(
-        n: Option<NodeRef<'_, i64, i64, SIZE>>,
+        n: Option<NodeRef<'_, i64, i64, CHUNK>>,
         ids: &mut std::collections::HashSet<usize>,
     ) {
         if let Some(n) = n
@@ -393,6 +411,23 @@ mod tests {
             let a = d.0.get(&1).unwrap().0.root().unwrap().identity();
             let b = d.0.get(&2).unwrap().0.root().unwrap().identity();
             assert_eq!(a, b);
+        });
+    }
+
+    /// A node whose keys do not ascend (a corrupt image) fails the read
+    /// rather than building a map whose lookups are wrong.
+    #[test]
+    fn misordered_keys_are_refused() {
+        let maps = forest();
+        let mut enc = ImageEncoder::new();
+        let packed = encode_all(&maps[..1], &mut enc);
+        let mut dec = packed.decoder(&enc);
+        DecodeImage::with(&mut dec, || {
+            let mut buf = packed.body();
+            let negated = map_decode::<i64, i64>(&mut buf, &mut |b| {
+                Ok((-i64::decode(b)?, i64::decode(b)?))
+            });
+            assert!(negated.is_err());
         });
     }
 

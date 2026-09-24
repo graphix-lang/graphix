@@ -286,8 +286,9 @@ before it there). The object is marked defined before its contents are
 written, so an occurrence of it inside its own definition is a reference
 too; a decode that reaches an object while that object is being decoded
 builds it again from its offset, and every such cycle passes through a
-kind that registers before its contents (a type variable's cell, a
-resolution cell), so it ends. The trailer carries the
+kind that registers before its contents (a type variable's wrapper and
+cell, a resolution cell), so it ends, having entered one definition at
+most twice; a third entry is a corrupt image and fails the read. The trailer carries the
 ordinal-to-offset table the reader loads before anything decodes (every
 decode buffer is a slice of the mapped image). An occurrence costs its
 reference, a function of its ordinal alone, in the length pass and in
@@ -475,13 +476,17 @@ correctness by recompiling.
 
 ### IDs: written as minted, block relocation
 
-Encode writes every ID as minted and records each domain's extent,
-one past the largest. Decode reserves one block of that extent per
-domain with a single fetch-add on that domain's allocator and adds the
-base to every ID as it is decoded. No floors: an allocator never moves
-backwards and never overlaps anything already handed out, and the same
-image loads into several runtimes in one process (the test suite, the
-GUI harness, the LSP), each with its own block. This is one add per ID
+Encode writes every ID as minted and records each domain's span, the
+smallest and one past the largest. Decode reserves, per domain, one
+block the span's length at or above the span's extent, with a single
+update of that domain's allocator, and offsets every ID into it: an
+allocator never moves backwards and never overlaps anything already
+handed out, the same image loads into several runtimes in one process
+(the test suite, the GUI harness, the LSP), each with its own block,
+and no ID this process mints or relocates equals one the image wrote,
+so a scope component minted after a restore (`#fn7`, `#do12`) never
+spells one the image's scope text holds. An ID outside its span, or a
+span that would take the allocator past its limit, fails the read. This is one add per ID
 during a pass that touches every ID anyway. (The first version
 renumbered IDs densely in first-seen order and then sorted them so
 maps keyed by IDs kept their order, which cost a second measure pass
@@ -492,7 +497,8 @@ them above its block, wider by a byte at most.)
 
 `atomic_id!` (`../netidx/netidx-core/src/utils.rs:173`) needs a
 reserve-block API; `from_inner` does not reserve. Every persisted
-domain is accounted for (`BindId`, `LambdaId`, `ExprId`, `TVarId`,
+domain is accounted for (`BindId`, `LambdaId`, `LambdaInstanceId`,
+`ExprId`, `TVarId`,
 `AbstractId`, `TraitId`, `TypeRef` cells, nominal registries on the
 Rust side), and nominal identities reconnect by name, not by
 registration order.
@@ -505,8 +511,9 @@ bindings actually captured.
 ### Env: maps packed with their sharing (built)
 
 Only four `Env` fields are lexical: `binds`, `modules`, `typedefs`,
-`traits` (`graphix-compiler/src/env.rs:330`). Everything else is
-global and is written once, as the final tables.
+`traits`. Everything else is global and is written once, as the final
+tables, except the IDE sink and `lsp_mode`, which are the runtime's
+configuration and never travel.
 
 A definition's `def_env` is a persistent snapshot sharing all but a
 root path with its neighbours, so the image packs the maps with their

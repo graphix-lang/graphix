@@ -15,7 +15,7 @@ use crate::{
     BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent,
     env::{Env, ImportEntry},
-    expr::{At, Expr, ExprId, ExprKind, ModPath, Name, TypeDefBody},
+    expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, TypeDefBody},
     fusion::{
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_const_node,
@@ -935,15 +935,14 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
 ) -> Result<(Box<[Node<R, E>]>, Box<[usize]>)> {
     let exprs: smallvec::SmallVec<[&'a Expr; 32]> = exprs.collect();
     // pre-register the block's `mod` names so resolution is independent
-    // of declaration order; the `Module` arm removes its entry from
-    // `predeclared_mods` instead of tripping the duplicate guard
+    // of declaration order; the `Module` arm is told, so its own
+    // duplicate guard does not trip
     for e in exprs.iter() {
         if let ExprKind::Module { name, .. } = &e.kind {
             let p = ModPath(scope.lexical.append(name));
             if ctx.env.modules.contains(&p) {
                 return Err(anyhow::anyhow!("duplicate module definition {p}").at(&(*e)));
             }
-            ctx.predeclared_mods.insert(p.clone());
             ctx.env.modules.insert_cow(p);
         }
     }
@@ -965,9 +964,20 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
             }
             ExprKind::Use { reexport, names } if !value_position => children
                 .push(compile_use(ctx, flags, e.clone(), &scope, *reexport, names)?),
-            ExprKind::Module { name, value } if !value_position => children.push(
-                compile_module(ctx, flags, e.clone(), &scope, top_id, name, value)?,
-            ),
+            ExprKind::Module { name, value }
+                if !value_position || matches!(value, ModuleKind::Dynamic { .. }) =>
+            {
+                children.push(compile_module(
+                    ctx,
+                    flags,
+                    e.clone(),
+                    &scope,
+                    top_id,
+                    name,
+                    value,
+                    true,
+                )?)
+            }
             ExprKind::TypeDef(td) if !value_position => children.push(TypeDef::compile(
                 ctx,
                 e.clone(),
@@ -1102,10 +1112,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
                 continue;
             }
             if self.module {
-                // CR claude for eric: [bug] for a module block `self.spec.ori` is the declaring
-                // file, so a type error in m.gx is framed "in file main.gx" (here, below, and in
-                // typecheck1); see the CR at compiler.rs compile_module for the right origin.
-                wrap!(n, n.typecheck0(ctx)).with_context(|| self.spec.ori.clone())?
+                wrap!(n, n.typecheck0(ctx)).with_context(|| n.spec().ori.clone())?
             } else {
                 wrap!(n, n.typecheck0(ctx))?
             }
@@ -1113,7 +1120,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         for i in self.catches.iter().rev() {
             let n = &mut self.children[*i];
             if self.module {
-                wrap!(n, n.typecheck0(ctx)).with_context(|| self.spec.ori.clone())?
+                wrap!(n, n.typecheck0(ctx)).with_context(|| n.spec().ori.clone())?
             } else {
                 wrap!(n, n.typecheck0(ctx))?
             }
@@ -1129,7 +1136,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
                 continue;
             }
             if self.module {
-                wrap!(n, n.typecheck1(ctx)).with_context(|| self.spec.ori.clone())?
+                wrap!(n, n.typecheck1(ctx)).with_context(|| n.spec().ori.clone())?
             } else {
                 wrap!(n, n.typecheck1(ctx))?
             }
@@ -1139,7 +1146,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         for i in self.catches.iter().rev() {
             let n = &mut self.children[*i];
             if self.module {
-                wrap!(n, n.typecheck1(ctx)).with_context(|| self.spec.ori.clone())?
+                wrap!(n, n.typecheck1(ctx)).with_context(|| n.spec().ori.clone())?
             } else {
                 wrap!(n, n.typecheck1(ctx))?
             }

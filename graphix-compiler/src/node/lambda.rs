@@ -1031,17 +1031,19 @@ impl Lambda {
 
 /// The `init` of a definition: how a call site builds an instance from
 /// the source body (or a builtin) in the definition's environment and
-/// scope. A function of its data, so an image can rebuild it.
+/// its `fn` block under `scope`, the definition's own. A function of
+/// its data, so an image can rebuild it.
 pub(crate) fn make_init<R: Rt, E: UserEvent>(
     id: LambdaId,
     flags: BitFlags<CFlag>,
     def_env: Env,
-    def_scope: Scope,
+    scope: &Scope,
     def_typ: Arc<FnType>,
     def_argspec: Arc<[Arg]>,
     def_spec: Expr,
     body: Either<Expr, ArcStr>,
 ) -> InitFn<R, E> {
+    let def_scope = scope.append_block("fn", id.inner());
     SArc::new(move |scope, ctx, args, mode, tid| {
         ctx.with_restored(def_env.clone(), |ctx| match body.clone() {
             Either::Left(body) => {
@@ -1228,8 +1230,6 @@ impl Lambda {
             .collect::<Result<LPooled<Vec<_>>>>()?;
         constraints.extend(trait_quantifiers.drain(..));
         let original_scope = scope.clone();
-        let scope = scope.append_block("fn", id.0);
-        let def_scope = scope.clone();
         let env = ctx.env.clone();
         let def_env = ctx.env.clone();
         // CR claude for eric: [structure] the kind of body (expression, collection
@@ -1253,7 +1253,7 @@ impl Lambda {
                     "unknown builtin function {builtin}: this graphix was not built \
                      with it, so calls are checked against its signature only"
                 );
-                ctx.env.warn(&spec.ori, pos, end, msg);
+                ctx.env.warn(flags, &spec, pos, end, msg)?;
             }
             if !ctx.builtins_allowed {
                 bail!("defining builtins is not allowed in this context")
@@ -1331,7 +1331,7 @@ impl Lambda {
             id,
             flags,
             def_env,
-            def_scope,
+            &original_scope,
             def_typ.clone(),
             def_argspec.clone(),
             def_spec.clone(),
@@ -1419,7 +1419,6 @@ pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
             typ: Type::empty_tvar(),
             pos: SourcePosition::default(),
             ori: Arc::new(Origin::default()),
-            pattern: None,
             facet: None,
         },
     );
@@ -1562,7 +1561,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 typ: Type::empty_tvar(),
                 pos: SourcePosition::default(),
                 ori: Arc::new(Origin::default()),
-                pattern: None,
                 facet: None,
             },
         );

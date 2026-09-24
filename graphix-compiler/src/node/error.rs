@@ -750,12 +750,9 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     }
 
     fn check_unhandled(env: &Env, flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
-        let msg = "error raised by ? will not be caught";
-        if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
-            bailat!(spec, "{msg}")
-        }
         if flags.contains(CFlag::WarnUnhandled) {
-            env.warn(&spec.ori, spec.pos, spec.end.0, msg);
+            let msg = "error raised by ? will not be caught";
+            env.warn(flags, spec, spec.pos, spec.end.0, msg)?;
         }
         Ok(())
     }
