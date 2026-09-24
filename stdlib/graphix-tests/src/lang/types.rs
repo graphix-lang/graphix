@@ -1000,6 +1000,34 @@ const NESTED_QUANTIFIER_CONCRETE: &str = r#"{
   let apply = |f: F| f(1);
   apply(|x| x + 1)
 }"#;
+const NESTED_QUANTIFIER_CONCRETE_INLINE: &str = r#"{
+  let apply = |f: fn<'b: Number>(x: 'b) -> 'b| f(1);
+  apply(|x| x + 1)
+}"#;
+// `apply` may call `f` at any number type, so an i64 function is not one.
+const NESTED_QUANTIFIER_MONO: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
+  let apply = |f: F| f(1);
+  let inc = |x: i64| x + 1;
+  apply(inc)
+}"#;
+// The argument is checked with 'b rigid: well typed for every 'b.
+const NESTED_QUANTIFIER_SQUARE: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
+  let apply = |f: F| f(3);
+  apply(|x| x * x)
+}"#;
+const NESTED_QUANTIFIER_COMPARE: &str = r#"{
+  type G = fn<'b: Number>(x: 'b, y: 'b) -> bool;
+  let apply = |f: G| select f(1, 2) { true => 1, false => 0 };
+  apply(|x, y| x < y)
+}"#;
+const NESTED_QUANTIFIER_TWO_TYPES: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
+  let apply = |f: F| f(3) + cast<i64>(f(2.5))$;
+  let sq = |x| x * x;
+  apply(sq)
+}"#;
 const TRAIT_BESIDE_UNSATISFIABLE: &str = r#"{
   type P<'x: string> = Array<'x>;
   type Q<'x: Eq> = Array<'x>;
@@ -1031,6 +1059,8 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (REF_UNION_PARAMS, "expected fn"),
         (NESTED_QUANTIFIER, "does not contain"),
         (NESTED_QUANTIFIER_CONCRETE, "cannot compute"),
+        (NESTED_QUANTIFIER_CONCRETE_INLINE, "cannot compute"),
+        (NESTED_QUANTIFIER_MONO, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
@@ -1050,6 +1080,9 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (REF_UNION_SAME_PARAMS, 2),
         (DIFF_REF_PARAMS, 1),
         (NESTED_QUANTIFIER_OK, 2),
+        (NESTED_QUANTIFIER_SQUARE, 9),
+        (NESTED_QUANTIFIER_COMPARE, 1),
+        (NESTED_QUANTIFIER_TWO_TYPES, 15),
         (TRAIT_BESIDE_WITNESS, 0),
     ] {
         let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;

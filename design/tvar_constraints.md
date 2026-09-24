@@ -112,6 +112,27 @@ fact, and erasing it made the static type lie about the runtime value
   cell, writers refine it at their tc0, and `Bind::typecheck1` settles
   a cell nobody refined to ⊥.
 
+### Quantified function formals
+
+A formal of function type with its own quantifiers (`|f: F|`, `type F
+= fn<'b: Number>(x: 'b) -> 'b`) is rank-2: every call of `f` in the
+callee instantiates `'b` afresh, so the callee may call it at any
+type the bound admits. Its argument is therefore checked with `'b`
+RIGID (`callsite.rs::quantified_formal`): the formal is expanded once,
+rigid gates open on its quantifier cells, and the pre-unify, the
+argument's typecheck0 and a `check_contains_rigid` all run against
+that one expansion (each expansion of a typedef reference freshens its
+cells). `apply(|x| x * x)` checks; `apply(|x| x + 1)` and
+`apply(|x: i64| ..)` are refused, since they hold only where `'b` is
+`i64`.
+
+`FnType::contains` checks a declared bound only for a BOUND variable
+(`bounds_hold`). An open one stays open, standing for one type the
+bound admits; its cell enforces the bound at every binding. Binding
+it to its bound would type the argument's parameter as the whole set
+(`Number`), which is a different claim: values of several numeric
+types at once.
+
 ### `FnType` derives its constraint list from the cells
 
 The `constraints` list is gone from `FnType` (`typ/fntyp.rs`). Every

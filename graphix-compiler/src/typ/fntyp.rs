@@ -797,20 +797,17 @@ impl FnType {
             && self.throws.contains_int(flags, env, hist, &t.throws)?)
     }
 
-    /// Every declared bound holds for its variable. A variable with one
-    /// bound meets it (an open one binds to it); with several, only a
-    /// bound variable is checked: an open conjunction settles by a
-    /// witness, and meanwhile the cell enforces it at every binding.
+    /// Every declared bound holds for its bound variable. An open one
+    /// stays open: it stands for one type the bound admits, and its cell
+    /// enforces the bound at every binding.
     fn bounds_hold(
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
         hist: &mut ContainsHist,
     ) -> Result<bool> {
-        let view = self.constraint_view();
-        for (tv, tc) in view.iter() {
-            let alone = view.iter().filter(|(v, _)| v.name == tv.name).count() == 1;
-            if (alone || tv.is_bound())
+        for (tv, tc) in self.constraint_view().iter() {
+            if tv.is_bound()
                 && !tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))?
             {
                 return Ok(false);

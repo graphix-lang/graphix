@@ -11,6 +11,7 @@ use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, Event, ExecCtx, FnArgIdentity, LambdaId,
     LambdaInstanceId, Node, NodeView, PendingTailCall, Refs, ResolvingLambda, Rt, Scope,
     Tag, TagValue, Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
+    env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     fusion::{
         self,
@@ -26,7 +27,7 @@ use crate::{
     },
     perfdbg,
     profile::{self, Phase},
-    typ::{FnArgKind, FnArgType, FnType, TVar, Type},
+    typ::{FnArgKind, FnArgType, FnType, TVar, Type, tvar::RigidGate},
     wrap,
 };
 use ahash::{AHashMap, AHashSet};
@@ -222,6 +223,34 @@ fn compile_apply_args<R: Rt, E: UserEvent>(
     Ok(res)
 }
 
+/// A formal of quantified function type `fn<'b: C>(..)`, expanded once,
+/// with its quantifiers held rigid for the argument's check: the argument
+/// must be well typed for every 'b the bound admits, since the callee may
+/// call it at any. `None` for any other formal.
+fn quantified_formal(
+    env: &Env,
+    typ: &Type,
+) -> Result<Option<(Type, LPooled<Vec<RigidGate>>)>> {
+    let deref = typ.with_deref(|t| t.cloned());
+    let expanded = match &deref {
+        Some(Type::Fn(_)) => deref.clone(),
+        Some(t @ Type::Ref(_)) => t.lookup_ref_with(env, false)?,
+        _ => None,
+    };
+    let Some(formal @ Type::Fn(ft)) = &expanded else { return Ok(None) };
+    if ft.quantifiers.is_empty() {
+        return Ok(None);
+    }
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.collect_tvars(&mut named);
+    let gates = named
+        .iter()
+        .filter(|(name, _)| ft.quantifiers.contains(*name))
+        .map(|(_, tv)| tv.open_rigid())
+        .collect();
+    Ok(Some((formal.clone(), gates)))
+}
+
 /// Check a call's argument node against its formal's type `typ`.
 fn typecheck_arg<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
@@ -233,9 +262,18 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
     if matches!(n.view(), NodeView::Ref(_)) {
         wrap!(n, n.typecheck0(ctx))?;
     }
-    Type::pre_unify_arg(&ctx.env, typ, n.typ())?;
-    wrap!(n, n.typecheck0(ctx))?;
-    wrap!(n, typ.check_contains(&ctx.env, &n.typ()))
+    match quantified_formal(&ctx.env, typ)? {
+        None => {
+            Type::pre_unify_arg(&ctx.env, typ, n.typ())?;
+            wrap!(n, n.typecheck0(ctx))?;
+            wrap!(n, typ.check_contains(&ctx.env, &n.typ()))
+        }
+        Some((formal, _rigid)) => {
+            Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
+            wrap!(n, n.typecheck0(ctx))?;
+            wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))
+        }
+    }
 }
 
 /// A `Ref` to `arg`'s id, typed and placed by its node, else by `typ`.
