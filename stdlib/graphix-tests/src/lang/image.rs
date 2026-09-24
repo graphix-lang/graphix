@@ -98,8 +98,8 @@ async fn environment_round_trips() -> Result<()> {
         let rdefs = restored.typedefs.get(scope).expect("typedef scope survives");
         for (name, td) in defs {
             let rtd = rdefs.get(name).expect("typedef survives");
-            assert_eq!(show(&td.typ), show(&rtd.typ), "{scope}::{name}");
-            assert_eq!(td.params.len(), rtd.params.len());
+            assert_eq!(show(td.typ()), show(rtd.typ()), "{scope}::{name}");
+            assert_eq!(td.params().len(), rtd.params().len());
             assert_eq!(td.rep.as_ref().map(show), rtd.rep.as_ref().map(show));
         }
     }

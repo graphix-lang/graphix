@@ -48,9 +48,18 @@ snapshot.
   name's final target, which the new scope may not even reach). The
   field is `pub(in crate::typ)`; outside construction goes through
   `TypeRef::new`/`synthetic`, so a fresh cell is compiler-enforced.
-- **Accepted leak.** A recursive typedef's filled self-ref cell is an
-  Arc cycle (triomphe has no Weak) — bounded per definition, growing
-  only under dynamic-module redefinition churn.
+- **Weak, owned by the definition.** A recursive typedef's body
+  reaches its own cell once seeded, so a strong cell is a cycle. The
+  `TypeDef` holds its `ResolvedRef` (a `std::sync::Arc`, the one
+  allocation per definition that every resolution hands out) and a
+  cell holds a `Weak`. A cell whose definition is gone, a type that
+  outlived the env entry that defined it, is refused by `resolve_in`
+  and logged, never re-resolved: the name may mean something else now.
+  In an image the definition is an object by identity; a cell met
+  while its definition is still decoding takes the `Weak` of an
+  `Arc::new_cyclic` under construction, and a dead cell travels dead.
+  Pins: `env::test::recursive_typedefs_free_with_their_env`,
+  `image::tests::typedef_cells_decode_onto_their_definition`.
 
 ## Seeding: lazy, plus one eager pass at the order-correct moment
 

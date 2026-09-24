@@ -157,7 +157,7 @@ impl StructurePattern {
                 let td = env
                     .lookup_typedef(scope, name)?
                     .ok_or_else(|| anyhow!("unknown type {name}"))?;
-                let Type::Abstract { id, params } = &td.typ else {
+                let Type::Abstract { id, params } = td.typ() else {
                     bail!("{name} is not an abstract type, so it has no constructor")
                 };
                 let params = Arc::from_iter(params.iter().map(|_| Type::empty_tvar()));

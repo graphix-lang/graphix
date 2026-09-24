@@ -182,8 +182,8 @@ impl<'a> Query<'a> {
         }
         for (scope, defs) in &env.typedefs {
             if let Some(td) = defs.get(&*self.ident)
-                && in_file(&td.ori, self.file)
-                && here(zero_based(td.pos))
+                && in_file(td.ori(), self.file)
+                && here(zero_based(td.pos()))
             {
                 let name: CompactString = (&*self.ident).into();
                 return Some((Target::Type(scope.clone(), name.clone()), name));
@@ -217,7 +217,10 @@ impl<'a> Query<'a> {
             }
             Target::Type(scope, name) => {
                 let td = self.typedef(&scope, &name)?;
-                markdown(&format_compact!("type {written} = {}", td.typ), td.doc.as_ref())
+                markdown(
+                    &format_compact!("type {written} = {}", td.typ()),
+                    td.doc.as_ref(),
+                )
             }
             Target::Module(canonical) => {
                 markdown(&format_compact!("mod {canonical}"), None)
@@ -245,7 +248,7 @@ impl<'a> Query<'a> {
 
     fn type_location(&self, scope: &ModPath, name: &str) -> Option<Location> {
         let td = self.typedef(scope, name)?;
-        self.location(&td.ori, zero_based(td.pos))
+        self.location(td.ori(), zero_based(td.pos()))
     }
 
     /// A reference goes to its declaration; an interface `val` goes to

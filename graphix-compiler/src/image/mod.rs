@@ -41,7 +41,13 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
-use std::{cell::Cell, marker::PhantomData, path::PathBuf, ptr::NonNull};
+use std::{
+    cell::Cell,
+    marker::PhantomData,
+    path::PathBuf,
+    ptr::NonNull,
+    sync::{self, Weak},
+};
 use triomphe::Arc;
 
 pub(crate) const REF: u8 = 0;
@@ -190,6 +196,7 @@ pub struct ImageEncoder {
     handlers: Table<usize, ErrorHandler>,
     paths: Table<ArcStr>,
     refcells: Table<usize, RefCell>,
+    resolveds: Table<usize, Resolved>,
     origins: Table<usize, Arc<Origin>>,
     tvars: Table<usize, TVar>,
     cells: Table<usize, Arc<RwLock<TCell>>>,
@@ -348,6 +355,10 @@ pub struct ImageDecoder {
     handlers: AHashMap<u64, ErrorHandler>,
     paths: AHashMap<u64, ModPath>,
     refcells: AHashMap<u64, RefCell>,
+    /// Definitions decoded, owned here too for what decodes later, and
+    /// the ones being decoded, which a cell inside them reaches weakly.
+    resolveds: AHashMap<u64, Resolved>,
+    resolving: AHashMap<u64, Weak<ResolvedRef>>,
     origins: AHashMap<u64, Arc<Origin>>,
     tvars: AHashMap<u64, TVar>,
     cells: AHashMap<u64, Arc<RwLock<TCell>>>,
@@ -396,6 +407,8 @@ impl ImageDecoder {
             handlers: AHashMap::new(),
             paths: AHashMap::new(),
             refcells: AHashMap::new(),
+            resolveds: AHashMap::new(),
+            resolving: AHashMap::new(),
             origins: AHashMap::new(),
             tvars: AHashMap::new(),
             cells: AHashMap::new(),
@@ -582,7 +595,11 @@ pub(crate) fn is_decoding() -> bool {
 
 /// A type reference's write-once resolution cell, shared by every
 /// rebuild of the reference (`TypeRef::with_params`).
-pub(crate) type RefCell = Arc<Mutex<Option<Arc<ResolvedRef>>>>;
+pub(crate) type RefCell = Arc<Mutex<Option<Weak<ResolvedRef>>>>;
+
+/// A typedef's definition, held by its `TypeDef` and weakly by every
+/// cell naming it: an object by identity, so all of them decode to one.
+pub(crate) type Resolved = sync::Arc<ResolvedRef>;
 
 fn path_key(path: &ModPath) -> &str {
     path.0.as_ref()
@@ -637,31 +654,39 @@ pub(crate) fn path_decode(buf: &mut impl Buf) -> Result<ModPath, PackError> {
     })
 }
 
-/// A resolution cell is an object: written once with its contents
-/// through `resolved`, referenced afterwards, so references that share
-/// a cell share it again after decode.
-pub(crate) fn refcell_len(
-    cell: &RefCell,
-    resolved_len: impl FnOnce(&ResolvedRef) -> usize,
-) -> usize {
+/// A resolution cell is an object: written once, referenced afterwards,
+/// so references that share a cell share it again after decode. Its
+/// contents are a tag, `CELL_EMPTY`, `CELL_LIVE` and the definition, or
+/// `CELL_DEAD` for a definition gone before the write.
+const CELL_EMPTY: u8 = 0;
+const CELL_LIVE: u8 = 1;
+const CELL_DEAD: u8 = 2;
+
+/// The cell's definition, cloned out: the definition can reach this
+/// cell again and the lock is not reentrant.
+fn cell_state(cell: &RefCell) -> (u8, Option<Resolved>) {
+    match &*cell.lock() {
+        None => (CELL_EMPTY, None),
+        Some(w) => match w.upgrade() {
+            Some(r) => (CELL_LIVE, Some(r)),
+            None => (CELL_DEAD, None),
+        },
+    }
+}
+
+pub(crate) fn refcell_len(cell: &RefCell) -> usize {
     let key = Arc::as_ptr(cell) as usize;
     object_len(
         &key,
         |k| (*k, cell.clone()),
         |e| &mut e.refcells,
-        || {
-            // The resolved type can reach this cell again; the lock is not
-            // reentrant, so clone out before walking.
-            let resolved = cell.lock().clone();
-            1 + resolved.map_or(0, |r| resolved_len(&r))
-        },
+        || 1 + cell_state(cell).1.map_or(0, |r| resolved_len(&r)),
     )
 }
 
 pub(crate) fn refcell_encode<B: BufMut>(
     cell: &RefCell,
     buf: &mut B,
-    resolved_encode: impl FnOnce(&ResolvedRef, &mut ImageBuf) -> Result<(), PackError>,
 ) -> Result<(), PackError> {
     let key = Arc::as_ptr(cell) as usize;
     object_encode(
@@ -670,23 +695,17 @@ pub(crate) fn refcell_encode<B: BufMut>(
         |e| &mut e.refcells,
         buf,
         |buf| {
-            let resolved = cell.lock().clone();
-            match resolved {
-                None => buf.put_u8(0),
-                Some(r) => {
-                    buf.put_u8(1);
-                    resolved_encode(&r, buf)?;
-                }
+            let (tag, r) = cell_state(cell);
+            buf.put_u8(tag);
+            match r {
+                Some(r) => resolved_encode(&r, buf),
+                None => Ok(()),
             }
-            Ok(())
         },
     )
 }
 
-pub(crate) fn refcell_decode(
-    buf: &mut impl Buf,
-    resolved_decode: impl Fn(&mut &[u8]) -> Result<ResolvedRef, PackError> + Copy,
-) -> Result<RefCell, PackError> {
+pub(crate) fn refcell_decode(buf: &mut impl Buf) -> Result<RefCell, PackError> {
     with_slice(buf, |sub| {
         let at = position(sub)?;
         if !sub.has_remaining() {
@@ -697,26 +716,122 @@ pub(crate) fn refcell_decode(
                 let offset = ref_offset(sub)?;
                 match decoding(|d| d.refcells.get(&offset).cloned()).flatten() {
                     Some(c) => Ok(c),
-                    None => decode_at(offset, |b| refcell_decode(b, resolved_decode)),
+                    None => decode_at(offset, |b| refcell_decode(b)),
                 }
             }
             DEF => {
-                // Entered before its contents: the resolved type can
-                // reach this cell again.
+                // Entered before its contents: the definition can reach
+                // this cell again.
                 let cell: RefCell = Arc::new(Mutex::new(None));
                 decoding(|d| d.enter(|d| &mut d.refcells, at, cell.clone()));
                 if !sub.has_remaining() {
                     return Err(PackError::BufferShort);
                 }
                 match sub.get_u8() {
-                    0 => {}
-                    1 => *cell.lock() = Some(Arc::new(resolved_decode(sub)?)),
+                    CELL_EMPTY => {}
+                    CELL_LIVE => *cell.lock() = Some(resolved_decode_weak(sub)?),
+                    CELL_DEAD => *cell.lock() = Some(Weak::new()),
                     _ => return Err(PackError::UnknownTag),
                 }
                 Ok(cell)
             }
             _ => Err(PackError::UnknownTag),
         }
+    })
+}
+
+pub(crate) fn resolved_len(r: &Resolved) -> usize {
+    let key = sync::Arc::as_ptr(r) as usize;
+    object_len(
+        &key,
+        |k| (*k, r.clone()),
+        |e| &mut e.resolveds,
+        || crate::typ::resolved_len(r),
+    )
+}
+
+pub(crate) fn resolved_encode<B: BufMut>(
+    r: &Resolved,
+    buf: &mut B,
+) -> Result<(), PackError> {
+    let key = sync::Arc::as_ptr(r) as usize;
+    object_encode(
+        &key,
+        |k| (*k, r.clone()),
+        |e| &mut e.resolveds,
+        buf,
+        |buf| crate::typ::resolved_encode(r, buf),
+    )
+}
+
+/// A definition decoded, or one still being decoded (only a cell
+/// inside it can meet it then).
+enum ResolvedRead {
+    Built(Resolved),
+    Building(Weak<ResolvedRef>),
+}
+
+fn resolved_read(buf: &mut impl Buf) -> Result<ResolvedRead, PackError> {
+    with_slice(buf, |sub| {
+        let at = position(sub)?;
+        if !sub.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match sub.get_u8() {
+            REF => {
+                let offset = ref_offset(sub)?;
+                let known = decoding(|d| match d.resolveds.get(&offset) {
+                    Some(r) => Some(ResolvedRead::Built(r.clone())),
+                    None => d.resolving.get(&offset).cloned().map(ResolvedRead::Building),
+                })
+                .flatten();
+                match known {
+                    Some(r) => Ok(r),
+                    None => decode_at(offset, |b| resolved_read(b)),
+                }
+            }
+            DEF => {
+                // Built cyclic: the cells in its body take the weak half
+                // before the definition exists.
+                let mut failed = None;
+                let r = sync::Arc::new_cyclic(|w| {
+                    decoding(|d| d.resolving.insert(at, w.clone()));
+                    crate::typ::resolved_decode(sub).unwrap_or_else(|e| {
+                        failed = Some(e);
+                        ResolvedRef::new(
+                            ModPath::root(),
+                            Default::default(),
+                            Arc::default(),
+                            Arc::from_iter([]),
+                            Type::Bottom,
+                        )
+                    })
+                });
+                decoding(|d| d.resolving.remove(&at));
+                if let Some(e) = failed {
+                    return Err(e);
+                }
+                decoding(|d| d.enter(|d| &mut d.resolveds, at, r.clone()));
+                Ok(ResolvedRead::Built(r))
+            }
+            _ => Err(PackError::UnknownTag),
+        }
+    })
+}
+
+/// A typedef's definition; one still being decoded is a malformed image,
+/// since no definition contains its own typedef.
+pub(crate) fn resolved_decode(buf: &mut impl Buf) -> Result<Resolved, PackError> {
+    match resolved_read(buf)? {
+        ResolvedRead::Built(r) => Ok(r),
+        ResolvedRead::Building(_) => Err(PackError::InvalidFormat),
+    }
+}
+
+fn resolved_decode_weak(buf: &mut impl Buf) -> Result<Weak<ResolvedRef>, PackError> {
+    Ok(match resolved_read(buf)? {
+        ResolvedRead::Built(r) => sync::Arc::downgrade(&r),
+        ResolvedRead::Building(w) => w,
     })
 }
 
@@ -1848,6 +1963,69 @@ mod tests {
             assert!(a2.parts().1, "the alias source is frozen");
             assert!(!b2.parts().1);
         });
+    }
+
+    /// A recursive typedef's cells decode onto the definition the decoded
+    /// typedef owns, the one being built included, and nothing else
+    /// keeps it: dropping the decoded defs and the session frees it.
+    #[test]
+    fn typedef_cells_decode_onto_their_definition() {
+        use crate::env::{Env, TypeDef};
+        let mut env = Env::default();
+        let scope = ModPath::root();
+        for src in [
+            "type L = [`Nil, `Cons(i64, L)]",
+            "type A = [`End, `A(B)]",
+            "type B = [`End, `B(A)]",
+        ] {
+            let expr = crate::expr::parser::parse_one(src).unwrap();
+            let ExprKind::TypeDef(td) = &expr.kind else { unreachable!() };
+            env.deftype(
+                &scope,
+                &td.name,
+                td.params.clone(),
+                &td.body,
+                true,
+                None,
+                expr.pos,
+                expr.ori.clone(),
+            )
+            .unwrap();
+        }
+        env.seed_typedef_refs();
+        let defs = env.typedefs.get(&scope).unwrap();
+        let tds: Vec<TypeDef> =
+            ["L", "A", "B"].iter().map(|n| defs.get(*n).unwrap().clone()).collect();
+        let mut enc = ImageEncoder::new();
+        let packed = pack_all(&tds, &mut enc);
+        fn target(t: &Type, name: &str) -> Option<Resolved> {
+            let mut found = match t {
+                Type::Ref(tr) if tr.name.ends_with(name) => tr.resolved(),
+                _ => None,
+            };
+            t.for_each_child(&mut |c| found = found.take().or_else(|| target(c, name)));
+            found
+        }
+        let mut dec = packed.decoder(&enc);
+        drop(enc);
+        let decoded: Vec<TypeDef> = DecodeImage::with(&mut dec, || {
+            let mut body = packed.body();
+            tds.iter().map(|_| TypeDef::decode(&mut body).unwrap()).collect()
+        });
+        let (l, a, b) = (&decoded[0], &decoded[1], &decoded[2]);
+        for (from, name, to) in [(l, "L", l), (a, "B", b), (b, "A", a)] {
+            let r = target(from.typ(), name).expect("a live cell");
+            assert!(sync::Arc::ptr_eq(&r, &to.def), "{name} decoded twice");
+            assert!(!sync::Arc::ptr_eq(&r, &tds[0].def), "decoded onto the original");
+        }
+        let held: Vec<Weak<ResolvedRef>> =
+            decoded.iter().map(|td| sync::Arc::downgrade(&td.def)).collect();
+        drop(decoded);
+        drop(dec);
+        assert!(
+            held.iter().all(|w| w.upgrade().is_none()),
+            "a decoded definition leaked"
+        );
     }
 
     #[test]

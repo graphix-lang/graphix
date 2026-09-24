@@ -2,7 +2,10 @@
 //! records that carry a position and an origin by hand (a foreign
 //! position type and a shared origin), the rest derived.
 
-use super::{origin_decode, origin_encode, origin_len, pos_decode, pos_encode, pos_len};
+use super::{
+    self as image, origin_decode, origin_encode, origin_len, pos_decode, pos_encode,
+    pos_len,
+};
 use crate::{
     BindId,
     env::{Bind, Env, ImplDef, ImportEntry, Map, TraitDef, TypeDef},
@@ -59,35 +62,26 @@ impl Pack for Bind {
 
 impl Pack for TypeDef {
     fn encoded_len(&self) -> usize {
-        let TypeDef { params, typ, rep, doc, pos, ori, seeded } = self;
-        params.encoded_len()
-            + typ.encoded_len()
+        let TypeDef { def, rep, doc, seeded } = self;
+        image::resolved_len(def)
             + rep.encoded_len()
             + doc.encoded_len()
-            + pos_len(pos)
-            + origin_len(ori)
             + seeded.load(Ordering::Relaxed).encoded_len()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let TypeDef { params, typ, rep, doc, pos, ori, seeded } = self;
-        params.encode(buf)?;
-        typ.encode(buf)?;
+        let TypeDef { def, rep, doc, seeded } = self;
+        image::resolved_encode(def, buf)?;
         rep.encode(buf)?;
         doc.encode(buf)?;
-        pos_encode(pos, buf)?;
-        origin_encode(ori, buf)?;
         seeded.load(Ordering::Relaxed).encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         Ok(TypeDef {
-            params: Pack::decode(buf)?,
-            typ: Pack::decode(buf)?,
+            def: image::resolved_decode(buf)?,
             rep: Pack::decode(buf)?,
             doc: Pack::decode(buf)?,
-            pos: pos_decode(buf)?,
-            ori: origin_decode(buf)?,
             seeded: Arc::new(AtomicBool::new(bool::decode(buf)?)),
         })
     }

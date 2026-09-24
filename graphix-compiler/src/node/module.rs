@@ -212,7 +212,7 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
                 .range::<ModPath, _>(at..)
                 .take_while(|(path, _)| under(path))
                 .flat_map(|(_, defs)| defs.into_iter())
-                .filter_map(|(_, td)| match (&td.typ, &td.rep) {
+                .filter_map(|(_, td)| match (td.typ(), &td.rep) {
                     (Type::Abstract { id, .. }, Some(_)) => Some(*id),
                     _ => None,
                 })
@@ -289,8 +289,8 @@ fn check_sig<R: Rt, E: UserEvent>(
         {
             let sig_td = TypeDefExpr {
                 name: td.name.clone(),
-                params: sig_td.params.clone(),
-                body: match (&sig_td.typ, &sig_td.rep) {
+                params: sig_td.params().clone(),
+                body: match (sig_td.typ(), &sig_td.rep) {
                     (Type::Abstract { .. }, rep) => TypeDefBody::Abstract(rep.clone()),
                     (typ, _) => TypeDefBody::Alias(typ.clone()),
                 },

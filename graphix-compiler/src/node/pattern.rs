@@ -600,7 +600,7 @@ impl StructPatternNode {
                     .env
                     .lookup_typedef(&cx.scope.lexical, name)?
                     .ok_or_else(|| anyhow!("unknown type {name}"))?;
-                let Type::Abstract { id, .. } = &td.typ else {
+                let Type::Abstract { id, .. } = td.typ() else {
                     bail!("{name} is not an abstract type, so it has no constructor")
                 };
                 let id = *id;

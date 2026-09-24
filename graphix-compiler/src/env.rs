@@ -8,7 +8,7 @@ use crate::{
     },
     is_do_block, mod_root,
     profile::{self, Phase},
-    typ::{AbstractId, FnType, TVar, TraitId, Type, TypeRef},
+    typ::{AbstractId, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
@@ -108,19 +108,36 @@ impl AbstractRep {
 
 #[derive(Debug, Clone)]
 pub struct TypeDef {
-    pub params: Arc<[(TVar, Option<Type>)]>,
-    pub typ: Type,
+    /// The parameters, body, scope and site. The only strong owner:
+    /// every resolution cell naming this definition holds it weakly.
+    pub(crate) def: std::sync::Arc<ResolvedRef>,
     /// For a Graphix-minted abstract type, the representation its
     /// constructor wraps; present only where the definition is visible.
     pub rep: Option<Type>,
     pub doc: Option<ArcStr>,
-    /// Where the typedef was declared (IDE tooling only).
-    pub pos: SourcePosition,
-    pub ori: Arc<Origin>,
     /// Every `Type::Ref` reachable from `typ` and `rep` has its
     /// resolution cell filled; cells are write-once, so this never
     /// clears.
     pub seeded: Arc<AtomicBool>,
+}
+
+impl TypeDef {
+    pub fn params(&self) -> &Arc<[(TVar, Option<Type>)]> {
+        self.def.params()
+    }
+
+    pub fn typ(&self) -> &Type {
+        self.def.typ()
+    }
+
+    /// Where the typedef was declared (IDE tooling only).
+    pub fn pos(&self) -> SourcePosition {
+        self.def.pos()
+    }
+
+    pub fn ori(&self) -> &Arc<Origin> {
+        self.def.ori()
+    }
 }
 
 /// One explicit import: the imported name (the map key in
@@ -1341,12 +1358,15 @@ impl Env {
         defs.insert_cow(
             name.into(),
             TypeDef {
-                params,
-                typ: typ.clone(),
+                def: std::sync::Arc::new(ResolvedRef::new(
+                    scope.clone(),
+                    pos,
+                    ori,
+                    params,
+                    typ.clone(),
+                )),
                 rep,
                 doc,
-                pos,
-                ori,
                 seeded: Arc::new(AtomicBool::new(false)),
             },
         );
@@ -1383,7 +1403,7 @@ impl Env {
                 if td.seeded.load(Ordering::Relaxed) {
                     continue;
                 }
-                let complete = td.typ.seed_refs(self)
+                let complete = td.typ().seed_refs(self)
                     & td.rep.as_ref().is_none_or(|rep| rep.seed_refs(self));
                 if complete {
                     td.seeded.store(true, Ordering::Relaxed);
@@ -1608,6 +1628,51 @@ mod test {
         assert_eq!(env.package_root("/#fn7/m"), "/");
         env.package_roots.insert_cow(ArcStr::from("pkg"));
         assert_eq!(env.package_root("/pkg/#do1/sub"), "/pkg");
+    }
+
+    /// A recursive typedef's body reaches its own resolution cell once
+    /// seeded; the cell is weak, so the definition goes with the env.
+    #[test]
+    fn recursive_typedefs_free_with_their_env() {
+        let mut env = Env::default();
+        let scope = ModPath::root();
+        for src in [
+            "type L = [`Nil, `Cons(i64, L)]",
+            "type A = [`End, `A(B)]",
+            "type B = [`End, `B(A)]",
+        ] {
+            let expr = crate::expr::parser::parse_one(src).unwrap();
+            let crate::expr::ExprKind::TypeDef(td) = &expr.kind else { unreachable!() };
+            env.deftype(
+                &scope,
+                &td.name,
+                td.params.clone(),
+                &td.body,
+                true,
+                None,
+                expr.pos,
+                expr.ori.clone(),
+            )
+            .unwrap();
+        }
+        env.seed_typedef_refs();
+        let defs = env.typedefs.get(&scope).unwrap();
+        fn names_itself(t: &Type, def: &std::sync::Arc<ResolvedRef>) -> bool {
+            let mut found = matches!(t, Type::Ref(tr)
+                if tr.resolved().is_some_and(|r| std::sync::Arc::ptr_eq(&r, def)));
+            t.for_each_child(&mut |c| found |= names_itself(c, def));
+            found
+        }
+        let l = defs.get("L").unwrap();
+        assert!(names_itself(l.typ(), &l.def), "the seeded body must reach its own cell");
+        let held: LPooled<Vec<std::sync::Weak<ResolvedRef>>> = ["L", "A", "B"]
+            .iter()
+            .map(|n| std::sync::Arc::downgrade(&defs.get(*n).unwrap().def))
+            .collect();
+        drop(env);
+        for w in held.iter() {
+            assert!(w.upgrade().is_none(), "a definition outlived its env");
+        }
     }
 
     /// Removing a scope drops the abstract representation its typedef

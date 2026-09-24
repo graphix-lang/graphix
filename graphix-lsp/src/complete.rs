@@ -244,7 +244,7 @@ impl<'a> Completer<'a> {
         let types = env.typedefs.get(&module).into_iter().flat_map(|t| t.into_iter());
         for (name, td) in types {
             if seen.insert(name) {
-                let detail = compact_str::format_compact!("{}", td.typ);
+                let detail = compact_str::format_compact!("{}", td.typ());
                 items.push(item(name, CompletionItemKind::STRUCT, Some(detail)));
             }
         }

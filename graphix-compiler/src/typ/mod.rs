@@ -28,7 +28,7 @@ use std::{
     hash::{Hash, Hasher},
     iter, mem,
     ops::{ControlFlow, Deref, DerefMut},
-    sync::LazyLock,
+    sync::{self, LazyLock, Weak},
 };
 use triomphe::Arc;
 
@@ -103,8 +103,9 @@ struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
     /// Definition key → (the resolution it came from, pinned so the key
     /// is not reused; the param lists seen with their ids).
-    ref_ids:
-        LPooled<IntMap<usize, (Arc<ResolvedRef>, SmallVec<[(Arc<[Type]>, usize); 2]>)>>,
+    ref_ids: LPooled<
+        IntMap<usize, (sync::Arc<ResolvedRef>, SmallVec<[(Arc<[Type]>, usize); 2]>)>,
+    >,
     /// Content identity → id for non-Ref types, so the cycle memo does
     /// not conflate distinct finite sub-problems.
     content_ids: LPooled<AHashMap<NormKey, usize>>,
@@ -275,9 +276,11 @@ impl TraitId {
 
 impl nohash::IsEnabled for TraitId {}
 
-/// What a `TypeRef`'s name means: the snapshot [`Type::lookup_ref`]
-/// reads from the env, held in the ref's write-once `resolved` cell so
-/// a ref resolved once in its native env is env-independent after.
+/// What a `TypeRef`'s name means: the definition [`Type::lookup_ref`]
+/// reads, held by its `TypeDef` and weakly by the ref's write-once
+/// `resolved` cell, so a ref resolved once in its native env is
+/// env-independent after. A recursive definition's body reaches its own
+/// cell, so a strong cell would be a cycle.
 #[derive(Debug)]
 pub(crate) struct ResolvedRef {
     canonical_scope: ModPath,
@@ -288,6 +291,32 @@ pub(crate) struct ResolvedRef {
 }
 
 impl ResolvedRef {
+    pub(crate) fn new(
+        canonical_scope: ModPath,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
+        params: Arc<[(TVar, Option<Type>)]>,
+        typ: Type,
+    ) -> Self {
+        Self { canonical_scope, pos, ori, params, typ }
+    }
+
+    pub(crate) fn pos(&self) -> SourcePosition {
+        self.pos
+    }
+
+    pub(crate) fn ori(&self) -> &Arc<Origin> {
+        &self.ori
+    }
+
+    pub(crate) fn params(&self) -> &Arc<[(TVar, Option<Type>)]> {
+        &self.params
+    }
+
+    pub(crate) fn typ(&self) -> &Type {
+        &self.typ
+    }
+
     /// The definition's identity: every cell filled from one `TypeDef`
     /// shares its params allocation.
     pub(crate) fn def_key(&self) -> usize {
@@ -319,10 +348,10 @@ pub struct TypeRef {
     pub params: Arc<[Type]>,
     pub pos: Option<SourcePosition>,
     pub ori: Option<Arc<Origin>>,
-    pub(in crate::typ) resolved: Arc<Mutex<Option<Arc<ResolvedRef>>>>,
+    pub(in crate::typ) resolved: Arc<Mutex<Option<Weak<ResolvedRef>>>>,
 }
 
-fn resolved_len(r: &ResolvedRef) -> usize {
+pub(crate) fn resolved_len(r: &ResolvedRef) -> usize {
     let ResolvedRef { canonical_scope, pos, ori, params, typ } = r;
     canonical_scope.encoded_len()
         + image::pos_len(pos)
@@ -331,7 +360,10 @@ fn resolved_len(r: &ResolvedRef) -> usize {
         + typ.encoded_len()
 }
 
-fn resolved_encode(r: &ResolvedRef, buf: &mut impl BufMut) -> Result<(), PackError> {
+pub(crate) fn resolved_encode(
+    r: &ResolvedRef,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
     let ResolvedRef { canonical_scope, pos, ori, params, typ } = r;
     canonical_scope.encode(buf)?;
     image::pos_encode(pos, buf)?;
@@ -340,7 +372,7 @@ fn resolved_encode(r: &ResolvedRef, buf: &mut impl BufMut) -> Result<(), PackErr
     typ.encode(buf)
 }
 
-fn resolved_decode(buf: &mut impl Buf) -> Result<ResolvedRef, PackError> {
+pub(crate) fn resolved_decode(buf: &mut impl Buf) -> Result<ResolvedRef, PackError> {
     Ok(ResolvedRef {
         canonical_scope: PackTrait::decode(buf)?,
         pos: image::pos_decode(buf)?,
@@ -362,7 +394,7 @@ impl PackTrait for TypeRef {
         }
         let pos = 1 + pos.as_ref().map_or(0, image::pos_len);
         let ori = 1 + ori.as_ref().map_or(0, image::origin_len);
-        base + pos + ori + image::refcell_len(resolved, resolved_len)
+        base + pos + ori + image::refcell_len(resolved)
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -387,7 +419,7 @@ impl PackTrait for TypeRef {
                 image::origin_encode(o, buf)?;
             }
         }
-        image::refcell_encode(resolved, buf, resolved_encode)
+        image::refcell_encode(resolved, buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
@@ -407,7 +439,7 @@ impl PackTrait for TypeRef {
             1 => Some(image::origin_decode(buf)?),
             _ => return Err(PackError::UnknownTag),
         };
-        let resolved = image::refcell_decode(buf, |b| resolved_decode(b))?;
+        let resolved = image::refcell_decode(buf)?;
         Ok(TypeRef { scope, name, params, pos, ori, resolved })
     }
 }
@@ -463,13 +495,15 @@ impl TypeRef {
         Some(r.typ.replace_tvars(&known))
     }
 
-    pub(crate) fn resolved(&self) -> Option<Arc<ResolvedRef>> {
-        self.resolved.lock().clone()
+    /// The definition the cell holds; `None` when it is empty, or when
+    /// the definition is gone (see [`Self::resolve_in`]).
+    pub(crate) fn resolved(&self) -> Option<sync::Arc<ResolvedRef>> {
+        self.resolved.lock().as_ref().and_then(Weak::upgrade)
     }
 
     /// [`ResolvedRef::def_key`] of the filled cell.
     pub(crate) fn def_key(&self) -> Option<usize> {
-        self.resolved.lock().as_ref().map(|r| r.def_key())
+        self.resolved().map(|r| r.def_key())
     }
 
     /// Do two same-named refs mean the same definition? True unless
@@ -484,19 +518,9 @@ impl TypeRef {
 
     /// What this ref's name means in `env`; never reads or writes the
     /// cell.
-    pub(crate) fn resolve_pure(&self, env: &Env) -> Option<Arc<ResolvedRef>> {
+    pub(crate) fn resolve_pure(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
         env.resolve_visible(&self.scope, &self.name, crate::env::NameNs::Type, |s, n| {
-            env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| {
-                Arc::new(ResolvedRef {
-                    canonical_scope: ModPath(netidx_core::path::Path::from(
-                        ArcStr::from(s),
-                    )),
-                    pos: d.pos,
-                    ori: d.ori.clone(),
-                    params: d.params.clone(),
-                    typ: d.typ.clone(),
-                })
-            })
+            env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| d.def.clone())
         })
         .map_err(|e| {
             // Logged so an ambiguous glob does not read as "undefined type".
@@ -512,12 +536,30 @@ impl TypeRef {
     /// cell lock held (resolution can re-enter). Fills only this ref,
     /// not the snapshot's nested refs: mid-compile the env is
     /// incomplete, and a nested name can resolve to an outer shadow.
-    pub(crate) fn resolve_in(&self, env: &Env) -> Option<Arc<ResolvedRef>> {
-        if let Some(r) = self.resolved() {
-            return Some(r);
+    /// A cell whose definition is gone (a type that outlived the env
+    /// entry that defined it) is `None` too, and logged: the name may
+    /// mean something else now, so it is never re-resolved.
+    pub(crate) fn resolve_in(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
+        let dead = || {
+            log::error!(
+                "type `{}` outlived its definition in `{}`",
+                self.name,
+                self.scope
+            );
+            None
+        };
+        if let Some(w) = &*self.resolved.lock() {
+            return w.upgrade().or_else(dead);
         }
         let r = self.resolve_pure(env)?;
-        Some(self.resolved.lock().get_or_insert(r).clone())
+        let mut cell = self.resolved.lock();
+        match &*cell {
+            Some(w) => w.upgrade().or_else(dead),
+            None => {
+                *cell = Some(sync::Arc::downgrade(&r));
+                Some(r)
+            }
+        }
     }
 }
 

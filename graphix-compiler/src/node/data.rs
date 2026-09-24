@@ -845,7 +845,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
             .lookup_typedef(&scope.lexical, name)
             .at(&spec)?
             .ok_or_else(|| anyhow!("unknown type {name}").at(&spec))?;
-        let Type::Abstract { id, .. } = &td.typ else {
+        let Type::Abstract { id, .. } = td.typ() else {
             bailat!(spec, "{name} is not an abstract type, so it has no constructor")
         };
         let id = *id;
