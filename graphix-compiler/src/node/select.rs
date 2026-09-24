@@ -1,8 +1,8 @@
 use super::{
-    Held, VarRead, WakeBit,
+    Held, WakeBit,
     compiler::compile,
     pattern::{ArmMatch, PatternNode, SliceKind, StructPatternNode},
-    read_var,
+    wake::TrackedFires,
 };
 use crate::{
     BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
@@ -24,7 +24,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{Typ, Value};
-use nohash::{IntMap, IntSet};
+use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -74,7 +74,9 @@ impl LazyArmFacts {
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
         LazyArmFacts {
-            tracked: TrackedFires::init(&ctx.env, arms),
+            tracked: TrackedFires::new(&ctx.env, arms.len(), |i, r| {
+                arm_refs(&arms[i], r)
+            }),
             sleep_on_deselect: arms
                 .iter()
                 .map(|(_, n)| crate::analysis::arm_sleeps_on_deselect(ctx, n))
@@ -582,164 +584,25 @@ fn deselect<R: Rt, E: UserEvent>(
         body.sleep(ctx);
         ctx.deselecting_arm = saved;
     }
-    tracked.refresh_arm(&ctx.env, j, pat, body);
+    tracked.refresh(&ctx.env, j, |r| {
+        body.refs(r);
+        bound_by(pat, r)
+    });
 }
 
-/// Wake-catch-up fire tracking (design/wake_catchup.md): one fire bit
-/// per arm-body input, set when the input fires and consumed by the
-/// arm evaluation that reads it, so a woken arm receives exactly the
-/// fires no selected reader saw, once, at the current standing value.
-/// Guards, the scrutinee and pattern binds (of any enclosing select)
-/// are not tracked. Survives sleep and `reset_replay`; frames excluded.
-#[derive(Debug, Default)]
-struct TrackedFires {
-    /// Per arm: the body's free refs, keyed by the input they are
-    /// tracked under (a destructuring `let`'s siblings share their
-    /// group's representative, `Env::facet_of`). Refreshed at each
-    /// deselect, when the arm's subtree is fully materialized.
-    per_arm: Vec<IntMap<BindId, SmallVec<[BindId; 2]>>>,
-    /// Per arm: the inputs the pattern binds the body reads are facets
-    /// of. Reading a facet consumes the input's fire; the facet itself
-    /// is never delivered.
-    consumes: Vec<IntSet<BindId>>,
-    /// The union of `per_arm`'s keys.
-    all: IntSet<BindId>,
-    /// Sound fires no arm evaluation has consumed yet.
-    pending: IntSet<BindId>,
+/// An arm's free reads: its body's refs less its pattern's binds.
+fn arm_refs<R: Rt, E: UserEvent>(
+    (pat, body): &(PatternNode<R, E>, Node<R, E>),
+    r: &mut Refs,
+) {
+    body.refs(r);
+    bound_by(pat, r)
 }
 
-impl TrackedFires {
-    /// Arm `arm`'s tracked inputs into `inputs` and the pattern-bind
-    /// inputs it consumes into `consumes`, both cleared first.
-    fn arm_refs<R: Rt, E: UserEvent>(
-        env: &Env,
-        pat: &PatternNode<R, E>,
-        arm: &Node<R, E>,
-        inputs: &mut IntMap<BindId, SmallVec<[BindId; 2]>>,
-        consumes: &mut IntSet<BindId>,
-    ) {
-        inputs.clear();
-        consumes.clear();
-        let mut r = Refs::default();
-        arm.refs(&mut r);
-        pat.structure_predicate.ids(&mut |id| {
-            r.bound.insert(id);
-        });
-        for id in r.refed.difference(&r.bound).copied() {
-            match env.pattern_inputs(id) {
-                None => inputs.entry(env.facet_of(id)).or_default().push(id),
-                Some(ids) => consumes.extend(ids.iter().map(|id| env.facet_of(*id))),
-            }
-        }
-    }
-
-    fn init<R: Rt, E: UserEvent>(
-        env: &Env,
-        arms: &[(PatternNode<R, E>, Node<R, E>)],
-    ) -> Self {
-        let mut t = TrackedFires {
-            per_arm: arms.iter().map(|_| IntMap::default()).collect(),
-            consumes: arms.iter().map(|_| IntSet::default()).collect(),
-            all: IntSet::default(),
-            pending: IntSet::default(),
-        };
-        for (i, (pat, arm)) in arms.iter().enumerate() {
-            Self::arm_refs(env, pat, arm, &mut t.per_arm[i], &mut t.consumes[i]);
-        }
-        t.all.extend(t.per_arm.iter().flat_map(|m| m.keys().copied()));
-        t
-    }
-
-    fn refresh_arm<R: Rt, E: UserEvent>(
-        &mut self,
-        env: &Env,
-        i: usize,
-        pat: &PatternNode<R, E>,
-        arm: &Node<R, E>,
-    ) {
-        let Self { per_arm, consumes, all, pending } = self;
-        Self::arm_refs(env, pat, arm, &mut per_arm[i], &mut consumes[i]);
-        all.clear();
-        all.extend(per_arm.iter().flat_map(|m| m.keys().copied()));
-        pending.retain(|id| all.contains(id));
-    }
-
-    /// Record this cycle's sound fires of tracked inputs. Runs before
-    /// routing, so the taken arm consumes same-cycle fires immediately
-    /// and no-arm cycles accumulate them for a future waker.
-    fn observe<R: Rt, E: UserEvent>(&mut self, ctx: &ExecCtx<R, E>, event: &Event<E>) {
-        if ctx.frame_depth > 0 {
-            return;
-        }
-        let Self { all, pending, .. } = self;
-        for id in all.iter() {
-            if !pending.contains(id)
-                && let Some(VarRead::Delivered(tv)) = read_var(ctx, event, id)
-                && tv.tag().is_fired()
-                && !tv.tag().is_bottom()
-            {
-                pending.insert(*id);
-            }
-        }
-    }
-
-    /// Consume the bits arm `i` reads, injecting one catch-up FIRED
-    /// delivery at the current standing value for each input not
-    /// delivered live this cycle. Returns the injected entries for
-    /// [`Self::restore`]; a bottomed or vanished input spends its bit
-    /// and injects nothing.
-    fn deliver<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &ExecCtx<R, E>,
-        event: &mut Event<E>,
-        i: usize,
-    ) -> SmallVec<[(BindId, Option<TagValue>); 4]> {
-        let mut injected: SmallVec<[(BindId, Option<TagValue>); 4]> = SmallVec::new();
-        if ctx.frame_depth > 0 || self.pending.is_empty() {
-            return injected;
-        }
-        if let Some(consumed) = self.consumes.get(i) {
-            for id in consumed.iter() {
-                self.pending.remove(id);
-            }
-        }
-        let Some(set) = self.per_arm.get(i) else { return injected };
-        let keys: SmallVec<[BindId; 8]> =
-            self.pending.iter().filter(|id| set.contains_key(id)).copied().collect();
-        for key in keys {
-            self.pending.remove(&key);
-            for id in set[&key].iter().copied() {
-                let standing = match read_var(ctx, event, &id) {
-                    Some(VarRead::Delivered(_)) => None,
-                    Some(VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
-                        Some(tv.value_cloned())
-                    }
-                    _ => None,
-                };
-                if let Some(v) = standing {
-                    let prev = event.variables.insert(id, TagValue::fired(v));
-                    injected.push((id, prev));
-                }
-            }
-        }
-        injected
-    }
-
-    fn restore<E: UserEvent>(
-        event: &mut Event<E>,
-        injected: SmallVec<[(BindId, Option<TagValue>); 4]>,
-    ) {
-        for (id, prev) in injected {
-            match prev {
-                Some(tv) => {
-                    event.variables.insert(id, tv);
-                }
-                None => {
-                    event.variables.remove(&id);
-                }
-            }
-        }
-    }
+fn bound_by<R: Rt, E: UserEvent>(pat: &PatternNode<R, E>, r: &mut Refs) {
+    pat.structure_predicate.ids(&mut |id| {
+        r.bound.insert(id);
+    });
 }
 
 /// A refutable head the literal pool reads at one position of a

@@ -750,6 +750,8 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Catch(&'a node::error::Catch<R, E>),
     SeqGuard(&'a node::error::SeqGuard<R, E>),
     SeqAbort(&'a node::error::SeqAbortEvent<R, E>),
+    SeqMachine(&'a node::seq_machine::SeqMachine<R, E>),
+    SeqCapture(&'a node::seq_machine::SeqCapture<R, E>),
     Qop(&'a node::error::Qop<R, E>),
     OrNever(&'a node::error::OrNever<R, E>),
     ExplicitParens(&'a node::ExplicitParens<R, E>),

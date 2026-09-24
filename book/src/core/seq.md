@@ -101,7 +101,9 @@ inside a step, or call a function. The statement kinds are:
 produces a value. The last expression of the block is its output.
 
 **`let x = e;`** is a step like any other, and additionally carries the
-value it produced into every later step. A later `let x = ...` creates a
+value it produced into every later step. Once its step has passed, `x`
+keeps that value: a later change of `e`'s inputs while a later step
+waits is not seen. A later `let x = ...` creates a
 new binding. Its initializer sees the preceding `x`;
 earlier references and closures continue to refer to that preceding
 binding. The new binding can have a different type.
@@ -145,17 +147,25 @@ earlier statement wrote starts the next cycle and reads the new value:
 in between reads land together: `a <- x; b <- y; let s = a + b` writes
 `a` and `b` in one cycle and binds `s` the next.
 
-The compiler decides this by name. It cannot see what a function reads,
-so a call that follows a connect waits for the write to land, and
-`a <- f(x); b <- g(y)` issues `g` only after `f` has produced. When you
-know the two are independent, put them in a block: `{ a <- f(x); b <-
-g(y) }` issues both at once.
+The compiler decides this after it has resolved every call, following
+each call into the function it reaches. A write a function makes counts
+like one the statement makes itself: `put(5); let s = b`, where `put`
+writes the `b` it captured, reads the new `b`. A call to a function
+that does not read `a` does not wait for `a <- ..` to land. Two things
+count as touching every variable, because the compiler cannot name what
+they touch: a read or write through a reference (`*r`), and a call
+whose function is only known at run time (one stored in a struct or an
+array). A statement after one of those that reads anything outside the
+seq starts a cycle later. `until` and `try` follow the same rule. When
+you know two calls are independent, put them in a block: `{ a <- f(x);
+b <- g(y) }` issues both at once.
 
 `graphix --expand file.gx` checks the file and prints each sequence's
-lowered program: the step variable, one select arm per run of
-statements, and the cells that carry `let` values between steps. It is
-the tool for seeing exactly which event a step is waiting on and which
-statements share a cycle.
+lowered program: the step variable and one step per statement, then,
+for each instance, which steps start in the cycle the one before them
+completes (`S0 -> S1 same`) and which wait a cycle (`S1 -> S2 next`).
+It is the tool for seeing exactly which event a step is waiting on and
+which statements share a cycle.
 
 ## Call inputs
 
@@ -223,9 +233,11 @@ The one name it does not read live is the trigger's: `seqq request { until
 served == request; .. }` waits on the request this run is serving, as the
 same block under `seq` does.
 Connect destinations remain the original variables. An external variable
-written directly by the block also remains live when read, so queued
-`count <- count + 1` operations can accumulate rather than overwrite one
-another with an old count. Taking `&state` refers to the original state.
+the block writes, directly or through a function it calls, also remains
+live when read, so queued `count <- count + 1` operations can accumulate
+rather than overwrite one another with an old count. Taking `&state`
+refers to the original state. A write through a reference does not make
+anything live: the reference's target stays what it was captured as.
 
 Keep persistent effects such as subscriptions and `tui::suspend` outside
 the block; steps can update their inputs and wait for their responses.

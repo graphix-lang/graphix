@@ -539,25 +539,31 @@ blocker profile, not a gap count.
 - **`catch`** (`design/catch.md`) installs a handler for the rest of its
   block; it is not control flow.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): `seq [trigger | let pat = trigger] { stmt* }`
-  desugars to a pc machine (busy-drop, carried lets as cells, calls
-  issued once per entry over an argument snapshot). A statement starts
-  in the first cycle its predecessor's effect can be seen: statements
-  share a select arm until one reads or rewrites a variable an earlier
-  one wrote (a call, a deref or a nested seq counts as reading
-  everything pending and writing what the arm took `&` of), and the
-  next arm is the next cycle. A `{ .. }`
-  statement issues its statements together with local lets. `until`,
+  desugars to a machine node (`node/seq_machine.rs`: busy-drop, calls
+  issued once per entry over an argument snapshot); every statement is
+  a step and a passed step sleeps, so a `let` keeps its step's value.
+  A statement starts in the first cycle its predecessor's effect can
+  be seen: the next step enters in the cycle its predecessor completes
+  unless it reads or writes a variable a pending write targets, by the
+  post-resolution dependency summaries (`design/dependency_summaries.md`,
+  `analysis::plan_machines`, per instance): a callee's writes count, a
+  read or write through a reference or a call with no static target
+  counts as every variable; `until` and `try` follow the same rule.
+  Entering a step wakes it with `Select`'s catch-up (`node/wake.rs`).
+  A `{ .. }` statement issues its statements together with local lets. `until`,
   `try { .. } with(e[: T]) { .. }` (the error branch; `catch` is refused
   in a seq body outside lambda literals). A step completes on a FIRED
   production after its entry, never on a standing value; a call-free
   step reads its level as it stands at entry. `seqq` queues triggers
-  with captured values. `seq t; abort(e) { .. }` ends the run when
+  with captured values; a capture a step writes, a callee's write
+  included, is live (`SeqCapture`). `seq t; abort(e) { .. }` ends the run when
   `e` fires: silent, past any `try`, and it wins the cycle it fires in
   (the compiler-only `SeqAbort` node fails the machine's guards before
-  the select updates); `e` is an initial step, asleep between runs, and
+  the machine updates); `e` is an initial step, asleep between runs, and
   only its fires after the entry cycle count. `flush(e)` (`seqq` only)
   also empties the queue. A machine resets to idle in its handler's
-  `sleep()`: a run does not survive its arm's sleep. `--expand` prints the machine. `range(i, j)` is
+  `sleep()`: a run does not survive its arm's sleep. `--expand` prints the
+  machine and each instance's step boundaries. `range(i, j)` is
   the integer builtin (`` `RangeError ``).
 - **Comments** are legal only above an expression, a select arm, an impl
   or trait method, a struct-literal field or an interface item; `///`

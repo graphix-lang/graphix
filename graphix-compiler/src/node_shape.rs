@@ -324,6 +324,11 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::Qop(n) => kids.push(&n.n),
         V::SeqGuard(n) => kids.push(&n.n),
         V::SeqAbort(n) => kids.push(&n.n),
+        V::SeqCapture(c) => kids.extend([&c.snapshot, &c.live]),
+        V::SeqMachine(m) => {
+            kids.push(&m.pc);
+            kids.extend(m.steps.iter().flat_map(|s| s.nodes.iter()));
+        }
         V::OrNever(n) => kids.push(&n.n),
         V::Not(n) => kids.push(&n.n),
         V::Neg(n) => kids.push(&n.n),
@@ -389,6 +394,8 @@ pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> &'static str
         V::Catch(_) => "Catch",
         V::SeqGuard(_) => "SeqGuard",
         V::SeqAbort(_) => "SeqAbort",
+        V::SeqMachine(_) => "SeqMachine",
+        V::SeqCapture(_) => "SeqCapture",
         V::Qop(_) => "Qop",
         V::OrNever(_) => "OrNever",
         V::ExplicitParens(_) => "ExplicitParens",

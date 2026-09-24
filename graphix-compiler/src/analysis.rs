@@ -9,7 +9,7 @@
 use crate::{
     ApplyView, BindId, DefAssertionKind, ExecCtx, LambdaId, LambdaInstanceId, Node,
     NodeView, Refs, Rt, Update, UserEvent,
-    dbgenv::gxdbg_effect,
+    dbgenv::{gxdbg_effect, gxdbg_seqplan},
     effects::{EffectKind, RecursionKind},
     expr::{At, ExprKind, ModuleKind},
     fusion::{self, lowering},
@@ -18,8 +18,10 @@ use crate::{
         lambda::{GXLambda, LambdaDef},
         module::Module,
         select::Select,
+        seq_machine::{SeqCapture, SeqMachine},
     },
     profile::{self, Phase},
+    typ::Type,
 };
 use anyhow::{Result, anyhow};
 use nohash::{IntMap, IntSet};
@@ -37,11 +39,15 @@ struct StaticEdge<'a, R: Rt, E: UserEvent> {
 /// resolved calls between them, and, per bind a resolved call names
 /// its callee through, the instances it reached: the back-edge table
 /// for a self-call that is not yet in `ctx.bind_to_lambda` (a
-/// dynamically bound recursive callee).
+/// dynamically bound recursive callee). Also the seq machines met, and
+/// the `seqq` captures by the id of their machine, with the bind each
+/// is the value of.
 struct StaticCallGraph<'a, R: Rt, E: UserEvent> {
     instances: LPooled<IntMap<LambdaInstanceId, &'a GXLambda<R, E>>>,
     edges: LPooled<Vec<StaticEdge<'a, R, E>>>,
     self_binds: LPooled<IntMap<BindId, SmallVec<[LambdaInstanceId; 2]>>>,
+    machines: LPooled<Vec<&'a SeqMachine<R, E>>>,
+    captures: LPooled<IntMap<u64, SmallVec<[(BindId, &'a SeqCapture<R, E>); 4]>>>,
 }
 
 impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {
@@ -64,6 +70,8 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
         instances: LPooled::take(),
         edges: LPooled::take(),
         self_binds: LPooled::take(),
+        machines: LPooled::take(),
+        captures: LPooled::take(),
     };
     let mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>> =
         LPooled::take();
@@ -76,7 +84,19 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
     }
     while let Some((node, caller)) = stack.pop() {
         fusion::for_each_node(node, &mut |n| {
-            let NodeView::CallSite(site) = n.view() else { return };
+            let site = match n.view() {
+                NodeView::CallSite(site) => site,
+                NodeView::SeqMachine(m) => return graph.machines.push(m),
+                NodeView::Bind(b) => {
+                    if let NodeView::SeqCapture(c) = b.node.view()
+                        && let Some(id) = b.pattern.single_bind_id()
+                    {
+                        graph.captures.entry(c.machine).or_default().push((id, c))
+                    }
+                    return;
+                }
+                _ => return,
+            };
             if let Some(target) = site.static_target() {
                 graph.edges.push(StaticEdge { caller, callee: target.instance, site });
             }
@@ -196,6 +216,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
     let graph = collect_static_graph(root, None);
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
+    plan_machines(&graph);
     // An assertion whose definition is not yet reached stays pending
     // for a later compile or a runtime bind.
     check_def_assertions(&graph, ctx)
@@ -218,6 +239,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     }
     let facts = infer_effects(&graph, ctx);
     mark_recursion(&graph, &facts, ctx);
+    plan_machines(&graph);
     if let Err(e) = check_def_assertions(&graph, ctx) {
         log::error!("{e:#}");
         eprintln!("{e:#}");
@@ -456,6 +478,8 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::Catch(_)
         | NodeView::SeqGuard(_)
         | NodeView::SeqAbort(_)
+        | NodeView::SeqMachine(_)
+        | NodeView::SeqCapture(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
@@ -759,4 +783,316 @@ pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
         pure &= facts.is_pure();
     });
     !pure || recurses
+}
+
+/// Variables named by id, those some reference points to (`refs`), or
+/// every variable (`all`) (`design/dependency_summaries.md` §2).
+#[derive(Default)]
+struct Vars {
+    all: bool,
+    refs: bool,
+    ids: LPooled<IntSet<BindId>>,
+}
+
+impl Vars {
+    fn is_empty(&self) -> bool {
+        !self.all && !self.refs && self.ids.is_empty()
+    }
+
+    fn unknown(&self) -> bool {
+        self.all || self.refs
+    }
+
+    /// Whether `id` may be among these; a reference's target is not
+    /// counted, a `seqq` capture of it keeping its queued value.
+    fn names(&self, id: &BindId) -> bool {
+        self.all || self.ids.contains(id)
+    }
+
+    /// Add `other`; whether anything was added.
+    fn union(&mut self, other: &Vars) -> bool {
+        if self.all {
+            return false;
+        }
+        if other.all {
+            self.all = true;
+            self.ids.clear();
+            return true;
+        }
+        let refs = !self.refs && other.refs;
+        self.refs |= other.refs;
+        let n = self.ids.len();
+        self.ids.extend(other.ids.iter().copied());
+        refs || self.ids.len() != n
+    }
+
+    fn meets(&self, other: &Vars) -> bool {
+        match (self.unknown(), other.unknown()) {
+            (true, _) => !other.is_empty(),
+            (_, true) => !self.is_empty(),
+            _ => {
+                let (small, large) = if self.ids.len() <= other.ids.len() {
+                    (&self.ids, &other.ids)
+                } else {
+                    (&other.ids, &self.ids)
+                };
+                small.iter().any(|id| large.contains(id))
+            }
+        }
+    }
+}
+
+/// What code reads and writes, following statically resolved calls.
+#[derive(Default)]
+struct Summary {
+    reads: Vars,
+    writes: Vars,
+}
+
+impl Summary {
+    fn opaque(&mut self) {
+        self.reads.all = true;
+        self.writes.all = true;
+    }
+
+    fn union(&mut self, other: &Summary) -> bool {
+        let r = self.reads.union(&other.reads);
+        self.writes.union(&other.writes) || r
+    }
+}
+
+/// `n`'s own reads and writes into `s`, and the instances its calls
+/// reach into `callees`. A write or read through a reference, a call
+/// with no static target, a dynamic module, and a builtin handed a
+/// function or a reference touch every variable.
+fn local_summary<R: Rt, E: UserEvent>(
+    n: &Node<R, E>,
+    graph: &StaticCallGraph<'_, R, E>,
+    s: &mut Summary,
+    callees: &mut SmallVec<[LambdaInstanceId; 4]>,
+) {
+    fusion::for_each_node(n, &mut |x| match x.view() {
+        NodeView::Ref(r) => {
+            s.reads.ids.insert(r.id);
+        }
+        NodeView::Connect(c) => {
+            s.writes.ids.insert(c.id);
+        }
+        NodeView::ConnectDeref(_) => s.writes.refs = true,
+        NodeView::Deref(_) => s.reads.refs = true,
+        NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
+        NodeView::CallSite(cs) => {
+            if let Some(t) = cs.static_target()
+                && graph.instances.contains_key(&t.instance)
+            {
+                return callees.push(t.instance);
+            }
+            match cs.resolved_apply() {
+                Some(ApplyView::Lambda(g))
+                    if graph.instances.contains_key(&g.instance_id()) =>
+                {
+                    return callees.push(g.instance_id());
+                }
+                Some(ApplyView::BuiltIn) => {
+                    let reaches =
+                        cs.args.values().filter_map(|a| a.node.as_ref()).any(|a| {
+                            a.typ().with_deref(|t| {
+                                matches!(
+                                    t,
+                                    Some(Type::ByRef(_) | Type::Fn(_) | Type::Any)
+                                )
+                            })
+                        });
+                    if reaches {
+                        if gxdbg_seqplan() {
+                            eprintln!("SEQPLAN   opaque builtin {}", cs.fnode().spec());
+                        }
+                        s.opaque()
+                    }
+                    return;
+                }
+                _ => (),
+            }
+            if let NodeView::Ref(r) = cs.fnode().view()
+                && let Some(ids) = graph.self_binds.get(&r.id)
+            {
+                return callees.extend(ids.iter().copied());
+            }
+            if gxdbg_seqplan() {
+                eprintln!(
+                    "SEQPLAN   opaque call {} at {} static={} applied={}",
+                    cs.spec(),
+                    cs.spec().pos,
+                    cs.static_target().is_some(),
+                    match cs.resolved_apply() {
+                        Some(ApplyView::Lambda(_)) => "lambda",
+                        Some(ApplyView::BuiltIn) => "builtin",
+                        None => "none",
+                    }
+                );
+            }
+            s.opaque()
+        }
+        _ => (),
+    })
+}
+
+/// The summary of every instance `roots` reach: its body's own reads and
+/// writes joined with its callees', to a fixpoint over recursion.
+fn instance_summaries<R: Rt, E: UserEvent>(
+    graph: &StaticCallGraph<'_, R, E>,
+    roots: impl IntoIterator<Item = LambdaInstanceId>,
+) -> LPooled<IntMap<LambdaInstanceId, Summary>> {
+    let mut callees: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
+        LPooled::take();
+    let mut sums: LPooled<IntMap<LambdaInstanceId, Summary>> = LPooled::take();
+    let mut stack: LPooled<Vec<LambdaInstanceId>> = roots.into_iter().collect();
+    while let Some(i) = stack.pop() {
+        if sums.contains_key(&i) {
+            continue;
+        }
+        let Some(g) = graph.instances.get(&i) else { continue };
+        let mut s = Summary::default();
+        let mut cs = SmallVec::new();
+        local_summary(g.body(), graph, &mut s, &mut cs);
+        stack.extend(cs.iter().copied());
+        sums.insert(i, s);
+        callees.insert(i, cs);
+    }
+    let mut callers: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
+        LPooled::take();
+    for (i, cs) in callees.iter() {
+        for c in cs.iter() {
+            callers.entry(*c).or_default().push(*i);
+        }
+    }
+    let mut work: LPooled<Vec<LambdaInstanceId>> = sums.keys().copied().collect();
+    while let Some(i) = work.pop() {
+        let mut acc = Summary::default();
+        acc.union(&sums[&i]);
+        let mut changed = false;
+        for c in callees[&i].iter() {
+            if let Some(s) = sums.get(c) {
+                changed |= acc.union(s);
+            }
+        }
+        if changed {
+            sums.insert(i, acc);
+            if let Some(cs) = callers.get(&i) {
+                work.extend(cs.iter().copied());
+            }
+        }
+    }
+    sums
+}
+
+/// Decide each seq machine's step boundaries: a step enters in the cycle
+/// its predecessor completes unless it reads or writes a variable a write
+/// since the last next-cycle boundary is still carrying there
+/// (`design/dependency_summaries.md` §3). A `seqq` capture of a variable
+/// some step writes is live (§4).
+fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
+    let StaticCallGraph { machines, captures, .. } = graph;
+    if machines.is_empty() {
+        return;
+    }
+    let _profile = profile::phase(Phase::SeqPlan);
+    let steps: LPooled<Vec<SmallVec<[(Summary, SmallVec<[LambdaInstanceId; 4]>); 8]>>> =
+        machines
+            .iter()
+            .map(|m| {
+                m.steps
+                    .iter()
+                    .map(|s| {
+                        let mut sum = Summary::default();
+                        let mut cs = SmallVec::new();
+                        s.nodes
+                            .iter()
+                            .for_each(|n| local_summary(n, graph, &mut sum, &mut cs));
+                        (sum, cs)
+                    })
+                    .collect()
+            })
+            .collect();
+    let sums = instance_summaries(
+        graph,
+        steps.iter().flat_map(|m| m.iter().flat_map(|(_, cs)| cs.iter().copied())),
+    );
+    for (m, local) in machines.iter().zip(steps.iter()) {
+        let mut access: SmallVec<[Summary; 8]> = local
+            .iter()
+            .map(|(local, cs)| {
+                let mut s = Summary::default();
+                s.union(local);
+                cs.iter().filter_map(|c| sums.get(c)).for_each(|c| {
+                    s.union(c);
+                });
+                s.reads.ids.remove(&m.pc_id);
+                s.writes.ids.remove(&m.pc_id);
+                s
+            })
+            .collect();
+        if let Some(caps) = captures.get(&m.id) {
+            let mut written = Vars::default();
+            access.iter().for_each(|s| {
+                written.union(&s.writes);
+            });
+            for (id, c) in caps.iter() {
+                let live = written.names(&c.live_id);
+                c.is_live.store(live, Ordering::Relaxed);
+                if live {
+                    for a in access.iter_mut().filter(|a| a.reads.ids.contains(id)) {
+                        a.reads.ids.insert(c.live_id);
+                    }
+                }
+            }
+        }
+        let mut pending: SmallVec<[Vars; 8]> =
+            (0..access.len()).map(|_| Vars::default()).collect();
+        for (k, s) in m.steps.iter().enumerate() {
+            let same = match s.next {
+                Some(n) if n > k => {
+                    let mut out = Vars::default();
+                    out.union(&pending[k]);
+                    out.union(&access[k].writes);
+                    let same =
+                        !out.meets(&access[n].reads) && !out.meets(&access[n].writes);
+                    if same {
+                        pending[n].union(&out);
+                    }
+                    same
+                }
+                _ => false,
+            };
+            s.same_cycle.store(same, Ordering::Relaxed);
+        }
+        if m.expand {
+            println!("// seq at {} steps: {}\n", m.spec().pos, m.plan());
+        }
+        if gxdbg_seqplan() {
+            eprintln!("SEQPLAN {} {}", m.spec().pos, m.plan());
+            for (k, a) in access.iter().enumerate() {
+                eprintln!(
+                    "SEQPLAN   S{k} reads {} writes {}",
+                    if a.reads.all {
+                        "all".into()
+                    } else {
+                        format!("{:?} refs {}", a.reads.ids, a.reads.refs)
+                    },
+                    if a.writes.all {
+                        "all".into()
+                    } else {
+                        format!("{:?} refs {}", a.writes.ids, a.writes.refs)
+                    },
+                );
+            }
+            for (_, c) in captures.get(&m.id).into_iter().flatten() {
+                eprintln!(
+                    "SEQPLAN   capture {:?} live {}",
+                    c.live_id,
+                    c.is_live.load(Ordering::Relaxed)
+                );
+            }
+        }
+    }
 }

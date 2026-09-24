@@ -79,9 +79,11 @@ async fn destructured_snapshot(fusion_disabled: bool) -> Result<()> {
 }
 
 // The trigger's name reads the snapshot; a write or a reference reaches
-// the variable itself.
+// the variable itself. Each run outlasts its write, which would otherwise
+// land on an idle machine and start the next run.
 async fn trigger_writes_reach_the_variable(fusion_disabled: bool) -> Result<()> {
-    for body in ["t <- 10; t", "let q = &t; *q <- 10; 1"] {
+    let hold = "sys::time::after_idle(duration:20.ms, 1)";
+    for body in [format!("t <- 10; {hold}; t"), format!("let q = &t; *q <- 10; {hold}")] {
         let code = format!(
             r#"{{
                 let t = 0;
@@ -94,7 +96,7 @@ async fn trigger_writes_reach_the_variable(fusion_disabled: bool) -> Result<()> 
     }
     let code = r#"{
         let t = 0;
-        seq t { t <- 10; t + 1 }
+        seq t { t <- 10; sys::time::after_idle(duration:20.ms, 1); t + 1 }
     }"#;
     let (values, _) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
     assert_eq!(super::dense_deltas::as_i64s(&values), [1], "the body reads the snapshot");

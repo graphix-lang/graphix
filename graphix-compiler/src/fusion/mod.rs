@@ -399,6 +399,15 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::Qop(q) => rec!(&q.n),
         NodeView::SeqGuard(g) => rec!(&g.n),
         NodeView::SeqAbort(a) => rec!(&a.n),
+        NodeView::SeqCapture(c) => rec!(&c.snapshot, &c.live),
+        NodeView::SeqMachine(m) => {
+            rec!(&m.pc);
+            for s in m.steps.iter() {
+                for n in s.nodes.iter() {
+                    rec!(n)
+                }
+            }
+        }
         NodeView::OrNever(o) => rec!(&o.n),
         NodeView::ExplicitParens(p) => rec!(&p.n),
         NodeView::TypeCast(t) => rec!(&t.n),
@@ -991,6 +1000,8 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
         NodeView::Catch(_) => Some("catch installs an error handler"),
         NodeView::SeqGuard(_) => Some("sequence guard keeps cross-cycle state"),
         NodeView::SeqAbort(_) => Some("sequence abort fails a run"),
+        NodeView::SeqMachine(_) => Some("a seq machine sequences across cycles"),
+        NodeView::SeqCapture(_) => Some("a seqq capture is chosen by the analysis"),
         NodeView::Module(_) => Some("module statement is structure, not computation"),
         NodeView::Block(b) if b.module => {
             Some("module statement is structure, not computation")

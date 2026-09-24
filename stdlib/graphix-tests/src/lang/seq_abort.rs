@@ -50,7 +50,7 @@ async fn abort_beats_completion(fusion_disabled: bool) -> Result<()> {
         "#
         );
         let ran = values(&body, fusion_disabled).await?;
-        let expected = if cancel_at < 10 { 1 } else { 2 };
+        let expected = if cancel_at < 9 { 1 } else { 2 };
         assert_eq!(ran, [expected], "cancel at {cancel_at}");
     }
     Ok(())

@@ -490,6 +490,45 @@ pub struct TryWithExpr {
     pub handler: Arc<[Expr]>,
 }
 
+/// Compiler-generated: the machine a seq lowers to. `pc` reads the step
+/// variable; a step enters when `pc` becomes its label. `id` is the seq's.
+/// `scopes[i]` is the parent of lexical scope `i` (a try or with body's);
+/// scope 0 is the machine's.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct SeqMachineExpr {
+    pub id: u64,
+    pub pc: Arc<Expr>,
+    pub scopes: Arc<[u32]>,
+    pub steps: Arc<[SeqStep]>,
+}
+
+/// One statement of a seq machine. `items` compile as one statement
+/// list: any handlers, then `let <value> = ..` (the step completes on
+/// its fire, a fired `true` for an `until`), then what completion
+/// writes. `next` indexes the step that follows; `None` ends the run.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct SeqStep {
+    pub label: ArcStr,
+    pub scope: u32,
+    pub until: bool,
+    pub value: ArcStr,
+    pub items: Arc<[Expr]>,
+    pub next: Option<u32>,
+}
+
+/// Compiler-generated: a `seqq` capture of a variable its body reads,
+/// `snapshot` from the queued request, or `live` where the analysis finds
+/// that a step of machine `machine` writes it.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub struct SeqCaptureExpr {
+    pub machine: u64,
+    pub snapshot: Arc<Expr>,
+    pub live: Arc<Expr>,
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct StructWithExpr {
@@ -632,6 +671,8 @@ pub enum ExprKind {
     /// Compiler-generated: a fired production fails the enclosing seq
     /// machine's run.
     SeqAbort(Arc<Expr>),
+    SeqMachine(Arc<SeqMachineExpr>),
+    SeqCapture(Arc<SeqCaptureExpr>),
     OrNever(Arc<Expr>),
     Catch(Arc<CatchExpr>),
     ByRef(Arc<Expr>),
@@ -830,6 +871,14 @@ impl ExprKind {
             TryWith(t) => {
                 t.body.iter().for_each(|e| f(e));
                 t.handler.iter().for_each(|e| f(e));
+            }
+            SeqMachine(m) => {
+                f(&m.pc);
+                m.steps.iter().for_each(|s| s.items.iter().for_each(|e| f(e)))
+            }
+            SeqCapture(c) => {
+                f(&c.snapshot);
+                f(&c.live)
             }
             Eq { lhs, rhs }
             | Ne { lhs, rhs }
@@ -1499,6 +1548,21 @@ impl Expr {
                 bind: t.bind.clone(),
                 constraint: t.constraint.clone(),
                 handler: xs(f, &t.handler),
+            })),
+            SeqCapture(c) => SeqCapture(Arc::new(SeqCaptureExpr {
+                machine: c.machine,
+                snapshot: a(f, &c.snapshot),
+                live: a(f, &c.live),
+            })),
+            SeqMachine(m) => SeqMachine(Arc::new(SeqMachineExpr {
+                id: m.id,
+                pc: a(f, &m.pc),
+                scopes: m.scopes.clone(),
+                steps: Arc::from_iter(
+                    m.steps
+                        .iter()
+                        .map(|s| SeqStep { items: xs(f, &s.items), ..s.clone() }),
+                ),
             })),
             Eq { lhs, rhs } => Eq { lhs: a(f, lhs), rhs: a(f, rhs) },
             Ne { lhs, rhs } => Ne { lhs: a(f, lhs), rhs: a(f, rhs) },

@@ -3,13 +3,15 @@
 Status: built 2026-09-07 (straight-line, `until`, `try … with`, `seqq`;
 `if`/loops inside a seq are not built); arms by read-after-write and the
 `{ … }` block built 2026-09-11 (the `do` keyword is gone); `abort(..)`,
-`flush(..)` and the reset on sleep built 2026-09-19.
-Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow,seq_abort}.rs`,
+`flush(..)` and the reset on sleep built 2026-09-19; the machine node,
+steps decided by dependency summaries, built 2026-09-24
+(`dependency_summaries.md`).
+Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow,seq_abort,seq_let,seq_steps}.rs`,
 `graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
 `graphix-compiler/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`,
 `seq_do_statement_list_is_capped`), `expr/seq.rs` unit tests
-(`do_body_over_limit_is_a_compile_error`).
+(`a_long_seq_lowers_flat`).
 Supersedes: pure_select, pure_dataflow_plan, levels_and_events,
 seq_review_2026-09-04, seq_review_2026-09-06.
 
@@ -154,7 +156,7 @@ the variable.
 **Steps evaluate in order, once per entry.** A step's leaves —
 constants and reads of variables outside the step — are taken as they
 stand when the step is reached, and its effects are issued exactly
-once per reaching. A passed step's arm is asleep and nothing in it
+once per reaching. A passed step is asleep and nothing in it
 re-fires. This is `f(trigger ~ x)` applied mechanically, the rule the
 hand-written ceremonies get wrong.
 
@@ -164,16 +166,22 @@ dataflow carries both, so the next statement is issued in the cycle
 the one before it produced in. A connect's effect is its write, which
 lands the next cycle, so a statement that reads a variable an earlier
 statement wrote, or writes it again, starts the next cycle and sees the
-write. The statements between two such points share one arm of the
-machine (§6.4): `a <- x; b <- y; let s = a + b` writes `a` and `b` in
-one cycle and binds `s` the next; `n <- n + 1; n <- n + 1` is two
-cycles and `n + 2`. The analysis is by name and cannot see into a call
-(a closure may read anything), a read through a reference, or a nested
-seq; such a statement is taken to read every pending write, so
-`a <- f(x); b <- g(y)` issues `g` after `f` has produced, and to write
-every variable the arm took a reference to, so `set(&b, 5); let s = b`
-reads the new `b`. A closure's own writes to what it captured are not
-seen. A block is the override.
+write: `a <- x; b <- y; let s = a + b` writes `a` and `b` in one cycle
+and binds `s` the next; `n <- n + 1; n <- n + 1` is two cycles and
+`n + 2`. What a statement reads and writes is its dependency summary
+(`dependency_summaries.md`), taken after resolution and through the
+functions it calls, per instance: `put(5); let s = b` sees the `b` a
+closure wrote, and `a <- f(x); b <- g(y)` issues `g` in the cycle `f`
+produced when `g` does not read `a`. A write or read through a
+reference counts as every variable, and so does a call with no static
+target. `until` and `try` follow the same rule. A block is the
+override.
+
+**A passed step is asleep.** Nothing in it re-fires, so a `let` keeps
+the value its step produced while a later step waits; entering a step
+wakes it with catch-up (§6.4). A run whose last write targets its own
+trigger ends before the write lands, so the write starts the next run:
+a seq that must not re-trigger itself outlasts its write.
 
 **A block `{ … }` issues its statements together.** Every statement
 of a block is issued at the block's entry: `{ a <- f(x); b <- g(y) }`
@@ -207,8 +215,8 @@ re-called, in a seq as anywhere else, so a step calling it never
 completes on the second run. `|v| v ~ k` is the spelling.
 
 **A `let` binds the step's production for the rest of the run.**
-Later steps read it through a carried cell; shadowing is sequential as
-in a block.
+Later steps read the binding itself; shadowing is sequential as in a
+block, and a try or with body's lets are that body's.
 
 **A `?` aborts the run, unless a `try` takes it.** The machine
 installs ONE handler outermost: it resets the step variable to idle
@@ -251,14 +259,15 @@ error.
 
 ## 6. The lowering
 
-An AST-to-AST desugar (`expr/seq.rs`), so both engines inherit the
-semantics from one spec. Positions carry from each statement to the
-nodes it lowers to, so a type error names the step. `graphix --expand
-file.gx` checks the file and prints each seq's lowered machine, source
-position first: the machine is inspectable, which is the debugging
-story. The completion guards are compiler-only nodes and print as
-their operand, so re-parsing the expansion gives the machine without
-its error boundaries.
+A desugar (`expr/seq.rs`) to ordinary Graphix around one compiler
+node, the machine (`ExprKind::SeqMachine`, `node/seq_machine.rs`), so
+both engines run one implementation. Positions carry from each
+statement to the nodes it lowers to, so a type error names the step.
+`graphix --expand file.gx` checks the file and prints each seq's
+lowered machine, source position first, then each instance's step
+boundaries once the analysis has decided them (`S0 -> S1 same, S1 ->
+S2 next`); `GXDBG_SEQPLAN=1` adds every step's summary. The completion
+guards are compiler-only nodes and print as their operand.
 
 ### 6.1 The skeleton
 
@@ -272,21 +281,22 @@ its error boundaries.
   <abort event>;                            // §9, when the seq has one
   let go = filter(<trigger>, |x| x ~ idle); // busy-drop
   pc <- go ~ `S0;
-  select pc {
-    `Idle => never(),
-    `S0 => <arm 0>,
-    `S1 => <arm 1>,
-    ..
+  machine pc {
+    `S0 => { let v0 = <value>; <writes> } -> `S1,
+    `S1 => { let v1 = <value>; <writes> } -> end,
   };
   r
 }
 ```
 
-One arm per statement; labels are allocated as statements are lowered
-and the pc type is the set of every label. The cells need no
-annotations: an unannotated `let x = never()` takes its type from its
-writers, and a `let` annotation in the source passes to its cell (that
-is how a union-typed `try` value is spelled). The busy gate is
+One step per statement, labelled `S<index>`; the pc type is the set of
+every label. A step's items compile as one statement list: a try-body
+step's jump handlers (§7.3), the `let` of its value, then what its
+completion writes (a `let`'s pattern, a connect's target, a try's join
+cell, the block's result `r`). The cells need no annotations: an
+unannotated `let x = never()` takes its type from its writers, and a
+`let` annotation in the source passes to a try's join cell (that is how
+a union-typed `try` value is spelled). The busy gate is
 `core::filter`, not `t ~ select pc { .. }`: `~` holds a trigger's debt
 until its RHS first materializes and then pays it, which is a queue of
 one, not a drop. The predicate must consume the trigger
@@ -295,18 +305,16 @@ the lambda).
 
 ### 6.2 The entry event
 
-Inside an arm, the step variable read as a FREE variable — `pc`
-itself — fires on every delivery into the arm: first entry, re-entry,
-a same-arm re-delivery. It is the one event every atom below samples
-on. It must be a free read and not the arm's pattern bind, because a
-nested watch relies on wake catch-up re-raising it, and pattern binds
-are excluded from that tracker by design (a pattern bind is a facet of
-its arm's scrutinee delivery). The lowering never writes a constant
-RHS: a constant connect fires once per SELECTION and not on a same-arm
-re-match, so every transition (`pc <- pc ~ \`Sk`) and every carried
-write (`x_c <- pc ~ x`) is sampled on the entry event or on the step's
-completion, and both land in one batch so the next arm's entry samples
-the new values.
+Inside a step, the step variable read as a FREE variable — `pc`
+itself — fires at every entry: from the start event or a jump, which
+write it, and from a same-cycle boundary, where the machine publishes
+the new label within the cycle. It is the one event every atom below
+samples on, and it is a free read because a nested watch (the issue
+atom's select) relies on wake catch-up re-raising it when its arm is
+taken later. The lowering never writes a constant RHS: a constant
+connect fires once per SELECTION and not on a same-arm re-match, so
+every generated write is sampled on the entry event or runs with the
+step's completion.
 
 ### 6.3 The issue atom
 
@@ -350,29 +358,33 @@ inside it must raise once). A call-free `?` is therefore sampled on
 the entry event too, so a carried error raises at every entry rather
 than only when a catch-up fire happens to deliver it.
 
-### 6.4 Arms, blocks, `until`
+### 6.4 Steps, blocks, `until`
 
-`split_arms` cuts a statement list into arms: `until` and `try` stand
-alone; other statements share an arm until one reads or rewrites a
-variable an earlier statement of the arm wrote, or is opaque (a call, a
-deref, a nested seq) while such a write is pending; an opaque statement
-also writes every variable the arm took `&` of, and a write through a
-reference ends its arm, its target being unknown. The last statement
-of an arm writes the carried cells and the transition, `pc`-sampled so
-they land with the arm's writes. Inside an arm each statement's
-completion arm holds the statements after it (`lower_group`), so a
-statement is issued in the cycle its predecessor produced in; the arm
-lowers to nested selects and a run is cut at the parser's nesting
-limit. A block (`lower_block`) hoists each statement into a `let` under
-the arm, connects `pc ~ value`, and joins the statements with a select
-over the tuple of their values, present once every statement has
-produced. `until` is refused where its value would be used: the last
-statement of a seq, or of a try or with body whose value is used, must
-be an expression.
+The machine keeps one step awake. A step enters when `pc` fires its
+label (the start event, a `try` jump, a next-cycle boundary), and is
+updated under the wake view with `Select`'s catch-up
+(`node/wake.rs::TrackedFires`: one fire bit per step-body input per
+machine, consumed by whichever step reads it, so a fire while a step
+waits its turn is re-raised at its entry). It completes when its
+value's `let` publishes a FIRED production (a fired `true` for an
+`until`); only then do its writes run. The completed step sleeps, as a
+select deselects an arm, and the next enters: in the same cycle when
+the analysis decided so (`Step::same_cycle`, from the summaries: the
+next step reads and writes nothing the writes since the last
+next-cycle boundary carry), with `pc`'s new label published within the
+cycle as a `let` publishes; otherwise `pc` is written and the step
+enters the next cycle. A machine not yet planned, or planned
+conservatively, uses the next cycle everywhere. The last step writes
+`pc` idle. A block (`lower_block`) hoists each statement into a `let`
+under the step, connects `pc ~ value`, and joins the statements with a
+select over the tuple of their values, present once every statement
+has produced. `until` is refused where its value would be used: the
+last statement of a seq, or of a try or with body whose value is used,
+must be an expression.
 
 ### 6.5 What sleep does for free
 
-A passed arm sleeps, and sleep is pause: a timer step's pending timer
+A passed step sleeps, and sleep is pause: a timer step's pending timer
 is cancelled (`Timer::sleep` unrefs it), a `sys::net` level effect
 inside it tears down, a process spawn is not cancelled (`kill_on_drop`
 is on drop). That is all the cancellation `abort` (§9) needs: every
@@ -389,8 +401,8 @@ work, and on wake the machine would be busy, so it would drop the
 trigger that woke it (a `seqq` would lose its one credit for good).
 The machine's handler writes `pc` idle in its `sleep()`, as the
 restart builtins clear themselves in theirs; the write lands before the
-arm can wake. The carried cells keep their values and are overwritten
-by the next run.
+arm can wake. The steps' `let`s keep their values and are rebound by
+the next run.
 
 ## 7. Errors
 
@@ -455,26 +467,30 @@ whether a call throws.
 ### 7.3 The lowering of `try`
 
 A try is a branch whose edge is an error instead of a value. Try-body
-arms and with-body arms are ordinary arms of the one select; both
-tails write the statement's cell and transition to the join label.
-Each try-body arm carries a generated `Catch` whose handler body is
-`never()` and whose `seq_abort` action is a JUMP (`pc <- \`W0` instead
-of the machine's `pc <- \`Idle`); its `seq_capture` names the `e`
-cell. At runtime the capture writes the first delivery of each failure
+steps and with-body steps are ordinary steps of the one machine, each
+body in a lexical scope of its own. When the try's value is used, both
+bodies end by writing a join cell, and a join step after them reads it
+and writes the statement's own target; the join reads what both
+bodies' last steps wrote, so it enters the next cycle. Each try-body
+step carries a generated `Catch` whose handler body is `never()` and
+whose `seq_abort` action is a JUMP (`pc <- \`W` to the with body's
+first step instead of the machine's `pc <- \`Idle`); its `seq_capture`
+names the `e` cell. At runtime the capture writes the first delivery of each failure
 to the cell; at typecheck it unions its bind's inferred throws into the
-cell's type after its siblings, so the union is exact and an arm that
+cell's type after its siblings, so the union is exact and a step that
 cannot throw contributes ⊥. (A handler-side write `e_c <- once(e)` was
 tried first and failed: the connect aliased the cell to the first
 arm's frozen bind cell, so a second arm's different error type was
 refused, and `once`'s return cell is unresolved when the with body
 typechecks.)
 
-Nesting composes by arm ownership: an arm carries the jump handler of
-the innermost `try` whose BODY contains its statement; a with-body arm
-carries the enclosing try's handler if any and none otherwise. The
-handler is per arm but it is only a capture and a jump — one phantom
-`Catch` node per try-body arm is the cost of a try body that never
-fails. After the jump the failed arm sleeps and gets sleep's cleanup.
+Nesting composes by step ownership: a step carries the jump handler of
+every `try` whose BODY contains its statement, innermost last; a
+with-body step carries the enclosing try's handler if any and none
+otherwise. The handler is per step but it is only a capture and a jump
+— one phantom `Catch` node per try-body step is the cost of a try body
+that never fails. After the jump the failed step sleeps and gets
+sleep's cleanup.
 
 ### 7.4 Completion guards and the handler ledger
 
@@ -510,9 +526,9 @@ drains, a running guard holds its output too, and a fire in that time
 passes, as fired, once the drain ends with the generations unchanged. A
 catch that sleeps or is deleted gives up the raises it has not received,
 so no enclosing guard waits on them. So a failed step cannot
-schedule the next pc, write its carried cells, issue a generated
+schedule the next pc, run its completion writes, issue a generated
 connect or publish the block result, and the handler's reset never
-competes with a queued advance. In a try-body arm the nearest handler
+competes with a queued advance. In a try-body step the nearest handler
 is the jump handler, whose generation advances at the raise, and
 unlike a user `catch` it always LEAVES the region, so the latch is
 never a wedge. The guard is a fusion boundary; its child fuses
@@ -562,10 +578,13 @@ sample behaviour, deliberately inherited; exact arrival-time snapshots
 require initialized inputs. The body reads its captures as tuple
 projections of the dequeued request. `until` conditions (all but the
 trigger's name, which is this run's request as it is under `seq`),
-address-taking and variables the body itself writes stay LIVE (read-modify-write
-state must see its own writes across requests); direct write targets
-are never redirected into a snapshot, and a dereferenced write uses
-the queued reference handle.
+address-taking and variables the body writes stay LIVE (read-modify-write
+state must see its own writes across requests): a direct write target
+is never redirected into a snapshot, and a capture the body writes
+through a function it calls is a `SeqCapture` the analysis sets live
+from the steps' summaries (`dependency_summaries.md` §4); a
+dereferenced write uses the queued reference handle and makes no
+capture live.
 
 The queue is `core::queue` clocked by a credit variable: one initial
 credit starts the first request; each block output returns one; an
@@ -605,10 +624,10 @@ does not fire, nothing is raised to an enclosing handler, and a `try`
 around the current step is not taken: a with body that produced a
 fallback would continue an aborted run. Whatever must be undone is
 written outside the seq on the same event (`busy <- cancel ~ false`);
-the levels a ceremony drives already live there (§5). The carried
-cells keep their values until the next run overwrites them, so a
-`Proc` bound by a `let` stays alive: a child that must die with the
-run is written to a variable outside.
+the levels a ceremony drives already live there (§5). The steps'
+`let`s keep their values until the next run rebinds them, so a `Proc`
+bound by a `let` stays alive: a child that must die with the run is
+written to a variable outside.
 
 **`seqq`.** `abort` ends the current run and returns its credit, so the
 next queued request starts. `flush` is an abort that also empties the

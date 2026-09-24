@@ -54,7 +54,9 @@ pub(crate) mod op;
 pub(crate) mod pattern;
 pub mod place;
 pub(crate) mod select;
+pub(crate) mod seq_machine;
 pub mod traits;
+pub(crate) mod wake;
 
 /// A variable read's provenance under dense delivery — see [`read_var`].
 pub(crate) enum VarRead<'a> {

@@ -10,6 +10,7 @@ use super::{
     module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
     select::Select,
+    seq_machine::{SeqCapture, SeqMachine},
 };
 use crate::{
     CFlag, DefAssertion, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope, UserEvent,
@@ -314,6 +315,12 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::SeqAbort(e) => {
             SeqAbortEvent::compile(ctx, flags, spec.clone(), scope, top_id, e)
+        }
+        ExprKind::SeqMachine(m) => {
+            SeqMachine::compile(ctx, flags, spec.clone(), scope, top_id, m)
+        }
+        ExprKind::SeqCapture(c) => {
+            SeqCapture::compile(ctx, flags, spec.clone(), scope, top_id, c)
         }
         ExprKind::OrNever(e) => {
             OrNever::compile(ctx, flags, spec.clone(), scope, top_id, e)

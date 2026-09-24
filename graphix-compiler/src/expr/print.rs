@@ -1478,6 +1478,35 @@ impl PrettyDisplay for ExprKind {
             Struct(st) => st.fmt_pretty_inner(buf),
             Qop(e) | Rethrow(e) => pretty_then(buf, e, "?"),
             SeqGuard(e) | SeqAbort(e) => e.fmt_pretty(buf),
+            SeqCapture(c) => {
+                write!(buf, "capture(")?;
+                c.snapshot.fmt_pretty(buf)?;
+                buf.kill_newline();
+                write!(buf, " or live {})", c.live)
+            }
+            SeqMachine(m) => {
+                writeln!(buf, "machine {} {{", m.pc)?;
+                buf.nested(|buf| {
+                    for s in m.steps.iter() {
+                        write!(
+                            buf,
+                            "`{}{} => ",
+                            s.label,
+                            if s.until { " until" } else { "" }
+                        )?;
+                        pretty_print_exprs(buf, &s.items, "{", "}", ";", false)?;
+                        buf.kill_newline();
+                        match s.next {
+                            Some(n) => {
+                                writeln!(buf, " -> `{},", m.steps[n as usize].label)?
+                            }
+                            None => writeln!(buf, " -> end,")?,
+                        }
+                    }
+                    Ok(())
+                })?;
+                writeln!(buf, "}}")
+            }
             OrNever(e) => pretty_then(buf, e, "$"),
             Catch(c) => {
                 match &c.constraint {
@@ -2056,6 +2085,21 @@ impl ExprKind {
             ExprKind::Struct(st) => write!(f, "{st}"),
             ExprKind::Qop(e) | ExprKind::Rethrow(e) => write!(f, "{}?", e),
             ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => write!(f, "{e}"),
+            ExprKind::SeqCapture(c) => {
+                write!(f, "capture({} or live {})", c.snapshot, c.live)
+            }
+            ExprKind::SeqMachine(m) => {
+                write!(f, "machine {} {{ ", m.pc)?;
+                for s in m.steps.iter() {
+                    write!(f, "`{}{} => ", s.label, if s.until { " until" } else { "" })?;
+                    print_exprs(f, &s.items, "{ ", " }", "; ")?;
+                    match s.next {
+                        Some(n) => write!(f, " -> `{}, ", m.steps[n as usize].label)?,
+                        None => write!(f, " -> end ")?,
+                    }
+                }
+                write!(f, "}}")
+            }
             ExprKind::OrNever(e) => write!(f, "{}$", e),
             ExprKind::Catch(c) => match &c.constraint {
                 None => write!(f, "catch({}) {}", c.bind, c.handler),

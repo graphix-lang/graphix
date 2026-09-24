@@ -1,246 +1,177 @@
 # Dependency summaries, and a seq machine that uses them
 
-Status: proposal 2026-09-24; nothing here is built.
-Pins: none yet. §7 lists the pins to write first; each fails on the
-tree today.
+Status: built 2026-09-24 (summaries, the machine node, `seqq`
+captures from summaries).
+Pins: `stdlib/graphix-tests/src/lang/seq_steps.rs` (each failure in §1,
+the wake re-raise, a same-cycle `until`, a `let`'s fire in a later
+cycle), the netidx-admin tests (`roster_adds_and_edits_an_admin` found
+the carried `let`), the seq suites listed in
+`seq_blocks.md`, `graphix-compiler/src/expr/seq.rs`
+(`a_long_seq_lowers_flat`).
 
-**What each piece of code reads and writes, known after
-resolution.** A summary says which variables a node reads and which it
-writes, following statically resolved calls into their bodies. The
-analysis pass computes it next to the effect facts it already infers
-(`graphix-compiler/src/analysis.rs`). Its first consumer is `seq`,
-whose machine then becomes a compiler node that decides its step
-boundaries per instance. Automatic parallel evaluation is the second
-consumer (§6).
+**What each piece of code reads and writes, known after resolution.**
+A summary says which variables a node reads and which it writes,
+following statically resolved calls into their bodies. The analysis
+pass (`graphix-compiler/src/analysis.rs`) computes it, and its first
+consumer is `seq`: the machine is a compiler node that decides its step
+boundaries per instance from the summaries. Automatic parallel
+evaluation is the second consumer (§6).
 
 ## 1. The problem
 
 A seq starts each statement in the first cycle the effect of the
-statement before it can be seen (`seq_blocks.md` §5). `split_arms`
-(`expr/seq.rs`) decides this from the seq's own text, before
-compilation. It sees `<-` targets and `&` operands in that text, and
-treats every call as a reader of all pending writes. Four programs show
-where that falls short, all run on the current build:
+statement before it can be seen (`seq_blocks.md` §5). The lowering used
+to decide this from the seq's own text, before compilation: it saw
+`<-` targets and `&` operands and treated every call as a reader of all
+pending writes. Four programs showed where that fell short:
 
 ```graphix
 let b = 0; let put = |v| { b <- v; v };
-seq go { put(5); let s = b; s }                      // s = 0; §5 says 5
+seq go { put(5); let s = b; s }                      // was 0, is 5
 
 let c = 0; let r = &c; let set = |p: &i64, v| { *p <- v; v };
-seq go { set(r, 5); let s = c; s }                   // s = 0; §5 says 5
+seq go { set(r, 5); let s = c; s }                   // was 0, is 5
 
-seqq go { put2(5); until true; let s = b2; s }       // s = 0, for good
+seqq go { put2(5); until true; let s = b2; s }       // was 0 for good, is 5
 
 let v = 0; let w = never();                          // v <- 7 at 50ms, w <- 1 at 100ms
-seq go { let a = v; let b = w; a + b }               // 8; §5 says 1
+seq go { let a = v; let b = w; a + b }               // was 8, is 1
 ```
 
-1. **A closure's write to a variable it captured is invisible.** The
-   read of `b` shares the arm with the call, so it reads the old value.
-2. **So is a write through a reference that reached the call through a
-   variable.** Only a `&` written in the seq itself counts.
-3. **`seqq` captures a variable that only a callee writes.** Its body
-   only reads `b2`, so the capture snapshots `b2`, and no step ever
-   sees the write, even across a cut.
-4. **A step that has passed stays live when it shares an arm with the
-   step after it.** An arm lowers to nested selects, so the select for
-   `let a = v` is still awake while `let b = w` waits, and `a` follows
-   `v` to 7. §5 says a `let` binds its step's production for the rest
-   of the run, and that a passed step is asleep. Across a cut the
-   earlier arm sleeps and `a` stays 0.
+1. A closure's write to a variable it captured was invisible.
+2. So was a write through a reference that reached the call through a
+   variable; only a `&` written in the seq counted.
+3. `seqq` captured a variable only a callee wrote, so no step ever saw
+   the write.
+4. Statements that shared an arm lowered to nested selects, so a passed
+   statement stayed awake while the next waited, and `a` followed `v`.
 
-Failure 4 is independent of summaries, but it governs the fix: an arm
-boundary is not just a cycle of delay. It also decides which steps are
-still awake. So a boundary cannot become "same cycle or next, decided
-later" while the arms are nested selects.
-
-Two facts are known only after typecheck:
-- **Which body a call reaches.** `CallSite::typecheck1` pre-binds
-  statically resolvable calls, and a higher-order function's callback
-  resolves per instance.
-- **Which instance is which.** `|f| seq go { f(1); let s = b; s }`
-  needs a cut in an instance whose `f` writes `b`, and none in another.
-
-A rewrite that runs before compilation has neither.
-
-The rule also costs cycles in the other direction: `a <- f(x); b <-
-g(y)` waits a cycle for `a` even when `g` never reads it.
+Failure 4 governs the fix: an arm boundary was not just a cycle of
+delay, it decided which steps were awake. The two facts the boundary
+needs are known only after typecheck: which body a call reaches
+(`CallSite::typecheck1` pre-binds, a callback resolves per instance),
+and which instance is which (`|f| seq go { f(1); let s = b; s }` needs a
+cut where `f` writes `b` and none elsewhere).
 
 ## 2. The summary
 
 ```rust
-enum Vars { Set(SmallVec<[BindId; 8]>), All }
+struct Vars { all: bool, refs: bool, ids: IntSet<BindId> }
 struct Summary { reads: Vars, writes: Vars }
 ```
 
-For a node N (a seq statement, or an instance body):
+For a node (a seq step, an instance body), `analysis::local_summary`
+walks it (`fusion::for_each_node`):
 
-- **`reads`**: the variables N reads, excluding those N binds. `Refs`
-  already collects exactly this (`refed` minus `bound`), and
-  `CallSite::refs` already folds in a statically resolved callee's
-  body. An imaged callee that hasn't been decoded yet answers with its
-  `RefsSummary`.
-- **`writes`**: the target of every `Connect` in N, excluding N's own
-  binds, through statically resolved callees, transitively. Nothing
-  collects this today: `Connect::refs` reports only its value's reads.
-- **`All`** is the answer where the target can't be named:
-  - `ConnectDeref` writes `All`, since a reference can come from
-    anywhere (failure 2);
-  - `Deref` reads `All`;
-  - a call with no static target, and a dynamic module, read and write
-    `All`.
+- a `Ref` reads its id, a `Connect` writes its target;
+- a `Deref` reads `refs` and a `ConnectDeref` writes `refs`: whatever
+  some reference points to, which may be any variable;
+- a call reaches its instance (a static target, a resolved lambda, a
+  self-bind of the call graph); a builtin handed a reference, a
+  function or an `Any` reads and writes `all`, and one handed neither
+  touches nothing; any other call, and a dynamic module, read and
+  write `all`.
 
-  This is today's treatment of an opaque statement, applied only
-  where the code really is opaque. There is no alias analysis.
+An instance's summary is its body's joined with its callees', to a
+fixpoint over the instances the machines' calls reach
+(`instance_summaries`, a union worklist over the `StaticCallGraph`
+the effect inference builds). Nothing is stored: each analysis pass
+recomputes what its machines need, and a pass with no machine computes
+nothing. An imaged callee not yet decoded has no body to walk and is
+opaque. There is no alias analysis.
 
-**Computation.** Summaries are computed in `analysis.rs`, over the
-`StaticCallGraph` the effect inference already builds, with the same
-worklist:
-- an instance's summary is its body's own contribution joined with its
-  callees' summaries;
-- the order is least-first: start empty, join is union, `All` absorbs
-  everything;
-- recursion converges because the set of variables is finite.
-
-A callee outside the current analysis (a runtime-bound body analyzed by
-`analyze_bound_callee`) contributes its stored summary; an unknown one
-contributes `All`. A statement's summary is its node's contribution
-joined with the summaries of the call sites in it.
-
-**Storage.** The summary is stored per instance, on `GXLambda`, and set
-before the instance first runs. `RefsSummary` gains the `writes` half,
-so an imaged callee answers without being decoded.
-
-**Cost.** Summaries are computed on demand: only for instances
-reachable from a consumer, memoized per instance. The pass runs inside
-`--check`, and the typechecker must stay instant, so it is measured on
-the GUI suite and on the admin package before it lands.
+A callback written inline in a seq step is issued as `pc ~! |x| ..`
+(`seq_blocks.md` §6.3); `CallSite` resolves it as the literal it
+samples (`callsite.rs::lambda_literal`), so a step calling
+`array::map(xs, |x| ..)` reaches the callback's instance, and the
+loop fuses as it does outside a seq.
 
 ## 3. The seq machine
 
 **Every statement is a step, and a passed step sleeps.** Which steps
-are awake no longer depends on how the statements are grouped. The one
-decision left per boundary is whether step j+1 enters in the cycle
-where step j completes, or in the next one. The analysis makes that
-decision, per instance, from summaries.
+are awake no longer depends on grouping; the one decision per boundary
+is whether step `j+1` enters in the cycle `j` completes or the next.
 
-**What stays a desugar:**
-- the preamble: the `pc` variable, the busy gate, the machine's
-  handler, the `abort` event and the `seqq` queue with its credit;
-- the per-statement atoms: issue snapshots, `SeqGuard`, and `try`'s
-  jump handlers.
+The desugar (`expr/seq.rs`) keeps the preamble (the `pc` variable, the
+busy gate, the machine's handler, the `abort` event, the `seqq` queue)
+and the per-statement atoms (issue snapshots, `SeqGuard`, `try`'s jump
+handlers), and emits the steps as `ExprKind::SeqMachine`: per step a
+label, its items (handlers, `let <value> = ..`, completion writes), the
+index of the step after it and a lexical scope (a try or with body's
+own). `node/seq_machine.rs` runs it:
 
-These already have pins, and none of them depends on where the arms
-split.
+- **Entry.** A step enters when `pc` fires its label. At a same-cycle
+  boundary the machine publishes the new label within the cycle
+  (overlay, store, `notify_set`, as a `Bind` publishes), so the atoms'
+  entry event is `pc` in both cases. Entering wakes the step under the
+  wake view with `Select`'s catch-up (`node/wake.rs::TrackedFires`,
+  moved out of `select.rs` and shared): one fire bit per step-body
+  input per machine, consumed by whichever step reads it. After the
+  steps it ran, the machine records the fires they made for the steps
+  that did not run (`observe_except`); a step's own `let` is recorded
+  even where a step of its cycle read it, so its fire also reaches the
+  first step that reads it in a later cycle, as a carried cell's fire
+  reached the next arm (`seq_steps::let_fire_reaches_a_later_cycle`:
+  `let v = f(go); *r <- v; v ~ 5` would otherwise never complete).
+- **Completion.** The value's `let` publishing a FIRED production (a
+  fired `true` for an `until`); only then do the completion writes run.
+  The completed step sleeps (`deselect`, as a select's arm), then the
+  next enters in this cycle or `pc` is written for the next.
+- **Lets** are ordinary binds in the machine's scope, or a try or with
+  body's scope; the step that bound one sleeps once passed, so it keeps
+  its step's value. There are no carried cells. A `try`'s value, when
+  used, is a join cell both bodies' last steps write and a join step
+  reads.
+- **Sleep.** A sleeping machine sleeps its steps and is idle; its
+  handler also writes `pc` idle (`seq_blocks.md` §6.5).
 
-**What becomes a node:** the `select pc { .. }`, the nesting within an
-arm, the carried cells and `split_arms`. A compiler-only `SeqMachine`
-node holds the steps, each a label, a compiled statement and the
-boundary that follows it.
+**The boundary rule** (`analysis::plan_machines`, per instance, before
+the first cycle; `analyze_bound_callee` for a runtime-bound body).
+Step `j+1` enters in the next cycle when its summary's reads or writes
+meet the writes pending since the last next-cycle boundary (`all` and
+`refs` meet any non-empty set; `pc` is left out). Otherwise it enters
+in the same cycle. Every statement follows it, `until` and `try`
+included; the jump into a `with` body writes `pc`, so it is the next
+cycle. A call with no static target costs a cycle before a later read
+of an outer variable; that price is accepted. A machine not planned
+enters every step the cycle after (`Step::same_cycle` starts false).
+There is no nesting, so no nesting limit.
 
-**How the machine runs:**
-- **Entry.** Today an atom samples on `pc`, read as a free variable. A
-  same-cycle entry does not write `pc`, so each step reads a hidden
-  entry variable instead. The machine delivers it within the cycle,
-  through the overlay path a `let` uses, before it updates the step.
-- **Lets.** The statements compile in one block scope, so a `let` is an
-  ordinary bind over the later steps. The step that bound it sleeps
-  once passed, so the value stands for the rest of the run. The carried
-  cells go away, and so does the rebind rule (a write or a `&` of an
-  arm-local name forcing a cut). A write to a seq `let` writes its
-  bind.
-- **Same-cycle boundary.** When step j completes (its update returns a
-  fired production), the machine sleeps step j, delivers the entry of
-  step j+1 and updates it, all in the same cycle.
-- **Next-cycle boundary.** The machine writes `pc`, which lands next
-  cycle, as today. A `try` jump and the machine's resets (handler and
-  abort) keep writing `pc`.
-- **Sleep.** When its own arm sleeps, the machine sleeps its current
-  step and resets to idle, as today.
-- **Wake.** Entering a step wakes it, and the wake follows the
-  language's rule (`wake_catchup.md`): the step recomputes from the
-  present, and each input fire no awake reader saw is re-raised once.
-  For wake purposes the machine is a `Select` whose arms are its
-  steps: one fire bit per step-body input per machine, consumed by
-  whichever step reads the input. Today every step is entered through
-  a `Select` wake, whether in its own arm or nested in a shared arm,
-  and programs observe it:
+`--expand` prints the machine at compile and each instance's
+boundaries after the analysis; `GXDBG_SEQPLAN=1` prints every step's
+summary, each capture's choice and every opaque call.
 
-  ```graphix
-  let click = never(); click <- sys::time::after_idle(duration:20.ms, 1);
-  seq go { sys::time::after_idle(duration:60.ms, 0); let r = click ~ 7; r }
-  ```
-
-  gives 7 in both engines. The step is entered at 60 ms, and the fire
-  at 20 ms is re-raised at its entry. Without catch-up, `click ~ 7`
-  has nothing at entry and the run stalls until the next click. So
-  the machine uses `Select`'s tracker (`TrackedFires`, `deselect` in
-  `node/select.rs`), moved out where both nodes share it, not a second
-  implementation. The one difference is that the machine can change
-  steps within a cycle. A fire in the cycle of a same-cycle entry is
-  delivered live to the entered step, as it is today to a nested arm
-  selected in that cycle.
-
-**The boundary rule.** Step j+1 enters in the next cycle when its
-summary's reads or writes meet the writes pending since the last
-next-cycle boundary (`All` meets any non-empty set). Otherwise it
-enters in the same cycle.
-
-Every statement follows this rule, `until` and `try` included; neither
-is cut on both sides any more. A block `{ .. }` is one step. Entering a
-`try` body is an ordinary boundary. The jump into the `with` body is a
-`pc` write, so the `with` body enters in the next cycle.
-
-A call with no static target reads and writes `All`, so a read of an
-outer variable after it costs a cycle; that price is accepted. The
-nesting limit on arms goes away, because there is no nesting.
-
-**Per instance.** A seq in a lambda body has its own node in each
-instance, and each instance gets its own plan. `analyze` runs before
-the program's first cycle, and `analyze_bound_callee` before a
-runtime-bound body's first dispatch. A machine whose plan isn't set
-yet uses next-cycle everywhere, which is always sound.
-
-**What else has to follow:**
-- **Fusion** must descend into the machine's steps, as it descends into
-  `Select` arms today, or step interiors lose fusion. The fusecheck
-  manifest catches a loss.
-- **The image codec** writes the steps and each instance's plan. Images
-  are written before the first cycle, so there is no run state to
-  encode.
-- **`--expand`** prints after analysis: the desugared statements, then
-  each instance's boundaries.
+**The plan is imaged** with the machine (`same_cycle` per step), so a
+warm start runs the plan the cold compile decided.
 
 ## 4. `seqq` captures
 
-Failure 3 has the same cause. `desugar_queued` captures every outer
-variable the body only reads, and "only reads" is decided from the
-text. With summaries, a variable any step writes, including through a
-callee, stays live.
+`desugar_queued` captures every outer variable the body only reads by
+name. A captured variable some step may write through a callee is a
+`SeqCapture` (`ExprKind::SeqCapture`, `node/seq_machine.rs`): the
+queued snapshot, or the variable itself when the analysis finds that a
+step of its machine names it among its writes (`Vars::names`: an `all`
+counts, `refs` does not). A write through a reference keeps the queued
+handle and makes no capture live, as before; `&x` in the body already
+keeps `x` live. A live capture's reads count as reads of its variable
+for the boundary rule. The trigger's own capture is always the queued
+request.
 
-Captures are a tuple projection chosen before compilation, so moving
-the choice later means the machine owns the snapshot: during a run it
-delivers the captured values as overlays for the captured variables. Its
-own step, after the machine lands (§7). Until then the book says a
-capture of a variable only a callee writes never sees the write.
+## 5. What changed for existing programs
 
-## 5. What changes for existing programs
-
-- **Failure 4 is fixed.** A `let` no longer follows its source once its
-  step has passed, so the program in §1 gives 1. Any program that
-  relied on the old behaviour changes; none is known. The pins come
-  first, then the soak.
-- **Some seqs lose cycles:** where a call is shown not to read a
-  pending write.
-- **Some gain cycles:**
-  - where a callee writes something the next step reads (failures 1
-    and 2, the point of the change);
-  - where a call with no static target comes before a read of an outer
-    variable.
-- **`until` and `try` can start in the cycle their predecessor
-  completes**, where today each starts an arm of its own.
-- **Timing-sensitive tests will move.** The netidx-admin tests watch
-  cycle timing, so they run after each step (CLAUDE.md).
+- A `let` no longer follows its source once its step has passed.
+- A step after an `until` enters in the cycle the `until` completes and
+  reads what stands then (`seq_calls::until_stays_live`: 10, was 11);
+  a run of several same-cycle steps ends sooner, so an abort must come
+  earlier to win (`seq_abort::abort_beats_completion`).
+- A run whose last write targets its own trigger ends before the write
+  lands, and the write starts the next run, as a one-statement seq over
+  its own trigger always did; the old lowering's name match cut such a
+  run a cycle longer whenever a later statement named the trigger
+  (`seq_let::trigger_writes_reach_the_variable` now holds each run past
+  its write).
+- A callback written inline in a seq step resolves statically, so its
+  collection loop fuses.
 
 ## 6. Parallel evaluation
 
@@ -257,21 +188,3 @@ What it doesn't provide:
 
 Both belong to the evaluator's own design. The summary is its variable
 half.
-
-## 7. Order of work
-
-1. **Pins.** One for each failure in §1, asserting what §5 of
-   `seq_blocks.md` says, in both engines. All fail today; the `seqq`
-   pin stays failing until step 4. Two more that pass today and must
-   keep passing:
-   - the wake re-raise in §3;
-   - a same-cycle `until` whose condition is already true at entry.
-2. **The summary.** Build it in `analysis.rs`, add `writes` to
-   `RefsSummary`, and add a debug flag that prints each instance's
-   summary. Measure `--check` on the GUI suite and the admin package.
-3. **`SeqMachine`.** Delete `split_arms`, the carried cells and the
-   nesting cut. Then run: the gate, fuzz regress with fusecheck, the
-   admin tests, and a soak (this is a semantics change).
-4. **`seqq` captures from summaries.**
-5. **Docs.** Rewrite `seq_blocks.md` §5 and §6 as built, then update
-   `book/src/core/seq.md` and the graphix-lang skill.

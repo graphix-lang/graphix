@@ -87,7 +87,7 @@ async fn until_stays_live(fusion_disabled: bool) -> Result<()> {
         seq { until ready(step); step }
     }"#;
     let (values, _) = run_delta(code, fusion_disabled).await?;
-    assert_eq!(as_i64s(&values), [11]);
+    assert_eq!(as_i64s(&values), [10]);
     Ok(())
 }
 

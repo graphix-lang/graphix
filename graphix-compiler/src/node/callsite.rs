@@ -3,7 +3,9 @@ use super::{
     bind::Ref,
     compiler::compile,
     error::{Qop, join_raised},
-    lambda::{BuiltInLambda, GXLambda, LambdaDef, build_builtin_check, same_parameters},
+    lambda::{
+        BuiltInLambda, GXLambda, Lambda, LambdaDef, build_builtin_check, same_parameters,
+    },
     pattern::StructPatternNode,
     read_quiet,
 };
@@ -1004,7 +1006,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             .iter()
             .map(|(key, arg)| {
                 let source = arg.node.as_ref().and_then(|node| match node.view() {
-                    NodeView::Lambda(l) => Some(l.source_id()),
+                    _ if let Some(l) = lambda_literal(node) => Some(l.source_id()),
                     NodeView::Ref(r) if !ctx.batch_connect_targets.contains(&r.id) => ctx
                         .bind_to_lambda
                         .get(&r.id)
@@ -1045,7 +1047,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let Some(id) = pat.single_bind_id() else { continue };
             let Some(arg_node) = self.arg(&key) else { continue };
             match arg_node.view() {
-                NodeView::Lambda(l) => {
+                _ if let Some(l) = lambda_literal(arg_node) => {
                     let fv = l.def_value().clone();
                     if let Some(def) = fv.downcast_ref::<LambdaDef<R, E>>() {
                         ctx.fn_forward_resolutions.insert(id, def.id);
@@ -2104,4 +2106,17 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
         }
     }
     overlay.is_some()
+}
+
+/// The lambda literal an argument is: bare, or sampled (a seq step's
+/// inline callback, `pc ~! |x| ..`), whose value is the literal's.
+fn lambda_literal<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&Lambda> {
+    match node.view() {
+        NodeView::Lambda(l) => Some(l),
+        NodeView::Sample(s) => match s.arg.node.view() {
+            NodeView::Lambda(l) => Some(l),
+            _ => None,
+        },
+        _ => None,
+    }
 }

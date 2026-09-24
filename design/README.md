@@ -59,8 +59,8 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `module_system.md` | Rust-2018-style `use`; `self`/`super`/`package` roots |
 | `catch.md` | `catch(e) expr` installs a handler; not control flow |
 | `place_references.md` | `&a[i]`, `&s.f`, `&t.0`, `&m{k}` as root + path |
-| `seq_blocks.md` | `seq`/`seqq`: the pc machine, `until`, `do`, `try … with`, the completion rule, the error guards |
-| `dependency_summaries.md` | proposal: per-node read/write summaries after resolution; the seq machine as a node that sleeps each passed step and cuts per instance |
+| `seq_blocks.md` | `seq`/`seqq`: the pc machine, `until`, `try … with`, the completion rule, the error guards |
+| `dependency_summaries.md` | per-node read/write summaries after resolution; the seq machine node: every statement a step, a passed step asleep, boundaries per instance; `seqq` captures from summaries |
 
 ## Infrastructure
 

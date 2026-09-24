@@ -363,13 +363,21 @@ the run instead, and a stalled `seqq` queues every later trigger forever.
 A statement starts in the first cycle its predecessor's effect can be
 seen: `let a = f(); let b = g(a)` issues `g` the cycle `f` produced;
 `n <- n + 1; publish(n)` publishes the NEW `n` (a cycle later);
-`a <- x; b <- y; let s = a + b` lands both writes in one cycle. A call
-after a connect waits for the write (it may read anything); a block is
-the override. A step completes when it produces a NEW value after its
-entry, never on a value standing from an earlier run; a step that reads
-a level takes it as it stands at entry (under `seq`; `seqq` captured it
-with the request) and waits for it if absent. A `let`'s fire is
-live only in the next step (a later `t ~ x` on it does not write).
+`a <- x; b <- y; let s = a + b` lands both writes in one cycle. The
+compiler follows calls into the functions they reach: a call waits for
+an earlier write only when its function reads it, and `put(5); let s =
+b`, where `put` writes the `b` it captured, reads the new `b`. A read
+or write through a reference (`*r`), or a call through a function value
+the compiler cannot resolve, counts as touching everything and costs a
+cycle; a block is the override. `until` and `try` follow the same rule.
+A passed step is asleep: a `let` keeps the value its step produced. A
+step completes when it produces a NEW value after its entry, never on a
+value standing from an earlier run; a step that reads a level takes it
+as it stands at entry (under `seq`; `seqq` captured it with the
+request) and waits for it if absent. A `let`'s fire reaches the first
+later step that reads it, not the ones after (a second `t ~ x` on it
+does not write). A run whose last write targets its own trigger ends
+before the write lands, so the write starts the next run.
 `never()` in a step stalls the run. So does a step that is a select
 whose arms are connects (`select err { `Admin(m) => note <- m }`): put
 the connect outside, `note <- select err { `Admin(m) => m }`. The two

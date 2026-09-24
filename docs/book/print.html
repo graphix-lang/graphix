@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-391d4f0e.js";
+            window.path_to_searchindex_js = "searchindex-e16668c7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2186,7 +2186,9 @@ inside a step, or call a function. The statement kinds are:</p>
 <p><strong>An expression.</strong> <code>f(x);</code> is a step that completes when the expression
 produces a value. The last expression of the block is its output.</p>
 <p><strong><code>let x = e;</code></strong> is a step like any other, and additionally carries the
-value it produced into every later step. A later <code>let x = ...</code> creates a
+value it produced into every later step. Once its step has passed, <code>x</code>
+keeps that value: a later change of <code>e</code>’s inputs while a later step
+waits is not seen. A later <code>let x = ...</code> creates a
 new binding. Its initializer sees the preceding <code>x</code>;
 earlier references and closures continue to refer to that preceding
 binding. The new binding can have a different type.</p>
@@ -2223,15 +2225,23 @@ earlier statement wrote starts the next cycle and reads the new value:
 <code>n &lt;- n + 1; publish(n)</code> publishes the new <code>n</code>. Connects that nothing
 in between reads land together: <code>a &lt;- x; b &lt;- y; let s = a + b</code> writes
 <code>a</code> and <code>b</code> in one cycle and binds <code>s</code> the next.</p>
-<p>The compiler decides this by name. It cannot see what a function reads,
-so a call that follows a connect waits for the write to land, and
-<code>a &lt;- f(x); b &lt;- g(y)</code> issues <code>g</code> only after <code>f</code> has produced. When you
-know the two are independent, put them in a block: <code>{ a &lt;- f(x); b &lt;- g(y) }</code> issues both at once.</p>
+<p>The compiler decides this after it has resolved every call, following
+each call into the function it reaches. A write a function makes counts
+like one the statement makes itself: <code>put(5); let s = b</code>, where <code>put</code>
+writes the <code>b</code> it captured, reads the new <code>b</code>. A call to a function
+that does not read <code>a</code> does not wait for <code>a &lt;- ..</code> to land. Two things
+count as touching every variable, because the compiler cannot name what
+they touch: a read or write through a reference (<code>*r</code>), and a call
+whose function is only known at run time (one stored in a struct or an
+array). A statement after one of those that reads anything outside the
+seq starts a cycle later. <code>until</code> and <code>try</code> follow the same rule. When
+you know two calls are independent, put them in a block: <code>{ a &lt;- f(x); b &lt;- g(y) }</code> issues both at once.</p>
 <p><code>graphix --expand file.gx</code> checks the file and prints each sequence’s
-lowered program: the step variable, one select arm per run of
-statements, and the cells that carry <code>let</code> values between steps. It is
-the tool for seeing exactly which event a step is waiting on and which
-statements share a cycle.</p>
+lowered program: the step variable and one step per statement, then,
+for each instance, which steps start in the cycle the one before them
+completes (<code>S0 -&gt; S1 same</code>) and which wait a cycle (<code>S1 -&gt; S2 next</code>).
+It is the tool for seeing exactly which event a step is waiting on and
+which statements share a cycle.</p>
 <h2 id="call-inputs"><a class="header" href="#call-inputs">Call inputs</a></h2>
 <p>In both forms, each call waits until all its explicit arguments are
 present, then samples them together with <code>~!</code> and issues once. This gives
@@ -2283,9 +2293,11 @@ source reference variable subsequently points somewhere else.</p>
 The one name it does not read live is the trigger’s: <code>seqq request { until served == request; .. }</code> waits on the request this run is serving, as the
 same block under <code>seq</code> does.
 Connect destinations remain the original variables. An external variable
-written directly by the block also remains live when read, so queued
-<code>count &lt;- count + 1</code> operations can accumulate rather than overwrite one
-another with an old count. Taking <code>&amp;state</code> refers to the original state.</p>
+the block writes, directly or through a function it calls, also remains
+live when read, so queued <code>count &lt;- count + 1</code> operations can accumulate
+rather than overwrite one another with an old count. Taking <code>&amp;state</code>
+refers to the original state. A write through a reference does not make
+anything live: the reference’s target stays what it was captured as.</p>
 <p>Keep persistent effects such as subscriptions and <code>tui::suspend</code> outside
 the block; steps can update their inputs and wait for their responses.</p>
 <h2 id="errors"><a class="header" href="#errors">Errors</a></h2>

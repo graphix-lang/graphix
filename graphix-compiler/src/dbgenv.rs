@@ -44,6 +44,7 @@ dbg_flag!(gxdbg_kpoll, "GXDBG_KPOLL");
 dbg_flag!(gxdbg_native_all, "GXDBG_NATIVE_ALL");
 dbg_flag!(gxdbg_refmiss, "GXDBG_REFMISS");
 dbg_flag!(gxdbg_resolve, "GXDBG_RESOLVE");
+dbg_flag!(gxdbg_seqplan, "GXDBG_SEQPLAN");
 dbg_flag!(gxdbg_swallow, "GXDBG_SWALLOW");
 dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");
 dbg_flag!(gxdbg_tail, "GXDBG_TAIL");
