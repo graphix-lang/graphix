@@ -163,7 +163,7 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
             let name = bspec.pattern.single_bind().ok_or_else(|| {
                 anyhow!("emit_clif: non-single-bind let pattern not supported")
             })?;
-            let bind_id = bind.single_bind_id();
+            let bind_id = bind.pattern.single_bind_id();
             emit_let_node(cx, name, bind_id, &bind.node)?;
         }
         // Compile-time-only declarations — nothing to emit.

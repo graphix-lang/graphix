@@ -2,7 +2,8 @@
 
 Status: built 2026-09-02
 Pins: `stdlib/graphix-tests/src/lang/byref.rs` (`place_read_write`,
-`place_move_siblings_bad`, `place_through_param`).
+`place_move_siblings_bad`, `place_through_param`, `place_payload`,
+`place_root_bottom_mirror`).
 
 ## The rule
 
@@ -50,7 +51,8 @@ stale whole both writers read. `Rt::patch_var` beside `Rt::set_var`;
 
 - `node::place`: `Step::{Index, Field, Key}`, `Path`, `read_path`,
   `write_path` (a struct is its sorted `[name, value]` pairs; a map
-  insert is the immutable map's).
+  insert is the immutable map's; `Index(0)` is also an error's or an
+  abstract value's payload, which `&e.0` reaches where `e.0` types).
 - `ByRef` (`node/bind.rs`, `Place::of`): detects the chain at compile,
   compiles the root and the dynamic keys beside the whole access — the
   cell still mirrors the element, so embedders keep reading it —

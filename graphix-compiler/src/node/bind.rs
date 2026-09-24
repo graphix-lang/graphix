@@ -1,36 +1,41 @@
-// CR claude for eric: [style] use grouping: `crate::image::..` is split from the
-// `crate::{..}` group and `netidx_core::pack` is imported twice; items spelled in
-// full more than once below (`smallvec::SmallVec`, `super::read_var`,
-// `super::VarRead`, `super::coretraits::with_hooks`, `std::any::Any`,
-// `crate::dbgenv`) belong in these groups.
 use super::{
-    WakeBit, collection::CollectionIntrinsic, pattern::StructPatternNode, place,
+    VarRead, WakeBit,
+    coretraits::with_hooks,
+    data::{struct_field_type, tuple_field_type},
+    lambda::{DefBody, DefOrigin, LambdaDef},
+    pattern::StructPatternNode,
+    place::{self, Path},
+    read_var, standing_view,
 };
-use crate::image::ImageBuf;
-use crate::image::nodes::{NodeTag, decode_node, put_tag, tag_len};
 use crate::{
     BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
     Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
-    deref_typ,
+    dbgenv,
     expr::{self, At, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::{
         emit::{BodyCx, CompiledExpr, emit_ref_node},
         fuse,
     },
-    ide::ReferenceSite,
+    ide::{FieldRefSite, ReferenceSite},
+    image::{
+        ImageBuf,
+        nodes::{NodeTag, decode_node, put_tag, tag_len},
+    },
     typ::Type,
     wrap,
 };
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
+use compact_str::CompactString;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
-use netidx_core::pack::{decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Value;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
+use std::any::Any;
 use triomphe::Arc;
 
 #[derive(Debug)]
@@ -45,7 +50,8 @@ pub struct Bind<R: Rt, E: UserEvent> {
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
 /// `let <name> = <node>` binding (moved, never recompiled) and `body`,
-/// an expression over those names compiled under `scope`, is the value.
+/// an expression over those names compiled under a block scope of its
+/// own below `scope`, is the value.
 pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -55,18 +61,7 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
     operands: impl IntoIterator<Item = (ArcStr, Node<R, E>)>,
     body: Expr,
 ) -> Result<Node<R, E>> {
-    // CR claude for eric: [structure] this `mk` is copied in callsite.rs (twice)
-    // and traits.rs: an `Expr` at a given origin and position. It belongs in
-    // expr/mod.rs beside `ExprKind::to_expr`, which reads the thread origin.
-    let mk = |kind: ExprKind| Expr {
-        id: ExprId::new(),
-        ori: spec.ori.clone(),
-        pos: spec.pos,
-        kind,
-        dec: None,
-        str_form: Default::default(),
-        end: Default::default(),
-    };
+    let scope = scope.append_block("op", ExprId::new().inner());
     let mut children: Vec<Node<R, E>> = Vec::new();
     for (name, node) in operands {
         let typ = node.typ().clone();
@@ -74,16 +69,19 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             ctx,
             &typ,
             &expr::StructurePattern::Bind(name.clone().into()),
-            scope,
+            &scope,
             spec.pos,
             spec.ori.clone(),
         )?;
-        let bspec = mk(ExprKind::Bind(Arc::new(expr::BindExpr {
-            rec: false,
-            pattern: expr::StructurePattern::Bind(name.into()),
-            typ: None,
-            value: node.spec().clone(),
-        })));
+        let bspec = Expr::synth(
+            spec,
+            ExprKind::Bind(Arc::new(expr::BindExpr {
+                rec: false,
+                pattern: expr::StructurePattern::Bind(name.into()),
+                typ: None,
+                value: node.spec().clone(),
+            })),
+        );
         children.push(Node::new(Bind {
             spec: bspec,
             typ,
@@ -93,39 +91,45 @@ pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
             slept: WakeBit::default(),
         }));
     }
-    let mut body = compile(ctx, flags, body, scope, top_id)?;
+    let mut body = compile(ctx, flags, body, &scope, top_id)?;
     body.typecheck0(ctx)?;
     body.typecheck1(ctx)?;
-    let bspec = mk(ExprKind::Do {
-        exprs: Arc::from_iter(children.iter().chain([&body]).map(|n| n.spec().clone())),
-    });
+    let bspec = Expr::synth(
+        spec,
+        ExprKind::Do {
+            exprs: Arc::from_iter(
+                children.iter().chain([&body]).map(|n| n.spec().clone()),
+            ),
+        },
+    );
     children.push(body);
-    // CR claude for eric: [risk] the operands `#s`/`#aN` are bound in the CALLER's
-    // scope, not a fresh block scope as every source `{ .. }` gets: they stay in
-    // `env.binds` there for good and a second lowering in that scope shadows the
-    // first. `scope.append_block(..)` for the operands and body would contain them.
-    Ok(super::Block::new(false, children.into_boxed_slice(), bspec, scope.clone()))
+    Ok(super::Block::new(false, children.into_boxed_slice(), bspec, scope))
+}
+
+/// What `let name = |..| 'builtin` records of the builtin it binds;
+/// `None` for any other binding.
+fn builtin_binding<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    value: &Expr,
+) -> Option<BuiltinBindInfo> {
+    let (NodeView::Lambda(l), ExprKind::Lambda(lam), Type::Fn(typ)) =
+        (node.view(), &value.kind, node.typ())
+    else {
+        return None;
+    };
+    let def = l.def_value().downcast_ref::<LambdaDef<R, E>>()?;
+    let DefOrigin::Source { body: DefBody::BuiltIn(name), .. } = &def.origin else {
+        return None;
+    };
+    Some(BuiltinBindInfo {
+        name: name.clone(),
+        argspec: lam.args.clone(),
+        typ: typ.clone(),
+        lambda_id: Some(def.id),
+    })
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
-    // CR claude for eric: [structure] `single_bind_id` and `single_id` (below) are
-    // the same function twice. Both callers (flow.rs, module.rs check_sig) have
-    // already checked the pattern is `StructurePattern::Bind`, so each can be
-    // `self.pattern.single_bind_id()` (pattern.rs) and both of these go.
-    /// The single `BindId` this binding introduces when the pattern
-    /// binds exactly one name; `None` for destructuring patterns.
-    pub(crate) fn single_bind_id(&self) -> Option<BindId> {
-        let mut id: Option<BindId> = None;
-        let mut count = 0usize;
-        self.pattern.ids(&mut |i| {
-            count += 1;
-            if id.is_none() {
-                id = Some(i);
-            }
-        });
-        if count == 1 { id } else { None }
-    }
-
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -134,54 +138,38 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         top_id: ExprId,
         b: &expr::BindExpr,
     ) -> Result<Node<R, E>> {
-        let expr::BindExpr { rec, pattern, typ, value } = b;
+        let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
+        let annotation = match annotation {
+            Some(t) => Some(t.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical)),
+            None => None,
+        };
+        let compile_pattern = |ctx: &mut ExecCtx<R, E>, typ: &Type| {
+            StructPatternNode::compile(ctx, typ, pat, scope, spec.pos, spec.ori.clone())
+                .at(&spec)
+        };
         let (node, pattern, typ) = if *rec {
-            // CR claude for eric: [style] `!..is_some()` is `is_none()`; the loop
-            // below is `unparen` (this file); the lambda check `bail!`s with no site
-            // (probe: `let rec y = x;` reports "let rec may only be used for
-            // lambdas" with no position); "error {} can't be matched" reads oddly
-            // beside the other branch's "match error".
-            if !pattern.single_bind().is_some() {
+            if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
-            let mut v = value;
-            while let ExprKind::ExplicitParens(inner) = &v.kind {
-                v = inner;
+            if !matches!(unparen(value).kind, ExprKind::Lambda(_)) {
+                bailat!(spec, "let rec may only be used for lambdas")
             }
-            match v {
-                Expr { kind: ExprKind::Lambda(_), .. } => (),
-                _ => bail!("let rec may only be used for lambdas"),
-            }
-            // CR claude for eric: [bug] the rec annotation skips `rewrite_trait_args`,
-            // which the plain `let` applies. Probe: `let rec f: fn(x: Display) ->
-            // string = |x| "a";` is refused ("can't be matched by fn(x: Display) ->
-            // string") while the same line without `rec` checks. One annotation
-            // path for both branches.
-            let typ = match typ {
-                Some(typ) => typ.scope_refs(&scope.lexical),
-                None => Type::empty_tvar(),
-            };
-            let pattern = StructPatternNode::compile(
-                ctx,
-                &typ,
-                pattern,
-                scope,
-                spec.pos,
-                spec.ori.clone(),
-            )
-            .at(&spec)?;
+            let typ = annotation.unwrap_or_else(Type::empty_tvar);
+            // bound before the value compiles, so the body's
+            // self-references see the annotation
+            let pattern = compile_pattern(ctx, &typ)?;
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
             let ntyp = node.typ();
             if !typ.contains(&ctx.env, ntyp)? {
                 format_with_flags(PrintFlag::DerefTVars, || {
-                    bailat!(spec, "error {} can't be matched by {typ}", ntyp)
+                    bailat!(spec, "match error {ntyp} can't be matched by {typ}")
                 })?
             }
             (node, pattern, typ)
         } else {
             let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
-            let typ = match typ {
-                Some(typ) => typ.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical),
+            let typ = match annotation {
+                Some(typ) => typ,
                 None => {
                     // A ⊥ initializer seeds a fresh cell its writers
                     // refine, settled to ⊥ in typecheck1 if none do.
@@ -191,7 +179,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         } else {
                             node.typ().clone()
                         };
-                    let ptyp = pattern.infer_type_predicate(&ctx.env, &scope.lexical)?;
+                    let ptyp = pat.infer_type_predicate(&ctx.env, &scope.lexical)?;
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bailat!(spec, "match error {typ} can't be matched by {ptyp}")
@@ -200,21 +188,13 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                     typ
                 }
             };
-            let pattern = StructPatternNode::compile(
-                ctx,
-                &typ,
-                pattern,
-                scope,
-                spec.pos,
-                spec.ori.clone(),
-            )
-            .at(&spec)?;
+            let pattern = compile_pattern(ctx, &typ)?;
             (node, pattern, typ)
         };
         if pattern.is_refutable() {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
-        let mut siblings: smallvec::SmallVec<[BindId; 4]> = smallvec::SmallVec::new();
+        let mut siblings: SmallVec<[BindId; 4]> = SmallVec::new();
         pattern.ids(&mut |id| siblings.push(id));
         if let Some(&rep) = siblings.first()
             && siblings.len() > 1
@@ -230,42 +210,16 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                 ctx.env.poly_binds.insert_cow(id);
             });
         }
-        // CR claude for eric: [bug] the (scope, name) entry is never removed, not
-        // when this Bind is deleted nor when a later non-builtin `let` of the same
-        // name in the same scope shadows it, and that let inherits it. Probe:
-        // `let f = |@args: ..| -> Number 'core_sum; let f = |@args: i64| -> i64 42;
-        // println(f())` is refused "a sync variadic builtin with no data inputs
-        // never fires" (the second f alone prints 42); effect analysis and fusion
-        // read the same stale entry. Overwrite/remove the key here and in delete.
-        // CR claude for eric: [readability] `spec.kind` is re-matched for the
-        // BindExpr already destructured above: `pattern` and `value` are in hand.
-        // Keyed by (scope, name), not BindId: sig and impl get
-        // different ids for one builtin binding.
-        if let ExprKind::Bind(be) = &spec.kind {
-            if let expr::StructurePattern::Bind(bind_name) = &be.pattern {
-                if let ExprKind::Lambda(lam) = &value.kind {
-                    if let netidx_core::utils::Either::Right(builtin_name) = &lam.body {
-                        if CollectionIntrinsic::from_name(builtin_name).is_none()
-                            && let Type::Fn(fn_type) = node.typ()
-                        {
-                            let lambda_id = match node.view() {
-                                NodeView::Lambda(l) => l.lambda_id::<R, E>(),
-                                _ => None,
-                            };
-                            ctx.builtin_bindings.insert(
-                                (
-                                    scope.lexical.clone(),
-                                    compact_str::CompactString::from(bind_name.as_str()),
-                                ),
-                                BuiltinBindInfo {
-                                    name: builtin_name.clone(),
-                                    argspec: lam.args.clone(),
-                                    typ: fn_type.clone(),
-                                    lambda_id,
-                                },
-                            );
-                        }
-                    }
+        // Keyed by (scope, name), not BindId: sig and impl get different
+        // ids for one builtin binding. A later `let` of the name shadows it.
+        if let expr::StructurePattern::Bind(name) = pat {
+            let key = (scope.lexical.clone(), CompactString::from(name.as_str()));
+            match builtin_binding(&node, value) {
+                Some(info) => {
+                    ctx.builtin_bindings.insert(key, info);
+                }
+                None => {
+                    ctx.builtin_bindings.remove(&key);
                 }
             }
         }
@@ -286,19 +240,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             NodeView::Lambda(l) => Some(l.def_value().clone()),
             _ => None,
         }
-    }
-
-    /// The id if this bind has exactly one binding, otherwise `None`.
-    pub(crate) fn single_id(&self) -> Option<BindId> {
-        let mut id = None;
-        let mut n = 0;
-        self.pattern.ids(&mut |i| {
-            if n == 0 {
-                id = Some(i)
-            }
-            n += 1
-        });
-        if n == 1 { id } else { None }
     }
 }
 
@@ -346,13 +287,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
         // persists in the store.
-        // CR claude for eric: [bug] the comment says a QUIET initializer, but the
-        // guard also swallows a genuine fire at a wake. Probe: in an arm that
-        // sleeps on odd n, `let x = y; x <- select n { 0 => 5, _ => never() }`
-        // with `y = n * 100` prints x = 5 at n = 2, 4, 6 although y fired 200, 400,
-        // 600 in those cycles; the never-sleeping twin prints 200, 400.. It exists
-        // because a constant initializer re-fires at every wake and would reset
-        // the target; that phantom fire is the root cause to fix, not this guard.
+        // XCR claude for eric: a genuine fire at a wake is lost, but the named root
+        // cause is a rule (CLAUDE.md: constants fire at a wake) and a `let` is its
+        // node's name, so no tag tells the wake's fire from an event's. Needs a
+        // ruling: the proposal (an Event-scoped wake-derived id set) is in the report.
         // A connect target's value is its last write: at a wake a quiet
         // initializer republishes nothing over it, a standing bottom
         // (`let x = never()`) included.
@@ -364,29 +302,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 });
                 target
             };
-        // CR claude for eric: [readability] the trace re-derives the publish
-        // predicate without `wake_refresh`, so `publishing=` is false on exactly the
-        // wake refreshes it exists to debug. Compute `publish` once below and print
-        // that.
-        if crate::dbgenv::gxdbg_letbind() {
+        // After a sleep the store entry may lag a stale recompute;
+        // re-publish quietly (design/wake_catchup.md).
+        let wake_refresh = woke && !tag.triggers();
+        let publish = !keep_connect_target_value
+            && (tag.triggers()
+                || (!self.ever_published && !tag.is_bottom())
+                || wake_refresh);
+        if dbgenv::gxdbg_letbind() {
             eprintln!(
-                "LETBIND {} tag={tag:?} val={:?} ever_published={} fd={} keep_connect_target_value={keep_connect_target_value} publishing={}",
+                "LETBIND {} tag={tag:?} val={:?} ever_published={} fd={} keep_connect_target_value={keep_connect_target_value} publishing={publish}",
                 self.spec.pos,
                 tv.value_cloned(),
                 self.ever_published,
                 ctx.frame_depth,
-                !keep_connect_target_value
-                    && (tag.triggers() || (!self.ever_published && !tag.is_bottom()))
             );
         }
-        // After a sleep the store entry may lag a stale recompute;
-        // re-publish quietly (design/wake_catchup.md).
-        let wake_refresh = woke && !tag.triggers() && !keep_connect_target_value;
-        if !keep_connect_target_value
-            && (tag.triggers()
-                || (!self.ever_published && !tag.is_bottom())
-                || wake_refresh)
-        {
+        if publish {
             let quiet = !tag.triggers();
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
@@ -428,6 +360,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             ctx.bind_to_lambda.remove(&id);
             ctx.connect_targets.remove(&id);
         });
+        if let NodeView::Lambda(l) = self.node.view()
+            && let Some(lambda) = l.lambda_id::<R, E>()
+            && let Some(id) = self.pattern.single_bind_id()
+            && let Some(b) = ctx.env.by_id.get(&id)
+        {
+            let key = (b.scope.clone(), b.name.clone());
+            if ctx.builtin_bindings.get(&key).is_some_and(|i| i.lambda_id == Some(lambda))
+            {
+                ctx.builtin_bindings.remove(&key);
+            }
+        }
         self.node.delete(ctx);
         self.pattern.delete(ctx);
     }
@@ -506,10 +449,9 @@ pub struct Ref {
     pub id: BindId,
     pub(super) top_id: ExprId,
     pub(crate) resident: TagValue,
-    // CR claude for eric: [readability] `typecheck0` sets this before its exempt
-    // returns (a rec knot, a gate parameter), so it means "considered", not
-    // "minted"; a later typecheck0 of the same node never mints. Say which is meant.
-    /// This occurrence's signature has been minted (see `typecheck0`).
+    /// The first `typecheck0` decided this occurrence's signature, once:
+    /// fresh cells, or the definition's own (a rec knot, a gate
+    /// parameter, the instance being elaborated).
     pub(crate) instantiated: bool,
 }
 
@@ -523,23 +465,18 @@ fn synthesized_bind_ref(name: &ModPath) -> Option<BindId> {
 }
 
 impl Ref {
-    // CR claude for eric: [structure] a Ref without its `ref_var` is a state this
-    // constructor makes representable and every caller must remember to close
-    // (compile's `#bind` path, callsite `retarget`, image_decode); take `ctx` and
-    // register here. `compile` also builds `Self` by hand instead of calling this,
-    // and the `allow(dead_code)` is stale (retarget uses it).
-    /// Construct a `Ref` from resolved components. Does not touch the
-    /// ExecCtx: the caller must register the reference with
-    /// `ctx.rt.ref_var(id, top_id)`.
-    #[allow(dead_code)]
-    pub fn new<R: Rt, E: UserEvent>(
+    /// A reference to `id`, registered with the runtime; `delete`
+    /// unregisters it.
+    pub(crate) fn new<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
         id: BindId,
         typ: Type,
         top_id: ExprId,
-        spec: Expr,
+        spec: impl Into<Arc<Expr>>,
     ) -> Node<R, E> {
+        ctx.rt.ref_var(id, top_id);
         Node::new(Self {
-            spec: Arc::new(spec),
+            spec: spec.into(),
             typ,
             id,
             top_id,
@@ -562,8 +499,7 @@ impl Ref {
                 bailat!(spec, "synthesized reference to an unknown binding {id:?}")
             };
             let typ = bind.typ.clone();
-            ctx.rt.ref_var(id, top_id);
-            return Ok(Self::new(id, typ, top_id, spec));
+            return Ok(Self::new(ctx, id, typ, top_id, spec));
         }
         let resolved = match ctx.env.lookup_bind(&scope.lexical, name) {
             Ok(r) => r,
@@ -588,16 +524,7 @@ impl Ref {
                         def_ori,
                     });
                 }
-                ctx.rt.ref_var(bind_id, top_id);
-                let spec = Arc::new(spec);
-                Ok(Node::new(Self {
-                    spec,
-                    typ,
-                    id: bind_id,
-                    top_id,
-                    resident: TagValue::phantom(),
-                    instantiated: false,
-                }))
+                Ok(Self::new(ctx, bind_id, typ, top_id, spec))
             }
         }
     }
@@ -613,15 +540,7 @@ impl Ref {
         let typ = Type::decode(buf)?;
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
-        Ok(Node::new(Self {
-            spec,
-            typ,
-            id,
-            top_id,
-            resident: TagValue::phantom(),
-            instantiated: false,
-        }))
+        Ok(Self::new(ctx, id, typ, top_id, spec))
     }
 }
 
@@ -644,9 +563,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         // Overlays first, then the store; a store miss rides the resident.
-        let dbg = crate::dbgenv::gxdbg_ref();
-        let r = match super::read_var(ctx, event, &self.id) {
-            Some(super::VarRead::Delivered(tv)) => {
+        let dbg = dbgenv::gxdbg_ref();
+        let r = match read_var(ctx, event, &self.id) {
+            Some(VarRead::Delivered(tv)) => {
                 if dbg {
                     eprintln!(
                         "REF {} @{} {:?} DELIVERED tag={:?}",
@@ -658,25 +577,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 }
                 self.resident.set(tv.clone())
             }
-            Some(super::VarRead::Standing(tv)) => {
-                // CR claude for eric: [structure] this init-view rule is copied
-                // verbatim into Deref::update; one helper (`standing_view(ctx,
-                // event, tv) -> TagValue`) next to `read_var` keeps them one rule.
-                // Fresh under a genuine init view only: a wake-forced
-                // view reads a standing entry stale, since its value is
-                // a past event the graph already consumed. Frames force
-                // `event.init`, so a framed read consults `dispatch_init`.
-                let init = if ctx.frame_depth > 0 {
-                    ctx.dispatch_init
-                } else {
-                    event.init && !event.wake_init
-                };
-                let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
-                let mut tv = tv.clone();
-                tv.retag(tag);
+            Some(VarRead::Standing(tv)) => {
+                let tv = standing_view(ctx, event, tv);
                 if dbg {
                     eprintln!(
-                        "REF {} @{} {:?} STANDING init={init} (ei={} wi={} fd={} fi={}) tag={:?} val={:?}",
+                        "REF {} @{} {:?} STANDING (ei={} wi={} fd={} fi={}) tag={:?} val={:?}",
                         self.spec,
                         self.spec.pos,
                         self.id,
@@ -684,7 +589,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                         event.wake_init,
                         ctx.frame_depth,
                         ctx.dispatch_init,
-                        tag,
+                        tv.tag(),
                         tv.value_cloned()
                     );
                 }
@@ -779,18 +684,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
 enum PlaceStep<R: Rt, E: UserEvent> {
     Index(Node<R, E>),
     Tuple(usize),
-    Field(ArcStr),
+    Field(expr::Name),
     Key(Node<R, E>),
 }
 
 /// The place a `&root[i].f` reference stands for: the root node (a
 /// variable reference or a dereference) and the path's steps
-/// (design/place_references.md). `path` is the path as last resolved.
+/// (design/place_references.md), typed from `scope`. `path` is the path
+/// as last resolved.
 #[derive(Debug)]
 struct Place<R: Rt, E: UserEvent> {
     root: Node<R, E>,
     steps: Vec<PlaceStep<R, E>>,
-    path: place::Path,
+    scope: ModPath,
+    path: Path,
 }
 
 impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
@@ -830,7 +737,7 @@ impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
         match buf.get_u8() {
             0 => Ok(PlaceStep::Index(decode_node(ctx, buf)?)),
             1 => Ok(PlaceStep::Tuple(usize::decode(buf)?)),
-            2 => Ok(PlaceStep::Field(ArcStr::decode(buf)?)),
+            2 => Ok(PlaceStep::Field(expr::Name::decode(buf)?)),
             3 => Ok(PlaceStep::Key(decode_node(ctx, buf)?)),
             _ => Err(PackError::UnknownTag),
         }
@@ -840,7 +747,7 @@ impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
 enum PlaceSpec {
     Index(Expr),
     Tuple(usize),
-    Field(ArcStr),
+    Field(expr::Name),
     Key(Expr),
 }
 
@@ -857,7 +764,7 @@ struct Address<'a> {
     /// The binding at the bottom of the reference chain.
     bind: BindId,
     /// The path from `bind`'s value.
-    path: &'a place::Path,
+    path: &'a Path,
     /// The tail of `path` the place's own steps resolved: the path
     /// from the root node's production.
     steps: &'a [place::Step],
@@ -879,7 +786,7 @@ struct Resolved<'a> {
 fn root_place<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
 ) -> Option<(BindId, &[place::Step])> {
-    let any = &**root as &dyn std::any::Any;
+    let any = &**root as &dyn Any;
     match any.downcast_ref::<Ref>() {
         Some(r) => Some((r.id, &[])),
         None => {
@@ -894,6 +801,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         self.root.image_len()
             + varint_len(self.steps.len() as u64)
             + self.steps.iter().map(|s| s.image_len()).sum::<usize>()
+            + self.scope.encoded_len()
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -902,7 +810,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         for s in &self.steps {
             s.image_encode(buf)?;
         }
-        Ok(())
+        self.scope.encode(buf)
     }
 
     fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
@@ -912,7 +820,8 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         for _ in 0..n {
             steps.push(PlaceStep::image_decode(ctx, buf)?);
         }
-        Ok(Place { root, steps, path: place::Path::new() })
+        let scope = ModPath::decode(buf)?;
+        Ok(Place { root, steps, scope, path: Path::new() })
     }
 
     /// The accessor chain of `expr` down to a variable or a
@@ -931,7 +840,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                     cur = unparen(source);
                 }
                 ExprKind::StructRef { source, field } => {
-                    steps.push(PlaceSpec::Field(field.name.clone()));
+                    steps.push(PlaceSpec::Field(field.clone()));
                     cur = unparen(source);
                 }
                 ExprKind::MapRef { source, key } => {
@@ -971,7 +880,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Place { root, steps, path: place::Path::new() })
+        Ok(Place { root, steps, scope: scope.lexical.clone(), path: Path::new() })
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Resolved<'_> {
@@ -1004,7 +913,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                 }
                 PlaceStep::Tuple(i) => self.path.push(place::Step::Index(*i as i64)),
                 PlaceStep::Field(name) => {
-                    self.path.push(place::Step::Field(name.clone()))
+                    self.path.push(place::Step::Field(name.name.clone()))
                 }
                 PlaceStep::Key(n) => {
                     let tv = n.update(ctx, event);
@@ -1046,9 +955,8 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         }
     }
 
-    /// The element type: each step's container rule over the root's
-    /// type, the way the access nodes type themselves, without the
-    /// access's failure (a place handles that at runtime).
+    /// The element type: each step's accessor rule over the root's type,
+    /// without the access's failure (a place handles that at runtime).
     fn elem_type(&self, ctx: &mut ExecCtx<R, E>, spec: &Expr) -> Result<Type> {
         let mut cur = self.root.typ().clone();
         for step in &self.steps {
@@ -1068,36 +976,14 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                     mt.check_contains(&ctx.env, &cur)?;
                     vt
                 }
-                // CR claude for eric: [bug] this re-types `.0` for tuples only, while
-                // TupleRef also types it on an Error and an abstract payload. Probe:
-                // `type C = Abstract<i64>; let c = C(5); let r = &c.0;` is refused
-                // "expected tuple not C" though `c.0` compiles. The step rules
-                // restate StructRef/TupleRef/ArrayRef/MapRef typing and have
-                // drifted; share one rule per accessor.
-                PlaceStep::Tuple(i) => deref_typ!("tuple", ctx, &cur,
-                    Some(Type::Tuple(ts)) => match ts.get(*i) {
-                        Some(t) => Ok(t.clone()),
-                        None => bail!("tuple has no field {i}"),
-                    }
-                )?,
+                PlaceStep::Tuple(i) => tuple_field_type(ctx, &self.scope, &cur, *i)?,
                 PlaceStep::Field(name) => {
-                    let t = deref_typ!("struct", ctx, &cur,
-                        Some(Type::Struct(flds)) => {
-                            match flds.iter().find(|(n, _, _)| n == name) {
-                                Some((_, t, _)) => Ok(t.clone()),
-                                None => bail!("in struct, unknown field {name}"),
-                            }
-                        }
-                    )?;
-                    // CR claude for eric: [bug] every field of a place is recorded at
-                    // `spec.pos`, the `&`, because `PlaceSpec::Field` kept only the
-                    // name and dropped its `Name` position; StructRef records
-                    // `field.pos_or(..)`. Hover/definition on `b` in `&s.a.b` misses.
+                    let (_, t) = struct_field_type(ctx, &cur, &name.name)?;
                     if ctx.env.lsp_mode {
-                        ctx.env.push_field_ref(crate::ide::FieldRefSite {
-                            pos: spec.pos,
+                        ctx.env.push_field_ref(FieldRefSite {
+                            pos: name.pos_or(spec.pos),
                             ori: spec.ori.clone(),
-                            name: name.clone(),
+                            name: name.name.clone(),
                             typ: t.clone(),
                         });
                     }
@@ -1140,7 +1026,7 @@ pub struct ByRef<R: Rt, E: UserEvent> {
     referent: Referent<R, E>,
     pub id: BindId,
     resident: TagValue,
-    registered: Option<(BindId, place::Path)>,
+    registered: Option<(BindId, Path)>,
 }
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
@@ -1183,7 +1069,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             }
             None => {
                 let child = compile(ctx, flags, unparen(expr).clone(), scope, top_id)?;
-                if let Some(c) = (&*child as &dyn std::any::Any).downcast_ref::<Ref>() {
+                if let Some(c) = (&*child as &dyn Any).downcast_ref::<Ref>() {
                     ctx.env.byref_chain.insert_cow(id, c.id);
                 }
                 let typ = Type::ByRef(Arc::new(child.typ().clone()));
@@ -1205,27 +1091,23 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         self.referent.each_ref(f)
     }
 
-    // CR claude for eric: [bug] outside init a fire is QUEUED (`set_var`), and a
-    // bottom is never written. For a chainless reference the cell is what `*r`
-    // reads, so `*r` lags its expression a cycle and rides stale over bottom.
-    // Probe: n ticking, `v = select n { 2 => never(), k => k * 10 }; r = &(v + 1);
-    // println("[n] [*r]")` prints "1 1", "2 11", "4 31"; the twin `let w = v + 1;
-    // r = &w` prints "1 11", nothing at 2, "4 41". Publish like Bind::update does
-    // (this cycle, bottoms included).
-    /// Write the cell: a fire is delivered (this cycle under init, so
-    /// `Deref` reads it under a wake view too; else queued), a stale
-    /// value under an init view still materializes the cell (embedders
-    /// read it directly and a chainless ref's cell is its only storage).
-    fn publish(&self, ctx: &mut ExecCtx<R, E>, event: &Event<E>, tv: TagValue) {
-        let (fired, bottom) = (tv.is_fired(), tv.tag().is_bottom());
-        if fired {
-            if event.init {
-                ctx.rt.store_insert(self.id, TagValue::fired(tv.value()));
+    /// Write the cell, which `Deref` reads for a chainless reference and
+    /// embedders read directly: a fire this cycle, bottoms included, as a
+    /// `let` publishes; a quiet production under an init view stands in
+    /// it, so the cell exists from the reference's birth.
+    fn publish(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, tv: TagValue) {
+        let tag = tv.tag();
+        if tag.triggers() {
+            let stored = if tag.is_bottom() {
+                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
             } else {
-                ctx.rt.set_var(self.id, tv.value());
-            }
-        } else if event.init && !bottom {
-            ctx.rt.store_insert_standing(self.id, TagValue::stale(tv.value()));
+                TagValue::fired(tv.value_cloned())
+            };
+            ctx.rt.store_insert(self.id, stored);
+            event.variables.insert(self.id, tv);
+            ctx.rt.notify_set(self.id);
+        } else if event.init {
+            ctx.rt.store_insert_standing(self.id, tv);
         }
     }
 
@@ -1298,24 +1180,25 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                     ctx.rt.set_ref_path(self.id, bind, path.clone());
                     self.registered = Some((bind, path.clone()));
                 }
-                // CR claude for eric: [bug] suspected: a root that goes bottom while
-                // its address stays determined skips this and leaves the cell (what
-                // embedders read) on the old element; a bottom input must set the
-                // mirror bottom (`bottom_mirror`), as an undetermined key does.
-                // the cell mirrors the element, read through the address
-                if (moved || event.init) && !root.tag().is_bottom() {
-                    let read = super::coretraits::with_hooks(ctx, event, || {
-                        root.with_value(|v| place::read_path(v, steps))
-                    });
+                // the cell mirrors the element, read through the address;
+                // a bottom root sets it bottom
+                if moved || event.init {
+                    let read = match root.tag().is_bottom() {
+                        true => None,
+                        false => Some(with_hooks(ctx, event, || {
+                            root.with_value(|v| place::read_path(v, steps))
+                        })),
+                    };
                     match read {
-                        Ok(v) => {
+                        Some(Ok(v)) => {
                             let tag = if moved { Tag::FIRED } else { root.tag() };
                             self.publish(ctx, event, TagValue::tagged(v, tag))
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             log::warn!("read through a reference: {e}");
                             self.bottom_mirror(ctx);
                         }
+                        None => self.bottom_mirror(ctx),
                     }
                 }
                 moved
@@ -1394,7 +1277,7 @@ pub struct Deref<R: Rt, E: UserEvent> {
     /// The binding the reference's value resolves to and the path into
     /// that binding's value (empty unless the reference is a place);
     /// `None` while the reference is bottom.
-    addr: Option<(BindId, place::Path)>,
+    addr: Option<(BindId, Path)>,
 }
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
@@ -1406,14 +1289,10 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         let typ = Type::decode(buf)?;
         let child = decode_node(ctx, buf)?;
         let top_id = ExprId::decode(buf)?;
-        let addr = match bool::decode(buf)? {
-            false => None,
-            true => {
-                let id = BindId::decode(buf)?;
-                ctx.rt.ref_var(id, top_id);
-                Some((id, place::path_decode(buf)?))
-            }
-        };
+        let addr = Option::<(BindId, Path)>::decode(buf)?;
+        if let Some((id, _)) = &addr {
+            ctx.rt.ref_var(*id, top_id);
+        }
         Ok(Node::new(Self {
             spec,
             typ,
@@ -1422,22 +1301,6 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
             resident: TagValue::phantom(),
             addr,
         }))
-    }
-
-    // CR claude for eric: [dead] no caller anywhere in the workspace; the module
-    // is pub(crate), so `allow(dead_code)` only hides that.
-    /// Build a `Deref` from an already-compiled child that evaluates to
-    /// a `Value::U64` / `Value::V64` holding a BindId.
-    #[allow(dead_code)]
-    pub fn new(typ: Type, child: Node<R, E>, top_id: ExprId, spec: Expr) -> Node<R, E> {
-        Node::new(Self {
-            spec,
-            typ,
-            child,
-            top_id,
-            resident: TagValue::phantom(),
-            addr: None,
-        })
     }
 
     pub(crate) fn compile(
@@ -1463,8 +1326,9 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// Address `cell`'s referent: the place it stands for, else the
     /// binding at the end of its byref chain (`&x`'s cell mirrors x a
     /// cycle late, the referent does not; a chainless reference's own
-    /// cell is its only storage).
-    fn address(&mut self, ctx: &mut ExecCtx<R, E>, cell: BindId) -> BindId {
+    /// cell is its only storage). Returns the binding and whether it
+    /// changed.
+    fn address(&mut self, ctx: &mut ExecCtx<R, E>, cell: BindId) -> (BindId, bool) {
         let (id, path) = match ctx.rt.ref_path(&cell) {
             Some((root, path)) => (*root, &path[..]),
             None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), &[][..]),
@@ -1474,15 +1338,16 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
                 if &p[..] != path {
                     *p = path.into();
                 }
+                (id, false)
             }
             _ => {
                 let path = path.into();
                 self.release(ctx);
                 ctx.rt.ref_var(id, self.top_id);
                 self.addr = Some((id, path));
+                (id, true)
             }
         }
-        id
     }
 
     fn release(&mut self, ctx: &mut ExecCtx<R, E>) {
@@ -1499,11 +1364,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             + self.typ.encoded_len()
             + self.child.image_len()
             + self.top_id.encoded_len()
-            + 1
-            + self
-                .addr
-                .as_ref()
-                .map_or(0, |(id, p)| id.encoded_len() + place::path_len(p))
+            + self.addr.encoded_len()
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1512,14 +1373,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         self.typ.encode(buf)?;
         self.child.image_encode(buf)?;
         self.top_id.encode(buf)?;
-        self.addr.is_some().encode(buf)?;
-        match &self.addr {
-            Some((id, p)) => {
-                id.encode(buf)?;
-                place::path_encode(p, buf)
-            }
-            None => Ok(()),
-        }
+        self.addr.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -1536,26 +1390,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             self.release(ctx);
             return self.resident.set_bottom(addr.triggers());
         };
-        let id = self.address(ctx, cell);
-        let res = match super::read_var(ctx, event, &id) {
-            Some(super::VarRead::Delivered(tv)) => Some(tv.clone()),
-            Some(super::VarRead::Standing(tv)) => {
-                // Fresh under a genuine init view only (see Ref::update).
-                let init = if ctx.frame_depth > 0 {
-                    ctx.dispatch_init
-                } else {
-                    event.init && !event.wake_init
-                };
-                let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
-                let mut c = tv.clone();
-                c.retag(tag);
-                Some(c)
-            }
+        let (id, moved) = self.address(ctx, cell);
+        let res = match read_var(ctx, event, &id) {
+            Some(VarRead::Delivered(tv)) => Some(tv.clone()),
+            Some(VarRead::Standing(tv)) => Some(standing_view(ctx, event, tv)),
             None => None,
         };
         let res = match (res, &self.addr) {
             (Some(tv), Some((_, path))) if !path.is_empty() && !tv.tag().is_bottom() => {
-                let read = super::coretraits::with_hooks(ctx, event, || {
+                let read = with_hooks(ctx, event, || {
                     tv.with_value(|v| place::read_path(v, path))
                 });
                 match read {
@@ -1572,17 +1415,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             }
             (res, _) => res,
         };
-        // CR claude for eric: [bug] when the address moved to a binding that has
-        // never delivered, this rides the PREVIOUS referent's value. Probe: `x = 1;
-        // y = sys::time::after_idle(duration:10.s, 2); r = select n { 0 => &x, _ =>
-        // &y }; println("[n] [*r]")` prints "1 1", "2 1", "3 1" (y has no value).
-        // A moved address with nothing to read is bottom, not the old resident.
         match res {
             Some(mut tv) => {
                 let t = tv.tag().join(addr);
                 tv.retag(t);
                 self.resident.set(tv)
             }
+            // a moved address with nothing to read is bottom
+            None if moved => self.resident.set_bottom(addr.triggers()),
             None => self.resident.ride(),
         }
     }

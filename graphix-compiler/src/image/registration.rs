@@ -30,7 +30,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 11;
+pub const REGISTRATION_FORMAT: u8 = 12;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -216,7 +216,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             ("pending settles", !self.pending_settles.iter().all(|s| s.is_empty())),
             ("an open definition gate", self.def_gate_depth != 0),
             ("lambdas resolving", !self.resolving_lambdas.lock().is_empty()),
-            ("active lambdas", !self.active_lambdas.is_empty()),
             ("core hook sites", !self.core_hook_sites.is_empty()),
         ];
         if let Some((what, _)) = busy.iter().find(|(_, b)| *b) {

@@ -90,8 +90,7 @@ checks are cheap and stay.
 
 The entry is every definition's post-gate scheme, keyed within the
 entry by a stable definition identity (the lambda literal's preorder
-index in its packed module, or `def.src`; `ExprId`s are fresh per
-decode). On a hit, registration parses and compiles the package top
+index in its packed module; `ExprId`s are fresh per decode). On a hit, registration parses and compiles the package top
 level as today, and where the gate would run it decodes the stored
 scheme, aliases its variables by name onto the fresh scheme's cells
 with the mechanism definition creation already uses (`lambda.rs:976`),

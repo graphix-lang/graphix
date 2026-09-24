@@ -382,3 +382,119 @@ async fn place_through_deref_mirror() -> Result<()> {
     assert_eq!(mirror, Some(Value::I64(10)));
     Ok(())
 }
+
+// A reference to an expression publishes in the cycle its expression
+// fires, bottoms included: it reads as a reference to a `let` of the
+// expression does.
+const BYREF_EXPR: &str = r#"{
+  let n = array::iter([0, 1, 2, 3]);
+  let v = select n { 2 => never(), k => k * 10 };
+  let r = &(v + 1);
+  *r
+}"#;
+
+const BYREF_LET: &str = r#"{
+  let n = array::iter([0, 1, 2, 3]);
+  let v = select n { 2 => never(), k => k * 10 };
+  let w = v + 1;
+  let r = &w;
+  *r
+}"#;
+
+async fn byref_expr_same_cycle(fusion_disabled: bool) -> Result<()> {
+    use super::dense_deltas::{as_i64s, run_delta};
+    let (expr, _) = run_delta(BYREF_EXPR, fusion_disabled).await?;
+    let (bind, _) = run_delta(BYREF_LET, fusion_disabled).await?;
+    assert_eq!(as_i64s(&expr), as_i64s(&bind));
+    assert_eq!(as_i64s(&expr), vec![1, 11, 31]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn byref_expr_same_cycle_interp() -> Result<()> {
+    byref_expr_same_cycle(true).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn byref_expr_same_cycle_jit() -> Result<()> {
+    byref_expr_same_cycle(false).await
+}
+
+// A dereference whose address moved to a binding that has never
+// delivered is bottom, not the previous referent's value.
+const DEREF_MOVED_TO_UNDELIVERED: &str = r#"
+{
+  let x = 1;
+  let y = sys::time::after_idle(duration:10.s, 2);
+  let sel = false;
+  sel <- sys::time::timer(duration:0.02s, false) ~ true;
+  let r = select sel { false => &x, true => &y };
+  let late = sys::time::timer(duration:0.06s, false) ~ *r;
+  any(late, sys::time::timer(duration:0.12s, false) ~ -1)
+}
+"#;
+
+run!(deref_moved_to_undelivered, DEREF_MOVED_TO_UNDELIVERED, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(-1)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A place reaches an abstract value's payload where its definition is
+// visible, and an error's; writes rebuild them.
+const PLACE_PAYLOAD: &str = r#"
+{
+  type C = Abstract<i64>;
+  let c = C(5);
+  let e: Error<i64> = error(1);
+  let rc = &c.0;
+  let re = &e.0;
+  let before = once((*rc, *re));
+  let t1 = sys::time::timer(duration:0.02s, false);
+  *rc <- t1 ~ 7;
+  *re <- t1 ~ 8;
+  let t2 = sys::time::timer(duration:0.06s, false);
+  t2 ~ (before, c.0, e.0, *rc, *re)
+}
+"#;
+
+run!(place_payload, PLACE_PAYLOAD, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[i64:5, i64:1], i64:7, i64:8, i64:7, i64:8]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+/// A place whose root goes bottom sets its cell, which an embedder
+/// reads, bottom.
+#[tokio::test(flavor = "current_thread")]
+async fn place_root_bottom_mirror() -> Result<()> {
+    use graphix_compiler::Rt;
+    use graphix_rt::GXEvent;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let ctx = crate::init(tx).await?;
+    let compiled = ctx
+        .rt
+        .compile(arcstr::literal!(
+            "{ let b = 1; b <- sys::time::timer(duration:0.02s, false) ~ 0; \
+             let a = [10 / b]; &a[0] }"
+        ))
+        .await?;
+    let eid = compiled.exprs[0].id;
+    let mut cell = None;
+    let deadline = tokio::time::sleep(std::time::Duration::from_millis(200));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            batch = rx.recv() => match batch {
+                None => anyhow::bail!("runtime died"),
+                Some(mut batch) => for e in batch.drain(..) {
+                    if let GXEvent::Updated(id, Value::U64(c)) = e && id == eid {
+                        cell = Some(graphix_compiler::BindId::from(c));
+                    }
+                }
+            }
+        }
+    }
+    let Some(id) = cell else { anyhow::bail!("no reference produced") };
+    let mirror = ctx.rt.with_ctx(move |ctx| ctx.rt.store_value(&id)).await?;
+    ctx.shutdown().await;
+    assert_eq!(mirror, None);
+    Ok(())
+}

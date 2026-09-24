@@ -1277,3 +1277,39 @@ run!(
     |v: Result<&Value>| format!("{}", v.unwrap()) == r#""<<<1>>>""#;
     FuseExpect::Jit
 );
+
+// A labeled parameter before `self` does not shift which argument a
+// union dispatch reads as `self`.
+run!(
+    trait_union_labeled_before_self,
+    r#"
+{
+  type A = Abstract<i64>;
+  type B = Abstract<string>;
+  trait Show { val show: fn(#pre: string, self, n: i64) -> string };
+  impl Show for A { let show = |#pre: string, s: A, n: i64| "[pre] A [n]" };
+  impl Show for B { let show = |#pre: string, s: B, n: i64| "[pre] B [n]" };
+  let x: [A, B] = A(1);
+  Show::show(#pre: "p", x, 3)
+}
+"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "p A 3");
+    FuseExpect::Jit
+);
+
+// A bound naming another declared variable reads the fresh one: the
+// implementation applies to `Pair<string, [string, null]>`.
+run!(
+    core_eq_bound_names_other_var,
+    r#"
+{
+  type Pair<'a, 'b> = Abstract<('a, 'b)>;
+  impl<'a, 'b: ['a, null]> Eq for Pair<'a, 'b> { let eq = |x, y| true };
+  let q1: Pair<string, [string, null]> = Pair(("a", "x"));
+  let q2: Pair<string, [string, null]> = Pair(("b", "y"));
+  q1 == q2
+}
+"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)));
+    FuseExpect::Jit
+);

@@ -29,7 +29,7 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{collections::hash_map::Entry, sync::LazyLock};
+use std::{collections::hash_map::Entry, fmt, sync::LazyLock};
 use triomphe::Arc;
 
 pub(super) static ECHAIN: LazyLock<ModPath> =
@@ -118,6 +118,21 @@ pub(crate) struct SeqAbort<R: Rt, E: UserEvent> {
     /// A machine's step variable, written idle when the machine sleeps.
     pc: Option<BindId>,
     pending: bool,
+}
+
+/// Join `etyp`, an error type raised to the catch `catch`, into the type
+/// its bind infers.
+pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
+    let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
+        bail!("BUG: catch {catch:?} has no inferred bind")
+    };
+    let tv = tv.read();
+    let mut cell = tv.typ.write();
+    cell.typ = match &cell.typ {
+        None => Some(etyp.clone()),
+        Some(t) => Some(Type::union(env, &[t, etyp])?),
+    };
+    Ok(())
 }
 
 impl<R: Rt, E: UserEvent> Catch<R, E> {
@@ -644,7 +659,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let handler = scope.dynamic.handler();
         if handler.is_none() && !matches!(spec.kind, ExprKind::Rethrow(_)) {
-            Self::check_unhandled(&ctx.env, flags, &spec)?;
+            Self::check_unhandled(&ctx.env, flags, &spec, "error raised by ?")?;
         }
         let typ = Type::empty_tvar();
         Ok(Node::new(Self {
@@ -663,17 +678,22 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     // and position printed into it (and an "ERROR:" prefix) rather than a
     // `bailat!(spec, ..)`, so it carries no `ErrorSite` and the LSP cannot place
     // it on the `?`.
-    fn check_unhandled(env: &Env, flags: BitFlags<CFlag>, spec: &Expr) -> Result<()> {
+    pub(crate) fn check_unhandled(
+        env: &Env,
+        flags: BitFlags<CFlag>,
+        spec: &Expr,
+        raised: impl fmt::Display,
+    ) -> Result<()> {
         if flags.contains(CFlag::WarnUnhandled | CFlag::WarningsAreErrors) {
-            bail!(
-                "ERROR: {} at {} error raised by ? will not be caught",
-                spec.ori,
-                spec.pos
-            )
+            bail!("ERROR: {} at {} {raised} will not be caught", spec.ori, spec.pos)
         }
         if flags.contains(CFlag::WarnUnhandled) {
-            let msg = "error raised by ? will not be caught";
-            env.warn(&spec.ori, spec.pos, spec.end.0, msg);
+            env.warn(
+                &spec.ori,
+                spec.pos,
+                spec.end.0,
+                format_args!("{raised} will not be caught"),
+            );
         }
         Ok(())
     }
@@ -839,7 +859,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 return self.typ.check_contains(&ctx.env, &Type::Bottom);
             }
             if self.handler.is_none() {
-                Self::check_unhandled(&ctx.env, self.flags, &self.spec)?;
+                Self::check_unhandled(
+                    &ctx.env,
+                    self.flags,
+                    &self.spec,
+                    "error raised by ?",
+                )?;
             }
         }
         self.strip = wrap!(self, Strip::of(ctx, '?', self.n.typ()))?;
@@ -859,18 +884,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             } else {
                 wrap!(self, fix_echain_typ(&ctx, &etyp))?
             };
-            let bind = ctx.env.by_id.get(&id).ok_or_else(|| anyhow!("BUG: catch"))?;
-            match &bind.typ {
-                Type::TVar(tv) => {
-                    let tv = tv.read();
-                    let mut cell = tv.typ.write();
-                    cell.typ = match &cell.typ {
-                        None => Some(etyp.clone()),
-                        Some(t) => Some(Type::union(&ctx.env, &[t, &etyp])?),
-                    };
-                }
-                _ => unreachable!(),
-            }
+            join_raised(&ctx.env, id, &etyp)?;
         }
         Ok(())
     }

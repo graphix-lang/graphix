@@ -90,6 +90,43 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
     }
 }
 
+/// A standing entry as a reader sees it: fresh under a genuine init
+/// view only. A wake-forced view reads it stale, its value is a past
+/// event the graph already consumed; frames force `event.init`, so a
+/// framed read consults `dispatch_init`.
+pub(crate) fn standing_view<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    event: &Event<E>,
+    tv: &TagValue,
+) -> TagValue {
+    let init = if ctx.frame_depth > 0 {
+        ctx.dispatch_init
+    } else {
+        event.init && !event.wake_init
+    };
+    let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
+    let mut tv = tv.clone();
+    tv.retag(tag);
+    tv
+}
+
+/// [`read_var`] with a standing entry retagged quiet.
+pub(crate) fn read_quiet<R: Rt, E: UserEvent>(
+    ctx: &ExecCtx<R, E>,
+    event: &Event<E>,
+    id: &BindId,
+) -> Option<TagValue> {
+    read_var(ctx, event, id).map(|r| match r {
+        VarRead::Delivered(tv) => tv.clone(),
+        VarRead::Standing(tv) => {
+            let mut tv = tv.clone();
+            let tag = tv.tag().quiet();
+            tv.retag(tag);
+            tv
+        }
+    })
+}
+
 #[macro_export]
 macro_rules! wrap {
     ($n:expr, $e:expr) => {
@@ -1484,9 +1521,7 @@ impl WriteTarget {
         1 + match target {
             None => 0,
             Some(WriteTarget::Bind(id)) => id.encoded_len(),
-            Some(WriteTarget::Place(id, path)) => {
-                id.encoded_len() + place::path_len(path)
-            }
+            Some(WriteTarget::Place(id, path)) => id.encoded_len() + path.encoded_len(),
         }
     }
 
@@ -1500,7 +1535,7 @@ impl WriteTarget {
             Some(WriteTarget::Place(id, path)) => {
                 buf.put_u8(2);
                 id.encode(buf)?;
-                place::path_encode(path, buf)
+                path.encode(buf)
             }
         }
     }
@@ -1514,7 +1549,7 @@ impl WriteTarget {
             1 => Ok(Some(WriteTarget::Bind(BindId::decode(buf)?))),
             2 => Ok(Some(WriteTarget::Place(
                 BindId::decode(buf)?,
-                place::path_decode(buf)?,
+                place::Path::decode(buf)?,
             ))),
             _ => Err(PackError::UnknownTag),
         }

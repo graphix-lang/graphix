@@ -533,7 +533,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::Impl(i) => {
             rec!(&i.body);
             for p in i.prototypes.iter() {
-                rec!(p)
+                rec!(&p.site)
             }
         }
         NodeView::Ref(_)

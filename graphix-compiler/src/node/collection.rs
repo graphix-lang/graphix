@@ -137,7 +137,7 @@ pub mod list {
 // field (read only by image_encode, able to disagree with `T`), the ZST
 // `operation: T` with its unused `&mut self`, and the `emit_call` pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, netidx_derive::Pack)]
-pub(crate) enum CollectionIntrinsic {
+pub enum CollectionIntrinsic {
     ArrayInit,
     ArrayMap,
     ArrayFilter,

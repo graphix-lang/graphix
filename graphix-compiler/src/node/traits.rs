@@ -7,31 +7,37 @@
 //! compile as typed bindings in a block below the declaring module
 //! with the trait's dispatchers glob-visible.
 
-// CR claude for eric: [style] `crate::env::Map`, `crate::image::ImageBuf` and
-// `crate::image::nodes` sit outside the `crate::{..}` group (which already opens
-// `env::{..}`); repeated paths stay spelled out: `ahash::AHashMap` x3,
-// `arcstr::literal!` x2, `super::coretraits::CoreTrait::of_id` x2,
-// `crate::BindId` x2, `crate::expr::{Attr, Decorations, LambdaExpr, Arg}`.
-use super::Block;
-use crate::env::Map;
-use crate::image::ImageBuf;
-use crate::image::nodes::{
-    NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
+use super::{
+    Block,
+    bind::lower_over_operands,
+    callsite::{ArgKey, CallSite},
+    coretraits::{CoreTrait, method_ftype},
+    genn::SynthCall,
+    lambda::LambdaDef,
 };
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
-    env::{Env, ImplDef, TraitDef},
+    BindId, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, SourcePosition,
+    TagValue, Update, UserEvent, bailat,
+    env::{Env, ImplDef, Map, TraitDef, TraitMethodRef},
     expr::{
-        BindExpr, Expr, ExprId, ExprKind, ImplExpr, ModPath, StructurePattern, TraitExpr,
+        ApplyExpr, Arg, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
+        ImplExpr, LambdaExpr, ModPath, Origin, Pattern, SelectExpr, StructurePattern,
+        TraitExpr,
     },
-    typ::{FnType, TVar, Type, TypeRef},
+    image::{
+        ImageBuf,
+        nodes::{NodeTag, decode_node, put_tag, tag_len},
+    },
+    typ::{FnArgKind, FnType, TVar, Type, TypeRef},
     wrap,
 };
-use anyhow::{Context, Result, bail};
-use arcstr::ArcStr;
+use ahash::{AHashMap, AHashSet};
+use anyhow::{Context, Result, anyhow, bail};
+use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
@@ -41,14 +47,14 @@ use triomphe::Arc;
 /// default body is checked).
 pub(crate) fn method_sig(parsed: &FnType, tref: &Type, scope: &ModPath) -> FnType {
     let ft = parsed.scope_refs(scope);
-    let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+    let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     ft.alias_tvars(&mut known);
     if let Some(tv) = known.get("self") {
         tv.add_cell_constraint(tref.clone());
     }
     let mut quantifiers: LPooled<Vec<ArcStr>> = ft.quantifiers.iter().cloned().collect();
     if !quantifiers.iter().any(|q| &**q == "self") {
-        quantifiers.push(arcstr::literal!("self"));
+        quantifiers.push(literal!("self"));
     }
     FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft }
 }
@@ -56,8 +62,8 @@ pub(crate) fn method_sig(parsed: &FnType, tref: &Type, scope: &ModPath) -> FnTyp
 /// The method signature instantiated at an implementation target:
 /// `self := target`, everything else fresh.
 pub(crate) fn method_sig_at(sig: &FnType, target: &Type) -> FnType {
-    let mut known: LPooled<ahash::AHashMap<ArcStr, Type>> = LPooled::take();
-    known.insert(arcstr::literal!("self"), target.clone());
+    let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
+    known.insert(literal!("self"), target.clone());
     sig.replace_tvars(&known)
 }
 
@@ -65,7 +71,6 @@ pub(crate) fn method_sig_at(sig: &FnType, target: &Type) -> FnType {
 /// from the declared signature (positional by position, labeled by
 /// name). Written annotations are kept.
 fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
-    use crate::{expr::LambdaExpr, typ::FnArgKind};
     let ExprKind::Lambda(l) = &value.kind else { return value.clone() };
     let positional: LPooled<Vec<&Type>> = sig
         .args
@@ -92,12 +97,13 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
             (None, Some(t)) => Some(t.clone()),
             (c, _) => c.clone(),
         };
-        crate::expr::Arg { constraint, ..a.clone() }
+        Arg { constraint, ..a.clone() }
     }));
     let rtype = l.rtype.clone().or_else(|| Some(sig.rtype.clone()));
     let throws =
         l.throws.clone().or_else(|| sig.explicit_throws.then(|| sig.throws.clone()));
-    let kind = ExprKind::Lambda(Arc::new(LambdaExpr {
+    let mut e = value.clone();
+    e.kind = ExprKind::Lambda(Arc::new(LambdaExpr {
         args,
         vargs: l.vargs.clone(),
         rtype,
@@ -105,29 +111,14 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
         constraints: l.constraints.clone(),
         body: l.body.clone(),
     }));
-    // CR claude for eric: [structure] three `Expr` literals in this file list
-    // every field by hand (here, the default binds in `Trait::compile`, the
-    // method binds in `Impl::compile`), so a new `Expr` field must be threaded
-    // through each. `Impl::compile`'s copy also drops the method's parsed `end`
-    // and `str_form` (`Default::default()`) while keeping its id and pos, so
-    // anything ranged on the rebuilt bind (`env.warn`, LSP) ends at NOWHERE. Use
-    // `Expr { kind, ..value.clone() }` / `Expr { kind, dec, ..m.clone() }`.
-    Expr {
-        id: value.id,
-        ori: value.ori.clone(),
-        pos: value.pos,
-        kind,
-        dec: value.dec.clone(),
-        str_form: value.str_form,
-        end: value.end,
-    }
+    e
 }
 
 pub(crate) fn trait_ref(
     scope: &ModPath,
     name: &ArcStr,
-    pos: crate::SourcePosition,
-    ori: &Arc<crate::expr::Origin>,
+    pos: SourcePosition,
+    ori: &Arc<Origin>,
 ) -> Type {
     Type::Ref(TypeRef::new(
         scope.clone(),
@@ -175,7 +166,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                 t.name.pos_or(spec.pos),
                 spec.ori.clone(),
             )
-            .with_context(|| format!("in trait declaration at {}", spec.pos))?;
+            .at(&spec)?;
         let dscope = scope.append_block("trait", spec.id.inner());
         ctx.env.import_glob(&dscope.lexical, def.path.clone());
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
@@ -188,23 +179,18 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                     typ: Some(Type::Fn(Arc::new(sig.clone()))),
                     value: annotate_lambda(body, &sig),
                 };
-                exprs.push(Expr {
-                    id: ExprId::new(),
-                    ori: body.ori.clone(),
-                    pos: body.pos,
-                    kind: ExprKind::Bind(Arc::new(b)),
-                    dec: None,
-                    str_form: Default::default(),
-                    end: Default::default(),
-                });
+                let mut e = body.clone();
+                e.id = ExprId::new();
+                e.kind = ExprKind::Bind(Arc::new(b));
+                e.dec = None;
+                exprs.push(e);
             }
         }
         let exprs: Arc<[Expr]> = Arc::from_iter(exprs.drain(..));
         let defaults =
             Block::compile(ctx, flags, spec.clone(), &dscope, top_id, true, &exprs)
                 .with_context(|| format!("in the default methods of trait {}", t.name))?;
-        let mut defaults_by_name: LPooled<Vec<(CompactString, crate::BindId)>> =
-            LPooled::take();
+        let mut defaults_by_name: LPooled<Vec<(CompactString, BindId)>> = LPooled::take();
         if let Some(binds) = ctx.env.binds.get(&dscope.lexical) {
             for (n, id) in binds.into_iter() {
                 defaults_by_name.push((n.clone(), *id));
@@ -280,11 +266,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         &Type::Bottom
     }
 
-    // CR claude for eric: [readability] a trait has no `NodeView` of its own and
-    // presents itself as its defaults block, so every view walker sees a module
-    // `Block` (`node_shape` names it "ModuleBlock") while the image, `typ` and
-    // `delete` see a `Trait`. `Impl` has `NodeView::Impl`; give `Trait` one, or
-    // say why it must impersonate.
+    /// A declaration has nothing of its own to walk: every view walker
+    /// treats a trait exactly as its defaults' module block.
     fn view(&self) -> NodeView<'_, R, E> {
         self.defaults.view()
     }
@@ -307,7 +290,7 @@ pub struct Impl<R: Rt, E: UserEvent> {
     /// For a core trait, one never-run call site per method so the
     /// analysis reaches the method's body and verifies its implicit
     /// `#[sync]`.
-    pub(crate) prototypes: Vec<Node<R, E>>,
+    pub(crate) prototypes: Vec<SynthCall<R, E>>,
 }
 
 /// The orphan rule: an abstract type's impl belongs to the type's
@@ -329,10 +312,9 @@ pub(crate) fn check_target(
         && let Type::Ref(tr) = target
         && env.trait_of_ref(tr).is_none()
     {
-        let type_pkg = tr
-            .resolve_in(env)
-            .map(|r| env.package_root(r.canonical_scope()).to_string())
-            .unwrap_or_default();
+        let resolved = tr.resolve_in(env);
+        let type_pkg =
+            resolved.as_ref().map_or("", |r| env.package_root(r.canonical_scope()));
         if here != trait_pkg && here != type_pkg {
             bail!(
                 "impl {} for {target}: a named type's implementation must live in the \
@@ -355,7 +337,7 @@ pub(crate) fn check_target(
     // Rust-backed abstract carries no payload, so its impl would
     // never be called
     if !declared
-        && crate::node::coretraits::CoreTrait::of_id(trait_def.id).is_some()
+        && CoreTrait::of_id(trait_def.id).is_some()
         && let Type::Abstract { id, .. } = &canonical
         && !env.abstract_minted(*id)
     {
@@ -367,21 +349,17 @@ pub(crate) fn check_target(
             trait_def.name
         )
     }
-    // CR claude for eric: [style] `type_pkg` is a heap `String` (`to_string`,
-    // `String::new()`, and again in the hole branch above) built on every impl
-    // compile only to compare with `&str`s. Keep the resolved `Arc` alive and
-    // borrow, or use `ArcStr`.
     match &canonical {
         Type::Abstract { id, .. } => {
+            let resolved = match target {
+                Type::Ref(tr) => tr.resolve_in(env),
+                _ => None,
+            };
             let type_pkg = match env.abstract_reps.get(id) {
-                Some(rep) => env.package_root(&rep.scope).to_string(),
-                None => match target {
-                    Type::Ref(tr) => tr
-                        .resolve_in(env)
-                        .map(|r| env.package_root(r.canonical_scope()).to_string())
-                        .unwrap_or_default(),
-                    _ => String::new(),
-                },
+                Some(rep) => env.package_root(&rep.scope),
+                None => resolved
+                    .as_ref()
+                    .map_or("", |r| env.package_root(r.canonical_scope())),
             };
             if here != trait_pkg && here != type_pkg {
                 bail!(
@@ -428,13 +406,13 @@ pub(crate) fn impl_head(
     declared: bool,
 ) -> Result<(Type, Arc<[TVar]>)> {
     let target = im.target.scope_refs(scope);
-    let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+    let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     let params: Arc<[TVar]> = Arc::from_iter(im.params.iter().map(|tv| {
         let tv = TVar::empty_named(tv.name.clone());
         known.insert(tv.name.clone(), tv.clone());
         tv
     }));
-    let mut in_target: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+    let mut in_target: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     target.collect_tvars(&mut in_target);
     for tv in params.iter() {
         if !in_target.contains_key(&tv.name) {
@@ -493,26 +471,21 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         im: &ImplExpr,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
-        // CR claude for eric: [readability] errors here print positions into the
-        // message (`at {}`, `(at {})` with `spec.pos`/`m.pos`, and
-        // `with_context(format!("at {}"))` on `impl_head`/`register_impl`;
-        // `Trait::compile` likewise) instead of `bailat!`/`.at(&m)`, so they carry
-        // no `ErrorSite`: the LSP marks the whole impl, never the offending
-        // method.
-        let trait_id = match ctx.env.lookup_trait(&scope.lexical, &im.trait_name)? {
-            Some(id) => id,
-            None => bail!("no trait `{}` in scope at {}", im.trait_name, spec.pos),
-        };
+        let trait_id =
+            match ctx.env.lookup_trait(&scope.lexical, &im.trait_name).at(&spec)? {
+                Some(id) => id,
+                None => bailat!(spec, "no trait `{}` in scope", im.trait_name),
+            };
         let trait_def = ctx.env.trait_def(trait_id).cloned().ok_or_else(|| {
-            anyhow::anyhow!("trait {} has no definition", im.trait_name)
+            anyhow!("trait {} has no definition", im.trait_name).at(&spec)
         })?;
-        let (target, params) = impl_head(&ctx.env, &scope.lexical, &trait_def, im, false)
-            .with_context(|| format!("at {}", spec.pos))?;
+        let (target, params) =
+            impl_head(&ctx.env, &scope.lexical, &trait_def, im, false).at(&spec)?;
         let bscope = scope.append_block("impl", spec.id.inner());
         ctx.env.import_glob(&bscope.lexical, trait_def.path.clone());
-        let core = super::coretraits::CoreTrait::of_id(trait_id).is_some();
+        let core = CoreTrait::of_id(trait_id).is_some();
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
-        let mut provided: LPooled<ahash::AHashSet<ArcStr>> = LPooled::take();
+        let mut provided: LPooled<AHashSet<ArcStr>> = LPooled::take();
         for m in im.methods.iter() {
             let ExprKind::Bind(b) = &m.kind else {
                 unreachable!("impl methods are binds")
@@ -522,15 +495,10 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             };
             let Some(decl) = trait_def.methods.iter().find(|d| d.name == name.name)
             else {
-                bail!(
-                    "{} is not a method of trait {} (at {})",
-                    name,
-                    trait_def.name,
-                    m.pos
-                )
+                bailat!(m, "{} is not a method of trait {}", name, trait_def.name)
             };
             if !provided.insert(name.name.clone()) {
-                bail!("method {name} is implemented twice (at {})", m.pos);
+                bailat!(m, "method {name} is implemented twice");
             }
             let sig = method_sig_at(&decl.typ.reset_tvars(), &target);
             let b = BindExpr {
@@ -543,37 +511,29 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             let dec = match (core, &m.dec) {
                 (false, dec) => dec.clone(),
                 (true, dec) => {
-                    let sync = crate::expr::Attr {
-                        name: arcstr::literal!("sync"),
-                        args: Arc::from_iter([]),
-                    };
+                    let sync = Attr { name: literal!("sync"), args: Arc::from_iter([]) };
                     let (comments, attrs) = match dec {
                         Some(d) => (d.comments.clone(), d.attrs.clone()),
                         None => (Arc::from_iter([]), Arc::from_iter([])),
                     };
-                    Some(Box::new(crate::expr::Decorations {
+                    Some(Box::new(Decorations {
                         comments,
                         attrs: Arc::from_iter(attrs.iter().cloned().chain([sync])),
                     }))
                 }
             };
-            exprs.push(Expr {
-                id: m.id,
-                ori: m.ori.clone(),
-                pos: m.pos,
-                kind: ExprKind::Bind(Arc::new(b)),
-                dec,
-                str_form: Default::default(),
-                end: Default::default(),
-            });
+            let mut e = m.clone();
+            e.kind = ExprKind::Bind(Arc::new(b));
+            e.dec = dec;
+            exprs.push(e);
         }
         for d in trait_def.methods.iter() {
             if !provided.contains(&d.name) && d.default.is_none() {
-                bail!(
-                    "impl {} for {target} is missing the required method {} (at {})",
+                bailat!(
+                    spec,
+                    "impl {} for {target} is missing the required method {}",
                     trait_def.name,
-                    d.name,
-                    spec.pos
+                    d.name
                 )
             }
         }
@@ -581,7 +541,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         let body =
             Block::compile(ctx, flags, spec.clone(), &bscope, top_id, true, &exprs)
                 .with_context(|| format!("in impl {} for {target}", trait_def.name))?;
-        let mut methods: Map<CompactString, crate::BindId> = Map::new();
+        let mut methods: Map<CompactString, BindId> = Map::new();
         if let Some(binds) = ctx.env.binds.get(&bscope.lexical) {
             for (n, id) in binds.into_iter() {
                 methods.insert_cow(n.clone(), *id);
@@ -597,10 +557,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             pos: spec.pos,
             ori: spec.ori.clone(),
         });
-        let fulfils = ctx
-            .env
-            .register_impl(def.clone())
-            .with_context(|| format!("at {}", spec.pos))?;
+        let fulfils = ctx.env.register_impl(def.clone()).at(&spec)?;
         Ok(Node::new(Self {
             spec,
             def,
@@ -614,34 +571,21 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
-    // CR claude for eric: [structure] the loop body (a `genn::bind` per argument,
-    // `genn::reference` to the method, `genn::apply`, typecheck0 + typecheck1) is
-    // `coretraits::build_site` again; one shared builder. Like that one, the
-    // `#proto..` env binds it creates are never unbound when the prototypes are
-    // deleted.
     fn build_prototypes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        use super::genn;
-        if super::coretraits::CoreTrait::of_id(self.def.trait_id).is_none() {
+        if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());
         }
         let scope = Scope { lexical: self.def.scope.clone(), ..Scope::root() };
         let top_id = self.spec.id;
         for (k, (_, bind)) in self.def.methods.clone().into_iter().enumerate() {
-            let Some(ftype) = super::coretraits::method_ftype(&ctx.env, *bind) else {
+            let Some(ftype) = method_ftype(&ctx.env, *bind) else {
                 bail!("impl method {:?} is not a function", bind)
             };
-            let mut args: SmallVec<[Node<R, E>; 2]> = SmallVec::new();
-            for (i, a) in ftype.args.iter().enumerate() {
-                let name = format_compact!("#proto{}_{k}_{i}", self.spec.id.inner());
-                let (_, n) =
-                    genn::bind(ctx, &scope.lexical, &name, a.typ.clone(), top_id);
-                args.push(n);
-            }
-            let fnode = genn::reference(ctx, *bind, Type::Fn(ftype.clone()), top_id);
-            let mut site = genn::apply(fnode, scope.clone(), args, &ftype, top_id);
-            site.typecheck0(ctx)?;
-            site.typecheck1(ctx)?;
-            self.prototypes.push(site);
+            let prefix = format_compact!("#proto{}_{k}", self.spec.id.inner());
+            let types = ftype.args.iter().map(|a| a.typ.clone());
+            let call =
+                SynthCall::build(ctx, &scope, &prefix, *bind, &ftype, types, top_id)?;
+            self.prototypes.push(call);
         }
         Ok(())
     }
@@ -657,7 +601,13 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
         let fulfils = Option::<Arc<ImplDef>>::decode(buf)?;
         let trait_def = Arc::<TraitDef>::decode(buf)?;
         let body = decode_node(ctx, buf)?;
-        let prototypes = decode_nodes(ctx, buf)?;
+        let n = decode_varint(buf)? as usize;
+        let mut prototypes = Vec::with_capacity(n);
+        for _ in 0..n {
+            let site = decode_node(ctx, buf)?;
+            let args = SmallVec::<[BindId; 2]>::decode(buf)?;
+            prototypes.push(SynthCall { site, args });
+        }
         Ok(Node::new(Self { spec, def, fulfils, trait_def, body, prototypes }))
     }
 }
@@ -670,7 +620,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
             + self.fulfils.encoded_len()
             + self.trait_def.encoded_len()
             + self.body.image_len()
-            + nodes_len(&self.prototypes)
+            + varint_len(self.prototypes.len() as u64)
+            + self
+                .prototypes
+                .iter()
+                .map(|p| p.site.image_len() + p.args.encoded_len())
+                .sum::<usize>()
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -680,7 +635,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         self.fulfils.encode(buf)?;
         self.trait_def.encode(buf)?;
         self.body.image_encode(buf)?;
-        encode_nodes(&self.prototypes, buf)
+        encode_varint(self.prototypes.len() as u64, buf);
+        for p in self.prototypes.iter() {
+            p.site.image_encode(buf)?;
+            p.args.encode(buf)?;
+        }
+        Ok(())
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -717,7 +677,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
     fn refs(&self, refs: &mut Refs) {
         self.body.refs(refs);
         for p in self.prototypes.iter() {
-            p.refs(refs)
+            p.site.refs(refs)
         }
     }
 
@@ -725,12 +685,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         &self.spec
     }
 
-    // CR claude for eric: [risk] `unregister_impl` (and `undeftrait` for
-    // `Trait::delete`) match by `Arc::ptr_eq`, but `def`/`trait_def` are imaged
-    // by value: after a warm start the node's `Arc` and the env's registered one
-    // are different allocations, so deleting a decoded Impl leaves its
-    // implementation registered. Match by identity that survives the image
-    // (trait id + scope), or make the defs shared image objects.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.delete(ctx);
         for p in self.prototypes.iter_mut() {
@@ -759,5 +713,266 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         self.body.fuse(ctx)
+    }
+}
+
+impl<R: Rt, E: UserEvent> CallSite<R, E> {
+    /// Resolve a trait method call to an implementation by the self
+    /// argument's type. An open self type is an error outside a
+    /// definition gate; a union self type lowers to a select.
+    pub(super) fn resolve_trait_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        tm: TraitMethodRef,
+    ) -> Result<()> {
+        let Some(def) = ctx.env.trait_def(tm.trait_id).cloned() else {
+            bailat!(self.spec, "trait method call through an unknown trait")
+        };
+        let m = &def.methods[tm.index];
+        let Some(ftype) = self.ftype.as_ref() else { return Ok(()) };
+        // Dispatch reasons per union member, so the self type must be in
+        // union normal form with its cells settled first.
+        let mut self_t = match ftype.args.get(m.self_index) {
+            Some(a) => {
+                let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                a.typ.collect_tvars(&mut tvs);
+                for (_, tv) in tvs.drain() {
+                    wrap!(self, tv.settle_or_bottom(&ctx.env))?;
+                }
+                a.typ.resolve_tvars().normalize()
+            }
+            None => {
+                bailat!(
+                    self.spec,
+                    "{}::{} called without its self argument",
+                    def.name,
+                    m.name
+                )
+            }
+        };
+        if !def.hole {
+            while let Type::Ref(tr) = &self_t
+                && ctx.env.trait_of_ref(tr).is_none()
+            {
+                self_t = self_t.lookup_ref(&ctx.env)?;
+            }
+        }
+        if self_t.has_unbound() {
+            if ctx.def_gate_depth > 0 {
+                return Ok(());
+            }
+            bailat!(
+                self.spec,
+                "cannot resolve {}::{}: the type of its self argument ({}) is not \
+                 known at this call; annotate it",
+                def.name,
+                m.name,
+                self_t
+            )
+        }
+        if let Some(core) = CoreTrait::of_id(def.id) {
+            return self.lower_core_call(ctx, core);
+        }
+        if let Type::Set(members) = &self_t
+            && !def.hole
+        {
+            let members = members.clone();
+            return self.lower_trait_union(ctx, &def, tm.index, &members);
+        }
+        // A constructor trait selects by the receiver's outermost form.
+        if def.hole {
+            self_t = match Type::app_split(&self_t, &ctx.env)? {
+                Some((ctor, _)) => ctor,
+                None => bailat!(
+                    self.spec,
+                    "cannot resolve {}::{}: {} is not a type constructor (it has no \
+                     last type parameter for {} to abstract over)",
+                    def.name,
+                    m.name,
+                    self_t,
+                    def.name
+                ),
+            };
+        }
+        let Some(im) = ctx.env.find_impl(def.id, &self_t)? else {
+            bailat!(self.spec, "no implementation of {} for {}", def.name, self_t)
+        };
+        let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default) else {
+            bailat!(
+                self.spec,
+                "impl {} for {} has no method {} and the trait declares no default",
+                def.name,
+                self_t,
+                m.name
+            )
+        };
+        self.retarget(ctx, bind);
+        let fv =
+            ctx.bind_to_lambda.get(&bind).cloned().or_else(|| ctx.rt.store_value(&bind));
+        if let Some(fv) = fv
+            && let Some(ldef) = fv.downcast_ref::<LambdaDef<R, E>>()
+        {
+            self.resolve_static(ctx, ldef)?;
+        }
+        Ok(())
+    }
+
+    /// A core trait's dispatcher is the operator it stands behind:
+    /// `Eq::eq(a, b)` is `a == b`, `Display::fmt(x)` is `"[x]"`,
+    /// `Ord::cmp(a, b)` tests `<` and `>`.
+    fn lower_core_call(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        core: CoreTrait,
+    ) -> Result<()> {
+        let (mut operands, names) = self.take_operands(None)?;
+        let spec = (*self.spec).clone();
+        let mk = |kind: ExprKind| Expr::synth(&spec, kind);
+        let mut positional = names
+            .iter()
+            .filter(|(l, _)| l.is_none())
+            .map(|(_, n)| mk(ExprKind::Ref { name: ModPath::from([n.clone()]) }));
+        let (Some(a), b) = (positional.next(), positional.next()) else {
+            bailat!(spec, "core trait call without its self argument")
+        };
+        let (a, b) = (&a, b.as_ref());
+        let tag = |t: &'static str| {
+            mk(ExprKind::Variant { tag: ArcStr::from(t), args: Arc::from_iter([]) })
+        };
+        let e = match (core, b) {
+            (CoreTrait::Display, _) => {
+                mk(ExprKind::StringInterpolate { args: Arc::from_iter([a.clone()]) })
+            }
+            (CoreTrait::Eq, Some(b)) => {
+                mk(ExprKind::Eq { lhs: Arc::new(a.clone()), rhs: Arc::new(b.clone()) })
+            }
+            (CoreTrait::Ord, Some(b)) => {
+                let lt = mk(ExprKind::Lt {
+                    lhs: Arc::new(a.clone()),
+                    rhs: Arc::new(b.clone()),
+                });
+                let gt = mk(ExprKind::Gt {
+                    lhs: Arc::new(a.clone()),
+                    rhs: Arc::new(b.clone()),
+                });
+                let scrutinee = mk(ExprKind::Tuple { args: Arc::from_iter([lt, gt]) });
+                let arm = |l: StructurePattern, r: StructurePattern, body: Expr| {
+                    (
+                        Pattern {
+                            type_predicate: None,
+                            structure_predicate: StructurePattern::Tuple {
+                                all: None,
+                                binds: Arc::from_iter([l, r]),
+                            },
+                            guard: None,
+                        },
+                        body,
+                    )
+                };
+                let lit = |b: bool| StructurePattern::Literal(Value::Bool(b));
+                let any = || StructurePattern::Ignore;
+                mk(ExprKind::Select(SelectExpr {
+                    arg: Arc::new(scrutinee),
+                    arms: Arc::from_iter([
+                        arm(lit(true), any(), tag("Less")),
+                        arm(any(), lit(true), tag("Greater")),
+                        arm(any(), any(), tag("Equal")),
+                    ]),
+                }))
+            }
+            (CoreTrait::Eq | CoreTrait::Ord, None) => {
+                bailat!(spec, "core trait call without its other argument")
+            }
+        };
+        let scope = self.scope.clone();
+        let node = lower_over_operands(
+            ctx,
+            self.flags,
+            &scope,
+            &spec,
+            self.top_id,
+            operands.drain(..),
+            e,
+        )?;
+        self.install_lowered(ctx, node)
+    }
+
+    /// Dispatch over a union self type: the call becomes
+    ///
+    /// ```text
+    /// { let #s = <self>; let #a0 = <arg0>; ..;
+    ///   select #s { M1 as #t => <impl M1>(#t, #a0, ..), M2 as #t => .. } }
+    /// ```
+    ///
+    /// The implementation bindings are named by id (`#bind::N`).
+    fn lower_trait_union(
+        &mut self,
+        ctx: &mut ExecCtx<R, E>,
+        def: &TraitDef,
+        index: usize,
+        members: &[Type],
+    ) -> Result<()> {
+        let m = &def.methods[index];
+        let mut targets: LPooled<Vec<(Type, BindId)>> = LPooled::take();
+        for mem in members.iter() {
+            let Some(im) = ctx.env.find_impl(def.id, mem)? else {
+                bailat!(
+                    self.spec,
+                    "no implementation of {} for {mem}, a member of the self type {}",
+                    def.name,
+                    Type::Set(Arc::from_iter(members.iter().cloned()))
+                )
+            };
+            let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default)
+            else {
+                bailat!(self.spec, "impl {} for {mem} has no method {}", def.name, m.name)
+            };
+            targets.push((mem.clone(), bind));
+        }
+        let spec = (*self.spec).clone();
+        let mk = |kind: ExprKind| Expr::synth(&spec, kind);
+        let self_key = self
+            .ftype
+            .as_ref()
+            .and_then(|ft| ArgKey::of_formals(&ft.args).nth(m.self_index));
+        let (mut operands, names) = self.take_operands(self_key.as_ref())?;
+        let call_args: LPooled<Vec<(Option<ArcStr>, Expr)>> = names
+            .iter()
+            .map(|(label, name)| {
+                let arg = if name == "#s" { literal!("#t") } else { name.clone() };
+                (label.clone(), mk(ExprKind::Ref { name: ModPath::from([arg]) }))
+            })
+            .collect();
+        let arms = targets.drain(..).map(|(mem, bind)| {
+            let bind = format_compact!("{}", bind.inner());
+            let f = mk(ExprKind::Ref {
+                name: ModPath::from([literal!("#bind"), ArcStr::from(bind.as_str())]),
+            });
+            let call = mk(ExprKind::Apply(ApplyExpr {
+                function: Arc::new(f),
+                args: Arc::from_iter(call_args.iter().cloned()),
+            }));
+            let pat = Pattern {
+                type_predicate: Some(mem),
+                structure_predicate: StructurePattern::Bind(literal!("#t").into()),
+                guard: None,
+            };
+            (pat, call)
+        });
+        let select = mk(ExprKind::Select(SelectExpr {
+            arg: Arc::new(mk(ExprKind::Ref { name: ModPath::from([literal!("#s")]) })),
+            arms: Arc::from_iter(arms),
+        }));
+        let scope = self.scope.clone();
+        let node = lower_over_operands(
+            ctx,
+            self.flags,
+            &scope,
+            &spec,
+            self.top_id,
+            operands.drain(..),
+            select,
+        )?;
+        self.install_lowered(ctx, node)
     }
 }

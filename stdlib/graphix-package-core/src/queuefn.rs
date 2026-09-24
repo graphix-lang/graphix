@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use arcstr::{ArcStr, literal};
+use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, Effect, Event, ExecCtx, InitFn, LambdaId, Node,
@@ -293,8 +293,6 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
         let env = ctx.env.clone();
         let def = LambdaDef {
             id,
-            // Synthetic wrapper: no source lambda exists.
-            src: literal!("queuefn"),
             env,
             scope: self.scope.clone(),
             argspec,

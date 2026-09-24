@@ -1,37 +1,43 @@
-// CR claude for eric: [style] `crate::image` is imported in two `use` lines,
-// `netidx_core::pack::{Pack, PackError}` in two, and repeated items are spelled
-// in full in the body: `crate::image::slice_len/slice_encode`, `ahash::AHashMap`
-// (2x), `crate::fusion::fuse` (2x), `crate::fusion::emit::*`,
-// `netidx_core::pack::PackError` (imported), `super::read_var`/`VarRead` (6x).
-use super::{Nop, WakeBit, compiler::compile};
-use crate::image::ImageBuf;
-use crate::image::{
-    env::{lexical_decode, lexical_encode, lexical_len},
-    nodes::{NodeTag, decode_node, put_tag, tag_len},
+use super::{
+    Nop, VarRead, WakeBit,
+    callsite::{CallSite, Feeds, QuietAtRoot, publish_production},
+    collection::CollectionIntrinsic,
+    compiler::compile,
+    pattern::StructPatternNode,
+    produce_constant, read_quiet, read_var,
 };
 use crate::{
-    Apply, ApplyView, ApplyViewMut, BindId, BindMode, CFlag, Event, ExecCtx, InitFn,
-    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent,
+    Apply, ApplyView, BindId, BindMode, CFlag, Event, ExecCtx, InitFn, LambdaId,
+    LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    dbgenv,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, At, Expr, ExprId, Origin},
-    fusion::emit::{BodyCx, CompiledExpr},
-    node::{
-        callsite::CallSite, collection::CollectionIntrinsic, pattern::StructPatternNode,
+    fusion::{
+        self,
+        emit::{
+            BodyCx, CompiledExpr, call_result_needs_value_widening, widen_result_to_value,
+        },
+    },
+    image::{
+        self, ImageBuf,
+        env::{lexical_decode, lexical_encode, lexical_len},
+        nodes::{NodeTag, decode_node, put_tag, tag_len},
     },
     profile::{self, Phase},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds, tvar::RigidGate},
     wrap,
 };
+use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::pack::Pack;
-use netidx_core::pack::PackError;
-use netidx_core::utils::Either;
+use netidx_core::{
+    pack::{Pack, PackError},
+    utils::Either,
+};
 use netidx_value::Value;
 use nohash::IntMap;
 use parking_lot::Mutex;
@@ -50,19 +56,16 @@ use triomphe::Arc;
 
 pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub id: LambdaId,
-    // CR claude for eric: [dead] nothing reads `src` (only the image codec in
-    // image/defs.rs carries it), and filling it pretty-prints the whole lambda at
-    // every `Lambda::compile`, including every instance body's re-compile of its
-    // nested literals. The stable identity it describes is now `source`. Delete.
-    /// The pretty-printed source: an identity stable across compiles.
-    /// Not used for equality — `PartialEq` is id-based so same-source
-    /// closures over different captures stay distinct.
-    pub src: ArcStr,
     pub env: Env,
     pub scope: Scope,
     pub argspec: Arc<[Arg]>,
     pub typ: Arc<FnType>,
     pub init: InitFn<R, E>,
+    // XCR claude for eric: the body kind is decided once (`DefBody`); the check
+    // stays a def field: `DefBody` is Clone data make_init and the image carry,
+    // a Mutex'd Apply is neither, and `builtin_check` answers it for a builtin only.
+    /// A builtin definition's check `Apply`, built by the definition gate
+    /// ([`Self::builtin_check`]).
     pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
     /// Intrinsic sync/async effect, computed by `analysis::infer_effects`
     /// after all lambdas are compiled. Calls through fn-typed parameters
@@ -85,8 +88,43 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
 /// a function of these and which an image carries as data, or Rust
 /// code building an `Apply` at runtime, which no image can carry.
 pub enum DefOrigin {
-    Source { body: Either<Expr, ArcStr>, flags: BitFlags<CFlag>, spec: Expr },
+    Source { body: DefBody, flags: BitFlags<CFlag>, spec: Expr },
     Runtime,
+}
+
+/// What a source definition's instances run.
+#[derive(Debug, Clone)]
+pub enum DefBody {
+    Expr(Expr),
+    /// A traversal the compiler builds (`'array_map`, ..).
+    Collection(CollectionIntrinsic),
+    /// A Rust builtin, by its registered name.
+    BuiltIn(ArcStr),
+}
+
+impl DefBody {
+    pub(crate) fn of(body: &Either<Expr, ArcStr>) -> Self {
+        match body {
+            Either::Left(e) => DefBody::Expr(e.clone()),
+            Either::Right(name) => match CollectionIntrinsic::from_name(name) {
+                Some(intrinsic) => DefBody::Collection(intrinsic),
+                None => DefBody::BuiltIn(name.clone()),
+            },
+        }
+    }
+}
+
+impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
+    /// The check `Apply` of a builtin definition; `None` for any other.
+    /// It holds `None` until the definition gate builds it, and for a
+    /// definition restored from an image until its first call site
+    /// rebuilds it.
+    pub(crate) fn builtin_check(&self) -> Option<&Mutex<Option<Box<dyn Apply<R, E>>>>> {
+        match &self.origin {
+            DefOrigin::Source { body: DefBody::BuiltIn(_), .. } => Some(&self.check),
+            DefOrigin::Source { .. } | DefOrigin::Runtime => None,
+        }
+    }
 }
 
 impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
@@ -126,17 +164,12 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
         0
     }
 
-    fn encode(
-        &self,
-        _buf: &mut impl bytes::BufMut,
-    ) -> std::result::Result<(), netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
+    fn encode(&self, _buf: &mut impl bytes::BufMut) -> Result<(), PackError> {
+        Err(PackError::Application(0))
     }
 
-    fn decode(
-        _buf: &mut impl bytes::Buf,
-    ) -> std::result::Result<Self, netidx_core::pack::PackError> {
-        Err(netidx_core::pack::PackError::Application(0))
+    fn decode(_buf: &mut impl bytes::Buf) -> Result<Self, PackError> {
+        Err(PackError::Application(0))
     }
 }
 
@@ -161,9 +194,12 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     self_bind: Mutex<Option<BindId>>,
     /// The dispatch's return slot, lent to the owning `CallSite`.
     resident: TagValue,
+    /// A tail loop ended mid-recursion: the next framed pass resumes it.
+    /// Cycle state, false before any cycle (and so in an image).
     resumes_mid_recursion: bool,
     /// `true` until the first dispatch, which seeds the fresh formal
-    /// ids' value channel from the args' quiet productions.
+    /// ids' value channel from the args' quiet productions; true in an
+    /// image, which is written before any cycle.
     first_dispatch: bool,
     /// The def-side lexical env the body was compiled under. The body
     /// typechecks under it too: the caller's env, which drives the
@@ -171,10 +207,11 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     env: Env,
 }
 
-// CR claude for eric: [perf] walks the whole body's refs into fresh sets on every
-// call, and a looped tail body calls it up to three times per dispatch (the
-// quiet-poll gate in `update`, `framed`, the result tag). The body's read set
-// only changes when a nested callee binds; cache it on the instance.
+// XCR claude for eric: a dispatch now walks the body's refs at most once
+// before the body runs and once after (it walked up to four times). Caching
+// on the instance is not done: the set changes when any nested dynamic site
+// binds, which the instance cannot observe without a ctx-wide bind counter.
+/// Did the body read a variable delivered with a triggering tag?
 fn body_reads_triggered<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
@@ -185,8 +222,8 @@ fn body_reads_triggered<R: Rt, E: UserEvent>(
     let mut hit = false;
     refs.with_refs(|id| {
         hit |= matches!(
-            super::read_var(ctx, event, &id),
-            Some(super::VarRead::Delivered(tv)) if tv.tag().triggers()
+            read_var(ctx, event, &id),
+            Some(VarRead::Delivered(tv)) if tv.tag().triggers()
         );
     });
     hit
@@ -198,37 +235,26 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         self.id
     }
 
+    /// `reads` answers [`body_reads_triggered`] before the body runs.
     fn run_tail_loop(
         &mut self,
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
         entry_fired: bool,
+        reads: &mut impl FnMut(&Node<R, E>, &ExecCtx<R, E>, &Event<E>) -> bool,
     ) -> TagValue {
         let mut frame: LPooled<IntMap<BindId, TagValue>> = LPooled::take();
         let mut reentered = false;
         let framed = self.resumes_mid_recursion
             && !event.init
-            && (entry_fired || body_reads_triggered(&self.body, ctx, event));
+            && (entry_fired || reads(&self.body, ctx, event));
         if framed {
             self.body.reset_replay(ctx);
             // a delivered formal keeps its cycle tag, a standing one
             // reads quiet
-            // CR claude for eric: [structure] "read a var, a standing entry retagged
-            // quiet" is written here, in the `None` rebind arm below and in
-            // CallSite::update_call's tail interception; one helper beside
-            // `read_var`.
             for pat in self.args.iter() {
                 pat.ids(&mut |id| {
-                    if let Some(vr) = super::read_var(ctx, event, &id) {
-                        let tv = match vr {
-                            super::VarRead::Delivered(tv) => tv.clone(),
-                            super::VarRead::Standing(tv) => {
-                                let mut c = tv.clone();
-                                let t = c.tag().quiet();
-                                c.retag(t);
-                                c
-                            }
-                        };
+                    if let Some(tv) = read_quiet(ctx, event, &id) {
                         frame.insert(id, tv);
                     }
                 });
@@ -268,7 +294,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                 }
                 res
             };
-            if crate::dbgenv::gxdbg_tail() {
+            if dbgenv::gxdbg_tail() {
                 eprintln!(
                     "TAILDBG id={:?} pass reentered={reentered} framed={framed} init={} fi={} res={:?} pending={:?}",
                     self.id,
@@ -308,21 +334,10 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                         })
                     }
                     None => pat.ids(&mut |id| {
-                        let tv =
-                            prev.get(&id).cloned().or_else(|| {
-                                match super::read_var(ctx, event, &id) {
-                                    Some(super::VarRead::Delivered(tv)) => {
-                                        Some(tv.clone())
-                                    }
-                                    Some(super::VarRead::Standing(tv)) => {
-                                        let mut c = tv.clone();
-                                        let t = c.tag().quiet();
-                                        c.retag(t);
-                                        Some(c)
-                                    }
-                                    None => None,
-                                }
-                            });
+                        let tv = prev
+                            .get(&id)
+                            .cloned()
+                            .or_else(|| read_quiet(ctx, event, &id));
                         if let Some(tv) = tv {
                             frame.insert(id, tv);
                         }
@@ -330,12 +345,17 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
                 }
             }
         };
+        let mut after: Option<bool> = None;
+        let mut reads_after =
+            |body: &Node<R, E>, ctx: &ExecCtx<R, E>, event: &Event<E>| {
+                *after.get_or_insert_with(|| body_reads_triggered(body, ctx, event))
+            };
         // a quiet poll cleans no frame state, so it must not clear the flag
         if reentered
             || framed
             || event.init
             || entry_fired
-            || body_reads_triggered(&self.body, ctx, event)
+            || reads_after(&self.body, ctx, event)
         {
             self.resumes_mid_recursion = reentered;
         }
@@ -343,8 +363,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         // triggered; fired if any tail-select scrutinee on the executed
         // path fired; otherwise the body's own tag.
         let res = if (reentered || framed) && !res.is_bottom() {
-            let entry = entry_fired || body_reads_triggered(&self.body, ctx, event);
-            if !entry {
+            if !(entry_fired || reads_after(&self.body, ctx, event)) {
                 TagValue::stale(res.value())
             } else if ctx.tail_scrut_fired {
                 TagValue::fired(res.value())
@@ -365,12 +384,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     /// The compiled body.
     pub fn body(&self) -> &Node<R, E> {
         &self.body
-    }
-
-    // CR claude for eric: [dead] no callers in either repo; nor for `Lambda::def`.
-    /// The compiled body, for fusion to splice kernels into.
-    pub fn body_mut(&mut self) -> &mut Node<R, E> {
-        &mut self.body
     }
 
     pub(crate) fn inline_callback_body(&self) -> Option<&Node<R, E>> {
@@ -419,43 +432,34 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
-    // CR claude for eric: [bug] `+ 3 .. + 1` counts four bools; image_encode
-    // writes three (tail_loop, self_recursive, resumes_mid_recursion), so the
-    // length is one byte too long per instance against the rule that every
-    // `encoded_len` in a session is exact. And `resumes_mid_recursion` is cycle
-    // state, always false before a cycle, while `first_dispatch` is not imaged:
-    // pick one rule (refuse it, or drop it and decode false).
     fn image_len(&self) -> usize {
         self.id.encoded_len()
             + self.instance_id.encoded_len()
-            + crate::image::slice_len(&self.args)
+            + image::slice_len(&self.args)
             + self.typ.encoded_len()
             + self.body.image_len()
-            + 3
+            + 2
             + self.self_bind.lock().encoded_len()
-            + 1
             + lexical_len(&self.env)
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
+        if self.resumes_mid_recursion {
+            return Err(PackError::Application(image::NOT_QUIESCENT));
+        }
         self.id.encode(buf)?;
         self.instance_id.encode(buf)?;
-        crate::image::slice_encode(&self.args, buf)?;
+        image::slice_encode(&self.args, buf)?;
         self.typ.encode(buf)?;
         self.body.image_encode(buf)?;
         self.tail_loop.load(Ordering::Relaxed).encode(buf)?;
         self.self_recursive.load(Ordering::Relaxed).encode(buf)?;
         self.self_bind.lock().encode(buf)?;
-        self.resumes_mid_recursion.encode(buf)?;
         lexical_encode(&self.env, buf)
     }
 
     fn view(&self) -> ApplyView<'_, R, E> {
         ApplyView::Lambda(self)
-    }
-
-    fn view_mut(&mut self) -> ApplyViewMut<'_, R, E> {
-        ApplyViewMut::Lambda(self)
     }
 
     fn update(
@@ -467,106 +471,39 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         let woke = self.slept.take() && ctx.frame_depth == 0;
         let mut entry_fired = event.init;
         let first = mem::replace(&mut self.first_dispatch, false);
+        // the formals' value channel seeds from a quiet arg production on
+        // the first dispatch and after a wake; in a frame it always does
+        // (the seed dies with the pass: frames never write the store)
+        let root = if first || woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         for (arg, pat) in from.iter_mut().zip(&self.args) {
             let tv = arg.update(ctx, event);
-            let tag = tv.tag();
-            entry_fired |= tag.triggers();
-            // CR claude for eric: [bug] the frame twin of the hole in
-            // CallSite::update_call: in a frame a quiet BOTTOM arg seeds nothing,
-            // so the formal reads through to the store's pre-frame value. Once the
-            // call site publishes the stale bottom, this seed must stand it on the
-            // overlay too, or the ride just moves here.
-            // Seed the formals' value channel from a quiet arg production
-            // on the first dispatch, after a wake, and on every framed
-            // dispatch (a frame's seed dies with the pass; frames never
-            // write the store).
-            if (first || ctx.frame_depth > 0 || woke)
-                && !tag.triggers()
-                && !tag.is_bottom()
-            {
-                let v = tv.value_cloned();
-                let store = ctx.frame_depth == 0;
-                pat.bind(&v, &mut |id, v| {
-                    if store {
-                        // store only: an overlay entry would shadow the
-                        // store's init-view upgrade
-                        ctx.rt.store_insert_standing(id, TagValue::stale(v.clone()));
-                    } else {
-                        event.variables.insert(id, TagValue::stale(v.clone()));
-                    }
-                });
-            } else if woke && !tag.triggers() {
-                pat.ids(&mut |id| {
-                    ctx.rt.store_insert_standing(
-                        id,
-                        TagValue::tagged(Value::Null, Tag::STALE_BOTTOM),
-                    );
-                });
-            }
-            // Publish triggering deliveries only. A fresh bottom persists
-            // in the store so a later quiet read sees the standing bottom,
-            // not the pre-bottom value. Frames never write the store.
-            if tag.triggers() {
-                if tag.is_bottom() {
-                    let store = ctx.frame_depth == 0;
-                    pat.ids(&mut |id| {
-                        if store {
-                            ctx.rt.store_insert(
-                                id,
-                                TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
-                            );
-                        }
-                        event
-                            .variables
-                            .insert(id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
-                    });
-                } else {
-                    let v = tv.value_cloned();
-                    let store = ctx.frame_depth == 0;
-                    pat.bind(&v, &mut |id, v| {
-                        if store {
-                            ctx.rt.store_insert(id, TagValue::fired(v.clone()));
-                        }
-                        event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-                    })
-                }
-            }
+            entry_fired |= tv.tag().triggers();
+            publish_production(ctx, event, Feeds::Pattern(pat), tv, false, root);
         }
         // an interrupted dispatch is not a bottom: it rides its last result
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
+        let mut before: Option<bool> = None;
+        let mut reads = |body: &Node<R, E>, ctx: &ExecCtx<R, E>, event: &Event<E>| {
+            *before.get_or_insert_with(|| body_reads_triggered(body, ctx, event))
+        };
+        let tail_loop = self.tail_loop.load(Ordering::Relaxed);
         // A quiet poll of a previously looped tail body rides the resident:
         // an unframed pass would re-read the entry formals and derive the
         // pre-loop value. Sound because a tail loop is sync.
-        if self.tail_loop.load(Ordering::Relaxed)
+        if tail_loop
             && self.resumes_mid_recursion
             && !entry_fired
-            && !body_reads_triggered(&self.body, ctx, event)
+            && !reads(&self.body, ctx, event)
         {
             return self.resident.ride();
         }
-        // CR claude for eric: [dead] `active_lambdas` is read only by the image
-        // quiescence check, which runs between cycles when the count is always
-        // zero: a hash insert and remove per dispatch for nothing. Its doc in
-        // lib.rs cites `callsite::transient_body_ok`, which no longer exists.
-        // Also `ensure_sufficient` below is already inside `Node::update`.
-        *ctx.active_lambdas.entry(self.id).or_insert(0) += 1;
-        let res = if !self.tail_loop.load(Ordering::Relaxed) {
-            crate::stack::ensure_sufficient(|| self.body.update(ctx, event).clone())
+        let res = if tail_loop {
+            self.run_tail_loop(ctx, event, entry_fired, &mut reads)
         } else {
-            self.run_tail_loop(ctx, event, entry_fired)
+            self.body.update(ctx, event).clone()
         };
-        match ctx.active_lambdas.entry(self.id) {
-            MapEntry::Occupied(mut e) => {
-                let n = e.get_mut();
-                *n -= 1;
-                if *n == 0 {
-                    e.remove();
-                }
-            }
-            MapEntry::Vacant(_) => unreachable!("active_lambdas underflow"),
-        }
         self.resident.set(res)
     }
 
@@ -619,26 +556,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // to a union must hand its consumers a Value pair
         match res {
             Some(cv)
-                if crate::fusion::emit::call_result_needs_value_widening(
-                    callsite.typ(),
-                    &self.typ.rtype,
-                ) =>
+                if call_result_needs_value_widening(callsite.typ(), &self.typ.rtype) =>
             {
-                Ok(Some(crate::fusion::emit::widen_result_to_value(
-                    cx,
-                    &self.typ.rtype,
-                    cv,
-                )?))
+                Ok(Some(widen_result_to_value(cx, &self.typ.rtype, cv)?))
             }
             res => Ok(res),
         }
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        if crate::dbgenv::gxdbg_instance_fusion() {
+        if dbgenv::gxdbg_instance_fusion() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
-            let r = crate::fusion::fuse(&mut self.body, ctx);
+            let r = fusion::fuse(&mut self.body, ctx);
             eprintln!(
                 "INSTANCE-FUSION GXLambda::fuse id={:?} fused_delta={} new_failures:",
                 self.id,
@@ -649,7 +579,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
             }
             return r;
         }
-        crate::fusion::fuse(&mut self.body, ctx)
+        fusion::fuse(&mut self.body, ctx)
     }
 
     fn typ(&self) -> Arc<FnType> {
@@ -665,14 +595,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         self.body.refs(refs)
     }
 
-    // CR claude for eric: [bug] leak: `CallSite::register_fn_params` records this
-    // instance's fn-param BindIds in `ctx.fn_forward_resolutions` and nothing
-    // ever removes them. Instances are made at runtime (every recursion level,
-    // every collection slot), so a callback-taking call inside a shrinking and
-    // regrowing recursion or map grows the table without bound. Remove them here.
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.delete(ctx);
         for n in &self.args {
+            n.ids(&mut |id| {
+                ctx.fn_forward_resolutions.remove(&id);
+            });
             n.delete(ctx)
         }
     }
@@ -811,7 +739,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         let tail_loop = bool::decode(buf)?;
         let self_recursive = bool::decode(buf)?;
         let self_bind = Option::<BindId>::decode(buf)?;
-        let resumes_mid_recursion = bool::decode(buf)?;
         let env = lexical_decode(buf)?;
         Ok(Self {
             slept: WakeBit::default(),
@@ -824,7 +751,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self_recursive: AtomicBool::new(self_recursive),
             self_bind: Mutex::new(self_bind),
             resident: TagValue::phantom(),
-            resumes_mid_recursion,
+            resumes_mid_recursion: false,
             first_dispatch: true,
             env,
         })
@@ -912,10 +839,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
     /// Fusion sees the wrapped builtin's own view.
     fn view(&self) -> ApplyView<'_, R, E> {
         self.apply.view()
-    }
-
-    fn view_mut(&mut self) -> ApplyViewMut<'_, R, E> {
-        self.apply.view_mut()
     }
 
     fn emit_clif(
@@ -1013,11 +936,6 @@ impl Lambda {
         self.def.downcast_ref::<LambdaDef<R, E>>().map(|d| d.id)
     }
 
-    /// Borrow the underlying `LambdaDef`.
-    pub fn def<R: Rt, E: UserEvent>(&self) -> Option<&LambdaDef<R, E>> {
-        self.def.downcast_ref::<LambdaDef<R, E>>()
-    }
-
     /// The wrapped `LambdaDef` `Value`, which this node emits at init.
     pub fn def_value(&self) -> &Value {
         &self.def
@@ -1040,116 +958,79 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
     def_typ: Arc<FnType>,
     def_argspec: Arc<[Arg]>,
     def_spec: Expr,
-    body: Either<Expr, ArcStr>,
+    body: DefBody,
 ) -> InitFn<R, E> {
     SArc::new(move |scope, ctx, args, mode, tid| {
-        ctx.with_restored(def_env.clone(), |ctx| match body.clone() {
-            Either::Left(body) => {
-                let scope = Scope {
-                    dynamic: scope.dynamic.clone(),
-                    lexical: def_scope.lexical.clone(),
-                };
-                // a dynamic bind retries with the definition signature:
-                // the runtime callee can differ from the site's prior view
-                let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
-                    GXLambda::new(
+        // the definition's names, the call site's handlers
+        let scope =
+            Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
+        ctx.with_restored(def_env.clone(), |ctx| match &body {
+            DefBody::Expr(body) => instantiate(ctx, mode, &def_typ, |ctx, typ| {
+                let argspec = def_argspec.clone();
+                GXLambda::new(
+                    ctx,
+                    flags,
+                    id,
+                    typ,
+                    argspec,
+                    args,
+                    &scope,
+                    tid,
+                    body.clone(),
+                )
+            }),
+            DefBody::Collection(intrinsic) => {
+                instantiate(ctx, mode, &def_typ, |ctx, typ| {
+                    GXLambda::new_collection(
                         ctx,
-                        flags,
                         id,
                         typ,
                         def_argspec.clone(),
                         args,
                         &scope,
                         tid,
-                        body.clone(),
+                        def_spec.clone(),
+                        *intrinsic,
                     )
-                };
-                // CR claude for eric: [structure] this scope construction and
-                // three-way mode match are repeated verbatim in the intrinsic arm
-                // below; one helper over the `build` closure.
-                // CR claude for eric: [risk] `or_else(|_| ..)` retries on ANY error,
-                // not only the parameter-count refusal it is for: a body that fails
-                // to compile is compiled twice, the first error is lost, and what the
-                // failed attempt built (the argument patterns' env binds, the partial
-                // body's `ref_var`s) is dropped without `delete`.
-                match mode {
-                    BindMode::Static { instance, .. } => {
-                        build(ctx, Arc::new(instance.clone()))
-                    }
-                    BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
-                        .or_else(|_| build(ctx, def_typ.clone())),
-                    BindMode::Definition => build(ctx, def_typ.clone()),
-                }
-                .map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
+                })
             }
-            Either::Right(builtin) => {
-                if let Some(intrinsic) = CollectionIntrinsic::from_name(&builtin) {
-                    let scope = Scope {
-                        dynamic: scope.dynamic.clone(),
-                        lexical: def_scope.lexical.clone(),
-                    };
-                    let build = |ctx: &mut ExecCtx<R, E>, typ: Arc<FnType>| {
-                        GXLambda::new_collection(
-                            ctx,
-                            id,
-                            typ,
-                            def_argspec.clone(),
-                            args,
-                            &scope,
-                            tid,
-                            def_spec.clone(),
-                            intrinsic,
-                        )
-                    };
-                    let result = match mode {
-                        BindMode::Static { instance, .. } => {
-                            build(ctx, Arc::new(instance.clone()))
-                        }
-                        BindMode::Dynamic(r) => build(ctx, Arc::new(r.clone()))
-                            .or_else(|_| build(ctx, def_typ.clone())),
-                        BindMode::Definition => build(ctx, def_typ.clone()),
-                    };
-                    result.map(|a| -> Box<dyn Apply<R, E>> { Box::new(a) })
-                } else {
-                    let init = match ctx.builtins.get(&*builtin).copied() {
-                        Some(init) => Some(init),
-                        None if ctx.env.lsp_mode => Some(UnknownBuiltIn::init as _),
-                        None => None,
-                    };
-                    match init {
-                        None => bail!("unknown builtin function {builtin}"),
-                        Some(init) => {
-                            let typ = match mode.resolved() {
-                                Some(r) => Arc::new(r.clone()),
-                                None => def_typ.clone(),
-                            };
-                            let resolved = mode.resolved();
-                            // CR claude for eric: [bug] a builtin gets the DEFINITION's
-                            // dynamic scope, where the lambda arms above get the call
-                            // site's, so a builtin HOF's callback raises to handlers at
-                            // the builtin's definition, not the caller's catch. Probe:
-                            // `{ catch(e) println("caught [e]"); filter(c, |v| select v {
-                            // 2 => error(`Boom)?, _ => true }) }` warns "will not be
-                            // caught" and logs "unhandled error Boom" on both engines;
-                            // the same through a Graphix HOF reaches the catch. Pass
-                            // `Scope { dynamic: scope.dynamic, lexical: def_scope.lexical }`.
-                            init(ctx, &def_typ, resolved, &def_scope, args, tid).map(
-                                |apply| {
-                                    let f: Box<dyn Apply<R, E>> =
-                                        Box::new(BuiltInLambda {
-                                            typ,
-                                            name: builtin.clone(),
-                                            apply,
-                                        });
-                                    f
-                                },
-                            )
-                        }
-                    }
-                }
+            DefBody::BuiltIn(name) => {
+                let init = match ctx.builtins.get(&**name).copied() {
+                    Some(init) => init,
+                    None if ctx.env.lsp_mode => UnknownBuiltIn::init as _,
+                    None => bail!("unknown builtin function {name}"),
+                };
+                let resolved = mode.resolved();
+                let typ =
+                    resolved.map_or_else(|| def_typ.clone(), |r| Arc::new(r.clone()));
+                let apply = init(ctx, &def_typ, resolved, &scope, args, tid)?;
+                Ok(Box::new(BuiltInLambda { typ, name: name.clone(), apply }) as Box<_>)
             }
         })
     })
+}
+
+/// Do `a` and `b` list the same parameters, kind for kind?
+pub(crate) fn same_parameters(a: &FnType, b: &FnType) -> bool {
+    a.args.len() == b.args.len()
+        && a.args.iter().zip(b.args.iter()).all(|(a, b)| a.kind == b.kind)
+}
+
+/// Build an instance at the signature `mode` names: the site's, unless a
+/// dynamic bind's runtime callee has another parameter list than the
+/// site's view, which takes the definition's own.
+fn instantiate<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    mode: BindMode<'_>,
+    def_typ: &Arc<FnType>,
+    build: impl FnOnce(&mut ExecCtx<R, E>, Arc<FnType>) -> Result<GXLambda<R, E>>,
+) -> Result<Box<dyn Apply<R, E>>> {
+    let typ = match mode {
+        BindMode::Static { instance, .. } => Arc::new(instance.clone()),
+        BindMode::Dynamic(r) if same_parameters(r, def_typ) => Arc::new(r.clone()),
+        BindMode::Dynamic(_) | BindMode::Definition => def_typ.clone(),
+    };
+    Ok(Box::new(build(ctx, typ)?))
 }
 
 impl Lambda {
@@ -1217,44 +1098,37 @@ impl Lambda {
             });
         }
         let argspec = Arc::from_iter(argspec.drain(..));
-        let mut constraints = l
+        let mut constraints: LPooled<Vec<_>> = l
             .constraints
             .iter()
             .map(|(tv, tc)| {
-                let tv = tv.scope_refs(&scope.lexical);
-                let tc = tc.scope_refs(&scope.lexical);
-                Ok((tv, tc))
+                (tv.scope_refs(&scope.lexical), tc.scope_refs(&scope.lexical))
             })
-            .collect::<Result<LPooled<Vec<_>>>>()?;
+            .collect();
         constraints.extend(trait_quantifiers.drain(..));
-        let original_scope = scope.clone();
-        let scope = scope.append_block("fn", id.0);
-        let def_scope = scope.clone();
-        let env = ctx.env.clone();
-        let def_env = ctx.env.clone();
-        // CR claude for eric: [structure] the kind of body (expression, collection
-        // intrinsic, builtin) is re-derived by `CollectionIntrinsic::from_name` here,
-        // in the effect and stateless initializers below, in make_init and in
-        // callsite.rs `finalize_lambda`. An enum on the def decides it once, and
-        // would carry the builtin-only `check` so "restored" is not read off a None.
-        if let Either::Right(builtin) = &l.body {
-            if CollectionIntrinsic::from_name(builtin).is_none()
-                && ctx.builtins.get(builtin.as_str()).is_none()
-            {
-                if !ctx.env.lsp_mode {
-                    bail!("unknown builtin function {builtin}")
-                }
-                // the `'name` that ends the lambda's text
-                let end = spec.end.0;
-                let len = builtin.chars().count() as i32 + 1;
-                let pos = SourcePosition { column: (end.column - len).max(1), ..end };
-                let pos = if end == expr::WrittenAt::NOWHERE.0 { spec.pos } else { pos };
-                let msg = format_args!(
-                    "unknown builtin function {builtin}: this graphix was not built \
-                     with it, so calls are checked against its signature only"
-                );
-                ctx.env.warn(&spec.ori, pos, end, msg);
+        let body = DefBody::of(&l.body);
+        let builtin = match &l.body {
+            Either::Left(_) => None,
+            Either::Right(name) => Some(name),
+        };
+        if let DefBody::BuiltIn(builtin) = &body
+            && ctx.builtins.get(builtin.as_str()).is_none()
+        {
+            if !ctx.env.lsp_mode {
+                bail!("unknown builtin function {builtin}")
             }
+            // the `'name` that ends the lambda's text
+            let end = spec.end.0;
+            let len = builtin.chars().count() as i32 + 1;
+            let pos = SourcePosition { column: (end.column - len).max(1), ..end };
+            let pos = if end == expr::WrittenAt::NOWHERE.0 { spec.pos } else { pos };
+            let msg = format_args!(
+                "unknown builtin function {builtin}: this graphix was not built \
+                 with it, so calls are checked against its signature only"
+            );
+            ctx.env.warn(&spec.ori, pos, end, msg);
+        }
+        if let Some(builtin) = builtin {
             if !ctx.builtins_allowed {
                 bail!("defining builtins is not allowed in this context")
             }
@@ -1308,7 +1182,7 @@ impl Lambda {
         // alias same-named leaves onto the declared quantifier tvars first
         // so each constraint lands in the one cell every occurrence shares
         {
-            let mut known: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
+            let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             for (tv, _) in constraints.iter() {
                 known.insert(tv.name.clone(), tv.clone());
             }
@@ -1319,53 +1193,38 @@ impl Lambda {
             }
         }
         typ.lambda_ids.set_id(id);
-        // CR claude for eric: [style] `def_typ`, `def_argspec`, `def_spec`, `body`
-        // (and `def_env` above) exist only to be cloned again into make_init, and
-        // `l.body` is cloned a third time for `origin`; pass the clones directly.
-        // Likewise `constraints` collects a `Result` its closure never fails.
-        let def_typ = typ.clone();
-        let def_argspec = argspec.clone();
-        let def_spec = spec.clone();
-        let body = l.body.clone();
         let init = make_init(
             id,
             flags,
-            def_env,
-            def_scope,
-            def_typ.clone(),
-            def_argspec.clone(),
-            def_spec.clone(),
+            ctx.env.clone(),
+            scope.append_block("fn", id.0),
+            typ.clone(),
+            argspec.clone(),
+            spec.clone(),
             body.clone(),
         );
+        let (intrinsic_effect, stateless) = match &body {
+            DefBody::Expr(_) | DefBody::Collection(_) => (EffectKind::Sync, true),
+            DefBody::BuiltIn(name) => {
+                (ctx.builtin_effect(name), ctx.builtin_stateless(name))
+            }
+        };
         // No signature ref seeding here: the module tree is mid-registration
         // and a name's final target may not be registered yet. Cells fill
         // at typecheck.
         let def = ctx.lambdawrap.wrap(LambdaDef {
             id,
-            src: ArcStr::from(spec.to_string()),
             typ: typ.clone(),
-            env,
+            env: ctx.env.clone(),
             argspec,
             init,
-            scope: original_scope,
+            scope: scope.clone(),
             check: Mutex::new(None),
-            intrinsic_effect: Mutex::new(match &l.body {
-                Either::Right(name) if CollectionIntrinsic::from_name(name).is_some() => {
-                    EffectKind::Sync
-                }
-                Either::Right(name) => ctx.builtin_effect(name),
-                Either::Left(_) => EffectKind::Sync,
-            }),
-            stateless: AtomicBool::new(match &l.body {
-                Either::Right(name) if CollectionIntrinsic::from_name(name).is_some() => {
-                    true
-                }
-                Either::Right(name) => ctx.builtin_stateless(name),
-                Either::Left(_) => true,
-            }),
+            intrinsic_effect: Mutex::new(intrinsic_effect),
+            stateless: AtomicBool::new(stateless),
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
-            origin: DefOrigin::Source { body: l.body.clone(), flags, spec: spec.clone() },
+            origin: DefOrigin::Source { body, flags, spec: spec.clone() },
         });
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Node::new(Self {
@@ -1391,58 +1250,85 @@ impl Lambda {
     }
 }
 
+/// A definition's gate: its body checks once, over a `Nop` per declared
+/// argument, raising to a faux catch that collects its throws. Its
+/// declared tvars are rigid (the body must be well-typed for any 'a;
+/// anonymous '_N inference cells stay bindable) and a self-call knots to
+/// its own cells (`ExecCtx::rec_defs`). Every path leaves by `close`.
+// XCR claude for eric: shared by the def gate and a restored builtin's check;
+// it leaves by an explicit `close(ctx)`, not on drop: a Drop cannot reach the
+// context, and a guard holding `&mut ExecCtx` would lock it for the body check.
+struct DefGate<R: Rt, E: UserEvent> {
+    def: LambdaId,
+    faux_id: BindId,
+    args: LPooled<Vec<Node<R, E>>>,
+    scope: Scope,
+    rigid: LPooled<Vec<RigidGate>>,
+}
+
+impl<R: Rt, E: UserEvent> DefGate<R, E> {
+    fn open(ctx: &mut ExecCtx<R, E>, def: &LambdaDef<R, E>) -> Self {
+        let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
+        let faux_id = BindId::new();
+        ctx.env.by_id.insert_cow(
+            faux_id,
+            Bind {
+                doc: None,
+                export: false,
+                id: faux_id,
+                name: "faux".into(),
+                scope: def.scope.lexical.clone(),
+                typ: Type::empty_tvar(),
+                pos: SourcePosition::default(),
+                ori: Arc::new(Origin::default()),
+                pattern: None,
+                facet: None,
+            },
+        );
+        let scope = def.scope.with_catch((faux_id, ExprId::new()), false);
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        def.typ.collect_tvars(&mut named);
+        named.retain(|name, _| !name.starts_with('_'));
+        let rigid = named.values().map(|tv| tv.open_rigid()).collect();
+        ctx.rec_defs.insert(def.id);
+        ctx.def_gate_depth += 1;
+        Self { def: def.id, faux_id, args, scope, rigid }
+    }
+
+    /// The error type the body raised to the gate's catch.
+    fn thrown(&self, ctx: &ExecCtx<R, E>) -> Type {
+        ctx.env.by_id[&self.faux_id].typ.deref_cloned().unwrap_or(Type::Bottom)
+    }
+
+    fn close(mut self, ctx: &mut ExecCtx<R, E>) {
+        ctx.def_gate_depth -= 1;
+        ctx.rec_defs.remove(&self.def);
+        ctx.env.by_id.remove_cow(&self.faux_id);
+        for gate in self.rigid.drain(..) {
+            gate.close();
+        }
+    }
+}
+
 /// A builtin's check `Apply`, as the definition gate builds it: the
-/// builtin over a `Nop` per declared argument, checked once. A
-/// restored definition rebuilds it on first use.
-pub(crate) fn builtin_check<R: Rt, E: UserEvent>(
+/// builtin over the gate's arguments, checked once.
+pub(crate) fn build_builtin_check<R: Rt, E: UserEvent>(
     def: &LambdaDef<R, E>,
     ctx: &mut ExecCtx<R, E>,
 ) -> Result<Box<dyn Apply<R, E>>> {
-    // CR claude for eric: [structure] the faux-arg, faux-bind and gate-scope setup
-    // is a copy of Lambda::typecheck0's. One def-gate type that enters (faux
-    // catch, rigid gates, rec_defs, depth) and leaves on drop would serve both
-    // and shorten the 120-line typecheck0 with its hand-written teardown.
-    let mut faux_args: LPooled<Vec<Node<R, E>>> =
-        def.typ.args.iter().map(|at| Node::new(Nop { typ: at.typ.clone() })).collect();
-    let faux_id = BindId::new();
-    // CR claude for eric: [bug] this faux catch bind is never removed from
-    // `env.by_id` (Lambda::typecheck0 removes its own), so every restored builtin
-    // leaves a stray "faux" binding in the env for the session's life.
-    ctx.env.by_id.insert_cow(
-        faux_id,
-        Bind {
-            doc: None,
-            export: false,
-            id: faux_id,
-            name: "faux".into(),
-            scope: def.scope.lexical.clone(),
-            typ: Type::empty_tvar(),
-            pos: SourcePosition::default(),
-            ori: Arc::new(Origin::default()),
-            pattern: None,
-            facet: None,
-        },
-    );
-    let gate_scope = def.scope.with_catch((faux_id, ExprId::new()), false);
-    let mut f = (def.init)(
-        &gate_scope,
-        ctx,
-        &mut faux_args,
-        BindMode::Definition,
-        ExprId::new(),
-    )?;
-    f.typecheck0(ctx, &mut faux_args)?;
-    Ok(f)
+    let mut gate = DefGate::open(ctx, def);
+    let res =
+        (def.init)(&gate.scope, ctx, &mut gate.args, BindMode::Definition, ExprId::new())
+            .and_then(|mut f| f.typecheck0(ctx, &mut gate.args).map(|()| f));
+    gate.close(ctx);
+    res
 }
 
-// CR claude for eric: [readability] stale references: the per-site default check
-// is `CallSite::prepare_bind` (static and dynamic binds alike), and the comment
-// in Lambda::typecheck0 names a `setup_bind` that no longer exists.
 /// The definition's check of its labeled defaults, under the gate:
 /// each default compiles in the def's scope and must fit its parameter.
 /// Against a declared tvar it must fit the tvar's constraints, not the
 /// variable, since a default is allowed to instantiate the variable at
-/// a site that omits the argument (`CallSite::setup_dynamic_bind`).
+/// a site that omits the argument (`CallSite::prepare_bind`).
 fn check_defaults<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     def: &LambdaDef<R, E>,
@@ -1491,23 +1377,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         self.typ.encode(buf)
     }
 
-    // CR claude for eric: [structure] a hand copy of `node::produce_constant`, the
-    // one frame rule CLAUDE.md names for every constant: call it with
-    // `&mut self.resident` and `|| self.def.clone()`.
+    /// A lambda literal is a constant.
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        // same production rule as `Constant`: FIRED at init, STALE inside
-        // frames, which force init
-        if ctx.frame_depth > 0 {
-            if ctx.dispatch_init {
-                self.resident.set(TagValue::fired(self.def.clone()))
-            } else {
-                self.resident.set(TagValue::stale(self.def.clone()))
-            }
-        } else if event.init {
-            self.resident.set(TagValue::fired(self.def.clone()))
-        } else {
-            self.resident.ride()
-        }
+        produce_constant(ctx, event, &mut self.resident, || self.def.clone())
     }
 
     fn spec(&self) -> &Expr {
@@ -1537,55 +1409,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .def
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
+        let spec = &self.spec;
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after
         // the body (`check_defaults`), and again per omitting call site
-        // (`setup_bind`), where one may narrow that site's cells.
-        let mut faux_args: LPooled<Vec<Node<R, E>>> = def
-            .typ
-            .args
-            .iter()
-            .map(|at| {
-                let n: Node<R, E> = Node::new(Nop { typ: at.typ.clone() });
-                Ok(n)
-            })
-            .collect::<Result<_>>()?;
-        let faux_id = BindId::new();
-        ctx.env.by_id.insert_cow(
-            faux_id,
-            Bind {
-                doc: None,
-                export: false,
-                id: faux_id,
-                name: "faux".into(),
-                scope: def.scope.lexical.clone(),
-                typ: Type::empty_tvar(),
-                pos: SourcePosition::default(),
-                ori: Arc::new(Origin::default()),
-                pattern: None,
-                facet: None,
-            },
-        );
-        let gate_scope = def.scope.with_catch((faux_id, ExprId::new()), false);
-        // Declared (named) signature tvars are rigid for the duration of
-        // the def gate: the body must be well-typed for arbitrary 'a.
-        // Anonymous '_N inference cells stay bindable.
-        let mut named_tvs: LPooled<ahash::AHashMap<ArcStr, TVar>> = LPooled::take();
-        def.typ.collect_tvars(&mut named_tvs);
-        named_tvs.retain(|name, _| !name.starts_with('_'));
-        let mut gates: LPooled<Vec<RigidGate>> =
-            named_tvs.values().map(|tv| tv.open_rigid()).collect();
-        // a self-call site knots to the def's own cells (`ExecCtx::rec_defs`)
-        ctx.rec_defs.insert(def.id);
-        ctx.def_gate_depth += 1;
+        // (`CallSite::prepare_bind`), where one may narrow that site's cells.
+        let mut gate = DefGate::open(ctx, def);
         let res = (def.init)(
-            &gate_scope,
+            &gate.scope,
             ctx,
-            &mut faux_args,
+            &mut gate.args,
             BindMode::Definition,
             ExprId::new(),
         )
-        .at(&Update::<R, E>::spec(self));
+        .at(spec);
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             // fn-typed params knot like self-calls: a call to `f` unifies
@@ -1601,53 +1438,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                     }
                 }
             }
-            let res = f.typecheck0(ctx, &mut faux_args).at(&Update::<R, E>::spec(self));
+            let res = f.typecheck0(ctx, &mut gate.args).at(spec);
             for id in param_knot.drain(..) {
                 ctx.def_gate_params.remove(&id);
             }
             // a builtin's check `Apply` is retained for `CallSite::typecheck1`;
             // a user body is not re-checked per call site
-            if matches!(f.view(), ApplyView::Lambda(_)) {
-                f.delete(ctx)
-            } else {
-                let def = self
-                    .def
-                    .downcast_ref::<LambdaDef<R, E>>()
-                    .expect("failed to unwrap lambda");
-                *def.check.lock() = Some(f);
+            match def.builtin_check() {
+                None => f.delete(ctx),
+                Some(check) => *check.lock() = Some(f),
             }
             res?;
-            let inferred_throws = ctx.env.by_id[&faux_id]
-                .typ
-                .deref_cloned()
-                .unwrap_or(Type::Bottom)
-                .scope_refs(&def.scope.lexical)
-                .normalize();
-            ftyp.throws
-                .check_contains(&ctx.env, &inferred_throws)
-                .at(&Update::<R, E>::spec(self))?;
+            let inferred_throws =
+                gate.thrown(ctx).scope_refs(&def.scope.lexical).normalize();
+            ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
             // record the gate's inferred facts as cell conjuncts; a nested
             // gate records closed facts only (`FnType::constrain_known`)
             ftyp.constrain_known(ctx.def_gate_depth > 1);
             Ok(())
         });
-        let res = res.and_then(|()| check_defaults(ctx, def, &gate_scope));
-        ctx.def_gate_depth -= 1;
-        ctx.rec_defs.remove(&def.id);
-        ctx.env.by_id.remove_cow(&faux_id);
-        for gate in gates.drain(..) {
-            gate.close();
-        }
+        let res = res.and_then(|()| check_defaults(ctx, def, &gate.scope));
+        gate.close(ctx);
         // closed inferred bindings survive the gate: a solved fact must not
         // degrade to an upper bound a consumer can narrow first
         self.typ.unbind_open_tvars();
         // GRAPHIX_RIGID_AUDIT=1 is a cataloging tool: a rejected def that
         // continues may compile to a different shape, so never trust its
         // value output
-        if res.is_err() && crate::dbgenv::graphix_rigid_audit() {
-            if let Err(e) = &res {
-                eprintln!("RIGID-AUDIT reject: {} — {e:#}", Update::<R, E>::spec(self));
-            }
+        if let Err(e) = &res
+            && dbgenv::graphix_rigid_audit()
+        {
+            eprintln!("RIGID-AUDIT reject: {spec} — {e:#}");
             return Ok(());
         }
         res

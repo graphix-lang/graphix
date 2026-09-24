@@ -13,6 +13,7 @@ mod hbs;
 mod http;
 mod interrupt;
 mod json;
+mod leaks;
 mod lift;
 mod list;
 mod lsp_fusion;

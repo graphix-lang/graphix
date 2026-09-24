@@ -629,11 +629,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         ApplyView::BuiltIn
     }
 
-    /// Mutable counterpart to [`Self::view`].
-    fn view_mut(&mut self) -> ApplyViewMut<'_, R, E> {
-        ApplyViewMut::BuiltIn
-    }
-
     /// Same borrowed-production contract as [`Update::update`]: the
     /// returned `&TagValue` is the builtin's resident result slot.
     fn update(
@@ -737,15 +732,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 /// lambda with a walkable body, or an opaque builtin.
 pub enum ApplyView<'a, R: Rt, E: UserEvent> {
     Lambda(&'a GXLambda<R, E>),
-    BuiltIn,
-}
-
-// CR claude for eric: [dead] ApplyViewMut and Apply::view_mut have no reader
-// (see the CR at callsite.rs `callee_apply`/`resolved_apply_mut`); delete the
-// chain.
-/// Mutable counterpart to [`ApplyView`].
-pub enum ApplyViewMut<'a, R: Rt, E: UserEvent> {
-    Lambda(&'a mut GXLambda<R, E>),
     BuiltIn,
 }
 
@@ -1323,13 +1309,14 @@ pub(crate) struct PendingTailCall {
     pub(crate) args: smallvec::SmallVec<[Option<TagValue>; 4]>,
 }
 
-/// A call site's instantiation identity: per argument, the source
-/// lambda ([`node::lambda::LambdaDef::source`]) it statically resolves
-/// to, or `None`. Two sites reaching one def with the same identity are
+/// A call site's instantiation identity: per argument, sorted by its
+/// key, the source lambda ([`node::lambda::LambdaDef::source`]) it
+/// statically resolves to, or `None`. Two sites reaching one def with the same identity are
 /// one instantiation (a self-call); different identities are distinct
 /// even while the def is resolving. Source identity, not `LambdaId`,
 /// because a literal in an instance body is re-minted per compile.
-pub(crate) type FnArgIdentity = smallvec::SmallVec<[Option<ExprId>; 4]>;
+pub(crate) type FnArgIdentity =
+    smallvec::SmallVec<[(node::callsite::ArgKey, Option<ExprId>); 4]>;
 
 #[derive(Clone)]
 pub(crate) struct ResolvingLambda {
@@ -1442,7 +1429,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
-    pub(crate) fn_forward_resolutions: IntMap<BindId, LambdaId>,
+    pub fn_forward_resolutions: IntMap<BindId, LambdaId>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
     /// statement boundaries drain it, so a settle runs only after every
@@ -1470,15 +1457,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Module names pre-registered by a block's header scan, so `mod`
     /// declaration order does not matter.
     pub(crate) predeclared_mods: AHashSet<ModPath>,
-    // CR claude for eric: [readability] stale doc: `callsite::transient_body_ok`
-    // does not exist; the only reader is the image quiescence check
-    // (image/registration.rs). Say what it is for now, or delete it (the CR at
-    // lambda.rs `active_lambdas` bookkeeping).
-    /// `LambdaId`s whose `GXLambda::update` is on the Rust stack, with
-    /// activation counts. `CallSite::bind` binds a recursive unfold
-    /// transient (`callsite::transient_body_ok`), so non-tail recursion
-    /// holds O(depth) instances.
-    pub(crate) active_lambdas: nohash::IntMap<LambdaId, u32>,
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
@@ -1580,7 +1558,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             pending_tail_call: None,
             pending_imports: Vec::new(),
             predeclared_mods: AHashSet::default(),
-            active_lambdas: nohash::IntMap::default(),
             control: Arc::new(Control::new()),
             diagnostics: Vec::new(),
             frame_depth: 0,

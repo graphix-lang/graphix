@@ -268,7 +268,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             && let Some(binds) = ctx.env.binds.get(&scope.lexical)
             && let Expr { kind: ExprKind::Bind(bexp), .. } = bind.spec()
             && let StructurePattern::Bind(name) = &bexp.pattern
-            && let Some(id) = bind.single_id()
+            && let Some(id) = bind.pattern.single_bind_id()
             && let Some(proxy_id) = binds.get(&CompactString::from(name.as_str()))
             && let Some(proxy_bind) = ctx.env.by_id.get(&proxy_id)
         {

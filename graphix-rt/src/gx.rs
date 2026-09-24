@@ -898,7 +898,7 @@ impl<X: GXExt> GX<X> {
         let argn = argn
             .map(|(arg, id)| genn::reference(&mut self.ctx, *id, arg.typ.clone(), eid))
             .collect::<smallvec::SmallVec<[_; 2]>>();
-        let fnode = genn::constant(v.clone());
+        let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
         self.ctx.begin_runtime_node(eid);
         graphix_compiler::check_and_fuse(&mut self.ctx, &mut n)?;

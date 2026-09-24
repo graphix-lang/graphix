@@ -238,6 +238,32 @@ pub struct ImplDef {
     pub ori: Arc<Origin>,
 }
 
+impl TraitDef {
+    /// One declaration, whether or not both sides were decoded from an
+    /// image (an image carries a def by value): its dispatchers are
+    /// minted per declaration.
+    pub(crate) fn same_definition(&self, other: &TraitDef) -> bool {
+        self.id == other.id
+            && self.pos == other.pos
+            && self
+                .methods
+                .iter()
+                .map(|m| m.dispatcher)
+                .eq(other.methods.iter().map(|m| m.dispatcher))
+    }
+}
+
+impl ImplDef {
+    /// One implementation, whether or not both sides were decoded from
+    /// an image: an implementation's scope is its own block.
+    pub(crate) fn same_definition(&self, other: &ImplDef) -> bool {
+        self.trait_id == other.trait_id
+            && self.scope == other.scope
+            && self.declared == other.declared
+            && self.pos == other.pos
+    }
+}
+
 /// Which namespace a resolution serves. Path interiors are always
 /// modules; the terminal name's kind decides which preludes apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -985,7 +1011,7 @@ impl Env {
             self.unbind_variable(m.dispatcher);
         }
         self.modules.remove_cow(&def.path);
-        if self.trait_defs.get(&def.id).map(|d| Arc::ptr_eq(d, def)) == Some(true) {
+        if self.trait_defs.get(&def.id).is_some_and(|d| d.same_definition(def)) {
             self.trait_defs.remove_cow(&def.id);
         }
     }
@@ -1030,7 +1056,7 @@ impl Env {
     pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) {
         let Some(list) = self.impls.get(&im.trait_id) else { return };
         let list: Vec<Arc<ImplDef>> =
-            list.iter().filter(|o| !Arc::ptr_eq(o, im)).cloned().collect();
+            list.iter().filter(|o| !o.same_definition(im)).cloned().collect();
         if list.is_empty() {
             self.impls.remove_cow(&im.trait_id);
         } else {
