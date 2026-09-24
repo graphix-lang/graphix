@@ -56,3 +56,56 @@ async fn lsp_mode_fuses_and_survives_ill_typed() -> Result<()> {
     drain.abort();
     Ok(())
 }
+
+/// A kernel keeps its code alive past a JIT reset: the reset retires the
+/// module while the kernels compiled into it keep running.
+#[tokio::test]
+async fn kernel_outlives_jit_reset() -> Result<()> {
+    use anyhow::Context;
+    use graphix_compiler::{
+        Event, NoUserEvent, Scope, Tag, TagValue, compile,
+        expr::{ModPath, parser::parse_one},
+    };
+    use netidx_value::Value;
+    let (tx, _rx) = mpsc::channel(10);
+    let ctx = graphix_package_core::testing::init_with_flags_and_setup(
+        tx,
+        crate::TEST_REGISTER,
+        vec![],
+        BitFlags::empty(),
+        |_| {},
+    )
+    .await?;
+    let result = ctx
+        .rt
+        .with_ctx(move |ctx| -> Result<()> {
+            let flags = BitFlags::empty();
+            let scope = Scope::root().append("jit_reset");
+            let mut input =
+                compile(ctx, flags, &scope, parse_one("let input: i64 = never()")?)?;
+            let id = ctx
+                .env
+                .lookup_bind(&scope.lexical, &ModPath::from(["input"]))?
+                .context("input binding")?
+                .1
+                .id;
+            let mut node =
+                compile(ctx, flags, &scope, parse_one("#[native]\ninput * 2 + 1")?)?;
+            for (i, n) in [3i64, 5, 8].into_iter().enumerate() {
+                if i > 0 {
+                    ctx.fusion.reset_jit_for_check()?;
+                }
+                let mut event = Event::new(NoUserEvent);
+                event.init = i == 0;
+                event.variables.insert(id, TagValue::tagged(Value::I64(n), Tag::FIRED));
+                let v = node.update(ctx, &mut event);
+                assert_eq!(v.value_cloned(), Value::I64(n * 2 + 1), "step {i}");
+            }
+            node.delete(ctx);
+            input.delete(ctx);
+            Ok(())
+        })
+        .await?;
+    ctx.shutdown().await;
+    result
+}

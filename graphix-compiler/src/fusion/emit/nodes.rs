@@ -516,7 +516,13 @@ pub(crate) fn emit_owned_value_operand_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     node: &Node<R, E>,
 ) -> Result<CompiledExpr> {
-    match kernel_abi::abi_kind(node.typ()) {
+    // Normalized: a select's type is its raw arm union, its emission
+    // follows the normalized one.
+    let kind = match kernel_abi::freeze_for_abi_normalized(node.typ()) {
+        Some(t) => kernel_abi::abi_kind(&t),
+        None => kernel_abi::abi_kind(node.typ()),
+    };
+    match kind {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             // A missing 2-word input is a `Value::Null` placeholder the
             // helpers run harmlessly on; its taint guards the result.

@@ -18,6 +18,7 @@ use netidx_value::Value;
 
 use super::{
     abi::{CompiledExpr, scalar_disc, value_disc},
+    jit::pack_value_to_u64,
     lower::LowerCtx,
 };
 
@@ -296,57 +297,12 @@ pub(super) fn compile_const(
     v: &Value,
     prim: PrimType,
 ) -> Result<ClifValue> {
-    macro_rules! bad {
-        () => {
-            return Err(anyhow::anyhow!("compile_const: {v:?} isn't a {prim:?} scalar"))
-        };
-    }
+    let bits = pack_value_to_u64(v, prim)
+        .ok_or_else(|| anyhow!("compile_const: {v:?} isn't a {prim:?} scalar"))?;
     Ok(match prim {
-        PrimType::I8 => match v {
-            Value::I8(x) => b.ins().iconst(types::I8, *x as i64),
-            _ => bad!(),
-        },
-        PrimType::I16 => match v {
-            Value::I16(x) => b.ins().iconst(types::I16, *x as i64),
-            _ => bad!(),
-        },
-        PrimType::I32 => match v {
-            Value::I32(x) | Value::Z32(x) => b.ins().iconst(types::I32, *x as i64),
-            _ => bad!(),
-        },
-        PrimType::I64 => match v {
-            Value::I64(x) | Value::Z64(x) => b.ins().iconst(types::I64, *x),
-            _ => bad!(),
-        },
-        PrimType::U8 => match v {
-            Value::U8(x) => b.ins().iconst(types::I8, *x as i64),
-            _ => bad!(),
-        },
-        PrimType::U16 => match v {
-            Value::U16(x) => b.ins().iconst(types::I16, *x as i64),
-            _ => bad!(),
-        },
-        PrimType::U32 => match v {
-            Value::U32(x) | Value::V32(x) => b.ins().iconst(types::I32, *x as i64),
-            _ => bad!(),
-        },
-        PrimType::U64 => match v {
-            Value::U64(x) | Value::V64(x) => b.ins().iconst(types::I64, *x as i64),
-            _ => bad!(),
-        },
-        PrimType::F32 => match v {
-            Value::F32(x) => b.ins().f32const(*x),
-            _ => bad!(),
-        },
-        PrimType::F64 => match v {
-            Value::F64(x) => b.ins().f64const(*x),
-            _ => bad!(),
-        },
-        PrimType::Bool => match v {
-            Value::Bool(true) => b.ins().iconst(types::I8, 1),
-            Value::Bool(false) => b.ins().iconst(types::I8, 0),
-            _ => bad!(),
-        },
+        PrimType::F32 => b.ins().f32const(f32::from_bits(bits as u32)),
+        PrimType::F64 => b.ins().f64const(f64::from_bits(bits)),
+        p => b.ins().iconst(prim_to_clif(p), bits as i64),
     })
 }
 

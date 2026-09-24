@@ -199,7 +199,7 @@ pub struct ImageEncoder {
     /// Kernel signatures, slot-chain leaves and body records by `Arc`.
     pub(crate) kernel_sigs: Table<usize, std::sync::Arc<KernelSig>>,
     pub(crate) site_leaves: Table<usize, std::sync::Arc<SiteLeaf>>,
-    pub(crate) records: Table<usize, std::sync::Arc<BodyRecord>>,
+    pub(crate) records: Table<usize, triomphe::Arc<BodyRecord>>,
     /// The distinct trees seen with each id, as the session's own
     /// clones (a clone shares its children): an expression is keyed by
     /// the address of the clone it matches, so a caller's address is
@@ -354,7 +354,7 @@ pub struct ImageDecoder {
     pub(crate) fntypes: AHashMap<u64, FnType>,
     pub(crate) kernel_sigs: AHashMap<u64, std::sync::Arc<KernelSig>>,
     pub(crate) site_leaves: AHashMap<u64, std::sync::Arc<SiteLeaf>>,
-    pub(crate) records: AHashMap<u64, std::sync::Arc<BodyRecord>>,
+    pub(crate) records: AHashMap<u64, triomphe::Arc<BodyRecord>>,
     /// The builtins' fast fns by name, for a kernel constant's recipe.
     fastcalls: AHashMap<&'static str, FastCall>,
     instances: AHashMap<LambdaInstanceId, u64>,

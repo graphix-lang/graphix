@@ -10,7 +10,7 @@ use crate::{
     fusion::{
         LambdaCallInfo,
         emit_helpers::{AbiTy, HelperSpec, all_helpers},
-        kernel_abi::{self, AbiParamKind, KernelSig},
+        kernel_abi::{self, AbiParamKind, KernelKey, KernelSig},
         lowering::{self, BuiltinCallSiteInfo},
     },
     typ::Type,
@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
-    body::{BodySource, emit_interrupt_check},
+    body::{BodyRole, BodySource, emit_interrupt_check},
     record::{EmitConst, SymbolTable},
 };
 
@@ -43,7 +43,7 @@ use super::{
 pub(super) fn compile_into_function<'a>(
     b: &mut FunctionBuilder,
     kernel: &'a KernelSig,
-    callee_refs: &'a BTreeMap<usize, FuncRef>,
+    callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
     self_thunk: Option<FuncRef>,
     helper_refs: &'a HelperRefs,
     consts: &'a std::cell::RefCell<Vec<EmitConst>>,
@@ -51,7 +51,7 @@ pub(super) fn compile_into_function<'a>(
     symbols: &'a SymbolTable,
     symbol: &'a str,
     body: &'a BodySource<'a>,
-    callee_layouts: &'a BTreeMap<usize, SiteLayout>,
+    callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
 ) -> Result<(usize, Vec<kernel_abi::SiteAnchor>, Vec<kernel_abi::SelfBlock>, SiteLayout)>
 {
     let spec = &body.spec;
@@ -60,8 +60,6 @@ pub(super) fn compile_into_function<'a>(
     b.switch_to_block(entry);
 
     let mut env = JitEnv::new();
-    // Params are declared first: tail-call dispatch relies on
-    // `env.locals[0..param_count]` being the params in order.
     let mut initial_vals: poolshark::local::LPooled<Vec<ClifValue>> =
         poolshark::local::LPooled::take();
     initial_vals.extend_from_slice(b.block_params(entry));
@@ -172,20 +170,19 @@ pub(super) fn compile_into_function<'a>(
         None
     };
 
-    let call_slots = if kernel.params.is_empty() {
-        TailSlots::Positional
-    } else {
-        TailSlots::Named(kernel.params.as_slice())
-    };
     let lower = LowerCtx {
-        tail: TailCtx { loop_head, param_mark, call_slots, tail_scrut_stale_acc },
+        tail: TailCtx {
+            loop_head,
+            param_mark,
+            call_slots: kernel.params.as_slice(),
+            tail_scrut_stale_acc,
+        },
         init_flag,
         quiet_flag,
         wake_flag,
         callee_refs,
         self_thunk,
         helper_refs,
-        sel_fires: std::cell::RefCell::new(Vec::new()),
         value_buf_stack: std::cell::RefCell::new(Vec::new()),
         owned_input_stack: std::cell::RefCell::new(Vec::new()),
         collection_site: std::cell::Cell::new(None),
@@ -198,18 +195,18 @@ pub(super) fn compile_into_function<'a>(
         kernel,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
-        self_call: spec.self_call,
+        self_call: spec.self_call(),
         type_env: spec.type_env,
         state: StateChannel {
             ptr: state_ptr,
-            enabled: spec.allow_state,
+            enabled: matches!(spec.role, BodyRole::Parent),
             next: std::cell::Cell::new(0),
             anchors: std::cell::RefCell::new(Vec::new()),
             self_blocks: std::cell::RefCell::new(Vec::new()),
         },
         site: StateChannel {
             ptr: site_ptr,
-            enabled: !spec.allow_state,
+            enabled: !matches!(spec.role, BodyRole::Parent),
             next: std::cell::Cell::new(0),
             anchors: std::cell::RefCell::new(Vec::new()),
             self_blocks: std::cell::RefCell::new(Vec::new()),
@@ -217,7 +214,6 @@ pub(super) fn compile_into_function<'a>(
         slot_tables: std::cell::RefCell::new(Vec::new()),
         closed_frame: std::cell::RefCell::new(None),
         callee_layouts,
-        loop_depth: std::cell::Cell::new(0),
     };
     // A wedged native loop aborts to bottom on interrupt.
     if loop_head.is_some() {
@@ -247,23 +243,25 @@ pub(super) fn compile_into_function<'a>(
     let words = lower.site.next.get() as u32;
     // A self-call's child block has this body's layout, which is only
     // known once emission ends.
-    let self_roots: std::sync::Arc<[u32]> = {
-        let mut v: Vec<u32> =
-            lower.self_call_roots.borrow().iter().map(|off| (*off / 8) as u32).collect();
-        v.sort_unstable();
-        v.into()
-    };
+    let mut slots: Vec<u32> =
+        lower.self_call_roots.borrow().iter().map(|off| (*off / 8) as u32).collect();
+    slots.sort_unstable();
     kernel.site_block_words.store(words as u64, std::sync::atomic::Ordering::Relaxed);
-    let mut self_blocks: Vec<kernel_abi::SelfBlock> = self_roots
-        .iter()
-        .map(|rel| kernel_abi::SelfBlock { rel: *rel, words, slots: self_roots.clone() })
-        .collect();
-    self_blocks.extend(lower.site.self_blocks.borrow().iter().cloned());
-    let site_layout = SiteLayout {
+    let anchors: std::sync::Arc<[kernel_abi::SiteAnchor]> =
+        lower.site.anchors.borrow().clone().into();
+    let nested = lower.site.self_blocks.borrow().clone();
+    let activation = triomphe::Arc::new(kernel_abi::ActivationLayout {
         words,
-        anchors: lower.site.anchors.borrow().clone().into(),
-        self_blocks: self_blocks.into(),
-    };
+        slots: slots.iter().copied().collect(),
+        anchors: anchors.iter().cloned().collect(),
+        nested: nested.iter().cloned().collect(),
+    });
+    let mut self_blocks: Vec<kernel_abi::SelfBlock> = slots
+        .iter()
+        .map(|rel| kernel_abi::SelfBlock { rel: *rel, layout: activation.clone() })
+        .collect();
+    self_blocks.extend(nested);
+    let site_layout = SiteLayout { words, anchors, self_blocks: self_blocks.into() };
     Ok((
         lower.state.next.get(),
         slot_table_words,
@@ -371,7 +369,7 @@ pub(super) struct StateChannel {
     /// it can be absent ([`SelWord::Guarded`]).
     pub(super) ptr: ClifValue,
     /// Whether this body may claim words here: `state` only for the
-    /// region root, `site` only for callees (`BodySpec::allow_state`).
+    /// region root, `site` only for callees (`BodySpec::role`).
     pub(super) enabled: bool,
     /// Next unclaimed word index.
     pub(super) next: std::cell::Cell<usize>,
@@ -391,25 +389,12 @@ pub(super) struct TailCtx<'a> {
     /// Env mark right after the params are bound; a rebind truncates
     /// to it.
     pub(super) param_mark: usize,
-    pub(super) call_slots: TailSlots<'a>,
+    /// The kernel's params, by tail-call slot (`KernelSig::params`).
+    pub(super) call_slots: &'a [kernel_abi::KernelParam],
     /// AND over every tail-position select scrutinee's STALE bit on
     /// the executed path; `emit_kernel_return` folds it into the
     /// returned disc.
     pub(super) tail_scrut_stale_acc: Variable,
-}
-
-// CR claude for eric: [dead] `Positional` is chosen only when `kernel.params` is
-// empty (line 176), where a tail call has nothing to rebind; no hand-built test
-// kernel exists anymore. Drop the enum for the slice, and the line-63 comment
-// ("tail-call dispatch relies on env.locals[0..param_count]"), which only the
-// Positional path relied on.
-/// How a tail-call rebind maps its args onto the kernel's params.
-#[derive(Clone, Copy)]
-pub(super) enum TailSlots<'a> {
-    /// Hand-built test kernels: rebind by position.
-    Positional,
-    /// Per-source-position tail-call slot map (`KernelSig::tail_call_slots`).
-    Named(&'a [kernel_abi::KernelParam]),
 }
 
 /// A closed scaffold-loop frame awaiting its exit's slot truncates.
@@ -418,22 +403,6 @@ pub(crate) struct ClosedFrame {
     pub(super) len: ClifValue,
     pub(super) src_disc: ClifValue,
     pub(super) pending: Vec<TruncRec>,
-}
-
-// CR claude for eric: [dead] Suspected redundant, the whole `sel_fires` stack.
-// `tail.tail_scrut_stale_acc` already ANDs every tail select's scrutinee STALE and
-// each taken arm's guard fold along the executed path (emit_select_node_tail), so
-// it is bitwise <= each level's `sound_stale` and the per-level fold in
-// emit_kernel_return is absorbed by its final acc fold. `bfired` is false on every
-// arms path (a tainted scrutinee returns before its arms), so the override never
-// fires. Both date from the stored-selection ride. Check with the
-// tail-select-bottom-out pins, then delete.
-/// A tail-position select's own-fire summary; a still-stale result
-/// meeting `bfired` becomes TAINT fresh.
-#[derive(Clone, Copy)]
-pub(super) struct SelFire {
-    pub(super) sound_stale: ClifValue,
-    pub(super) bfired: Option<ClifValue>,
 }
 
 pub(crate) struct LowerCtx<'a> {
@@ -453,26 +422,20 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) site: StateChannel,
     /// Layouts of already-defined callees; a missing entry is a
     /// recursive back-edge (the call passes 0).
-    pub(super) callee_layouts: &'a BTreeMap<usize, SiteLayout>,
+    pub(super) callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
     /// Open scaffold-loop frames, innermost last.
     pub(super) slot_tables: std::cell::RefCell<Vec<SlotTableFrame>>,
     /// The frame `close_slot_tables` just popped, for the loop exit's
     /// `emit_slot_truncates`.
     pub(super) closed_frame: std::cell::RefCell<Option<ClosedFrame>>,
-    /// Enclosing scaffold-loop depth. State claims are refused inside
-    /// loops: one static word cannot hold per-slot memory.
-    pub(super) loop_depth: std::cell::Cell<u32>,
     /// Callee kernel identity (`kernel_key`) → `FuncRef`, declared in
     /// the current function before the FunctionBuilder is built.
-    pub(super) callee_refs: &'a BTreeMap<usize, FuncRef>,
+    pub(super) callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
     /// The spill thunk a self-call takes when the remaining stack is
     /// inside the red zone.
     pub(super) self_thunk: Option<FuncRef>,
     /// `FuncRef`s for the runtime helpers, by helper name.
     pub(super) helper_refs: &'a HelperRefs,
-    /// Enclosing tail-position selects' own-fire summaries, innermost
-    /// last. `emit_kernel_return` folds them innermost-first.
-    pub(super) sel_fires: std::cell::RefCell<Vec<SelFire>>,
     /// In-flight value bufs between `buf_new` and finalize; a
     /// whole-kernel abort drops them ([`emit_pending_cleanup`]).
     pub(super) value_buf_stack: std::cell::RefCell<Vec<Variable>>,
@@ -499,25 +462,21 @@ pub(crate) struct LowerCtx<'a> {
     /// The single abort block; its body is emitted at the end of
     /// `compile_into_function`. A bottomed call does not come here.
     pub(super) pending_exit: std::cell::RefCell<Option<Block>>,
-    /// Sync-builtin Apply sites by spec id (`None` for callee bodies).
-    pub(super) builtin_apply_sites:
-        Option<&'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>>,
-    /// Statically-resolved lambda call sites (`None` for callee bodies).
-    pub(super) lambda_call_sites: Option<&'a nohash::IntMap<ExprId, LambdaCallInfo>>,
+    /// Sync-builtin Apply sites by spec id.
+    pub(super) builtin_apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
+    /// Statically-resolved lambda call sites.
+    pub(super) lambda_call_sites: &'a nohash::IntMap<ExprId, LambdaCallInfo>,
     /// Set when this kernel is a self-recursive lambda body: the self
     /// binding and the kernel's own call descriptor.
     pub(super) self_call: Option<&'a (BindId, LambdaCallInfo)>,
     /// Type-resolution env snapshot ([`resolve_node_typ`]).
-    pub(super) type_env: Option<&'a Env>,
+    pub(super) type_env: &'a Env,
 }
 
 /// Expand named/abstract type refs in a node's `Type` through the
-/// region's env snapshot; unchanged when there is none.
+/// region's env snapshot.
 pub(super) fn resolve_node_typ(ctx: &LowerCtx, t: &Type) -> Type {
-    match ctx.type_env {
-        Some(env) => lowering::expand_refs(t, env),
-        None => t.clone(),
-    }
+    lowering::expand_refs(t, ctx.type_env)
 }
 
 /// [`kernel_abi::freeze_for_abi_normalized`], retrying through

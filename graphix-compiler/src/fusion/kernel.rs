@@ -70,12 +70,12 @@ impl Drop for Kernel {
         }
         for b in self.jit.state_self_blocks.iter() {
             let p = std::mem::replace(&mut self.state[b.rel as usize], 0);
-            unsafe { super::emit_helpers::free_self_block_tree(p, &b.slots) };
+            unsafe { super::emit_helpers::free_self_block_tree(p, &b.layout) };
         }
         if let Some(l) = self.jit.own_site.as_ref() {
             for b in l.self_blocks.iter() {
                 let p = std::mem::replace(&mut self.site[b.rel as usize], 0);
-                unsafe { super::emit_helpers::free_self_block_tree(p, &b.slots) };
+                unsafe { super::emit_helpers::free_self_block_tree(p, &b.layout) };
             }
         }
         if let Some(l) = self.jit.own_site.as_ref() {
@@ -405,7 +405,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
         // snapshot when a hook can fire) and delivers its raises after.
         // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)
         // and `out` is two words the wrapper fills.
-        let ((), raises) =
+        let ((), mut raises) =
             crate::node::coretraits::with_display_hooks(ctx, event, |env| {
                 super::emit_helpers::with_qop_raises(|| {
                     super::emit_helpers::with_kernel_env(env, || unsafe {
@@ -413,7 +413,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                     })
                 })
             });
-        for (site, v) in raises {
+        for (site, v) in raises.drain(..) {
             // SAFETY: `site` is a `QopSite` constant of the kernel's
             // record, which outlives its code.
             let site = unsafe { &*site };
@@ -445,8 +445,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                         unsafe {
                             reclaim_self_block_tree(
                                 (&mut self.state[b.rel as usize]) as *mut u64,
-                                b.words as usize,
-                                &b.slots,
+                                &b.layout,
                                 generation,
                             )
                         };
@@ -456,8 +455,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
                             unsafe {
                                 reclaim_self_block_tree(
                                     (&mut self.site[b.rel as usize]) as *mut u64,
-                                    b.words as usize,
-                                    &b.slots,
+                                    &b.layout,
                                     generation,
                                 )
                             };
@@ -469,6 +467,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
             SELF_BLOCK_GEN.with(|c| c.set(saved_gen));
             SELF_BLOCK_REACHED.with(|c| c.set(saved_reached));
         }
+        super::emit_helpers::resume_kernel_panic();
         if pending {
             // The out slot is a sentinel, not a Value.
             if crate::dbgenv::graphix_dbg_invoke() {
@@ -516,8 +515,23 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fusion::emit::unpack_u64_to_value;
     use kernel_abi::PrimType;
+
+    fn unpack_u64_to_value(bits: u64, prim: PrimType) -> Value {
+        match prim {
+            PrimType::I8 => Value::I8(bits as i8),
+            PrimType::I16 => Value::I16(bits as i16),
+            PrimType::I32 => Value::I32(bits as i32),
+            PrimType::I64 => Value::I64(bits as i64),
+            PrimType::U8 => Value::U8(bits as u8),
+            PrimType::U16 => Value::U16(bits as u16),
+            PrimType::U32 => Value::U32(bits as u32),
+            PrimType::U64 => Value::U64(bits),
+            PrimType::F32 => Value::F32(f32::from_bits(bits as u32)),
+            PrimType::F64 => Value::F64(f64::from_bits(bits)),
+            PrimType::Bool => Value::Bool(bits != 0),
+        }
+    }
 
     #[test]
     fn value_boundary_bits_round_trip() {

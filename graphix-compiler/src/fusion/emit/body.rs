@@ -3,19 +3,18 @@
 //! forcing/bottom/interrupt machinery, tail-rebind jumps, and
 //! the kernel return protocol.
 
-use super::record::{EmitConst, KernelConst};
 use crate::{
     BindId, Node, NodeView, Rt, Update, UserEvent,
     env::Env,
     expr::{Expr, ExprId, ExprKind},
     fusion::{
         LambdaCallInfo, intern,
-        kernel_abi::{self, AbiKind},
+        kernel_abi::{self, AbiKind, AbiParamKind, KernelKey},
         lowering::BuiltinCallSiteInfo,
     },
     typ::Type,
 };
-use anyhow::{Context as AnyContext, Result, anyhow};
+use anyhow::{Context as AnyContext, Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, FuncRef, Inst, InstBuilder, Value as ClifValue, condcodes::IntCC,
@@ -24,116 +23,97 @@ use cranelift_codegen::ir::{
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::{Linkage, Module};
 use netidx_value::Value;
+use smallvec::SmallVec;
 
 use super::{
     abi::{
-        CompiledExpr, JitEnv, LocalKind, STALE, TAINT, ValueVar, emit_untainted_i64,
+        CompiledExpr, JitEnv, LocalKind, STALE, ValueVar, emit_untainted_i64,
         propagate_flags, scalar_disc, value_disc,
     },
-    call::{
-        CompositeSource, drop_owned_composites, emit_drop_local, emit_pending_cleanup,
-    },
-    flow::emit_body_tail,
+    call::{CompositeSource, emit_drop_local, emit_pending_cleanup},
+    flow::{emit_body_tail, emit_scope_drops},
     lower::{
-        ClosedFrame, LowerCtx, SelFire, SelWord, SiteLayout, SlotTable, SlotTableFrame,
-        TailSlots, TruncAnchor, TruncLeaf, TruncRec,
+        ClosedFrame, LowerCtx, SelWord, SiteLayout, SlotTable, SlotTableFrame,
+        TruncAnchor, TruncLeaf, TruncRec,
     },
     nodes::emit_owned_value_operand_node,
+    record::{EmitConst, KernelConst},
     scalar::scalar_to_payload_i64,
 };
 
-// CR claude for eric: [readability] stale doc: the taint field is gone; the new
-// value's disc carries its tag.
 /// One tail-call rebind: the kernel param slot index (among
 /// `KernelSig::params` — skipped and invariant formals leave holes,
-/// so the pairing is explicit), the new value, its composite
-/// provenance, and its taint bit.
+/// so the pairing is explicit), the new value (its disc carries its
+/// tag) and its composite provenance.
 pub(super) struct TailRebind {
     pub(super) slot: usize,
     pub(super) val: CompiledExpr,
     pub(super) source: CompositeSource,
 }
 
-/// Resolve a tail-rebind target slot's `ValueVar`, by BindId first:
-/// a carried formal and a capture can share a basename, and a
-/// name-only lookup finds the later-bound capture.
-fn lookup_slot(env: &JitEnv, slot: &kernel_abi::KernelParam) -> Option<ValueVar> {
-    let l = match slot.bind_id {
-        Some(id) => env.lookup(id, &slot.name),
-        None => env.lookup_name(&slot.name),
-    }?;
-    Some(l.words)
+/// Resolve a tail-rebind target slot's `ValueVar` among the params
+/// (the locals below `mark`), by BindId first: a carried formal and a
+/// capture can share a basename, and a name-only lookup finds the
+/// later-bound capture.
+fn lookup_slot(
+    env: &JitEnv,
+    mark: usize,
+    slot: &kernel_abi::KernelParam,
+) -> Option<ValueVar> {
+    let params = &env.locals[..mark];
+    let by_id =
+        slot.bind_id.and_then(|id| params.iter().rev().find(|l| l.bind_id == Some(id)));
+    by_id
+        .or_else(|| {
+            params.iter().rev().find(|l| {
+                (slot.bind_id.is_none() || l.bind_id.is_none()) && l.name == slot.name
+            })
+        })
+        .map(|l| l.words)
 }
 
 /// The rebind-and-jump core of a self tail-call. Rebinds the leading
 /// formal slots, writing both the payload and the disc (the
 /// terminating arm returns a formal, whose disc must be the last
-/// iteration's fired-ness), drops every owned non-slot local above
-/// the param mark, truncates the env to the params, and jumps to the
-/// loop head.
+/// iteration's fired-ness), drops every local above the param mark,
+/// truncates the env to the params, and jumps to the loop head.
 pub(super) fn emit_tail_rebind_jump(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
     ctx: &LowerCtx,
-    rebinds: smallvec::SmallVec<[TailRebind; 8]>,
+    rebinds: SmallVec<[TailRebind; 8]>,
 ) -> Result<()> {
     let head = ctx.tail.loop_head.ok_or_else(|| {
         anyhow!("kernel malformed: TailCall in kernel without has_tail_loop")
     })?;
-    // CR claude for eric: [dead] TailSlots::Positional is chosen only when
-    // kernel.params is empty (lower.rs:163), where there is nothing to rebind, and
-    // the "hand-built test kernels" it was for no longer exist. Drop the enum and
-    // this branch, which would rebind a composite without clone or drop.
-    let TailSlots::Named(slots) = ctx.tail.call_slots else {
-        debug_assert!(rebinds.len() <= ctx.tail.param_mark);
-        for r in rebinds.iter() {
-            let vv = env.locals[r.slot].words;
-            b.def_var(vv.payload, r.val.payload);
-            b.def_var(vv.disc, r.val.disc);
-        }
-        env.truncate(ctx.tail.param_mark);
-        b.ins().jump(head, &[]);
-        return Ok(());
-    };
-    // Slots cover every kernel value param; a tail call rebinds only
-    // the loop-carried formals.
+    let slots = ctx.tail.call_slots;
     debug_assert!(rebinds.len() <= slots.len());
-    use kernel_abi::AbiParamKind;
     let helper =
         |name: &str| ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing {name}"));
-    // CR claude for eric: [bug] use after free. Every new value was emitted before
-    // this loop, so a Borrowed one is the OLD payload of another formal; rebind i
-    // drops its formal's old value before rebind j clones it. Probe:
-    // `let rec f = |n: i64, a: Array<i64>, b: Array<i64>| -> Array<i64> select n
-    // { 0 => b, n => f(n - 1, [n, n, n, n], a) }` fed from a timer panics in
-    // poolshark (valarray_finalize); the node-walk prints [2, 2, 2, 2], and
-    // swapping the formal order fuses fine. Clone every Borrowed value first, then
-    // drop the old values. Same for the Variant/Nullable/Value arm.
-    for r in rebinds.iter() {
+    // Every new value is owned before any old one drops: a Borrowed new
+    // value may be another formal's old payload.
+    let mut staged: SmallVec<[(ValueVar, LocalKind, ClifValue, ClifValue); 8]> =
+        SmallVec::new();
+    for r in rebinds {
         let slot = &slots[r.slot];
-        let vv = lookup_slot(env, slot)
+        let vv = lookup_slot(env, ctx.tail.param_mark, slot)
             .ok_or_else(|| anyhow!("TailCall: slot `{}` not in env", slot.name))?;
-        match slot.kind.abi() {
-            AbiParamKind::Scalar(_) => {
-                b.def_var(vv.payload, r.val.payload);
-                b.def_var(vv.disc, r.val.disc);
-            }
-            // a Borrowed new value is cloned; the old slot value is dropped
+        let borrowed = r.source == CompositeSource::Borrowed;
+        let (kind, disc, payload) = match slot.kind.abi() {
+            AbiParamKind::Scalar(p) => (LocalKind::Scalar(p), r.val.disc, r.val.payload),
             AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
-                let newp = if r.source == CompositeSource::Borrowed {
+                let payload = if borrowed {
                     let call =
                         b.ins().call(helper("graphix_valarray_clone")?, &[r.val.payload]);
                     b.inst_results(call)[0]
                 } else {
                     r.val.payload
                 };
-                let old = b.use_var(vv.payload);
-                b.ins().call(helper("graphix_valarray_drop")?, &[old]);
-                b.def_var(vv.payload, newp);
-                b.def_var(vv.disc, r.val.disc);
+                (LocalKind::Composite, r.val.disc, payload)
             }
-            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
-                let (newd, newp) = if r.source == CompositeSource::Borrowed {
+            k
+            @ (AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value) => {
+                let (disc, payload) = if borrowed {
                     let call = b.ins().call(
                         helper("graphix_value_clone")?,
                         &[r.val.disc, r.val.payload],
@@ -143,38 +123,24 @@ pub(super) fn emit_tail_rebind_jump(
                 } else {
                     (r.val.disc, r.val.payload)
                 };
-                let old_d = b.use_var(vv.disc);
-                let old_p = b.use_var(vv.payload);
-                b.ins().call(helper("graphix_value_drop")?, &[old_d, old_p]);
-                b.def_var(vv.payload, newp);
-                b.def_var(vv.disc, newd);
+                let kind = match k {
+                    AbiParamKind::Variant => LocalKind::Variant,
+                    AbiParamKind::Nullable => LocalKind::Nullable,
+                    _ => LocalKind::Value,
+                };
+                (kind, disc, payload)
             }
-            // a String production is always owned (a local read
-            // refcount-bumps)
-            AbiParamKind::String => {
-                let old_p = b.use_var(vv.payload);
-                b.ins().call(helper("graphix_arcstr_drop")?, &[old_p]);
-                b.def_var(vv.payload, r.val.payload);
-                b.def_var(vv.disc, r.val.disc);
-            }
-        }
+            AbiParamKind::String => (LocalKind::String, r.val.disc, r.val.payload),
+        };
+        staged.push((vv, kind, disc, payload));
     }
-    // CR claude for eric: [bug] leak: the filter keeps a local out of the drops when
-    // any formal has its NAME, so a top-level let shadowing a formal leaks once per
-    // iteration; lookup_slot above says names are not unique. Probe: `let rec f =
-    // |n: i64, a: Array<i64>| -> Array<i64> { let a = [n, ..16 elems]; select n
-    // { 0 => a, n => f(n - 1, a) } }` over 6M iterations peaks at 2.1GB RSS fused,
-    // 52MB node-walk or with the let renamed. Everything above param_mark is not a
-    // formal; drop it by position.
-    // Block and select-arm locals were dropped at their scope exits,
-    // so the env's tail holds only top-level lets without a rebind
-    // slot; those would leak per iteration.
-    let drops: smallvec::SmallVec<[(LocalKind, ValueVar); 8]> = env.locals
-        [ctx.tail.param_mark..]
-        .iter()
-        .filter(|l| !slots.iter().any(|s| s.name == l.name))
-        .map(|l| (l.kind, l.words))
-        .collect();
+    for (vv, kind, disc, payload) in staged {
+        emit_drop_local(b, ctx, kind, vv)?;
+        b.def_var(vv.payload, payload);
+        b.def_var(vv.disc, disc);
+    }
+    let drops: SmallVec<[(LocalKind, ValueVar); 8]> =
+        env.locals_above(ctx.tail.param_mark).collect();
     for (kind, vv) in drops {
         emit_drop_local(b, ctx, kind, vv)?;
     }
@@ -183,45 +149,10 @@ pub(super) fn emit_tail_rebind_jump(
     Ok(())
 }
 
-// CR claude for eric: [dead] only abi.rs's emit_or_abort_on_taint(_keep) call
-// this, and those have no callers in either repo (their re-exports in mod.rs are
-// unused). distributed_jit.md still says may-bottom HOF bodies route through it.
-/// When the I8 `valid` bit is 0, set the pending flag, run
-/// `emit_pending_cleanup` and jump to `pending_exit`; otherwise fall
-/// through to a fresh block. For a tainted scalar consumed by a site
-/// with no per-value validity channel.
-pub(super) fn emit_bottom_abort(
-    b: &mut FunctionBuilder,
-    env: &mut JitEnv,
-    ctx: &LowerCtx,
-    valid: ClifValue,
-) -> Result<()> {
-    let pending_set = ctx
-        .helper_refs
-        .get("graphix_abort_set")
-        .ok_or_else(|| anyhow!("missing graphix_abort_set"))?;
-    let pre_pending = b.create_block();
-    let continue_block = b.create_block();
-    let pending_exit = pending_exit_block(b, ctx);
-    b.ins().brif(valid, continue_block, &[], pre_pending, &[]);
-    b.switch_to_block(pre_pending);
-    b.seal_block(pre_pending);
-    b.ins().call(pending_set, &[]);
-    emit_pending_cleanup(b, env, ctx)?;
-    b.ins().jump(pending_exit, &[]);
-    b.switch_to_block(continue_block);
-    b.seal_block(continue_block);
-    Ok(())
-}
-
-// CR claude for eric: [structure] this and emit_bottom_abort write out the same
-// abort edge that emit_kernel_bottom is (abort_set, pending cleanup, jump to
-// pending_exit) plus a continue block; branch to a block that calls
-// emit_kernel_bottom instead.
 /// Poll `graphix_interrupted` at a loop head: nonzero takes the
-/// kernel's abort path (pending flag, `emit_pending_cleanup`,
-/// `pending_exit`), zero falls through to a fresh block. Emitted at
-/// the tail-loop head and every HOF scaffold loop head.
+/// kernel's abort path ([`emit_kernel_bottom`]), zero falls through
+/// to a fresh block. Emitted at the tail-loop head and every HOF
+/// scaffold loop head.
 pub(super) fn emit_interrupt_check(
     b: &mut FunctionBuilder,
     env: &mut JitEnv,
@@ -231,21 +162,14 @@ pub(super) fn emit_interrupt_check(
         .helper_refs
         .get("graphix_interrupted")
         .ok_or_else(|| anyhow!("missing graphix_interrupted"))?;
-    let pending_set = ctx
-        .helper_refs
-        .get("graphix_abort_set")
-        .ok_or_else(|| anyhow!("missing graphix_abort_set"))?;
     let call = b.ins().call(interrupted, &[]);
     let intr = b.inst_results(call)[0];
-    let pre_pending = b.create_block();
+    let abort_bl = b.create_block();
     let continue_block = b.create_block();
-    let pending_exit = pending_exit_block(b, ctx);
-    b.ins().brif(intr, pre_pending, &[], continue_block, &[]);
-    b.switch_to_block(pre_pending);
-    b.seal_block(pre_pending);
-    b.ins().call(pending_set, &[]);
-    emit_pending_cleanup(b, env, ctx)?;
-    b.ins().jump(pending_exit, &[]);
+    b.ins().brif(intr, abort_bl, &[], continue_block, &[]);
+    b.switch_to_block(abort_bl);
+    b.seal_block(abort_bl);
+    emit_kernel_bottom(&mut BodyCx { b: &mut *b, env: &mut *env, ctx })?;
     b.switch_to_block(continue_block);
     b.seal_block(continue_block);
     Ok(())
@@ -264,37 +188,41 @@ pub(super) trait BodyEmitter {
     ) -> Result<()>;
 }
 
-// CR claude for eric: [structure] builtin_apply_sites, lambda_call_sites and
-// type_env are Option but both constructions (jit.rs, parent and callee) pass
-// Some; and allow_state/self_call encode "region parent" vs "callee" (a parent
-// never has a self_call). Plain references plus a role enum would say so.
+/// Which body of a region a kernel build emits.
+#[derive(Clone, Copy)]
+pub(super) enum BodyRole<'a> {
+    /// The region root, the only body that claims per-instance state
+    /// words (see [`StateChannel::enabled`]).
+    Parent,
+    /// A callee body, claiming per-call-site block words; `Some` when it
+    /// is self-recursive: the binding its self-references carry and the
+    /// kernel's own call descriptor.
+    Callee(Option<&'a (BindId, LambdaCallInfo)>),
+}
+
 /// The data facts a kernel build needs about one body;
 /// `compile_into_function` copies them onto the [`LowerCtx`].
 #[derive(Clone, Copy)]
 pub(super) struct BodySpec<'a> {
-    /// Fastcall/cast sites of the region being emitted;
+    /// Fastcall/cast sites of the body being emitted;
     /// `CallSite::emit_clif` lowers a registered site to a direct call.
-    pub(super) builtin_apply_sites:
-        Option<&'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>>,
-    // CR claude for eric: [readability] stale: callee bodies get their own sites
-    // (jit.rs passes `Some(&cb.sites)`) and layout_of keys on them. Same stale
-    // "None for callee bodies" at lower.rs:462-466.
-    /// Statically-resolved lambda call sites of the region being
-    /// emitted; `None` for callee bodies (a callee's only cross-kernel
-    /// reference is itself).
-    pub(super) lambda_call_sites: Option<&'a nohash::IntMap<ExprId, LambdaCallInfo>>,
-    /// `Some` when the kernel being emitted is a self-recursive lambda
-    /// body: the binding its self-references carry and the kernel's
-    /// own call descriptor.
-    pub(super) self_call: Option<&'a (BindId, LambdaCallInfo)>,
+    pub(super) builtin_apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
+    /// Statically-resolved lambda call sites of the body being emitted.
+    pub(super) lambda_call_sites: &'a nohash::IntMap<ExprId, LambdaCallInfo>,
     /// The environment for type resolution only: node `typ` cells can
     /// carry `Type::Ref`s that need `env.lookup_ref` before
     /// `abi_kind`/freeze can classify them. Never for binding lookups.
-    pub(super) type_env: Option<&'a Env>,
-    /// Whether this body may claim per-instance state words — `true`
-    /// only for the region parent's root body. See
-    /// [`StateChannel::enabled`].
-    pub(super) allow_state: bool,
+    pub(super) type_env: &'a Env,
+    pub(super) role: BodyRole<'a>,
+}
+
+impl<'a> BodySpec<'a> {
+    pub(super) fn self_call(&self) -> Option<&'a (BindId, LambdaCallInfo)> {
+        match self.role {
+            BodyRole::Parent => None,
+            BodyRole::Callee(s) => s,
+        }
+    }
 }
 
 /// One body to build: the data spec + the type-erased emission hook.
@@ -389,7 +317,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// zero-initialized per instance, so store `value + 1` and read 0
     /// as "no previous observation".
     pub fn claim_state_word(&self) -> Option<i32> {
-        if !self.ctx.state.enabled || self.ctx.loop_depth.get() > 0 {
+        if !self.ctx.state.enabled || self.env.loop_depth > 0 {
             return None;
         }
         let idx = self.ctx.state.next.get();
@@ -432,14 +360,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             self.ctx.closed_frame.borrow().is_none(),
             "a closed frame's slot truncates were never emitted"
         );
-        let depth = self.ctx.loop_depth.get() + 1;
+        let depth = self.env.loop_depth + 1;
         // Every open loop pushed a frame, so the stack is the
         // enclosing-loop chain, outermost first.
-        let enclosing: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
+        let enclosing: SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
             let frames = self.ctx.slot_tables.borrow();
             debug_assert_eq!(
                 frames.len(),
-                self.ctx.loop_depth.get() as usize,
+                self.env.loop_depth as usize,
                 "slot-table frames out of sync with loop depth"
             );
             frames.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
@@ -531,10 +459,32 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Ok(())
     }
 
-    // CR claude for eric: [structure] the directory walk (call
-    // graphix_slot_state_table, use_var(idx), shift by 3, add) is written three
-    // times: here, in emit_slot_truncates and in call.rs emit_site_block's
-    // emit_chain. One fn over (word_addr, dirs, leaf_ptr) serves all three.
+    /// Walk one directory level per entry of `dirs` (an enclosing
+    /// frame's `(len, src_disc, idx_var)`, outermost first) from the
+    /// anchor word at `word`, ensuring each level's table owns
+    /// `n_dirs - j` levels below it, and return the address of the
+    /// current slot's word in the last one.
+    pub(crate) fn emit_dir_walk(
+        &mut self,
+        word: ClifValue,
+        dirs: &[(ClifValue, ClifValue, Variable)],
+        n_dirs: usize,
+        leaf_ptr: ClifValue,
+    ) -> Result<ClifValue> {
+        let helper = self.helper("graphix_slot_state_table")?;
+        let mut word = word;
+        for (j, (flen, fdisc, fidx)) in dirs.iter().enumerate() {
+            let fvalid = emit_untainted_i64(self.b, *fdisc);
+            let own = self.b.ins().iconst(types::I64, (n_dirs - j) as i64);
+            let call = self.b.ins().call(helper, &[word, *flen, fvalid, own, leaf_ptr]);
+            let dir = self.b.inst_results(call)[0];
+            let i = self.b.use_var(*fidx);
+            let o = self.b.ins().ishl_imm(i, 3);
+            word = self.b.ins().iadd(dir, o);
+        }
+        Ok(word)
+    }
+
     /// Emit the owning-table chain from `word_addr` (an anchor word's
     /// address) through one directory level per enclosing frame down
     /// to this loop's LEAF selection table (sized `len`, resize gated
@@ -546,23 +496,12 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         len: ClifValue,
         src_disc: ClifValue,
     ) -> Result<ClifValue> {
-        let helper = self.helper("graphix_slot_state_table")?;
-        let n_dirs = enclosing.len();
         let no_leaf = self.b.ins().iconst(types::I64, 0);
-        let mut word_addr = word_addr;
-        for (k, (flen, fdisc, fidx)) in enclosing.iter().enumerate() {
-            let fvalid = emit_untainted_i64(self.b, *fdisc);
-            let own = self.b.ins().iconst(types::I64, (n_dirs - k) as i64);
-            let call =
-                self.b.ins().call(helper, &[word_addr, *flen, fvalid, own, no_leaf]);
-            let dir = self.b.inst_results(call)[0];
-            let i = self.b.use_var(*fidx);
-            let o = self.b.ins().ishl_imm(i, 3);
-            word_addr = self.b.ins().iadd(dir, o);
-        }
+        let word = self.emit_dir_walk(word_addr, enclosing, enclosing.len(), no_leaf)?;
+        let helper = self.helper("graphix_slot_state_table")?;
         let valid = emit_untainted_i64(self.b, src_disc);
         let own0 = self.b.ins().iconst(types::I64, 0);
-        let call = self.b.ins().call(helper, &[word_addr, len, valid, own0, no_leaf]);
+        let call = self.b.ins().call(helper, &[word, len, valid, own0, no_leaf]);
         Ok(self.b.inst_results(call)[0])
     }
 
@@ -571,18 +510,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// emission, before propagating a body error.
     pub(crate) fn close_slot_tables(&mut self) {
         let popped = self.ctx.slot_tables.borrow_mut().pop();
-        debug_assert!(popped.is_some(), "close_slot_tables without an open frame");
-        // Stashed for `emit_slot_truncates` in the exit block; an
-        // overwrite happens only on error paths, where the kernel is
-        // discarded.
-        if let Some(f) = popped {
-            *self.ctx.closed_frame.borrow_mut() = Some(ClosedFrame {
-                depth: f.depth,
-                len: f.len,
-                src_disc: f.src_disc,
-                pending: f.pending,
-            });
-        }
+        // Stashed for `emit_slot_truncates` in the exit block, which
+        // refuses the kernel when there was no frame to pop.
+        *self.ctx.closed_frame.borrow_mut() = popped.map(|f| ClosedFrame {
+            depth: f.depth,
+            len: f.len,
+            src_disc: f.src_disc,
+            pending: f.pending,
+        });
     }
 
     /// Emit the closed frame's chain re-ensures in the current block;
@@ -592,28 +527,29 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// with this frame's len, truncating on a shrink; the records then
     /// propagate to the enclosing frame.
     pub(crate) fn emit_slot_truncates(&mut self) -> Result<()> {
-        // CR claude for eric: [risk] a missing frame is an emitter bug, and a release
-        // build answers it by emitting the kernel without its truncates (slot
-        // state that never shrinks), not by losing fusion. Return Err so the region
-        // node-walks; same for the debug_assert-and-continue in close_slot_tables.
         let Some(ClosedFrame { depth, len, src_disc, pending: recs }) =
             self.ctx.closed_frame.borrow_mut().take()
         else {
-            debug_assert!(false, "emit_slot_truncates without a closed frame");
-            return Ok(());
+            bail!("emit_clif: a scaffold loop exit without a closed slot-table frame");
         };
         if recs.is_empty() {
             return Ok(());
         }
         let k = depth as usize;
-        let dirs: smallvec::SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
+        let dirs: SmallVec<[(ClifValue, ClifValue, Variable); 4]> = {
             let frames = self.ctx.slot_tables.borrow();
-            debug_assert_eq!(frames.len(), k - 1, "closed frame depth out of sync");
+            if frames.len() + 1 != k {
+                bail!("emit_clif: a closed slot-table frame out of sync with its depth");
+            }
             frames.iter().map(|f| (f.len, f.src_disc, f.idx_var)).collect()
         };
         let table_helper = self.helper("graphix_slot_state_table")?;
         let valid = emit_untainted_i64(self.b, src_disc);
         for r in recs.iter() {
+            let n_dirs = r.n_dirs as usize;
+            if k > n_dirs + 1 {
+                bail!("emit_clif: a slot-chain record deeper than its claim");
+            }
             let leaf_ptr = match &r.leaf_rt {
                 None => self.b.ins().iconst(types::I64, 0),
                 Some(l) => self.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
@@ -630,7 +566,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                     (self.b.ins().iadd_imm(base, off as i64), Some(base))
                 }
             };
-            let (walk_bl, done_bl) = match guard {
+            let done_bl = match guard {
                 Some(base) => {
                     let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
                     let walk = self.b.create_block();
@@ -638,32 +574,18 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                     self.b.ins().brif(has, walk, &[], done, &[]);
                     self.b.switch_to_block(walk);
                     self.b.seal_block(walk);
-                    (Some(walk), Some(done))
+                    Some(done)
                 }
-                None => (None, None),
+                None => None,
             };
-            let n_dirs = r.n_dirs as usize;
             // Walk the still-open directory levels by their current
             // ordinals, then ensure level k: a directory when
             // k <= n_dirs, the leaf when k == n_dirs + 1.
-            let mut word = word0;
-            for (j, (flen, fdisc, fidx)) in dirs.iter().enumerate() {
-                let fvalid = emit_untainted_i64(self.b, *fdisc);
-                let own = self.b.ins().iconst(types::I64, (n_dirs - j) as i64);
-                let call = self
-                    .b
-                    .ins()
-                    .call(table_helper, &[word, *flen, fvalid, own, leaf_ptr]);
-                let dir = self.b.inst_results(call)[0];
-                let i = self.b.use_var(*fidx);
-                let o = self.b.ins().ishl_imm(i, 3);
-                word = self.b.ins().iadd(dir, o);
-            }
+            let word = self.emit_dir_walk(word0, &dirs, n_dirs, leaf_ptr)?;
             if k <= n_dirs {
                 let own = self.b.ins().iconst(types::I64, (n_dirs - (k - 1)) as i64);
                 self.b.ins().call(table_helper, &[word, len, valid, own, leaf_ptr]);
             } else {
-                debug_assert_eq!(k, n_dirs + 1, "trunc record deeper than its claim");
                 match r.leaf {
                     TruncLeaf::Table { stride } => {
                         let words = self.b.ins().imul_imm(len, stride as i64);
@@ -678,7 +600,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                     }
                 }
             }
-            if let (Some(_), Some(done)) = (walk_bl, done_bl) {
+            if let Some(done) = done_bl {
                 self.b.ins().jump(done, &[]);
                 self.b.switch_to_block(done);
                 self.b.seal_block(done);
@@ -702,7 +624,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let (idx_var, table, guarded) = {
             let frames = self.ctx.slot_tables.borrow();
             let f = frames.last()?;
-            if f.depth != self.ctx.loop_depth.get() {
+            if f.depth != self.env.loop_depth {
                 return None;
             }
             let SlotTable { base, guarded, .. } =
@@ -740,7 +662,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// sibling calls at the same depth get separate trees. Refused
     /// inside scaffold loops, where the root would alias every slot.
     pub(crate) fn claim_self_block_word(&self) -> Option<i32> {
-        if self.ctx.loop_depth.get() > 0 {
+        if self.env.loop_depth > 0 {
             return None;
         }
         let off = self.claim_site_word()?;
@@ -783,31 +705,23 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         self.ctx.collection_site.get()
     }
 
-    // CR claude for eric: [readability] stale: mutual recursion is refused
-    // (callsite.rs:2457), and on None the call site roots a per-activation block
-    // tree (call.rs emit_site_block), it does not pass 0.
     /// The [`SiteLayout`] of an already-DEFINED callee, by kernel
-    /// identity ([`kernel_abi::kernel_key`]). `None` = recursive
-    /// back-edge (self-calls, mutual-recursion cycles): the call site
-    /// passes 0.
-    pub(crate) fn callee_site_layout(&self, key: usize) -> Option<&'c SiteLayout> {
+    /// identity ([`kernel_abi::kernel_key`]). `None` is a self-call
+    /// (mutual recursion is refused at the call site), whose call site
+    /// roots a per-activation block tree instead.
+    pub(crate) fn callee_site_layout(&self, key: KernelKey) -> Option<&'c SiteLayout> {
         self.ctx.callee_layouts.get(&key)
     }
 
-    // CR claude for eric: [structure] ctx.loop_depth and env.loop_depth are two
-    // copies of one counter kept equal only by these two fns; keep one.
     /// Bracket scaffold-loop body emission, including the loop's own
     /// element/index/acc binds (their `Local::depth` stamp is what
     /// [`node_loop_invariant_ref`] keys on).
     pub fn enter_loop(&mut self) {
-        self.ctx.loop_depth.set(self.ctx.loop_depth.get() + 1);
         self.env.loop_depth += 1;
     }
 
     pub fn exit_loop(&mut self) {
-        let d = self.ctx.loop_depth.get();
-        debug_assert!(d > 0, "exit_loop without a matching enter_loop");
-        self.ctx.loop_depth.set(d.saturating_sub(1));
+        debug_assert!(self.env.loop_depth > 0, "exit_loop without a matching enter_loop");
         self.env.loop_depth = self.env.loop_depth.saturating_sub(1);
     }
 
@@ -819,7 +733,8 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let gv = match consts.iter().find(|c| c.recipe.same_as(&recipe)) {
             Some(c) => c.gv,
             None => {
-                let name = format!("{}.c{}", self.ctx.symbol, consts.len());
+                let name =
+                    compact_str::format_compact!("{}.c{}", self.ctx.symbol, consts.len());
                 let mut module = self.ctx.module.borrow_mut();
                 let data = module
                     .declare_data(&name, Linkage::Import, false, false)
@@ -841,14 +756,14 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// The builtin Apply-site info for `id`, if the region's discovery
     /// pass registered one.
     pub(crate) fn builtin_site(&self, id: ExprId) -> Option<&BuiltinCallSiteInfo> {
-        self.ctx.builtin_apply_sites.and_then(|m| m.get(&id))
+        self.ctx.builtin_apply_sites.get(&id)
     }
 
     /// The lambda call-site info for `id`, if `try_fuse`'s analysis
     /// registered one; `Some` means the callee kernel is declared in
     /// this function's `callee_refs` and ready to `call`.
     pub(crate) fn lambda_site(&self, id: ExprId) -> Option<&LambdaCallInfo> {
-        self.ctx.lambda_call_sites.and_then(|m| m.get(&id))
+        self.ctx.lambda_call_sites.get(&id)
     }
 
     /// The kernel's own self-call descriptor when emitting a
@@ -879,24 +794,21 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 }
 
-// CR claude for eric: [bug] leak: a Ref to a String local answers Borrowed, but
-// emit_ref_node clones every String read, so the value is owned. Consumers that
-// ask this for a non-String slot kind never drop it: emit_lambda_call_node (a
-// string into a `[string, null]` formal) and emit_tail_rebind_jump's Value arm,
-// which clones it again. Probe: a tail loop calling `f(s)` with `f = |v: [string,
-// null]| ..` and a fresh `let s = "..[n]"` per iteration peaks at 311MB for 4M
-// iterations fused, 52MB node-walk or with `v: string`. Answer Owned for a
-// String-typed Ref.
 /// Ownership classification of a Node-rooted result: a binding read
-/// is borrowed (the env slot keeps the ref), grouping is transparent
-/// to its tail, everything else hands out an owned ref. Decides
-/// whether a clone is needed before the source's scope drops.
+/// is borrowed (the env slot keeps the ref) unless it is a String
+/// (a String read clones), grouping is transparent to its tail,
+/// everything else hands out an owned ref. Decides whether a clone is
+/// needed before the source's scope drops.
 pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> CompositeSource {
-    use NodeView;
     let mut n: &dyn Update<R, E> = &**node;
     loop {
         match n.view() {
-            NodeView::Ref(_) => return CompositeSource::Borrowed,
+            NodeView::Ref(_) => {
+                return match kernel_abi::abi_kind(n.typ()) {
+                    Some(AbiKind::String) => CompositeSource::Owned,
+                    _ => CompositeSource::Borrowed,
+                };
+            }
             NodeView::ExplicitParens(p) => n = &*p.n,
             _ => return CompositeSource::Owned,
         }
@@ -1050,11 +962,6 @@ pub(super) fn emit_kernel_return(
     mut cv: CompiledExpr,
     src: CompositeSource,
 ) -> Result<()> {
-    // The result fires if its value chain fired or any tail-select
-    // scrutinee on the executed path did (`TailCtx::tail_scrut_stale_acc`).
-    // CR claude for eric: [style] GXDBG_CALLRET is read with env::var_os at every
-    // emission (also call.rs emit_lambda_call_node) while every other switch is a
-    // cached `dbgenv` fn, and CLAUDE.md's debug table does not list it.
     #[cfg(debug_assertions)]
     if crate::dbgenv::gxdbg_callret() {
         let f = cx.helper("graphix_dbg_disc")?;
@@ -1064,54 +971,36 @@ pub(super) fn emit_kernel_return(
         let t3 = cx.b.ins().iconst(types::I64, 3);
         cx.b.ins().call(f, &[t3, acc]);
     }
-    {
-        // The bottom-out rule (design/activation_state.md): fold the
-        // enclosing tail-select scopes innermost-first; a still-stale
-        // result meeting a level's fresh-bottom fire becomes TAINT fresh.
-        let levels: smallvec::SmallVec<[SelFire; 4]> =
-            cx.ctx.sel_fires.borrow().iter().rev().copied().collect();
-        for SelFire { sound_stale: sound, bfired: bf } in levels {
-            cv.disc = fold_stale(cx.b, cv.disc, sound);
-            if let Some(bf) = bf {
-                let sbit = cx.b.ins().band_imm(cv.disc, STALE);
-                let quiet = cx.b.ins().icmp_imm(IntCC::NotEqual, sbit, 0);
-                let ov = cx.b.ins().band(quiet, bf);
-                let d_bot = cx.b.ins().band_imm(cv.disc, !STALE);
-                let d_bot = cx.b.ins().bor_imm(d_bot, TAINT);
-                cv.disc = cx.b.ins().select(ov, d_bot, cv.disc);
-            }
-        }
-        // The loop-carried accumulator (cross-ITERATION sound fires —
-        // a fired loop-head scrutinee in any pass upgrades a stale
-        // final result) folds last, outermost.
-        let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-        cv.disc = fold_stale(cx.b, cv.disc, acc);
-    }
+    // The result fires if its value chain fired or any tail-select
+    // scrutinee or consulted guard on the executed path did, in any
+    // pass of the loop (`TailCtx::tail_scrut_stale_acc`).
+    let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
+    cv.disc = fold_stale(cx.b, cv.disc, acc);
     // The disc is rebased on the static return shape's Value
     // discriminant: `TagValue::from_raw` decodes these exact bits, so
     // they must be a valid one-hot discriminant plus tag bits.
     match kernel_abi::abi_kind(return_type) {
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
-            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            emit_scope_drops(cx, 0)?;
             cx.b.ins().return_(&[disc, payload]);
         }
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             let bits = ensure_owned_composite_src(cx, src, cv.payload)?;
-            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            emit_scope_drops(cx, 0)?;
             let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             cx.b.ins().return_(&[disc, bits]);
         }
         Some(AbiKind::String) => {
             // String results are owned at production.
-            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            emit_scope_drops(cx, 0)?;
             let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
             let disc = propagate_flags(cx.b, base, &[cv.disc]);
             cx.b.ins().return_(&[disc, cv.payload]);
         }
         Some(AbiKind::Scalar(p)) => {
-            drop_owned_composites(cx.b, cx.env, cx.ctx)?;
+            emit_scope_drops(cx, 0)?;
             // Widen the payload to the Value-encoded word (sign/zero
             // extension, float bitcast — `pack_value_to_u64`'s rules).
             let payload = scalar_to_payload_i64(cx.b, p, cv.payload);

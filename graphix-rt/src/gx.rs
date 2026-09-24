@@ -456,8 +456,11 @@ impl<X: GXExt> GX<X> {
         // it is set: one that arrived while idle must not poison this cycle.
         self.ctx.control.clear_interrupt();
         let mut run_nodes = || {
-            let _control =
-                graphix_compiler::fusion::emit_helpers::enter_control(&self.ctx.control);
+            // On the thread that runs the nodes: the task may migrate
+            // between cycles.
+            let _interrupt = graphix_compiler::fusion::emit_helpers::InterruptScope::new(
+                &self.ctx.control,
+            );
             for (id, n) in self.nodes.iter_mut() {
                 if let Some(init) = self.ctx.rt.updated.get(id) {
                     self.event.init = *init;

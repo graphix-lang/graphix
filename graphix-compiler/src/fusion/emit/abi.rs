@@ -2,18 +2,14 @@
 //! TAINT/STALE disc-tag algebra, and [`JitEnv`] (name → local
 //! binding, ownership kinds, scope truncation).
 
-use crate::{BindId, Node, Rt, UserEvent, fusion::kernel_abi::PrimType};
-use anyhow::Result;
+use crate::{BindId, fusion::kernel_abi::PrimType};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     InstBuilder, Type as ClifType, Value as ClifValue, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 
-use super::{
-    body::{BodyCx, emit_bottom_abort},
-    scalar::prim_to_clif,
-};
+use super::{body::BodyCx, scalar::prim_to_clif};
 
 // CR claude for eric: [risk] These are copied by hand from netidx-value and nothing
 // pins them: emit_helpers.rs asserts only the 16-byte size. A renumbered netidx
@@ -37,6 +33,7 @@ pub(super) mod value_disc {
     pub const F64: i64 = 0x0000_2000;
     pub const BOOL: i64 = 0x0000_4000;
     pub const NULL: i64 = 0x0000_8000;
+    pub const ERROR: i64 = 0x2000_0000;
     pub const STRING: i64 = 0x8000_0000;
     pub const ARRAY: i64 = 0x1000_0000;
 }
@@ -285,11 +282,6 @@ impl JitEnv {
         self.locals.iter().rev().find(|l| l.bind_id.is_none() && l.name.as_str() == name)
     }
 
-    /// By name only, for sites with no BindId.
-    pub(super) fn lookup_name(&self, name: &str) -> Option<&Local> {
-        self.locals.iter().rev().find(|l| l.name.as_str() == name)
-    }
-
     /// By BindId alone, for synthetic `Ref`s that name nothing.
     pub(super) fn lookup_id(&self, id: BindId) -> Option<&Local> {
         self.locals.iter().rev().find(|l| l.bind_id == Some(id))
@@ -345,47 +337,8 @@ pub(crate) fn bind_scalar_var_with_disc(
     cx.env.bind(name, ValueVar { disc, payload }, LocalKind::Scalar(prim), bind_id);
 }
 
-// CR claude for eric: [dead] emit_or_abort_on_taint, emit_or_abort_on_taint_keep
-// and scalar_result have no caller in the workspace or ../netidx (only the mod.rs
-// re-export); HOF bodies now fold taint into SlotFlags. With them goes
-// body::emit_bottom_abort, whose only callers are these two. Delete all four.
-/// Emit an operand and abort the kernel if it is tainted, returning the
-/// payload word. For HOF operands that have no per-value taint channel.
-pub fn emit_or_abort_on_taint<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    node: &Node<R, E>,
-) -> Result<ClifValue> {
-    let cv = node.emit_clif(cx)?;
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    Ok(cv.payload)
-}
-
 /// Wrap owned ValArray bits as a composite [`CompiledExpr`].
 pub fn array_result(cx: &mut BodyCx, ptr: ClifValue) -> CompiledExpr {
     let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
     CompiledExpr::new(disc, ptr)
-}
-
-/// Wrap a scalar payload as a [`CompiledExpr`] with the prim's disc.
-/// The disc must match the payload's shape: `set_var` rebuilds a
-/// `Value` from it.
-pub fn scalar_result(
-    cx: &mut BodyCx,
-    prim: PrimType,
-    payload: ClifValue,
-) -> CompiledExpr {
-    CompiledExpr::new(scalar_disc(cx.b, prim), payload)
-}
-
-/// [`emit_or_abort_on_taint`] returning the whole [`CompiledExpr`]; on the continue
-/// path the disc carries only the operand's [`STALE`] bit.
-pub fn emit_or_abort_on_taint_keep<R: Rt, E: UserEvent>(
-    cx: &mut BodyCx,
-    node: &Node<R, E>,
-) -> Result<CompiledExpr> {
-    let cv = node.emit_clif(cx)?;
-    let valid = is_untainted(cx.b, cv.disc);
-    emit_bottom_abort(cx.b, cx.env, cx.ctx, valid)?;
-    Ok(cv)
 }

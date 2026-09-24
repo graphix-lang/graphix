@@ -873,11 +873,11 @@ pub enum AbiReturn {
 // `SelfBlock` slots (and `WrappedKernel`, `FnType` keys in mod.rs/kernel.rs)
 // although nothing takes a `Weak` or forms a cycle: `triomphe::Arc`, which the
 // file already imports. Spelled out 17 times here besides.
-// CR claude for eric: [style] kernel identity is a bare `usize` address used as
-// a map key in jit.rs; a `KernelKey` newtype keeps it from mixing with other
-// addresses and counts (CR at emit/jit.rs).
-pub(crate) fn kernel_key(k: &std::sync::Arc<KernelSig>) -> usize {
-    std::sync::Arc::as_ptr(k) as usize
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct KernelKey(usize);
+
+pub(crate) fn kernel_key(k: &std::sync::Arc<KernelSig>) -> KernelKey {
+    KernelKey(std::sync::Arc::as_ptr(k) as usize)
 }
 
 /// A kernel's ABI contract, shared by `Arc` between the runtime dispatch
@@ -935,13 +935,23 @@ impl Clone for KernelSig {
 /// self-call's activation depth is a run-time fact, so its callee block
 /// is a lazily allocated child (`graphix_site_child_block`) rather than
 /// a static carve-out. Keyed by call site, never by depth (siblings at
-/// one depth are distinct activations). `words`/`slots` describe the
-/// child blocks, identical at every level.
+/// one depth are distinct activations).
 #[derive(Debug, Clone)]
 pub struct SelfBlock {
     pub rel: u32,
+    pub layout: Arc<ActivationLayout>,
+}
+
+/// What every block of an activation tree holds, identical at every
+/// level: `words` words and the reach stamp after them, the child
+/// activations' roots at `slots`, the chains `anchors` own and the
+/// other kernels' activation trees rooted at `nested`.
+#[derive(Debug)]
+pub struct ActivationLayout {
     pub words: u32,
-    pub slots: std::sync::Arc<[u32]>,
+    pub slots: Box<[u32]>,
+    pub anchors: Box<[SiteAnchor]>,
+    pub nested: Box<[SelfBlock]>,
 }
 
 /// One owner of a per-slot state chain: the word at `rel` (absolute in
@@ -958,11 +968,13 @@ pub struct SiteAnchor {
 }
 
 /// A chain leaf whose entries are per-slot call-site blocks: `stride`
-/// words per slot, `anchors` naming the in-block words owning further chains.
+/// words per slot, `anchors` naming the in-block words owning further
+/// chains and `self_blocks` those rooting activation trees.
 #[derive(Debug, Clone)]
 pub struct SiteLeaf {
     pub stride: u32,
     pub anchors: std::sync::Arc<[SiteAnchor]>,
+    pub self_blocks: std::sync::Arc<[SelfBlock]>,
 }
 
 /// Leading `u64` wire slots before the parameter list, present in every
@@ -1149,22 +1161,44 @@ mod tests {
 
 impl PackTrait for SelfBlock {
     fn encoded_len(&self) -> usize {
-        let SelfBlock { rel, words, slots } = self;
-        rel.encoded_len() + words.encoded_len() + crate::image::slice_len(slots)
+        crate::stack::ensure_sufficient(|| {
+            let SelfBlock { rel, layout } = self;
+            let ActivationLayout { words, slots, anchors, nested } = &**layout;
+            rel.encoded_len()
+                + words.encoded_len()
+                + crate::image::slice_len(slots)
+                + crate::image::slice_len(anchors)
+                + crate::image::slice_len(nested)
+        })
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let SelfBlock { rel, words, slots } = self;
-        rel.encode(buf)?;
-        words.encode(buf)?;
-        crate::image::slice_encode(slots, buf)
+        crate::stack::ensure_sufficient(|| {
+            let SelfBlock { rel, layout } = self;
+            let ActivationLayout { words, slots, anchors, nested } = &**layout;
+            rel.encode(buf)?;
+            words.encode(buf)?;
+            crate::image::slice_encode(slots, buf)?;
+            crate::image::slice_encode(anchors, buf)?;
+            crate::image::slice_encode(nested, buf)
+        })
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let rel = u32::decode(buf)?;
-        let words = u32::decode(buf)?;
-        let slots: Vec<u32> = PackTrait::decode(buf)?;
-        Ok(SelfBlock { rel, words, slots: slots.into() })
+        crate::stack::ensure_sufficient(|| {
+            let rel = u32::decode(buf)?;
+            let words = u32::decode(buf)?;
+            let slots: Vec<u32> = PackTrait::decode(buf)?;
+            let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
+            let nested: Vec<SelfBlock> = PackTrait::decode(buf)?;
+            let layout = ActivationLayout {
+                words,
+                slots: slots.into(),
+                anchors: anchors.into(),
+                nested: nested.into(),
+            };
+            Ok(SelfBlock { rel, layout: Arc::new(layout) })
+        })
     }
 }
 
@@ -1209,7 +1243,11 @@ pub(crate) fn site_leaf_len(l: &std::sync::Arc<SiteLeaf>) -> usize {
         &(std::sync::Arc::as_ptr(l) as usize),
         |k| (*k, l.clone()),
         |e| &mut e.site_leaves,
-        || l.stride.encoded_len() + crate::image::slice_len(&l.anchors),
+        || {
+            l.stride.encoded_len()
+                + crate::image::slice_len(&l.anchors)
+                + crate::image::slice_len(&l.self_blocks)
+        },
     )
 }
 
@@ -1224,7 +1262,8 @@ pub(crate) fn site_leaf_encode(
         buf,
         |buf| {
             l.stride.encode(buf)?;
-            crate::image::slice_encode(&l.anchors, buf)
+            crate::image::slice_encode(&l.anchors, buf)?;
+            crate::image::slice_encode(&l.self_blocks, buf)
         },
     )
 }
@@ -1238,7 +1277,12 @@ pub(crate) fn site_leaf_decode(
         |buf| {
             let stride = u32::decode(buf)?;
             let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
-            Ok(std::sync::Arc::new(SiteLeaf { stride, anchors: anchors.into() }))
+            let self_blocks: Vec<SelfBlock> = PackTrait::decode(buf)?;
+            Ok(std::sync::Arc::new(SiteLeaf {
+                stride,
+                anchors: anchors.into(),
+                self_blocks: self_blocks.into(),
+            }))
         },
         |b| site_leaf_decode(b),
     )

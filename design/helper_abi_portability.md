@@ -12,12 +12,11 @@ F27); no graphix test yet runs a fused kernel on a Win64 host
 A fused kernel calls Rust helpers (`fusion/emit_helpers.rs`) through
 Cranelift `call` instructions whose signatures come from each helper's
 `HelperSpec` (`emit/lower.rs`, `helper_signature`). The spec spells a
-parameter or return as a list of machine slots, and two types are two
+parameter or return as a list of machine slots, and one type is two
 slots wide:
 
 ```rust
-TagValue   => &[AbiTy::I64, AbiTy::I64];   // (disc, payload)
-DynCallRet => &[AbiTy::I64, AbiTy::I64];   // (word0, word1)
+TagValue => &[AbiTy::I64, AbiTy::I64];   // (disc, payload)
 ```
 
 On the Rust side the same helper is `pub extern "C" fn` taking or
@@ -67,19 +66,10 @@ value. The other seams are already portable:
   registers by absolute position rather than by class, and Cranelift
   does that for a declared `F64` slot, so those agree.
 
-The affected helpers today (`emit_helpers.rs`):
-
-| takes a `TagValue` | returns a `TagValue` | returns a `DynCallRet` |
-|---|---|---|
-| `graphix_value_buf_push_value` | `graphix_value_clone_from_static` | `graphix_fastcall` |
-| `graphix_value_buf_push_value_borrowed` | `graphix_valarray_into_list` | `graphix_typedcall` |
-| | `graphix_valarray_into_cmap` | |
-| | `graphix_valarray_index` | |
-| | `graphix_valarray_get_value` | |
-| | `graphix_struct_get_value` | |
-
-Ten helpers. `fast_dispatch` also returns a `DynCallRet` but is a plain
-Rust function called by the two dispatch helpers, not a seam.
+The affected helpers today (`emit_helpers.rs`): every helper whose Rust
+signature names a `TagValue`, about 55 taking one (every value-shaped
+reader, consumer and arithmetic helper) and 29 returning one (among
+them the fastcall trampolines `graphix_fastcall`/`graphix_typedcall`).
 
 ## The rule to adopt
 
@@ -95,21 +85,21 @@ Concretely:
    payload: u64` and rebuilds it with `TagValue::from_raw`. The
    `HelperArg` table keeps `TagValue => [I64, I64]` as the *CLIF* shape
    of the pair a call site already has in two SSA values; the Rust
-   signature just stops pretending it is one argument. Two helpers.
+   signature just stops pretending it is one argument.
 
-2. **Returns.** A helper that returns a `TagValue` or a `DynCallRet`
-   takes an extra trailing `out: *mut [u64; 2]` and returns nothing.
+2. **Returns.** A helper that returns a `TagValue` takes an extra
+   trailing `out: *mut [u64; 2]` and returns nothing.
    The emitter allocates a two-word stack slot at the call site,
    passes its address as the last argument, and loads the pair after
-   the call. `HelperRet` for the two pair types becomes "one pointer
+   the call. `HelperRet` for `TagValue` becomes "one pointer
    parameter, no return slots", so `helper_signature` grows the
-   parameter list by one and `spec.ret` is empty for them; the call
-   sites in `emit/call.rs` / `emit/scalar.rs` that today read two
-   return values read two loads. Eight helpers.
+   parameter list by one and `spec.ret` is empty for them; every call
+   site across `emit/` that today reads two return values reads two
+   loads.
 
 3. **The macro enforces it.** `jit_helpers!` today accepts any type
-   with a `HelperArg` impl. Remove the `HelperArg` impls for `TagValue`
-   and `DynCallRet` (keep them as `HelperRet` in the out-pointer form),
+   with a `HelperArg` impl. Remove the `HelperArg` impl for `TagValue`
+   (keep it as `HelperRet` in the out-pointer form),
    so a helper declared with a struct by value fails to compile rather
    than compiling into a SysV-only seam. The registry test
    `fastcall_tags_follow_the_arg_discs` already exercises the pair
@@ -117,7 +107,7 @@ Concretely:
    through a JIT'd kernel so the load-after-call path is covered on
    every host the suite runs on.
 
-4. **Lift the Windows gate** in `compile` once the ten helpers are
+4. **Lift the Windows gate** in `compile` once the helpers are
    converted, and run the fusion suite on `x86_64-pc-windows-gnu`
    before merging — with `wine` as the cargo runner
    (`CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine`) that is a normal
@@ -131,7 +121,7 @@ dispatches a builtin. Not measurable against those.
 ### The alternative, and why not
 
 Rust has `extern "sysv64"`, and Cranelift will emit a call under
-`CallConv::SystemV` on any x86_64 host. Declaring the ten helpers
+`CallConv::SystemV` on any x86_64 host. Declaring the helpers
 `extern "sysv64"` and building their signatures with `SystemV` instead
 of `default_call_conv()` fixes x86_64 Windows in a dozen lines and
 leaves every helper body alone. It is the wrong fix: it only exists on

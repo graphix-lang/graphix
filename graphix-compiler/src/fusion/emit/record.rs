@@ -15,8 +15,10 @@ use crate::{
     node::error::QopSite,
     typ::Type,
 };
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
+use compact_str::CompactString;
 use cranelift_codegen::{
     binemit::Reloc,
     ir::{GlobalValue, LibCall},
@@ -25,14 +27,16 @@ use cranelift_module::DataId;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::Value;
 use parking_lot::Mutex;
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use poolshark::local::LPooled;
+use std::sync::Arc as StdArc;
+use triomphe::Arc;
 
-// CR claude for eric: [style] std Arc where triomphe fits (no Weak, no cycle; also
-// BodyRecord's Arc), std HashMap with String keys where the names are short
-// generated ones (CompactString), and a raw usize for an address.
+// XCR claude for eric: triomphe and CompactString done. The address stays a
+// usize: the table crosses into cranelift's `Send` lookup fn, and a pointer
+// newtype would only rename the cast `KernelConst::pointer` already does.
 /// The addresses the module resolves imported constant symbols to,
 /// shared with its symbol lookup fn.
-pub(crate) type SymbolTable = Arc<Mutex<HashMap<String, usize>>>;
+pub(crate) type SymbolTable = Arc<Mutex<AHashMap<CompactString, usize>>>;
 
 /// A pointee the code refers to by address, owned here when it is one,
 /// with what a loader needs to recreate it. Every occurrence in a body
@@ -54,7 +58,7 @@ pub enum KernelConst {
     },
     /// The cast pseudo-site's fn.
     Cast(TypedFastFn),
-    SiteLeaf(Arc<SiteLeaf>),
+    SiteLeaf(StdArc<SiteLeaf>),
     /// The owning kernel's `site_block_words` cell.
     SiteBlockWords,
 }
@@ -69,35 +73,42 @@ impl KernelConst {
             KernelConst::QopSite(b) => &**b as *const QopSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
             KernelConst::TypedFn { f, .. } | KernelConst::Cast(f) => *f as usize,
-            KernelConst::SiteLeaf(l) => Arc::as_ptr(l) as *const u8 as usize,
+            KernelConst::SiteLeaf(l) => StdArc::as_ptr(l) as *const u8 as usize,
             KernelConst::SiteBlockWords => {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
             }
         }
     }
 
-    /// Whether one symbol can serve both: equal strings and values, the
-    /// same leaf, the same fn. Types and `?` sites are never shared.
+    /// Whether one symbol can serve both: equal strings, identical
+    /// values, the same leaf, the same fn. Types and `?` sites are never
+    /// shared.
     pub(super) fn same_as(&self, other: &KernelConst) -> bool {
         match (self, other) {
             (KernelConst::Str(a), KernelConst::Str(b)) => a == b,
-            // CR claude for eric: [bug] netidx `Value ==` is not identity: 0.0 ==
-            // -0.0 and every NaN equals every NaN, so the second of two such
-            // constants in one body reads the first's value. Probe: `select k
-            // { 5 => {"a" => 0.0}, _ => {"a" => -0.0} }` prints {"a" => 0} for k=6
-            // fused, {"a" => -0} node-walk. Share only on exact identity (packed
-            // bytes, or float bits).
-            (KernelConst::Value(a), KernelConst::Value(b)) => a == b,
+            (KernelConst::Value(a), KernelConst::Value(b)) => identical(a, b),
             (KernelConst::FastFn { f: a, .. }, KernelConst::FastFn { f: b, .. }) => {
                 *a as usize == *b as usize
             }
             (KernelConst::TypedFn { f: a, .. }, KernelConst::TypedFn { f: b, .. })
             | (KernelConst::Cast(a), KernelConst::Cast(b)) => *a as usize == *b as usize,
-            (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => Arc::ptr_eq(a, b),
+            (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => StdArc::ptr_eq(a, b),
             (KernelConst::SiteBlockWords, KernelConst::SiteBlockWords) => true,
             _ => false,
         }
     }
+}
+
+/// `a` and `b` encode to the same bytes. `==` is not identity: it
+/// equates `0.0` with `-0.0`, every NaN with every NaN, and decimals
+/// of one value at different scales.
+fn identical(a: &Value, b: &Value) -> bool {
+    if a != b {
+        return false;
+    }
+    let (mut ab, mut bb): (LPooled<Vec<u8>>, LPooled<Vec<u8>>) =
+        (LPooled::take(), LPooled::take());
+    a.encode(&mut *ab).is_ok() && b.encode(&mut *bb).is_ok() && *ab == *bb
 }
 
 /// A constant while its body is being emitted: the recipe, its data
@@ -131,24 +142,22 @@ pub struct RecordReloc {
     pub addend: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordKind {
-    /// A kernel body; its signature derives from its `KernelSig`.
-    Kernel,
+    /// A kernel body; its signature derives from its `KernelSig`. Its
+    /// constants are what its code refers to by address; its thunk, a
+    /// [`RecordKind::Thunk`], is the one a self-recursive body
+    /// re-enters through.
+    Kernel { consts: Vec<KernelConst>, thunk: Option<Arc<BodyRecord>> },
     /// The `(args, out)` thunk a self-recursive body re-enters through.
     Thunk,
     /// A region's `(args, out)` wrapper.
     Wrapper,
 }
 
-// CR claude for eric: [structure] `kind` beside fields only some kinds may carry: a
-// Thunk or Wrapper never has consts or a thunk, a Kernel's thunk must be a Thunk
-// record, and RelocTarget::Thunk only makes sense in a Kernel. An enum with
-// per-kind payloads makes those states unrepresentable.
-/// One defined function: its code, relocations and constants, plus the
-/// records it refers to. Callees are recorded before their callers, so
-/// the records form a tree below a region's wrapper; a self reference
-/// and the spill thunk stay inside the record.
+/// One defined function: its code and relocations, plus the records it
+/// refers to. Callees are recorded before their callers, so the records
+/// form a tree below a region's wrapper; a self reference and the spill
+/// thunk stay inside the record.
 pub struct BodyRecord {
     pub kind: RecordKind,
     /// The symbol's base name; a loader mints a fresh suffix.
@@ -156,21 +165,41 @@ pub struct BodyRecord {
     pub bytes: Box<[u8]>,
     pub align: u64,
     pub relocs: Vec<RecordReloc>,
-    pub consts: Vec<KernelConst>,
     pub callees: Vec<Arc<BodyRecord>>,
     /// The kernel a body or thunk belongs to; a wrapper's is its body's.
-    pub kernel: Arc<KernelSig>,
-    pub thunk: Option<Arc<BodyRecord>>,
+    pub kernel: StdArc<KernelSig>,
+}
+
+impl BodyRecord {
+    /// The constants the code refers to by address.
+    pub fn consts(&self) -> &[KernelConst] {
+        match &self.kind {
+            RecordKind::Kernel { consts, .. } => consts,
+            RecordKind::Thunk | RecordKind::Wrapper => &[],
+        }
+    }
+
+    pub fn thunk(&self) -> Option<&Arc<BodyRecord>> {
+        match &self.kind {
+            RecordKind::Kernel { thunk, .. } => thunk.as_ref(),
+            RecordKind::Thunk | RecordKind::Wrapper => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for BodyRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self.kind {
+            RecordKind::Kernel { .. } => "kernel",
+            RecordKind::Thunk => "thunk",
+            RecordKind::Wrapper => "wrapper",
+        };
         f.debug_struct("BodyRecord")
-            .field("kind", &self.kind)
+            .field("kind", &kind)
             .field("label", &self.label)
             .field("bytes", &self.bytes.len())
             .field("relocs", &self.relocs.len())
-            .field("consts", &self.consts.len())
+            .field("consts", &self.consts().len())
             .field("callees", &self.callees.len())
             .finish()
     }
@@ -233,6 +262,20 @@ fn reloc_of(tag: u8) -> Result<Reloc, PackError> {
     })
 }
 
+/// A libcall by its position in cranelift's list; an image never
+/// crosses builds, so the order need only be this build's.
+fn libcall_tag(lc: LibCall) -> Result<u8, PackError> {
+    LibCall::all_libcalls()
+        .iter()
+        .position(|l| *l == lc)
+        .and_then(|i| u8::try_from(i).ok())
+        .ok_or(PackError::InvalidFormat)
+}
+
+fn libcall_of(tag: u8) -> Result<LibCall, PackError> {
+    LibCall::all_libcalls().get(tag as usize).copied().ok_or(PackError::UnknownTag)
+}
+
 impl Pack for RecordReloc {
     fn encoded_len(&self) -> usize {
         let RecordReloc { offset, kind: _, target, addend } = self;
@@ -240,10 +283,7 @@ impl Pack for RecordReloc {
             RelocTarget::Helper(n) => n.encoded_len(),
             RelocTarget::Callee(i) | RelocTarget::Const(i) => i.encoded_len(),
             RelocTarget::Owner | RelocTarget::Thunk => 0,
-            // CR claude for eric: [style] allocates a String to measure it, and
-            // again in encode; decode goes through String too. A fixed tag per
-            // LibCall (like reloc_tag) avoids all three.
-            RelocTarget::LibCall(lc) => lc.to_string().encoded_len(),
+            RelocTarget::LibCall(_) => 1,
         };
         offset.encoded_len() + 1 + 1 + target + addend.encoded_len()
     }
@@ -265,7 +305,7 @@ impl Pack for RecordReloc {
             RelocTarget::Thunk => buf.put_u8(tag::THUNK),
             RelocTarget::LibCall(lc) => {
                 buf.put_u8(tag::LIBCALL);
-                lc.to_string().encode(buf)?;
+                buf.put_u8(libcall_tag(*lc)?);
             }
             RelocTarget::Const(i) => {
                 buf.put_u8(tag::CONST);
@@ -283,12 +323,7 @@ impl Pack for RecordReloc {
             tag::CALLEE => RelocTarget::Callee(u32::decode(buf)?),
             tag::OWNER => RelocTarget::Owner,
             tag::THUNK => RelocTarget::Thunk,
-            tag::LIBCALL => {
-                let name = String::decode(buf)?;
-                RelocTarget::LibCall(
-                    LibCall::from_str(&name).map_err(|_| PackError::InvalidFormat)?,
-                )
-            }
+            tag::LIBCALL => RelocTarget::LibCall(libcall_of(u8::decode(buf)?)?),
             tag::CONST => RelocTarget::Const(u32::decode(buf)?),
             _ => return Err(PackError::UnknownTag),
         };
@@ -392,9 +427,9 @@ impl Pack for KernelConst {
     }
 }
 
-fn kind_tag(k: RecordKind) -> u8 {
+fn kind_tag(k: &RecordKind) -> u8 {
     match k {
-        RecordKind::Kernel => tag::KERNEL,
+        RecordKind::Kernel { .. } => tag::KERNEL,
         RecordKind::Thunk => tag::THUNK_KIND,
         RecordKind::Wrapper => tag::WRAPPER,
     }
@@ -408,28 +443,22 @@ pub(crate) fn record_len(r: &Arc<BodyRecord>) -> usize {
         |k| (*k, r.clone()),
         |e| &mut e.records,
         || {
-            let BodyRecord {
-                kind: _,
-                label,
-                bytes,
-                align,
-                relocs,
-                consts,
-                callees,
-                kernel,
-                thunk,
-            } = &**r;
+            let BodyRecord { kind, label, bytes, align, relocs, callees, kernel } = &**r;
+            let kind_len = match kind {
+                RecordKind::Kernel { consts, thunk } => {
+                    image::slice_len(consts) + 1 + thunk.as_ref().map_or(0, record_len)
+                }
+                RecordKind::Thunk | RecordKind::Wrapper => 0,
+            };
             1 + label.encoded_len()
                 + varint_len(bytes.len() as u64)
                 + bytes.len()
                 + varint_len(*align)
                 + image::slice_len(relocs)
-                + image::slice_len(consts)
                 + varint_len(callees.len() as u64)
                 + callees.iter().map(record_len).sum::<usize>()
                 + kernel_abi::kernel_sig_len(kernel)
-                + 1
-                + thunk.as_ref().map_or(0, record_len)
+                + kind_len
         },
     )
 }
@@ -444,35 +473,30 @@ pub(crate) fn record_encode(
         |e| &mut e.records,
         buf,
         |buf| {
-            let BodyRecord {
-                kind,
-                label,
-                bytes,
-                align,
-                relocs,
-                consts,
-                callees,
-                kernel,
-                thunk,
-            } = &**r;
-            buf.put_u8(kind_tag(*kind));
+            let BodyRecord { kind, label, bytes, align, relocs, callees, kernel } = &**r;
+            buf.put_u8(kind_tag(kind));
             label.encode(buf)?;
             encode_varint(bytes.len() as u64, buf);
             buf.put_slice(bytes);
             encode_varint(*align, buf);
             image::slice_encode(relocs, buf)?;
-            image::slice_encode(consts, buf)?;
             encode_varint(callees.len() as u64, buf);
             for c in callees {
                 record_encode(c, buf)?;
             }
             kernel_abi::kernel_sig_encode(kernel, buf)?;
-            match thunk {
-                None => Ok(buf.put_u8(0)),
-                Some(t) => {
-                    buf.put_u8(1);
-                    record_encode(t, buf)
+            match kind {
+                RecordKind::Kernel { consts, thunk } => {
+                    image::slice_encode(consts, buf)?;
+                    match thunk {
+                        None => Ok(buf.put_u8(0)),
+                        Some(t) => {
+                            buf.put_u8(1);
+                            record_encode(t, buf)
+                        }
+                    }
                 }
+                RecordKind::Thunk | RecordKind::Wrapper => Ok(()),
             }
         },
     )
@@ -483,12 +507,7 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
         buf,
         |d| &mut d.records,
         |buf| {
-            let kind = match u8::decode(buf)? {
-                tag::KERNEL => RecordKind::Kernel,
-                tag::THUNK_KIND => RecordKind::Thunk,
-                tag::WRAPPER => RecordKind::Wrapper,
-                _ => return Err(PackError::UnknownTag),
-            };
+            let kind_tag = u8::decode(buf)?;
             let label = ArcStr::decode(buf)?;
             let n = decode_varint(buf)? as usize;
             if buf.remaining() < n {
@@ -498,16 +517,30 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             buf.copy_to_slice(&mut bytes);
             let align = decode_varint(buf)?;
             let relocs: Vec<RecordReloc> = Pack::decode(buf)?;
-            let consts: Vec<KernelConst> = Pack::decode(buf)?;
             let n = decode_varint(buf)? as usize;
             let mut callees = Vec::with_capacity(n.min(64));
             for _ in 0..n {
                 callees.push(record_decode(buf)?);
             }
             let kernel = kernel_abi::kernel_sig_decode(buf)?;
-            let thunk = match u8::decode(buf)? {
-                0 => None,
-                1 => Some(record_decode(buf)?),
+            let kind = match kind_tag {
+                tag::KERNEL => {
+                    let consts: Vec<KernelConst> = Pack::decode(buf)?;
+                    let thunk = match u8::decode(buf)? {
+                        0 => None,
+                        1 => {
+                            let t = record_decode(buf)?;
+                            if !matches!(t.kind, RecordKind::Thunk) {
+                                return Err(PackError::InvalidFormat);
+                            }
+                            Some(t)
+                        }
+                        _ => return Err(PackError::UnknownTag),
+                    };
+                    RecordKind::Kernel { consts, thunk }
+                }
+                tag::THUNK_KIND => RecordKind::Thunk,
+                tag::WRAPPER => RecordKind::Wrapper,
                 _ => return Err(PackError::UnknownTag),
             };
             Ok(Arc::new(BodyRecord {
@@ -516,10 +549,8 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
                 bytes: bytes.into(),
                 align,
                 relocs,
-                consts,
                 callees,
                 kernel,
-                thunk,
             }))
         },
         |b| record_decode(b),

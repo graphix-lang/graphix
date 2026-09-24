@@ -104,9 +104,8 @@ calls, the counter, block creation and sealing order, per-iteration
 element binding and dropping — and take a body closure over `BodyCx`
 that owns the policy. Elements may be scalar, composite, String or
 bare Value; fold accumulators may be composite or String. A may-bottom
-body or predicate is routed through `emit_or_abort_on_taint` (a runtime
-bottom-abort of the HOF), so it fuses; there is no build-time
-may-bottom de-fuse.
+body or predicate folds its taint into the loop's `SlotFlags`, so it
+fuses; there is no build-time may-bottom de-fuse.
 
 **`KernelSig`** (`fusion/kernel_abi.rs`): the ABI contract — name, the
 unified param list in source order (`abi_params` groups by kind:

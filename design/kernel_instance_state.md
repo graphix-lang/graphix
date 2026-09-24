@@ -175,7 +175,11 @@ generation and every reached activation block is stamped with it; after
 the run, if the reach count fell below the live tree size, the
 `state`/`site` `SelfBlock` trees are walked and every subtree not
 stamped current is freed, its source word nulled so `Kernel::drop`
-never double-frees. The walk is gated on the count (a stable or growing
+never double-frees. A tree's `ActivationLayout` names everything a
+block owns (its slot chains, other kernels' trees nested in it, its
+child activations) and a per-slot block's `SiteLeaf` names its trees as
+well as its chains, so every free, shed, truncated or dropped, walks the
+whole of it. The walk is gated on the count (a stable or growing
 recursion pays only the counter) and written in safe Rust rather than
 emitted CLIF — the reclaim is transparent to the differential, so the
 pointer walk lives where ASAN can see it. Both tree walks

@@ -1593,3 +1593,151 @@ run!(never_arm_args_effect, NEVER_ARM_ARGS_EFFECT, |v: Result<&Value>| match v {
     Ok(Value::I64(1)) => true,
     _ => false,
 }, timeout: 5; FuseExpect::Jit);
+
+// A tail call whose new value for one composite formal is another
+// formal's old value: the rebind owns every new value before an old one
+// drops.
+const TAIL_REBIND_SWAPPED_COMPOSITES: &str = r#"
+{
+  let rec f = |n: i64, a: Array<i64>, b: Array<i64>| -> Array<i64> select n {
+    0 => b,
+    n => f(n - 1, [n, n, n, n], a)
+  };
+  f(3, [0], [1])
+}
+"#;
+
+run!(tail_rebind_swapped_composites, TAIL_REBIND_SWAPPED_COMPOSITES, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => a.iter().all(|v| *v == Value::I64(2)) && a.len() == 4,
+        _ => false,
+    }
+}; FuseExpect::Jit);
+
+// A let shadowing a formal is a body local like any other: the rebind
+// drops it by position, and the formal's new value is its clone.
+const TAIL_REBIND_SHADOWED_FORMAL: &str = r#"
+{
+  let rec f = |n: i64, a: Array<i64>| -> Array<i64> {
+    let a = [n, n, n];
+    select n { 0 => a, n => f(n - 1, a) }
+  };
+  f(3, [7])
+}
+"#;
+
+run!(tail_rebind_shadowed_formal, TAIL_REBIND_SHADOWED_FORMAL, |v: Result<&Value>| {
+    match v {
+        Ok(Value::Array(a)) => a.iter().all(|v| *v == Value::I64(0)) && a.len() == 3,
+        _ => false,
+    }
+}; FuseExpect::Jit);
+
+// A string read into a value-shaped formal is owned (a string read
+// clones), in a lambda call and in a tail rebind.
+const STRING_READ_INTO_VALUE_FORMAL: &str = r#"
+{
+  let g = |v: [string, null]| -> i64 select v { null as _ => 0, _ => 1 };
+  let rec f = |n: i64, acc: i64, last: [string, null]| -> [string, null] {
+    let s = "s[n]";
+    select n { 0 => select acc { 5 => last, _ => null }, n => f(n - 1, acc + g(s), s) }
+  };
+  f(5, 0, null)
+}
+"#;
+
+run!(string_read_into_value_formal, STRING_READ_INTO_VALUE_FORMAL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "s1")
+}; FuseExpect::Jit);
+
+// Two constants equal under `==` but not identical keep their own
+// symbols: -0.0 is not 0.0.
+const DISTINCT_ZERO_CONSTANTS: &str = r#"
+{
+  let k = 6;
+  select k { 5 => {"a" => 0.0}, _ => {"a" => -0.0} }
+}
+"#;
+
+run!(distinct_zero_constants, DISTINCT_ZERO_CONSTANTS, |v: Result<&Value>| match v {
+    Ok(Value::Map(m)) => matches!(
+        m.get(&Value::from("a")),
+        Some(Value::F64(x)) if *x == 0.0 && x.is_sign_negative()
+    ),
+    _ => false,
+}; FuseExpect::Jit);
+
+// A guarded nested tuple pattern: its leaf binds read through an
+// interior pointer the guard prologue computes in straight-line code.
+const NESTED_TUPLE_GUARD: &str = r#"
+{
+  let a = ((7, 1), 2);
+  let limit = 5;
+  #[native] select a { ((x, y), z) if x > limit => x + y + z, _ => 0 }
+}
+"#;
+
+run!(nested_tuple_guard, NESTED_TUPLE_GUARD, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(10)))
+}; FuseExpect::Jit);
+
+// An owned composite scrutinee in tail position: every terminator drops
+// it with the rest of the env.
+const TAIL_SELECT_OWNED_SCRUTINEE: &str = r#"
+{
+  let rec f = |n: i64, acc: i64| -> i64 select (n, acc) {
+    (0, a) => a,
+    (m, a) => f(m - 1, a + m)
+  };
+  #[native] f(10, 0)
+}
+"#;
+
+run!(tail_select_owned_scrutinee, TAIL_SELECT_OWNED_SCRUTINEE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(55)))
+}; FuseExpect::Jit);
+
+// A string arm widens to a value-shaped merge.
+const STRING_ARM_VALUE_MERGE: &str = r#"
+{
+  let x = 0;
+  #[native] select x { 0 => "a", _ => null }
+}
+"#;
+
+run!(string_arm_value_merge, STRING_ARM_VALUE_MERGE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "a")
+}; FuseExpect::Jit);
+
+// A recursive body whose activations each own a nested loop's slot
+// chain, at alternating depth: shed activations free their chains.
+const SHED_ACTIVATIONS_FREE_CHAINS: &str = r#"
+{
+  let rec f = |k: i64, a: Array<Array<i64>>| -> i64 select k {
+    0 => 0,
+    _ => array::len(array::map(a, |r| array::map(r, |x| x + k))) + f(k - 1, a)
+  };
+  let d = array::iter([20, 1, 20, 1, 3]);
+  let r = f(d, [[1, 2], [3, 4]]);
+  select count(r) { 5 => r, _ => never() }
+}
+"#;
+
+run!(shed_activations_free_chains, SHED_ACTIVATIONS_FREE_CHAINS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(6)))
+}; FuseExpect::Jit);
+
+// A loop over calls to a recursive callee, at alternating length: a
+// dropped slot's block frees the callee's activation tree.
+const DROPPED_SLOTS_FREE_TREES: &str = r#"
+{
+  let rec f = |k: i64| -> i64 select k { 0 => 0, _ => k + f(k - 1) };
+  let src = array::iter([[1, 2, 3, 4, 5, 6], [1], [4, 5, 6], [2]]);
+  let r = array::map(src, |x| f(x));
+  select count(r) { 4 => r, _ => never() }
+}
+"#;
+
+run!(dropped_slots_free_trees, DROPPED_SLOTS_FREE_TREES, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a.len() == 1 && a[0] == Value::I64(3))
+}; FuseExpect::Jit);

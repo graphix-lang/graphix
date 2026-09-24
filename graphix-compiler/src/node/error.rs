@@ -911,7 +911,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
                 }
             }
         };
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, sink)
+        emit_qop_node(cx, &self.n, &self.typ, sink)
     }
 }
 
@@ -1317,6 +1317,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
             },
             Strip::Null => QopSink::DropNull,
         };
-        emit_qop_node(cx, self.spec.id, &self.n, &self.typ, sink)
+        emit_qop_node(cx, &self.n, &self.typ, sink)
     }
 }

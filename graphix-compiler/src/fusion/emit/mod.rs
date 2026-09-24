@@ -31,13 +31,7 @@ pub mod scaffold;
 mod scalar;
 mod select;
 
-// CR claude for eric: [dead] emit_or_abort_on_taint, emit_or_abort_on_taint_keep
-// and scalar_result have no users in this repo or ../netidx; with them goes
-// body.rs emit_bottom_abort.
-pub use self::abi::{
-    CompiledExpr, array_result, emit_or_abort_on_taint, emit_or_abort_on_taint_keep,
-    scalar_result,
-};
+pub use self::abi::{CompiledExpr, array_result};
 pub(crate) use self::abi::{STALE, TAINT, prim_to_value_disc};
 pub use self::body::{
     BodyCx, ensure_owned_composite_src, ensure_owned_value_src, node_composite_source,
@@ -46,14 +40,8 @@ pub use self::body::{
 pub use self::call::CompositeSource;
 pub(crate) use self::call::{emit_builtin_call_node, emit_lambda_call_node};
 pub(crate) use self::flow::{QopSink, emit_block_node, emit_qop_node};
-// CR claude for eric: [structure] `fusion::emit` is a pub module, and JitCtx,
-// WrapperFn, KernelConst, RecordKind, RecordReloc and RelocTarget are public
-// re-exports nothing outside emit uses; they leak the record internals. Narrow
-// them to pub(crate) or drop them.
-pub use self::jit::{
-    Jit, JitCtx, WrappedKernel, WrapperFn, compile_kernel_with_callees_direct,
-    pack_value_to_u64, unpack_u64_to_value,
-};
+pub(crate) use self::jit::{ArenaExhausted, compile_kernel_with_callees_direct};
+pub use self::jit::{Jit, WrappedKernel, pack_value_to_u64};
 pub(crate) use self::nodes::{
     call_result_needs_value_widening, emit_abstract_ref_node, emit_arith_node,
     emit_array_ref_node, emit_array_slice_node, emit_bool_node, emit_cast_node,
@@ -64,6 +52,5 @@ pub(crate) use self::nodes::{
     emit_struct_with_node, emit_tuple_new_node, emit_tuple_ref_node,
     emit_variant_new_node, widen_result_to_value,
 };
-pub use self::record::{BodyRecord, KernelConst, RecordKind, RecordReloc, RelocTarget};
-pub(crate) use self::record::{record_decode, record_encode, record_len};
-pub(crate) use self::select::{emit_select_node, slot_state_sites};
+pub(crate) use self::record::{BodyRecord, record_decode, record_encode, record_len};
+pub(crate) use self::{scaffold::slot_state_sites, select::emit_select_node};
