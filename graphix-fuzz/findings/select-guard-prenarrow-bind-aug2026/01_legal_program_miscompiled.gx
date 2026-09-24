@@ -30,4 +30,8 @@
 // compiles and AGREES in both engines before AND after the fix — the
 // union alone is not enough. This witness is kept unreduced because the
 // reductions stopped reproducing.
-{let x = i64:1; let y = x; select any(x, y, [i64:1, i64:2, i64:2, i64:3, i64:1, i64:4, {let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let f = |n| array::map([n], |i| select i {i64:0 if m == i64:0 => i64:1, _ => i64:2}); let c = count(f(i64:0)); select count(x) {i64:4 => c, _ => never()}}, i64:5]) {v if v == i64:1 => "first [v]", v if v == i64:2 => "second ", v => "third "}}
+// Exact-type comparison (2026-09-24): `v == i64:1` over the union is now
+// refused, so the guards call `eq`, whose arguments are checked by
+// containment and bind the same way the direct comparison did. Not
+// re-bisected against the pre-fix build.
+{let eq = |a, b| a == b; let x = i64:1; let y = x; select any(x, y, [i64:1, i64:2, i64:2, i64:3, i64:1, i64:4, {let x = array::iter([i64:1, i64:2, i64:3, i64:4]); let m = x / i64:3; let f = |n| array::map([n], |i| select i {i64:0 if m == i64:0 => i64:1, _ => i64:2}); let c = count(f(i64:0)); select count(x) {i64:4 => c, _ => never()}}, i64:5]) {v if eq(v, i64:1) => "first [v]", v if eq(v, i64:2) => "second ", v => "third "}}

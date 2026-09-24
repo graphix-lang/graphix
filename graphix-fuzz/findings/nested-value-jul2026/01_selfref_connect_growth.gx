@@ -27,4 +27,5 @@
 // closed the growth needs the honest element type to keep pinning
 // the runtime observable rather than a compile error.
 // minimized:
-{let a: Array<Any> = [i64:100, null, i64:3, i64:4]; a <- [i64:5, i64:6, a, sys::fs::tempdir::create]; let clock: Any = let tm = sys::time::timer(duration:0.05s, false); let v = array::iterq(#clock, a); clock <- v; filter(v, |x| x == i64:8)}
+// Exact-type comparison (2026-09-24): the Any element is type-tested.
+{let a: Array<Any> = [i64:100, null, i64:3, i64:4]; a <- [i64:5, i64:6, a, sys::fs::tempdir::create]; let clock: Any = let tm = sys::time::timer(duration:0.05s, false); let v = array::iterq(#clock, a); clock <- v; filter(v, |x| select x {i64 as n => n == i64:8, _ => false})}

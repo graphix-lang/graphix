@@ -269,23 +269,26 @@ if we compile a function with no type constraints, such as:
 let f = |x, y| x + y
 ```
 
-It's type will be something like:
+Its type will be something like:
 
 ```graphix
-val f: fn<
-  '_2069: Number,
-  '_2067: Number,
-  '_2071: Number
->(x: '_2067, y: '_2069) -> '_2071
+val f: fn<'_2067: Number>(x: '_2067, y: '_2067) -> '_2067
 ```
 
-The compiler has inferred a bunch of properties here,
+The compiler has inferred two properties here,
 
-- both arguments must be of type `Number`, that's what the constraints
-on `'_2067: Number` and `_2069: Number` mean.
-- both arguments need not be the same type, hence they are different type variables
-- the return type will also be a number, hence `'_2071: Number`, but
-  it may not be the same type of number as either of the arguments.
+- both arguments are one type of number: arithmetic is
+  `fn('a: Number, 'a) -> 'a`, so `f(1, 2.5)` is refused (cast one side).
+- the result is that same type.
+
+Comparison is `fn('a, 'a) -> bool` over exactly one type: `|x, y| x < y`
+takes two arguments of one type, and neither operand's type may merely
+contain the other's. `x == 3` over `x: [i64, null]` and `` v == `Red ``
+over `` v: [`Green, `Red] `` are refused; select on the value instead
+(`` select v { `Red => true, _ => false } ``, `opt::is_some`). A type
+holding two numeric types is refused even against itself, because its
+values would order by representation rather than by number: `x < y`
+over `x, y: [i64, f64]` or `Number` is an error.
 
 Because unchecked arithmetic operators like `+` log errors and return
 bottom on overflow rather than throwing, there is no `throws` clause

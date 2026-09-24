@@ -9,4 +9,6 @@
 // it to `TVar(other)`) in `alias`/`alias_cells` — the elem now types
 // honestly as `[i64, fn(...)]`, freeze refuses it, and both modes
 // agree through the interpreted HOF.
-{let a = [i64:0, i64:0, {let rec sum_to = |n, acc| select n {i64:0 => acc, _ => sum_to(n - i64:1, acc)}; sum_to(i64:3, buffer::to_string)}, i64:4, i64:0]; array::find(a, |x| x > i64:3)}
+// Exact-type comparison (2026-09-24): a union element is compared through
+// a type test; a return of the flattening makes the `_` arm dead, refused.
+{let a = [i64:0, i64:0, {let rec sum_to = |n, acc| select n {i64:0 => acc, _ => sum_to(n - i64:1, acc)}; sum_to(i64:3, buffer::to_string)}, i64:4, i64:0]; array::find(a, |x| select x {i64 as n => n > i64:3, _ => true})}

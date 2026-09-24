@@ -12,4 +12,6 @@
 // bound to Any records genuine dataflow; concrete use of an
 // Any-returning call now requires a cast, and the map honestly
 // refuses to fuse over the Any-carrying element union.
-{let a = [i64:0, {let f = |n| select n {i64:0 => let trigs: Any = i64:9, _ => [i64:1, i64:2, i64:4]}; f(i64:3)}, i64:4]; array::map(a, |x| x > i64:3)}
+// Exact-type comparison (2026-09-24): a union element is compared through
+// a type test; a return of the flattening makes the `_` arm dead, refused.
+{let a = [i64:0, {let f = |n| select n {i64:0 => let trigs: Any = i64:9, _ => [i64:1, i64:2, i64:4]}; f(i64:3)}, i64:4]; array::map(a, |x| select x {i64 as n => n > i64:3, _ => true})}

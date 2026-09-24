@@ -13,6 +13,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag, tag_len},
     },
     node::error::{diagnostic_site, report_failure},
+    stack::ensure_sufficient,
     typ::{ContainsFlags, Type},
     wrap,
 };
@@ -208,6 +209,17 @@ fn unify_operands(env: &Env, lt: &Type, rt: &Type) -> Result<Option<Type>> {
     Ok(Some(wide.clone()))
 }
 
+/// Both operands of a comparison are one type: each contains the other,
+/// probed both ways without binding, then committed both ways.
+fn same_type(env: &Env, lt: &Type, rt: &Type) -> Result<bool> {
+    let probe = ContainsFlags::RigidCheck.into();
+    let commit = ContainsFlags::Commit | ContainsFlags::RigidCheck;
+    Ok(lt.contains_with_flags(probe, env, rt)?
+        && rt.contains_with_flags(probe, env, lt)?
+        && lt.contains_with_flags(commit, env, rt)?
+        && rt.contains_with_flags(commit, env, lt)?)
+}
+
 /// An operand whose type is known must be in `bound` now; an open cell
 /// carries `bound` as a constraint for later.
 fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
@@ -221,6 +233,39 @@ fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
     }
 }
 
+/// The numeric primitives a value of `t` may be, through bound cells,
+/// unions and typedefs. An open cell and `Any` contribute none.
+fn numeric_members(env: &Env, t: &Type) -> Result<BitFlags<Typ>> {
+    ensure_sufficient(|| {
+        t.with_deref(|t| match t {
+            Some(Type::Primitive(p)) => Ok(*p & Typ::number()),
+            Some(Type::Set(ts)) => ts
+                .iter()
+                .try_fold(BitFlags::empty(), |acc, t| Ok(acc | numeric_members(env, t)?)),
+            Some(t @ Type::Ref(_)) => match t.lookup_ref_with(env, false)? {
+                Some(t) => numeric_members(env, &t),
+                None => Ok(BitFlags::empty()),
+            },
+            _ => Ok(BitFlags::empty()),
+        })
+    })
+}
+
+/// Comparison is `fn('a, 'a) -> bool` over one numeric type: operands
+/// that may be two numeric types would order by representation.
+fn refuse_mixed_numeric(env: &Env, t: &Type) -> Result<()> {
+    if numeric_members(env, t)?.len() > 1 {
+        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            bail!(
+                "cannot compare values of {t}: comparison is fn('a, 'a) -> bool and \
+                 {t} holds more than one numeric type (cast to one)"
+            )
+        })
+    } else {
+        Ok(())
+    }
+}
+
 macro_rules! compare_op {
     ($name:ident, $op:tt) => {
         binary_node!($name, Type::boolean(), {
@@ -230,10 +275,6 @@ macro_rules! compare_op {
                 event: &mut Event<E>,
             ) -> &TagValue {
                 let (l, r, _, tag) = gated_operands!(self, ctx, event);
-                // XCR claude for eric: undecided by the docs, so not changed: `[i64, f64]`
-                // operands of two variants order by `Value` (variant first) while arith
-                // promotes. Recommend refusing `<`..`>=` over a union of 2+ numeric types
-                // at typecheck: a numeric `<` would disagree with `==`, map keys and sort.
                 let v = coretraits::with_hooks(ctx, event, || {
                     l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
                 });
@@ -244,24 +285,25 @@ macro_rules! compare_op {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
-                if wrap!(self, unify_operands(&ctx.env, lt, rt))?.is_none() {
-                    return wrap!(
+                if wrap!(self, same_type(&ctx.env, lt, rt))? {
+                    wrap!(self, refuse_mixed_numeric(&ctx.env, lt))
+                } else {
+                    wrap!(
                         self,
                         $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                             bail!(
                                 "cannot compare {lt} with {rt}: comparison is \
-                                 fn('a, 'a) -> bool — both operands must be one type \
-                                 (cast one side explicitly)"
+                                 fn('a, 'a) -> bool — both operands must be one type"
                             )
                         })
-                    );
+                    )
                 }
-                Ok(())
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
+                wrap!(self, refuse_mixed_numeric(&ctx.env, self.lhs.typ()))
             }
 
             fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {

@@ -1090,7 +1090,7 @@ run!(hof_nullable_map, HOF_NULLABLE_MAP, |v: Result<&Value>| matches!(
 
 // A Value-shape (variant) element in a filter whose predicate is `==`.
 const HOF_VARIANT_FILTER: &str = r#"
-array::filter([`Red, `Green, `Red], |v| v == `Red)
+array::filter([`Red, `Green, `Red], |v| select v { `Red => true, _ => false })
 "#;
 run!(hof_variant_filter, HOF_VARIANT_FILTER, |v: Result<&Value>| {
     matches!(v, Ok(Value::Array(a)) if a.len() == 2)
@@ -1099,7 +1099,7 @@ run!(hof_variant_filter, HOF_VARIANT_FILTER, |v: Result<&Value>| {
 // A Value-shape variant element returned by find after a dropped
 // non-match.
 const HOF_VARIANT_FIND: &str = r#"
-array::find([`Red, `Green, `Blue], |v| v == `Green)
+array::find([`Red, `Green, `Blue], |v| select v { `Green => true, _ => false })
 "#;
 run!(hof_variant_find, HOF_VARIANT_FIND, |v: Result<&Value>| matches!(
     v,

@@ -3,4 +3,6 @@
 // String element's pointer bits as i64 (false) where the total order
 // says string > i64 (true). Honest elem `[i64, string]` refuses the
 // scalar loop; both modes agree via the interpreted HOF.
-{let a = [i64:0, {let rec f = |n, acc| select n {i64:0 => acc, _ => f(n - i64:1, acc)}; f(i64:3, "hi")}, i64:4]; array::map(a, |x| x > i64:3)}
+// Exact-type comparison (2026-09-24): a union element is compared through
+// a type test; a return of the flattening makes the `_` arm dead, refused.
+{let a = [i64:0, {let rec f = |n, acc| select n {i64:0 => acc, _ => f(n - i64:1, acc)}; f(i64:3, "hi")}, i64:4]; array::map(a, |x| select x {i64 as n => n > i64:3, _ => true})}

@@ -438,7 +438,7 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 2	tailloop-firing-jul2026/01_live_input_tail_loop.gx
 3	tailloop-firing-jul2026/02_const_chain_capture.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
-1	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
+2	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
 1	taint-cache-callee-jul2026/00_callee_interior_bottom.gx
 4	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 2	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx

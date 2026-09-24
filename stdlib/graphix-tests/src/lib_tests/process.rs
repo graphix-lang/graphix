@@ -114,7 +114,7 @@ const PROCESS_CONCURRENT_WAIT: &str = r#"
   let child = sys::process::spawn(options)?;
   let first = sys::process::wait(child.proc)?;
   let second = sys::process::wait(child.proc)?;
-  first.code == 3 && second.code == 3
+  first.code$ == 3 && second.code$ == 3
 }
 "#;
 

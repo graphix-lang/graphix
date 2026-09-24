@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2d3e9d80.js";
+            window.path_to_searchindex_js = "../searchindex-477e4daa.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -449,19 +449,27 @@ closures in <code>defpackage!</code>:</p>
 package should handle its display. The shell calls this to decide whether to
 use the default display or delegate to your package.</li>
 <li><strong><code>init_custom</code></strong> constructs your <code>CustomDisplay</code>. It receives a <code>stop</code>
-channel — send on it when the display wants to exit (e.g. the user closed a
-window), and the shell will call <code>clear()</code> before dropping the display.</li>
+channel (<code>graphix_package::Stop</code>), which the display keeps for as long as it
+lives. Send <code>Ok(())</code> on it when the program is done (the user closed the
+window, the script called your exit builtin) and <code>Err(e)</code> when the display
+cannot go on (the terminal went away). Dropping it unsent means the display
+died. The shell calls <code>clear()</code> before dropping the display; a script then
+exits, with the error if there was one, and the REPL returns to its prompt.
+It also receives <code>run_on_main</code>, for a display that needs the main thread.</li>
 </ul>
 <p>Here is a minimal example that prints every update to stderr:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use async_trait::async_trait;
 use graphix_compiler::{env::Env, expr::ExprId};
-use graphix_package::CustomDisplay;
+use graphix_package::{CustomDisplay, Stop};
 use graphix_rt::GXExt;
 use netidx_value::Value;
 
-struct DebugDisplay;
+struct DebugDisplay {
+    // held so the shell knows the display is alive
+    _stop: Stop,
+}
 
 #[async_trait]
 impl&lt;X: GXExt&gt; CustomDisplay&lt;X&gt; for DebugDisplay {
@@ -482,8 +490,8 @@ defpackage! {
             matches!(t, Some(graphix_compiler::typ::Type::Array(_)))
         })
     },
-    init_custom =&gt; |_gx, _env, _stop, _e| {
-        Ok(Box::new(DebugDisplay))
+    init_custom =&gt; |_gx, _env, stop, _e, _run_on_main| {
+        Ok(Box::new(DebugDisplay { _stop: stop }))
     }
 }
 <span class="boring">}</span></code></pre>

@@ -34,8 +34,8 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   let write_done = sys::fs::write_all(#path: established ~ paths.file, "modified by write_all");
   let content = sys::fs::read_all(write_done ~ paths.file);
 
-  let content_ok = content == "modified by write_all";
-  let modify_ok = modify_event != "";
+  let content_ok = content$ == "modified by write_all";
+  let modify_ok = modify_event$ != "";
 
   content_ok && modify_ok
 }"#;
@@ -59,8 +59,8 @@ const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   let write_done = sys::fs::write_all(#path: established ~ paths.file, "modified by write_all");
   let content = sys::fs::read_all(write_done ~ paths.file);
 
-  let content_ok = content == "modified by write_all";
-  let modify_ok = modify_event != "";
+  let content_ok = content$ == "modified by write_all";
+  let modify_ok = modify_event$ != "";
 
   content_ok && modify_ok
 }"#;

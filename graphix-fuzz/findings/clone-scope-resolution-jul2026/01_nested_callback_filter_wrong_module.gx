@@ -22,5 +22,6 @@
 // LIVE top), diagnosed with GRAPHIX_DBG-style probes on
 // notify_set/ref_var and a per-MapQ slot-state trace.
 // mutant: {let a = [i64:1, i64:2]; let b = [i64:1, i64:2]; array::map(a, |x| array::map(b, |y| {let a = [i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, `Modify, i64:8]; filter(array::iter(a), |x| x > i64:7)}))}
+// Exact-type comparison (2026-09-24): the `Modify-carrying element is type-tested.
 // minimized:
-{let a = [f64:0., i64:2]; let b = [i64:1, i64:2]; array::map(a, |x| array::map(b, |y| {let a = [i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, `Modify, i64:8]; filter(array::iter(a), |x| x > i64:7)}))}
+{let a = [f64:0., i64:2]; let b = [i64:1, i64:2]; array::map(a, |x| array::map(b, |y| {let a = [i64:1, i64:2, i64:3, i64:4, i64:5, i64:6, `Modify, i64:8]; filter(array::iter(a), |x| select x {i64 as n => n > i64:7, _ => false})}))}

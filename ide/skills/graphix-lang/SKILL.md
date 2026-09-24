@@ -169,7 +169,12 @@ datetime:"2020-01-01T00:00:00Z"  duration:1.0s  duration:500.ms   // units: ns u
 
 Unchecked arithmetic logs and bottoms on failure; checked (`+?` …)
 returns `[T, Error<`ArithError(string)>]`. `&&`/`||` are strict
-(`false && ⊥ = ⊥`). Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
+(`false && ⊥ = ⊥`). Both operands of an operator are ONE type (cast one
+side). Comparison is exact: `x == 3` over `x: [i64, null]` and `` v ==
+`Red `` over `` [`Green, `Red] `` are refused — `opt::is_some`,
+`opt::contains(x, 3)`, `` select v { `Red => true, _ => false } ``,
+`r$ == "a"` on a Result; `[i64, f64]` or `Number` operands are refused
+even against themselves. Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
 `x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
 chain (`(k ~ sel)$.name`). On an untyped parameter they read as the

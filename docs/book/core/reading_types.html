@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2d3e9d80.js";
+            window.path_to_searchindex_js = "../searchindex-477e4daa.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -329,21 +329,23 @@ itself during the type inference process.</p>
 <p>if we compile a function with no type constraints, such as:</p>
 <pre><code class="language-graphix">let f = |x, y| x + y
 </code></pre>
-<p>It’s type will be something like:</p>
-<pre><code class="language-graphix">val f: fn&lt;
-  '_2069: Number,
-  '_2067: Number,
-  '_2071: Number
-&gt;(x: '_2067, y: '_2069) -&gt; '_2071
+<p>Its type will be something like:</p>
+<pre><code class="language-graphix">val f: fn&lt;'_2067: Number&gt;(x: '_2067, y: '_2067) -&gt; '_2067
 </code></pre>
-<p>The compiler has inferred a bunch of properties here,</p>
+<p>The compiler has inferred two properties here,</p>
 <ul>
-<li>both arguments must be of type <code>Number</code>, that’s what the constraints
-on <code>'_2067: Number</code> and <code>_2069: Number</code> mean.</li>
-<li>both arguments need not be the same type, hence they are different type variables</li>
-<li>the return type will also be a number, hence <code>'_2071: Number</code>, but
-it may not be the same type of number as either of the arguments.</li>
+<li>both arguments are one type of number: arithmetic is
+<code>fn('a: Number, 'a) -&gt; 'a</code>, so <code>f(1, 2.5)</code> is refused (cast one side).</li>
+<li>the result is that same type.</li>
 </ul>
+<p>Comparison is <code>fn('a, 'a) -&gt; bool</code> over exactly one type: <code>|x, y| x &lt; y</code>
+takes two arguments of one type, and neither operand’s type may merely
+contain the other’s. <code>x == 3</code> over <code>x: [i64, null]</code> and <code>v == `Red</code>
+over <code>v: [`Green, `Red]</code> are refused; select on the value instead
+(<code>select v { `Red =&gt; true, _ =&gt; false }</code>, <code>opt::is_some</code>). A type
+holding two numeric types is refused even against itself, because its
+values would order by representation rather than by number: <code>x &lt; y</code>
+over <code>x, y: [i64, f64]</code> or <code>Number</code> is an error.</p>
 <p>Because unchecked arithmetic operators like <code>+</code> log errors and return
 bottom on overflow rather than throwing, there is no <code>throws</code> clause
 in the type signature. (The log message is an interpreter debugging

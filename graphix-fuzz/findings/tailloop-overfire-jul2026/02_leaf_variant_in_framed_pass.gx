@@ -9,7 +9,9 @@
 // the consulted-guard rule) says 1. Found by sep03a on four boxes
 // (2026-09-03); the annotation is what keeps the nested select from
 // resolving statically. `node::produce_constant` is now the one rule.
-{let x = array::iter([true, true, true, i64:4]); let m = x;
+// Exact-type comparison (2026-09-24): the incidental bools became i64:1 so
+// the guard `m == i64:0` compares one type; it is false for both.
+{let x = array::iter([i64:1, i64:1, i64:1, i64:4]); let m = x;
  let rec f = |n| select n {i64:0 => select {type Screen = [`Connect, `Panel([`D, `Q, `R])]; let s: Screen = `Panel(`D);
    select s {`Connect => true, `Panel(`Q) => true, `Panel(`D) => true, `Panel(`R) => i64:3}} {i64:0 if m == i64:0 => true, _ => true},
    _ => f(i64:0)}; let c = count(f(i64:3)); select x {i64:4 => c, _ => true}}

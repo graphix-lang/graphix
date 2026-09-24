@@ -500,11 +500,11 @@ run!(cast_narrow_saturates, CAST_NARROW_SATURATES, |v: Result<&Value>| match v {
 });
 
 // A rec def whose base arm returns a param: the elem union is honestly
-// `[i64, string]`, and the total order answers ("hi" > 3).
+// `[i64, string]`.
 const REC_RETURN_PARAM_ELEM: &str = r#"
 {
   let a = [0, {let rec f = |n, acc| select n {0 => acc, _ => f(n - 1, acc)}; f(3, "hi")}, 4];
-  array::map(a, |x| x > 3)
+  array::map(a, |x| select x { i64 as n => n > 3, _ => true })
 }
 "#;
 
@@ -520,12 +520,11 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// The Fn-element twin: the union is `[i64, fn(...)]` and the Fn sorts
-// above 3.
+// The Fn-element twin: the union is `[i64, fn(...)]`.
 const REC_RETURN_FN_ELEM: &str = r#"
 {
   let a = [0, 0, {let rec f = |n, acc| select n {0 => acc, _ => f(n - 1, acc)}; f(3, buffer::to_string)}, 4, 0];
-  array::map(a, |x| x > 3)
+  array::map(a, |x| select x { i64 as n => n > 3, _ => true })
 }
 "#;
 
@@ -1079,3 +1078,49 @@ async fn declared_bounds_print_in_the_header() -> Result<()> {
     }
     Ok(())
 }
+
+// Comparison is `fn('a, 'a) -> bool` over exactly one type: neither
+// operand's type may merely contain the other's, and a type holding two
+// numeric types is refused even against itself.
+#[tokio::test(flavor = "current_thread")]
+async fn comparison_operands_are_one_type() -> Result<()> {
+    for src in [
+        "{ let x: [i64, null] = 3; x == 3 }",
+        "{ let v: [`Green, `Red] = `Red; v == `Red }",
+        "{ let r: [string, Error<`E>] = \"a\"; r != \"a\" }",
+        "{ let x: [i64, f64] = 3; let y: [i64, f64] = 2.5; x < y }",
+        "{ let f = |a: Number, b: Number| a >= b; f(3, 2.5) }",
+        "{ type N = [i64, u8]; let x: N = 3; x <= x }",
+    ] {
+        match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(msg.contains("cannot compare"), "{src}: {msg}")
+            }
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
+
+const COMPARISON_ONE_TYPE: &str = r#"{
+  let s: [`Menu, `Edit] = `Menu;
+  let t: [`Menu, `Edit] = `Edit;
+  let f = 'a: Number |a: 'a, b: 'a| -> bool a < b;
+  let g = |a, b| a == b;
+  [s == t, s != t, f(3, 4), f(2.5, 1.5), g("a", "a"), g(s, t)]
+}"#;
+
+run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        &**a == &[
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Bool(false),
+        ]
+    }
+    _ => false,
+});
