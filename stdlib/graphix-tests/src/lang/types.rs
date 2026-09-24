@@ -991,6 +991,12 @@ const NESTED_QUANTIFIER: &str = r#"{
 }"#;
 const NESTED_QUANTIFIER_OK: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
+  let apply = |f: F| f(2);
+  apply(|x| x)
+}"#;
+// `x + 1` is `'b + i64`, which holds only where 'b is i64.
+const NESTED_QUANTIFIER_CONCRETE: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
   let apply = |f: F| f(1);
   apply(|x| x + 1)
 }"#;
@@ -1024,6 +1030,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (PRODUCT_UNION_VARIANT, "does not contain"),
         (REF_UNION_PARAMS, "expected fn"),
         (NESTED_QUANTIFIER, "does not contain"),
+        (NESTED_QUANTIFIER_CONCRETE, "cannot compute"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
@@ -1124,3 +1131,51 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
     }
     _ => false,
 });
+
+// Arithmetic is `fn('a: Number, 'a) -> 'a` over exactly one type, and a
+// type holding two numeric types is refused even against itself.
+#[tokio::test(flavor = "current_thread")]
+async fn arithmetic_operands_are_one_type() -> Result<()> {
+    for src in [
+        "{ let x: [i64, f64] = 3; x + 1 }",
+        "{ let x: [i64, f64] = 3; x * x }",
+        "{ let x: [i64, null] = 3; x - 1 }",
+        "{ let f = |a: Number, b: Number| a + b; f(1, 2) }",
+        "{ let t: (Number, Number) = (1, 2.5); t.0 % t.1 }",
+    ] {
+        match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(msg.contains("cannot compute"), "{src}: {msg}")
+            }
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
+
+// A select arm that only raises leaves its success type open; the other
+// operand decides it.
+const ARITH_OVER_RAISING_ARM: &str = r#"{
+  let go = 2;
+  let r = select go { 1 => error(`Oops)?, _ => go };
+  let f = 'a: Number |a: 'a, b: 'a| -> 'a a * b;
+  [r * 100, f(3, 4), -r]
+}"#;
+
+run!(arith_over_raising_arm, ARITH_OVER_RAISING_ARM, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => &**a == &[Value::I64(200), Value::I64(12), Value::I64(-2)],
+    _ => false,
+});
+
+// A ⊥ operand never produces, so the other operand's type stands.
+const BOTTOM_OPERAND: &str = r#"{
+  let x = 1;
+  let y = x + never();
+  let z = never() == x;
+  let w: [i64, null] = null;
+  let v = w$ * 2;
+  0
+}"#;
+
+run!(bottom_operand, BOTTOM_OPERAND, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))));

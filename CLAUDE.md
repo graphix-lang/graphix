@@ -560,11 +560,13 @@ blocker profile, not a gap count.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is
   left-associative (`8 / 2 * 2` is 8). `BinOp` (`expr/binop.rs`) is the
-  one table. Arithmetic is `fn('a: Number, 'a) -> 'a`; comparison is
-  `fn('a, 'a) -> bool` over EXACTLY one type (each operand's type
-  contains the other's: `[i64, null] == 3` and `` [`A, `B] == `A `` are
-  refused), and a type holding two numeric types is refused even
-  against itself (`node/op.rs::refuse_mixed_numeric`).
+  one table. Arithmetic (`fn('a: Number, 'a) -> 'a`) and comparison
+  (`fn('a, 'a) -> bool`) take operands of EXACTLY one type, each
+  containing the other's (`node/op.rs::operand_type`): `[i64, null] ==
+  3`, `` [`A, `B] == `A `` and `[i64, f64] + 1` are refused; a ⊥ operand
+  takes the other's type. A type holding two numeric types (`[i64,
+  f64]`, `Number`) is refused even against itself
+  (`refuse_mixed_numeric`).
 
 ## Stack discipline
 

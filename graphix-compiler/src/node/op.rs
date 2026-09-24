@@ -189,35 +189,25 @@ macro_rules! gated_operands {
     }};
 }
 
-/// Both operands of a binary operator are one type: probe each
-/// direction without binding (a failed binding walk cannot be undone),
-/// then commit the one that holds. The committed type, or `None` when
-/// neither operand's type contains the other's.
-fn unify_operands(env: &Env, lt: &Type, rt: &Type) -> Result<Option<Type>> {
-    let probe = ContainsFlags::RigidCheck.into();
-    let commit = ContainsFlags::Commit | ContainsFlags::RigidCheck;
-    let (wide, narrow) = if lt.contains_with_flags(probe, env, rt)? {
-        (lt, rt)
-    } else if rt.contains_with_flags(probe, env, lt)? {
-        (rt, lt)
-    } else {
-        return Ok(None);
-    };
-    if !wide.contains_with_flags(commit, env, narrow)? {
-        wide.check_contains(env, narrow)?;
+/// The one type both operands of a binary operator have, or `None`: each
+/// contains the other, probed both ways without binding (a failed binding
+/// walk cannot be undone), then committed both ways. A ⊥ operand never
+/// produces, so the other operand's type stands.
+fn operand_type<'t>(env: &Env, lt: &'t Type, rt: &'t Type) -> Result<Option<&'t Type>> {
+    let bottom = |t: &Type| t.with_deref(|t| matches!(t, Some(Type::Bottom)));
+    if bottom(rt) {
+        return Ok(Some(lt));
     }
-    Ok(Some(wide.clone()))
-}
-
-/// Both operands of a comparison are one type: each contains the other,
-/// probed both ways without binding, then committed both ways.
-fn same_type(env: &Env, lt: &Type, rt: &Type) -> Result<bool> {
+    if bottom(lt) {
+        return Ok(Some(rt));
+    }
     let probe = ContainsFlags::RigidCheck.into();
     let commit = ContainsFlags::Commit | ContainsFlags::RigidCheck;
-    Ok(lt.contains_with_flags(probe, env, rt)?
+    let one = lt.contains_with_flags(probe, env, rt)?
         && rt.contains_with_flags(probe, env, lt)?
         && lt.contains_with_flags(commit, env, rt)?
-        && rt.contains_with_flags(commit, env, lt)?)
+        && rt.contains_with_flags(commit, env, lt)?;
+    Ok(one.then_some(lt))
 }
 
 /// An operand whose type is known must be in `bound` now; an open cell
@@ -251,14 +241,13 @@ fn numeric_members(env: &Env, t: &Type) -> Result<BitFlags<Typ>> {
     })
 }
 
-/// Comparison is `fn('a, 'a) -> bool` over one numeric type: operands
-/// that may be two numeric types would order by representation.
-fn refuse_mixed_numeric(env: &Env, t: &Type) -> Result<()> {
+/// Operands of one type that may be two numeric types would compare by
+/// representation and compute by promotion: `what` refuses them.
+fn refuse_mixed_numeric(env: &Env, t: &Type, what: &str) -> Result<()> {
     if numeric_members(env, t)?.len() > 1 {
         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             bail!(
-                "cannot compare values of {t}: comparison is fn('a, 'a) -> bool and \
-                 {t} holds more than one numeric type (cast to one)"
+                "cannot {what} values of {t}: it holds more than one numeric type (cast to one)"
             )
         })
     } else {
@@ -285,10 +274,9 @@ macro_rules! compare_op {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
-                if wrap!(self, same_type(&ctx.env, lt, rt))? {
-                    wrap!(self, refuse_mixed_numeric(&ctx.env, lt))
-                } else {
-                    wrap!(
+                match wrap!(self, operand_type(&ctx.env, lt, rt))? {
+                    Some(t) => wrap!(self, refuse_mixed_numeric(&ctx.env, t, "compare")),
+                    None => wrap!(
                         self,
                         $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                             bail!(
@@ -296,14 +284,14 @@ macro_rules! compare_op {
                                  fn('a, 'a) -> bool — both operands must be one type"
                             )
                         })
-                    )
+                    ),
                 }
             }
 
             fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
-                wrap!(self, refuse_mixed_numeric(&ctx.env, self.lhs.typ()))
+                wrap!(self, refuse_mixed_numeric(&ctx.env, self.lhs.typ(), "compare"))
             }
 
             fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -710,13 +698,9 @@ macro_rules! arith_op {
             fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
                 let num = Type::Primitive(Typ::number());
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
-                // A known operand must be numeric at typecheck0; the
-                // def-time acceptance gate for a lambda body runs only there.
-                wrap!(self, constrain_operand(&ctx.env, &num, lt))?;
-                wrap!(self, constrain_operand(&ctx.env, &num, rt))?;
                 // A declared `'a: Number` formal is rigid while its def
                 // gate is open: `x + f64:0.` must reject, not bind 'a.
-                let Some(out) = wrap!(self, unify_operands(&ctx.env, lt, rt))? else {
+                let Some(t) = wrap!(self, operand_type(&ctx.env, lt, rt))? else {
                     return wrap!(
                         self,
                         $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
@@ -730,10 +714,15 @@ macro_rules! arith_op {
                         })
                     );
                 };
+                // The operands are one type now, so one bound covers both. A
+                // known operand must be numeric at typecheck0; the def-time
+                // acceptance gate for a lambda body runs only there.
+                wrap!(self, constrain_operand(&ctx.env, &num, t))?;
+                wrap!(self, refuse_mixed_numeric(&ctx.env, t, "compute with"))?;
                 let ut = if $checked {
-                    Type::Set(Arc::from_iter([out, ARITH_ERR.clone()]))
+                    Type::Set(Arc::from_iter([t.clone(), ARITH_ERR.clone()]))
                 } else {
-                    out
+                    t.clone()
                 };
                 wrap!(self, self.typ.check_contains(&ctx.env, &ut))
             }

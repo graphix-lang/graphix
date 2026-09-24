@@ -281,6 +281,12 @@ The compiler has inferred two properties here,
   `fn('a: Number, 'a) -> 'a`, so `f(1, 2.5)` is refused (cast one side).
 - the result is that same type.
 
+The operands must be exactly one type: `x + 1` over `x: [i64, null]` is
+refused (take the null off first, `x$ + 1`), and so is any arithmetic
+over a type holding two numeric types, `[i64, f64]` or `Number`, even
+`x * x`: its values would promote at runtime, so the result's type
+would not say what it is.
+
 Comparison is `fn('a, 'a) -> bool` over exactly one type: `|x, y| x < y`
 takes two arguments of one type, and neither operand's type may merely
 contain the other's. `x == 3` over `x: [i64, null]` and `` v == `Red ``

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-477e4daa.js";
+            window.path_to_searchindex_js = "../searchindex-391d4f0e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -338,6 +338,11 @@ itself during the type inference process.</p>
 <code>fn('a: Number, 'a) -&gt; 'a</code>, so <code>f(1, 2.5)</code> is refused (cast one side).</li>
 <li>the result is that same type.</li>
 </ul>
+<p>The operands must be exactly one type: <code>x + 1</code> over <code>x: [i64, null]</code> is
+refused (take the null off first, <code>x$ + 1</code>), and so is any arithmetic
+over a type holding two numeric types, <code>[i64, f64]</code> or <code>Number</code>, even
+<code>x * x</code>: its values would promote at runtime, so the result’s type
+would not say what it is.</p>
 <p>Comparison is <code>fn('a, 'a) -&gt; bool</code> over exactly one type: <code>|x, y| x &lt; y</code>
 takes two arguments of one type, and neither operand’s type may merely
 contain the other’s. <code>x == 3</code> over <code>x: [i64, null]</code> and <code>v == `Red</code>

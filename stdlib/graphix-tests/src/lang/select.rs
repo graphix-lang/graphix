@@ -25,9 +25,9 @@ run!(select0, SELECT0, |v: Result<&Value>| match v {
 
 const LOOPING_SELECT: &str = r#"
 {
-  let v: [Number, string, error] = "1";
+  let v: [i64, string, error] = "1";
   let v = select v {
-    Number as i => i,
+    i64 as i => i,
     string as s => v <- cast<i64>(s),
     error as e => never(e)
   };

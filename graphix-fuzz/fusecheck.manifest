@@ -61,7 +61,7 @@
 4	catch-stmt-aug2026/01_shadowing_rethrow.gx
 3	catch-stmt-aug2026/02_toplevel_file_catch.gx
 1	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
-0	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
+1	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
 6	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
 1	composite-qop-jun2026/01_composite_success_qop_segv.gx
 1	composite-qop-jun2026/02_borrowed_inner_qop.gx

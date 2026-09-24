@@ -110,20 +110,19 @@ run!(default_outside_constraint_set, DEFAULT_OUTSIDE_CONSTRAINT_SET, |v: Result<
 
 const LABELED_ARGS: &str = r#"
 {
-  let f = |#foo: Number, #bar: Number = 42| foo + bar;
+  let f = |#foo: i64, #bar: i64 = 42| foo + bar;
   f(#foo: 0)
 }
 "#;
 
-// None: `foo + bar` over `Number` params returns the loose `Number` set.
 run!(labeled_args, LABELED_ARGS, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const REQUIRED_ARGS: &str = r#"
 {
-  let f = |#foo: Number, #bar: Number = 42| foo + bar;
+  let f = |#foo: i64, #bar: i64 = 42| foo + bar;
   f(#bar: 0)
 }
 "#;
@@ -135,40 +134,37 @@ run!(required_args, REQUIRED_ARGS, |v: Result<&Value>| match v {
 
 const MIXED_ARGS: &str = r#"
 {
-  let f = |#foo: Number, #bar: Number = 42, baz| foo + bar + baz;
+  let f = |#foo: i64, #bar: i64 = 42, baz| foo + bar + baz;
   f(#foo: 0, 0)
 }
 "#;
 
-// None: loose `Number` return.
 run!(mixed_args, MIXED_ARGS, |v: Result<&Value>| match v {
     Ok(Value::I64(42)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARG_SUBTYPING: &str = r#"
 {
-  let f = |#foo: Number, #bar: Number = 42| foo + bar;
-  let g = |f: fn(#foo: Number) -> Number| f(#foo: 3);
+  let f = |#foo: i64, #bar: i64 = 42| foo + bar;
+  let g = |f: fn(#foo: i64) -> i64| f(#foo: 3);
   g(f)
 }
 "#;
 
-// ASPIRE: Jit — fn-typed lambda arg passed as a value (the HOF gap).
 run!(arg_subtyping, ARG_SUBTYPING, |v: Result<&Value>| match v {
     Ok(Value::I64(45)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const ARG_NAME_SHORT: &str = r#"
 {
-  let f = |#foo: Number, #bar: Number = 42| foo + bar;
+  let f = |#foo: i64, #bar: i64 = 42| foo + bar;
   let foo = 3;
   f(#foo)
 }
 "#;
 
-// None: loose `Number` return.
 run!(arg_name_short, ARG_NAME_SHORT, |v: Result<&Value>| match v {
     Ok(Value::I64(45)) => true,
     _ => false,

@@ -55,9 +55,9 @@ run!(struct_computed_bool_field, STRUCT_COMPUTED_BOOL_FIELD, |v: Result<&Value>|
 
 const TUPLES1: &str = r#"
 {
-  let t: (string, Number, Number) = ("foo", 42, 23.5);
+  let t: (string, i64, f64) = ("foo", 42, 23.5);
   let (_, y, z) = t;
-  y + z
+  cast<f64>(y)$ + z
 }
 "#;
 
