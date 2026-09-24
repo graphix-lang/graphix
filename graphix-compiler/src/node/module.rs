@@ -970,7 +970,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
 
     fn typ(&self) -> &Type {
         match &self.body {
-            Body::Static => self.nodes.last().map(|n| n.typ()).unwrap_or(&Type::Bottom),
+            Body::Static => self.nodes.last().map(|n| n.typ()).unwrap_or(Type::BOTTOM),
             Body::Dynamic { .. } => &DYNAMIC_TYP,
         }
     }

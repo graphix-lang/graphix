@@ -179,8 +179,8 @@ pub(super) fn alt_types(typ: &Type, alts: usize) -> Option<Arc<[Type]>> {
 
 fn struct_fields(env: &Env, typ: &Type) -> Option<Arc<[(ArcStr, Type, WrittenAt)]>> {
     typ.with_deref(|t| match t {
-        Some(t @ Type::Ref(_)) => match t.lookup_ref(env) {
-            Ok(Type::Struct(elts)) => Some(elts),
+        Some(t @ Type::Ref(_)) => match &t.lookup_ref(env) {
+            Ok(Type::Struct(elts)) => Some(elts.clone()),
             Ok(_) | Err(_) => None,
         },
         Some(Type::Struct(elts)) => Some(elts.clone()),
@@ -550,7 +550,7 @@ impl StructPatternNode {
                         binds.iter().map(|_| Type::empty_tvar()),
                     )),
                 )?;
-                let Some(Type::Tuple(elts)) = type_predicate.deref_cloned() else {
+                let Some(Type::Tuple(elts)) = &type_predicate.deref_cloned() else {
                     return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("tuple patterns can't match {type_predicate}")
                     });
@@ -575,13 +575,13 @@ impl StructPatternNode {
                         WrittenAt::NOWHERE,
                     ),
                 )?;
-                let Some(Type::Variant(ttag, elts, _)) = type_predicate.deref_cloned()
+                let Some(Type::Variant(ttag, elts, _)) = &type_predicate.deref_cloned()
                 else {
                     return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("variant patterns can't match {type_predicate}")
                     });
                 };
-                if ttag != *tag {
+                if *ttag != *tag {
                     bail!("pattern cannot match type, tag mismatch {ttag} vs {tag}")
                 }
                 if binds.len() != elts.len() {
@@ -631,7 +631,7 @@ impl StructPatternNode {
                     )?,
                     _ => bail!("non exhaustive struct matches require type annotations"),
                 }
-                let Some(Type::Struct(elts)) = type_predicate.deref_cloned() else {
+                let Some(Type::Struct(elts)) = &type_predicate.deref_cloned() else {
                     return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!("struct patterns can't match {type_predicate}")
                     });

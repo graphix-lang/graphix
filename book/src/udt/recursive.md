@@ -19,7 +19,14 @@ This defines a singly linked list as a set of two variant cases. Either the list
 is empty (nil), or it is a cons cell with a `'a` and a list, which itself could
 be either a cons cell or nil. If you've never heard the term "cons" and "nil"
 they come from lisp, the original functional programming language from the late
-1950s. Anyway, lets define some functions to work on our new list type,
+1950s.
+
+The recursion must pass through a structure, as `Lst` does through the payload
+of `` `Cons ``: a type that refers back to itself through unions and aliases alone,
+`type T = [i64, T]` or `type A = B; type B = A`, describes no value, and it is
+refused where it is defined.
+
+Anyway, lets define some functions to work on our new list type,
 
 ```graphix
 type Lst<'a> = [

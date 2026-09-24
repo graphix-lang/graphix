@@ -729,7 +729,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
     fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn typ(&self) -> &Type {
-        &Type::Bottom
+        Type::BOTTOM
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -1094,7 +1094,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &self.children.last().map(|n| n.typ()).unwrap_or(&Type::Bottom)
+        self.children.last().map(|n| n.typ()).unwrap_or(Type::BOTTOM)
     }
 
     // CR claude for eric: [structure] the "covered children in order, then
@@ -1440,7 +1440,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &Type::Bottom
+        Type::BOTTOM
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1686,7 +1686,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn typ(&self) -> &Type {
-        &Type::Bottom
+        Type::BOTTOM
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1795,7 +1795,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
             self.resident.set(TagValue::tagged(Value::Null, tag))
         } else {
             let v = tv.value_cloned();
-            self.resident.set(TagValue::tagged(self.target.cast_value(&ctx.env, v), tag))
+            let v = self.target.cast_from(&ctx.env, self.n.typ(), v);
+            self.resident.set(TagValue::tagged(v, tag))
         }
     }
 

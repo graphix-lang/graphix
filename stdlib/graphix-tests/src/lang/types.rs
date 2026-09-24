@@ -780,8 +780,8 @@ const VARIANT_MAP_PAYLOAD: &str = r#"
 }"#;
 run!(variant_map_payload, VARIANT_MAP_PAYLOAD, |v: Result<&Value>| matches!(v, Ok(Value::I64(2))); graphix_package_core::testing::FuseExpect::Jit);
 
-// A cast into a recursive union that consumes nothing is refused, not
-// a stack overflow.
+// A recursive union that consumes nothing names no value: refused at
+// its definition, not a stack overflow at the cast.
 const CAST_RECURSIVE_NO_PROGRESS: &str = r#"
 {
   type Loop = [i64, Loop];
@@ -789,7 +789,7 @@ const CAST_RECURSIVE_NO_PROGRESS: &str = r#"
 }
 "#;
 run!(cast_recursive_no_progress, CAST_RECURSIVE_NO_PROGRESS, |v: Result<&Value>| {
-    matches!(v, Ok(Value::Error(_)))
+    matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
 // A two-element array is not a list: converting it keeps both items.
@@ -840,3 +840,242 @@ run!(
         let result: T<string> = 1
     "#
 ; graphix_package_core::testing::FuseExpect::None);
+
+// An array whose last element is list-shaped is still an array: the
+// cast's source type, not the value's shape, picks the conversion.
+const CAST_ARRAY_TO_LIST: &str = r#"{
+  let a: Array<Array<i64>> = [[1], []];
+  cast<List<Array<i64>>>(a)$
+}"#;
+run!(cast_array_to_list, CAST_ARRAY_TO_LIST, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[i64:1], [[], []]]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+const CAST_NESTED_ARRAY_TO_LIST: &str = r#"{
+  let b: Array<Array<Array<i64>>> = [[[1]], [[2], []]];
+  cast<List<Array<Array<i64>>>>(b)$
+}"#;
+run!(cast_nested_array_to_list, CAST_NESTED_ARRAY_TO_LIST, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[[i64:1]], [[[i64:2], []], []]]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A list statically so converts to an array element by element.
+const CAST_LIST_TO_ARRAY: &str = r#"{
+  let l = [<1, 2>];
+  cast<Array<i64>>(l)$
+}"#;
+run!(cast_list_to_array, CAST_LIST_TO_ARRAY, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:1, i64:2]"
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// Each refused program was accepted and went wrong at run time (a
+// value the type excludes, a function called on the wrong type, an
+// exhaustive select with no arm to take); each accepted twin shows
+// what the rule still admits.
+const NON_CONTRACTIVE: &str = r#"{
+  type T = [i64, T];
+  let v: T = "hello";
+  0
+}"#;
+const NON_CONTRACTIVE_MUTUAL: &str = r#"{
+  type A = [B, `X(i64)];
+  type B = [A, `Y(i64)];
+  let x: A = `Y(1);
+  0
+}"#;
+const NON_CONTRACTIVE_ALIAS: &str = r#"{
+  type Id<'a> = 'a;
+  type T = [i64, Id<T>];
+  0
+}"#;
+const CONTRACTIVE: &str = r#"{
+  type T = [i64, `Wrap(T)];
+  let v: T = `Wrap(`Wrap(3));
+  select v { i64 as n => n, `Wrap(_) => 1 }
+}"#;
+const PARAM_CONTRAVARIANT: &str = r#"{
+  type F<'a> = fn(x: 'a) -> i64;
+  let widen = |f: Array<F<i64>>| -> Array<F<Number>> f;
+  0
+}"#;
+const PARAM_COVARIANT: &str = r#"{
+  type B<'a> = {v: 'a};
+  let widen = |b: Array<B<i64>>| -> Array<B<Number>> b;
+  array::len(widen([{v: 1}]))
+}"#;
+const REF_THROUGH_CELL: &str = r#"{
+  type T = [`Cons(i64, T), `Nil];
+  let mk = |a| `Cons(1, a);
+  let t: T = `Cons(2, mk(mk("oops")));
+  0
+}"#;
+const REF_THROUGH_CELL_OK: &str = r#"{
+  type T = [`Cons(i64, T), `Nil];
+  let mk = |a| `Cons(1, a);
+  let t: T = `Cons(2, mk(mk(`Nil)));
+  select t { `Cons(n, _) => n, `Nil => 0 }
+}"#;
+const RIGID_IN_SET: &str = r#"{
+  let f = |x: ['a, i64]| -> ['b, i64] x;
+  f(1.5)
+}"#;
+const RIGID_IN_SET_ARRAY: &str = r#"{
+  let f = |x: [Array<'a>, i64]| -> [Array<'b>, i64] x;
+  f(1)
+}"#;
+const RIGID_IN_SET_OK: &str = r#"{
+  let f = |x: ['a, i64]| -> ['a, i64] x;
+  f(1)
+}"#;
+const SET_MEMBER_PROBE: &str = r#"{
+  let f = |x: [`A('a, i64), `A(Array<i64>, string)], d: 'a| -> 'a d;
+  f(`A([1], "s"), 42)
+}"#;
+const SET_MEMBER_PROBE_BINDS: &str = r#"{
+  let f = |x: [`A('a, i64), `A(Array<i64>, string)], d: 'a| -> 'a d;
+  f(`A(1, 2), "s")
+}"#;
+const DEFAULTED_LABEL: &str = r#"{
+  let f = |#x: i64| x + 1;
+  let a: Array<fn(?#x: i64) -> i64> = [f];
+  0
+}"#;
+const DEFAULTED_LABEL_OK: &str = r#"{
+  let g = |#x: i64 = 1| x + 1;
+  let a: Array<fn(?#x: i64) -> i64> = [g];
+  let b: Array<fn(#x: i64) -> i64> = [g];
+  array::len(a) + array::len(b)
+}"#;
+const PRODUCT_UNION: &str = r#"{
+  let x: [(i64, i64), (string, string)] = (1, "a");
+  0
+}"#;
+const PRODUCT_UNION_VARIANT: &str = r#"{
+  let x: [`P(i64, i64), `P(string, string)] = `P(1, "a");
+  0
+}"#;
+const PRODUCT_UNION_ONE_DIFFERS: &str = r#"{
+  let x: [(i64, i64), (string, i64)] = ("a", 1);
+  x.1
+}"#;
+const REF_UNION_PARAMS: &str = r#"{
+  type F<'a> = fn(x: 'a) -> i64;
+  let fi: F<i64> = |x: i64| -> i64 x + 1;
+  let fs: F<string> = |x: string| -> i64 str::len(x);
+  let flag = true;
+  let ai: `A(F<i64>) = `A(fi);
+  let as: `A(F<string>) = `A(fs);
+  let c = select flag { true => ai, false => as };
+  select c { `A(f) => f("hello") }
+}"#;
+const REF_UNION_SAME_PARAMS: &str = r#"{
+  type F<'a> = fn(x: 'a) -> i64;
+  let fi: F<i64> = |x: i64| -> i64 x + 1;
+  let fj: F<i64> = |x: i64| -> i64 x * 2;
+  let flag = true;
+  let ai: `A(F<i64>) = `A(fi);
+  let aj: `A(F<i64>) = `A(fj);
+  let c = select flag { true => ai, false => aj };
+  select c { `A(f) => f(1) }
+}"#;
+const DIFF_REF_PARAMS: &str = r#"{
+  type Box<'a> = {v: 'a};
+  type Both = [Array<Box<i64>>, Array<Box<string>>];
+  type BS = Array<Box<string>>;
+  let x: Both = [{v: 1}];
+  select x { BS as s => 0, Array<Box<i64>> as b => 1 }
+}"#;
+const NESTED_QUANTIFIER: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
+  let apply = |f: F| f("hello");
+  0
+}"#;
+const NESTED_QUANTIFIER_OK: &str = r#"{
+  type F = fn<'b: Number>(x: 'b) -> 'b;
+  let apply = |f: F| f(1);
+  apply(|x| x + 1)
+}"#;
+const TRAIT_BESIDE_UNSATISFIABLE: &str = r#"{
+  type P<'x: string> = Array<'x>;
+  type Q<'x: Eq> = Array<'x>;
+  type R<'x: i64> = Array<'x>;
+  let g = |a: P<'q>, b: Q<'q>, c: R<'q>| 0;
+  g([], [], [])
+}"#;
+const TRAIT_BESIDE_WITNESS: &str = r#"{
+  type Q<'x: Eq> = Array<'x>;
+  type R<'x: i64> = Array<'x>;
+  let g = |b: Q<'q>, c: R<'q>| 0;
+  g([], [])
+}"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn unsound_acceptances_are_refused() -> Result<()> {
+    for (src, refusal) in [
+        (NON_CONTRACTIVE, "refers back to itself"),
+        (NON_CONTRACTIVE_MUTUAL, "refers back to itself"),
+        (NON_CONTRACTIVE_ALIAS, "refers back to itself"),
+        (PARAM_CONTRAVARIANT, "does not contain"),
+        (REF_THROUGH_CELL, "does not contain"),
+        (RIGID_IN_SET, "does not contain"),
+        (RIGID_IN_SET_ARRAY, "does not contain"),
+        (SET_MEMBER_PROBE_BINDS, "does not contain"),
+        (DEFAULTED_LABEL, "does not contain"),
+        (PRODUCT_UNION, "does not contain"),
+        (PRODUCT_UNION_VARIANT, "does not contain"),
+        (REF_UNION_PARAMS, "expected fn"),
+        (NESTED_QUANTIFIER, "does not contain"),
+        (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
+    ] {
+        let msg = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => format!("{e:#}"),
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(msg.contains(refusal), "wrong refusal for {src}: {msg}");
+    }
+    for (src, expected) in [
+        (CONTRACTIVE, 1),
+        (PARAM_COVARIANT, 1),
+        (REF_THROUGH_CELL_OK, 2),
+        (RIGID_IN_SET_OK, 1),
+        (SET_MEMBER_PROBE, 42),
+        (DEFAULTED_LABEL_OK, 2),
+        (PRODUCT_UNION_ONE_DIFFERS, 1),
+        (REF_UNION_SAME_PARAMS, 2),
+        (DIFF_REF_PARAMS, 1),
+        (NESTED_QUANTIFIER_OK, 2),
+        (TRAIT_BESIDE_WITNESS, 0),
+    ] {
+        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        assert_eq!(v, Value::I64(expected), "{src}");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+// A signature's declared bounds print once, by name, joined by `+`.
+const PRINTED_BOUND: &str = r#"{
+  let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+  let g: fn(x: string) -> bool = f;
+  0
+}"#;
+const PRINTED_BOUNDS: &str = r#"{
+  let f = 'a: Eq + Ord |x: 'a, y: 'a| -> bool x < y;
+  let g: fn(x: string) -> string = f;
+  0
+}"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn declared_bounds_print_in_the_header() -> Result<()> {
+    for (src, header) in
+        [(PRINTED_BOUND, "fn<'a: Number>("), (PRINTED_BOUNDS, "fn<'a: Eq + Ord>(")]
+    {
+        let msg = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => format!("{e:#}"),
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(msg.contains(header), "no {header} in: {msg}");
+        assert!(!msg.contains("Number & Number"), "a doubled bound in: {msg}");
+    }
+    Ok(())
+}

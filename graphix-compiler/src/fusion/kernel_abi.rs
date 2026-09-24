@@ -489,7 +489,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                     .iter()
                     .map(|m| {
                         let m = m.deref_cloned();
-                        match m {
+                        match &m {
                             Some(Type::Variant(tag, payloads, at)) => {
                                 let fp: Result<LPooled<Vec<Type>>, FreezeError> =
                                     payloads
@@ -500,7 +500,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                                 Ok(Type::Variant(
                                     tag.clone(),
                                     Arc::from_iter(fp.drain(..)),
-                                    at,
+                                    *at,
                                 ))
                             }
                             _ => Err(NonCanonical),

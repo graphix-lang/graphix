@@ -1,12 +1,17 @@
-use super::AndAc;
 use crate::{
     LambdaId,
+    dbgenv::graphix_dbg_bind,
     env::Env,
     expr::{
         ModPath,
         print::{PrettyBuf, PrettyDisplay},
     },
-    typ::{RefHist, TVar, Type, contains::ContainsFlags},
+    typ::{
+        TVar, Type,
+        contains::{ContainsFlags, ContainsHist},
+        key_text,
+        matches::MatchHist,
+    },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, bail};
@@ -18,12 +23,15 @@ use netidx_derive::Pack;
 use nohash::{IntMap, IntSet};
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
-    cmp::{Eq, Ordering, PartialEq},
+    cell::RefCell,
+    cmp::Ordering,
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
     ops::ControlFlow,
     sync::{Arc as SArc, Weak},
+    thread::LocalKey,
 };
 use triomphe::Arc;
 
@@ -104,8 +112,8 @@ impl Ord for FnArgKind {
     }
 }
 
-impl std::hash::Hash for FnArgKind {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for FnArgKind {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             FnArgKind::Positional { .. } => 0u8.hash(state),
             FnArgKind::Labeled { name, has_default } => {
@@ -117,7 +125,7 @@ impl std::hash::Hash for FnArgKind {
     }
 }
 
-#[derive(Debug, Clone, Pack)]
+#[derive(Debug, Clone, Pack, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[pack(unwrapped)]
 pub struct FnArgType {
     pub kind: FnArgKind,
@@ -143,36 +151,6 @@ impl FnArgType {
 
     pub fn has_default(&self) -> bool {
         self.kind.has_default()
-    }
-}
-
-// CR claude for eric: [style] `FnArgType`'s hand-written PartialEq, PartialOrd,
-// Ord and Hash compare `kind` then `typ`, which is exactly what `#[derive]`
-// produces for this field order. Derive them.
-impl PartialEq for FnArgType {
-    fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.typ == other.typ
-    }
-}
-
-impl Eq for FnArgType {}
-
-impl PartialOrd for FnArgType {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for FnArgType {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.kind.cmp(&other.kind).then_with(|| self.typ.cmp(&other.typ))
-    }
-}
-
-impl std::hash::Hash for FnArgType {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.kind.hash(state);
-        self.typ.hash(state);
     }
 }
 
@@ -299,64 +277,86 @@ pub struct FnType {
     pub lambda_ids: LambdaIds,
 }
 
+/// Signature vars in their deterministic order, by (name, TVarId):
+/// recording and settle order land in constraint lists and diagnostics.
+pub(super) fn sorted_tvars(
+    tvs: impl IntoIterator<Item = (ArcStr, TVar)>,
+) -> LPooled<Vec<(ArcStr, TVar)>> {
+    let mut v: LPooled<Vec<(ArcStr, TVar)>> = tvs.into_iter().collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id)));
+    v
+}
+
+thread_local! {
+    static VIEWING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+    static CONSTRAINING: RefCell<IntSet<usize>> = RefCell::new(IntSet::default());
+}
+
+/// One walk's reentrancy guard on a signature: a conjunct can reach the
+/// signature it constrains. The key is released on drop, unwind too.
+struct Walking {
+    set: &'static LocalKey<RefCell<IntSet<usize>>>,
+    key: usize,
+}
+
+impl Walking {
+    fn enter(
+        set: &'static LocalKey<RefCell<IntSet<usize>>>,
+        ft: &FnType,
+    ) -> Option<Self> {
+        let key = ft as *const FnType as usize;
+        set.with_borrow_mut(|s| s.insert(key)).then_some(Walking { set, key })
+    }
+}
+
+impl Drop for Walking {
+    fn drop(&mut self) {
+        self.set.with_borrow_mut(|s| s.remove(&self.key));
+    }
+}
+
 impl FnType {
     /// The tvar cells reachable from args / vargs / rtype / throws,
     /// by name.
     pub(crate) fn sig_tvars(&self) -> LPooled<AHashMap<ArcStr, TVar>> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        for arg in self.args.iter() {
-            arg.typ.collect_tvars(&mut known);
-        }
-        if let Some(t) = &self.vargs {
-            t.collect_tvars(&mut known);
-        }
-        self.rtype.collect_tvars(&mut known);
-        self.throws.collect_tvars(&mut known);
+        self.for_each_type(&mut |t| t.collect_tvars(&mut known));
         known
     }
 
-    /// Name-sorted `(tvar, constraint)` pairs for every declared
-    /// quantifier whose cell carries exactly one conjunct.
-    /// Multi-conjunct cells are unlisted.
-    // CR claude for eric: [bug] Dropping multi-conjunct cells drops declared
-    // bounds from Display, Eq, Ord and Hash. probe: `let f = 'a: Number |x: 'a,
-    // y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f` reports `f` as
-    // `fn(x: 'a: unbound within Number & Number, ..)`: the cell holds `Number`
-    // twice and the `fn<'a: Number>` header is gone. List the (deduped)
-    // conjunction instead of nothing.
-    pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
-        // Only declared names produce pairs: an inner fn mentioning a
-        // quantifier has an empty `quantifiers`, which terminates the
-        // regress on self-referential constraints.
-        let key = self as *const Self as usize;
-        if !Self::walking(|w| w.insert(key)) {
-            return LPooled::take();
-        }
-        let r = (|| {
-            let known = self.sig_tvars();
-            let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
-            for name in self.quantifiers.iter() {
-                let Some(tv) = known.get(name) else { continue };
-                let cons = tv.cell_constraints();
-                if let [tc] = &cons[..] {
-                    // Normalized so equality and display agree on the
-                    // canonical form.
+    /// `(tvar, conjunct)` for every conjunct of every signature cell
+    /// `keep` selects, normalized (so equality and display agree on the
+    /// canonical form), sorted by name then conjunct.
+    fn constraint_pairs(
+        &self,
+        keep: impl Fn(&TVar) -> bool,
+    ) -> LPooled<Vec<(TVar, Type)>> {
+        let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        let Some(_guard) = Walking::enter(&VIEWING, self) else { return view };
+        for (_, tv) in self.sig_tvars().drain() {
+            if keep(&tv) {
+                for tc in tv.cell_constraints() {
                     view.push((tv.clone(), tc.normalize()));
                 }
             }
-            view.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
-            view
-        })();
-        Self::walking(|w| w.remove(&key));
-        r
+        }
+        view.sort_by(|(a, x), (b, y)| a.name.cmp(&b.name).then_with(|| x.cmp(y)));
+        view.dedup_by(|(a, x), (b, y)| a.name == b.name && x == y);
+        view
     }
 
-    // CR claude for eric: [readability] The first three doc lines belong to
-    // `cell_constraint_pairs` below; `content_key` was inserted between them and
-    // their function, so it now carries both docs and that one has none.
-    /// Every reachable single-conjunct cell as (tvar, conjunct) pairs,
-    /// declared or not (an inferred impl's constraints sit on auto
-    /// `'_N` cells).
+    /// The declared quantifiers' conjuncts, as [`Self::constraint_pairs`]:
+    /// the part of the constraints that is the signature's identity.
+    pub fn constraint_view(&self) -> LPooled<Vec<(TVar, Type)>> {
+        self.constraint_pairs(|tv| self.quantifiers.contains(&tv.name))
+    }
+
+    /// Every reachable cell's conjuncts, declared or not (an inferred
+    /// impl's constraints sit on auto `'_N` cells).
+    pub(crate) fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
+        self.constraint_pairs(|_| true)
+    }
+
     /// The canonical bytes the image keys this type by: the shape with
     /// every variable by identity, and the lambda ids cell by identity.
     pub(crate) fn content_key(&self, out: &mut Vec<u8>) {
@@ -369,12 +369,6 @@ impl FnType {
             quantifiers: _,
             lambda_ids,
         } = self;
-        // CR claude for eric: [structure] `text` re-implements `key_text` in
-        // typ/mod.rs, which `Type::content_key` uses for the same bytes. Share it.
-        let text = |s: &str, out: &mut Vec<u8>| {
-            encode_varint(s.len() as u64, out);
-            out.put_slice(s.as_bytes());
-        };
         encode_varint(args.len() as u64, out);
         for a in args.iter() {
             match &a.kind {
@@ -384,13 +378,13 @@ impl FnType {
                         None => out.put_u8(0),
                         Some(n) => {
                             out.put_u8(1);
-                            text(n, out);
+                            key_text(n, out);
                         }
                     }
                 }
                 FnArgKind::Labeled { name, has_default } => {
                     out.put_u8(1);
-                    text(name, out);
+                    key_text(name, out);
                     out.put_u8(*has_default as u8);
                 }
             }
@@ -408,143 +402,47 @@ impl FnType {
         out.put_u8(*explicit_throws as u8);
         out.put_u64_le(lambda_ids.addr() as u64);
     }
-
-    // CR claude for eric: [structure] The loop body and the sort are
-    // `constraint_view`'s; the two differ only in which names they visit.
-    // `constraint_view` is this filtered to `quantifiers`.
-    pub(crate) fn cell_constraint_pairs(&self) -> LPooled<Vec<(TVar, Type)>> {
-        let known = self.sig_tvars();
-        let mut view: LPooled<Vec<(TVar, Type)>> = LPooled::take();
-        for tv in known.values() {
-            let cons = tv.cell_constraints();
-            if let [tc] = &cons[..] {
-                view.push((tv.clone(), tc.normalize()));
-            }
-        }
-        view.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
-        view
-    }
-
-    // CR claude for eric: [risk] One thread-local set guards two different walks
-    // (`constraint_view`, `for_each_sig_constraint`) by the same key, and neither
-    // removes its key on unwind: a nested call of the other walk, or any panic
-    // mid-walk, silently empties later answers for that address (Eq and
-    // `collect_tvars` read them). `constraint_view`'s comment says empty inner
-    // `quantifiers` end the regress, yet image decode (expr/serialize.rs) gives
-    // inner fns quantifiers. Use a drop guard and a separate set per walk.
-    fn walking<R>(f: impl FnOnce(&mut nohash::IntSet<usize>) -> R) -> R {
-        thread_local! {
-            static WALKING: std::cell::RefCell<nohash::IntSet<usize>> =
-                std::cell::RefCell::new(nohash::IntSet::default());
-        }
-        WALKING.with_borrow_mut(f)
-    }
 }
 
-// CR claude for eric: [perf] Eq, Ord and Hash each call `constraint_view` on
-// both sides: a full signature walk into a pooled map, a normalize of every
-// conjunct (itself a quadratic set flatten), a sort. `flatten_set`'s `acc.sort()`
-// and `merge`'s `f0 == f1` hit this per comparison. Compare the shape first and
-// read the constraints only when it is equal (PartialOrd already orders it so).
+/// Structural: `lambda_ids` is provenance, `explicit_throws` does not
+/// survive a print round-trip when throws is Bottom, and the declared
+/// constraints compare only once the shape is equal.
 impl PartialEq for FnType {
     fn eq(&self, other: &Self) -> bool {
-        let Self {
-            args: args0,
-            vargs: vargs0,
-            rtype: rtype0,
-            throws: th0,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        let Self {
-            args: args1,
-            vargs: vargs1,
-            rtype: rtype1,
-            throws: th1,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = other;
-        args0 == args1
-            && vargs0 == vargs1
-            && rtype0 == rtype1
-            && th0 == th1
+        self.args == other.args
+            && self.vargs == other.vargs
+            && self.rtype == other.rtype
+            && self.throws == other.throws
             && *self.constraint_view() == *other.constraint_view()
     }
 }
 
 impl Eq for FnType {}
 
-// CR claude for eric: [style] The nested `match .. Some(Equal) => ..` pyramid is
-// `cmp(..).then_with(..)` chained; `Ord` should hold it and `partial_cmp` return
-// `Some(self.cmp(other))`, not `Ord` unwrapping `partial_cmp`. The local
-// `use std::cmp::Ordering` repeats the top-level import.
 impl PartialOrd for FnType {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        use std::cmp::Ordering;
-        let Self {
-            args: args0,
-            vargs: vargs0,
-            rtype: rtype0,
-            throws: th0,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        let Self {
-            args: args1,
-            vargs: vargs1,
-            rtype: rtype1,
-            throws: th1,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = other;
-        match args0.partial_cmp(&args1) {
-            Some(Ordering::Equal) => match vargs0.partial_cmp(vargs1) {
-                Some(Ordering::Equal) => match rtype0.partial_cmp(rtype1) {
-                    Some(Ordering::Equal) => {
-                        match (*self.constraint_view())
-                            .partial_cmp(&*other.constraint_view())
-                        {
-                            Some(Ordering::Equal) => th0.partial_cmp(th1),
-                            r => r,
-                        }
-                    }
-                    r => r,
-                },
-                r => r,
-            },
-            r => r,
-        }
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for FnType {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap()
+        self.args
+            .cmp(&other.args)
+            .then_with(|| self.vargs.cmp(&other.vargs))
+            .then_with(|| self.rtype.cmp(&other.rtype))
+            .then_with(|| (*self.constraint_view()).cmp(&*other.constraint_view()))
+            .then_with(|| self.throws.cmp(&other.throws))
     }
 }
 
-impl std::hash::Hash for FnType {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Like PartialEq: lambda_ids is provenance and explicit_throws
-        // does not survive a print round-trip when throws is Bottom.
-        let Self {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        args.hash(state);
-        vargs.hash(state);
-        rtype.hash(state);
-        self.constraint_view().hash(state);
-        throws.hash(state);
+/// The shape only: equal signatures have equal shapes.
+impl Hash for FnType {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.args.hash(state);
+        self.vargs.hash(state);
+        self.rtype.hash(state);
+        self.throws.hash(state);
     }
 }
 
@@ -654,27 +552,36 @@ impl FnType {
         });
     }
 
-    /// Visit each signature cell's constraint conjuncts. Guarded per
-    /// `FnType` address: a conjunct Fn can reach back here.
-    pub(crate) fn for_each_sig_constraint(&self, f: &mut impl FnMut(&Type)) {
-        let key = self as *const Self as usize;
-        if Self::walking(|w| w.insert(key)) {
-            // CR claude for eric: [structure] "sig_tvars drained into a Vec,
-            // sorted by (name, id)" is written three times: here,
-            // `constrain_known` and `sig_matches_int` (which also calls
-            // `impl_fn.sig_tvars()` twice). One `sorted_sig_tvars` helper.
-            let mut tvs: LPooled<Vec<(ArcStr, TVar)>> =
-                self.sig_tvars().drain().collect();
-            tvs.sort_by(|a, b| {
-                a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
-            });
-            for (_, tv) in tvs.drain(..) {
+    /// Every type position of the signature in its one order: args,
+    /// vargs, rtype, each signature cell's conjuncts (flagged `true`),
+    /// throws. [`Self::alias_tvars`] makes the first-seen occurrence of a
+    /// name the surviving cell, so the order is observable. The
+    /// conjuncts are guarded per `FnType` address: one can reach back.
+    pub(crate) fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
+        let FnType {
+            args,
+            vargs,
+            rtype,
+            throws,
+            explicit_throws: _,
+            quantifiers: _,
+            lambda_ids: _,
+        } = self;
+        for arg in args.iter() {
+            f(&arg.typ, false)
+        }
+        if let Some(vargs) = vargs {
+            f(vargs, false)
+        }
+        f(rtype, false);
+        if let Some(_guard) = Walking::enter(&CONSTRAINING, self) {
+            for (_, tv) in sorted_tvars(self.sig_tvars().drain()).drain(..) {
                 for tc in tv.cell_constraints() {
-                    f(&tc);
+                    f(&tc, true);
                 }
             }
-            Self::walking(|w| w.remove(&key));
         }
+        f(throws, false);
     }
 
     pub fn unbind_tvars(&self) {
@@ -693,40 +600,23 @@ impl FnType {
     pub fn constrain_known(&self, closed_only: bool) {
         let mut known = LPooled::take();
         self.collect_tvars(&mut known);
-        // Recording order lands in constraint lists and diagnostics,
-        // so it must be deterministic.
-        let mut known: LPooled<Vec<(ArcStr, TVar)>> = known.drain().collect();
-        known.sort_by(|a, b| {
-            a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
-        });
-        for (_, tv) in known.drain(..) {
+        for (_, tv) in sorted_tvars(known.drain()).drain(..) {
             // Cloned out through the alias chain: add_cell_constraint
             // write-locks the same cell.
             let bound = Type::TVar(tv.clone()).deref_cloned();
-            if closed_only {
-                match &bound {
-                    Some(t)
-                        if *t != Type::Bottom && *t != Type::Any && !t.has_unbound() => {}
-                    _ => continue,
-                }
+            let Some(t) = bound.filter(|t| *t != Type::Bottom && *t != Type::Any) else {
+                continue;
+            };
+            if closed_only && t.has_unbound() {
+                continue;
             }
-            if let Some(t) = bound
-                && t != Type::Bottom
-                && t != Type::Any
-            {
-                // Private cells, open leaves left open: a partial fact
-                // must not be closed to `Array<Any>`.
-                let t = t.reset_tvars();
-                let tc = t.normalize();
-                if crate::dbgenv::graphix_dbg_bind() {
-                    eprintln!(
-                        "CONSTRAIN-KNOWN '{}({:x}) += {tc:?}",
-                        tv.name,
-                        tv.cell_addr()
-                    );
-                }
-                tv.add_cell_constraint(tc);
+            // Private cells, open leaves left open: a partial fact
+            // must not be closed to `Array<Any>`.
+            let tc = t.reset_tvars().normalize();
+            if graphix_dbg_bind() {
+                eprintln!("CONSTRAIN-KNOWN '{}({:x}) += {tc:?}", tv.name, tv.cell_addr());
             }
+            tv.add_cell_constraint(tc);
         }
     }
 
@@ -753,9 +643,9 @@ impl FnType {
     pub(super) fn replace_tvars_int(
         &self,
         known: &AHashMap<ArcStr, Type>,
-        renamed: &mut AHashMap<ArcStr, TVar>,
+        fresh: &mut AHashMap<usize, TVar>,
     ) -> Option<Self> {
-        self.cow_walk(|t| t.replace_tvars_int(known, renamed))
+        self.cow_walk(|t| t.replace_tvars_int(known, fresh))
     }
 
     /// Replace auto type variables (`'_23`) that carry one constraint
@@ -763,8 +653,6 @@ impl FnType {
     /// `Type::resolve_tvars`, which discards the cells.
     pub fn replace_auto_constrained(&self) -> Self {
         let mut known: LPooled<AHashMap<ArcStr, Type>> = LPooled::take();
-        let Self { args, vargs, rtype, throws, explicit_throws, quantifiers, lambda_ids } =
-            self;
         // Read the cells directly: auto names are never declared, so
         // `constraint_view` cannot see them.
         for (name, tv) in self.sig_tvars().drain() {
@@ -777,31 +665,9 @@ impl FnType {
         let mut all_tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut all_tvars);
         for (name, tv) in all_tvars.drain() {
-            if !known.contains_key(&name) {
-                known.insert(name, Type::TVar(tv));
-            }
+            known.entry(name).or_insert(Type::TVar(tv));
         }
-        // CR claude for eric: [structure] The rebuild below is
-        // `self.replace_tvars(&known)` (every name is in `known`, so the shared
-        // `renamed` map is never used), minus its copy-on-write sharing.
-        let args = Arc::from_iter(args.iter().map(|FnArgType { kind, typ }| FnArgType {
-            kind: kind.clone(),
-            typ: typ.replace_tvars(&known),
-        }));
-        let vargs = vargs.as_ref().map(|t| t.replace_tvars(&known));
-        let rtype = rtype.replace_tvars(&known);
-        let throws = throws.replace_tvars(&known);
-        let explicit_throws = *explicit_throws;
-        let lambda_ids = lambda_ids.clone();
-        Self {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws,
-            quantifiers: quantifiers.clone(),
-            lambda_ids,
-        }
+        self.replace_tvars(&known)
     }
 
     pub fn has_unbound(&self) -> bool {
@@ -815,82 +681,25 @@ impl FnType {
         .is_break()
     }
 
-    pub fn bind_as(&self, t: &Type) {
-        self.for_each_type(&mut |x| x.bind_as(t))
-    }
-
-    // CR claude for eric: [structure] `alias_tvars`, `unfreeze_tvars` and
-    // `collect_tvars` each hand-write the same args/vargs/rtype/constraints/throws
-    // walk, and `sig_tvars` re-writes `for_each_type`'s. One walker that takes a
-    // "visit constraints" switch keeps the order in one place.
-    // The three walks below visit the cell constraints between rtype
-    // and throws; for `alias_tvars` the first-seen occurrence of a
-    // name becomes the surviving cell, so the order is observable.
-
     pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        for arg in args.iter() {
-            arg.typ.alias_tvars(known)
-        }
-        if let Some(vargs) = vargs {
-            vargs.alias_tvars(known)
-        }
-        rtype.alias_tvars(known);
-        self.for_each_sig_constraint(&mut |tc| tc.alias_tvars(known));
-        throws.alias_tvars(known);
+        self.for_each_part(&mut |t, _| t.alias_tvars(known))
     }
 
     pub fn unfreeze_tvars(&self) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        for arg in args.iter() {
-            arg.typ.unfreeze_tvars()
-        }
-        if let Some(vargs) = vargs {
-            vargs.unfreeze_tvars()
-        }
-        rtype.unfreeze_tvars();
-        self.for_each_sig_constraint(&mut |tc| tc.unfreeze_tvars());
-        throws.unfreeze_tvars();
+        self.for_each_part(&mut |t, _| t.unfreeze_tvars())
     }
 
+    /// Conjuncts are visited in their canonical form: a tvar in a
+    /// portion that normalizes away carries no constraint force, and
+    /// identity must not depend on the stored form.
     pub fn collect_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        let FnType {
-            args,
-            vargs,
-            rtype,
-            throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        for arg in args.iter() {
-            arg.typ.collect_tvars(known)
-        }
-        if let Some(vargs) = vargs {
-            vargs.collect_tvars(known)
-        }
-        rtype.collect_tvars(known);
-        // Over the canonical form: a tvar in a portion that normalizes
-        // away carries no constraint force, and identity must not
-        // depend on the stored form.
-        self.for_each_sig_constraint(&mut |tc| tc.normalize().collect_tvars(known));
-        throws.collect_tvars(known);
+        self.for_each_part(&mut |t, constraint| {
+            if constraint {
+                t.normalize().collect_tvars(known)
+            } else {
+                t.collect_tvars(known)
+            }
+        })
     }
 
     /// Index of the first positional parameter (`args.len()` when all
@@ -899,46 +708,44 @@ impl FnType {
         self.args.iter().position(|a| a.is_positional()).unwrap_or(self.args.len())
     }
 
+    /// `self`'s arguments paired with `t`'s: labeled by name, positional
+    /// by index. The pairs cover what aligns; the flag says whether the
+    /// shapes align in full: no label of `self` absent from `t`, no
+    /// required label of `t` absent from `self`, as many positionals.
+    fn align<'a>(
+        &'a self,
+        t: &'a Self,
+    ) -> (SmallVec<[(&'a FnArgType, &'a FnArgType); 8]>, bool) {
+        let (sul, tul) = (self.first_positional(), t.first_positional());
+        let mut pairs: SmallVec<[(&FnArgType, &FnArgType); 8]> = SmallVec::new();
+        let mut ok = self.args.len() - sul == t.args.len() - tul;
+        for a in &self.args[..sul] {
+            match t.args[..tul].iter().find(|b| b.label() == a.label()) {
+                Some(b) => pairs.push((a, b)),
+                None => ok = false,
+            }
+        }
+        ok &= t.args[..tul].iter().all(|b| {
+            b.has_default() || self.args[..sul].iter().any(|a| a.label() == b.label())
+        });
+        pairs.extend(self.args[sul..].iter().zip(t.args[tul..].iter()));
+        (pairs, ok)
+    }
+
     /// Whether a value of type `t` could match a pattern typed `self`:
     /// same arity and labels, every component could match; nothing is
     /// unified.
-    // CR claude for eric: [structure] Pairing a labeled prefix by name and a
-    // positional suffix by index, with the missing-label checks, is written out
-    // in `could_match_int`, `contains_int` and `pre_unify_params` (and a fourth
-    // variant in `sig_contains`). One alignment iterator would keep the rules,
-    // including the `has_default` one `contains_int` misses, in one place.
     pub(super) fn could_match_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut MatchHist,
         t: &Self,
     ) -> Result<bool> {
-        let sul = self.first_positional();
-        let tul = t.first_positional();
-        for a in &self.args[..sul] {
-            if let FnArgKind::Labeled { name: l, .. } = &a.kind {
-                match t.args.iter().find(|b| b.label() == Some(l)) {
-                    None => return Ok(false),
-                    Some(o) => {
-                        if !a.typ.could_match_int(env, hist, &o.typ)? {
-                            return Ok(false);
-                        }
-                    }
-                }
-            }
-        }
-        for a in &t.args[..tul] {
-            if let FnArgKind::Labeled { name: l, has_default } = &a.kind
-                && !*has_default
-                && !self.args.iter().any(|b| b.label() == Some(l))
-            {
-                return Ok(false);
-            }
-        }
-        if self.args.len() - sul != t.args.len() - tul {
+        let (pairs, ok) = self.align(t);
+        if !ok {
             return Ok(false);
         }
-        for (a, b) in self.args[sul..].iter().zip(t.args[tul..].iter()) {
+        for (a, b) in pairs {
             if !a.typ.could_match_int(env, hist, &b.typ)? {
                 return Ok(false);
             }
@@ -957,81 +764,58 @@ impl FnType {
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.contains_int(
-            ContainsFlags::AliasTVars | ContainsFlags::InitTVars,
-            env,
-            &mut RefHist::new(LPooled::take()),
-            t,
-        )
+        self.contains_int(ContainsFlags::Commit.into(), env, &mut ContainsHist::new(), t)
     }
 
+    /// Arguments are contravariant: each of `t`'s parameters must admit
+    /// what `self`'s callers pass, and a label `self` lets a caller omit
+    /// must be one `t` defaults.
     pub(super) fn contains_int(
         &self,
         flags: BitFlags<ContainsFlags>,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), bool>>,
+        hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        let sul = self.first_positional();
-        let tul = t.first_positional();
-        // CR claude for eric: [bug] A label present on both sides is accepted
-        // whatever its `has_default`: `fn(?#x: i64) -> i64` contains
-        // `fn(#x: i64) -> i64`, so a caller may omit `#x` on a function that
-        // requires it. probe: `let f = |#x: i64| x + 1; let a: Array<fn(?#x:
-        // i64) -> i64> = [f]; let h = a[0]$; println("r = [h()]")` passes
-        // `--check` and never prints; passed to a `|h: fn(?#x: i64) -> i64| h()`
-        // parameter it fails with "BUG: in bind missing required argument x".
-        // A defaulted label in `self` needs a defaulted label in `t`.
-        for a in &self.args[..sul] {
-            if let FnArgKind::Labeled { name: l, .. } = &a.kind {
-                match t.args.iter().find(|a| a.label() == Some(l)) {
-                    None => return Ok(false),
-                    Some(o) => {
-                        if !o.typ.contains_int(flags, env, hist, &a.typ)? {
-                            return Ok(false);
-                        }
-                    }
-                }
+        let (pairs, ok) = self.align(t);
+        if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
+            return Ok(false);
+        }
+        for (s, t) in pairs {
+            if !t.typ.contains_int(flags, env, hist, &s.typ)? {
+                return Ok(false);
             }
         }
-        for a in &t.args[..tul] {
-            if let FnArgKind::Labeled { name: l, has_default } = &a.kind {
-                if !*has_default && !self.args.iter().any(|a| a.label() == Some(l)) {
-                    return Ok(false);
-                }
-            }
-        }
-        let slen = self.args.len() - sul;
-        let tlen = t.args.len() - tul;
-        Ok(slen == tlen
-            && t.args[tul..]
-                .iter()
-                .zip(self.args[sul..].iter())
-                .map(|(t, s)| t.typ.contains_int(flags, env, hist, &s.typ))
-                .collect::<Result<AndAc>>()?
-                .0
-            && match (&t.vargs, &self.vargs) {
-                (Some(tv), Some(sv)) => tv.contains_int(flags, env, hist, sv)?,
-                (None, None) => true,
-                (_, _) => false,
-            }
-            && self.rtype.contains_int(flags, env, hist, &t.rtype)?
-            && self
-                .constraint_view()
-                .iter()
-                .map(|(tv, tc)| {
-                    tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))
-                })
-                .collect::<Result<AndAc>>()?
-                .0
-            && t.constraint_view()
-                .iter()
-                .map(|(tv, tc)| {
-                    tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))
-                })
-                .collect::<Result<AndAc>>()?
-                .0
+        Ok(match (&t.vargs, &self.vargs) {
+            (Some(tv), Some(sv)) => tv.contains_int(flags, env, hist, sv)?,
+            (None, None) => true,
+            (_, _) => false,
+        } && self.rtype.contains_int(flags, env, hist, &t.rtype)?
+            && self.bounds_hold(flags, env, hist)?
+            && t.bounds_hold(flags, env, hist)?
             && self.throws.contains_int(flags, env, hist, &t.throws)?)
+    }
+
+    /// Every declared bound holds for its variable. A variable with one
+    /// bound meets it (an open one binds to it); with several, only a
+    /// bound variable is checked: an open conjunction settles by a
+    /// witness, and meanwhile the cell enforces it at every binding.
+    fn bounds_hold(
+        &self,
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+    ) -> Result<bool> {
+        let view = self.constraint_view();
+        for (tv, tc) in view.iter() {
+            let alone = view.iter().filter(|(v, _)| v.name == tv.name).count() == 1;
+            if (alone || tv.is_bound())
+                && !tc.contains_int(flags, env, hist, &Type::TVar(tv.clone()))?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub fn check_contains(&self, env: &Env, other: &Self) -> Result<()> {
@@ -1046,77 +830,9 @@ impl FnType {
     /// before its body is typechecked. Return and throws are what the
     /// body determines and are left open.
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
-        let flags = ContainsFlags::AliasTVars | ContainsFlags::InitTVars;
-        let mut hist = RefHist::new(LPooled::take());
-        let sul = self.first_positional();
-        let tul = t.first_positional();
-        for a in &self.args[..sul] {
-            if let FnArgKind::Labeled { name: l, .. } = &a.kind
-                && let Some(o) = t.args.iter().find(|a| a.label() == Some(l))
-            {
-                o.typ.contains_int(flags, env, &mut hist, &a.typ)?;
-            }
-        }
-        for (t, s) in t.args[tul..].iter().zip(self.args[sul..].iter()) {
-            t.typ.contains_int(flags, env, &mut hist, &s.typ)?;
-        }
-        Ok(())
-    }
-
-    // CR claude for eric: [dead] `sig_contains` / `check_sig_contains` have no
-    // caller in the workspace (and compare arguments covariantly, unlike
-    // `contains`); `map_argpos` below has none either. Delete them.
-    /// [`Self::contains`] without labeled argument subtyping.
-    pub fn sig_contains(&self, env: &Env, other: &Self) -> Result<bool> {
-        let Self {
-            args: args0,
-            vargs: vargs0,
-            rtype: rtype0,
-            throws: tr0,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        let Self {
-            args: args1,
-            vargs: vargs1,
-            rtype: rtype1,
-            throws: tr1,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = other;
-        Ok(args0.len() == args1.len()
-            && args0
-                .iter()
-                .zip(args1.iter())
-                .map(|(a0, a1)| Ok(a0.kind == a1.kind && a0.typ.contains(env, &a1.typ)?))
-                .collect::<Result<AndAc>>()?
-                .0
-            && match (vargs0, vargs1) {
-                (None, None) => true,
-                (None, _) | (_, None) => false,
-                (Some(t0), Some(t1)) => t0.contains(env, t1)?,
-            }
-            && rtype0.contains(env, rtype1)?
-            && self
-                .constraint_view()
-                .iter()
-                .map(|(tv, tc)| tc.contains(env, &Type::TVar(tv.clone())))
-                .collect::<Result<AndAc>>()?
-                .0
-            && other
-                .constraint_view()
-                .iter()
-                .map(|(tv, tc)| tc.contains(env, &Type::TVar(tv.clone())))
-                .collect::<Result<AndAc>>()?
-                .0
-            && tr0.contains(env, tr1)?)
-    }
-
-    pub fn check_sig_contains(&self, env: &Env, other: &Self) -> Result<()> {
-        if !self.sig_contains(env, other)? {
-            bail!("Fn signature {self} does not contain {other}")
+        let mut hist = ContainsHist::new();
+        for (s, t) in self.align(t).0 {
+            t.typ.contains_int(ContainsFlags::Commit.into(), env, &mut hist, &s.typ)?;
         }
         Ok(())
     }
@@ -1126,7 +842,7 @@ impl FnType {
             env,
             impl_fn,
             &mut LPooled::take(),
-            &mut RefHist::new(LPooled::take()),
+            &mut super::RefHist::new(),
         )
     }
 
@@ -1135,7 +851,7 @@ impl FnType {
         env: &Env,
         impl_fn: &Self,
         tvar_map: &mut IntMap<usize, Type>,
-        hist: &mut RefHist<AHashSet<(Option<usize>, Option<usize>)>>,
+        hist: &mut super::RefHist<AHashSet<super::RefPair>>,
     ) -> Result<()> {
         let Self {
             args: sig_args,
@@ -1200,15 +916,15 @@ impl FnType {
         // Every declared bound must be among the impl cell's whole
         // conjunction, compared by meaning (refs are scoped
         // independently on each side).
-        let sig_cons = self.constraint_view();
-        let impl_tvs = impl_fn.sig_tvars();
-        for (sig_tv, sig_tc) in sig_cons.iter() {
+        let impl_tvs = sorted_tvars(impl_fn.sig_tvars().drain());
+        let probe = BitFlags::empty();
+        for (sig_tv, sig_tc) in self.constraint_view().iter() {
             let mut found = false;
-            if let Some(tv) = impl_tvs.get(&sig_tv.name) {
-                for c in tv.cell_constraints().iter() {
+            if let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name)) {
+                for c in impl_tvs[i].1.cell_constraints().iter() {
                     if c == sig_tc
-                        || (c.contains_with_flags(BitFlags::empty(), env, sig_tc)?
-                            && sig_tc.contains_with_flags(BitFlags::empty(), env, c)?)
+                        || (c.contains_with_flags(probe, env, sig_tc)?
+                            && sig_tc.contains_with_flags(probe, env, c)?)
                     {
                         found = true;
                         break;
@@ -1221,23 +937,13 @@ impl FnType {
         }
         // Every conjunct of every impl cell must admit the
         // signature's concrete choice.
-        let mut impl_tvs: LPooled<Vec<(ArcStr, TVar)>> =
-            impl_fn.sig_tvars().drain().collect();
-        impl_tvs.sort_by(|a, b| {
-            a.0.cmp(&b.0).then_with(|| a.1.read().id.cmp(&b.1.read().id))
-        });
-        for (_, tv) in impl_tvs.drain(..) {
-            match tvar_map.get(&tv.inner_addr()).cloned() {
+        for (_, tv) in impl_tvs.iter() {
+            match tvar_map.get(&tv.cell_addr()) {
                 None | Some(Type::TVar(_)) => (),
                 Some(sig_type) => {
                     for impl_tc in tv.cell_constraints() {
                         let ok = impl_tc
-                            .contains_int(
-                                enumflags2::BitFlags::empty(),
-                                env,
-                                &mut RefHist::new(LPooled::take()),
-                                &sig_type,
-                            )
+                            .contains_with_flags(probe, env, sig_type)
                             .unwrap_or(false);
                         if !ok {
                             bail!(
@@ -1250,31 +956,6 @@ impl FnType {
             }
         }
         Ok(())
-    }
-
-    pub fn map_argpos(
-        &self,
-        other: &Self,
-    ) -> LPooled<AHashMap<ArcStr, (Option<usize>, Option<usize>)>> {
-        let mut tbl: LPooled<AHashMap<ArcStr, (Option<usize>, Option<usize>)>> =
-            LPooled::take();
-        for (i, a) in self.args.iter().enumerate() {
-            match &a.kind {
-                FnArgKind::Positional { .. } => break,
-                FnArgKind::Labeled { name, .. } => {
-                    tbl.entry(name.clone()).or_default().0 = Some(i)
-                }
-            }
-        }
-        for (i, a) in other.args.iter().enumerate() {
-            match &a.kind {
-                FnArgKind::Positional { .. } => break,
-                FnArgKind::Labeled { name, .. } => {
-                    tbl.entry(name.clone()).or_default().1 = Some(i)
-                }
-            }
-        }
-        tbl
     }
 
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
@@ -1306,14 +987,11 @@ impl FnType {
         !self.explicit_throws
             && match &self.throws {
                 Type::Bottom => true,
-                Type::TVar(tv) => {
-                    let bound = tv.read().typ.read().typ.clone();
-                    match bound {
-                        Some(Type::Bottom) => true,
-                        None => tv.name.starts_with('_'),
-                        Some(_) => false,
-                    }
-                }
+                Type::TVar(tv) => match tv.binding() {
+                    Some(Type::Bottom) => true,
+                    None => tv.name.starts_with('_'),
+                    Some(_) => false,
+                },
                 _ => false,
             }
     }
@@ -1334,11 +1012,48 @@ fn is_self_param(a: &FnArgType) -> bool {
 /// The quantifiers a signature prints: the declared ones, minus the
 /// receiver `self` (implied by its trait) and the compiler-minted
 /// `#arg` quantifiers of traits written in argument position (those
-/// print as the trait at the argument).
+/// print as the trait at the argument). One entry per conjunct, a
+/// variable's conjuncts adjacent.
 fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     let mut v = ft.constraint_view();
     v.retain(|(tv, _)| &*tv.name != "self" && !tv.name.starts_with('#'));
     v
+}
+
+/// How an argument's name is written before its type.
+struct ArgPrefix<'a>(&'a FnArgKind);
+
+impl fmt::Display for ArgPrefix<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            FnArgKind::Labeled { name, has_default: true } => write!(f, "?#{name}: "),
+            FnArgKind::Labeled { name, has_default: false } => write!(f, "#{name}: "),
+            FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: "),
+            FnArgKind::Positional { name: None } => Ok(()),
+        }
+    }
+}
+
+/// A return type as written after `->`: a function type is
+/// parenthesized, bare or behind a reference.
+enum Ret<'a> {
+    Fn(&'a FnType),
+    RefFn(&'a FnType),
+    Ref(&'a Type),
+    Plain(&'a Type),
+}
+
+impl<'a> Ret<'a> {
+    fn of(t: &'a Type) -> Self {
+        match t {
+            Type::Fn(ft) => Ret::Fn(ft),
+            Type::ByRef(t) => match &**t {
+                Type::Fn(ft) => Ret::RefFn(ft),
+                t => Ret::Ref(t),
+            },
+            t => Ret::Plain(t),
+        }
+    }
 }
 
 impl fmt::Display for FnType {
@@ -1349,38 +1064,19 @@ impl fmt::Display for FnType {
         } else {
             write!(f, "fn<")?;
             for (i, (tv, t)) in constraints.iter().enumerate() {
-                // CR claude for eric: [bug] `{tv}` is the variable's Display,
-                // which under `DerefTVars` (every error message) renders its cell:
-                // probe: `let f = 'a: Eq + Ord |x: 'a, y: 'a| -> bool x < y; let g:
-                // fn(x: string) -> string = f` reports `fn<'a: unbound within Ord:
-                // Ord>(..)`. The header wants the bare name `'{tv.name}` (also the
-                // pretty printer's header).
-                write!(f, "{tv}: {t}")?;
-                if i < constraints.len() - 1 {
-                    write!(f, ", ")?;
+                match i.checked_sub(1).map(|j| &constraints[j].0) {
+                    Some(prev) if prev.name == tv.name => write!(f, " + {t}")?,
+                    Some(_) => write!(f, ", '{}: {t}", tv.name)?,
+                    None => write!(f, "'{}: {t}", tv.name)?,
                 }
             }
             write!(f, ">(")?;
         }
-        // CR claude for eric: [structure] The argument prefix (`?#x: `, `#x: `,
-        // `x: `) and the rtype parenthesization (`-> (fn..)`, `-> &(fn..)`) are
-        // written again in `fmt_pretty_inner`; factor both so the printers
-        // cannot drift.
         for (i, a) in self.args.iter().enumerate() {
             if is_self_param(a) {
                 write!(f, "{}", a.typ)?;
             } else {
-                match &a.kind {
-                    FnArgKind::Labeled { name, has_default: true } => {
-                        write!(f, "?#{name}: ")?
-                    }
-                    FnArgKind::Labeled { name, has_default: false } => {
-                        write!(f, "#{name}: ")?
-                    }
-                    FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: ")?,
-                    FnArgKind::Positional { name: None } => (),
-                }
-                write!(f, "{}", a.typ)?;
+                write!(f, "{}{}", ArgPrefix(&a.kind), a.typ)?;
             }
             if i < self.args.len() - 1 || self.vargs.is_some() {
                 write!(f, ", ")?;
@@ -1389,13 +1085,11 @@ impl fmt::Display for FnType {
         if let Some(vargs) = &self.vargs {
             write!(f, "@args: {}", vargs)?;
         }
-        match &self.rtype {
-            Type::Fn(ft) => write!(f, ") -> ({ft})")?,
-            Type::ByRef(t) => match &**t {
-                Type::Fn(ft) => write!(f, ") -> &({ft})")?,
-                t => write!(f, ") -> &{t}")?,
-            },
-            t => write!(f, ") -> {t}")?,
+        match Ret::of(&self.rtype) {
+            Ret::Fn(ft) => write!(f, ") -> ({ft})")?,
+            Ret::RefFn(ft) => write!(f, ") -> &({ft})")?,
+            Ret::Ref(t) => write!(f, ") -> &{t}")?,
+            Ret::Plain(t) => write!(f, ") -> {t}")?,
         }
         if self.suppress_throws() {
             Ok(())
@@ -1414,12 +1108,19 @@ impl PrettyDisplay for FnType {
             writeln!(buf, "fn<")?;
             buf.nested(|buf| {
                 for (i, (tv, t)) in constraints.iter().enumerate() {
-                    write!(buf, "{tv}: ")?;
-                    buf.nested(|buf| t.fmt_pretty(buf))?;
-                    if i < constraints.len() - 1 {
-                        buf.kill_newline();
-                        writeln!(buf, ",")?;
+                    match i.checked_sub(1).map(|j| &constraints[j].0) {
+                        Some(prev) if prev.name == tv.name => {
+                            buf.kill_newline();
+                            write!(buf, " + ")?;
+                        }
+                        Some(_) => {
+                            buf.kill_newline();
+                            writeln!(buf, ",")?;
+                            write!(buf, "'{}: ", tv.name)?;
+                        }
+                        None => write!(buf, "'{}: ", tv.name)?,
                     }
+                    buf.nested(|buf| t.fmt_pretty(buf))?;
                 }
                 Ok(())
             })?;
@@ -1430,16 +1131,7 @@ impl PrettyDisplay for FnType {
                 if is_self_param(a) {
                     writeln!(buf, "{}", a.typ)?;
                 } else {
-                    match &a.kind {
-                        FnArgKind::Labeled { name, has_default: true } => {
-                            write!(buf, "?#{name}: ")?
-                        }
-                        FnArgKind::Labeled { name, has_default: false } => {
-                            write!(buf, "#{name}: ")?
-                        }
-                        FnArgKind::Positional { name: Some(n) } => write!(buf, "{n}: ")?,
-                        FnArgKind::Positional { name: None } => (),
-                    }
+                    write!(buf, "{}", ArgPrefix(&a.kind))?;
                     buf.nested(|buf| a.typ.fmt_pretty(buf))?;
                 }
                 if i < self.args.len() - 1 || self.vargs.is_some() {
@@ -1453,26 +1145,24 @@ impl PrettyDisplay for FnType {
             }
             Ok(())
         })?;
-        match &self.rtype {
-            Type::Fn(ft) => {
+        match Ret::of(&self.rtype) {
+            Ret::Fn(ft) => {
                 write!(buf, ") -> (")?;
                 ft.fmt_pretty(buf)?;
                 buf.kill_newline();
                 writeln!(buf, ")")?;
             }
-            Type::ByRef(t) => match &**t {
-                Type::Fn(ft) => {
-                    write!(buf, ") -> &(")?;
-                    ft.fmt_pretty(buf)?;
-                    buf.kill_newline();
-                    writeln!(buf, ")")?;
-                }
-                t => {
-                    write!(buf, ") -> &")?;
-                    t.fmt_pretty(buf)?;
-                }
-            },
-            t => {
+            Ret::RefFn(ft) => {
+                write!(buf, ") -> &(")?;
+                ft.fmt_pretty(buf)?;
+                buf.kill_newline();
+                writeln!(buf, ")")?;
+            }
+            Ret::Ref(t) => {
+                write!(buf, ") -> &")?;
+                t.fmt_pretty(buf)?;
+            }
+            Ret::Plain(t) => {
                 write!(buf, ") -> ")?;
                 t.fmt_pretty(buf)?;
             }

@@ -25,3 +25,24 @@ fn deep_ast_drops_without_overflow() {
         .join()
         .expect("deep AST teardown overflowed the stack");
 }
+
+/// A type is as deep as the program that builds it is long (a chain of
+/// `let x1 = [x0]` or of typedefs), so its teardown is guarded too.
+#[test]
+#[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
+fn deep_type_drops_without_overflow() {
+    use graphix_compiler::typ::Type;
+    use triomphe::Arc;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            let mut t = Type::Bottom;
+            for _ in 0..DEPTH {
+                t = Type::Array(Arc::new(t));
+            }
+            drop(t);
+        })
+        .expect("spawn")
+        .join()
+        .expect("deep type teardown overflowed the stack");
+}

@@ -1038,7 +1038,7 @@ fn cell_len(cell: &Arc<RwLock<TCell>>) -> usize {
         || {
             let (typ, constraints, refused) = {
                 let c = cell.read();
-                (c.typ.clone(), c.constraints.clone(), c.cycle_refused)
+                (c.binding.clone(), c.constraints.to_vec(), c.cycle_refused)
             };
             typ.encoded_len() + slice_len(&constraints) + refused.encoded_len()
         },
@@ -1401,12 +1401,12 @@ fn cell_encode(
                     log::warn!(
                         "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
                         c.rigid_gates,
-                        c.typ,
+                        c.binding,
                         c.constraints
                     );
                     return Err(PackError::InvalidFormat);
                 }
-                (c.typ.clone(), c.constraints.clone(), c.cycle_refused)
+                (c.binding.clone(), c.constraints.to_vec(), c.cycle_refused)
             };
             typ.encode(buf)?;
             slice_encode(&constraints, buf)?;
@@ -1439,7 +1439,7 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
                 let tv = TVar::from_parts(name, id, frozen, placeholder);
                 decoding(|d| d.tvars.insert(at, tv.clone()));
                 let cell = cell_decode(sub)?;
-                tv.write().typ = cell;
+                tv.write().cell = cell;
                 Ok(tv)
             }
             _ => Err(PackError::UnknownTag),
@@ -1470,7 +1470,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
                 let constraints: Vec<_> = Pack::decode(sub)?;
                 let refused = bool::decode(sub)?;
                 let mut c = cell.write();
-                c.typ = typ;
+                c.binding = typ;
                 c.constraints = constraints.into_iter().collect();
                 c.cycle_refused = refused;
                 drop(c);
@@ -1752,7 +1752,7 @@ mod tests {
         let packed = pack_all(&[Type::TVar(a)], &mut enc);
         let mut dec = packed.decoder(&enc);
         DecodeImage::with(&mut dec, || {
-            let Type::TVar(outer) = Type::decode(&mut packed.body()).unwrap() else {
+            let Type::TVar(outer) = &Type::decode(&mut packed.body()).unwrap() else {
                 panic!("a tvar")
             };
             let cons = outer.cell_constraints();
@@ -1819,7 +1819,8 @@ mod tests {
             assert!(a2.same_cell(&b2), "aliases share a cell");
             assert!(!a2.same_cell(&c2));
             // c is bound to a's wrapper, the same one the tuple holds
-            let Some(Type::TVar(inner)) = c2.read().typ.read().typ.clone() else {
+            let binding = c2.binding();
+            let Some(Type::TVar(inner)) = &binding else {
                 panic!("c must stay bound to a tvar")
             };
             assert_eq!(inner.wrapper_addr(), a2.wrapper_addr());

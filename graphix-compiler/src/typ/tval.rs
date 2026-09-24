@@ -1,9 +1,7 @@
-use super::{PrintFlag, Type, TypeRef, cast::IsAFlags};
-use crate::{env::Env, typ::format_with_flags};
+use super::{PrintFlag, Type, cast::IsAFlags};
+use crate::{abstract_value, env::Env, typ::format_with_flags};
 use ahash::AHashSet;
-// CR claude for eric: [style] One `netidx_value::{NakedValue, Value}` group.
-use netidx_value::NakedValue;
-use netidx_value::Value;
+use netidx_value::{NakedValue, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::fmt;
@@ -65,13 +63,10 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                         }
                     }
                     // Debug consults a user Display impl when the hooks are armed.
-                    // CR claude for eric: [style] `get(v).is_some()` in the guard,
-                    // then `get(v).unwrap()` in the body (also `fmt_inner`'s first
-                    // arm). Match `Value::Abstract(_)` and `if let Some(g)` inside.
-                    v @ Value::Abstract(_) if crate::abstract_value::get(v).is_some() => {
-                        let g = crate::abstract_value::get(v).unwrap();
-                        write!(f, "{g:?}")?
-                    }
+                    v @ Value::Abstract(_) => match abstract_value::get(v) {
+                        Some(g) => write!(f, "{g:?}")?,
+                        None => write!(f, "{}", NakedValue(v))?,
+                    },
                     v => write!(f, "{}", NakedValue(v))?,
                 }
             }
@@ -81,7 +76,7 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
 }
 
 /// Bounded-prefix Display of a value, for diagnostics.
-struct NakedPrefix<'a>(&'a Value);
+pub(super) struct NakedPrefix<'a>(pub(super) &'a Value);
 
 impl fmt::Display for NakedPrefix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -104,18 +99,23 @@ fn shape_excludes(t: &Type, v: &Value) -> bool {
 }
 
 /// The member of `ts` a value known to belong to one of them belongs
-/// to: the one whose shape admits it when that is one member, else
-/// `coretraits::union_member`'s choice.
-// CR claude for eric: [structure] The type printer reaches up into
-// `node::coretraits` for `union_member`, a pure type/value question built on
-// `is_a`. It belongs in `typ/cast.rs` beside `is_a`, used by both.
+/// to: the one whose shape admits it when that is one member, else the
+/// first strict match, else the first structured plain match, else the
+/// first plain match.
 fn member_of(env: &Env, ts: &[Type], v: &Value) -> Option<usize> {
     let mut admits = ts.iter().enumerate().filter(|(_, t)| !shape_excludes(t, v));
     match (admits.next(), admits.next()) {
-        (Some((i, _)), None) => Some(i),
-        (None, _) => None,
-        (Some(_), Some(_)) => crate::node::coretraits::union_member(env, ts, v),
+        (Some((i, _)), None) => return Some(i),
+        (None, _) => return None,
+        (Some(_), Some(_)) => (),
     }
+    let blind = |t: &Type| {
+        t.with_deref(|t| matches!(t, None | Some(Type::Any) | Some(Type::Bottom)))
+    };
+    ts.iter()
+        .position(|t| t.is_a_with(env, IsAFlags::Strict.into(), v))
+        .or_else(|| ts.iter().position(|t| !blind(t) && t.is_a(env, v)))
+        .or_else(|| ts.iter().position(|t| t.is_a(env, v)))
 }
 
 impl<'a> TVal<'a> {
@@ -138,13 +138,6 @@ impl<'a> TVal<'a> {
             });
         }
         match (&self.typ, &self.v) {
-            // CR claude for eric: [dead] This arm does exactly what the next one
-            // does through `fmt_naked`, whose `Abstract` arm prints `{g:?}` for a
-            // Graphix-minted box. Delete it.
-            (Type::Abstract { .. }, v) if crate::abstract_value::get(v).is_some() => {
-                let g = crate::abstract_value::get(v).unwrap();
-                write!(f, "{g:?}")
-            }
             (
                 Type::Primitive(_)
                 | Type::Abstract { .. }
@@ -156,26 +149,20 @@ impl<'a> TVal<'a> {
             ) => fmt_naked(f, v),
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => fmt_naked(f, v),
-            (Type::Ref(TypeRef { .. }), v) => {
+            // `hist` is the path: a name met again on the same value
+            // expands without consuming it, so it prints naked.
+            (Type::Ref(tr), v) => {
                 let typ = match self.typ.lookup_ref(&self.env) {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,
                 };
-                // CR claude for eric: [bug] `typ` is the owned result of
-                // `lookup_ref`, a stack local, so `typ_addr` is a fresh frame
-                // address at every level and a cycle through names never repeats a
-                // key. probe: `` type A = [B, `X(i64)]; type B = [A, `Y(i64)]; let
-                // x: A = `Y(1); println("[x]") `` (--no-fusion) loops A -> B -> A
-                // forever growing the stack; `GRAPHIX_DBG_TVAL=1` shows the cycle.
-                // Key on the ref's identity (see `cast.rs` `ref_key`) and remove it
-                // on return, as `is_a` does.
-                let typ_addr = (&typ as *const Type).addr();
-                let v_addr = (self.v as *const Value).addr();
-                if !hist.contains(&(typ_addr, v_addr)) {
-                    hist.insert((typ_addr, v_addr));
-                    TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist)?
+                let key = (tr.def_key().unwrap_or(0), (*v as *const Value).addr());
+                if !hist.insert(key) {
+                    return fmt_naked(f, v);
                 }
-                Ok(())
+                let r = TVal { typ: &typ, env: self.env, v }.fmt_int(f, hist);
+                hist.remove(&key);
+                r
             }
             (Type::Array(et), Value::Array(a)) => {
                 write!(f, "[")?;
@@ -252,9 +239,9 @@ impl<'a> TVal<'a> {
                 write!(f, ")")
             }
             (Type::Tuple(_), v) => fmt_naked(f, v),
-            (Type::TVar(tv), v) => match &tv.read().typ.read().typ {
+            (Type::TVar(tv), v) => match tv.binding() {
                 None => fmt_naked(f, v),
-                Some(typ) => TVal { env: self.env, typ, v }.fmt_int(f, hist),
+                Some(typ) => TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist),
             },
             (Type::App(c, a), v) => match Type::app_filled(c, a) {
                 Some(typ) => TVal { env: self.env, typ: &typ, v }.fmt_int(f, hist),
@@ -272,8 +259,6 @@ impl<'a> TVal<'a> {
             }
             (Type::Variant(_, _, _), Value::String(s)) => write!(f, "`{s}"),
             (Type::Variant(_, _, _), v) => fmt_naked(f, v),
-            // Member selection is `coretraits::union_member`: the first
-            // strict match (blind leaves match nothing), else plain is_a.
             (Type::Set(ts), v) => match member_of(self.env, ts, v) {
                 None => fmt_naked(f, v),
                 Some(i) => Self { typ: &ts[i], env: self.env, v }.fmt_int(f, hist),
@@ -285,11 +270,8 @@ impl<'a> TVal<'a> {
 impl<'a> fmt::Display for TVal<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.typ.is_a_with(&self.env, IsAFlags::MatchAbstract.into(), &self.v) {
-            // CR claude for eric: [style] A library `Display` impl writing to
-            // stderr: an embedder (the TUI, the LSP) gets text on its terminal.
-            // Use `log::warn!` like the other swallowed-error diagnostics.
             return format_with_flags(PrintFlag::DerefTVars, || {
-                eprintln!(
+                log::warn!(
                     "error, type {} does not match value {}",
                     self.typ,
                     NakedPrefix(self.v)
@@ -322,9 +304,8 @@ mod test {
         }
         let s = format_compact!("{}", Naked(&v));
         assert!(s.starts_with("[99999, [99998, "));
-        // CR claude for eric: [readability] `|| s.ends_with("]")` makes the first
-        // disjunct moot; the assertion accepts any tail. The value ends `0]..]`.
-        assert!(s.ends_with(", 0]]") || s.ends_with("]"));
+        let head = s.trim_end_matches(']');
+        assert!(head.ends_with("[0, 0") && s.len() - head.len() == 100_000);
     }
 
     // Typed printing grows the stack as the value's depth needs and

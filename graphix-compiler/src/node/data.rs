@@ -383,8 +383,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
         let styp = self.source.typ().deref_cloned();
-        let check = || -> Result<()> {
-            match styp {
+        let mut check = || -> Result<()> {
+            match &styp {
                 Some(Type::Struct(flds)) => {
                     for rep in self.replace.iter_mut() {
                         let r =
@@ -920,8 +920,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         // once, at the first construction, after both typecheck passes over the
         // whole program; this node's typecheck1 still precedes its later siblings'
         // passes, which can bind a cell its type shares.
-        let params = self.params.get_or_insert_with(|| match self.typ.resolve_tvars() {
-            Type::Abstract { params, .. } => params,
+        let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
+            Type::Abstract { params, .. } => params.clone(),
             _ => Arc::from_iter([]),
         });
         let v = abstract_value::wrap(

@@ -1,6 +1,7 @@
 use crate::{
     env::Env,
-    typ::{RefHist, Type, TypeRef},
+    stack::ensure_sufficient,
+    typ::{RefHist, RefPair, Type, TypeRef},
 };
 use ahash::AHashMap;
 use anyhow::Result;
@@ -58,141 +59,157 @@ fn diff_already_normal(before: &Type, after: &Type) -> bool {
 /// cell (a collapse must not discard a cell whose future binding may
 /// diverge). `Fn` keeps plain equality.
 pub(super) fn union_identical(t0: &Type, t1: &Type) -> bool {
+    ensure_sufficient(|| union_identical_inner(t0, t1))
+}
+
+fn union_identical_inner(t0: &Type, t1: &Type) -> bool {
+    let all = |a: &[Type], b: &[Type]| {
+        a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| union_identical(a, b))
+    };
     match (t0, t1) {
         (Type::TVar(a), Type::TVar(b)) => {
-            let ai = a.read();
-            let bi = b.read();
-            Arc::ptr_eq(&ai.typ, &bi.typ) || {
-                let ab = ai.typ.read();
-                let bb = bi.typ.read();
-                match (&ab.typ, &bb.typ) {
-                    (Some(x), Some(y)) => union_identical(x, y),
+            a.same_cell(b)
+                || match (a.binding(), b.binding()) {
+                    (Some(x), Some(y)) => union_identical(&x, &y),
                     _ => false,
                 }
-            }
         }
         // A bound tvar compares through its binding; an unbound one
         // is identical only to its own cell.
         (Type::TVar(a), t) | (t, Type::TVar(a)) => {
-            let ai = a.read();
-            let ab = ai.typ.read();
-            match &ab.typ {
-                Some(x) => union_identical(x, t),
-                None => false,
-            }
+            a.binding().is_some_and(|x| union_identical(&x, t))
         }
-        (Type::Bottom, Type::Bottom) | (Type::Any, Type::Any) => true,
+        (Type::Bottom, Type::Bottom)
+        | (Type::Any, Type::Any)
+        | (Type::Hole, Type::Hole) => true,
+        (Type::App(c0, a0), Type::App(c1, a1)) => {
+            union_identical(c0, c1) && union_identical(a0, a1)
+        }
         (Type::Primitive(a), Type::Primitive(b)) => a == b,
         (
             Type::Abstract { id: i0, params: p0 },
             Type::Abstract { id: i1, params: p1 },
-        ) => {
-            i0 == i1
-                && p0.len() == p1.len()
-                && p0.iter().zip(p1.iter()).all(|(a, b)| union_identical(a, b))
-        }
+        ) => i0 == i1 && all(p0, p1),
         (Type::Ref(r0), Type::Ref(r1)) => {
             r0.scope == r1.scope
                 && r0.name == r1.name
                 && r0.cells_agree(r1)
-                && r0.params.len() == r1.params.len()
-                && r0
-                    .params
-                    .iter()
-                    .zip(r1.params.iter())
-                    .all(|(a, b)| union_identical(a, b))
+                && all(&r0.params, &r1.params)
         }
-        (Type::Set(s0), Type::Set(s1)) => {
-            s0.len() == s1.len()
-                && s0.iter().zip(s1.iter()).all(|(a, b)| union_identical(a, b))
-        }
-        (Type::Error(a), Type::Error(b)) => union_identical(a, b),
-        (Type::Array(a), Type::Array(b)) => union_identical(a, b),
-        (Type::List(a), Type::List(b)) => union_identical(a, b),
+        (Type::Set(s0), Type::Set(s1)) => all(s0, s1),
+        (Type::Error(a), Type::Error(b))
+        | (Type::Array(a), Type::Array(b))
+        | (Type::List(a), Type::List(b))
+        | (Type::ByRef(a), Type::ByRef(b)) => union_identical(a, b),
         (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
             union_identical(k0, k1) && union_identical(v0, v1)
         }
-        (Type::ByRef(a), Type::ByRef(b)) => union_identical(a, b),
-        (Type::Tuple(a), Type::Tuple(b)) => {
-            a.len() == b.len()
-                && a.iter().zip(b.iter()).all(|(x, y)| union_identical(x, y))
-        }
+        (Type::Tuple(a), Type::Tuple(b)) => all(a, b),
         (Type::Struct(a), Type::Struct(b)) => {
             a.len() == b.len()
                 && a.iter()
                     .zip(b.iter())
                     .all(|((n0, x, _), (n1, y, _))| n0 == n1 && union_identical(x, y))
         }
-        (Type::Variant(tg0, a, _), Type::Variant(tg1, b, _)) => {
-            tg0 == tg1
-                && a.len() == b.len()
-                && a.iter().zip(b.iter()).all(|(x, y)| union_identical(x, y))
-        }
+        (Type::Variant(tg0, a, _), Type::Variant(tg1, b, _)) => tg0 == tg1 && all(a, b),
         (Type::Fn(f0), Type::Fn(f1)) => f0 == f1,
         _ => false,
     }
 }
 
+/// Two same-named refs to one definition with identical params.
+fn same_ref(r0: &TypeRef, r1: &TypeRef) -> bool {
+    r0.scope == r1.scope
+        && r0.name == r1.name
+        && r0.cells_agree(r1)
+        && r0.params.len() == r1.params.len()
+        && r0.params.iter().zip(r1.params.iter()).all(|(a, b)| union_identical(a, b))
+}
+
+/// The two-member union of `a` and `b`.
+fn pair(a: &Type, b: &Type) -> Type {
+    Type::Set(Arc::from_iter([a.clone(), b.clone()]))
+}
+
 impl Type {
+    /// Same-named refs `self` (`t0`) and `t` (`t1`): identical params are
+    /// one member; one differing param merges param-wise when the merge
+    /// holds both (a probe, so only a covariant param merges); more than
+    /// one would invent pairs, so they stay two members.
+    fn union_ref_params(
+        &self,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<RefPair, Type>>,
+        t0: &TypeRef,
+        t1: &TypeRef,
+        t: &Self,
+    ) -> Result<Self> {
+        let mut differ = t0
+            .params
+            .iter()
+            .zip(t1.params.iter())
+            .enumerate()
+            .filter(|(_, (a, b))| !union_identical(a, b));
+        let (i, (p0, p1)) = match (differ.next(), differ.next()) {
+            (None, _) => return Ok(self.clone()),
+            (Some(d), None) => d,
+            (Some(_), Some(_)) => return Ok(pair(self, t)),
+        };
+        let mut params: LPooled<Vec<Type>> = t0.params.iter().cloned().collect();
+        params[i] = p0.union_int(env, hist, p1)?;
+        let merged = Type::Ref(t0.with_params(Arc::from_iter(params.drain(..))));
+        let probe = BitFlags::empty();
+        if merged.contains_with_flags(probe, env, self)?
+            && merged.contains_with_flags(probe, env, t)?
+        {
+            Ok(merged)
+        } else {
+            Ok(pair(self, t))
+        }
+    }
+
     fn union_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), Type>>,
+        hist: &mut RefHist<AHashMap<RefPair, Type>>,
+        t: &Self,
+    ) -> Result<Self> {
+        ensure_sufficient(|| self.union_inner(env, hist, t))
+    }
+
+    fn union_inner(
+        &self,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<RefPair, Type>>,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
-            // CR claude for eric: [bug] same-named refs union parameter-wise,
-            // which is an upper bound only for a covariant, single-differing
-            // parameter. With `type F<'a> = fn(x: 'a) -> i64`, `F<i64> ∪
-            // F<string>` becomes `F<[i64, string]>`, a fn that accepts both.
-            // Probe: `let c = select flag { true => `A(fi), false => `A(fs) }`
-            // (annotated `A(F<i64>) / `A(F<string>)) then `select c { `A(f) =>
-            // f("hello") }` checks and runs the i64 fn on "hello" (arith parse
-            // error at run time). With two params it also invents pairs, which
-            // the Variant arm below refuses to do. Merge only identical params
-            // (union_identical); otherwise keep both members.
             (Type::Ref(t0), Type::Ref(t1))
                 if t0.name == t1.name
                     && t0.scope == t1.scope
                     && t0.cells_agree(t1)
                     && t0.params.len() == t1.params.len() =>
             {
-                let mut params = t0
-                    .params
-                    .iter()
-                    .zip(t1.params.iter())
-                    .map(|(p0, p1)| p0.union_int(env, hist, p1))
-                    .collect::<Result<LPooled<Vec<_>>>>()?;
-                let params = Arc::from_iter(params.drain(..));
-                Ok(Self::Ref(t0.with_params(params)))
+                self.union_ref_params(env, hist, t0, t1, t)
             }
-            (tr @ Type::Ref(TypeRef { .. }), t) => {
-                let t0_id = hist.ref_id(tr, env);
-                let t_id = hist.ref_id(t, env);
-                let t0 = tr.lookup_ref(env)?;
-                match hist.get(&(t0_id, t_id)) {
-                    Some(t) => Ok(t.clone()),
-                    None => {
-                        hist.insert((t0_id, t_id), tr.clone());
-                        let r = t0.union_int(env, hist, t);
-                        hist.remove(&(t0_id, t_id));
-                        r
-                    }
+            (tr @ Type::Ref(TypeRef { .. }), t) | (t, tr @ Type::Ref(TypeRef { .. })) => {
+                let key = if matches!(self, Type::Ref(_)) {
+                    (hist.ref_id(tr, env), hist.ref_id(t, env))
+                } else {
+                    (hist.ref_id(t, env), hist.ref_id(tr, env))
+                };
+                if let Some(u) = hist.get(&key) {
+                    return Ok(u.clone());
                 }
-            }
-            (t, tr @ Type::Ref(TypeRef { .. })) => {
-                let t_id = hist.ref_id(t, env);
-                let t1_id = hist.ref_id(tr, env);
-                let t1 = tr.lookup_ref(env)?;
-                match hist.get(&(t_id, t1_id)) {
-                    Some(t) => Ok(t.clone()),
-                    None => {
-                        hist.insert((t_id, t1_id), tr.clone());
-                        let r = t.union_int(env, hist, &t1);
-                        hist.remove(&(t_id, t1_id));
-                        r
-                    }
-                }
+                let e = tr.lookup_ref(env)?;
+                hist.insert(key, tr.clone());
+                let r = if matches!(self, Type::Ref(_)) {
+                    e.union_int(env, hist, t)
+                } else {
+                    t.union_int(env, hist, &e)
+                };
+                hist.remove(&key);
+                r
             }
             (t0 @ Type::Abstract { .. }, t1 @ Type::Abstract { .. })
                 if union_identical(t0, t1) =>
@@ -200,7 +217,7 @@ impl Type {
                 Ok(self.clone())
             }
             (t0 @ Type::Abstract { .. }, t1) | (t0, t1 @ Type::Abstract { .. }) => {
-                Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
+                Ok(pair(t0, t1))
             }
             (Type::Bottom, t) | (t, Type::Bottom) => Ok(t.clone()),
             (Type::Any, _) | (_, Type::Any) => Ok(Type::Any),
@@ -211,7 +228,7 @@ impl Type {
                 if self == t {
                     Ok(self.clone())
                 } else {
-                    Ok(Type::Set(Arc::from_iter([self.clone(), t.clone()])))
+                    Ok(pair(self, t))
                 }
             }
             (Type::Primitive(p), t) | (t, Type::Primitive(p)) if p.is_empty() => {
@@ -230,55 +247,11 @@ impl Type {
                 Type::Array(_) | Type::Struct(_) | Type::Tuple(_) | Type::Variant(..),
                 Type::Primitive(p),
             ) if p.contains(Typ::Array) => Ok(Type::Primitive(*p)),
-            (Type::Primitive(p), Type::Array(t))
-            | (Type::Array(t), Type::Primitive(p)) => Ok(Type::Set(Arc::from_iter([
-                Type::Primitive(*p),
-                Type::Array(t.clone()),
-            ]))),
-            // CR claude for eric: [structure] Array, List, Map, ByRef, Struct and
-            // Tuple below are one rule written six times ("identical: keep one,
-            // else a two-member set"), and `Type::Set(Arc::from_iter([a, b]))`
-            // is spelled ~15 times; a pair helper and one arm over the
-            // same-variant case would carry it.
-            (t @ Type::Array(t0), u @ Type::Array(_)) => {
-                if union_identical(t, u) {
-                    Ok(Type::Array(t0.clone()))
-                } else {
-                    Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
-                }
-            }
-            (t @ Type::List(t0), u @ Type::List(_)) => {
-                if union_identical(t, u) {
-                    Ok(Type::List(t0.clone()))
-                } else {
-                    Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
-                }
-            }
-            (t0 @ Type::List(_), t1) | (t0, t1 @ Type::List(_)) => {
-                Ok(Type::Set(Arc::from_iter([t0.clone(), t1.clone()])))
-            }
             (Type::Primitive(p), Type::Map { .. })
             | (Type::Map { .. }, Type::Primitive(p))
                 if p.contains(Typ::Map) =>
             {
                 Ok(Type::Primitive(*p))
-            }
-            (Type::Primitive(p), Type::Map { key, value })
-            | (Type::Map { key, value }, Type::Primitive(p)) => {
-                Ok(Type::Set(Arc::from_iter([
-                    Type::Primitive(*p),
-                    Type::Map { key: key.clone(), value: value.clone() },
-                ])))
-            }
-            (t @ Type::Map { key: k0, value: v0 }, u @ Type::Map { .. }) => {
-                if union_identical(t, u) {
-                    Ok(Type::Map { key: k0.clone(), value: v0.clone() })
-                } else {
-                    Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
-                }
-            }
-            (t @ Type::Map { .. }, u) | (u, t @ Type::Map { .. }) => {
-                Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
             }
             (Type::Primitive(p), Type::Error(_))
             | (Type::Error(_), Type::Primitive(p))
@@ -289,42 +262,12 @@ impl Type {
             (Type::Error(e0), Type::Error(e1)) => {
                 Ok(Type::Error(Arc::new(e0.union_int(env, hist, e1)?)))
             }
-            (e @ Type::Error(_), t) | (t, e @ Type::Error(_)) => {
-                Ok(Type::Set(Arc::from_iter([e.clone(), t.clone()])))
-            }
-            (t @ Type::ByRef(t0), u @ Type::ByRef(_)) => {
-                if union_identical(t, u) {
-                    Ok(Type::ByRef(t0.clone()))
-                } else {
-                    Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
-                }
-            }
             (Type::Set(s0), Type::Set(s1)) => Ok(Type::Set(Arc::from_iter(
                 s0.iter().cloned().chain(s1.iter().cloned()),
             ))),
             (Type::Set(s), t) | (t, Type::Set(s)) => Ok(Type::Set(Arc::from_iter(
                 s.iter().cloned().chain(iter::once(t.clone())),
             ))),
-            (u @ Type::Struct(_), t @ Type::Struct(_)) => {
-                if union_identical(u, t) {
-                    Ok(u.clone())
-                } else {
-                    Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
-                }
-            }
-            (u @ Type::Struct(_), t) | (t, u @ Type::Struct(_)) => {
-                Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
-            }
-            (u @ Type::Tuple(_), t @ Type::Tuple(_)) => {
-                if union_identical(u, t) {
-                    Ok(u.clone())
-                } else {
-                    Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
-                }
-            }
-            (u @ Type::Tuple(_), t) | (t, u @ Type::Tuple(_)) => {
-                Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
-            }
             (u @ Type::Variant(tg0, t0, at), t @ Type::Variant(tg1, t1, _)) => {
                 // Component-wise union is exact only when at most one
                 // position differs: `P(A, X) ∪ `P(B, Y) is not
@@ -343,41 +286,31 @@ impl Type {
                         .collect::<Result<LPooled<Vec<_>>>>()?;
                     Ok(Type::Variant(tg0.clone(), Arc::from_iter(typs.drain(..)), *at))
                 } else {
-                    Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
+                    Ok(pair(u, t))
                 }
-            }
-            (u @ Type::Variant(_, _, _), t) | (t, u @ Type::Variant(_, _, _)) => {
-                Ok(Type::Set(Arc::from_iter([u.clone(), t.clone()])))
-            }
-            (Type::Fn(f0), Type::Fn(f1)) => {
-                if f0 == f1 {
-                    Ok(Type::Fn(f0.clone()))
-                } else {
-                    Ok(Type::Set(Arc::from_iter([
-                        Type::Fn(f0.clone()),
-                        Type::Fn(f1.clone()),
-                    ])))
-                }
-            }
-            (f @ Type::Fn(_), t) | (t, f @ Type::Fn(_)) => {
-                Ok(Type::Set(Arc::from_iter([f.clone(), t.clone()])))
             }
             (t0 @ Type::TVar(_), t1 @ Type::TVar(_)) if union_identical(t0, t1) => {
                 Ok(t0.clone())
             }
             // A bound cell unions as its binding; an unbound cell
             // stays its own member.
-            (Type::TVar(tv), t1) => match tv.read().typ.read().typ.clone() {
+            (Type::TVar(tv), t1) => match tv.binding() {
                 Some(b) => b.union_int(env, hist, t1),
-                None => Ok(Type::Set(Arc::from_iter([self.clone(), t1.clone()]))),
+                None => Ok(pair(self, t1)),
             },
-            (t0, Type::TVar(tv)) => match tv.read().typ.read().typ.clone() {
+            (t0, Type::TVar(tv)) => match tv.binding() {
                 Some(b) => t0.union_int(env, hist, &b),
-                None => Ok(Type::Set(Arc::from_iter([t0.clone(), t.clone()]))),
+                None => Ok(pair(t0, t)),
             },
-            (t @ Type::ByRef(_), u) | (u, t @ Type::ByRef(_)) => {
-                Ok(Type::Set(Arc::from_iter([t.clone(), u.clone()])))
+            // Everything left of one variant is kept once if identical,
+            // else as two members.
+            (t0, t1)
+                if std::mem::discriminant(t0) == std::mem::discriminant(t1)
+                    && union_identical(t0, t1) =>
+            {
+                Ok(t0.clone())
             }
+            (t0, t1) => Ok(pair(t0, t1)),
         }
     }
 
@@ -386,7 +319,7 @@ impl Type {
         let Some(first) = iter.next() else {
             return Ok(Type::Primitive(BitFlags::empty()));
         };
-        let mut hist = RefHist::new(LPooled::take());
+        let mut hist = RefHist::new();
         let mut acc = first.clone();
         for t in iter {
             acc = acc.union_int(env, &mut hist, t)?;
@@ -397,42 +330,34 @@ impl Type {
     fn diff_int(
         &self,
         env: &Env,
-        hist: &mut RefHist<AHashMap<(Option<usize>, Option<usize>), Type>>,
+        hist: &mut RefHist<AHashMap<RefPair, Type>>,
+        t: &Self,
+    ) -> Result<Self> {
+        ensure_sufficient(|| self.diff_inner(env, hist, t))
+    }
+
+    fn diff_inner(
+        &self,
+        env: &Env,
+        hist: &mut RefHist<AHashMap<RefPair, Type>>,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
-            // CR claude for eric: [bug] same-named refs subtract to empty
-            // whatever their params: `Box<i64> - Box<string>` is empty, so
-            // `Array<Box<i64>> - Array<Box<string>>` is too. Probe: `type Box<'a>
-            // = {v: 'a}; type Both = [Array<Box<i64>>, Array<Box<string>>]; type
-            // BS = Array<Box<string>>; let x: Both = [{v: 1}];` then `select x {
-            // BS as s => 0, Array<Box<i64>> as b => 1 }` is refused as
-            // "unreachable arm"; the same program over inline struct types runs
-            // and prints 1. Empty only when the params are identical, else
-            // expand.
-            (Type::Ref(tr0), Type::Ref(tr1))
-                if tr0.scope == tr1.scope
-                    && tr0.name == tr1.name
-                    && tr0.cells_agree(tr1) =>
-            {
+            (Type::Ref(tr0), Type::Ref(tr1)) if same_ref(tr0, tr1) => {
                 Ok(Type::Primitive(BitFlags::empty()))
             }
             (t0 @ Type::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Type::Ref(TypeRef { .. })) => {
-                let t0_id = hist.ref_id(t0, env);
-                let t1_id = hist.ref_id(t1, env);
+                let key = (hist.ref_id(t0, env), hist.ref_id(t1, env));
+                if let Some(r) = hist.get(&key) {
+                    return Ok(r.clone());
+                }
                 let t0 = t0.lookup_ref(env)?;
                 let t1 = t1.lookup_ref(env)?;
-                match hist.get(&(t0_id, t1_id)) {
-                    Some(r) => Ok(r.clone()),
-                    None => {
-                        let r = Type::Primitive(BitFlags::empty());
-                        hist.insert((t0_id, t1_id), r);
-                        let r = t0.diff_int(env, hist, &t1);
-                        hist.remove(&(t0_id, t1_id));
-                        r
-                    }
-                }
+                hist.insert(key, Type::Primitive(BitFlags::empty()));
+                let r = t0.diff_int(env, hist, &t1);
+                hist.remove(&key);
+                r
             }
             (Type::App(..), _)
             | (_, Type::App(..))
@@ -537,29 +462,23 @@ impl Type {
                     Ok(Type::Fn(f0.clone()))
                 }
             }
-            // CR claude for eric: [risk] these three arms recurse while the
-            // `match` scrutinee still holds both cells' read guards, against the
-            // rule contains.rs keeps ("never recurse under the cell guard"):
-            // diff(`'a := Foo<'b>`, `'b`) with `type Foo<'x: Number>` reaches
-            // lookup_ref, which add_cell_constraint's 'b under a write lock
-            // while this frame read-locks 'b: a self-deadlock. Clone the
-            // bindings out first. Same in matches.rs could_match_int's TVar arms.
+            // Bindings are cloned out: the recursion may lock these cells.
             (Type::TVar(tv0), t1 @ Type::TVar(tv1)) => {
-                if Arc::ptr_eq(&tv0.read().typ, &tv1.read().typ) {
+                if tv0.same_cell(tv1) {
                     return Ok(Type::Primitive(BitFlags::empty()));
                 }
-                Ok(match (&tv0.read().typ.read().typ, &tv1.read().typ.read().typ) {
+                Ok(match (tv0.binding(), tv1.binding()) {
                     (None, _) => Type::TVar(tv0.clone()),
                     (Some(t0), None) => t0.diff_int(env, hist, t1)?,
-                    (Some(t0), Some(t1)) => t0.diff_int(env, hist, t1)?,
+                    (Some(t0), Some(t1)) => t0.diff_int(env, hist, &t1)?,
                 })
             }
-            (Type::TVar(tv), t) => Ok(match &tv.read().typ.read().typ {
+            (Type::TVar(tv), t) => Ok(match tv.binding() {
                 Some(tv) => tv.diff_int(env, hist, t)?,
                 None => self.clone(),
             }),
-            (t, Type::TVar(tv)) => Ok(match &tv.read().typ.read().typ {
-                Some(tv) => t.diff_int(env, hist, tv)?,
+            (t, Type::TVar(tv)) => Ok(match tv.binding() {
+                Some(tv) => t.diff_int(env, hist, &tv)?,
                 None => self.clone(),
             }),
             (Type::List(t0), Type::List(t1)) => {
@@ -679,7 +598,7 @@ impl Type {
     }
 
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
-        let r = self.diff_int(env, &mut RefHist::new(LPooled::take()), t)?;
+        let r = self.diff_int(env, &mut RefHist::new(), t)?;
         if diff_already_normal(self, &r) { Ok(r) } else { Ok(r.normalize()) }
     }
 }

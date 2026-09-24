@@ -200,10 +200,12 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             let tp = cx.interned_type(typ)?;
             cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
         }
-        SiteDispatch::Cast(typ) => {
+        SiteDispatch::Cast { target, source } => {
             let typed = cx.helper("graphix_typedcall")?;
             let fp = cx.const_ptr(KernelConst::Cast(cast_typed))?;
-            let tp = cx.interned_type(typ)?;
+            let pair =
+                Type::Tuple(triomphe::Arc::from_iter([target.clone(), source.clone()]));
+            let tp = cx.interned_type(&pair)?;
             cx.b.ins().call(typed, &[fp, tp, base, n, taint_mask, stale_mask])
         }
     };

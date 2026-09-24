@@ -46,8 +46,9 @@ where
         optional(attempt(sptoken('=')).with(expr())),
         position(),
     )
-        .then(|(mut comments, doc, name, typ, default, end)| match typ {
+        .then(|(mut comments, doc, name, typ, default, end)| match &typ {
             Type::Fn(ft) => {
+                let ft = ft.clone();
                 let self_index = ft.args.iter().position(|a| {
                     matches!(&a.kind, FnArgKind::Positional { name: Some(n) } if &**n == "self")
                 });

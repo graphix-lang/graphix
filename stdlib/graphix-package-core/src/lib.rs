@@ -66,19 +66,19 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
             return false;
         }
         let t = t.with_deref(|d| d.cloned()).unwrap_or_else(|| t.clone());
-        match t {
+        match &t {
             Type::Bottom => true,
             Type::Set(els) | Type::Tuple(els) | Type::Variant(_, els, _) => {
                 els.iter().any(|e| contains_bottom(e, depth + 1))
             }
             Type::Array(e) | Type::Error(e) | Type::ByRef(e) => {
-                contains_bottom(&e, depth + 1)
+                contains_bottom(e, depth + 1)
             }
             Type::Struct(fields) => {
                 fields.iter().any(|(_, e, _)| contains_bottom(e, depth + 1))
             }
             Type::Map { key, value } => {
-                contains_bottom(&key, depth + 1) || contains_bottom(&value, depth + 1)
+                contains_bottom(key, depth + 1) || contains_bottom(value, depth + 1)
             }
             _ => false,
         }

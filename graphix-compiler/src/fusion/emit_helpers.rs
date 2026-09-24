@@ -660,8 +660,8 @@ fn value_arith_op(
     f: impl FnOnce(Value, Value) -> Value,
 ) -> TagValue {
     match f(l.value(), r.value()) {
-        Value::Error(_) => TagValue::tainted(Value::Null),
-        v => TagValue::clean(v),
+        Value::Error(_) => TagValue::phantom(),
+        v => TagValue::fired(v),
     }
 }
 
@@ -741,7 +741,7 @@ safe fn graphix_value_clone(tv: TagValue) -> TagValue {
 /// # Safety
 /// `ptr` must point to a live `Value` that outlives the JIT'd code.
 unsafe fn graphix_value_clone_from_static(ptr: *const Value) -> TagValue {
-    TagValue::clean(unsafe { (*ptr).clone() })
+    TagValue::fired(unsafe { (*ptr).clone() })
 }
 
 /// The abstract constructor `T(v)`: box `tv` under the abstract type
@@ -757,7 +757,7 @@ unsafe fn graphix_abstract_wrap(
         crate::typ::Type::Abstract { id, params } => (*id, params.clone()),
         t => panic!("graphix_abstract_wrap: {t} is not an abstract type — JIT codegen bug"),
     };
-    TagValue::clean(crate::abstract_value::wrap(id, name, params, tv.value()))
+    TagValue::fired(crate::abstract_value::wrap(id, name, params, tv.value()))
 }
 
 safe fn graphix_abstract_get_i64(tv: TagValue) -> i64 {
@@ -818,7 +818,7 @@ safe fn graphix_abstract_get_array(tv: TagValue) -> u64 {
 
 safe fn graphix_abstract_get_value(tv: TagValue) -> TagValue {
     let r = tv.with_value(|v| {
-        TagValue::clean(crate::abstract_value::payload(v).cloned().unwrap_or(Value::Null))
+        TagValue::fired(crate::abstract_value::payload(v).cloned().unwrap_or(Value::Null))
     });
     std::mem::forget(tv);
     r
@@ -850,23 +850,23 @@ safe fn graphix_value_rem(l: TagValue, r: TagValue) -> TagValue {
 // bottom; consumes both operands.
 
 safe fn graphix_value_checked_add(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(arith(BinOp::Add, true, l.value(), r.value()))
+    TagValue::fired(arith(BinOp::Add, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_sub(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(arith(BinOp::Sub, true, l.value(), r.value()))
+    TagValue::fired(arith(BinOp::Sub, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_mul(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(arith(BinOp::Mul, true, l.value(), r.value()))
+    TagValue::fired(arith(BinOp::Mul, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_div(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(arith(BinOp::Div, true, l.value(), r.value()))
+    TagValue::fired(arith(BinOp::Div, true, l.value(), r.value()))
 }
 
 safe fn graphix_value_checked_rem(l: TagValue, r: TagValue) -> TagValue {
-    TagValue::clean(arith(BinOp::Mod, true, l.value(), r.value()))
+    TagValue::fired(arith(BinOp::Mod, true, l.value(), r.value()))
 }
 
 /// Value equality; consumes both operands.
@@ -877,7 +877,7 @@ safe fn graphix_value_eq(l: TagValue, r: TagValue) -> u8 {
 /// `bytes[i]`: the `u8` or the index error, via the shared
 /// [`bytes_index`]. Consumes `v`.
 safe fn graphix_bytes_index(v: TagValue, i: i64) -> TagValue {
-    TagValue::clean(match v.value() {
+    TagValue::fired(match v.value() {
         Value::Bytes(b) => bytes_index(&b, i),
         _ => Value::error("ArrayIndexError: expected bytes"),
     })
@@ -886,7 +886,7 @@ safe fn graphix_bytes_index(v: TagValue, i: i64) -> TagValue {
 /// `m{key}`: the value or the not-found error, via the shared
 /// [`map_get`]. Consumes both operands.
 safe fn graphix_map_ref(map: TagValue, key: TagValue) -> TagValue {
-    TagValue::clean(map_get(&map.value(), &key.value()))
+    TagValue::fired(map_get(&map.value(), &key.value()))
 }
 
 /// `a[i..j]` over an array or bytes: `flags` bit0 = `start` present,
@@ -894,7 +894,7 @@ safe fn graphix_map_ref(map: TagValue, key: TagValue) -> TagValue {
 safe fn graphix_array_slice(src: TagValue, start: i64, end: i64, flags: i64) -> TagValue {
     let s = if flags & 1 != 0 { Some(start) } else { None };
     let e = if flags & 2 != 0 { Some(end) } else { None };
-    TagValue::clean(array_slice(&src.value(), s, e))
+    TagValue::fired(array_slice(&src.value(), s, e))
 }
 
 /// Borrowed `Value::Null` test. Lowering inlines the disc compare; the
@@ -975,7 +975,7 @@ safe fn graphix_variant_payload_value(v: TagValue, payload_idx: usize) -> TagVal
         _ => Value::Null,
     });
     std::mem::forget(v);
-    TagValue::clean(r)
+    TagValue::fired(r)
 }
 
 /// Owned `ArcStr` clone of a string variant payload slot; mismatch
@@ -1018,7 +1018,7 @@ safe fn graphix_list_get_value(v: TagValue, j: usize) -> TagValue {
         None => Value::Null,
     });
     std::mem::forget(v);
-    TagValue::clean(r)
+    TagValue::fired(r)
 }
 
 /// Owned `ValArray` bits of the j-th head; the empty array on mismatch.
@@ -1052,7 +1052,7 @@ safe fn graphix_list_tail(v: TagValue, k: usize) -> TagValue {
         None => Value::Null,
     });
     std::mem::forget(v);
-    TagValue::clean(r)
+    TagValue::fired(r)
 }
 
 /// Owned `ValArray` bits of a composite variant payload slot; the
@@ -1217,7 +1217,7 @@ safe fn graphix_list_to_valarray(tv: TagValue) -> u64 {
 /// Consume finalized ValArray bits and build the List value.
 unsafe fn graphix_valarray_into_list(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
-    TagValue::clean(crate::node::list::from_iter(arr.iter().cloned()))
+    TagValue::fired(crate::node::list::from_iter(arr.iter().cloned()))
 }
 
 /// Flatten a Map value into owned ValArray bits of `[k, v]` pairs in
@@ -1237,7 +1237,7 @@ safe fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
 /// `Value::Map` ([`crate::node::collection::pairs_to_map`]).
 unsafe fn graphix_valarray_into_cmap(bits: u64) -> TagValue {
     let arr = unsafe { va_owned(bits) };
-    TagValue::clean(crate::node::collection::pairs_to_map(arr.iter()))
+    TagValue::fired(crate::node::collection::pairs_to_map(arr.iter()))
 }
 
 }
@@ -1504,7 +1504,7 @@ unsafe fn graphix_valarray_len(bits: u64) -> usize {
 /// Source-level `arr[idx]` via the shared [`array_index`]: the element
 /// or the index error; negative `idx` counts from the end.
 unsafe fn graphix_valarray_index(bits: u64, idx: i64) -> TagValue {
-    TagValue::clean(array_index(unsafe { va_ref(&bits) }, idx))
+    TagValue::fired(array_index(unsafe { va_ref(&bits) }, idx))
 }
 
 /// Resize a scaffold loop's per-slot state table (a boxed `Vec<u64>`
@@ -1662,7 +1662,7 @@ unsafe fn graphix_valarray_get_arcstr(bits: u64, idx: usize) -> arcstr::ArcStr {
 
 /// `arr[idx]` as an owned `Value`.
 unsafe fn graphix_valarray_get_value(bits: u64, idx: usize) -> TagValue {
-    TagValue::clean(unsafe { va_ref(&bits) }.get(idx).cloned().unwrap_or(Value::Null))
+    TagValue::fired(unsafe { va_ref(&bits) }.get(idx).cloned().unwrap_or(Value::Null))
 }
 
 /// A struct field as owned ValArray bits.
@@ -1675,7 +1675,7 @@ unsafe fn graphix_struct_get_arcstr(bits: u64, sorted_idx: usize) -> arcstr::Arc
 }
 
 unsafe fn graphix_struct_get_value(bits: u64, sorted_idx: usize) -> TagValue {
-    TagValue::clean(
+    TagValue::fired(
         struct_field(unsafe { va_ref(&bits) }, sorted_idx).cloned().unwrap_or(Value::Null),
     )
 }

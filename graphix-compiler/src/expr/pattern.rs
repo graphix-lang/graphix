@@ -426,14 +426,14 @@ pub(crate) fn union_members(
         }
         match t.deref_cloned() {
             None => Ok(()),
-            Some(Type::Set(ts)) => {
-                ts.iter().try_for_each(|t| walk(env, t, depth + 1, out))
-            }
-            Some(t @ Type::Ref(_)) => walk(env, &t.lookup_ref(env)?, depth + 1, out),
-            Some(t) => {
-                out.push(t);
-                Ok(())
-            }
+            Some(t) => match &t {
+                Type::Set(ts) => ts.iter().try_for_each(|t| walk(env, t, depth + 1, out)),
+                Type::Ref(_) => walk(env, &t.lookup_ref(env)?, depth + 1, out),
+                _ => {
+                    out.push(t);
+                    Ok(())
+                }
+            },
         }
     }
     walk(env, t, 0, out)

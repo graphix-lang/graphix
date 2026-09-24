@@ -171,8 +171,8 @@ impl MapCollection for ValArray {
     }
 
     fn element_type(ft: &FnType) -> Result<Type> {
-        match source_type(ft) {
-            Some(Type::Array(t)) => Ok((*t).clone()),
+        match &source_type(ft) {
+            Some(Type::Array(t)) => Ok((**t).clone()),
             _ => bail!("expected Array, got {}", ft.args[0].typ),
         }
     }
@@ -227,9 +227,9 @@ impl MapCollection for ValueMap {
     }
 
     fn element_type(ft: &FnType) -> Result<Type> {
-        match source_type(ft) {
+        match &source_type(ft) {
             Some(Type::Map { key, value }) => {
-                Ok(Type::Tuple(Arc::from_iter([(*key).clone(), (*value).clone()])))
+                Ok(Type::Tuple(Arc::from_iter([(**key).clone(), (**value).clone()])))
             }
             _ => bail!("expected Map, got {}", ft.args[0].typ),
         }
@@ -263,8 +263,8 @@ impl MapCollection for ListCollection {
     }
 
     fn element_type(ft: &FnType) -> Result<Type> {
-        match source_type(ft) {
-            Some(Type::List(t)) => Ok((*t).clone()),
+        match &source_type(ft) {
+            Some(Type::List(t)) => Ok((**t).clone()),
             _ => bail!("expected List, got {}", ft.args[0].typ),
         }
     }

@@ -174,7 +174,7 @@ fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> R
             WRITING.with_borrow_mut(|w| w.pop());
         }
     }
-    let cell = tv.read().typ.clone();
+    let cell = tv.read().cell.clone();
     let key = Arc::as_ptr(&cell) as usize;
     if WRITING.with_borrow(|w| w.contains(&key)) {
         return f(None, &[]);
@@ -182,7 +182,7 @@ fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> R
     WRITING.with_borrow_mut(|w| w.push(key));
     let _writing = Writing;
     let cell = cell.read();
-    f(cell.typ.as_ref(), &cell.constraints)
+    f(cell.binding.as_ref(), &cell.constraints)
 }
 
 /// Under an image session the wrapper and its cell are shared objects
@@ -236,7 +236,7 @@ impl Pack for TVar {
             None => TVar::empty_named(name),
         };
         {
-            let cell = tv.read().typ.clone();
+            let cell = tv.cell();
             let mut cell = cell.write();
             for c in constraints {
                 cell.add_constraint(c);

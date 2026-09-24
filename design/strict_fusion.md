@@ -71,7 +71,8 @@ is for a result directed by its return type (`str::parse`'s `'b`): the
 site bakes its resolved `CallSite::typ()` beside the pointer and
 `graphix_typedcall` runs it under the kernel's env loan (`KERNEL_ENV`).
 The non-inline `cast<T>(x)` is the same dispatch with `cast_typed`, the
-interp's exact `cast_value`. The interp runs the same fn through
+interp's exact `cast_from` (the site interns the `(target, source)`
+pair: the source's static type tells an array from a list). The interp runs the same fn through
 `fast_eval`/`fast_eval_typed` — one implementation per builtin.
 
 A labeled default the call left unwritten is marshaled from the

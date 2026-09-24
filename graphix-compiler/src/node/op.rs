@@ -194,8 +194,7 @@ macro_rules! gated_operands {
 /// neither operand's type contains the other's.
 fn unify_operands(env: &Env, lt: &Type, rt: &Type) -> Result<Option<Type>> {
     let probe = ContainsFlags::RigidCheck.into();
-    let commit =
-        ContainsFlags::AliasTVars | ContainsFlags::InitTVars | ContainsFlags::RigidCheck;
+    let commit = ContainsFlags::Commit | ContainsFlags::RigidCheck;
     let (wide, narrow) = if lt.contains_with_flags(probe, env, rt)? {
         (lt, rt)
     } else if rt.contains_with_flags(probe, env, lt)? {
@@ -215,10 +214,10 @@ fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
     if t.with_deref(|t| t.is_some()) {
         bound.check_contains(env, t)
     } else {
-        if let Type::TVar(tv) = t {
-            tv.add_cell_constraint(bound.clone());
+        match t {
+            Type::TVar(tv) => tv.narrow_cell(env, bound.clone()),
+            _ => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -667,7 +666,7 @@ macro_rules! arith_op {
             /// are one numeric type. Idempotent; runs at typecheck0 and
             /// again at typecheck1 after the operand cells settle.
             fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-                let num = Type::number();
+                let num = Type::Primitive(Typ::number());
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 // A known operand must be numeric at typecheck0; the
                 // def-time acceptance gate for a lambda body runs only there.
