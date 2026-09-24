@@ -66,7 +66,7 @@ the option-shape collapse happen inline in the CLIF walk and in the
 HOF lowering is the scaffold loops driven straight from the node
 graph; the kernel boundary is the region's free-variable input list
 (`KernelSig`), materialized by the compile attempt itself
-(`sig_from_inputs`) rather than by a separate analysis that could drift
+(`sig_from_params`) rather than by a separate analysis that could drift
 from the emitter.
 
 Steelmen for keeping a middle IR, and why they lose: a flat enum is a

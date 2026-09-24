@@ -274,6 +274,14 @@ impl MapCollection for ListCollection {
 /// bottom on both engines, and the node-walk logs it once per fired count.
 pub const MAX_ARRAY_INIT_LEN: i64 = 16 * 1024 * 1024;
 
+/// The diagnostic of a collection init count past the element limit,
+/// from both engines.
+pub(crate) fn log_init_oversize(n: i64) {
+    log::error!(
+        "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
+    );
+}
+
 #[derive(Debug, Clone, Default)]
 struct IndexRange(usize);
 
@@ -293,9 +301,7 @@ impl MapCollection for IndexRange {
         let Value::I64(n) = value else { return None };
         if n > MAX_ARRAY_INIT_LEN {
             if fired {
-                log::error!(
-                    "collection init size {n} exceeds the {MAX_ARRAY_INIT_LEN} element limit"
-                );
+                log_init_oversize(n);
             }
             return None;
         }
@@ -495,7 +501,7 @@ impl CallbackParam {
     fn elem<'a>(
         &'a self,
         typ: &'a Type,
-        leaves: &'a [(BindId, usize, scaffold::LeafShape)],
+        leaves: &'a [scaffold::Leaf],
     ) -> scaffold::HofElem<'a> {
         scaffold::HofElem { name: &self.name, id: self.id, typ, leaves }
     }
@@ -531,7 +537,7 @@ fn callback_param<R: Rt, E: UserEvent>(
 fn bindable_array_element(
     typ: &Type,
     binds: &[(BindId, usize)],
-) -> Option<(Type, Vec<(BindId, usize, scaffold::LeafShape)>)> {
+) -> Option<(Type, scaffold::Leaves)> {
     let typ = kernel_abi::freeze_for_abi_normalized(typ)?;
     let leaves = scaffold::elem_leaves(&typ, binds)?;
     match kernel_abi::abi_kind(&typ) {
@@ -587,7 +593,7 @@ fn finish_loop_result(
     if source_invariant {
         flags.set_src_invariant();
     }
-    flags.apply(cx, result, &[source.disc])
+    flags.apply(cx, result, source.disc)
 }
 
 /// Emit a List/Map HOF source: marshal the collection Value owned and
@@ -1879,7 +1885,7 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
         Some(AbiKind::String) if acc.binds.is_empty() => scaffold::FoldAcc::Str,
         // The init and body may emit narrower members of the acc union;
         // `emit_owned_value_operand_node` normalizes them to an owned Value.
-        Some(k @ (AbiKind::Variant | AbiKind::Nullable | AbiKind::Value))
+        Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value)
             if acc.binds.is_empty() =>
         {
             for n in [init, body] {
@@ -1891,11 +1897,6 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
             scaffold::FoldAcc::Value {
                 init_src: CompositeSource::Owned,
                 body_src: CompositeSource::Owned,
-                kind: match k {
-                    AbiKind::Variant => scaffold::ValueLeafKind::Variant,
-                    AbiKind::Nullable => scaffold::ValueLeafKind::Nullable,
-                    _ => scaffold::ValueLeafKind::Value,
-                },
             }
         }
         _ => return Ok(None),

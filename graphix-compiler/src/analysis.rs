@@ -8,14 +8,15 @@
 
 use crate::{
     ApplyView, BindId, DefAssertionKind, ExecCtx, LambdaId, LambdaInstanceId, Node,
-    NodeView, Refs, Rt, UserEvent,
+    NodeView, Refs, Rt, Update, UserEvent,
     dbgenv::gxdbg_effect,
     effects::{EffectKind, RecursionKind},
-    expr::{At, ExprKind},
+    expr::{At, ExprKind, ModuleKind},
     fusion::{self, lowering},
     node::{
         callsite::{ArgKey, CallSite},
         lambda::{GXLambda, LambdaDef},
+        module::Module,
         select::Select,
     },
     profile::{self, Phase},
@@ -425,6 +426,12 @@ fn body_facts<R: Rt, E: UserEvent>(
     res
 }
 
+/// A dynamic module runs code its source delivers at run time, whose
+/// effects nothing here can see.
+fn is_dynamic_module<R: Rt, E: UserEvent>(m: &Module<R, E>) -> bool {
+    matches!(&m.spec().kind, ExprKind::Module { value: ModuleKind::Dynamic { .. }, .. })
+}
+
 /// Which `<-` targets count as state of the code being classified.
 #[derive(Clone, Copy)]
 enum OwnTargets<'a> {
@@ -458,13 +465,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         },
         NodeView::ConnectDeref(_) => LambdaFacts::STATEFUL,
         NodeView::Qop(_) | NodeView::OrNever(_) => LambdaFacts::PURE,
-        // CR claude for eric: [bug] A dynamic Module is PURE here and
-        // fusion::for_each_node never visits its `source`, so an async source is
-        // invisible. Probe: `#[sync] let f = |x: i64| { let s = mod t dynamic {
-        // sandbox whitelist [core]; sig { val foo: i64 }; source
-        // sys::time::after_idle(duration:0.01s, "let foo = 42") }; (s, x) }` is
-        // accepted; the same after_idle outside the module is refused. The same
-        // hole makes arm_sleeps_on_deselect call such an arm pure.
+        NodeView::Module(m) if is_dynamic_module(m) => LambdaFacts::ASYNC,
         NodeView::Bind(_)
         | NodeView::Module(_)
         | NodeView::Block(_)

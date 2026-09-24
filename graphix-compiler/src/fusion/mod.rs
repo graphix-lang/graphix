@@ -6,43 +6,41 @@
 //! `Update::fuse` recursion. This module supplies the shared mechanics:
 //! [`try_fuse`] (early effect rejection and whole-subtree compilation),
 //! [`fuse`] (the child-visit protocol),
-//! [`lowering`] (discovery and signature derivation) and [`builder`]
-//! (the runtime [`builder::FusedKernel`] carrier).
+//! [`lowering`] (discovery and signature derivation) and [`kernel`]
+//! (the runtime [`FusedKernel`] node).
 
-pub mod builder;
 pub mod emit;
 pub mod emit_helpers;
-pub mod intern;
 pub mod kernel;
 pub mod kernel_abi;
 pub mod lowering;
 
-pub use builder::FusedKernel;
+pub use kernel::FusedKernel;
 
 use crate::{
-    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, Refs, Rt, Update, UserEvent,
+    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, PrintFlag, Refs, Rt, Update,
+    UserEvent,
     env::Env,
     expr::{Expr, ExprId, ExprKind, Origin},
+    format_with_flags,
     fusion::{
         kernel_abi::{
-            FreezeError, KernelSig, freeze_for_abi_normalized,
-            try_freeze_for_abi_normalized,
+            AbiKind, FreezeError, KernelParam, KernelSig, ParamKind,
+            freeze_for_abi_normalized, try_freeze_for_abi_normalized,
         },
-        lowering::{RegionInputKind, expand_refs},
+        lowering::expand_refs,
     },
     node,
     node::genn,
     profile::{self, Phase},
     typ::{FnType, Type},
 };
-// CR claude for eric: [style] Repeated long paths the imports should carry:
-// `std::sync::Arc` (6x), `compact_str::format_compact!` (9x),
-// `arcstr::ArcStr` (10x), `compact_str::CompactString` (5x),
-// `crate::format_with_flags`/`PrintFlag` (3x); and
-// `poolshark::local::LPooled`/`crate::ApplyView` in check_attributes_subtree
-// are spelled out although already imported. `FusionFailure::reason` holds a
-// full `{e:#}` chain, not a short string: `ArcStr`, not `CompactString`.
+use arcstr::{ArcStr, literal};
+use compact_str::{CompactString, format_compact};
+use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
+use std::collections::BTreeMap;
+use triomphe::Arc;
 
 #[derive(Debug, Clone)]
 struct FusionSource {
@@ -70,7 +68,7 @@ impl FusionSource {
 #[derive(Debug, Clone)]
 pub struct FusionFailure {
     pub id: ExprId,
-    pub reason: compact_str::CompactString,
+    pub reason: ArcStr,
     source: FusionSource,
 }
 
@@ -83,7 +81,7 @@ impl FusionFailure {
 #[derive(Debug)]
 pub(crate) struct FusionBlocker {
     spec: Expr,
-    reason: compact_str::CompactString,
+    reason: CompactString,
 }
 
 impl std::fmt::Display for FusionBlocker {
@@ -94,7 +92,7 @@ impl std::fmt::Display for FusionBlocker {
 
 impl std::error::Error for FusionBlocker {}
 
-pub(crate) fn blocker(spec: &Expr, reason: compact_str::CompactString) -> anyhow::Error {
+pub(crate) fn blocker(spec: &Expr, reason: CompactString) -> anyhow::Error {
     FusionBlocker { spec: spec.clone(), reason }.into()
 }
 
@@ -111,8 +109,8 @@ pub struct FusionStats {
     pub fused: usize,
     /// Attempts rejected during discovery, before input collection or emission.
     pub rejected_before_emit: usize,
-    /// Per-failure source identity and compile error. Compile-time only;
-    /// bounded by program size.
+    /// Per-failure source identity and compile error, across the
+    /// context's compiles.
     pub failed: Vec<FusionFailure>,
     /// JIT module rotations: an exhausted module is replaced by a fresh
     /// one, and its ~256MB arena is freed when the last kernel compiled
@@ -125,10 +123,10 @@ pub struct FusionStats {
 }
 
 impl FusionStats {
-    fn record_failure(&mut self, spec: &Expr, reason: compact_str::CompactString) {
+    fn record_failure(&mut self, spec: &Expr, reason: &str) {
         self.failed.push(FusionFailure {
             id: spec.id,
-            reason,
+            reason: ArcStr::from(reason),
             source: FusionSource::new(spec),
         });
     }
@@ -150,36 +148,26 @@ impl FusionStats {
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, reached as
 /// `ctx.fusion.<x>`.
 pub struct FusionCtx {
-    /// Per-context cranelift module + cross-kernel-call cache. The
-    /// mutex is interior mutability for `ExecCtx`'s `Sync` bound; JIT
-    /// ops are compile-time only.
-    pub jit: parking_lot::Mutex<emit::Jit>,
+    /// Per-context cranelift module + cross-kernel-call cache, built on
+    /// first use ([`Self::jit`]). The mutex is interior mutability for
+    /// `ExecCtx`'s `Sync` bound; JIT ops are compile-time only.
+    jit: parking_lot::Mutex<Option<emit::Jit>>,
     /// Monomorphized lambda-kernel cache. Catch coverage and fn
     /// resolutions are part of the key because the kernel bakes them.
     /// The cached `Arc<KernelSig>` is the callable handle: the JIT's
-    /// `by_kernel` cache keys on its pointer identity.
-    // CR claude for eric: [perf] Never evicted, and keyed by a LambdaId minted
-    // per compile, so an entry is dead once its compile ends; a long-lived
-    // context (LSP: one ExecCtx, a check per edit, `reset_jit_for_check`
-    // keeps this) grows without bound. `stats.failed`/`fused_sources` grow the
-    // same way ("bounded by program size" is false there) and are scanned
-    // linearly per lookup. Clear them per compile/check.
+    /// `by_kernel` cache keys on its pointer identity. It lives as long
+    /// as the context's compiled code (a later compile may call an
+    /// earlier one's lambda); [`Self::reset_jit_for_check`] clears it.
+    // XCR claude for eric: cleared per check (the LSP's growth), not per compile:
+    // a REPL or dynamic-module compile calls an earlier compile's lambdas, whose
+    // cached sig is also the key of their compiled bodies in `by_kernel`, and
+    // FusionStats is documented to accumulate across compiles.
     pub kernels: parking_lot::Mutex<
-        std::collections::BTreeMap<
-            (
-                LambdaId,
-                std::sync::Arc<FnType>,
-                lowering::QopCoverage,
-                lowering::FnResolutions,
-            ),
-            lowering::CachedKernel,
+        BTreeMap<
+            (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions),
+            LambdaCallInfo,
         >,
     >,
-    /// Lambdas whose kernel build is currently on the stack. A
-    /// re-entrant build (mutual recursion) is refused so the chain
-    /// de-fuses instead of recursing forever. `Arc` so a drop-guard can
-    /// hold the set without borrowing the `ExecCtx`.
-    pub(crate) building: triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>,
     /// Whether fusion is enabled for the current compile; set by
     /// [`crate::compile`].
     pub enabled: bool,
@@ -193,31 +181,37 @@ pub struct FusionCtx {
 }
 
 impl FusionCtx {
+    /// The context's JIT module, built on first use.
+    pub(crate) fn jit(&self) -> anyhow::Result<MappedMutexGuard<'_, emit::Jit>> {
+        let mut jit = self.jit.lock();
+        if jit.is_none() {
+            *jit = Some(emit::Jit::new()?);
+        }
+        Ok(MutexGuard::map(jit, |jit| jit.as_mut().expect("built above")))
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
-            // CR claude for eric: [perf] every ExecCtx builds a full Jit here (ISA probe,
-            // ~152 helper declarations, a 256MB arena reservation) even with fusion off
-            // (UIs, LSP checks, --no-fusion). Build it on first use.
-            jit: parking_lot::Mutex::new(emit::Jit::new()?),
-            kernels: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
-            building: triomphe::Arc::new(parking_lot::Mutex::new(
-                nohash::IntSet::default(),
-            )),
+            jit: parking_lot::Mutex::new(None),
+            kernels: parking_lot::Mutex::new(BTreeMap::new()),
             enabled: true,
             stats: FusionStats::default(),
             top_id: None,
         })
     }
 
-    /// Reset the JIT to an empty module. The lambda-kernel signature
-    /// cache survives: it holds module-independent descriptors that
-    /// re-declare into the fresh module on next use. The old module's
-    /// code is freed once no kernel compiled into it is left.
+    /// Drop the JIT module (the next fusion builds a fresh one) and
+    /// forget the previous check's kernel signatures and fusion outcomes:
+    /// every lambda id they key on died with it. The old module's code is
+    /// freed once no kernel compiled into it is left.
     ///
     /// For the check/LSP path, which would otherwise accumulate every
     /// checked file's kernels in one module.
-    pub fn reset_jit_for_check(&self) -> anyhow::Result<()> {
-        *self.jit.lock() = emit::Jit::new()?;
+    pub fn reset_jit_for_check(&mut self) -> anyhow::Result<()> {
+        *self.jit.lock() = None;
+        self.kernels.lock().clear();
+        self.stats.failed.clear();
+        self.stats.fused_sources.clear();
         Ok(())
     }
 }
@@ -226,9 +220,9 @@ impl FusionCtx {
 #[derive(Debug, Clone)]
 pub(crate) struct FreeVarInput {
     pub(crate) bind_id: BindId,
-    pub(crate) name: arcstr::ArcStr,
+    pub(crate) name: ArcStr,
     /// Kernel-input classification, computed once from the binding's type.
-    pub(crate) kind: RegionInputKind,
+    pub(crate) kind: ParamKind,
     /// Full graphix type, needed by the runtime feeder Node.
     pub(crate) typ: Type,
 }
@@ -275,11 +269,11 @@ pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     let resolved = expand_refs(&b.typ, &ctx.env);
     // Normalized: a select with a never() arm leaves a Set polluted by
     // the arm's late-bound TVar.
-    let frozen = kernel_abi::freeze_for_abi_normalized(&resolved)?;
-    let kind = lowering::type_to_region_input_kind(frozen)?;
+    let frozen = freeze_for_abi_normalized(&resolved)?;
+    let kind = lowering::param_kind(&frozen)?;
     Some(FreeVarInput {
         bind_id: id,
-        name: arcstr::ArcStr::from(b.name.as_str()),
+        name: ArcStr::from(b.name.as_str()),
         kind,
         typ: b.typ.clone(),
     })
@@ -358,10 +352,9 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         NodeView::MapQ(m) => rec!(&m.source, &m.prototype),
         NodeView::FoldQ(m) => rec!(&m.source, &m.init, &m.prototype),
         NodeView::Module(m) => {
-            // CR claude for eric: [bug] a dynamic module's `source` is never visited, so
-            // effect analysis misses an async source: `#[sync]` is accepted on a function
-            // whose dynamic-module source calls `after_idle` (probed; CR at analysis.rs
-            // dynamic Module). node_shape.rs's second child walk visits source, not nodes.
+            if let Some(s) = m.source() {
+                rec!(s);
+            }
             for child in m.nodes.iter() {
                 rec!(child)
             }
@@ -482,13 +475,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
             }
         }
         NodeView::MapRef(m) => rec!(&m.source, &m.key),
-        // CR claude for eric: [bug] Calls `f` on the referent's direct children but
-        // never recurses into them, so every walk built on this (effect analysis,
-        // call graph, fusion discovery, fingerprints, #[native]) misses whatever
-        // sits two levels under a `&`. Probe: `#[sync] let f = |n: i64| { let r =
-        // &(throttle(#rate: duration:0.001s, n) + 1); *r }` compiles; without the
-        // `+ 1` it is refused as async. Fix: `b.for_each_child(&mut |c| rec!(c))`.
-        NodeView::ByRef(b) => b.for_each_child(f),
+        NodeView::ByRef(b) => b.for_each_child(&mut |c| rec!(c)),
         NodeView::Deref(d) => rec!(&d.child),
         NodeView::Add(o) => rec!(&o.lhs, &o.rhs),
         NodeView::Sub(o) => rec!(&o.lhs, &o.rhs),
@@ -571,29 +558,11 @@ pub(crate) fn for_each_reachable_node<'a, R: Rt, E: UserEvent>(
     }
 }
 
-/// One statically-resolved lambda call site in a region being compiled,
-/// recorded by [`discover_lambda_calls`] and consumed by
-/// `CallSite::emit_clif` to emit a CLIF `call` against the callee.
-// CR claude for eric: [structure] A per-site copy of the cached kernel:
-// `fn_name` repeats `kernel.fn_name` (and the doc is stale: `funcids` and
-// `callee_refs` key on `kernel_key`, not the name), and `arg_types`/`captures`
-// are Vec clones made per site on every region attempt (top-down fusion
-// re-runs discovery per subtree). Hold one `Arc<CachedKernel>` instead.
-#[derive(Debug, Clone)]
-pub struct LambdaCallInfo {
-    /// The callee kernel's name in the `funcids`/`callee_refs` maps —
-    /// the cached kernel's name, never this call site's source name.
-    pub fn_name: arcstr::ArcStr,
-    /// The same `Arc` the `by_kernel` entry keys on.
-    pub kernel: std::sync::Arc<KernelSig>,
-    /// The callee's input types in signature order, formals then
-    /// captures, resolved and frozen at build time — the caller's type
-    /// authority for arg classification (env is unavailable at emit time).
-    pub arg_types: Vec<Type>,
-    /// Closure-converted captures, appended after the formal args; the
-    /// caller marshals each from its own env, BindId-first.
-    pub captures: Vec<lowering::CaptureSlot>,
-}
+/// The callee of one statically-resolved lambda call site in a region
+/// being compiled, recorded by [`discover_lambda_calls`] and consumed by
+/// `CallSite::emit_clif` to emit a CLIF `call` against it: the cached
+/// kernel every site reaching it shares.
+pub type LambdaCallInfo = triomphe::Arc<lowering::CachedKernel>;
 
 /// A discovered callee's body Node + self-call info. The body reference
 /// is live through this region's resolved `GXLambda` for the duration
@@ -611,45 +580,47 @@ pub struct CalleeBody<'n, R: Rt, E: UserEvent> {
     pub apply_sites: nohash::IntMap<ExprId, lowering::BuiltinCallSiteInfo>,
 }
 
+/// What [`discover_lambda_calls`] found in a region.
+pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
+    /// The root's call sites.
+    pub(crate) sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
+    /// Every callee in the closure, in discovery order, by kernel
+    /// identity: fn indices and the region layout are stable across
+    /// processes.
+    pub(crate) callees: LPooled<Vec<(kernel_abi::KernelKey, Arc<KernelSig>)>>,
+    /// Each callee's body, self-call info and own call sites, by kernel
+    /// identity.
+    pub(crate) bodies: BTreeMap<kernel_abi::KernelKey, CalleeBody<'n, R, E>>,
+    /// The decorated nodes a successful build absorbs.
+    pub(crate) decorated: LPooled<nohash::IntSet<ExprId>>,
+    /// Call sites whose lambda has no kernel, with the reason.
+    pub(crate) refused: LPooled<Vec<(&'n Expr, CompactString)>>,
+}
+
 /// Walk the region collecting every statically-resolved lambda call
 /// site, building (or cache-hitting) each callee's kernel signature
 /// transitively: a built callee's own body is scanned in turn. A lambda
 /// that fails to build is not recorded; its call site bails at emission
-/// and the region de-fuses (never a partial kernel).
-///
-/// Returns the root's call sites, every callee in the closure in
-/// discovery order, each callee's body + self-call info + own call
-/// sites keyed by kernel identity, and the decorated nodes the region
-/// would absorb. A callee already in `bodies` is not re-scanned, which
-/// closes self- and mutual recursion.
+/// and the region de-fuses (never a partial kernel). A callee already
+/// in `bodies` is not re-scanned, which closes self- and mutual
+/// recursion.
 pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     root: &'n Node<R, E>,
-    ctx: &mut ExecCtx<R, E>,
-) -> (
-    LPooled<nohash::IntMap<ExprId, LambdaCallInfo>>,
-    LPooled<Vec<(kernel_abi::KernelKey, std::sync::Arc<KernelSig>)>>,
-    std::collections::BTreeMap<kernel_abi::KernelKey, CalleeBody<'n, R, E>>,
-    LPooled<nohash::IntSet<ExprId>>,
-) {
-    // Decorated nodes seen by this walk are exactly the nodes a
-    // successful build absorbs; `try_fuse` commits them to `attr_absorbed`.
+    ctx: &ExecCtx<R, E>,
+) -> Discovery<'n, R, E> {
     let collect_decorated = !ctx.attr_census.lock().is_empty();
-    let mut decorated: LPooled<nohash::IntSet<ExprId>> = LPooled::take();
-    // Keyed by kernel identity (names shadow, monomorphizations share a
-    // name); a Vec in discovery order so fn indices and the region
-    // layout are stable across processes.
-    let mut callees: LPooled<Vec<(kernel_abi::KernelKey, std::sync::Arc<KernelSig>)>> =
-        LPooled::take();
-    let mut bodies: std::collections::BTreeMap<
-        kernel_abi::KernelKey,
-        CalleeBody<'n, R, E>,
-    > = std::collections::BTreeMap::new();
+    let mut d = Discovery {
+        sites: LPooled::take(),
+        callees: LPooled::take(),
+        bodies: BTreeMap::new(),
+        decorated: LPooled::take(),
+        refused: LPooled::take(),
+    };
     // The second field says where a body's discovered sites land:
     // `None` = the root, `Some(ptr)` = that callee's `CalleeBody.sites`.
     let mut worklist: LPooled<Vec<(&'n Node<R, E>, Option<kernel_abi::KernelKey>)>> =
         LPooled::take();
     worklist.push((root, None));
-    let mut root_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> = LPooled::take();
     while let Some((body, target)) = worklist.pop() {
         let mut local_sites: LPooled<nohash::IntMap<ExprId, LambdaCallInfo>> =
             LPooled::take();
@@ -657,9 +628,9 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             LPooled::take();
         for_each_emitted_node(body, &mut |n| {
             if collect_decorated
-                && n.spec().dec.as_ref().is_some_and(|d| !d.attrs.is_empty())
+                && n.spec().dec.as_ref().is_some_and(|dec| !dec.attrs.is_empty())
             {
-                decorated.insert(n.spec().id);
+                d.decorated.insert(n.spec().id);
             }
             let NodeView::CallSite(cs) = n.view() else {
                 return;
@@ -667,84 +638,60 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             let Some(ApplyView::Lambda(g)) = cs.resolved_apply() else {
                 return;
             };
-            // The source name labels the emitted symbol only; resolution
-            // is by kernel identity. A lambda-literal call has no name
-            // and stays on the node-walk.
-            // CR claude for eric: [structure] Fusion is gated on having a label: a
-            // statically resolved call whose fnode is not a `Ref` loses fusion only
-            // because the symbol would be unnamed. Probe: `#[native]
-            // ((|x: i64| x * 2 + 1)(n))` is refused ("lambda call site ... not
-            // discovered"). Label such a callee `lambda` (or by its LambdaId).
-            let ExprKind::Ref { name } = &cs.fnode.spec().kind else {
+            // A collection-bodied lambda is emitted inline at its call site.
+            if matches!(g.body().view(), NodeView::MapQ(_) | NodeView::FoldQ(_)) {
                 return;
-            };
-            let name: arcstr::ArcStr = match lowering::ident_of(name) {
-                Some(ident) => arcstr::ArcStr::from(ident),
-                None => {
-                    let s: &str = name.0.as_ref();
-                    arcstr::ArcStr::from(s)
-                }
+            }
+            // The source name labels the emitted symbol only; resolution
+            // is by kernel identity.
+            let name: ArcStr = match &cs.fnode.spec().kind {
+                ExprKind::Ref { name } => match lowering::ident_of(name) {
+                    Some(ident) => ArcStr::from(ident),
+                    None => ArcStr::from(AsRef::<str>::as_ref(&name.0)),
+                },
+                _ => literal!("lambda"),
             };
             // The site's resolved FnType keys the kernel cache.
             let Some(site_ftype) = cs.resolved_ftype() else {
                 return;
             };
-            let Some(cached) = lowering::build_lambda_kernel(g, site_ftype, &name, ctx)
-            else {
-                return;
+            let cached = match lowering::build_lambda_kernel(g, site_ftype, &name, ctx) {
+                Ok(cached) => cached,
+                Err(why) => {
+                    let reason = format_compact!("lambda `{name}` has no kernel: {why}");
+                    d.refused.push((n.spec(), reason));
+                    return;
+                }
             };
             let ptr = kernel_abi::kernel_key(&cached.kernel);
             // A repeat reach (a self-call or mutual back-edge) records
             // the site but does not re-enqueue the body.
-            if !bodies.contains_key(&ptr) {
-                callees.push((ptr, cached.kernel.clone()));
-                let self_call = cached.is_rec.then(|| {
-                    (
-                        cached.self_bind.expect(
-                            "is_rec without self_bind — \
-                             build_lambda_kernel derives is_rec FROM \
-                             self_bind",
-                        ),
-                        LambdaCallInfo {
-                            fn_name: cached.fn_name.clone(),
-                            kernel: cached.kernel.clone(),
-                            arg_types: cached.signature.arg_types.clone(),
-                            captures: cached.captures.clone(),
-                        },
-                    )
-                });
-                bodies.insert(
+            if !d.bodies.contains_key(&ptr) {
+                d.callees.push((ptr, cached.kernel.clone()));
+                d.bodies.insert(
                     ptr,
                     CalleeBody {
                         body: g.body(),
-                        self_call,
+                        self_call: cached.self_call.map(|sb| (sb, cached.clone())),
                         sites: LPooled::take(),
                         apply_sites: cached.apply_sites.clone(),
                     },
                 );
                 enqueue.push((g.body(), ptr));
             }
-            local_sites.insert(
-                n.spec().id,
-                LambdaCallInfo {
-                    fn_name: cached.fn_name,
-                    kernel: cached.kernel,
-                    arg_types: cached.signature.arg_types.clone(),
-                    captures: cached.captures,
-                },
-            );
+            local_sites.insert(n.spec().id, cached);
         });
         match target {
-            None => root_sites = local_sites,
+            None => d.sites = local_sites,
             Some(ptr) => {
-                if let Some(cb) = bodies.get_mut(&ptr) {
+                if let Some(cb) = d.bodies.get_mut(&ptr) {
                     cb.sites = local_sites;
                 }
             }
         }
         worklist.extend(enqueue.drain(..).map(|(body, ptr)| (body, Some(ptr))));
     }
-    (root_sites, callees, bodies, decorated)
+    d
 }
 
 /// The fusion visit protocol for one `Node`: try to fuse the whole
@@ -804,12 +751,10 @@ pub(crate) fn check_attributes_subtree<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
 ) -> anyhow::Result<()> {
     let mut err: Option<anyhow::Error> = None;
-    let mut stack: poolshark::local::LPooled<Vec<&Node<R, E>>> =
-        poolshark::local::LPooled::take();
+    let mut stack: LPooled<Vec<&Node<R, E>>> = LPooled::take();
     stack.push(root);
     while let Some(node) = stack.pop() {
-        let mut descend: poolshark::local::LPooled<Vec<&Node<R, E>>> =
-            poolshark::local::LPooled::take();
+        let mut descend: LPooled<Vec<&Node<R, E>>> = LPooled::take();
         for_each_node(node, &mut |n| {
             if err.is_none() {
                 if let Err(e) = check_node_attributes(n, ctx) {
@@ -818,7 +763,7 @@ pub(crate) fn check_attributes_subtree<R: Rt, E: UserEvent>(
                 }
             }
             if let NodeView::CallSite(cs) = n.view() {
-                if let Some(crate::ApplyView::Lambda(g)) = cs.resolved_apply() {
+                if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
                     descend.push(g.body());
                 }
             }
@@ -848,7 +793,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     let phase = profile::phase(Phase::ReturnType);
     let Some(return_type) = freeze_region_return(node.typ(), &ctx.env) else {
         if crate::dbgenv::gxdbg_freeze_ret() {
-            crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            format_with_flags(PrintFlag::DerefTVars, || {
                 eprintln!("FREEZE-RET-MISS {:?} typ={}", node.spec().id, node.typ());
                 Ok::<_, std::fmt::Error>(())
             })
@@ -865,60 +810,34 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     if let Err(blocker) = lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery)
     {
         ctx.fusion.stats.rejected_before_emit += 1;
-        return refuse(ctx, &blocker.spec, blocker.reason);
+        return refuse(ctx, &blocker.spec, &blocker.reason);
     }
     drop(phase);
     let phase = profile::phase(Phase::Inputs);
     let inputs = collect_region_inputs(&**node, ctx);
-    if let Some(name) = non_scalar_basename_collision(&inputs) {
-        return refuse(
-            ctx,
-            node.spec(),
-            compact_str::format_compact!(
-                "non-scalar region inputs share basename `{name}` — \
-                 refuse to fuse"
-            ),
-        );
-    }
     drop(phase);
     let phase = profile::phase(Phase::Callees);
-    // Callee kernels build before the jit lock is taken:
-    // `build_lambda_kernel` needs `&mut ExecCtx`.
-    let (lambda_sites, lambda_callees, callee_bodies, region_decorated) =
-        discover_lambda_calls(node, ctx);
+    let lambdas = discover_lambda_calls(node, ctx);
     drop(phase);
     let source_id = node.spec().id;
-    // CR claude for eric: [readability] `try_fuse` is ~180 lines of phases glued by
-    // tuples: `discover_lambda_calls` returns an unnamed 4-tuple and
-    // `sig_from_inputs` a pair whose second half is discarded here. A
-    // `Discovery` struct and a sig-only builder would read better.
-    let (sig, _arg_types) = match sig_from_inputs(
-        arcstr::ArcStr::from(
-            compact_str::format_compact!("region_{:?}", source_id).as_str(),
-        ),
-        inputs.iter().map(|fv| (fv.name.clone(), &fv.kind, Some(fv.bind_id))),
+    let kernel = Arc::new(sig_from_params(
+        ArcStr::from(format_compact!("region_{:?}", source_id).as_str()),
+        inputs.iter().map(|fv| KernelParam {
+            name: fv.name.clone(),
+            kind: fv.kind.clone(),
+            bind_id: Some(fv.bind_id),
+        }),
         return_type,
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            // A freeze invariant violation; de-fuse rather than panic.
-            return refuse(
-                ctx,
-                node.spec(),
-                compact_str::format_compact!("sig_from_inputs: {e:#}"),
-            );
-        }
-    };
-    let kernel = std::sync::Arc::new(sig);
+    ));
     let build = |ctx: &mut ExecCtx<R, E>| {
         emit::compile_kernel_with_callees_direct(
-            &mut ctx.fusion.jit.lock(),
+            &mut *ctx.fusion.jit()?,
             &kernel,
-            &lambda_callees,
+            &lambdas.callees,
             node,
             &discovery.apply_sites,
-            &lambda_sites,
-            &callee_bodies,
+            &lambdas.sites,
+            &lambdas.bodies,
             &ctx.env,
         )
     };
@@ -932,7 +851,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
     {
         match emit::Jit::new() {
             Ok(fresh) => {
-                *ctx.fusion.jit.lock() = fresh;
+                *ctx.fusion.jit.lock() = Some(fresh);
                 ctx.fusion.stats.jit_generations += 1;
                 log::warn!(
                     "JIT code arena exhausted: retired generation {} (freed when its \
@@ -943,23 +862,27 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
             }
             Err(e2) => {
                 log::warn!(
-                    "JIT code arena exhausted and a fresh module could not be created \
-                     ({e2:#}) — the region will run interpreted"
+                    "JIT code arena exhausted and a fresh module could \
+                     not be created ({e2:#}) — the region will run \
+                     interpreted"
                 );
             }
         }
     }
     drop(phase);
     let wrapped = match result {
-        Ok(w) => std::sync::Arc::new(w),
+        Ok(w) => w,
         Err(e) => {
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
+            for (spec, why) in lambdas.refused.iter() {
+                ctx.fusion.stats.record_failure(spec, why);
+            }
             let spec = e
                 .chain()
                 .find_map(|cause| cause.downcast_ref::<FusionBlocker>())
                 .map(|blocker| &blocker.spec)
                 .unwrap_or_else(|| node.spec());
-            return refuse(ctx, spec, compact_str::format_compact!("{e:#}"));
+            return refuse(ctx, spec, &format!("{e:#}"));
         }
     };
     // Feeders register under the real top id: `Rt::ref_var` is keyed
@@ -970,85 +893,55 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         .iter()
         .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
         .collect();
-    match builder::FusedKernel::<R, E>::new(
+    let n = FusedKernel::new(
         node.spec().clone(),
         node.typ().clone(),
         kernel,
-        Some(wrapped),
+        wrapped,
         feeders,
-    ) {
-        Ok(n) => {
-            log::debug!(
-                "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
-                inputs.len()
-            );
-            if crate::dbgenv::graphix_dbg_region() {
-                for (i, fv) in inputs.iter().enumerate() {
-                    let deref =
-                        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-                            compact_str::format_compact!("{}", fv.typ)
-                        });
-                    let cons = match &fv.typ {
-                        crate::typ::Type::TVar(tv) => {
-                            let cs = tv.cell_constraints();
-                            compact_str::format_compact!("{cs:?}")
-                        }
-                        _ => compact_str::format_compact!("-"),
-                    };
-                    eprintln!(
-                        "DBGREGION {source_id:?} input[{i}] name={} bind={:?} \
-                         typ={} deref={deref} cons={cons} kind={:?}",
-                        fv.name, fv.bind_id, fv.typ, fv.kind
-                    );
+    );
+    log::debug!(
+        "fusion::try_fuse: fused region {source_id:?} with {} input(s)",
+        inputs.len()
+    );
+    if crate::dbgenv::graphix_dbg_region() {
+        for (i, fv) in inputs.iter().enumerate() {
+            let deref = format_with_flags(PrintFlag::DerefTVars, || {
+                format_compact!("{}", fv.typ)
+            });
+            let cons = match &fv.typ {
+                crate::typ::Type::TVar(tv) => {
+                    let cs = tv.cell_constraints();
+                    format_compact!("{cs:?}")
                 }
-            }
-            ctx.fusion.stats.record_fused(node.spec());
-            if !region_decorated.is_empty() {
-                ctx.attr_absorbed.lock().extend(region_decorated.iter().copied());
-            }
-            Ok(Some(n))
+                _ => format_compact!("-"),
+            };
+            eprintln!(
+                "DBGREGION {source_id:?} input[{i}] name={} bind={:?} \
+                 typ={} deref={deref} cons={cons} kind={:?}",
+                fv.name, fv.bind_id, fv.typ, fv.kind
+            );
         }
-        Err(e) => refuse(
-            ctx,
-            node.spec(),
-            compact_str::format_compact!("FusedKernel::new: {e:#}"),
-        ),
     }
+    ctx.fusion.stats.record_fused(node.spec());
+    if !lambdas.decorated.is_empty() {
+        ctx.attr_absorbed.lock().extend(lambdas.decorated.iter().copied());
+    }
+    Ok(Some(n))
 }
+
+/// Whether a build failed for want of JIT code memory: the arena
+/// refuses the define with an allocation error.
 
 /// De-fuse the region, recording the reason so `attempted` and
 /// `failed` agree.
 fn refuse<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     spec: &Expr,
-    reason: compact_str::CompactString,
+    reason: &str,
 ) -> anyhow::Result<Option<Node<R, E>>> {
     ctx.fusion.stats.record_failure(spec, reason);
     Ok(None)
-}
-
-/// Scalar env slots resolve by BindId, but the other per-kind tables
-/// are name-keyed, so two non-scalar inputs sharing a basename would
-/// alias one slot. Returns the first colliding name.
-// CR claude for eric: [structure] The hazard this guards looks gone: every
-// param local is bound with its BindId and `JitEnv::lookup` (emit/abi.rs:260)
-// resolves BindId-first for every kind, so shadowed names only cost fusion.
-// Probe: a lambda capturing `x` called as `#[native] f(array::len(x))` after
-// `let x` is re-bound is refused ("share basename `x`"); renaming the second
-// `x` fuses. Delete the check (and its doc premise) after a fuzz soak.
-pub(crate) fn non_scalar_basename_collision(
-    inputs: &[FreeVarInput],
-) -> Option<&arcstr::ArcStr> {
-    let mut names: LPooled<ahash::AHashSet<&str>> = LPooled::take();
-    for fv in inputs {
-        if matches!(fv.kind, RegionInputKind::Prim(_)) {
-            continue;
-        }
-        if !names.insert(fv.name.as_str()) {
-            return Some(&fv.name);
-        }
-    }
-    None
 }
 
 /// Freeze a region root's type into the kernel's return ABI type, or
@@ -1057,11 +950,8 @@ pub(crate) fn non_scalar_basename_collision(
 /// type is the raw arm union; on failure, retry with refs expanded,
 /// since an abstract-typed return carries Refs the env-free freeze rejects.
 pub(crate) fn freeze_region_return(typ: &Type, env: &Env) -> Option<Type> {
-    use kernel_abi::AbiKind;
     if crate::dbgenv::graphix_dbg_freeze() {
-        let d = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-            compact_str::format_compact!("{typ}")
-        });
+        let d = format_with_flags(PrintFlag::DerefTVars, || format_compact!("{typ}"));
         eprintln!(
             "DBGFREEZE typ={typ} deref={d} resolved={:?}",
             typ.resolve_tvars().normalize()
@@ -1131,77 +1021,20 @@ pub(crate) fn region_is_candidate<R: Rt, E: UserEvent>(node: &Node<R, E>) -> boo
     }
 }
 
-/// Build a [`KernelSig`] from a typed input list — signature only. One
-/// param per input in source order; vec order is ABI order. The second
-/// return is the per-input graphix type list in the same order, the
-/// caller-side type authority for cross-kernel call marshalling.
-pub(crate) fn sig_from_inputs<'k>(
-    fn_name: arcstr::ArcStr,
-    inputs: impl IntoIterator<Item = (arcstr::ArcStr, &'k RegionInputKind, Option<BindId>)>,
+/// A [`KernelSig`] over `params` in source order, which is the ABI
+/// order.
+pub(crate) fn sig_from_params(
+    fn_name: ArcStr,
+    params: impl IntoIterator<Item = KernelParam>,
     return_type: Type,
-) -> anyhow::Result<(KernelSig, Vec<Type>)> {
-    use kernel_abi::{KernelParam, ParamKind};
-    let mut params: Vec<KernelParam> = Vec::new();
-    let mut arg_types: Vec<Type> = Vec::new();
-    for (name, kind, bind_id) in inputs.into_iter() {
-        let (kind, typ) = match kind {
-            RegionInputKind::Prim(prim) => {
-                (ParamKind::Scalar(*prim), kernel_abi::prim_type(*prim))
-            }
-            RegionInputKind::Array(elem) => (
-                ParamKind::Array { elem: elem.clone() },
-                kernel_abi::array_type(elem.clone()),
-            ),
-            RegionInputKind::Tuple(t) => {
-                let elems = kernel_abi::tuple_slots(t).map(<[Type]>::to_vec).ok_or_else(
-                    || {
-                        anyhow::anyhow!(
-                            "RegionInputKind::Tuple must carry a frozen \
-                             Type::Tuple (freeze invariant)"
-                        )
-                    },
-                )?;
-                (ParamKind::Tuple { elems }, t.clone())
-            }
-            RegionInputKind::Struct(t) => {
-                let fields = kernel_abi::struct_fields(t)
-                    .map(|fs| fs.iter().map(|(n, t, _)| (n.clone(), t.clone())).collect())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "RegionInputKind::Struct must carry a frozen \
-                             Type::Struct (freeze invariant)"
-                        )
-                    })?;
-                (ParamKind::Struct { fields }, t.clone())
-            }
-            RegionInputKind::Variant(t) => {
-                let cases = kernel_abi::variant_cases(t).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "RegionInputKind::Variant must carry a frozen variant \
-                         Type (freeze invariant)"
-                    )
-                })?;
-                (ParamKind::Variant { cases }, t.clone())
-            }
-            RegionInputKind::Nullable(elem) => (
-                ParamKind::Nullable { elem: elem.clone() },
-                kernel_abi::nullable_type(elem.clone()),
-            ),
-            RegionInputKind::String => (ParamKind::String, kernel_abi::string_type()),
-            RegionInputKind::Value(t) => (ParamKind::Value { typ: t.clone() }, t.clone()),
-        };
-        params.push(KernelParam { name, kind, bind_id });
-        arg_types.push(typ);
-    }
-    let sig = KernelSig {
+) -> KernelSig {
+    KernelSig {
         fn_name,
-        params,
+        params: params.into_iter().collect(),
         return_type,
         has_tail_loop: false,
         skipped_args: Vec::new(),
         tail_invariant: Vec::new(),
-        defined: std::sync::atomic::AtomicBool::new(false),
         site_block_words: std::sync::atomic::AtomicU64::new(0),
-    };
-    Ok((sig, arg_types))
+    }
 }

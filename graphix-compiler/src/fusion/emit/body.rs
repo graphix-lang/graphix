@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     expr::{Expr, ExprId, ExprKind},
     fusion::{
-        LambdaCallInfo, intern,
+        LambdaCallInfo,
         kernel_abi::{self, AbiKind, AbiParamKind, KernelKey},
         lowering::BuiltinCallSiteInfo,
     },
@@ -33,7 +33,7 @@ use super::{
     call::{CompositeSource, emit_drop_local, emit_pending_cleanup},
     flow::{emit_body_tail, emit_scope_drops},
     lower::{
-        ClosedFrame, LowerCtx, SelWord, SiteLayout, SlotTable, SlotTableFrame,
+        Channel, ClosedFrame, LowerCtx, SelWord, SiteLayout, SlotTable, SlotTableFrame,
         TruncAnchor, TruncLeaf, TruncRec,
     },
     nodes::emit_owned_value_operand_node,
@@ -88,8 +88,6 @@ pub(super) fn emit_tail_rebind_jump(
     })?;
     let slots = ctx.tail.call_slots;
     debug_assert!(rebinds.len() <= slots.len());
-    let helper =
-        |name: &str| ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing {name}"));
     // Every new value is owned before any old one drops: a Borrowed new
     // value may be another formal's old payload.
     let mut staged: SmallVec<[(ValueVar, LocalKind, ClifValue, ClifValue); 8]> =
@@ -103,32 +101,24 @@ pub(super) fn emit_tail_rebind_jump(
             AbiParamKind::Scalar(p) => (LocalKind::Scalar(p), r.val.disc, r.val.payload),
             AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
                 let payload = if borrowed {
-                    let call =
-                        b.ins().call(helper("graphix_valarray_clone")?, &[r.val.payload]);
+                    let clone = ctx.helper(b, "graphix_valarray_clone")?;
+                    let call = b.ins().call(clone, &[r.val.payload]);
                     b.inst_results(call)[0]
                 } else {
                     r.val.payload
                 };
                 (LocalKind::Composite, r.val.disc, payload)
             }
-            k
-            @ (AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value) => {
+            AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
                 let (disc, payload) = if borrowed {
-                    let call = b.ins().call(
-                        helper("graphix_value_clone")?,
-                        &[r.val.disc, r.val.payload],
-                    );
+                    let clone = ctx.helper(b, "graphix_value_clone")?;
+                    let call = b.ins().call(clone, &[r.val.disc, r.val.payload]);
                     let rs = b.inst_results(call);
                     (rs[0], rs[1])
                 } else {
                     (r.val.disc, r.val.payload)
                 };
-                let kind = match k {
-                    AbiParamKind::Variant => LocalKind::Variant,
-                    AbiParamKind::Nullable => LocalKind::Nullable,
-                    _ => LocalKind::Value,
-                };
-                (kind, disc, payload)
+                (LocalKind::Value, disc, payload)
             }
             AbiParamKind::String => (LocalKind::String, r.val.disc, r.val.payload),
         };
@@ -158,10 +148,7 @@ pub(super) fn emit_interrupt_check(
     env: &mut JitEnv,
     ctx: &LowerCtx,
 ) -> Result<()> {
-    let interrupted = ctx
-        .helper_refs
-        .get("graphix_interrupted")
-        .ok_or_else(|| anyhow!("missing graphix_interrupted"))?;
+    let interrupted = ctx.helper(b, "graphix_interrupted")?;
     let call = b.ins().call(interrupted, &[]);
     let intr = b.inst_results(call)[0];
     let abort_bl = b.create_block();
@@ -270,8 +257,8 @@ pub struct BodyCx<'a, 'f, 'c> {
 
 impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// FuncRef for a registered `emit_helpers` runtime helper.
-    pub fn helper(&self, name: &str) -> Result<FuncRef> {
-        self.ctx.helper_refs.get(name).ok_or_else(|| anyhow!("missing helper {name}"))
+    pub fn helper(&mut self, name: &str) -> Result<FuncRef> {
+        self.ctx.helper(self.b, name)
     }
 
     /// Look up a helper and call it, asserting the argument count
@@ -283,7 +270,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub fn call_helper(&mut self, name: &str, args: &[ClifValue]) -> Result<Inst> {
         let f = self.helper(name)?;
         debug_assert_eq!(
-            self.ctx.helper_refs.arity.get(name).copied(),
+            self.ctx.helper_refs.arity(name),
             Some(args.len()),
             "helper `{name}` called with {} args",
             args.len()
@@ -317,7 +304,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// zero-initialized per instance, so store `value + 1` and read 0
     /// as "no previous observation".
     pub fn claim_state_word(&self) -> Option<i32> {
-        if !self.ctx.state.enabled || self.env.loop_depth > 0 {
+        if self.ctx.claims != Channel::State || self.env.loop_depth > 0 {
             return None;
         }
         let idx = self.ctx.state.next.get();
@@ -332,7 +319,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// heap chain ([`open_slot_tables`](Self::open_slot_tables)).
     /// Callee bodies still refuse.
     pub fn claim_state_word_loop_invariant(&self) -> Option<i32> {
-        if !self.ctx.state.enabled {
+        if self.ctx.claims != Channel::State {
             return None;
         }
         let idx = self.ctx.state.next.get();
@@ -390,7 +377,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                         anchor: TruncAnchor::State(off),
                         n_dirs: n_dirs as u32,
                         leaf: TruncLeaf::Table { stride: 1 },
-                        leaf_rt: None,
                     });
                     self.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                         rel: (off / 8) as u32,
@@ -412,7 +398,6 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                             anchor: TruncAnchor::Site(off),
                             n_dirs: n_dirs as u32,
                             leaf: TruncLeaf::Table { stride: 1 },
-                            leaf_rt: None,
                         });
                         let base = self.site_ptr();
                         let word_addr = self.b.ins().iadd_imm(base, off as i64);
@@ -550,7 +535,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             if k > n_dirs + 1 {
                 bail!("emit_clif: a slot-chain record deeper than its claim");
             }
-            let leaf_ptr = match &r.leaf_rt {
+            let leaf_ptr = match r.leaf.site_leaf() {
                 None => self.b.ins().iconst(types::I64, 0),
                 Some(l) => self.const_ptr(KernelConst::SiteLeaf(l.clone()))?,
             };
@@ -594,7 +579,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
                             .ins()
                             .call(table_helper, &[word, words, valid, own0, leaf_ptr]);
                     }
-                    TruncLeaf::Blocks => {
+                    TruncLeaf::Blocks(_) => {
                         let blocks_helper = self.helper("graphix_slot_state_blocks")?;
                         self.b.ins().call(blocks_helper, &[word, len, valid, leaf_ptr]);
                     }
@@ -649,7 +634,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// base may be 0 at runtime (a recursive back-edge), so every
     /// consumer null-guards ([`SelWord::Guarded`]).
     pub(crate) fn claim_site_word(&self) -> Option<i32> {
-        if !self.ctx.site.enabled {
+        if self.ctx.claims != Channel::Site {
             return None;
         }
         let idx = self.ctx.site.next.get();
@@ -676,7 +661,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     pub(crate) fn claim_site_anchor(
         &self,
         own_levels: u32,
-        leaf: Option<std::sync::Arc<kernel_abi::SiteLeaf>>,
+        leaf: Option<triomphe::Arc<kernel_abi::SiteLeaf>>,
     ) -> Option<i32> {
         let off = self.claim_site_word()?;
         self.ctx.site.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
@@ -750,7 +735,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// The address of the interned `s`, shared by every use in the body.
     pub fn interned_str(&mut self, s: &ArcStr) -> Result<ClifValue> {
-        self.const_ptr(KernelConst::Str(Box::new(intern::intern(s))))
+        self.const_ptr(KernelConst::Str(Box::new(s.clone())))
     }
 
     /// The builtin Apply-site info for `id`, if the region's discovery
@@ -908,7 +893,7 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
 
 /// Unconditionally bottom the kernel from the current block: set the
 /// pending flag, drop the in-flight owned set, and jump to
-/// `pending_exit` (so `Kernel::update` returns `None`). Terminates the
+/// `pending_exit` (so `FusedKernel::update` returns `None`). Terminates the
 /// block.
 pub(super) fn emit_kernel_bottom(cx: &mut BodyCx) -> Result<()> {
     let pending_set = cx.helper("graphix_abort_set")?;
@@ -964,11 +949,12 @@ pub(super) fn emit_kernel_return(
 ) -> Result<()> {
     #[cfg(debug_assertions)]
     if crate::dbgenv::gxdbg_callret() {
+        use crate::fusion::emit_helpers::CallRetTag;
         let f = cx.helper("graphix_dbg_disc")?;
-        let t = cx.b.ins().iconst(types::I64, 2);
+        let t = cx.b.ins().iconst(types::I64, CallRetTag::Return as i64);
         cx.b.ins().call(f, &[t, cv.disc]);
         let acc = cx.b.use_var(cx.ctx.tail.tail_scrut_stale_acc);
-        let t3 = cx.b.ins().iconst(types::I64, 3);
+        let t3 = cx.b.ins().iconst(types::I64, CallRetTag::TailScrutAcc as i64);
         cx.b.ins().call(f, &[t3, acc]);
     }
     // The result fires if its value chain fired or any tail-select

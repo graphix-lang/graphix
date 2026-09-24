@@ -28,7 +28,6 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
-use std::sync::Arc as StdArc;
 use triomphe::Arc;
 
 // XCR claude for eric: triomphe and CompactString done. The address stays a
@@ -58,7 +57,7 @@ pub enum KernelConst {
     },
     /// The cast pseudo-site's fn.
     Cast(TypedFastFn),
-    SiteLeaf(StdArc<SiteLeaf>),
+    SiteLeaf(Arc<SiteLeaf>),
     /// The owning kernel's `site_block_words` cell.
     SiteBlockWords,
 }
@@ -73,7 +72,7 @@ impl KernelConst {
             KernelConst::QopSite(b) => &**b as *const QopSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
             KernelConst::TypedFn { f, .. } | KernelConst::Cast(f) => *f as usize,
-            KernelConst::SiteLeaf(l) => StdArc::as_ptr(l) as *const u8 as usize,
+            KernelConst::SiteLeaf(l) => Arc::as_ptr(l) as *const u8 as usize,
             KernelConst::SiteBlockWords => {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
             }
@@ -92,7 +91,7 @@ impl KernelConst {
             }
             (KernelConst::TypedFn { f: a, .. }, KernelConst::TypedFn { f: b, .. })
             | (KernelConst::Cast(a), KernelConst::Cast(b)) => *a as usize == *b as usize,
-            (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => StdArc::ptr_eq(a, b),
+            (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => Arc::ptr_eq(a, b),
             (KernelConst::SiteBlockWords, KernelConst::SiteBlockWords) => true,
             _ => false,
         }
@@ -167,7 +166,7 @@ pub struct BodyRecord {
     pub relocs: Vec<RecordReloc>,
     pub callees: Vec<Arc<BodyRecord>>,
     /// The kernel a body or thunk belongs to; a wrapper's is its body's.
-    pub kernel: StdArc<KernelSig>,
+    pub kernel: Arc<KernelSig>,
 }
 
 impl BodyRecord {

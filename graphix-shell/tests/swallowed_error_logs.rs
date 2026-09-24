@@ -1,7 +1,9 @@
 //! `$` and a handler-less `?` swallow an error, and say so: the
 //! node-walk logs the site and the error, and a fused kernel logs the
 //! same line through its helper. The logger's module path tells the
-//! two apart, so each engine is proven to have produced its own.
+//! two apart, so each engine is proven to have produced its own. A
+//! collection init count past the element limit bottoms, and says so,
+//! in both engines.
 
 use std::{
     fs,
@@ -18,14 +20,21 @@ let y = a[i]?;
 sys::exit(sys::time::after_idle(duration:200.ms, 0))
 "#;
 
-/// Run the program with logging to `dir`; returns (stderr, log text).
-fn run(no_fusion: bool, label: &str) -> (String, String) {
+/// A count past `MAX_ARRAY_INIT_LEN`; `#[native]` proves the kernel ran it.
+const OVERSIZE: &str = r#"
+let n = 20000000;
+let a = #[native] array::init(n, |i| i);
+sys::exit(sys::time::after_idle(duration:200.ms, 0))
+"#;
+
+/// Run `program` with logging to `dir`; returns (stderr, log text).
+fn run(program: &str, no_fusion: bool, label: &str) -> (String, String) {
     let dir =
         std::env::temp_dir().join(format!("gx-swallow-{}-{}", std::process::id(), label));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("tempdir");
     let path = dir.join("swallow.gx");
-    fs::write(&path, PROGRAM).expect("write program");
+    fs::write(&path, program).expect("write program");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
     if no_fusion {
         cmd.arg("--no-fusion");
@@ -73,12 +82,23 @@ fn assert_diagnostics(label: &str, module: &str, stderr: &str, log: &str) {
 
 #[test]
 fn fused_swallowed_errors_are_logged() {
-    let (stderr, log) = run(false, "jit");
+    let (stderr, log) = run(PROGRAM, false, "jit");
     assert_diagnostics("jit", "graphix_compiler::fusion::emit_helpers", &stderr, &log);
 }
 
 #[test]
 fn node_walk_swallowed_errors_are_logged() {
-    let (stderr, log) = run(true, "interp");
+    let (stderr, log) = run(PROGRAM, true, "interp");
     assert_diagnostics("interp", "graphix_compiler::node::error", &stderr, &log);
+}
+
+#[test]
+fn init_oversize_is_logged_by_both_engines() {
+    for (no_fusion, label) in [(false, "oversize-jit"), (true, "oversize-interp")] {
+        let (_, log) = run(OVERSIZE, no_fusion, label);
+        assert!(
+            log.contains("collection init size 20000000 exceeds"),
+            "{label}: the oversize count was not logged:\n{log}"
+        );
+    }
 }

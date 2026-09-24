@@ -132,7 +132,7 @@ reset_replay` is called between frames and clears REPLAY memory only
 ("the last value I saw") while preserving SEMANTIC state (`count`'s
 tally, `once`'s flag, a select's selection, an accumulated queue). It
 is required with no default impl: the replay-vs-semantic classification
-is a per-node decision the compiler must force. `Kernel::reset_replay`
+is a per-node decision the compiler must force. `FusedKernel::reset_replay`
 is a no-op — a kernel carries no replay caches.
 
 ### The north star
@@ -211,7 +211,7 @@ the JIT and the engine did not get simpler.
   standing bottom must not fire loop or select machinery. Wire slot 0 is
   a context word: bit 0 init, bit 1 quiet frame, bit 2 wake.
 - **Output.** Every kernel returns its result's honest TAINT/STALE tag
-  in-band on the disc; `Kernel::update` decodes it — Fired/Stale carry
+  in-band on the disc; `FusedKernel::update` decodes it — Fired/Stale carry
   the value into the resident, bottoms produce the shared
   FreshBottom/StaleBottom. A quiet poll rides the resident (R1).
   Pending is reserved for genuine aborts (the interrupt, the stack

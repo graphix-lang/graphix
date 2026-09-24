@@ -15,53 +15,52 @@ use crate::{
     },
     typ::Type,
 };
-use anyhow::{Context as AnyContext, Result};
+use anyhow::{Context as AnyContext, Result, anyhow, bail};
 use cranelift_codegen::ir::{
-    AbiParam, Block, FuncRef, InstBuilder, Signature, Value as ClifValue,
+    AbiParam, Block, FuncRef, Function, InstBuilder, Signature, Value as ClifValue,
     condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};
-// CR claude for eric: [style] `std::cell::RefCell` (x24), `std::cell::Cell` (x7),
-// `std::sync::Arc` (x4) and `poolshark::local::LPooled` (x2) are spelled out in
-// full throughout; import them here with BTreeMap.
-use std::collections::BTreeMap;
+use poolshark::local::LPooled;
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+};
+use triomphe::Arc;
 
 use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
     body::{BodyRole, BodySource, emit_interrupt_check},
+    call::BufKind,
     record::{EmitConst, SymbolTable},
 };
 
-// CR claude for eric: [structure] Eleven parameters in, an anonymous 4-tuple out,
-// and a side effect on the shared KernelSig (`site_block_words.store`, line 256)
-// made before the caller knows the function verifies: a discarded build still
-// writes the cell a constant recipe points at, against the design's "a discarded
-// function is free of consequences". Return a named struct and let the caller
-// publish the words after a successful define.
+// XCR claude for eric: returns a named struct now; the params are distinct inputs.
+// The words stay published here: `publish_site_block_words` is write-once and
+// refuses a second layout, so a discarded build leaves only the value every build
+// of the body computes, and nothing reads the cell before a define succeeds.
 pub(super) fn compile_into_function<'a>(
     b: &mut FunctionBuilder,
     kernel: &'a KernelSig,
     callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
     self_thunk: Option<FuncRef>,
-    helper_refs: &'a HelperRefs,
-    consts: &'a std::cell::RefCell<Vec<EmitConst>>,
-    module: &'a std::cell::RefCell<&'a mut JITModule>,
+    helper_ids: &'a HelperFuncIds,
+    consts: &'a RefCell<Vec<EmitConst>>,
+    module: &'a RefCell<&'a mut JITModule>,
     symbols: &'a SymbolTable,
     symbol: &'a str,
     body: &'a BodySource<'a>,
     callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
-) -> Result<(usize, Vec<kernel_abi::SiteAnchor>, Vec<kernel_abi::SelfBlock>, SiteLayout)>
-{
+) -> Result<EmittedBody> {
     let spec = &body.spec;
     let entry = b.create_block();
     b.append_block_params_for_function_params(entry);
     b.switch_to_block(entry);
 
     let mut env = JitEnv::new();
-    let mut initial_vals: poolshark::local::LPooled<Vec<ClifValue>> =
-        poolshark::local::LPooled::take();
+    let mut initial_vals: LPooled<Vec<ClifValue>> = LPooled::take();
     initial_vals.extend_from_slice(b.block_params(entry));
     // Wire slot 0 is the context word: bit 0 init, bit 1 quiet, bit 2
     // wake. Under a wake view init is not genuine: consumers read
@@ -84,31 +83,24 @@ pub(super) fn compile_into_function<'a>(
             q
         }
     };
+    let helper_refs = HelperRefs::new(helper_ids, module);
+    let helper = |b: &mut FunctionBuilder, name: &str| {
+        helper_refs.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))
+    };
     let state_ptr = initial_vals[1];
-    // CR claude for eric: [style] GXDBG_CALLRET is read with std::env on every
-    // compile (also in emit_kernel_return) instead of through a dbgenv flag, is
-    // missing from CLAUDE.md's debug table, and tags its output with bare 2/3/4.
     #[cfg(debug_assertions)]
-    if crate::dbgenv::gxdbg_callret() {
-        if let Some(f) = helper_refs.get("graphix_dbg_disc") {
-            let t = b.ins().iconst(types::I64, 4);
-            b.ins().call(f, &[t, init_flag]);
-        }
+    if crate::dbgenv::gxdbg_callret()
+        && let Some(f) = helper_refs.get(b.func, "graphix_dbg_disc")
+    {
+        use crate::fusion::emit_helpers::CallRetTag;
+        let t = b.ins().iconst(types::I64, CallRetTag::InitFlag as i64);
+        b.ins().call(f, &[t, init_flag]);
     }
     // Wire slot 2: the callee's per-call-site block; 0 for parents and
     // recursive back-edges, so consumers null-guard.
     let site_ptr = initial_vals[2];
     // Non-scalar params are cloned at entry so the body owns every
     // slot and drops them unconditionally.
-    let clone_helper = helper_refs
-        .get("graphix_valarray_clone")
-        .expect("graphix_valarray_clone helper must be registered");
-    let value_clone_helper = helper_refs
-        .get("graphix_value_clone")
-        .expect("graphix_value_clone helper must be registered");
-    let arcstr_clone_helper = helper_refs
-        .get("graphix_arcstr_clone")
-        .expect("graphix_arcstr_clone helper must be registered");
     for d in kernel.abi_params() {
         // A missing input arrives as a helper-safe placeholder; the disc's
         // TAINT guards it.
@@ -117,22 +109,19 @@ pub(super) fn compile_into_function<'a>(
         let (payload, kind) = match d.kind {
             AbiParamKind::Scalar(p) => (payload_in, LocalKind::Scalar(p)),
             AbiParamKind::Array | AbiParamKind::Tuple | AbiParamKind::Struct => {
-                let call = b.ins().call(clone_helper, &[payload_in]);
+                let clone = helper(b, "graphix_valarray_clone")?;
+                let call = b.ins().call(clone, &[payload_in]);
                 (b.inst_results(call)[0], LocalKind::Composite)
             }
             AbiParamKind::String => {
-                let call = b.ins().call(arcstr_clone_helper, &[payload_in]);
+                let clone = helper(b, "graphix_arcstr_clone")?;
+                let call = b.ins().call(clone, &[payload_in]);
                 (b.inst_results(call)[0], LocalKind::String)
             }
             AbiParamKind::Variant | AbiParamKind::Nullable | AbiParamKind::Value => {
-                let call = b.ins().call(value_clone_helper, &[disc, payload_in]);
-                let owned_payload = b.inst_results(call)[1];
-                let kind = match d.kind {
-                    AbiParamKind::Variant => LocalKind::Variant,
-                    AbiParamKind::Nullable => LocalKind::Nullable,
-                    _ => LocalKind::Value,
-                };
-                (owned_payload, kind)
+                let clone = helper(b, "graphix_value_clone")?;
+                let call = b.ins().call(clone, &[disc, payload_in]);
+                (b.inst_results(call)[1], LocalKind::Value)
             }
         };
         let disc_var = b.declare_var(types::I64);
@@ -174,7 +163,7 @@ pub(super) fn compile_into_function<'a>(
         tail: TailCtx {
             loop_head,
             param_mark,
-            call_slots: kernel.params.as_slice(),
+            call_slots: &kernel.params,
             tail_scrut_stale_acc,
         },
         init_flag,
@@ -183,11 +172,11 @@ pub(super) fn compile_into_function<'a>(
         callee_refs,
         self_thunk,
         helper_refs,
-        value_buf_stack: std::cell::RefCell::new(Vec::new()),
-        owned_input_stack: std::cell::RefCell::new(Vec::new()),
-        collection_site: std::cell::Cell::new(None),
-        self_call_roots: std::cell::RefCell::new(Vec::new()),
-        pending_exit: std::cell::RefCell::new(None),
+        in_flight_bufs: RefCell::new(Vec::new()),
+        owned_input_stack: RefCell::new(Vec::new()),
+        collection_site: Cell::new(None),
+        self_call_roots: RefCell::new(Vec::new()),
+        pending_exit: RefCell::new(None),
         consts,
         module,
         symbols,
@@ -197,22 +186,14 @@ pub(super) fn compile_into_function<'a>(
         lambda_call_sites: spec.lambda_call_sites,
         self_call: spec.self_call(),
         type_env: spec.type_env,
-        state: StateChannel {
-            ptr: state_ptr,
-            enabled: matches!(spec.role, BodyRole::Parent),
-            next: std::cell::Cell::new(0),
-            anchors: std::cell::RefCell::new(Vec::new()),
-            self_blocks: std::cell::RefCell::new(Vec::new()),
+        claims: match spec.role {
+            BodyRole::Parent => Channel::State,
+            BodyRole::Callee(_) => Channel::Site,
         },
-        site: StateChannel {
-            ptr: site_ptr,
-            enabled: !matches!(spec.role, BodyRole::Parent),
-            next: std::cell::Cell::new(0),
-            anchors: std::cell::RefCell::new(Vec::new()),
-            self_blocks: std::cell::RefCell::new(Vec::new()),
-        },
-        slot_tables: std::cell::RefCell::new(Vec::new()),
-        closed_frame: std::cell::RefCell::new(None),
+        state: StateChannel::new(state_ptr),
+        site: StateChannel::new(site_ptr),
+        slot_tables: RefCell::new(Vec::new()),
+        closed_frame: RefCell::new(None),
         callee_layouts,
     };
     // A wedged native loop aborts to bottom on interrupt.
@@ -226,7 +207,7 @@ pub(super) fn compile_into_function<'a>(
     }
 
     // Every abort path drops the owned set before jumping here; the
-    // sentinel is discarded by `Kernel::update` via `KERNEL_ABORT`.
+    // sentinel is discarded by `FusedKernel::update` via `KERNEL_ABORT`.
     let pending_exit_block = *lower.pending_exit.borrow();
     if let Some(pe) = pending_exit_block {
         b.switch_to_block(pe);
@@ -236,38 +217,66 @@ pub(super) fn compile_into_function<'a>(
     }
 
     b.seal_all_blocks();
-    // CR claude for eric: [perf] `lower` dies here, yet every registry is cloned out
-    // of its RefCell (and `site.anchors` cloned then copied again into an Arc).
-    // `take()` / `into_inner()` hands the Vecs over without a copy.
-    let slot_table_words = lower.state.anchors.borrow().clone();
-    let words = lower.site.next.get() as u32;
+    let LowerCtx { state, site, self_call_roots, .. } = lower;
+    let words = site.next.get() as u32;
     // A self-call's child block has this body's layout, which is only
     // known once emission ends.
     let mut slots: Vec<u32> =
-        lower.self_call_roots.borrow().iter().map(|off| (*off / 8) as u32).collect();
+        self_call_roots.into_inner().into_iter().map(|off| (off / 8) as u32).collect();
     slots.sort_unstable();
-    kernel.site_block_words.store(words as u64, std::sync::atomic::Ordering::Relaxed);
-    let anchors: std::sync::Arc<[kernel_abi::SiteAnchor]> =
-        lower.site.anchors.borrow().clone().into();
-    let nested = lower.site.self_blocks.borrow().clone();
-    let activation = triomphe::Arc::new(kernel_abi::ActivationLayout {
+    publish_site_block_words(kernel, words)?;
+    let anchors = site.anchors.into_inner();
+    let nested = site.self_blocks.into_inner();
+    let activation = Arc::new(kernel_abi::ActivationLayout {
         words,
         slots: slots.iter().copied().collect(),
         anchors: anchors.iter().cloned().collect(),
         nested: nested.iter().cloned().collect(),
     });
-    let mut self_blocks: Vec<kernel_abi::SelfBlock> = slots
+    let self_blocks: Vec<kernel_abi::SelfBlock> = slots
         .iter()
         .map(|rel| kernel_abi::SelfBlock { rel: *rel, layout: activation.clone() })
+        .chain(nested)
         .collect();
-    self_blocks.extend(nested);
-    let site_layout = SiteLayout { words, anchors, self_blocks: self_blocks.into() };
-    Ok((
-        lower.state.next.get(),
-        slot_table_words,
-        lower.state.self_blocks.borrow().clone(),
-        site_layout,
-    ))
+    Ok(EmittedBody {
+        state_words: state.next.get(),
+        slot_table_words: state.anchors.into_inner(),
+        state_self_blocks: state.self_blocks.into_inner(),
+        site_layout: SiteLayout {
+            words,
+            anchors: anchors.into(),
+            self_blocks: self_blocks.into(),
+        },
+    })
+}
+
+/// Record the body's site-block size on its kernel, where a self-call
+/// reads it at run time. Every build of one body lays its block out
+/// alike; a build that would not is refused rather than let a child
+/// block be sized for another layout.
+fn publish_site_block_words(kernel: &KernelSig, words: u32) -> Result<()> {
+    use std::sync::atomic::Ordering::Relaxed;
+    match kernel.site_block_words.compare_exchange(0, words as u64, Relaxed, Relaxed) {
+        Ok(_) => Ok(()),
+        Err(prev) if prev == words as u64 => Ok(()),
+        Err(prev) => bail!(
+            "kernel `{}`: a site block of {words} words where another build laid out \
+             {prev} — de-fuse",
+            kernel.fn_name
+        ),
+    }
+}
+
+/// What emitting one body produced beside its CLIF.
+pub(super) struct EmittedBody {
+    /// Per-instance state words the body claimed (wire slot 1).
+    pub(super) state_words: usize,
+    /// The instance-state words anchoring per-slot chains.
+    pub(super) slot_table_words: Vec<kernel_abi::SiteAnchor>,
+    /// The instance-state words rooting per-activation block trees.
+    pub(super) state_self_blocks: Vec<kernel_abi::SelfBlock>,
+    /// The per-call-site block its callers supply (wire slot 2).
+    pub(super) site_layout: SiteLayout,
 }
 
 /// A callee kernel's per-call-site state-block layout, recorded when
@@ -277,10 +286,10 @@ pub(super) fn compile_into_function<'a>(
 #[derive(Debug, Clone)]
 pub(crate) struct SiteLayout {
     pub(crate) words: u32,
-    pub(crate) anchors: std::sync::Arc<[kernel_abi::SiteAnchor]>,
+    pub(crate) anchors: Arc<[kernel_abi::SiteAnchor]>,
     /// Words rooting per-activation block trees; the block's owner
     /// frees and resets them.
-    pub(crate) self_blocks: std::sync::Arc<[kernel_abi::SelfBlock]>,
+    pub(crate) self_blocks: Arc<[kernel_abi::SelfBlock]>,
 }
 
 /// A per-slot state word's address. `Guarded` words ride a base
@@ -292,11 +301,6 @@ pub(crate) enum SelWord {
     Guarded { base: ClifValue, addr: ClifValue },
 }
 
-// CR claude for eric: [structure] `leaf_rt` is Some exactly when `leaf` is
-// `Blocks` (call.rs's trunc_rec, BodyCx::open_slot_tables), so the pair can
-// disagree. Carry the SiteLeaf in the variant, `TruncLeaf::Blocks(Arc<SiteLeaf>)`,
-// and drop leaf_rt. The Arcs here and in SiteLayout are immutable shared data:
-// triomphe::Arc.
 /// An in-loop state-chain claim re-ensured in every enclosing loop's
 /// exit block, so a zero-length epoch still truncates the chain and
 /// frees the dropped subtrees.
@@ -306,8 +310,6 @@ pub(crate) struct TruncRec {
     /// Directory levels above the claim's own loop.
     pub(super) n_dirs: u32,
     pub(super) leaf: TruncLeaf,
-    /// The leaf passed at every level, when the entries are blocks.
-    pub(super) leaf_rt: Option<std::sync::Arc<kernel_abi::SiteLeaf>>,
 }
 
 #[derive(Clone, Copy)]
@@ -318,12 +320,23 @@ pub(crate) enum TruncAnchor {
     Site(i32),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum TruncLeaf {
     /// `graphix_slot_state_table` leaf of `len * stride` words.
     Table { stride: u32 },
-    /// `graphix_slot_state_blocks` leaf (SiteLeaf-described blocks).
-    Blocks,
+    /// `graphix_slot_state_blocks` leaf of blocks the `SiteLeaf`
+    /// describes, passed at every level.
+    Blocks(Arc<kernel_abi::SiteLeaf>),
+}
+
+impl TruncLeaf {
+    /// The leaf descriptor every level of the chain is passed.
+    pub(super) fn site_leaf(&self) -> Option<&Arc<kernel_abi::SiteLeaf>> {
+        match self {
+            TruncLeaf::Table { .. } => None,
+            TruncLeaf::Blocks(l) => Some(l),
+        }
+    }
 }
 
 /// A guarded-select site's per-slot state table in an open scaffold
@@ -353,32 +366,46 @@ pub(crate) struct SlotTableFrame {
     pub(super) pending: Vec<TruncRec>,
 }
 
-// CR claude for eric: [structure] "Only one is enabled" is an invariant two bools
-// hold by construction (lines 205, 212); one `claims: Channel::{State, Site}` on
-// LowerCtx would make it unrepresentable. More broadly, LowerCtx carries ~12
-// Cell/RefCell fields of per-emission mutable state behind a shared `&` while
-// JitEnv is already `&mut` in BodyCx, and `loop_depth` exists twice (here and
-// JitEnv::loop_depth, bumped together in BodyCx::enter_loop). Moving the mutable
-// half into the `&mut` side removes the RefCells and the duplicate counter.
+// XCR claude for eric: one `claims: Channel` now says which channel a body
+// claims from, and the loop depth lives on JitEnv alone. The emission state stays
+// in RefCells behind `&LowerCtx`: moving it to the `&mut` side rewrites every
+// emitter's access (select.rs, flow.rs, body.rs), a follow-up once those settle.
+/// Which state channel a body claims its words from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Channel {
+    /// The per-instance state (wire slot 1): the region parent's root body.
+    State,
+    /// The per-call-site block (wire slot 2): a callee body.
+    Site,
+}
+
 /// One state-word channel: base pointer, claim counter, claim
 /// registries. `state` is the per-instance channel (wire slot 1),
-/// `site` the per-call-site channel (wire slot 2); only one is
-/// enabled for a body.
+/// `site` the per-call-site channel (wire slot 2); a body claims from
+/// its [`Channel`] only.
 pub(super) struct StateChannel {
     /// Base pointer (`I64`); possibly 0, so consumers null-guard where
     /// it can be absent ([`SelWord::Guarded`]).
     pub(super) ptr: ClifValue,
-    /// Whether this body may claim words here: `state` only for the
-    /// region root, `site` only for callees (`BodySpec::role`).
-    pub(super) enabled: bool,
     /// Next unclaimed word index.
-    pub(super) next: std::cell::Cell<usize>,
+    pub(super) next: Cell<usize>,
     /// Words anchoring per-slot state-table chains, freed by the
     /// chain's owner.
-    pub(super) anchors: std::cell::RefCell<Vec<kernel_abi::SiteAnchor>>,
+    pub(super) anchors: RefCell<Vec<kernel_abi::SiteAnchor>>,
     /// Words holding per-activation block trees owned by this channel,
     /// including callee-owned ones rebased into blocks this body carves.
-    pub(super) self_blocks: std::cell::RefCell<Vec<kernel_abi::SelfBlock>>,
+    pub(super) self_blocks: RefCell<Vec<kernel_abi::SelfBlock>>,
+}
+
+impl StateChannel {
+    fn new(ptr: ClifValue) -> Self {
+        Self {
+            ptr,
+            next: Cell::new(0),
+            anchors: RefCell::new(Vec::new()),
+            self_blocks: RefCell::new(Vec::new()),
+        }
+    }
 }
 
 /// Tail-loop machinery for a self-recursive kernel body; empty
@@ -389,7 +416,7 @@ pub(super) struct TailCtx<'a> {
     /// Env mark right after the params are bound; a rebind truncates
     /// to it.
     pub(super) param_mark: usize,
-    /// The kernel's params, by tail-call slot (`KernelSig::params`).
+    /// The params a tail-call rebinds, by slot index.
     pub(super) call_slots: &'a [kernel_abi::KernelParam],
     /// AND over every tail-position select scrutinee's STALE bit on
     /// the executed path; `emit_kernel_return` folds it into the
@@ -416,6 +443,8 @@ pub(crate) struct LowerCtx<'a> {
     /// Wire slot 0 bit 2: a wake view, under which init is not genuine
     /// (`init & !wake`).
     pub(super) wake_flag: ClifValue,
+    /// The channel this body claims from.
+    pub(super) claims: Channel,
     /// Per-instance state channel (wire slot 1).
     pub(super) state: StateChannel,
     /// Per-call-site state channel (wire slot 2).
@@ -424,10 +453,10 @@ pub(crate) struct LowerCtx<'a> {
     /// recursive back-edge (the call passes 0).
     pub(super) callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
     /// Open scaffold-loop frames, innermost last.
-    pub(super) slot_tables: std::cell::RefCell<Vec<SlotTableFrame>>,
+    pub(super) slot_tables: RefCell<Vec<SlotTableFrame>>,
     /// The frame `close_slot_tables` just popped, for the loop exit's
     /// `emit_slot_truncates`.
-    pub(super) closed_frame: std::cell::RefCell<Option<ClosedFrame>>,
+    pub(super) closed_frame: RefCell<Option<ClosedFrame>>,
     /// Callee kernel identity (`kernel_key`) → `FuncRef`, declared in
     /// the current function before the FunctionBuilder is built.
     pub(super) callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
@@ -435,24 +464,24 @@ pub(crate) struct LowerCtx<'a> {
     /// inside the red zone.
     pub(super) self_thunk: Option<FuncRef>,
     /// `FuncRef`s for the runtime helpers, by helper name.
-    pub(super) helper_refs: &'a HelperRefs,
-    /// In-flight value bufs between `buf_new` and finalize; a
-    /// whole-kernel abort drops them ([`emit_pending_cleanup`]).
-    pub(super) value_buf_stack: std::cell::RefCell<Vec<Variable>>,
+    pub(super) helper_refs: HelperRefs<'a>,
+    /// In-flight bufs between their `_new` and finalize, innermost
+    /// last; a whole-kernel abort drops them ([`emit_pending_cleanup`]).
+    pub(super) in_flight_bufs: RefCell<Vec<(BufKind, Variable)>>,
     /// Owned HOF input arrays in flight, freed by a pending exit inside
     /// the loop body. Finished ValArrays, not bufs.
-    pub(super) owned_input_stack: std::cell::RefCell<Vec<Variable>>,
+    pub(super) owned_input_stack: RefCell<Vec<Variable>>,
     /// The collection HOF callsite whose loop scaffold is under
     /// construction; keys a nested loop's prev-length word.
-    pub(super) collection_site: std::cell::Cell<Option<ExprId>>,
+    pub(super) collection_site: Cell<Option<ExprId>>,
     /// Site-word byte offsets rooting self-call activation trees; the
     /// block size they describe is final only after emission.
-    pub(super) self_call_roots: std::cell::RefCell<Vec<i32>>,
+    pub(super) self_call_roots: RefCell<Vec<i32>>,
     /// The constants this body refers to by address, in symbol order;
     /// harvested into the body's record.
-    pub(super) consts: &'a std::cell::RefCell<Vec<EmitConst>>,
+    pub(super) consts: &'a RefCell<Vec<EmitConst>>,
     /// The module, for declaring a constant's data symbol.
-    pub(super) module: &'a std::cell::RefCell<&'a mut JITModule>,
+    pub(super) module: &'a RefCell<&'a mut JITModule>,
     /// Where a constant symbol's address is entered for the loader.
     pub(super) symbols: &'a SymbolTable,
     /// This body's symbol; constant symbols are named under it.
@@ -461,7 +490,7 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) kernel: &'a KernelSig,
     /// The single abort block; its body is emitted at the end of
     /// `compile_into_function`. A bottomed call does not come here.
-    pub(super) pending_exit: std::cell::RefCell<Option<Block>>,
+    pub(super) pending_exit: RefCell<Option<Block>>,
     /// Sync-builtin Apply sites by spec id.
     pub(super) builtin_apply_sites: &'a nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     /// Statically-resolved lambda call sites.
@@ -471,6 +500,21 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) self_call: Option<&'a (BindId, LambdaCallInfo)>,
     /// Type-resolution env snapshot ([`resolve_node_typ`]).
     pub(super) type_env: &'a Env,
+}
+
+impl LowerCtx<'_> {
+    /// The `FuncRef` of a registered `emit_helpers` runtime helper.
+    pub(super) fn helper(&self, b: &mut FunctionBuilder, name: &str) -> Result<FuncRef> {
+        self.helper_refs.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))
+    }
+
+    /// The channel this body claims from.
+    pub(super) fn claims_channel(&self) -> &StateChannel {
+        match self.claims {
+            Channel::State => &self.state,
+            Channel::Site => &self.site,
+        }
+    }
 }
 
 /// Expand named/abstract type refs in a node's `Type` through the
@@ -486,28 +530,40 @@ pub(super) fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
         .or_else(|| kernel_abi::freeze_for_abi_normalized(&resolve_node_typ(ctx, t)))
 }
 
-// CR claude for eric: [perf] declare_helpers imports all ~150 registered helpers
-// into every function and clones the whole `arity` BTreeMap per function
-// (line 628), though a kernel calls a handful. Borrow the module-level arity map
-// and declare a helper's FuncRef on its first `get`.
-/// Runtime-helper `FuncRef`s, valid within one function body.
-#[derive(Default)]
-pub(super) struct HelperRefs {
-    pub(super) refs: BTreeMap<&'static str, FuncRef>,
-    /// Wire-slot count per helper, for [`BodyCx::call_helper`]'s debug
-    /// assert (cranelift reports an arity mismatch only as a whole-
-    /// function failure, a silent de-fuse).
-    pub(super) arity: BTreeMap<&'static str, usize>,
+/// The runtime helpers a function body calls, each imported into the
+/// function on its first use.
+pub(super) struct HelperRefs<'a> {
+    ids: &'a HelperFuncIds,
+    module: &'a RefCell<&'a mut JITModule>,
+    refs: RefCell<BTreeMap<&'static str, FuncRef>>,
 }
 
-impl HelperRefs {
-    pub(super) fn get(&self, name: &str) -> Option<FuncRef> {
-        self.refs.get(name).copied()
+impl<'a> HelperRefs<'a> {
+    fn new(ids: &'a HelperFuncIds, module: &'a RefCell<&'a mut JITModule>) -> Self {
+        Self { ids, module, refs: RefCell::new(BTreeMap::new()) }
+    }
+
+    /// The helper's `FuncRef` in `func`, the body being built.
+    pub(super) fn get(&self, func: &mut Function, name: &str) -> Option<FuncRef> {
+        if let Some(f) = self.refs.borrow().get(name) {
+            return Some(*f);
+        }
+        let (name, id) = self.ids.ids.get_key_value(name)?;
+        let f = self.module.borrow_mut().declare_func_in_func(*id, func);
+        self.refs.borrow_mut().insert(name, f);
+        Some(f)
+    }
+
+    /// The helper's wire-slot count, for [`BodyCx::call_helper`]'s debug
+    /// assert (cranelift reports an arity mismatch only as a whole-
+    /// function failure, a silent de-fuse).
+    pub(super) fn arity(&self, name: &str) -> Option<usize> {
+        self.ids.arity.get(name).copied()
     }
 }
 
 /// Runtime-helper `FuncId`s, declared once per JIT module;
-/// [`declare_helpers`] materializes them per function.
+/// [`HelperRefs`] imports them into a function as it uses them.
 pub(super) struct HelperFuncIds {
     pub(super) ids: BTreeMap<&'static str, FuncId>,
     /// See [`HelperRefs::arity`].
@@ -570,21 +626,6 @@ fn helper_signature(module: &JITModule, spec: &HelperSpec) -> Signature {
         sig.returns.push(helper_abi_param(*t, false));
     }
     sig
-}
-
-/// Declare each helper as a `FuncRef` in `func`; call before
-/// constructing the FunctionBuilder.
-pub(super) fn declare_helpers(
-    module: &mut JITModule,
-    func: &mut cranelift_codegen::ir::Function,
-    ids: &HelperFuncIds,
-) -> HelperRefs {
-    let mut refs = BTreeMap::new();
-    for (name, fid) in ids.ids.iter() {
-        let fref = module.declare_func_in_func(*fid, func);
-        refs.insert(*name, fref);
-    }
-    HelperRefs { refs, arity: ids.arity.clone() }
 }
 
 impl netidx_core::pack::Pack for SiteLayout {

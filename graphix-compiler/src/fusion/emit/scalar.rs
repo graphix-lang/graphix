@@ -22,62 +22,48 @@ use super::{
     lower::LowerCtx,
 };
 
-// CR claude for eric: [structure] six PrimType-to-helper-name tables in this file
-// (value_buf_push, valarray_get, abstract_get, struct_get, string_buf_push,
-// variant_payload) differ only in the prefix; one macro or `[&str; 11]` per family
-// indexed by prim removes the copies. Three of them return a Result that is never
-// Err.
-/// Map a [`PrimType`] to the `graphix_value_buf_push_<T>` helper.
-pub(super) fn value_buf_push_helper(p: PrimType) -> Result<&'static str> {
-    Ok(match p {
-        PrimType::I8 => "graphix_value_buf_push_i8",
-        PrimType::I16 => "graphix_value_buf_push_i16",
-        PrimType::I32 => "graphix_value_buf_push_i32",
-        PrimType::I64 => "graphix_value_buf_push_i64",
-        PrimType::U8 => "graphix_value_buf_push_u8",
-        PrimType::U16 => "graphix_value_buf_push_u16",
-        PrimType::U32 => "graphix_value_buf_push_u32",
-        PrimType::U64 => "graphix_value_buf_push_u64",
-        PrimType::F32 => "graphix_value_buf_push_f32",
-        PrimType::F64 => "graphix_value_buf_push_f64",
-        PrimType::Bool => "graphix_value_buf_push_bool",
-    })
+/// The eleven members of a per-prim helper family `<prefix><prim>`, in
+/// [`PrimType`] declaration order (pinned by `helper_families_follow_prims`).
+macro_rules! prim_family {
+    ($prefix:literal) => {
+        [
+            concat!($prefix, "i8"),
+            concat!($prefix, "i16"),
+            concat!($prefix, "i32"),
+            concat!($prefix, "i64"),
+            concat!($prefix, "u8"),
+            concat!($prefix, "u16"),
+            concat!($prefix, "u32"),
+            concat!($prefix, "u64"),
+            concat!($prefix, "f32"),
+            concat!($prefix, "f64"),
+            concat!($prefix, "bool"),
+        ]
+    };
 }
 
-/// Map an element [`PrimType`] to the `graphix_valarray_get_<T>` helper.
-pub(super) fn valarray_get_helper(p: PrimType) -> Result<&'static str> {
-    Ok(match p {
-        PrimType::I8 => "graphix_valarray_get_i8",
-        PrimType::I16 => "graphix_valarray_get_i16",
-        PrimType::I32 => "graphix_valarray_get_i32",
-        PrimType::I64 => "graphix_valarray_get_i64",
-        PrimType::U8 => "graphix_valarray_get_u8",
-        PrimType::U16 => "graphix_valarray_get_u16",
-        PrimType::U32 => "graphix_valarray_get_u32",
-        PrimType::U64 => "graphix_valarray_get_u64",
-        PrimType::F32 => "graphix_valarray_get_f32",
-        PrimType::F64 => "graphix_valarray_get_f64",
-        PrimType::Bool => "graphix_valarray_get_bool",
-    })
+const VALUE_BUF_PUSH: [&str; 11] = prim_family!("graphix_value_buf_push_");
+const VALARRAY_GET: [&str; 11] = prim_family!("graphix_valarray_get_");
+const ABSTRACT_GET: [&str; 11] = prim_family!("graphix_abstract_get_");
+const STRUCT_GET: [&str; 11] = prim_family!("graphix_struct_get_");
+const STRING_BUF_PUSH: [&str; 11] = prim_family!("graphix_string_buf_push_");
+const VARIANT_PAYLOAD: [&str; 11] = prim_family!("graphix_variant_payload_");
+
+/// The `graphix_value_buf_push_<T>` helper for a [`PrimType`].
+pub(super) fn value_buf_push_helper(p: PrimType) -> &'static str {
+    VALUE_BUF_PUSH[p as usize]
+}
+
+/// The `graphix_valarray_get_<T>` helper for an element [`PrimType`].
+pub(super) fn valarray_get_helper(p: PrimType) -> &'static str {
+    VALARRAY_GET[p as usize]
 }
 
 /// The helper that reads a Graphix-minted abstract value's payload
 /// (`.0`) at the representation's shape.
 pub(super) fn abstract_read_helper(rep: &Type) -> Result<&'static str> {
     Ok(match kernel_abi::abi_kind(rep) {
-        Some(AbiKind::Scalar(p)) => match p {
-            PrimType::I8 => "graphix_abstract_get_i8",
-            PrimType::I16 => "graphix_abstract_get_i16",
-            PrimType::I32 => "graphix_abstract_get_i32",
-            PrimType::I64 => "graphix_abstract_get_i64",
-            PrimType::U8 => "graphix_abstract_get_u8",
-            PrimType::U16 => "graphix_abstract_get_u16",
-            PrimType::U32 => "graphix_abstract_get_u32",
-            PrimType::U64 => "graphix_abstract_get_u64",
-            PrimType::F32 => "graphix_abstract_get_f32",
-            PrimType::F64 => "graphix_abstract_get_f64",
-            PrimType::Bool => "graphix_abstract_get_bool",
-        },
+        Some(AbiKind::Scalar(p)) => ABSTRACT_GET[p as usize],
         Some(AbiKind::String) => "graphix_abstract_get_arcstr",
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             "graphix_abstract_get_array"
@@ -93,36 +79,22 @@ pub(super) fn abstract_read_helper(rep: &Type) -> Result<&'static str> {
     })
 }
 
-/// Map a struct field [`PrimType`] to the `graphix_struct_get_<T>` helper.
-pub(super) fn struct_get_helper(p: PrimType) -> Result<&'static str> {
-    Ok(match p {
-        PrimType::I8 => "graphix_struct_get_i8",
-        PrimType::I16 => "graphix_struct_get_i16",
-        PrimType::I32 => "graphix_struct_get_i32",
-        PrimType::I64 => "graphix_struct_get_i64",
-        PrimType::U8 => "graphix_struct_get_u8",
-        PrimType::U16 => "graphix_struct_get_u16",
-        PrimType::U32 => "graphix_struct_get_u32",
-        PrimType::U64 => "graphix_struct_get_u64",
-        PrimType::F32 => "graphix_struct_get_f32",
-        PrimType::F64 => "graphix_struct_get_f64",
-        PrimType::Bool => "graphix_struct_get_bool",
-    })
+/// The `graphix_struct_get_<T>` helper for a struct field [`PrimType`].
+pub(super) fn struct_get_helper(p: PrimType) -> &'static str {
+    STRUCT_GET[p as usize]
 }
 
-// CR claude for eric: [readability] the first three lines are
-// element_read_helper's doc, stranded on the enum and naming a `struct_access`
-// parameter that is now `read: ElementRead`.
-/// Map an element [`Type`] to its element-read helper by ABI kind.
-/// `struct_access` picks the `struct_get_*` (kv-pair read) family over
-/// the flat `valarray_get_*` family.
-/// Which family of unchecked element-read helpers an accessor uses.
+/// Which family of element-read helpers an accessor uses.
 #[derive(Clone, Copy)]
 pub(super) enum ElementRead {
+    /// The flat `valarray_get_*` family.
     ArrayIndex,
+    /// The `struct_get_*` family, which reads the value of a
+    /// `[name, value]` pair.
     StructField,
 }
 
+/// An element [`Type`]'s read helper by ABI kind, in the `read` family.
 pub(super) fn element_read_helper(
     elem: &Type,
     read: ElementRead,
@@ -131,9 +103,9 @@ pub(super) fn element_read_helper(
     Ok(match kernel_abi::abi_kind(elem) {
         Some(AbiKind::Scalar(p)) => {
             if struct_access {
-                struct_get_helper(p)?
+                struct_get_helper(p)
             } else {
-                valarray_get_helper(p)?
+                valarray_get_helper(p)
             }
         }
         Some(AbiKind::String) => {
@@ -165,10 +137,9 @@ pub(super) fn element_read_helper(
     })
 }
 
-// CR claude for eric: [readability] "fresh box" is stale: composites are one-word
-// ValArray handles with no box since the unified Value ABI.
 /// Emit an element read `arr_ptr[idx]` (or struct field) of element
-/// type `elem`. The result is owned (fresh box or refcount-bumped clone).
+/// type `elem`. The result is owned: a scalar, or a refcount-bumped
+/// clone.
 pub(super) fn compile_element_read(
     b: &mut FunctionBuilder,
     arr_ptr: ClifValue,
@@ -178,10 +149,7 @@ pub(super) fn compile_element_read(
     ctx: &LowerCtx,
 ) -> Result<CompiledExpr> {
     let helper_name = element_read_helper(elem, read)?;
-    let helper = ctx
-        .helper_refs
-        .get(helper_name)
-        .ok_or_else(|| anyhow!("missing JIT helper `{helper_name}`"))?;
+    let helper = ctx.helper(b, helper_name)?;
     let call = b.ins().call(helper, &[arr_ptr, idx_val]);
     if kernel_abi::is_value_shape(elem) {
         let (r0, r1) = {
@@ -230,18 +198,9 @@ pub(super) fn widen_to_i64(
     })
 }
 
-// CR claude for eric: [readability] the CR below is resolved (the prior review
-// said so too): this fn's signed arm sign-extends exactly as pack_value_to_u64
-// does. Delete it.
 /// Promote a scalar CLIF value to the 8-byte payload word of a Value,
 /// following `pack_value_to_u64`: signed ints sign-extend, unsigned
 /// ints and bool zero-extend, floats bitcast through their integer mirror.
-// CR claude for eric: `pack_value_to_u64` (the Rust twin) SIGN-extends
-// signed prims, so a kernel-produced payload word differs from a
-// runtime-packed one in the upper bytes. Harmless today (every
-// consumer truncates), but it breaks the design doc's "the payload
-// word IS the Value encoding" invariant — either sextend signed prims
-// here or amend design/unified_value_abi.md. See review doc C1.
 pub(super) fn scalar_to_payload_i64(
     b: &mut FunctionBuilder,
     p: PrimType,
@@ -274,19 +233,7 @@ pub(super) fn scalar_to_payload_i64(
 /// The `graphix_string_buf_push_*` helper that Display-renders a
 /// scalar of `p` into a string buffer.
 pub(super) fn string_buf_push_helper(p: PrimType) -> &'static str {
-    match p {
-        PrimType::I64 => "graphix_string_buf_push_i64",
-        PrimType::U64 => "graphix_string_buf_push_u64",
-        PrimType::I32 => "graphix_string_buf_push_i32",
-        PrimType::U32 => "graphix_string_buf_push_u32",
-        PrimType::I16 => "graphix_string_buf_push_i16",
-        PrimType::U16 => "graphix_string_buf_push_u16",
-        PrimType::I8 => "graphix_string_buf_push_i8",
-        PrimType::U8 => "graphix_string_buf_push_u8",
-        PrimType::F64 => "graphix_string_buf_push_f64",
-        PrimType::F32 => "graphix_string_buf_push_f32",
-        PrimType::Bool => "graphix_string_buf_push_bool",
-    }
+    STRING_BUF_PUSH[p as usize]
 }
 
 /// Lower a scalar [`Value`] constant of `prim` to a CLIF constant.
@@ -352,17 +299,8 @@ pub(super) fn compile_bin(
             BinOp::Sub => b.ins().fsub(l, r),
             BinOp::Mul => b.ins().fmul(l, r),
             BinOp::Div => b.ins().fdiv(l, r),
-            // CR claude for eric: [perf] a float `%` de-fuses the whole region. A
-            // helper (or libm fmod libcall) with Rust `%` semantics keeps it native;
-            // CLAUDE.md asks to push on de-fuse corner cases. `let _ = (l, r)` is
-            // noise.
             BinOp::Mod => {
-                // Cranelift has no `frem`; refuse so the kernel node-walks.
-                let _ = (l, r);
-                return Err(anyhow!(
-                    "JIT: float modulo unsupported (no cranelift frem); \
-                     kernel runs on the interpreter"
-                ));
+                return Err(anyhow!("compile_bin: a float `%` emits through its helper"));
             }
         }
     })
@@ -560,18 +498,34 @@ pub(super) fn cast_u64_to_prim(
     }
 }
 
-pub(super) fn variant_payload_helper(p: PrimType) -> Result<&'static str> {
-    Ok(match p {
-        PrimType::I8 => "graphix_variant_payload_i8",
-        PrimType::I16 => "graphix_variant_payload_i16",
-        PrimType::I32 => "graphix_variant_payload_i32",
-        PrimType::I64 => "graphix_variant_payload_i64",
-        PrimType::U8 => "graphix_variant_payload_u8",
-        PrimType::U16 => "graphix_variant_payload_u16",
-        PrimType::U32 => "graphix_variant_payload_u32",
-        PrimType::U64 => "graphix_variant_payload_u64",
-        PrimType::F32 => "graphix_variant_payload_f32",
-        PrimType::F64 => "graphix_variant_payload_f64",
-        PrimType::Bool => "graphix_variant_payload_bool",
-    })
+/// The `graphix_variant_payload_<T>` helper for a payload [`PrimType`].
+pub(super) fn variant_payload_helper(p: PrimType) -> &'static str {
+    VARIANT_PAYLOAD[p as usize]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helper_families_follow_prims() {
+        use PrimType::*;
+        for p in [I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, Bool] {
+            let suffix = format!("_{}", format!("{p:?}").to_lowercase());
+            for family in [
+                VALUE_BUF_PUSH,
+                VALARRAY_GET,
+                ABSTRACT_GET,
+                STRUCT_GET,
+                STRING_BUF_PUSH,
+                VARIANT_PAYLOAD,
+            ] {
+                assert!(
+                    family[p as usize].ends_with(&suffix),
+                    "{p:?}: {}",
+                    family[p as usize]
+                );
+            }
+        }
+    }
 }

@@ -434,7 +434,8 @@ node graph IS the IR — there is no parallel typed IR
   (`nodes::emit_bottom_placeholder` takes the governing discs); kernel
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
-- **JIT memory**: one JITModule + 256MB arena per ExecCtx; on exhaustion
+- **JIT memory**: one JITModule + 256MB arena per ExecCtx, built on its
+  first fusion (a fusion-off context never builds one); on exhaustion
   the module retires whole and the region rebuilds in a fresh one; a
   module's code is freed when the module and every kernel compiled into
   it have dropped (each `WrappedKernel` holds its code). Kernel ABI: kind-grouped params from
@@ -602,6 +603,7 @@ compile, so unscoped prints are gigabytes.
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |
 | `GXDBG_CS=1` / `GXDBG_DYNC=1` | every CallSite dispatch and result tag / every fastcall trampoline dispatch |
+| `GXDBG_CALLRET=1` | (debug builds) from inside kernels: each entry's init flag, each return disc and tail fold, each cross-kernel call result |
 | `GXDBG_TYPEREF=1` | scope table dump on an "undefined type" refusal |
 | `GXDBG_LETBIND=1` / `GXDBG_REF=1` | let publication decisions / read misses |
 | `GXDBG_SLOT=1` | per-slot production tags and the collection fold decision |

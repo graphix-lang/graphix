@@ -41,7 +41,7 @@ pub use self::call::CompositeSource;
 pub(crate) use self::call::{emit_builtin_call_node, emit_lambda_call_node};
 pub(crate) use self::flow::{QopSink, emit_block_node, emit_qop_node};
 pub(crate) use self::jit::{ArenaExhausted, compile_kernel_with_callees_direct};
-pub use self::jit::{Jit, WrappedKernel, pack_value_to_u64};
+pub use self::jit::{Jit, WrappedKernel, isa_description, pack_value_to_u64};
 pub(crate) use self::nodes::{
     call_result_needs_value_widening, emit_abstract_ref_node, emit_arith_node,
     emit_array_ref_node, emit_array_slice_node, emit_bool_node, emit_cast_node,

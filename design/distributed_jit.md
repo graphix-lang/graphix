@@ -41,7 +41,7 @@ trait Apply<R, E> {
 
 /// Mechanics only, no policy: identity suppression, region inputs →
 /// KernelSig, compile under the jit lock (emit_clif recursion from
-/// `node`), Kernel + feeders. Ok(None) = didn't compile.
+/// `node`), a FusedKernel over the feeders. Ok(None) = didn't compile.
 pub fn try_fuse<R, E>(node: &Node<R, E>, ctx: &mut ExecCtx<R, E>)
     -> Result<Option<Node<R, E>>>;
 ```
@@ -104,20 +104,21 @@ calls, the counter, block creation and sealing order, per-iteration
 element binding and dropping — and take a body closure over `BodyCx`
 that owns the policy. Elements may be scalar, composite, String or
 bare Value; fold accumulators may be composite or String. A may-bottom
-body or predicate folds its taint into the loop's `SlotFlags`, so it
-fuses; there is no build-time may-bottom de-fuse.
+body or predicate folds its taint into the loop's `SlotFlags`: a
+tainted slot taints the HOF result, never the kernel, so it fuses;
+there is no build-time may-bottom de-fuse.
 
 **`KernelSig`** (`fusion/kernel_abi.rs`): the ABI contract — name, the
 unified param list in source order (`abi_params` groups by kind:
 scalars, then array/tuple/struct pointers, then strings, then 2-word
 variant/nullable/value), return type, `has_tail_loop`, and the
 skipped/invariant formal positions. Built once per kernel and shared by
-`Arc`: the runtime `Kernel` node and the JIT cache key off the same
+`Arc`: the runtime `FusedKernel` node and the JIT cache key off the same
 allocation, so **the `Arc<KernelSig>` is the compiled-callable
 handle**. `PrimType`/`AbiKind`/`abi_kind`/`freeze_for_abi` live beside
 it — the durable, body-free half of the boundary. There is no kernel
 *body* type; a kernel build is signature derivation
-(`sig_from_inputs`, the one builder for regions, lambda callees and
+(`sig_from_params`, the one builder for regions, lambda callees and
 body-split sub-regions). Region inputs are sorted by `BindId` so the
 signature is source-order-stable across processes (`detcheck` pins
 this).
@@ -159,11 +160,13 @@ each was obvious in hindsight and invisible in advance.
    site string); unchecked arith logs from the node-walk only
    (`--no-fusion` shows it).
 
-3. **First call is init.** A cross-kernel call site forces the callee's
-   init view on its first call ever (the first-call words in the
-   per-call-site block, `kernel_instance_state.md`). The symptom of
-   forgetting it is a kernel that works when first fired at startup and
-   pends forever when first fired by an async input.
+3. **First call is init.** A cross-kernel call site in a region's root
+   body forces the callee's init view on its first call ever (a
+   first-call word in the instance state, shared across loop
+   iterations; `kernel_instance_state.md`); a callee body's own call
+   sites pass their init view on. The symptom of forgetting it is a
+   kernel that works when first fired at startup and pends forever when
+   first fired by an async input.
 
 4. **Runtime wake-ups key on `(BindId, top_id)`.** Feeders register
    `ref_var` under the REAL top expression id (`ExecCtx::fuse_top_id`),

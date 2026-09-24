@@ -4,48 +4,46 @@
 //! emitters consume.
 
 use crate::{
-    BindId, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    BindId, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Update, UserEvent,
     env::Env,
     expr::{ExprId, ExprKind, ModPath},
     fusion::{
         self, FusionBlocker,
         kernel_abi::{
-            self, AbiKind, KernelSig, Seen, abi_kind, freeze_for_abi_normalized,
-            scalar_prim,
+            self, AbiKind, KernelParam, KernelSig, ParamKind, Seen, abi_kind,
+            expand_key_fp, freeze_for_abi_normalized, scalar_prim,
         },
     },
     node::{callsite::CallSite, lambda::GXLambda},
     profile::{self, Phase},
-    typ::{FnArgKind, FnType, Type},
+    typ::{FnArgKind, FnType, Type, TypeRef},
 };
 use arcstr::ArcStr;
+use compact_str::{CompactString, format_compact};
+use enumflags2::BitFlags;
 use netidx_value::Value;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
+use std::cell::{Cell, RefCell};
 
-pub use kernel_abi::{KnownFusedFn, PrimType};
+pub use kernel_abi::PrimType;
 
-/// A lambda kernel signature, cached per monomorphization in
-/// `FusionCtx::kernels`. `fn_name` is the symbol call sites resolve
-/// against.
-// CR claude for eric: [structure] `is_rec` + `self_bind` is a pair that must agree
-// (discover_lambda_calls `expect`s it, with a message claiming is_rec derives
-// from self_bind; it comes from `g.self_recursive()`), so it should be one
-// `self_call: Option<BindId>`. `fn_name` repeats `kernel.fn_name`, and
-// `signature.self_bind`/`return_type` are never read (only `arg_types`). The
-// doc is stale: calls resolve by `kernel_key`, not by `fn_name`.
-#[derive(Debug, Clone)]
+/// A lambda kernel, cached per monomorphization in
+/// `FusionCtx::kernels` and shared by every call site that reaches it.
+#[derive(Debug)]
 pub struct CachedKernel {
-    pub fn_name: ArcStr,
-    pub kernel: std::sync::Arc<KernelSig>,
-    pub signature: KnownFusedFn,
+    /// The kernel; calls resolve by its identity ([`kernel_abi::kernel_key`]).
+    pub kernel: triomphe::Arc<KernelSig>,
+    /// The callee's input types in signature order, formals then
+    /// captures, frozen at build time: the caller's type authority for
+    /// arg classification (env is unavailable at emit time).
+    pub arg_types: Vec<Type>,
     /// Captured outer bindings, appended to the signature after the
     /// formals in this order; callers forward each capture's current value.
     pub captures: Vec<CaptureSlot>,
-    /// The body references its own binding.
-    pub is_rec: bool,
-    /// The binding the kernel was built from; body emission recognises
-    /// self-calls by it.
-    pub self_bind: Option<BindId>,
+    /// The binding a self-recursive body calls itself through; body
+    /// emission recognises self-calls by it.
+    pub self_call: Option<BindId>,
     /// Fastcall/cast sites in the body, by `Apply` expr id.
     pub apply_sites: nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
 }
@@ -149,7 +147,7 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
         let Some(reason) = reason else { return };
         failure = Some(FusionBlocker { spec: n.spec().clone(), reason: reason.into() });
     });
-    match failure.or_else(|| arm_raise_blocker(&selects)) {
+    match failure.or_else(|| arm_raise_blocker(node, &selects)) {
         Some(failure) => Err(failure),
         None => Ok(()),
     }
@@ -160,40 +158,47 @@ pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
 /// arm saw is re-delivered FIRED when this arm reads it
 /// (design/wake_catchup.md), and a constant fires at the arm's wake. A
 /// kernel derives its selection fresh every run and remembers neither,
-/// so the raise node-walks.
-// CR claude for eric: [perf] One full `for_each_reachable_node` walk per arm of
-// every select in the region, callee bodies included and re-walked per arm, and
-// `found` only mutes the visitor without stopping the walk: nested selects make
-// this quadratic, and it re-runs on every top-down region attempt. One walk
-// that tracks "under an arm" (and stops at the first hit) gives the same answer.
+/// so the raise node-walks. `selects` are the region's selects in
+/// pre-order; one nested in another's arm is covered by the outer walk.
 fn arm_raise_blocker<R: Rt, E: UserEvent>(
+    root: &Node<R, E>,
     selects: &[&Node<R, E>],
 ) -> Option<FusionBlocker> {
-    let mut found = None;
+    let raises =
+        |n: &Node<R, E>| matches!(n.view(), NodeView::Qop(q) if q.handler.is_some());
+    let mut any = false;
+    if !selects.is_empty() {
+        fusion::for_each_reachable_node(root, &mut |n| any |= raises(n));
+    }
+    if !any {
+        return None;
+    }
+    let mut nested: LPooled<nohash::IntSet<usize>> = LPooled::take();
+    let mut found: Option<&Node<R, E>> = None;
     for s in selects {
-        let NodeView::Select(s) = s.view() else { continue };
-        for (_, body) in s.arms.iter() {
-            fusion::for_each_reachable_node(body, &mut |n| {
-                if found.is_some() {
-                    return;
+        let NodeView::Select(sel) = s.view() else { continue };
+        if found.is_some() {
+            break;
+        }
+        if nested.contains(&(*s as *const Node<R, E> as usize)) {
+            continue;
+        }
+        for (_, body) in sel.arms.iter() {
+            fusion::for_each_reachable_node(body, &mut |n| match n.view() {
+                NodeView::Select(_) => {
+                    nested.insert(n as *const Node<R, E> as usize);
                 }
-                let NodeView::Qop(q) = n.view() else { return };
-                if q.handler.is_some() {
-                    found = Some(FusionBlocker {
-                        spec: n.spec().clone(),
-                        reason: "a `?` under a handler raises an edge its arm may owe \
-                                 to the select's fire tracker — arm entry is the \
-                                 node-walk's"
-                            .into(),
-                    });
-                }
+                _ if found.is_none() && raises(n) => found = Some(n),
+                _ => (),
             });
-            if found.is_some() {
-                return found;
-            }
         }
     }
-    found
+    found.map(|n| FusionBlocker {
+        spec: n.spec().clone(),
+        reason: "a `?` under a handler raises an edge its arm may owe to the select's \
+                 fire tracker — arm entry is the node-walk's"
+            .into(),
+    })
 }
 
 /// A root that can never emit a value. Nested, the same node may sit
@@ -210,20 +215,22 @@ fn root_blocker<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<&'static str> 
     }
 }
 
-/// Register a cast that is not emitted inline. The inline test here
-/// must mirror `emit_cast_node`'s, or the site registers out of step
-/// with emission.
-// CR claude for eric: [structure] "Must mirror" is a duplicated predicate held in
-// sync by a comment (`emit_cast_node` repeats it). Make it one
-// `cast_is_inline(source, target)` fn both call.
+/// The `(source, target)` prims of a cast emitted inline: numeric
+/// scalar to numeric scalar, branchless and infallible. Every other
+/// cast is a discovered call site.
+pub(crate) fn inline_cast(source: &Type, target: &Type) -> Option<(PrimType, PrimType)> {
+    let src = scalar_prim(source).filter(|p| p.is_numeric())?;
+    let tgt = PrimType::from_type(target).filter(|p| p.is_numeric())?;
+    Some((src, tgt))
+}
+
+/// Register a cast that is not emitted inline.
 fn try_register_cast<R: Rt, E: UserEvent>(
     tc: &crate::node::TypeCast<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) {
     let source = tc.n.typ();
-    if scalar_prim(source).is_some_and(|p| p.is_numeric())
-        && PrimType::from_type(&tc.target).is_some_and(|p| p.is_numeric())
-    {
+    if inline_cast(source, &tc.target).is_some() {
         return;
     }
     let Some(arg_frozen) = freeze_for_abi_normalized(source) else { return };
@@ -282,15 +289,12 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     };
     // `cs.ftype()` is `None` when typecheck did not reach this site;
     // the binding's generic FnType then usually fails to freeze.
-    let fn_type: std::sync::Arc<FnType> = match cs.ftype() {
-        Some(ft) => std::sync::Arc::new(ft.resolve_tvars()),
-        None => {
-            let inner: &FnType = &info.typ;
-            std::sync::Arc::new(inner.clone())
-        }
+    let fn_type: FnType = match cs.ftype() {
+        Some(ft) => ft.resolve_tvars(),
+        None => (*info.typ).clone(),
     };
     let apply_id = apply_expr.id;
-    let mut call_positional: smallvec::SmallVec<[usize; 8]> = smallvec::SmallVec::new();
+    let mut call_positional: SmallVec<[usize; 8]> = SmallVec::new();
     let mut call_labeled: LPooled<ahash::AHashMap<&str, usize>> = LPooled::take();
     for (call_idx, (label, _)) in a.args.iter().enumerate() {
         match label {
@@ -304,11 +308,6 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     let mut marshal_args: Vec<MarshalArg> = Vec::new();
     let mut pos_iter = call_positional.iter().enumerate();
     for fa in fn_type.args.iter() {
-        // CR claude for eric: [style] `use FnArgKind;` re-imports a name the file
-        // already imports (also `use NodeView;` in node_const_value_inner, `use
-        // AbiKind;` x3, `use kernel_abi::Seen;` x2); `use kernel_abi::expand_key_fp`
-        // sits mid-file. Delete the no-ops and move the last one to the top.
-        use FnArgKind;
         match &fa.kind {
             FnArgKind::Positional { .. } => {
                 let (pos_idx, call_idx) = match pos_iter.next() {
@@ -353,7 +352,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
             }
         }
     }
-    let remaining: smallvec::SmallVec<[_; 8]> = pos_iter.collect();
+    let remaining: SmallVec<[_; 8]> = pos_iter.collect();
     if !remaining.is_empty() {
         if fn_type.vargs.is_none() {
             return None;
@@ -419,7 +418,6 @@ pub(crate) fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option
 }
 
 fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Value> {
-    use NodeView;
     match node.view() {
         NodeView::Constant(c) => Some(c.value.clone()),
         NodeView::ExplicitParens(ep) => node_const_value(&ep.n),
@@ -437,8 +435,7 @@ fn node_const_value_inner<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<Valu
 /// Fold element nodes into a constant `Value::Array` (the runtime shape
 /// of array and tuple literals), or `None` if any element isn't constant.
 fn const_valarray<R: Rt, E: UserEvent>(elems: &[Node<R, E>]) -> Option<Value> {
-    let mut vals: poolshark::local::LPooled<Vec<Value>> =
-        poolshark::local::LPooled::take();
+    let mut vals: LPooled<Vec<Value>> = LPooled::take();
     for c in elems.iter() {
         vals.push(node_const_value(c)?);
     }
@@ -467,7 +464,7 @@ pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
     let _profile = profile::phase(Phase::ExpandRefs);
     let cx =
         ResolveCx { budget: 2_048, size_cap: FUSION_SIZE_CAP, ..ResolveCx::default() };
-    resolve_abstract_d(typ, env, None, &cx).unwrap_or_else(|| typ.clone())
+    expand_ref_d(typ, env, None, &cx).unwrap_or_else(|| typ.clone())
 }
 
 /// No kernel encodes a type that unfolds past this; resolving further
@@ -479,24 +476,20 @@ pub(crate) const FUSION_SIZE_CAP: u32 = 4_096;
 /// any path containing all its dependencies and a resolve costs the
 /// number of distinct types, not paths.
 struct ResolveCx {
-    /// Ref expansions.
-    // CR claude for eric: [perf] Looked up by a linear scan (`lookup`), and every
-    // hit clones the whole entry (its `deps` Vec and resolved `Type`) just to read
-    // it: O(entries) per Ref with up to `budget` entries. Key it by `fp` in a map
-    // and borrow the hit.
-    memo: std::cell::RefCell<LPooled<Vec<MemoEntry>>>,
+    /// Ref expansions by [`expand_key_fp`] of their key.
+    memo: RefCell<LPooled<ahash::AHashMap<u64, SmallVec<[MemoEntry; 1]>>>>,
     /// Shared composite subtrees between expansions.
-    nodes: std::cell::RefCell<LPooled<ahash::AHashMap<crate::typ::NormKey, NodeEntry>>>,
+    nodes: RefCell<LPooled<ahash::AHashMap<crate::typ::NormKey, NodeEntry>>>,
     /// `Seen` keys the current frame consulted; a frame's own key is
     /// not a dependency on its caller's path.
-    consulted: std::cell::RefCell<LPooled<Vec<kernel_abi::ExpandKey>>>,
+    consulted: RefCell<LPooled<Vec<TypeRef>>>,
     /// The current frame's result was truncated and must not be memoized.
-    poisoned: std::cell::Cell<bool>,
-    expansions: std::cell::Cell<u32>,
+    poisoned: Cell<bool>,
+    expansions: Cell<u32>,
     budget: u32,
     /// Output nodes so far, tree-wise; a memo hit charges its recorded
     /// size. Past `size_cap` the resolve stops.
-    unfolded: std::cell::Cell<u32>,
+    unfolded: Cell<u32>,
     size_cap: u32,
 }
 
@@ -516,30 +509,25 @@ impl Default for ResolveCx {
 }
 
 struct NodeEntry {
-    deps: Vec<(u64, kernel_abi::ExpandKey)>,
+    deps: Vec<(u64, TypeRef)>,
     resolved: Option<Type>,
     size: u32,
 }
 
 struct FrameResult {
-    deps: Vec<(u64, kernel_abi::ExpandKey)>,
+    deps: Vec<(u64, TypeRef)>,
     poisoned: bool,
     size: u32,
 }
 
-#[derive(Clone)]
 struct MemoEntry {
-    /// [`expand_key_fp`] of `key`, compared before the key itself.
-    fp: u64,
-    key: kernel_abi::ExpandKey,
-    deps: Vec<(u64, kernel_abi::ExpandKey)>,
+    key: TypeRef,
+    deps: Vec<(u64, TypeRef)>,
     /// `None` when nothing beneath the ref resolved: the ref stays opaque.
     resolved: Option<Type>,
     /// Tree-wise node count of `resolved`, charged on every hit.
     size: u32,
 }
-
-use kernel_abi::expand_key_fp;
 
 impl std::fmt::Debug for MemoEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -547,38 +535,31 @@ impl std::fmt::Debug for MemoEntry {
     }
 }
 
-fn key_closed(key: &kernel_abi::ExpandKey) -> bool {
-    let kernel_abi::ExpandKey::Ref(tr) = key;
-    tr.params.iter().all(|t| t.tvar_free())
+fn key_closed(key: &TypeRef) -> bool {
+    key.params.iter().all(|t| t.tvar_free())
 }
 
 impl ResolveCx {
     /// Record that the current frame's result depends on `key` being on
     /// the path.
-    fn consult(&self, key: &kernel_abi::ExpandKey) {
+    fn consult(&self, key: &TypeRef) {
         let mut cur = self.consulted.borrow_mut();
         if !cur.contains(key) {
             cur.push(key.clone());
         }
     }
 
-    fn lookup(
-        &self,
-        key: &kernel_abi::ExpandKey,
-        seen: Option<&Seen>,
-    ) -> Option<Option<Type>> {
-        let fp = expand_key_fp(key);
-        let hit = |e: &MemoEntry| {
-            e.fp == fp
-                && &e.key == key
-                && e.deps.iter().all(|(fp, d)| Seen::contains_fp(seen, *fp, d))
-        };
-        let entry = self.memo.borrow().iter().find(|e| hit(e))?.clone();
-        self.count_nodes(entry.size);
-        for (_, d) in &entry.deps {
+    fn lookup(&self, key: &TypeRef, seen: Option<&Seen>) -> Option<Option<Type>> {
+        let memo = self.memo.borrow();
+        let e = memo.get(&expand_key_fp(key))?.iter().find(|e| {
+            &e.key == key
+                && e.deps.iter().all(|(fp, d)| Seen::find_fp(seen, *fp, d).is_some())
+        })?;
+        self.count_nodes(e.size);
+        for (_, d) in &e.deps {
             self.consult(d);
         }
-        Some(entry.resolved)
+        Some(e.resolved.clone())
     }
 
     /// Count `n` output nodes against the size cap; `false` once past it.
@@ -601,18 +582,14 @@ impl ResolveCx {
     ) -> Option<Option<Type>> {
         let nodes = self.nodes.borrow();
         let e = nodes.get(key)?;
-        if !e.deps.iter().all(|(fp, d)| Seen::contains_fp(seen, *fp, d)) {
+        if !e.deps.iter().all(|(fp, d)| Seen::find_fp(seen, *fp, d).is_some()) {
             return None;
         }
-        let resolved = e.resolved.clone();
-        let deps = e.deps.clone();
-        let size = e.size;
-        drop(nodes);
-        self.count_nodes(size);
-        for (_, d) in &deps {
+        self.count_nodes(e.size);
+        for (_, d) in &e.deps {
             self.consult(d);
         }
-        Some(resolved)
+        Some(e.resolved.clone())
     }
 
     /// Run `f` as a tracked frame, returning what it consulted, whether
@@ -628,7 +605,7 @@ impl ResolveCx {
             std::mem::replace(&mut *self.consulted.borrow_mut(), saved_consulted);
         let poisoned = self.poisoned.get();
         let size = self.unfolded.get() - before;
-        let deps: Vec<(u64, kernel_abi::ExpandKey)> =
+        let deps: Vec<(u64, TypeRef)> =
             delta.iter().map(|k| (expand_key_fp(k), k.clone())).collect();
         for k in delta.drain(..) {
             let mut cur = self.consulted.borrow_mut();
@@ -663,7 +640,7 @@ impl ResolveCx {
     /// against the keys it consulted when `memoize`.
     fn expand(
         &self,
-        key: kernel_abi::ExpandKey,
+        key: TypeRef,
         memoize: bool,
         f: impl FnOnce() -> Option<Type>,
     ) -> Option<Type> {
@@ -679,14 +656,14 @@ impl ResolveCx {
         // An unbound tvar param compares equal to any other unbound
         // cell, so an open key would hand one site's cells to another.
         if memoize && !poisoned && key_closed(&key) {
+            let fp = expand_key_fp(&key);
             let entry = MemoEntry {
-                fp: expand_key_fp(&key),
                 key,
                 deps: deps.iter().map(|k| (expand_key_fp(k), k.clone())).collect(),
                 resolved: resolved.clone(),
                 size: self.unfolded.get() - unfolded_before,
             };
-            self.memo.borrow_mut().push(entry);
+            self.memo.borrow_mut().entry(fp).or_default().push(entry);
         }
         for k in deps.drain(..) {
             let mut cur = self.consulted.borrow_mut();
@@ -701,24 +678,24 @@ impl ResolveCx {
 
 /// `None` when nothing beneath resolved (the caller keeps the original)
 /// or the resolve was truncated (`cx.poisoned` set).
-// CR claude for eric: [readability] `resolve_abstract_d`/`resolve_abstract_node`
-// expand named types (`Type::Ref`); abstract types are the one thing they leave
-// alone. Name them for what they do (`expand_ref_d`/`expand_ref_node`). The 256
-// below is `kernel_abi::MAX_FREEZE_EXPANSIONS` spelled again; share the const.
-fn resolve_abstract_d<'a>(
+fn expand_ref_d<'a>(
     typ: &Type,
     env: &Env,
     seen: Option<&'a Seen<'a>>,
     cx: &ResolveCx,
 ) -> Option<Type> {
-    use kernel_abi::Seen;
-    // CR claude for eric: [bug] structural depth is uncounted and this recursion
-    // has no `stack::ensure_sufficient`: a flat 3000-line program `let x1 = [x0];
-    // let x2 = [x1]; ...` aborts `graphix --check` with a stack overflow when fusion
-    // is on (probed by two reviewers; --no-fusion survives this walk).
+    crate::stack::ensure_sufficient(|| expand_ref_d_inner(typ, env, seen, cx))
+}
+
+fn expand_ref_d_inner<'a>(
+    typ: &Type,
+    env: &Env,
+    seen: Option<&'a Seen<'a>>,
+    cx: &ResolveCx,
+) -> Option<Type> {
     // Bounds distinct expansions on one path, which is what stops
-    // non-regular recursion; structural depth is not counted.
-    if Seen::len(seen) > 256 {
+    // non-regular recursion.
+    if Seen::len(seen) > kernel_abi::MAX_FREEZE_EXPANSIONS {
         cx.poisoned.set(true);
         return None;
     }
@@ -731,7 +708,7 @@ fn resolve_abstract_d<'a>(
     {
         return hit;
     }
-    let (r, frame) = cx.node_frame(|cx| resolve_abstract_node(typ, env, seen, cx));
+    let (r, frame) = cx.node_frame(|cx| expand_ref_node(typ, env, seen, cx));
     if let Some(k) = nkey
         && !frame.poisoned
     {
@@ -743,79 +720,68 @@ fn resolve_abstract_d<'a>(
     r
 }
 
-fn resolve_abstract_node<'a>(
+fn expand_ref_node<'a>(
     typ: &Type,
     env: &Env,
     seen: Option<&'a Seen<'a>>,
     cx: &ResolveCx,
 ) -> Option<Type> {
-    use kernel_abi::{ExpandKey, Seen};
     match typ {
         // The inner type is cloned out so the tvar's read guard is not
         // held across `lookup_ref`'s lock acquisitions (a deadlock under
         // concurrent compiles). A deref is not an expansion: `seen`
         // passes through.
         Type::TVar(_) => match typ.deref_cloned() {
-            Some(t) => Some(resolve_abstract_d(&t, env, seen, cx).unwrap_or(t)),
+            Some(t) => Some(expand_ref_d(&t, env, seen, cx).unwrap_or(t)),
             None => None,
         },
         Type::Ref(tr) => {
-            let key = ExpandKey::Ref(tr.clone());
-            if Seen::contains(seen, &key) {
-                cx.consult(&key);
+            if Seen::find(seen, tr).is_some() {
+                cx.consult(tr);
                 return None;
             }
-            if let Some(t) = cx.lookup(&key, seen) {
+            if let Some(t) = cx.lookup(tr, seen) {
                 return t;
             }
             if !cx.charge() {
                 return None;
             }
             match typ.lookup_ref(env) {
-                Ok(resolved) => cx.expand(key, true, || {
-                    let node = Seen::push(seen, ExpandKey::Ref(tr.clone()));
+                Ok(resolved) => cx.expand(tr.clone(), true, || {
+                    let node = Seen::push(seen, tr.clone());
                     Some(
-                        resolve_abstract_d(&resolved, env, Some(&node), cx)
-                            .unwrap_or(resolved),
+                        expand_ref_d(&resolved, env, Some(&node), cx).unwrap_or(resolved),
                     )
                 }),
                 _ => None,
             }
         }
         Type::Abstract { .. } => None,
-        t => t.cow_children(&mut |c| resolve_abstract_d(c, env, seen, cx)),
+        t => t.cow_children(&mut |c| expand_ref_d(c, env, seen, cx)),
     }
 }
 
 /// The catch-coverage fingerprint of a lambda instance's body: each
-/// `?`/`$` site's resolved handler bind in node-visit order (`u64::MAX`
-/// = handler-less). Part of the kernel cache key, because a kernel
-/// bakes its handler ids into its deliver sites.
-pub(crate) type QopCoverage = smallvec::SmallVec<[u64; 4]>;
+/// `?`/`$` site's resolved handler bind in emission order (`u64::MAX`
+/// = handler-less), inline collection callbacks included. Part of the
+/// kernel cache key, because a kernel bakes its handler ids into its
+/// deliver sites.
+pub(crate) type QopCoverage = SmallVec<[u64; 4]>;
 
 /// The lambda-resolution fingerprint of a lambda instance's body: per
-/// statically-resolved call site, the callee's `LambdaId` and the
+/// statically-resolved call site it emits, the callee's `LambdaId` and the
 /// identity of each fn-typed argument forwarded (`u64::MAX` when
 /// unresolvable). Part of the kernel cache key, because a kernel bakes
 /// those resolutions as CLIF calls.
-pub(crate) type FnResolutions = smallvec::SmallVec<[u64; 4]>;
+pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 
-// CR claude for eric: [bug] Walks `for_each_node`, which skips inline collection
-// callback bodies, but the kernel emits them (`for_each_emitted_node`): a `?`
-// in a callback is baked into the kernel yet absent from the key, so a second
-// instance under another catch reuses the first instance's handler — a fusion
-// wrong answer. Probe: `let h = |x: [i64, Error<`E(string)>]| -> i64 x?; let g =
-// |a: Array<[i64, Error<`E(string)>]>| -> Array<i64> array::map(a, h);` then
-// `{ catch(e) println(e ~ "h1"); g(a1) }` and the same with "h2"/`a2`: fused
-// prints h1 h1, --no-fusion h1 h2. Walk `for_each_emitted_node` here;
-// `invariant_formals` and `self_calls_abi_consistent` share the blind spot.
 fn body_fingerprint<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     ec: &ExecCtx<R, E>,
 ) -> (QopCoverage, FnResolutions) {
     let mut cov = QopCoverage::new();
     let mut res = FnResolutions::new();
-    crate::fusion::for_each_node(body, &mut |n| match n.view() {
+    fusion::for_each_emitted_node(body, &mut |n| match n.view() {
         NodeView::Qop(q) => match q.handler.as_ref().map(|h| h.id()) {
             Some((bind, top)) => {
                 cov.push(bind.inner());
@@ -889,23 +855,22 @@ fn is_fn_shaped(t: &Type, env: &Env) -> bool {
 }
 
 /// Per formal: is it passed unchanged (a `Ref` to its own binding) by
-/// every self-call in the body? Such a formal needs no rebind slot.
+/// every self-call the body emits? Such a formal needs no rebind slot.
 /// Vacuously true with no self-calls; a destructured formal is never
-/// invariant. Nested lambda bodies are not walked.
+/// invariant.
 pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: Option<BindId>,
-) -> smallvec::SmallVec<[bool; 8]> {
-    let ids: smallvec::SmallVec<[Option<BindId>; 8]> =
+) -> SmallVec<[bool; 8]> {
+    let ids: SmallVec<[Option<BindId>; 8]> =
         g.args().iter().map(|p| p.single_bind_id()).collect();
-    let mut inv: smallvec::SmallVec<[bool; 8]> =
-        ids.iter().map(|id| id.is_some()).collect();
+    let mut inv: SmallVec<[bool; 8]> = ids.iter().map(|id| id.is_some()).collect();
     let Some(sb) = self_bind else { return inv };
     enum ALook {
         Pos(usize),
         Named(ArcStr),
     }
-    let looks: smallvec::SmallVec<[ALook; 8]> = {
+    let looks: SmallVec<[ALook; 8]> = {
         let mut p = 0usize;
         g.typ()
             .args
@@ -920,7 +885,7 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
             })
             .collect()
     };
-    fusion::for_each_node(g.body(), &mut |n| {
+    fusion::for_each_emitted_node(g.body(), &mut |n| {
         let NodeView::CallSite(cs) = n.view() else { return };
         if !matches!(cs.fnode().view(), NodeView::Ref(r) if r.id == sb) {
             return;
@@ -946,119 +911,151 @@ pub(crate) fn invariant_formals<R: Rt, E: UserEvent>(
     inv
 }
 
-/// Build, or fetch from the per-`ExecCtx` cache, the kernel signature
-/// for the lambda `g` at the call site's resolved type. Signature
-/// derivation only: the body is validated by the compile attempt.
-/// `None` means the lambda has no kernel-representable signature and
-/// its call sites node-walk. A cache hit returns the first builder's
-/// `fn_name`.
-// CR claude for eric: [structure] ~230 lines doing eight jobs in sequence (key
-// and cache, discovery, naming, site/instance agreement, reentry guard,
-// formals, captures, return + recursion checks, sig build). Split at least the
-// formal and capture slot builders out; each `return None` is a silent de-fuse
-// with no reason recorded for #[native] or `FusionStats`.
+/// Why a lambda has no kernel; its call sites node-walk.
+pub(crate) type Refusal = CompactString;
+
+/// Build, or fetch from the per-`ExecCtx` cache, the kernel for the
+/// lambda `g` at the call site's resolved type. Signature derivation
+/// only: the body is validated by the compile attempt. `kernel_name`
+/// labels a fresh kernel's symbols.
 pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     site_ftype: &FnType,
     kernel_name: &ArcStr,
-    ec: &mut ExecCtx<R, E>,
-) -> Option<CachedKernel> {
-    let self_bind = g.self_bind();
-    // A collection-bodied lambda is inline-emitted at its call sites; a
-    // standalone kernel for it would fail to define.
-    if matches!(g.body().view(), NodeView::MapQ(_) | NodeView::FoldQ(_)) {
-        return None;
-    }
+    ec: &ExecCtx<R, E>,
+) -> Result<triomphe::Arc<CachedKernel>, Refusal> {
     // The key is the site's type, not `g.typ()`: the instance shares
     // tvar cells with the def, so `g.typ()` reports whichever
     // monomorphization unified first.
-    let resolved_typ = std::sync::Arc::new(site_ftype.resolve_tvars());
+    let resolved_typ = triomphe::Arc::new(site_ftype.resolve_tvars());
     let (coverage, fn_resolutions) = body_fingerprint(g.body(), ec);
     let key = (g.id(), resolved_typ, coverage, fn_resolutions);
-    if let Some(cached) = ec.fusion.kernels.lock().get(&key).cloned() {
-        return Some(cached);
+    if let Some(cached) = ec.fusion.kernels.lock().get(&key) {
+        return Ok(cached.clone());
     }
     let mut discovery = BuiltinCallDiscovery::default();
-    walk_node_for_builtin_calls(g.body(), ec, &mut discovery).ok()?;
-    // Kernel names are module-wide, so each coverage variant needs its
-    // own symbol; the suffix is deterministic in compile order.
-    // CR claude for eric: [dead] The premise is false: `ensure_declared` makes
-    // every symbol unique with `next_symbol`'s counter, and calls resolve by
-    // `kernel_key`, so `fn_name` is only a label. The range scan under the lock
-    // and the `__cov{n}` suffix can go.
-    let variant = {
-        let kernels = ec.fusion.kernels.lock();
-        kernels
-            .range((key.0, key.1.clone(), QopCoverage::new(), FnResolutions::new())..)
-            .take_while(|((id, ft, _, _), _)| *id == key.0 && *ft == key.1)
-            .count()
-    };
-    let kernel_name: ArcStr = if variant == 0 {
-        kernel_name.clone()
-    } else {
-        compact_str::format_compact!("{kernel_name}__cov{variant}").as_str().into()
-    };
-    let kernel_name = &kernel_name;
-    // Emission reads the instance's node types, so an instance that
-    // disagrees with the site would emit a kernel whose CLIF types
-    // mismatch the call. Constraint lists differ benignly; compare only
-    // args, vargs and return.
+    walk_node_for_builtin_calls(g.body(), ec, &mut discovery)
+        .map_err(|b| format_compact!("its body: {}", b.reason))?;
+    instance_agrees(g, &key.1, ec)?;
+    let self_bind = g.self_bind();
+    let mut formals = formal_slots(g, self_bind, ec)?;
+    let mut captures = capture_slots(g, self_bind, ec)?;
+    let return_type =
+        kernel_abi::freeze_for_abi_normalized(&expand_refs(&g.typ().rtype, &ec.env))
+            .ok_or("its return type has no kernel encoding")?;
+    // A unit-typed call has no value to return; bare Null should have
+    // widened.
+    if matches!(abi_kind(&return_type), Some(AbiKind::Unit | AbiKind::Null)) {
+        return Err("it returns no value".into());
+    }
+    let self_call = self_bind.filter(|_| g.self_recursive());
+    // Defense in depth behind static instance checking: a self-call
+    // feeding a formal a differently-shaped value would marshal it under
+    // the wrong ABI.
+    if let Some(sb) = self_call
+        && !self_calls_abi_consistent(g.body(), sb, &formals.by_position, ec)
     {
-        let gt = g.typ().resolve_tvars();
-        let st = &*key.1;
-        let args_agree = gt.args.len() == st.args.len()
-            && gt.args.iter().zip(st.args.iter()).all(|(a, b)| {
-                // An fn-typed arg is never a value slot and is keyed by
-                // `FnResolutions`; its `throws` differs benignly here.
-                if is_fn_shaped(&a.typ, &ec.env) || is_fn_shaped(&b.typ, &ec.env) {
-                    is_fn_shaped(&a.typ, &ec.env) && is_fn_shaped(&b.typ, &ec.env)
-                } else {
-                    a.typ == b.typ
-                }
-            });
-        if !args_agree || gt.vargs != st.vargs || gt.rtype != st.rtype {
-            log::trace!(
-                "build_lambda_kernel: site mono {} disagrees with lambda \
-                 instance {} — refusing (site node-walks)",
-                st,
-                gt
+        return Err("a self-call passes a formal a value of another shape".into());
+    }
+    let mut arg_types = std::mem::take(&mut formals.arg_types);
+    let mut params = std::mem::take(&mut formals.params);
+    let mut capture_slots = Vec::with_capacity(captures.len());
+    for (cap, kind) in captures.drain(..) {
+        params.push(KernelParam {
+            name: cap.name.clone(),
+            kind,
+            bind_id: Some(cap.bind_id),
+        });
+        arg_types.push(cap.typ.clone());
+        capture_slots.push(cap);
+    }
+    let mut sig = fusion::sig_from_params(kernel_name.clone(), params, return_type);
+    sig.has_tail_loop = g.tail_loop();
+    sig.skipped_args = formals.skipped;
+    sig.tail_invariant = formals.tail_invariant;
+    if crate::dbgenv::graphix_dbg_kernels() {
+        crate::format_with_flags(PrintFlag::DerefTVars, || {
+            eprintln!(
+                "KERNEL BUILT {kernel_name}: ret={} kind={:?}",
+                sig.return_type,
+                abi_kind(&sig.return_type)
             );
-            return None;
-        }
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
     }
-    // Mutual recursion would re-enter this build forever (the cache
-    // entry lands only on completion); a re-entered build refuses and
-    // the chain de-fuses.
-    // CR claude for eric: [dead] Nothing below re-enters this function: the only
-    // caller, `discover_lambda_calls`, walks callees from a worklist after each
-    // build returns (its cache entry already landed). So `FusionCtx::building`,
-    // this guard and the Arc they need are unreachable machinery. Also nothing
-    // here mutates the context: take `&ExecCtx`, not `&mut`.
-    struct BuildingGuard(triomphe::Arc<parking_lot::Mutex<nohash::IntSet<u64>>>, u64);
-    impl Drop for BuildingGuard {
-        fn drop(&mut self) {
-            self.0.lock().remove(&self.1);
-        }
+    let cached = triomphe::Arc::new(CachedKernel {
+        kernel: triomphe::Arc::new(sig),
+        arg_types,
+        captures: capture_slots,
+        self_call,
+        apply_sites: discovery.apply_sites,
+    });
+    ec.fusion.kernels.lock().insert(key, cached.clone());
+    Ok(cached)
+}
+
+/// Emission reads the instance's node types, so an instance that
+/// disagrees with the site would emit a kernel whose CLIF types
+/// mismatch the call. Constraint lists differ benignly; compare only
+/// args, vargs and return.
+fn instance_agrees<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    site: &FnType,
+    ec: &ExecCtx<R, E>,
+) -> Result<(), Refusal> {
+    let gt = g.typ().resolve_tvars();
+    let args_agree = gt.args.len() == site.args.len()
+        && gt.args.iter().zip(site.args.iter()).all(|(a, b)| {
+            // An fn-typed arg is never a value slot and is keyed by
+            // `FnResolutions`; its `throws` differs benignly here.
+            let (af, bf) = (is_fn_shaped(&a.typ, &ec.env), is_fn_shaped(&b.typ, &ec.env));
+            if af || bf { af && bf } else { a.typ == b.typ }
+        });
+    if !args_agree || gt.vargs != site.vargs || gt.rtype != site.rtype {
+        return Err(format_compact!(
+            "the instance's type {gt} disagrees with the site's {site}"
+        ));
     }
-    let lid = g.id().inner();
-    if !ec.fusion.building.lock().insert(lid) {
-        return None;
-    }
-    let _building = BuildingGuard(ec.fusion.building.clone(), lid);
-    // Slots carry the formal's BindId because a declared fn type's
-    // parameter names may differ from the lambda literal's own; body
-    // `Ref`s resolve by id first.
-    let typ = g.typ();
-    let mut inputs: LPooled<Vec<(ArcStr, RegionInputKind, Option<BindId>)>> =
-        LPooled::take();
-    let mut formal_slot_types_by_position: LPooled<Vec<(usize, Type)>> = LPooled::take();
+    Ok(())
+}
+
+/// A lambda's formals as kernel params.
+struct FormalSlots {
+    params: Vec<KernelParam>,
+    /// Each param's frozen type.
+    arg_types: Vec<Type>,
+    /// `(formal position, frozen slot type)` per param.
+    by_position: SmallVec<[(usize, Type); 8]>,
+    /// Formal positions with no slot (see `KernelSig::skipped_args`).
+    skipped: Vec<u32>,
+    /// Formal positions every self-call forwards unchanged.
+    tail_invariant: Vec<u32>,
+}
+
+/// Slots carry the formal's BindId because a declared fn type's
+/// parameter names may differ from the lambda literal's own; body
+/// `Ref`s resolve by id first.
+fn formal_slots<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    self_bind: Option<BindId>,
+    ec: &ExecCtx<R, E>,
+) -> Result<FormalSlots, Refusal> {
     let inv = invariant_formals(g, self_bind);
-    let mut skipped_args: Vec<u32> = Vec::new();
-    for (i, fa) in typ.args.iter().enumerate() {
+    let mut out = FormalSlots {
+        params: Vec::new(),
+        arg_types: Vec::new(),
+        by_position: SmallVec::new(),
+        skipped: Vec::new(),
+        tail_invariant: Vec::new(),
+    };
+    for (i, fa) in g.typ().args.iter().enumerate() {
         let name = match &fa.kind {
             FnArgKind::Positional { name: Some(n) } => n.clone(),
             FnArgKind::Labeled { name, .. } => name.clone(),
-            _ => return None,
+            FnArgKind::Positional { name: None } => {
+                return Err("a formal has no name".into());
+            }
         };
         let arg_typ = expand_refs(&fa.typ, &ec.env);
         // An invariant fn-typed formal drops out of the signature: its
@@ -1066,36 +1063,52 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         // as a value fails to emit. A rebind slot cannot carry a lambda.
         if is_fn_shaped(&arg_typ, &ec.env) {
             if inv[i] && matches!(fa.kind, FnArgKind::Positional { .. }) {
-                skipped_args.push(i as u32);
+                out.skipped.push(i as u32);
                 continue;
             }
-            return None;
+            return Err(format_compact!(
+                "fn-typed formal `{name}` is not forwarded unchanged by its self-calls"
+            ));
         }
-        let kt = kernel_abi::freeze_for_abi_normalized(&arg_typ)?;
-        let kind = type_to_region_input_kind(kt.clone())?;
+        let no_slot = || format_compact!("formal `{name}` has no kernel encoding");
+        let kt = kernel_abi::freeze_for_abi_normalized(&arg_typ).ok_or_else(no_slot)?;
+        let kind = param_kind(&kt).ok_or_else(no_slot)?;
         let id = g.args().get(i).and_then(|p| p.single_bind_id());
+        // A destructured formal refuses: a name-only slot would let a
+        // same-named body leaf resolve to the whole composite.
         if id.is_none() {
-            // A destructured formal refuses: a name-only slot would let
-            // a same-named body leaf resolve to the whole composite.
             let mut has_ids = false;
             if let Some(p) = g.args().get(i) {
                 p.ids(&mut |_| has_ids = true);
             }
             if has_ids {
-                return None;
+                return Err(format_compact!("formal `{name}` is destructured"));
             }
         }
-        inputs.push((name, kind, id));
-        formal_slot_types_by_position.push((i, kt));
+        out.params.push(KernelParam { name, kind, bind_id: id });
+        out.arg_types.push(kt.clone());
+        out.by_position.push((i, kt));
     }
-    let tail_invariant: Vec<u32> = inv
+    out.tail_invariant = inv
         .iter()
         .enumerate()
-        .filter(|(i, v)| **v && !skipped_args.contains(&(*i as u32)))
+        .filter(|(i, v)| **v && !out.skipped.contains(&(*i as u32)))
         .map(|(i, _)| i as u32)
         .collect();
+    Ok(out)
+}
+
+/// The outer bindings a lambda's body reads, in BindId order, as kernel
+/// params the caller forwards from its own env. A self-reference lowers
+/// as a call and a statically-resolved fn capture as a call, never as a
+/// value, so neither takes a slot.
+fn capture_slots<R: Rt, E: UserEvent>(
+    g: &GXLambda<R, E>,
+    self_bind: Option<BindId>,
+    ec: &ExecCtx<R, E>,
+) -> Result<LPooled<Vec<(CaptureSlot, ParamKind)>>, Refusal> {
     // Formal patterns bind outside the body, so `refs` reports them as
-    // external; they are excluded from the captures.
+    // external.
     let mut arg_ids: LPooled<nohash::IntSet<BindId>> = LPooled::take();
     for pat in g.args() {
         pat.ids(&mut |id| {
@@ -1106,95 +1119,25 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g.body().refs(&mut refs);
     let mut external: LPooled<Vec<BindId>> = LPooled::take();
     refs.with_external_refs(|id| {
-        if !arg_ids.contains(&id) {
+        if !arg_ids.contains(&id) && Some(id) != self_bind {
             external.push(id);
         }
     });
     external.sort_by_key(|id| id.inner());
-    let mut captures: Vec<CaptureSlot> = Vec::new();
-    for bind_id in external.iter().copied() {
-        // A self-reference lowers as a call, never as a value.
-        if Some(bind_id) == self_bind {
+    let mut out: LPooled<Vec<(CaptureSlot, ParamKind)>> = LPooled::take();
+    for bind_id in external.drain(..) {
+        let b = ec.env.by_id.get(&bind_id).ok_or("a capture has no binding")?;
+        if matches!(&b.typ, Type::Fn(_)) {
             continue;
         }
-        let b = ec.env.by_id.get(&bind_id)?;
-        let cap_typ = b.typ.clone();
-        // A statically-resolved fn capture is emitted as a call, not a
-        // value slot; a body that needs it as a value fails to emit.
-        if matches!(&cap_typ, Type::Fn(_)) {
-            continue;
-        }
-        let kt = match kernel_abi::freeze_for_abi_normalized(&expand_refs(
-            &cap_typ, &ec.env,
-        )) {
-            Some(t) => t,
-            None => return None,
-        };
-        let kind = match type_to_region_input_kind(kt.clone()) {
-            Some(k) => k,
-            None => return None,
-        };
+        let no_slot = || format_compact!("capture `{}` has no kernel encoding", b.name);
+        let kt = kernel_abi::freeze_for_abi_normalized(&expand_refs(&b.typ, &ec.env))
+            .ok_or_else(no_slot)?;
+        let kind = param_kind(&kt).ok_or_else(no_slot)?;
         let name = ArcStr::from(b.name.as_str());
-        inputs.push((name.clone(), kind, Some(bind_id)));
-        captures.push(CaptureSlot { bind_id, name, typ: kt });
+        out.push((CaptureSlot { bind_id, name, typ: kt }, kind));
     }
-    let return_typ =
-        kernel_abi::freeze_for_abi_normalized(&expand_refs(&typ.rtype, &ec.env))?;
-    // A unit-typed call has no value to return; bare Null should have
-    // widened.
-    if matches!(
-        kernel_abi::abi_kind(&return_typ),
-        Some(kernel_abi::AbiKind::Unit | kernel_abi::AbiKind::Null)
-    ) {
-        return None;
-    }
-    let is_rec = g.self_recursive();
-    // Defense in depth behind static instance checking: a self-call
-    // feeding a formal a differently-shaped value would marshal it under
-    // the wrong ABI.
-    if is_rec
-        && let Some(sb) = self_bind
-        && !self_calls_abi_consistent(g.body(), sb, &formal_slot_types_by_position, ec)
-    {
-        return None;
-    }
-    let has_tail = g.tail_loop();
-    let (mut sig, arg_types) = match fusion::sig_from_inputs(
-        kernel_name.clone(),
-        inputs.iter().map(|(name, kind, bind_id)| (name.clone(), kind, *bind_id)),
-        return_typ.clone(),
-    ) {
-        Ok(v) => v,
-        Err(e) => {
-            log::trace!("build_lambda_kernel: sig_from_inputs failed: {e:#}");
-            return None;
-        }
-    };
-    sig.has_tail_loop = has_tail;
-    sig.skipped_args = skipped_args;
-    sig.tail_invariant = tail_invariant;
-    if crate::dbgenv::graphix_dbg_kernels() {
-        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-            eprintln!(
-                "KERNEL BUILT {kernel_name}: ret={return_typ} kind={:?}",
-                kernel_abi::abi_kind(&return_typ)
-            );
-            Ok::<_, anyhow::Error>(())
-        })
-        .unwrap();
-    }
-    let signature = KnownFusedFn { arg_types, return_type: return_typ, self_bind };
-    let cached = CachedKernel {
-        fn_name: kernel_name.clone(),
-        kernel: std::sync::Arc::new(sig),
-        signature,
-        captures,
-        is_rec,
-        self_bind,
-        apply_sites: discovery.apply_sites,
-    };
-    ec.fusion.kernels.lock().insert(key, cached.clone());
-    Some(cached)
+    Ok(out)
 }
 
 /// The structural tail-loop predicate shared by the JIT's native-loop
@@ -1232,12 +1175,9 @@ pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
             continue;
         }
         let arg_typ = expand_refs(&fa.typ, &ec.env);
-        let kt = match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
-            Some(t) => t,
-            None => return false,
-        };
-        if type_to_region_input_kind(kt).is_none() {
-            return false;
+        match kernel_abi::freeze_for_abi_normalized(&arg_typ) {
+            Some(kt) if param_kind(&kt).is_some() => (),
+            _ => return false,
         }
     }
     body_has_self_tail_call(g.body(), self_bind)
@@ -1263,10 +1203,10 @@ pub(crate) fn body_has_self_tail_call<R: Rt, E: UserEvent>(
     )
 }
 
-/// Does every self-call in the body feed each positional formal a value
-/// whose frozen type fits that formal's slot type? Conservative: an
-/// unfreezable arg or a self-call that does not map 1:1 onto the
-/// formals counts as inconsistent. Nested lambda bodies are not walked.
+/// Does every self-call the body emits feed each positional formal a
+/// value whose frozen type fits that formal's slot type? Conservative:
+/// an unfreezable arg or a self-call that does not map 1:1 onto the
+/// formals counts as inconsistent.
 fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     self_bind: BindId,
@@ -1274,7 +1214,7 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     ec: &ExecCtx<R, E>,
 ) -> bool {
     let mut ok = true;
-    fusion::for_each_node(body, &mut |n| {
+    fusion::for_each_emitted_node(body, &mut |n| {
         if !ok {
             return;
         }
@@ -1293,10 +1233,11 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
                 ok = false;
                 return;
             };
-            // CR claude for eric: [perf] a committing check used as a yes/no probe: every
-            // failure pays contains_mismatch's diagnostic walks and builds an error that is
-            // dropped. Use the probe form (`contains` with probe flags).
-            if formal_kt.check_contains(&ec.env, &arg_kt).is_err() {
+            // A probe: fusion must not bind a cell the typechecker sees.
+            if !formal_kt
+                .contains_with_flags(BitFlags::empty(), &ec.env, &arg_kt)
+                .unwrap_or(false)
+            {
                 ok = false;
                 return;
             }
@@ -1305,60 +1246,32 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     ok
 }
 
-/// Kernel input slot classification, the source of a
-/// [`kernel_abi::KernelParam`]'s `ParamKind`. Function-typed inputs are
-/// not value slots. Each carried `Type` is frozen.
-// CR claude for eric: [structure] A fourth copy of the shape enum (with AbiKind,
-// AbiParamKind, ParamKind) that can hold invalid states: `Tuple(Type)` may carry
-// a non-tuple, hence the "freeze invariant" errors `sig_from_inputs` returns.
-// Build `ParamKind` directly here (Tuple{elems}, Struct{fields}, ...) and
-// `sig_from_inputs` becomes infallible. `type_to_region_input_kind` also
-// re-freezes types every caller has just frozen.
-#[derive(Debug, Clone)]
-pub enum RegionInputKind {
-    Prim(PrimType),
-    /// Carries the element type.
-    Array(Type),
-    /// Carries the full tuple type.
-    Tuple(Type),
-    /// Carries the full struct type.
-    Struct(Type),
-    /// Carries the full variant type (a `Variant` or a `Set` of them).
-    Variant(Type),
-    /// `[T, null]`; carries `T`.
-    Nullable(Type),
-    String,
-    /// Any other value shape; carries the full type.
-    Value(Type),
-}
-
-/// Classify a value [`Type`] as a kernel input. `None` for `Unit`, bare
-/// `Null` (widened to `Nullable<T>` at construction) and fn types.
-pub(crate) fn type_to_region_input_kind(t: Type) -> Option<RegionInputKind> {
-    use AbiKind;
-    // The stored type must be frozen: the non-derefing accessors
-    // (`tuple_slots`, `struct_fields`, `array_elem`) run on it later.
-    let t = kernel_abi::freeze_for_abi(&t)?;
-    match abi_kind(&t)? {
-        AbiKind::Scalar(p) => Some(RegionInputKind::Prim(p)),
-        AbiKind::Array => {
-            kernel_abi::array_elem(&t).map(|e| RegionInputKind::Array(e.clone()))
+/// The kernel param shape of a frozen value type; `None` for `Unit`,
+/// bare `Null` (widened to a nullable at construction), fn types, and a
+/// type whose top level is not concrete (an opaque recursive leaf).
+pub(crate) fn param_kind(t: &Type) -> Option<ParamKind> {
+    Some(match abi_kind(t)? {
+        AbiKind::Scalar(p) => ParamKind::Scalar(p),
+        AbiKind::Array => ParamKind::Array { elem: kernel_abi::array_elem(t)?.clone() },
+        AbiKind::Tuple => {
+            ParamKind::Tuple { elems: kernel_abi::tuple_slots(t)?.to_vec() }
         }
-        AbiKind::Tuple => Some(RegionInputKind::Tuple(t)),
-        AbiKind::Struct => Some(RegionInputKind::Struct(t)),
-        AbiKind::Variant => Some(RegionInputKind::Variant(t)),
-        AbiKind::Nullable => {
-            kernel_abi::nullable_inner(&t).map(RegionInputKind::Nullable)
-        }
-        AbiKind::String => Some(RegionInputKind::String),
-        AbiKind::Value => Some(RegionInputKind::Value(t)),
-        AbiKind::Unit | AbiKind::Null => None,
-    }
+        AbiKind::Struct => ParamKind::Struct {
+            fields: kernel_abi::struct_fields(t)?
+                .iter()
+                .map(|(n, t, _)| (n.clone(), t.clone()))
+                .collect(),
+        },
+        AbiKind::Variant => ParamKind::Variant { cases: kernel_abi::variant_cases(t)? },
+        AbiKind::Nullable => ParamKind::Nullable { elem: kernel_abi::nullable_inner(t)? },
+        AbiKind::String => ParamKind::String,
+        AbiKind::Value => ParamKind::Value { typ: t.clone() },
+        AbiKind::Unit | AbiKind::Null => return None,
+    })
 }
 
 /// A marshallable call argument shape: every fusable shape but `Unit`.
 fn is_call_arg_supported(t: &Type) -> bool {
-    use AbiKind;
     match abi_kind(t) {
         Some(
             AbiKind::Scalar(_)
@@ -1404,7 +1317,6 @@ pub(crate) fn is_datetime_or_duration(t: &Type) -> bool {
 
 /// A marshallable call return shape: every fusable shape but bare `Null`.
 fn is_call_return_supported(t: &Type) -> bool {
-    use AbiKind;
     match abi_kind(t) {
         Some(
             AbiKind::Scalar(_)

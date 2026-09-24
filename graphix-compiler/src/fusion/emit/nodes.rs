@@ -28,7 +28,10 @@ use super::{
         BodyCx, ensure_owned_composite_src, ensure_owned_value_src,
         node_composite_source, ref_local_name,
     },
-    call::{CompositeSource, emit_builtin_call_node},
+    call::{
+        BufKind, CompositeSource, close_buf, emit_builtin_call_node, finalize_valarray,
+        open_buf, open_value_buf,
+    },
     lower::{freeze_node_typ, resolve_node_typ},
     scaffold,
     scalar::{
@@ -121,11 +124,8 @@ pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
 pub(crate) fn emit_ref_node(
     cx: &mut BodyCx,
     spec: &Expr,
-    typ: &Type,
     id: BindId,
 ) -> Result<CompiledExpr> {
-    // CR claude for eric: [dead] `typ` is unused; drop the parameter.
-    let _ = typ;
     // BindId first (exact under shadowing); a synthetic Ref has no name
     // and resolves by id alone.
     let name = ref_local_name(spec);
@@ -166,11 +166,9 @@ pub(crate) fn emit_ref_node(
         }
         // Non-scalar kinds are borrowed reads: the env owns the slot and
         // consumers clone when they need ownership.
-        LocalKind::Scalar(_)
-        | LocalKind::Composite
-        | LocalKind::Variant
-        | LocalKind::Nullable
-        | LocalKind::Value => Ok(CompiledExpr::new(disc, cx.b.use_var(vv.payload))),
+        LocalKind::Scalar(_) | LocalKind::Composite | LocalKind::Value => {
+            Ok(CompiledExpr::new(disc, cx.b.use_var(vv.payload)))
+        }
     }
 }
 
@@ -240,6 +238,22 @@ pub(crate) fn emit_arith_node<R: Rt, E: UserEvent>(
             anyhow!("emit_clif: arith operand of non-scalar type {:?}", lhs.typ())
         })?;
     let base = scalar_disc(cx.b, prim);
+    // Cranelift has no `frem`: a float `%` is Rust's, the node-walk's.
+    if matches!(op, BinOp::Mod) && prim.is_float() {
+        let helper = match prim {
+            PrimType::F32 => "graphix_f32_rem",
+            _ => "graphix_f64_rem",
+        };
+        let call = cx.call_helper(helper, &[l, r])?;
+        let value = cx.b.inst_results(call)[0];
+        let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
+        return Ok(widen_to_declared_repr(
+            cx,
+            out_typ,
+            prim,
+            CompiledExpr::new(disc, value),
+        ));
+    }
     if matches!(op, BinOp::Div | BinOp::Mod)
         && prim.is_integer()
         && node_int_div_may_bottom(lhs, rhs)
@@ -323,11 +337,11 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
     let rprim = kernel_abi::freeze_for_abi_normalized(rhs.typ())
         .as_ref()
         .and_then(|t| kernel_abi::scalar_prim(t));
-    // CR claude for eric: [risk] the rhs prim is not compared with the lhs one. The
-    // checker demands one type today, but a pair of one CLIF width (u64 vs i64)
-    // would compare with the lhs's signedness where the node-walk orders by Typ
-    // first. Err unless the two prims are equal.
-    if let (Some(lp), Some(_)) = (lprim, rprim) {
+    // Mixed scalar types take the Value path below: the node-walk orders
+    // them by `Typ` first.
+    if let (Some(lp), Some(rp)) = (lprim, rprim)
+        && lp == rp
+    {
         let lcv = lhs.emit_clif(cx)?;
         let rcv = rhs.emit_clif(cx)?;
         let value = compile_cmp(cx.b, op, lp, lcv.payload, rcv.payload);
@@ -431,22 +445,16 @@ pub(crate) fn emit_cast_node<R: Rt, E: UserEvent>(
     target: &Type,
     expr_id: ExprId,
 ) -> Result<CompiledExpr> {
-    // Numeric scalar→scalar casts stay inline (branchless, infallible).
-    // `compile_cast` cannot lower a bool cast; bool takes the call below.
-    if let (Some(src), Some(tgt)) =
-        (kernel_abi::scalar_prim(inner.typ()), PrimType::from_type(target))
-    {
-        if src.is_numeric() && tgt.is_numeric() {
-            let cv = inner.emit_clif(cx)?;
-            let value = compile_cast(cx.b, cv.payload, src, tgt);
-            let base = scalar_disc(cx.b, tgt);
-            let disc = propagate_flags(cx.b, base, &[cv.disc]);
-            // The cast node's static type is the fallible `[T, Error]`
-            // union, so consumers expect the 2-word Value payload; the
-            // qop unwrap narrows back.
-            let payload = scalar_to_payload_i64(cx.b, tgt, value);
-            return Ok(CompiledExpr::new(disc, payload));
-        }
+    if let Some((src, tgt)) = lowering::inline_cast(inner.typ(), target) {
+        let cv = inner.emit_clif(cx)?;
+        let value = compile_cast(cx.b, cv.payload, src, tgt);
+        let base = scalar_disc(cx.b, tgt);
+        let disc = propagate_flags(cx.b, base, &[cv.disc]);
+        // The cast node's static type is the fallible `[T, Error]`
+        // union, so consumers expect the 2-word Value payload; the
+        // qop unwrap narrows back.
+        let payload = scalar_to_payload_i64(cx.b, tgt, value);
+        return Ok(CompiledExpr::new(disc, payload));
     }
     // Otherwise the discovered `SiteDispatch::Cast` site calls
     // `target.cast_value`, the node-walk's own fn; the `[T, Error]`
@@ -470,9 +478,9 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     args: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
-    let new_buf = cx.helper("graphix_string_buf_new")?;
-    let call = cx.b.ins().call(new_buf, &[]);
+    let call = cx.call_helper("graphix_string_buf_new", &[])?;
     let buf = cx.b.inst_results(call)[0];
+    open_buf(cx, BufKind::String, buf);
     // A tainted part renders harmlessly; its taint folds into the result.
     let mut part_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for a in args {
@@ -500,8 +508,8 @@ pub(crate) fn emit_string_interpolate_node<R: Rt, E: UserEvent>(
             }
         }
     }
-    let finalize = cx.helper("graphix_string_buf_finalize")?;
-    let call = cx.b.ins().call(finalize, &[buf]);
+    close_buf(cx);
+    let call = cx.call_helper("graphix_string_buf_finalize", &[buf])?;
     let payload = cx.b.inst_results(call)[0];
     let base = cx.b.ins().iconst(types::I64, value_disc::STRING);
     let disc = propagate_flags(cx.b, base, &part_discs);
@@ -614,7 +622,7 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     field: &Node<R, E>,
 ) -> Result<ClifValue> {
     let helper_name: &str = match kernel_abi::abi_kind(field.typ()) {
-        Some(AbiKind::Scalar(p)) => value_buf_push_helper(p)?,
+        Some(AbiKind::Scalar(p)) => value_buf_push_helper(p),
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
             match node_composite_source(field) {
                 CompositeSource::Owned => "graphix_value_buf_push_array",
@@ -653,62 +661,84 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     Ok(cv.disc)
 }
 
-// CR claude for eric: [risk] the helper's disc (r[0]) is dropped and the tuple's
-// ARRAY disc kept: right only while a cons cell is a Value::Array, a layout
-// CLAUDE.md says is private to node/collection.rs::list. Fold the helper's disc
-// with the tuple's flags. Building a ValArray and then copying it into cons
-// cells also allocates twice.
-/// `[<a, b, c>]`: build the elements as a ValArray, then convert through
-/// `graphix_valarray_into_list`. The disc is the tuple's.
+/// Emit `fields` into a fresh registered value buf; returns the buf
+/// and the fields' discs.
+fn emit_fields_into_buf<R: Rt, E: UserEvent>(
+    cx: &mut BodyCx,
+    fields: &[Node<R, E>],
+) -> Result<(ClifValue, smallvec::SmallVec<[ClifValue; 8]>)> {
+    let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
+    let buf = open_value_buf(cx, cap)?;
+    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
+    for f in fields {
+        field_discs.push(emit_push_field_node(cx, buf, f)?);
+    }
+    Ok((buf, field_discs))
+}
+
+/// A producer's disc: fires iff any field fired; zero fields is a
+/// constant and fires at init only.
+fn producer_disc(
+    cx: &mut BodyCx,
+    base: ClifValue,
+    field_discs: &[ClifValue],
+) -> ClifValue {
+    if field_discs.is_empty() {
+        let init = cx.init_flag();
+        const_stale_gate(cx.b, init, base)
+    } else {
+        propagate_flags(cx.b, base, field_discs)
+    }
+}
+
+/// `[<a, b, c>]`: the elements are pushed into a value buf that
+/// `graphix_list_finalize` turns into the list.
 pub(crate) fn emit_list_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     fields: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
-    let cv = emit_tuple_new_node(cx, fields)?;
-    let into = cx.helper("graphix_valarray_into_list")?;
-    let call = cx.b.ins().call(into, &[cv.payload]);
-    let payload = cx.b.inst_results(call)[1];
-    Ok(CompiledExpr::new(cv.disc, payload))
+    let (buf, field_discs) = emit_fields_into_buf(cx, fields)?;
+    close_buf(cx);
+    let call = cx.call_helper("graphix_list_finalize", &[buf])?;
+    let (base, payload) = {
+        let r = cx.b.inst_results(call);
+        (r[0], r[1])
+    };
+    let disc = producer_disc(cx, base, &field_discs);
+    Ok(CompiledExpr::new(disc, payload))
 }
 
-// CR claude for eric: [risk] suspected leak: this buf (and those of struct and
-// variant literals and string interpolation) is not on value_buf_stack, while
-// emit_struct_with_node registers its bufs for exactly the abort edge. A field
-// that takes one (a scaffold loop's interrupt check, an aborting callee) leaks the
-// buf and what was pushed. Register every in-flight buf, or none if no field can
-// abort.
 /// Tuple / array literal: push each field, finalize into an owned
 /// ValArray. Both share this emission; only the static type differs.
 pub(crate) fn emit_tuple_new_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     fields: &[Node<R, E>],
 ) -> Result<CompiledExpr> {
-    let buf_new = cx.helper("graphix_value_buf_new")?;
-    let finalize = cx.helper("graphix_valarray_finalize")?;
-    let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
-    let call = cx.b.ins().call(buf_new, &[cap]);
-    let buf = cx.b.inst_results(call)[0];
-    let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
-    for f in fields {
-        field_discs.push(emit_push_field_node(cx, buf, f)?);
-    }
-    let call = cx.b.ins().call(finalize, &[buf]);
-    let payload = cx.b.inst_results(call)[0];
-    // Fires iff any field fired; zero fields is a constant and fires at
-    // init only.
-    let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-    let disc = if field_discs.is_empty() {
-        let init = cx.init_flag();
-        const_stale_gate(cx.b, init, disc)
-    } else {
-        propagate_flags(cx.b, disc, &field_discs)
-    };
+    let (buf, field_discs) = emit_fields_into_buf(cx, fields)?;
+    let payload = finalize_valarray(cx, buf)?;
+    let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = producer_disc(cx, base, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
 
-// CR claude for eric: [structure] the `[name, value]` pair build (inner buf, push
-// the interned name, push the value, finalize, push into the outer buf) is written
-// here and again in emit_struct_with_node.
+/// Push a struct's `[name, value]` pair onto its `outer` buf; `value`
+/// pushes the field into the pair's buf and returns its disc.
+fn push_struct_pair(
+    cx: &mut BodyCx,
+    outer: ClifValue,
+    name: &ArcStr,
+    value: impl FnOnce(&mut BodyCx, ClifValue) -> Result<ClifValue>,
+) -> Result<ClifValue> {
+    let cap = cx.b.ins().iconst(types::I64, 2);
+    let pair = open_value_buf(cx, cap)?;
+    let name_ptr = cx.interned_str(name)?;
+    cx.call_helper("graphix_value_buf_push_arcstr", &[pair, name_ptr])?;
+    let disc = value(cx, pair)?;
+    let pair_bits = finalize_valarray(cx, pair)?;
+    cx.call_helper("graphix_value_buf_push_array", &[outer, pair_bits])?;
+    Ok(disc)
+}
+
 /// Struct literal: an outer ValArray of `[name, value]` pairs sorted by
 /// name (the canonical struct layout).
 pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
@@ -722,30 +752,19 @@ pub(crate) fn emit_struct_new_node<R: Rt, E: UserEvent>(
     let mut indexed: smallvec::SmallVec<[(&ArcStr, &Node<R, E>); 8]> =
         names.iter().zip(fields.iter()).collect();
     indexed.sort_by(|a, b| a.0.cmp(b.0));
-    let buf_new = cx.helper("graphix_value_buf_new")?;
-    let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
-    let push_array = cx.helper("graphix_value_buf_push_array")?;
-    let finalize = cx.helper("graphix_valarray_finalize")?;
-    let outer_cap = cx.b.ins().iconst(types::I64, indexed.len() as i64);
-    let call = cx.b.ins().call(buf_new, &[outer_cap]);
-    let outer = cx.b.inst_results(call)[0];
+    let cap = cx.b.ins().iconst(types::I64, indexed.len() as i64);
+    let outer = open_value_buf(cx, cap)?;
     let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> = smallvec::SmallVec::new();
     for (name, field) in indexed {
-        let inner_cap = cx.b.ins().iconst(types::I64, 2);
-        let call = cx.b.ins().call(buf_new, &[inner_cap]);
-        let inner = cx.b.inst_results(call)[0];
-        let name_ptr = cx.interned_str(name)?;
-        cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
         // Names are interned constants; only the value discs gate freshness.
-        field_discs.push(emit_push_field_node(cx, inner, field)?);
-        let call = cx.b.ins().call(finalize, &[inner]);
-        let inner_arr = cx.b.inst_results(call)[0];
-        cx.b.ins().call(push_array, &[outer, inner_arr]);
+        let disc = push_struct_pair(cx, outer, name, |cx, pair| {
+            emit_push_field_node(cx, pair, field)
+        })?;
+        field_discs.push(disc);
     }
-    let call = cx.b.ins().call(finalize, &[outer]);
-    let payload = cx.b.inst_results(call)[0];
-    let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-    let disc = propagate_flags(cx.b, disc, &field_discs);
+    let payload = finalize_valarray(cx, outer)?;
+    let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = producer_disc(cx, base, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
 
@@ -781,63 +800,46 @@ pub(crate) fn emit_struct_with_node<R: Rt, E: UserEvent>(
         }
         CompositeSource::Borrowed => None,
     };
-    let buf_new = cx.helper("graphix_value_buf_new")?;
-    let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
-    let push_array = cx.helper("graphix_value_buf_push_array")?;
-    let finalize = cx.helper("graphix_valarray_finalize")?;
-    let outer_cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
-    let call = cx.b.ins().call(buf_new, &[outer_cap]);
-    let outer = cx.b.inst_results(call)[0];
-    let outer_var = cx.b.declare_var(types::I64);
-    cx.b.def_var(outer_var, outer);
-    cx.ctx.value_buf_stack.borrow_mut().push(outer_var);
+    let cap = cx.b.ins().iconst(types::I64, fields.len() as i64);
+    let outer = open_value_buf(cx, cap)?;
     // Fires iff the source or any replacement fired.
     let mut field_discs: smallvec::SmallVec<[ClifValue; 8]> =
         smallvec::smallvec![src_disc];
     for (i, (name, field_typ)) in fields.iter().enumerate() {
-        let inner_cap = cx.b.ins().iconst(types::I64, 2);
-        let call = cx.b.ins().call(buf_new, &[inner_cap]);
-        let inner = cx.b.inst_results(call)[0];
-        let inner_var = cx.b.declare_var(types::I64);
-        cx.b.def_var(inner_var, inner);
-        cx.ctx.value_buf_stack.borrow_mut().push(inner_var);
-        let name_ptr = cx.interned_str(name)?;
-        cx.b.ins().call(push_arcstr, &[inner, name_ptr]);
         match replace.iter().find(|r| r.index == Some(i)) {
             Some(r) => {
-                field_discs.push(emit_push_field_node(cx, inner, &r.n)?);
+                let disc = push_struct_pair(cx, outer, name, |cx, pair| {
+                    emit_push_field_node(cx, pair, &r.n)
+                })?;
+                field_discs.push(disc);
             }
             None => {
-                // Guarded: a tainted source's placeholder has no fields.
-                let ftyp = resolve_node_typ(cx.ctx, field_typ);
-                let idx = cx.b.ins().iconst(types::I64, i as i64);
-                let cv = emit_guarded_element_read(
-                    cx,
-                    arr_ptr,
-                    src_disc,
-                    idx,
-                    &ftyp,
-                    ElementRead::StructField,
-                )?;
-                scaffold::push_field(cx, inner, cv, &ftyp, CompositeSource::Owned)?;
+                push_struct_pair(cx, outer, name, |cx, pair| {
+                    // Guarded: a tainted source's placeholder has no fields.
+                    let ftyp = resolve_node_typ(cx.ctx, field_typ);
+                    let idx = cx.b.ins().iconst(types::I64, i as i64);
+                    let cv = emit_guarded_element_read(
+                        cx,
+                        arr_ptr,
+                        src_disc,
+                        idx,
+                        &ftyp,
+                        ElementRead::StructField,
+                    )?;
+                    scaffold::push_field(cx, pair, cv, &ftyp, CompositeSource::Owned)?;
+                    Ok(cv.disc)
+                })?;
             }
         }
-        let call = cx.b.ins().call(finalize, &[inner]);
-        let inner_arr = cx.b.inst_results(call)[0];
-        cx.ctx.value_buf_stack.borrow_mut().pop(); // inner consumed by finalize
-        cx.b.ins().call(push_array, &[outer, inner_arr]);
     }
-    let call = cx.b.ins().call(finalize, &[outer]);
-    let payload = cx.b.inst_results(call)[0];
-    cx.ctx.value_buf_stack.borrow_mut().pop(); // outer consumed by finalize
+    let payload = finalize_valarray(cx, outer)?;
     // Dropped exactly once: the pending path drops it via `owned_input_stack`.
     if src_var.is_some() {
-        let drop = cx.helper("graphix_valarray_drop")?;
-        cx.b.ins().call(drop, &[arr_ptr]);
+        cx.call_helper("graphix_valarray_drop", &[arr_ptr])?;
         cx.ctx.owned_input_stack.borrow_mut().pop();
     }
-    let disc = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
-    let disc = propagate_flags(cx.b, disc, &field_discs);
+    let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
+    let disc = propagate_flags(cx.b, base, &field_discs);
     Ok(CompiledExpr::new(disc, payload))
 }
 
@@ -859,20 +861,15 @@ pub(crate) fn emit_variant_new_node<R: Rt, E: UserEvent>(
         let disc = const_stale_gate(cx.b, init, base);
         Ok(CompiledExpr::new(disc, bits))
     } else {
-        let buf_new = cx.helper("graphix_value_buf_new")?;
-        let push_arcstr = cx.helper("graphix_value_buf_push_arcstr")?;
-        let finalize = cx.helper("graphix_valarray_finalize")?;
         let cap = cx.b.ins().iconst(types::I64, (payloads.len() + 1) as i64);
-        let call = cx.b.ins().call(buf_new, &[cap]);
-        let buf = cx.b.inst_results(call)[0];
-        cx.b.ins().call(push_arcstr, &[buf, tag_ptr]);
+        let buf = open_value_buf(cx, cap)?;
+        cx.call_helper("graphix_value_buf_push_arcstr", &[buf, tag_ptr])?;
         let mut payload_discs: smallvec::SmallVec<[ClifValue; 8]> =
             smallvec::SmallVec::new();
         for p in payloads {
             payload_discs.push(emit_push_field_node(cx, buf, p)?);
         }
-        let call = cx.b.ins().call(finalize, &[buf]);
-        let bits = cx.b.inst_results(call)[0];
+        let bits = finalize_valarray(cx, buf)?;
         // Fires iff any payload fired.
         let base = cx.b.ins().iconst(types::I64, value_disc::ARRAY);
         let disc = propagate_flags(cx.b, base, &payload_discs);
@@ -1029,12 +1026,10 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-// CR claude for eric: [readability] "borrowed read of the payload" reads as a
-// borrowed result, but graphix_abstract_get_* return owned clones
-// (emit_helpers.rs:792-810); what is borrowed is the source.
-/// `x.0` on a Graphix-minted abstract value: a guarded, borrowed read
-/// of the payload at the representation's shape `rep` (the
-/// abstract twin of [`emit_guarded_element_read`]).
+/// `x.0` on a Graphix-minted abstract value: a guarded read of the
+/// payload at the representation's shape `rep` that borrows the source
+/// and returns an owned clone (the abstract twin of
+/// [`emit_guarded_element_read`]).
 pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     source: &Node<R, E>,
@@ -1272,17 +1267,13 @@ pub(crate) fn emit_array_slice_node<R: Rt, E: UserEvent>(
     Ok(CompiledExpr::new(disc, rpay))
 }
 
-// CR claude for eric: [readability] `kernel_abi::int_div_may_bottom` does not
-// exist; this is the only implementation. The fn-local `use NodeView;` below
-// re-imports a top-level name (also body.rs node_composite_source).
-/// Node analog of `kernel_abi::int_div_may_bottom`: false only when the
-/// divisor is a constant that provably cannot bottom. Sees through
+/// Whether an integer `/` or `%` may bottom: false only when the
+/// divisor is a constant that provably cannot. Sees through
 /// `ExplicitParens`.
 fn node_int_div_may_bottom<R: Rt, E: UserEvent>(
     lhs: &Node<R, E>,
     rhs: &Node<R, E>,
 ) -> bool {
-    use NodeView;
     fn const_value<'a, R: Rt, E: UserEvent>(n: &'a Node<R, E>) -> Option<&'a Value> {
         match n.view() {
             NodeView::Constant(c) => Some(&c.value),

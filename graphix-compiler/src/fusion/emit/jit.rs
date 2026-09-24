@@ -9,7 +9,7 @@ use crate::{
     fusion::{
         CalleeBody, LambdaCallInfo,
         emit_helpers::all_helpers,
-        kernel_abi::{self, AbiParamKind, AbiReturn, KernelKey, KernelSig, PrimType},
+        kernel_abi::{self, AbiKind, AbiParamKind, KernelKey, KernelSig, PrimType},
         lowering::BuiltinCallSiteInfo,
     },
     profile::{self, Phase},
@@ -36,17 +36,12 @@ use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    mem::ManuallyDrop,
-    sync::{Arc as StdArc, LazyLock},
-};
+use std::{cell::RefCell, collections::BTreeMap, mem::ManuallyDrop, sync::LazyLock};
 use triomphe::Arc;
 
 use super::{
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
-    lower::{HelperFuncIds, SiteLayout, compile_into_function, declare_helpers},
+    lower::{EmittedBody, HelperFuncIds, SiteLayout, compile_into_function},
     record::{BodyRecord, EmitConst, RecordKind, RecordReloc, RelocTarget, SymbolTable},
     scalar::prim_to_clif,
 };
@@ -119,22 +114,38 @@ impl Drop for JitCtx {
     }
 }
 
+/// The host ISA every module compiles for.
+fn host_isa() -> Result<cranelift_codegen::isa::OwnedTargetIsa> {
+    let mut flag_builder = settings::builder();
+    flag_builder.set("opt_level", "speed").context("set opt_level")?;
+    flag_builder
+        .set("use_colocated_libcalls", "false")
+        .context("set use_colocated_libcalls")?;
+    // cranelift-jit requires PIC off.
+    flag_builder.set("is_pic", "false").context("set is_pic")?;
+    let isa_builder = cranelift_native::builder()
+        .map_err(|e| anyhow!("cranelift_native::builder failed: {e}"))?;
+    isa_builder.finish(settings::Flags::new(flag_builder)).context("isa_builder.finish")
+}
+
+/// The target and flags every module compiles for; an image records it
+/// so code written by another host is refused.
+pub fn isa_description() -> String {
+    static DESC: LazyLock<String> = LazyLock::new(|| match host_isa() {
+        Ok(isa) => {
+            let isa_flags: Vec<String> =
+                isa.isa_flags().iter().map(|v| format!("{}={v}", v.name)).collect();
+            format!("{} {} {}", isa.triple(), isa.flags(), isa_flags.join(","))
+        }
+        Err(e) => format!("no host isa: {e:#}"),
+    });
+    DESC.clone()
+}
+
 impl JitCtx {
     fn new() -> Result<Self> {
         let _profile = profile::phase(Phase::JitInit);
-        let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").context("set opt_level")?;
-        flag_builder
-            .set("use_colocated_libcalls", "false")
-            .context("set use_colocated_libcalls")?;
-        // cranelift-jit requires PIC off.
-        flag_builder.set("is_pic", "false").context("set is_pic")?;
-        let isa_builder = cranelift_native::builder()
-            .map_err(|e| anyhow!("cranelift_native::builder failed: {e}"))?;
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .context("isa_builder.finish")?;
-        let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+        let mut builder = JITBuilder::with_isa(host_isa()?, default_libcall_names());
         // One contiguous reservation: colocated (Linkage::Local) calls use a
         // ±2GiB PC-relative relocation and finalize panics if two functions
         // land further apart. `GRAPHIX_JIT_ARENA` (bytes) overrides the size.
@@ -348,16 +359,14 @@ fn push_abi_params(sig: &mut Signature, kernel: &KernelSig) {
 /// Push the return `AbiParam`s onto `sig`: every kernel returns the
 /// `(disc, payload)` Value pair. Errors on a bare-`Null` return.
 fn push_abi_returns(sig: &mut Signature, kernel: &KernelSig) -> Result<()> {
-    match kernel.abi_return() {
-        Some(AbiReturn::Pair) => {
-            sig.returns.push(AbiParam::new(types::I64)); // disc
-            sig.returns.push(AbiParam::new(types::I64)); // payload
-        }
-        None => bail!(
+    if matches!(kernel_abi::abi_kind(&kernel.return_type), Some(AbiKind::Null) | None) {
+        bail!(
             "kernel returns the bare Null type; should have widened to Nullable<T> at \
              construction"
-        ),
+        )
     }
+    sig.returns.push(AbiParam::new(types::I64)); // disc
+    sig.returns.push(AbiParam::new(types::I64)); // payload
     Ok(())
 }
 
@@ -389,18 +398,18 @@ pub struct WrappedKernel {
     /// an image writes for this kernel.
     pub(crate) wrapper: Arc<BodyRecord>,
     /// Per-instance state words the root body claimed. The runtime
-    /// `Kernel` passes a zeroed buffer of this size in wire slot 1.
+    /// `FusedKernel` passes a zeroed buffer of this size in wire slot 1.
     pub(crate) state_words: usize,
     /// The root body's per-slot state-table anchors: each word holds a
     /// `Box<Vec<u64>>` chain owned by `graphix_slot_state_table` and
-    /// freed by `Kernel`'s `Drop`.
+    /// freed by `FusedKernel`'s `Drop`.
     pub(crate) slot_table_words: Vec<kernel_abi::SiteAnchor>,
     /// The body's own per-call-site block layout. A caller supplies the
-    /// block; for a region parent the runtime `Kernel` supplies it from
+    /// block; for a region parent the runtime `FusedKernel` supplies it from
     /// its own per-instance storage.
     pub(crate) own_site: Option<SiteLayout>,
     /// Per-activation block-tree roots living in the parent's state
-    /// buffer; `Kernel` frees and resets them with its own site block.
+    /// buffer; `FusedKernel` frees and resets them with its own site block.
     pub(crate) state_self_blocks: Vec<kernel_abi::SelfBlock>,
 }
 
@@ -466,15 +475,6 @@ impl Jit {
             records: BTreeMap::new(),
             loaded: BTreeMap::new(),
         })
-    }
-
-    /// The target and flags the module compiles for; an image records
-    /// it so code written by another host is refused.
-    pub fn isa_description(&self) -> String {
-        let isa = self.ctx.module.isa();
-        let isa_flags: Vec<String> =
-            isa.isa_flags().iter().map(|v| format!("{}={v}", v.name)).collect();
-        format!("{} {} {}", isa.triple(), isa.flags(), isa_flags.join(","))
     }
 
     /// Install a record's function, its thunk and its callees (once per
@@ -645,7 +645,7 @@ struct CachedKernel {
     /// is a self-call, which roots a per-activation block tree.
     site_layout: Option<SiteLayout>,
     /// Holds the Arc so its pointer cannot be reused by a later allocation.
-    _kernel: StdArc<KernelSig>,
+    _kernel: Arc<KernelSig>,
     /// See [`WrappedKernel::state_words`].
     state_words: usize,
 }
@@ -656,8 +656,8 @@ struct CachedKernel {
 /// without a recorded body fails the whole region.
 pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     jit: &mut Jit,
-    kernel: &StdArc<KernelSig>,
-    callees: &[(KernelKey, StdArc<KernelSig>)],
+    kernel: &Arc<KernelSig>,
+    callees: &[(KernelKey, Arc<KernelSig>)],
     root: &Node<R, E>,
     apply_sites: &nohash::IntMap<ExprId, BuiltinCallSiteInfo>,
     lambda_sites: &nohash::IntMap<ExprId, LambdaCallInfo>,
@@ -702,7 +702,7 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
 #[derive(Default)]
 struct Fresh {
     /// Fresh callee cache entries, in declaration order.
-    callees: SmallVec<[(CacheKey, StdArc<KernelSig>); 8]>,
+    callees: SmallVec<[(CacheKey, Arc<KernelSig>); 8]>,
     /// The fresh callee entries whose bodies were defined.
     defined: SmallVec<[CacheKey; 8]>,
     /// The parent's body, until it is defined.
@@ -711,9 +711,9 @@ struct Fresh {
 
 fn compile_region(
     jit: &mut Jit,
-    kernel: &StdArc<KernelSig>,
+    kernel: &Arc<KernelSig>,
     parent: &BodySource,
-    callees: &[(KernelKey, StdArc<KernelSig>)],
+    callees: &[(KernelKey, Arc<KernelSig>)],
     emitters: &AHashMap<KernelKey, BodySource>,
 ) -> Result<WrappedKernel> {
     let mut build_profile = profile::phase(Phase::JitBuild);
@@ -741,9 +741,9 @@ fn compile_region(
 
 fn compile_region_inner(
     jit: &mut Jit,
-    kernel: &StdArc<KernelSig>,
+    kernel: &Arc<KernelSig>,
     parent: &BodySource,
-    callees: &[(KernelKey, StdArc<KernelSig>)],
+    callees: &[(KernelKey, Arc<KernelSig>)],
     emitters: &AHashMap<KernelKey, BodySource>,
     fresh: &mut Fresh,
 ) -> Result<WrappedKernel> {
@@ -877,9 +877,9 @@ fn compile_region_inner(
 /// The fresh callees in definition order: a depth-first postorder over
 /// the static call edges between them, rooted in declaration order.
 fn def_order(
-    fresh: &[(CacheKey, StdArc<KernelSig>)],
+    fresh: &[(CacheKey, Arc<KernelSig>)],
     emitters: &AHashMap<KernelKey, BodySource>,
-) -> LPooled<Vec<(CacheKey, StdArc<KernelSig>)>> {
+) -> LPooled<Vec<(CacheKey, Arc<KernelSig>)>> {
     let pos = |k: KernelKey| fresh.iter().position(|(c, _)| c.kernel == k);
     let edges_of = |k: KernelKey| -> SmallVec<[usize; 8]> {
         let mut out: SmallVec<[usize; 8]> = emitters
@@ -899,7 +899,7 @@ fn def_order(
         out
     };
     let mut done: LPooled<AHashSet<usize>> = LPooled::take();
-    let mut order: LPooled<Vec<(CacheKey, StdArc<KernelSig>)>> = LPooled::take();
+    let mut order: LPooled<Vec<(CacheKey, Arc<KernelSig>)>> = LPooled::take();
     let mut stack: LPooled<Vec<(usize, SmallVec<[usize; 8]>, usize)>> = LPooled::take();
     for root in 0..fresh.len() {
         if !done.insert(root) {
@@ -939,7 +939,7 @@ struct DefinedBody {
 /// the caller's stub.
 fn define_kernel_body(
     jit: &mut JitCtx,
-    kernel: &StdArc<KernelSig>,
+    kernel: &Arc<KernelSig>,
     funcids: &[(KernelKey, (FuncId, Signature))],
     body_emitter: &BodySource,
     callee_layouts: &AHashMap<KernelKey, SiteLayout>,
@@ -977,7 +977,7 @@ fn define_kernel_body(
 
 /// The body [`define_kernel_body`] is defining.
 struct KernelBody<'a> {
-    kernel: &'a StdArc<KernelSig>,
+    kernel: &'a Arc<KernelSig>,
     func_id: FuncId,
     sig: &'a Signature,
     symbol: &'a str,
@@ -1011,7 +1011,7 @@ fn define_kernel_body_inner(
     jit.reset_func();
     jit.func_ctx.func.signature = sig.clone();
     jit.func_ctx.func.name = UserFuncName::user(0, func_id.as_u32());
-    let (state_words, slot_table_words, state_self_blocks, site_layout) = {
+    let EmittedBody { state_words, slot_table_words, state_self_blocks, site_layout } = {
         // Callee FuncRefs are declared before the FunctionBuilder borrows
         // `func_ctx.func`. The set is the body's lambda sites plus its
         // self-call, keyed by kernel identity.
@@ -1041,12 +1041,6 @@ fn define_kernel_body_inner(
         }
         let self_thunk = self_thunk_id
             .map(|tid| jit.module.declare_func_in_func(tid, &mut jit.func_ctx.func));
-        // CR claude for eric: [perf] suspected: this imports all ~152 helpers (and
-        // clones the arity map) into every function, so each kernel's CLIF carries
-        // 152 ext funcs and signatures that cranelift lowers per compile while a
-        // body uses a handful. Declaring on first `BodyCx::helper` use avoids it.
-        let helper_refs =
-            declare_helpers(&mut jit.module, &mut jit.func_ctx.func, &jit.helper_ids);
         let module = RefCell::new(&mut *jit.module);
         let mut builder =
             FunctionBuilder::new(&mut jit.func_ctx.func, &mut jit.builder_ctx);
@@ -1055,7 +1049,7 @@ fn define_kernel_body_inner(
             kernel,
             &callee_refs,
             self_thunk,
-            &helper_refs,
+            &jit.helper_ids,
             consts,
             &module,
             &jit.symbols,
@@ -1213,7 +1207,7 @@ fn build_trampoline(
 /// parent body `typed_func_id`.
 fn define_wrapper(
     jit: &mut JitCtx,
-    kernel: &StdArc<KernelSig>,
+    kernel: &Arc<KernelSig>,
     typed_func_id: FuncId,
     records: &BTreeMap<FuncId, Arc<BodyRecord>>,
 ) -> Result<(FuncId, Arc<BodyRecord>)> {

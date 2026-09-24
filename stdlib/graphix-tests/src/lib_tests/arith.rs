@@ -81,7 +81,7 @@ run!(float_subnormal, FLOAT_SUBNORMAL, |v: Result<&Value>| {
 const FLOAT_MOD: &str = "f64:7.0 % f64:3.0";
 run!(float_mod, FLOAT_MOD, |v: Result<&Value>| {
     matches!(v, Ok(Value::F64(f)) if *f == 1.0)
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // f32 inexact add.
 const F32_ADD_INEXACT: &str = "f32:0.1 + f32:0.2";

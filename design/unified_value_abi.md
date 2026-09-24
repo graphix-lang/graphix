@@ -25,7 +25,7 @@ encoding:
     payload);
   - variant / nullable / bare-value shapes: the `Value` payload word.
 
-Every kernel returns two words (`AbiReturn::Pair`). Because every seam
+Every kernel returns two words. Because every seam
 pair IS a tagged `Value`, the runtime decodes every kernel result
 through one arm (`TagValue::from_raw`), a callee's TAINT/STALE travels
 in-band in the disc, and a producer whose static type disagrees with a

@@ -142,7 +142,7 @@ it; cleared on crossing a callee body (`GXLambda::sleep`) so a
 whole-recursion pause and external calls in the deselected arm retain.
 Sleep is still pause for arms that PERSIST — an arm is a fixed position
 (pause/resume), a recursion depth is a transient invocation
-(delete/fresh). The JIT twin is `Kernel::update`'s reclaim of
+(delete/fresh). The JIT twin is `FusedKernel::update`'s reclaim of
 per-activation `SelfBlock` subtrees not stamped with the current reach
 generation (`kernel_instance_state.md`). If oscillation thrash from
 immediate delete+realloc ever bites, the refinement is a reset-on-reuse
@@ -170,7 +170,7 @@ loops by rebind-and-jump over one set of slots.
 own binding, every formal is positional with no varargs, every
 LOOP-CARRIED formal is a kernel-encodable kind (scalars in registers,
 composite pointers and two-word Values and Strings via the clone/drop
-protocol — every `RegionInputKind`), and the body has a self tail call.
+protocol — every kernel `ParamKind`), and the body has a self tail call.
 An INVARIANT formal — passed unchanged by every self-call
 (`invariant_formals`) — is never rebound, so even an fn-typed one
 loops: it drops out of the kernel signature (`KernelSig::skipped_args`,
@@ -208,7 +208,7 @@ stack, so it needed the JIT twin of `ensure_sufficient`:
   Cross-kernel edges are acyclic (mutual recursion de-fuses), so only
   self-calls check. Measured: 2,000,000 deep in 1.4s and 507MB, ~250
   bytes of stack per level.
-- The block-tree walks (`Kernel::drop`'s free, the reclaim) are
+- The block-tree walks (`FusedKernel::drop`'s free, the reclaim) are
   explicit worklists — they recursed one Rust frame per activation,
   invisible under a 256 cap and a tokio-worker overflow at 20k.
 - **The stack budget**: per runtime, on its `Control`
@@ -234,7 +234,7 @@ stack, so it needed the JIT twin of `ensure_sufficient`:
 Rejected: keeping the counter on the kernel while the interp lost it
 (the engines would disagree above 256 on any deep sync non-tail
 recursion). Rejected: the entry-only interim (`ensure_sufficient`
-around `Kernel::update`, a fresh segment per invocation) — it bounds
+around `FusedKernel::update`, a fresh segment per invocation) — it bounds
 depth at ~segment/frame, a large fixed number rather than memory, and
 fails silently (a segfault) past it. Containment otherwise is
 `atomic_recursion.md`'s: the interrupt, the budget, Ctrl-C.

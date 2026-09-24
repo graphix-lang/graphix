@@ -123,14 +123,14 @@ fn read_scrut_elem(
 ) -> Result<ClifValue> {
     let (helper_name, idx_v) = match idx {
         ElemIdx::FromStart(j) => {
-            (valarray_get_helper(prim)?, cx.b.ins().iconst(types::I64, j as i64))
+            (valarray_get_helper(prim), cx.b.ins().iconst(types::I64, j as i64))
         }
         ElemIdx::FromEnd { back, len } => {
             let b = cx.b.ins().iconst(types::I64, back as i64);
-            (valarray_get_helper(prim)?, cx.b.ins().isub(len, b))
+            (valarray_get_helper(prim), cx.b.ins().isub(len, b))
         }
         ElemIdx::StructField(i) => {
-            (struct_get_helper(prim)?, cx.b.ins().iconst(types::I64, i as i64))
+            (struct_get_helper(prim), cx.b.ins().iconst(types::I64, i as i64))
         }
     };
     let helper = cx.helper(helper_name)?;
@@ -303,12 +303,7 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
         }
         AbiKind::Variant | AbiKind::Nullable | AbiKind::Value => {
             let cv = sel.arg.node.emit_clif(cx)?;
-            let kind = match scrut_kind {
-                AbiKind::Variant => LocalKind::Variant,
-                AbiKind::Nullable => LocalKind::Nullable,
-                _ => LocalKind::Value,
-            };
-            adopt(cx, kind, cv.disc, cv.payload);
+            adopt(cx, LocalKind::Value, cv.disc, cv.payload);
             SelectScrut::Value { disc: cv.disc, payload: cv.payload }
         }
         AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => {
@@ -1075,15 +1070,7 @@ fn emit_list_pattern_cond(
 /// by its ABI kind. `Unit`/`Null` payloads (and shapes with no kernel
 /// encoding) refuse.
 fn payload_local_kind(t: &Type) -> Option<LocalKind> {
-    match kernel_abi::abi_kind(t)? {
-        AbiKind::Scalar(p) => Some(LocalKind::Scalar(p)),
-        AbiKind::Array | AbiKind::Tuple | AbiKind::Struct => Some(LocalKind::Composite),
-        AbiKind::String => Some(LocalKind::String),
-        AbiKind::Variant => Some(LocalKind::Variant),
-        AbiKind::Nullable => Some(LocalKind::Nullable),
-        AbiKind::Value => Some(LocalKind::Value),
-        AbiKind::Unit | AbiKind::Null => None,
-    }
+    kernel_abi::abi_kind(t).and_then(LocalKind::of)
 }
 
 /// Install an arm's `binds` into the env.
@@ -1122,7 +1109,7 @@ fn install_arm_binds(
             SelectArmBind::Payload { id, idx, prim } => {
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                 let call = cx.call_helper(
-                    variant_payload_helper(*prim)?,
+                    variant_payload_helper(*prim),
                     &[sdisc, value_payload()?, idx_c],
                 )?;
                 let v = cx.b.inst_results(call)[0];
@@ -1144,7 +1131,7 @@ fn install_arm_binds(
                         let bits = cx.b.inst_results(call)[0];
                         (cx.b.ins().iconst(types::I64, value_disc::STRING), bits)
                     }
-                    LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                    LocalKind::Value => {
                         let call =
                             cx.call_helper("graphix_variant_payload_value", &args)?;
                         let rs = cx.b.inst_results(call);
@@ -1175,7 +1162,7 @@ fn install_arm_binds(
                         let raw = cx.b.inst_results(call)[1];
                         (scalar_disc(cx.b, *p), cast_u64_to_prim(cx.b, raw, *p))
                     }
-                    LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => {
+                    LocalKind::Value => {
                         let call = cx.call_helper("graphix_list_get_value", &args)?;
                         let rs = cx.b.inst_results(call);
                         (rs[0], rs[1])
@@ -1540,7 +1527,7 @@ fn placeholder_for_kind(
         LocalKind::Scalar(p) => AbiKind::Scalar(p),
         LocalKind::String => AbiKind::String,
         LocalKind::Composite => AbiKind::Array,
-        LocalKind::Variant | LocalKind::Nullable | LocalKind::Value => AbiKind::Value,
+        LocalKind::Value => AbiKind::Value,
     };
     let cv = emit_bottom_of_kind(cx, abi)?;
     Ok((cx.b.ins().bor_imm(cv.disc, STALE), cv.payload))

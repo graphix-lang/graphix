@@ -172,7 +172,7 @@ node/Apply owns a `slept: bool` its own `sleep()` sets and its next
 depth-0 update takes: the `dense_gate!` structs (the macro takes
 `$self.slept`, so the field is macro-enforced), the op macros,
 StringInterpolate, MapQ, Bind, CallSite, GXLambda, `CachedArgs`,
-`Kernel` (a kernel is a node), and Select. `Node` stays a bare 16-byte
+`FusedKernel`, and Select. `Node` stays a bare 16-byte
 newtype; the bools hide in struct padding. Nodes that recompute
 unconditionally need none; `Any` and `~` ride correctly — they ARE
 edge state; `Constant` fires at wake as at init.

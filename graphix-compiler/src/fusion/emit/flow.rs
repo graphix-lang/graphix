@@ -363,12 +363,7 @@ fn emit_let_node<R: Rt, E: UserEvent>(
                 cv.disc,
                 cv.payload,
             )?;
-            let kind = match ak {
-                Some(AbiKind::Variant) => LocalKind::Variant,
-                Some(AbiKind::Nullable) => LocalKind::Nullable,
-                _ => LocalKind::Value,
-            };
-            bind_local(cx, name.clone(), disc, payload, kind, bind_id);
+            bind_local(cx, name.clone(), disc, payload, LocalKind::Value, bind_id);
         }
         Some(AbiKind::String) => {
             // String reads/consts are already owned clones.

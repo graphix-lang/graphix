@@ -256,7 +256,7 @@ that operation's duration (`coretraits::with_value_hooks`, the
 `DYN_DISPATCH_HANDLE` pattern — per-holder reborrow, save/restore so
 loans nest). Armed sites: the six comparison operators, the
 `CachedArgs` family (min/max/all/sort/the map builtins), `uniq`, the
-map literal and `m{key}` nodes, `Kernel::update`'s invocation, string
+map literal and `m{key}` nodes, `FusedKernel::update`'s invocation, string
 interpolation, and the print family. No loan — another thread, a
 context with no core impls (probed before arming) — means the
 structural case: publisher dedup, the wire and the REPL's handle-side
