@@ -1,7 +1,7 @@
 # Dependency summaries, and a seq machine that uses them
 
 Status: proposal 2026-09-24; nothing here is built.
-Pins: none yet. §8 lists the pins to write first; each fails on the
+Pins: none yet. §7 lists the pins to write first; each fails on the
 tree today.
 
 **What each piece of code reads and writes, known after
@@ -157,14 +157,43 @@ boundary that follows it.
   abort) keep writing `pc`.
 - **Sleep.** When its own arm sleeps, the machine sleeps its current
   step and resets to idle, as today.
+- **Wake.** Entering a step wakes it, and the wake follows the
+  language's rule (`wake_catchup.md`): the step recomputes from the
+  present, and each input fire no awake reader saw is re-raised once.
+  For wake purposes the machine is a `Select` whose arms are its
+  steps: one fire bit per step-body input per machine, consumed by
+  whichever step reads the input. Today every step is entered through
+  a `Select` wake, whether in its own arm or nested in a shared arm,
+  and programs observe it:
 
-**The boundary rule.** Step j+1 enters in the next cycle when:
-- its summary's reads or writes meet the writes pending since the last
-  next-cycle boundary (`All` meets any non-empty set);
-- otherwise it enters in the same cycle.
+  ```graphix
+  let click = never(); click <- sys::time::after_idle(duration:20.ms, 1);
+  seq go { sys::time::after_idle(duration:60.ms, 0); let r = click ~ 7; r }
+  ```
 
-A block `{ .. }` is one step. The nesting limit on arms goes away,
-because there is no nesting.
+  gives 7 in both engines. The step is entered at 60 ms, and the fire
+  at 20 ms is re-raised at its entry. Without catch-up, `click ~ 7`
+  has nothing at entry and the run stalls until the next click. So
+  the machine uses `Select`'s tracker (`TrackedFires`, `deselect` in
+  `node/select.rs`), moved out where both nodes share it, not a second
+  implementation. The one difference is that the machine can change
+  steps within a cycle. A fire in the cycle of a same-cycle entry is
+  delivered live to the entered step, as it is today to a nested arm
+  selected in that cycle.
+
+**The boundary rule.** Step j+1 enters in the next cycle when its
+summary's reads or writes meet the writes pending since the last
+next-cycle boundary (`All` meets any non-empty set). Otherwise it
+enters in the same cycle.
+
+Every statement follows this rule, `until` and `try` included; neither
+is cut on both sides any more. A block `{ .. }` is one step. Entering a
+`try` body is an ordinary boundary. The jump into the `with` body is a
+`pc` write, so the `with` body enters in the next cycle.
+
+A call with no static target reads and writes `All`, so a read of an
+outer variable after it costs a cycle; that price is accepted. The
+nesting limit on arms goes away, because there is no nesting.
 
 **Per instance.** A seq in a lambda body has its own node in each
 instance, and each instance gets its own plan. `analyze` runs before
@@ -192,7 +221,7 @@ callee, stays live.
 Captures are a tuple projection chosen before compilation, so moving
 the choice later means the machine owns the snapshot: during a run it
 delivers the captured values as overlays for the captured variables. Its
-own step, after the machine lands (§8). Until then the book says a
+own step, after the machine lands (§7). Until then the book says a
 capture of a variable only a callee writes never sees the write.
 
 ## 5. What changes for existing programs
@@ -208,6 +237,8 @@ capture of a variable only a callee writes never sees the write.
     and 2, the point of the change);
   - where a call with no static target comes before a read of an outer
     variable.
+- **`until` and `try` can start in the cycle their predecessor
+  completes**, where today each starts an arm of its own.
 - **Timing-sensitive tests will move.** The netidx-admin tests watch
   cycle timing, so they run after each step (CLAUDE.md).
 
@@ -227,25 +258,14 @@ What it doesn't provide:
 Both belong to the evaluator's own design. The summary is its variable
 half.
 
-## 7. Open questions
-
-- **`until` and `try`.** Should they follow the boundary rule, or keep a
-  cut on both sides as today? Keeping the cuts limits the timing
-  change; the rule is more uniform.
-- **Calls with no static target.** They write `All`, so a read of an
-  outer variable after one costs a cycle. Count how many step calls in
-  the admin package and the examples have no static target before
-  deciding this is acceptable.
-- **Catch-up on wake.** Does a woken step need `Select`'s wake catch-up
-  (`TrackedFires`, `deselect` in `node/select.rs`) beyond its entry
-  event? If it does, move that code out of `Select` and share it rather
-  than reimplementing it.
-
-## 8. Order of work
+## 7. Order of work
 
 1. **Pins.** One for each failure in §1, asserting what §5 of
    `seq_blocks.md` says, in both engines. All fail today; the `seqq`
-   pin stays failing until step 4.
+   pin stays failing until step 4. Two more that pass today and must
+   keep passing:
+   - the wake re-raise in §3;
+   - a same-cycle `until` whose condition is already true at entry.
 2. **The summary.** Build it in `analysis.rs`, add `writes` to
    `RefsSummary`, and add a debug flag that prints each instance's
    summary. Measure `--check` on the GUI suite and the admin package.
