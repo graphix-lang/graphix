@@ -662,9 +662,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         res
     }
 
-    // CR claude for eric: [structure] the "covered children, then catches in
-    // reverse" walk appears three times in this file (here, typecheck1_nodes,
-    // update) and three more in Block; one iterator helper for all six.
     fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
         let builtins_allowed =
             mem::replace(&mut ctx.builtins_allowed, matches!(self.body, Body::Static));
@@ -679,18 +676,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             )
             .map(|(n, c)| (Vec::from(n), c))?;
             let _profile = profile::phase(Phase::ModuleCheck);
-            // catches last, innermost-first (see `Block::typecheck0`)
-            let mut catch = catches.iter().copied().peekable();
-            for (i, n) in nodes.iter_mut().enumerate() {
-                if catch.peek() == Some(&i) {
-                    catch.next();
-                    continue;
-                }
-                n.typecheck0(ctx)?
-            }
-            for i in catches.iter().rev() {
-                nodes[*i].typecheck0(ctx)?
-            }
+            super::typecheck_in_order(ctx, &mut nodes, &catches, false, |n, ctx| {
+                n.typecheck0(ctx)
+            })?;
             Ok((nodes, catches))
         });
         ctx.builtins_allowed = builtins_allowed;
@@ -743,22 +731,13 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     fn typecheck1_nodes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         let Self { env, nodes, catches, .. } = self;
         ctx.with_restored_mut(env, |ctx| {
-            let mut catch = catches.iter().copied().peekable();
-            for (i, n) in nodes.iter_mut().enumerate() {
-                if catch.peek() == Some(&i) {
-                    catch.next();
-                    continue;
-                }
-                wrap!(n, n.typecheck1(ctx))?;
-                // a later statement's resolution reads settled facts
-                wrap!(n, crate::drain_pending_settles(ctx))?;
-            }
-            for i in catches.iter().rev() {
-                let n = &mut nodes[*i];
-                wrap!(n, n.typecheck1(ctx))?;
-                wrap!(n, crate::drain_pending_settles(ctx))?;
-            }
-            Ok(())
+            super::typecheck_in_order(
+                ctx,
+                nodes,
+                catches,
+                false,
+                super::typecheck1_settled,
+            )
         })
     }
 
@@ -889,19 +868,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 event.variables.insert(*inner, tv);
             }
         }
-        {
-            // catches last, innermost-first (see `Block::update`)
-            let mut catch = self.catches.iter().copied().peekable();
-            for (i, n) in self.nodes.iter_mut().enumerate() {
-                if catch.peek() == Some(&i) {
-                    catch.next();
-                    continue;
-                }
-                let _ = n.update(ctx, event);
-            }
-            for i in self.catches.iter().rev() {
-                let _ = self.nodes[*i].update(ctx, event);
-            }
+        for i in super::evaluation_order(self.nodes.len(), &self.catches) {
+            let _ = self.nodes[i].update(ctx, event);
         }
         event.init = init;
         for Proxy { inner, outer, private_inner } in &self.proxy {

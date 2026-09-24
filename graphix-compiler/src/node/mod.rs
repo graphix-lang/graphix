@@ -984,6 +984,49 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
     Ok((node, scope.clone()))
 }
 
+/// A block's children in evaluation order: those a `catch` covers in
+/// order, then the catches innermost first, so a handler sees every error
+/// its covered statements raise. `catches` is ascending.
+pub(crate) fn evaluation_order(
+    len: usize,
+    catches: &[usize],
+) -> impl Iterator<Item = usize> + '_ {
+    let mut next = catches.iter().copied().peekable();
+    (0..len)
+        .filter(move |i| next.next_if_eq(i).is_none())
+        .chain(catches.iter().rev().copied())
+}
+
+/// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
+/// body's errors also carry each statement's origin, the file it is in.
+pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    nodes: &mut [Node<R, E>],
+    catches: &[usize],
+    module: bool,
+    mut pass: impl FnMut(&mut Node<R, E>, &mut ExecCtx<R, E>) -> Result<()>,
+) -> Result<()> {
+    for i in evaluation_order(nodes.len(), catches) {
+        let n = &mut nodes[i];
+        let r = wrap!(n, pass(n, ctx));
+        match module {
+            true => r.with_context(|| n.spec().ori.clone())?,
+            false => r?,
+        }
+    }
+    Ok(())
+}
+
+/// A statement's `typecheck1`, then the settles it deferred: a later
+/// statement's resolution reads settled facts.
+pub(crate) fn typecheck1_settled<R: Rt, E: UserEvent>(
+    n: &mut Node<R, E>,
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<()> {
+    n.typecheck1(ctx)?;
+    crate::drain_pending_settles(ctx)
+}
+
 impl<R: Rt, E: UserEvent> Block<R, E> {
     /// Whether a `catch` covers the block's value, its last child.
     pub(crate) fn value_is_caught(&self) -> bool {
@@ -1033,23 +1076,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
                 .fold(TagValue::phantom_ref(), |_, n| n.update(ctx, event));
             return if self.module { TagValue::phantom_ref() } else { res };
         }
-        // covered children first, then catches innermost first; the
-        // value is the last syntactic child's (absent if it is a catch)
+        // the value is the last syntactic child's (absent if it is a catch)
         let last = self.children.len() - 1;
         let mut res: Option<TagValue> = None;
-        let mut catch = self.catches.iter().copied().peekable();
-        for (i, n) in self.children.iter_mut().enumerate() {
-            if catch.peek() == Some(&i) {
-                catch.next();
-                continue;
-            }
-            let r = n.update(ctx, event);
-            if i == last {
+        for i in evaluation_order(self.children.len(), &self.catches) {
+            let r = self.children[i].update(ctx, event);
+            if i == last && self.catches.last() != Some(&last) {
                 res = Some(r.clone());
             }
-        }
-        for i in self.catches.iter().rev() {
-            let _ = self.children[*i].update(ctx, event);
         }
         match res {
             Some(tv) if !self.module => self.resident.set(tv),
@@ -1086,60 +1120,24 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.children.last().map(|n| n.typ()).unwrap_or(Type::BOTTOM)
     }
 
-    // XCR claude for eric: agreed; not this round: the `wrap!` branches are where
-    // modules-image fixes the module-origin bug below, so the evaluation-order
-    // iterator and a `wrap_child` helper should land on that fix.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        // catches typecheck after the covered children so a handler sees
-        // the complete error-type accumulation
-        let mut catch = self.catches.iter().copied().peekable();
-        for (i, n) in self.children.iter_mut().enumerate() {
-            if catch.peek() == Some(&i) {
-                catch.next();
-                continue;
-            }
-            if self.module {
-                wrap!(n, n.typecheck0(ctx)).with_context(|| n.spec().ori.clone())?
-            } else {
-                wrap!(n, n.typecheck0(ctx))?
-            }
-        }
-        for i in self.catches.iter().rev() {
-            let n = &mut self.children[*i];
-            if self.module {
-                wrap!(n, n.typecheck0(ctx)).with_context(|| n.spec().ori.clone())?
-            } else {
-                wrap!(n, n.typecheck0(ctx))?
-            }
-        }
-        Ok(())
+        typecheck_in_order(
+            ctx,
+            &mut self.children,
+            &self.catches,
+            self.module,
+            |n, ctx| n.typecheck0(ctx),
+        )
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        let mut catch = self.catches.iter().copied().peekable();
-        for (i, n) in self.children.iter_mut().enumerate() {
-            if catch.peek() == Some(&i) {
-                catch.next();
-                continue;
-            }
-            if self.module {
-                wrap!(n, n.typecheck1(ctx)).with_context(|| n.spec().ori.clone())?
-            } else {
-                wrap!(n, n.typecheck1(ctx))?
-            }
-            // a later statement's resolution reads settled facts
-            wrap!(n, crate::drain_pending_settles(ctx))?;
-        }
-        for i in self.catches.iter().rev() {
-            let n = &mut self.children[*i];
-            if self.module {
-                wrap!(n, n.typecheck1(ctx)).with_context(|| n.spec().ori.clone())?
-            } else {
-                wrap!(n, n.typecheck1(ctx))?
-            }
-            wrap!(n, crate::drain_pending_settles(ctx))?;
-        }
-        Ok(())
+        typecheck_in_order(
+            ctx,
+            &mut self.children,
+            &self.catches,
+            self.module,
+            typecheck1_settled,
+        )
     }
 
     fn spec(&self) -> &Expr {
