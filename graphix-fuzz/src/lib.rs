@@ -13,6 +13,7 @@ pub mod callable;
 pub mod corpus;
 pub mod files;
 pub mod generate;
+pub mod mustreject;
 pub mod mutate;
 pub mod schedule;
 pub mod trace;
@@ -228,6 +229,9 @@ pub struct Subject {
     pub table: AHashMap<Path, VfsEntry>,
     /// The module the body is installed as.
     pub modname: String,
+    /// The characters before the body on the module's first line: a
+    /// position the compiler reports there is the body's plus this.
+    pub body_col: usize,
 }
 
 impl Subject {
@@ -252,7 +256,9 @@ impl Subject {
             spec.as_ref().map(|c| c.decls()).unwrap_or_default()
         );
         let inputs = if decls.is_empty() { "" } else { "use super::inputs::*; " };
-        let wrapped = ArcStr::from(format!("use super::*; {inputs}let result = {body}"));
+        let prefix = format!("use super::*; {inputs}let result = ");
+        let body_col = prefix.chars().count();
+        let wrapped = ArcStr::from(format!("{prefix}{body}"));
         let mut table = AHashMap::from_iter([(
             Path::from(format!("/{modname}.gx")),
             VfsEntry::from(wrapped),
@@ -274,6 +280,7 @@ impl Subject {
             mods: files::mod_decls(&files),
             table,
             modname: modname.to_string(),
+            body_col,
         })
     }
 
@@ -1981,7 +1988,7 @@ async fn typemorph_work_order(
 ) {
     for (i, p) in progs.iter().enumerate() {
         let flipped = match typemorph_subject(p, timeout, TM_CAP).await {
-            Ok(rep) => rep.probes.iter().any(|(_, v)| matches!(v, TmVerdict::Reject(_))),
+            Ok(rep) => rep.flipped(),
             Err(_) => false,
         };
         let _ = writeln!(out, "V {i} A");
@@ -2591,6 +2598,9 @@ pub struct TmReport {
     pub base: TmVerdict,
     pub probes: Vec<(String, TmVerdict)>,
     pub noparse: usize,
+    /// Each must-reject mutant (`mustreject`) and its finding, `None`
+    /// when it was refused where its rule says.
+    pub rejects: Vec<(String, Option<String>)>,
 }
 
 impl TmReport {
@@ -2620,7 +2630,23 @@ impl TmReport {
                 }
             }
         }
+        for (id, finding) in &self.rejects {
+            match finding {
+                None => {
+                    let _ = writeln!(s, "REJECT {id} ok");
+                }
+                Some(head) => {
+                    let _ = writeln!(s, "FLIP {id} {head}");
+                }
+            }
+        }
         s
+    }
+
+    /// Whether any probe, either way, came back a finding.
+    pub fn flipped(&self) -> bool {
+        self.probes.iter().any(|(_, v)| matches!(v, TmVerdict::Reject(_)))
+            || self.rejects.iter().any(|(_, f)| f.is_some())
     }
 }
 
@@ -2703,7 +2729,90 @@ pub async fn typemorph_subject(
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
-    Ok(TmReport { base, probes: results, noparse })
+    let rejects = match base {
+        TmVerdict::Accept => must_reject(body, &compose, per_check, cap).await?,
+        _ => Vec::new(),
+    };
+    Ok(TmReport { base, probes: results, noparse, rejects })
+}
+
+/// The must-reject half of a subject (`mustreject`): the base checked
+/// again, with its types, on a runtime with fusion off (a fused region
+/// hides its nodes' types), and each mutant its families build checked
+/// there. A mutant accepted is a `LEAK`; one refused away from the
+/// mutation and its rigid consumer is `MISPLACED`.
+async fn must_reject(
+    body: &str,
+    compose: &impl Fn(&str) -> String,
+    per_check: Duration,
+    cap: usize,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    use graphix_compiler::expr::ErrorSite;
+    let (tx, _rx) = mpsc::channel(64);
+    let sink = graphix_package_core::PrintSink::default();
+    let ctx = init_with_flags_and_setup(
+        tx,
+        REGISTER,
+        vec![],
+        Mode::Interp.flags(),
+        move |ctx| {
+            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = sink;
+        },
+    )
+    .await
+    .map_err(|e| format!("runtime init failed: {e:?}"))?;
+    let check = |full: String, types: bool| {
+        let ctx = &ctx;
+        async move {
+            let subj = Subject::parse(&full, "test").ok()?;
+            let resolver = VfsResolver::new(subj.table.clone());
+            let text = graphix_compiler::expr::Source::Internal(ArcStr::from(
+                subj.compile_text(),
+            ));
+            let resolvers = vec![resolver.into()];
+            let r = match types {
+                true => {
+                    tokio::time::timeout(
+                        per_check,
+                        ctx.rt.check_with_types(text, resolvers, None),
+                    )
+                    .await
+                }
+                false => {
+                    let fut = ctx.rt.check_with_resolvers(text, resolvers, None);
+                    tokio::time::timeout(per_check, fut).await
+                }
+            };
+            r.ok().map(|r| (r, subj.body_col))
+        }
+    };
+    let mut out = Vec::new();
+    if let Some((Ok(checked), body_col)) = check(compose(body), true).await {
+        let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test", body_col);
+        for p in mustreject::probes(body, &types, cap) {
+            let finding = match check(compose(&p.body), false).await {
+                None => continue,
+                Some((Ok(_), _)) => Some("LEAK: accepted".to_string()),
+                Some((Err(e), body_col)) => {
+                    let site = e.downcast_ref::<ErrorSite>().map(|s| s.expr());
+                    let right = site.is_some_and(|x| {
+                        mustreject::in_module(&x.ori, "test")
+                            && p.right_site(mustreject::to_body(x.pos, body_col))
+                    });
+                    match right {
+                        true => None,
+                        false => Some(format!(
+                            "MISPLACED: {}",
+                            tm_error_head(&format!("{e:?}"))
+                        )),
+                    }
+                }
+            };
+            out.push((p.id(), finding));
+        }
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
+    Ok(out)
 }
 
 /// Spawn the `typemorph-one` child on one subject and return its
@@ -4894,6 +5003,34 @@ mod tests {
         assert_eq!(
             oracle_tier("// a header naming throttle\ncount(x)"),
             OracleTier::Exact
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn must_reject_families_are_refused_where_their_rules_say() {
+        let per = Duration::from_secs(60);
+        for (prog, family) in [
+            (
+                "{ let f = |x| x; let a = array::map([1], f); let b = array::map([\"s\"], f); (a, b) }",
+                "mono-reuse#",
+            ),
+            ("{ let v: [`A, `B] = `A; select v { `A => 1, `B => 2 } }", "variant-widen#"),
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            assert!(rep.base == TmVerdict::Accept, "{prog}");
+            assert!(
+                rep.rejects.iter().any(|(id, f)| id.starts_with(family) && f.is_none()),
+                "{prog}: {:?}",
+                rep.rejects
+            );
+        }
+        // a call instantiates its callee whatever the binding: no site
+        let calls = "{ let f = |x| x + x; let a = f(1); let b = f(1.5); (a, b) }";
+        let rep = typemorph_subject(calls, per, TM_CAP).await.unwrap();
+        assert!(
+            !rep.rejects.iter().any(|(id, _)| id.starts_with("mono-reuse#")),
+            "{:?}",
+            rep.rejects
         );
     }
 

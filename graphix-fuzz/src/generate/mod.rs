@@ -14,6 +14,7 @@ pub mod twin;
 mod types;
 
 pub use types::GenType;
+use types::I64;
 
 use crate::mutate::Rng;
 
@@ -440,7 +441,18 @@ fn gen_slots(
                 format!("let {name} = {val}")
             };
             stmts.push(stmt);
-            ctx.push(name, ty);
+            ctx.push(name.clone(), ty.clone());
+            // a variant value is usually read by a select that covers
+            // its tags exactly, no wildcard (must-reject family 5 widens it)
+            if let GenType::Variant(tags) = &ty
+                && chance(rng, 0.5)
+            {
+                let sel =
+                    patterns::full_coverage_select(ctx, rng, &name, &ty, tags, &I64, 2);
+                let s = ctx.fresh();
+                stmts.push(format!("let {s} = {sel}"));
+                ctx.push(s, I64);
+            }
         }
     }
     stmts
@@ -495,7 +507,7 @@ fn gen_block(
 
 #[cfg(test)]
 mod test {
-    use super::{types::I64, *};
+    use super::*;
 
     /// Same seed → byte-identical program stream.
     #[test]

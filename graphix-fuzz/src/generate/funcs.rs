@@ -288,10 +288,18 @@ pub(super) fn gen_bare_lambda(
     // shadowed
     ctx.push(f.clone(), GenType::Opaque);
     let (ta, tb) = distinct_numeric_pair(rng);
+    // the two sites: calls, or (one param) the lambda passed as a value,
+    // which instantiates per use only because the binding is generalized
+    let values = arity == 1 && chance(rng, 0.5);
     for ty in [ta, tb] {
-        let args: Vec<_> = (0..arity).map(|_| types::literal(rng, &ty)).collect();
         let cname = ctx.fresh();
-        stmts.push(format!("let {cname} = {f}({})", args.join(", ")));
+        if values {
+            let xs: Vec<_> = (0..2).map(|_| types::literal(rng, &ty)).collect();
+            stmts.push(format!("let {cname} = array::map([{}], {f})", xs.join(", ")));
+        } else {
+            let args: Vec<_> = (0..arity).map(|_| types::literal(rng, &ty)).collect();
+            stmts.push(format!("let {cname} = {f}({})", args.join(", ")));
+        }
     }
     stmts
 }

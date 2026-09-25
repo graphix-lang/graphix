@@ -577,7 +577,7 @@ fn leaks_binds(e: &Expr) -> bool {
 /// the binding of `f` in force at `e` reaches: a block's later statements
 /// lose it after one rebinds `f`, and a form that binds `f` itself (a
 /// lambda parameter, a select arm, a catch) hides all of its children.
-fn calls_reached(
+pub(crate) fn calls_reached(
     e: &Expr,
     f: &str,
     reached: bool,
@@ -616,7 +616,7 @@ fn reads_no_name(e: &Expr) -> bool {
 /// Whether `n` itself introduces `name`. A `use` binds each item's
 /// rename or last segment, a glob anything; a form whose names this does
 /// not enumerate (`mod`, traits and impls) binds anything.
-fn binds(n: &Expr, name: &str) -> bool {
+pub(crate) fn binds(n: &Expr, name: &str) -> bool {
     match &n.kind {
         ExprKind::Bind(b) => pattern_binds(&b.pattern, name),
         ExprKind::Lambda(l) => l.args.iter().any(|a| pattern_binds(&a.pattern, name)),

@@ -1,9 +1,13 @@
 # Must-reject mutation
 
-Status: PROPOSED, not built (2026-09-25). An exception to this folder's
+Status: PROPOSED (2026-09-25), in part built: the type map
+(`Ide::expr_types`, `GXHandle::check_with_types`), the right-site check,
+families 1 and 5 (`graphix-fuzz/src/mustreject.rs`, run by every
+typemorph subject); the rest is proposal. An exception to this folder's
 as-built rule until it is built; then this document is rewritten as
 built, or folded into `graphix_fuzz.md` §8.
-Pins: none yet.
+Pins: `graphix-fuzz` `must_reject_families_are_refused_where_their_rules_say`;
+`graphix-tests` `lib_tests::expr_types`.
 
 ## The gap
 
@@ -66,13 +70,17 @@ and an open cell has not decided).
 Each family: the site, the mutation, the rule that must refuse it, and
 what disqualifies a site.
 
-**1. Monomorphic reuse (instantiation).** Site: `let f = |..| ..` whose
-uses the map shows instantiated at two disjoint types. Mutation: wrap
-the lambda so the binding is not generalized, `let f = { let z = ..;
-|..| .. }`. Rule: only a `let` of a lambda, or a `let` forwarding a
-generalized binding, generalizes; a non-generalized binding holds one
-instance, so the two uses conflict. Skip: `f` also reached through a
-reference (`&f`) or a callback that may re-instantiate it.
+**1. Monomorphic reuse (instantiation).** Site: `let f = |..| ..` passed
+as a VALUE (a reference that is not a call's callee) at two uses whose
+instances the map shows taking different primitive first parameters.
+Mutation: wrap the lambda so the binding is not generalized, `let f = {
+let tm__0 = null; |..| .. }`. Rule: only a `let` of a lambda, or a
+`let` forwarding a generalized binding, generalizes, and a value
+reference to a binding that is not generalized holds the binding's own
+cells, so the two uses meet in one instance. A CALL instantiates its
+callee whatever the binding (`CallSite::typecheck0`), so calls are not
+sites: `f(1); f(1.5)` over the wrapped `f` is accepted, rightly. Right
+site: the definition or either use's statement.
 
 **2. Rigid variables.** Site: a lambda with declared variables (`'a`,
 `'b`) whose parameters `x: 'a`, `y: 'b` are in scope in the body.
@@ -109,7 +117,9 @@ Mutation: replace the use with `select c { true => v, false => u }`,
 constant. Rule: the consumer's. Skip: any of the parent forms above
 that can absorb `U`.
 
-**5. Variant widening (the common case of 4).** Site: a value whose
+**5. Variant widening (the common case of 4).** Built so far: the
+widened scrutinee, directly under a select with no catch-all and no
+type-test arm, right site the select. Site: a value whose
 type is a set of variants `` [`A, `B(..)] `` consumed by a select that
 covers exactly those tags. Mutations:
 - a new tag into the flow: `` select c { true => v, false => `Fresh } ``,

@@ -262,58 +262,82 @@ pub(super) fn maybe_select(
             return Some(format!("select {scrut} {{ {} }}", arms.join(", ")));
         }
     }
-    // variant full-coverage mode: every tag once, no wildcard
-    if let GenType::Variant(tags) = &scrut_ty {
-        if rng.below(2) == 0 {
-            for _ in 0..rng.below(2) {
-                let (a, _) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, true);
-                arms.push(a);
-            }
-            let wild_text = |tag: &str, nargs: usize| {
-                if nargs == 0 {
-                    format!("`{tag}")
-                } else {
-                    format!("`{tag}({})", vec!["_"; nargs].join(", "))
-                }
-            };
-            let mut i = 0;
-            while i < tags.len() {
-                let mut inner = ctx.clone();
-                let mark = inner.mark();
-                // sometimes group two consecutive tags into one or-arm;
-                // the payloads bind nothing, so same-binds holds
-                if i + 1 < tags.len() && rng.below(3) == 0 {
-                    let (t0, a0) = &tags[i];
-                    let (t1, a1) = &tags[i + 1];
-                    let text = format!(
-                        "{} | {}",
-                        wild_text(t0, a0.len()),
-                        wild_text(t1, a1.len())
-                    );
-                    let body = exprs::gen_typed(&inner, rng, ty, d);
-                    arms.push(format!("{text} => {body}"));
-                    i += 2;
-                } else {
-                    let (tag, args) = &tags[i];
-                    let text = if args.is_empty() {
-                        format!("`{tag}")
-                    } else {
-                        let parts: Vec<_> = args
-                            .iter()
-                            .map(|t| gen_pattern(&mut inner, rng, t, 1, true, mark).text)
-                            .collect();
-                        format!("`{tag}({})", parts.join(", "))
-                    };
-                    let body = exprs::gen_typed(&inner, rng, ty, d);
-                    arms.push(format!("{text} => {body}"));
-                    i += 1;
-                }
-            }
-            return Some(format!("select {scrut} {{ {} }}", arms.join(", ")));
-        }
+    if let GenType::Variant(tags) = &scrut_ty
+        && rng.below(2) == 0
+    {
+        return Some(full_coverage_select(ctx, rng, &scrut, &scrut_ty, tags, ty, d));
     }
     // general mode: guarded arms first, then ≤1 unguarded refutable,
     // then the irrefutable final
+    general_select(ctx, rng, scrut, scrut_ty, ty, d, arms)
+}
+
+/// A select over a variant value covering every tag once, with no
+/// wildcard (guarded arms may precede it; two consecutive tags sometimes
+/// share an or-arm).
+pub(super) fn full_coverage_select(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    scrut: &str,
+    scrut_ty: &GenType,
+    tags: &[(String, Vec<GenType>)],
+    ty: &GenType,
+    d: usize,
+) -> String {
+    let mut arms: Vec<String> = Vec::new();
+    for _ in 0..rng.below(2) {
+        let (a, _) = gen_arm(ctx, rng, scrut_ty, ty, d, false, true);
+        arms.push(a);
+    }
+    let wild_text = |tag: &str, nargs: usize| {
+        if nargs == 0 {
+            format!("`{tag}")
+        } else {
+            format!("`{tag}({})", vec!["_"; nargs].join(", "))
+        }
+    };
+    let mut i = 0;
+    while i < tags.len() {
+        let mut inner = ctx.clone();
+        let mark = inner.mark();
+        // sometimes group two consecutive tags into one or-arm;
+        // the payloads bind nothing, so same-binds holds
+        if i + 1 < tags.len() && rng.below(3) == 0 {
+            let (t0, a0) = &tags[i];
+            let (t1, a1) = &tags[i + 1];
+            let text =
+                format!("{} | {}", wild_text(t0, a0.len()), wild_text(t1, a1.len()));
+            let body = exprs::gen_typed(&inner, rng, ty, d);
+            arms.push(format!("{text} => {body}"));
+            i += 2;
+        } else {
+            let (tag, args) = &tags[i];
+            let text = if args.is_empty() {
+                format!("`{tag}")
+            } else {
+                let parts: Vec<_> = args
+                    .iter()
+                    .map(|t| gen_pattern(&mut inner, rng, t, 1, true, mark).text)
+                    .collect();
+                format!("`{tag}({})", parts.join(", "))
+            };
+            let body = exprs::gen_typed(&inner, rng, ty, d);
+            arms.push(format!("{text} => {body}"));
+            i += 1;
+        }
+    }
+    format!("select {scrut} {{ {} }}", arms.join(", "))
+}
+
+fn general_select(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    scrut: String,
+    scrut_ty: GenType,
+    ty: &GenType,
+    d: usize,
+    mut arms: Vec<String>,
+) -> Option<String> {
     for _ in 0..rng.below(3) {
         let (a, _) = gen_arm(ctx, rng, &scrut_ty, ty, d, false, true);
         arms.push(a);
