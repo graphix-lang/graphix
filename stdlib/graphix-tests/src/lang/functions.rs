@@ -2144,3 +2144,46 @@ const FORWARDED_POLY_REF_TWICE: &str = r#"
 run!(forwarded_poly_ref_twice, FORWARDED_POLY_REF_TWICE, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"]]"#
 });
+
+// `flat_map`'s callback returns `['b, Array<'b>]`: a declared callback
+// type that is that union at one type binds 'b member-wise.
+const FLAT_MAP_DECLARED_UNION: &str = r#"
+{
+  let t: fn(a: Array<i64>, f: fn(x: i64) -> [i64, Array<i64>]) -> Array<i64> = array::flat_map;
+  t([1, 2], |x| select x { 1 => x, n => [n, n] })
+}
+"#;
+
+run!(flat_map_declared_union, FLAT_MAP_DECLARED_UNION, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[i64:1, i64:2, i64:2]"
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A binding that is not generalized holds one instance: used twice, the
+// second use meets cells the first linked.
+const MONOMORPHIC_FLAT_MAP_TWICE: &str = r#"
+{
+  let t = { let z = 1; array::flat_map };
+  let a = filter(t, |x| true);
+  let b = filter(t, |x| true);
+  (a([1], |x| [x, x]), b([2], |x| x))
+}
+"#;
+
+run!(monomorphic_flat_map_twice, MONOMORPHIC_FLAT_MAP_TWICE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:2]]"
+});
+
+// A callback typed body-first returns a cell constrained to an array;
+// `Option<'b>` holds it through `'b`, not as the whole `['b, null]`.
+const EXTRACTED_FILTER_MAP_CALLBACK: &str = r#"
+{
+  let tm = |x| [x, x];
+  array::filter_map([1, 2], tm)
+}
+"#;
+
+run!(extracted_filter_map_callback, EXTRACTED_FILTER_MAP_CALLBACK, |v: Result<
+    &Value,
+>| {
+    format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:2, i64:2]]"
+});

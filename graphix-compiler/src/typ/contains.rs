@@ -159,8 +159,10 @@ impl ContainsHist {
     }
 }
 
+/// A cell whose chain of bindings ends open is as free as the cell it
+/// ends in.
 fn is_unbound_tvar(t: &Type) -> bool {
-    matches!(t, Type::TVar(tv) if !tv.is_bound())
+    matches!(t, Type::TVar(_)) && t.with_deref(|d| d.is_none())
 }
 
 /// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
@@ -758,7 +760,15 @@ impl Type {
                     return Ok(false);
                 }
                 if !cell_constraints_ok(t1, env, hist, t0)? {
-                    return Ok(false);
+                    // a union the cell's constraints refuse whole may
+                    // still hold it in one member: `['b, null] ⊇ 'r`
+                    // with `'r` within `Array<_>`, by `'b`
+                    return match t0 {
+                        Self::Set(s) => {
+                            Ok(Self::set_commit(s, flags, env, hist, t)?.unwrap_or(false))
+                        }
+                        _ => Ok(false),
+                    };
                 }
                 if commit && !t1.is_rigid() {
                     if graphix_dbg_bind() {
@@ -782,6 +792,10 @@ impl Type {
             // the residue (the rhs members no concrete lhs member
             // covers) in one act; per-member it would capture greedily.
             (t0 @ Self::Set(s0), Self::Set(s1)) if s0.iter().any(is_unbound_tvar) => {
+                // the members free on entry: covering an rhs member may
+                // bind one (`Array<'b> ⊇ Array<i64>`) before the residue
+                // reaches it
+                let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
                 let probe = BitFlags::empty();
                 let mut residue: LPooled<Vec<Type>> = LPooled::take();
                 for m in s1.iter() {
@@ -814,7 +828,7 @@ impl Type {
                         continue;
                     }
                     let mut covered = false;
-                    for c in s0.iter().filter(|c| !is_unbound_tvar(c)) {
+                    for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
                         if c.contains_int(probe, env, hist, m)? {
                             if !c.contains_int(flags, env, hist, m)? {
                                 return Ok(false);
@@ -836,8 +850,9 @@ impl Type {
                     Type::Set(Arc::from_iter(residue.drain(..)))
                 };
                 let target = target.normalize();
-                match s0.iter().find(|m| is_unbound_tvar(m)) {
-                    Some(tv_m) => tv_m.contains_int(flags, env, hist, &target),
+                let bare = s0.iter().zip(&free).find(|(_, free)| **free);
+                match bare {
+                    Some((tv_m, _)) => tv_m.contains_int(flags, env, hist, &target),
                     None => Ok(false),
                 }
             }
@@ -1424,6 +1439,48 @@ impl Type {
 mod tests {
     use super::*;
     use arcstr::literal;
+
+    fn parsed(s: &str) -> Type {
+        let t = crate::expr::parser::parse_type(s).unwrap();
+        t.alias_tvars(&mut LPooled::take());
+        t
+    }
+
+    fn binding(t: &Type, i: usize) -> Option<Type> {
+        match t {
+            Type::Set(s) => s[i].deref_cloned(),
+            _ => panic!("not a set: {t}"),
+        }
+    }
+
+    // covering `Array<i64>` binds the bare member first; the residue
+    // `i64` must still reach it
+    #[test]
+    fn a_free_union_member_takes_the_residue_after_a_sibling_binds_it() {
+        let env = Env::default();
+        let free = parsed("['b, Array<'b>]");
+        assert!(free.contains(&env, &parsed("[i64, Array<i64>]")).unwrap());
+        assert_eq!(binding(&free, 0), Some(parsed("i64")));
+        let free = parsed("['b, Array<'b>]");
+        assert!(!free.contains(&env, &parsed("[string, Array<i64>]")).unwrap());
+    }
+
+    // a member bound to an open cell is as free as that cell: the other
+    // side's free member aliases it, never captures a sibling
+    #[test]
+    fn a_member_linked_to_an_open_cell_is_free() {
+        let env = Env::default();
+        let c = TVar::empty_named(literal!("c"));
+        let b = TVar::empty_named(literal!("b"));
+        b.bind(Type::TVar(c.clone()));
+        let linked = Type::Set(Arc::from_iter([
+            Type::TVar(b.clone()),
+            Type::Array(Arc::new(Type::TVar(b))),
+        ]));
+        let free = parsed("['b, Array<'b>]");
+        assert!(linked.contains(&env, &free).unwrap());
+        assert!(binding(&free, 0).is_none(), "captured: {free}");
+    }
 
     #[test]
     fn a_bound_cell_the_other_side_mentions_answers_by_its_binding() {
