@@ -435,6 +435,8 @@ enum ToGX<X: GXExt> {
         /// root; pre-existing registrations under that scope are scrubbed
         /// from the working env first.
         initial_scope: Option<ArcStr>,
+        /// Record every checked node's type (`Ide::expr_types`).
+        expr_types: bool,
         res: oneshot::Sender<Result<CheckResult>>,
     },
     Compile {
@@ -703,7 +705,13 @@ impl<X: GXExt> GXHandle<X> {
         initial_scope: Option<ArcStr>,
     ) -> Result<CheckResult> {
         Ok(self
-            .exec(|tx| ToGX::Check { path, resolvers: None, initial_scope, res: tx })
+            .exec(|tx| ToGX::Check {
+                path,
+                resolvers: None,
+                initial_scope,
+                expr_types: false,
+                res: tx,
+            })
             .await??)
     }
 
@@ -721,6 +729,27 @@ impl<X: GXExt> GXHandle<X> {
                 path,
                 resolvers: Some(resolvers),
                 initial_scope,
+                expr_types: false,
+                res: tx,
+            })
+            .await??)
+    }
+
+    /// Like `check_with_resolvers`, and the result's `ide.expr_types`
+    /// holds every checked node's type outside lambda bodies. A fused
+    /// region is opaque to it, so check on a runtime with fusion off.
+    pub async fn check_with_types(
+        &self,
+        path: Source,
+        resolvers: Vec<ResolverRef>,
+        initial_scope: Option<ArcStr>,
+    ) -> Result<CheckResult> {
+        Ok(self
+            .exec(|tx| ToGX::Check {
+                path,
+                resolvers: Some(resolvers),
+                initial_scope,
+                expr_types: true,
                 res: tx,
             })
             .await??)

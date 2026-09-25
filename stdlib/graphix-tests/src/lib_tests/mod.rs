@@ -8,6 +8,7 @@ mod callable;
 mod core;
 mod db;
 mod dirs;
+mod expr_types;
 mod fs;
 mod hbs;
 mod http;

@@ -109,6 +109,18 @@ pub struct ModuleInternalView {
     pub env: Env,
 }
 
+/// One checked expression's type: the node's written span and its type
+/// snapshot (`Type::resolve_tvars`), so nothing unified after the check
+/// moves it. Recorded only when a check asks for types.
+#[derive(Debug, Clone)]
+pub struct ExprTypeSite {
+    pub ori: Arc<Origin>,
+    pub pos: SourcePosition,
+    /// `None` for an expression the parser did not write.
+    pub end: Option<SourcePosition>,
+    pub typ: Type,
+}
+
 /// Every IDE/LSP side-channel accumulated during a compile. Installed
 /// into `Env.ide` only under an LSP-style check.
 #[derive(Debug)]
@@ -134,6 +146,9 @@ pub struct Ide {
     pub sig_links: GPooled<Vec<SigImplLink>>,
     /// Per-module impl-side env snapshots.
     pub module_internals: GPooled<Vec<ModuleInternalView>>,
+    /// Every checked node's type outside lambda bodies, when the check
+    /// asked for them (`record_expr_types`).
+    pub expr_types: GPooled<Vec<ExprTypeSite>>,
 }
 
 impl Ide {
@@ -157,6 +172,8 @@ impl Ide {
             LazyLock::new(|| Pool::new(32, 4096));
         static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
             LazyLock::new(|| Pool::new(32, 4096));
+        static EXPR_TYPE_SITE_POOL: LazyLock<Pool<Vec<ExprTypeSite>>> =
+            LazyLock::new(|| Pool::new(32, 65536));
         Self {
             binds: BIND_POOL.take(),
             references: REFERENCE_SITE_POOL.take(),
@@ -167,6 +184,7 @@ impl Ide {
             warnings: WARNING_POOL.take(),
             sig_links: SIG_LINK_POOL.take(),
             module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
+            expr_types: EXPR_TYPE_SITE_POOL.take(),
         }
     }
 }

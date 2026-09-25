@@ -536,8 +536,9 @@ impl<X: GXExt> GX<X> {
                 ToGX::GetEnv { res } => {
                     let _ = res.send(self.ctx.env.clone());
                 }
-                ToGX::Check { path, resolvers, initial_scope, res } => {
-                    let _ = res.send(self.check(&path, resolvers, initial_scope).await);
+                ToGX::Check { path, resolvers, initial_scope, expr_types, res } => {
+                    let r = self.check(&path, resolvers, initial_scope, expr_types).await;
+                    let _ = res.send(r);
                 }
                 ToGX::Compile { text, rt, res } => {
                     let r = self.compile(rt, text).await;
@@ -762,8 +763,11 @@ impl<X: GXExt> GX<X> {
         source: &Source,
         resolver_override: Option<Vec<ResolverRef>>,
         initial_scope: Option<ArcStr>,
+        expr_types: bool,
     ) -> Result<crate::CheckResult> {
-        self.check_inner(source, resolver_override, initial_scope).await.map(|(_, r)| r)
+        self.check_inner(source, resolver_override, initial_scope, expr_types)
+            .await
+            .map(|(_, r)| r)
     }
 
     /// Like `check`, but also returns the (post-resolve) Expr tree.
@@ -772,6 +776,7 @@ impl<X: GXExt> GX<X> {
         source: &Source,
         resolver_override: Option<Vec<ResolverRef>>,
         initial_scope: Option<ArcStr>,
+        expr_types: bool,
     ) -> Result<(Arc<[Expr]>, crate::CheckResult)> {
         // The LSP shares one runtime across every checked file and never
         // executes a kernel; without a reset each file's kernels accumulate
@@ -856,12 +861,15 @@ impl<X: GXExt> GX<X> {
                 return Err(e);
             }
             let env = self.ctx.env.clone();
-            let ide = match self.ctx.env.ide.as_ref() {
+            let mut ide = match self.ctx.env.ide.as_ref() {
                 None => graphix_compiler::ide::Ide::new(),
                 Some(ide) => {
                     std::mem::replace(&mut *ide.lock(), graphix_compiler::ide::Ide::new())
                 }
             };
+            if expr_types {
+                graphix_compiler::record_expr_types(&nodes, &mut ide.expr_types);
+            }
             for mut n in nodes.drain(..) {
                 n.delete(&mut self.ctx);
             }

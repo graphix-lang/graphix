@@ -2009,6 +2009,28 @@ pub fn compile_script<R: Rt, E: UserEvent>(
     .map(|(n, _)| n)
 }
 
+/// Every node's written span and type snapshot under the checked `nodes`,
+/// pre-order, for tooling that asks for types (`Ide::expr_types`). Lambda
+/// bodies are not visited (a body compiles per call site, so a site in it
+/// has no one type) and a fused region is opaque: record from a check
+/// with fusion off.
+pub fn record_expr_types<R: Rt, E: UserEvent>(
+    nodes: &[Node<R, E>],
+    out: &mut Vec<ide::ExprTypeSite>,
+) {
+    for n in nodes {
+        fusion::for_each_node(n, &mut |n| {
+            let spec = n.spec();
+            out.push(ide::ExprTypeSite {
+                ori: spec.ori.clone(),
+                pos: spec.pos,
+                end: spec.end.get(),
+                typ: n.typ().resolve_tvars(),
+            })
+        });
+    }
+}
+
 /// Build the top-level node `spec` with `build`, then check and fuse it,
 /// unwinding what it registered on failure.
 fn compile_top<R: Rt, E: UserEvent>(
