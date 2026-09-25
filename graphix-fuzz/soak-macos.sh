@@ -1,25 +1,23 @@
 #!/bin/bash
-# soak-start <campaign> <base-seed> [workers] [fuzz:generate:reactive]
+# soak-macos.sh <campaign> <base-seed> [workers] [fuzz:generate:reactive:typemorph]
 #   — macOS launcher (soak.sh needs /proc + setsid; this is the katana
 #   equivalent). NOTE the arg order differs from soak.sh.
 #
-# ONE process, not three: the campaign's three sources share a single
-# pool that divides the box by MEASURED CPU. Separate lane processes
+# ONE process, not one per source: the campaign's four sources share a
+# single pool that divides the box by MEASURED CPU. Separate lane processes
 # could only divide a box through the OS scheduler, and equal worker
 # counts bought wildly unequal CPU (13/19/66 measured).
 set -euo pipefail
 export GRAPHIX_FUZZ_TIMEOUT_SCALE=${GRAPHIX_FUZZ_TIMEOUT_SCALE:-4}
 campaign=${1:?campaign}; seed=${2:?base-seed}
 workers=${3:-$(( $(sysctl -n hw.ncpu) * 8 ))}
-mix=${4:-50:25:25}
+mix=${4:-50:25:25:10}
 case $workers in ''|*[!0-9]*|0) echo "workers must be positive" >&2; exit 2 ;; esac
 [ "$workers" -le $(( $(sysctl -n hw.ncpu) * 16 )) ] || {
   echo "workers $workers exceeds ncpu*16 — args are <campaign> <base-seed> [workers] [mix]" >&2
   exit 2; }
-case $mix in
-  [0-9]*:[0-9]*:[0-9]*) ;;
-  *) echo "mix must be fuzz:generate:reactive, e.g. 50:25:25" >&2; exit 2 ;;
-esac
+[[ $mix =~ ^[0-9]+(\.[0-9]+)?(:[0-9]+(\.[0-9]+)?){3}$ ]] || {
+  echo "mix must be fuzz:generate:reactive:typemorph, e.g. 50:25:25:10" >&2; exit 2; }
 root=~/tmp/target/fuzz; dir="$root/$campaign"
 binary=~/tmp/target/release/graphix-fuzz
 [ -e "$dir" ] && { echo "campaign dir exists: $dir" >&2; exit 1; }

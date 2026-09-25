@@ -18,7 +18,7 @@ set -euo pipefail
 if [[ $(uname -s) != Linux ]]; then
     echo "soak.sh requires Linux (nproc, setsid, /proc)." >&2
     echo "On macOS (katana): build, cp the binary to" >&2
-    echo "~/tmp/target/release/, then ~/bin/soak-start <campaign>" >&2
+    echo "~/tmp/target/release/, then graphix-fuzz/soak-macos.sh <campaign>" >&2
     echo "<base-seed> [workers] [mix] — note the different arg order." >&2
     exit 2
 fi

@@ -95,7 +95,7 @@ f_os()      { echo "$1" | cut -d: -f5; }
 # ASan's ~20TB shadow reservation — under an RSS cap instead). The
 # other knobs adjust automatically: workers/4 (ASan is ~3x RSS per
 # child; floor 8) and timeout scale x2 (~2x slowdown). Darwin hosts
-# refuse loudly (LSan is off on macOS and soak-start has no knob).
+# refuse loudly (LSan is off on macOS and soak-macos.sh has no knob).
 # Composes with FLEET_ONLY/FLEET_EXCLUDE; the seed math is unchanged.
 asan_host() {
     [[ -n ${FLEET_ASAN:-} && ",${FLEET_ASAN}," == *",$1,"* ]]
@@ -189,7 +189,7 @@ stop() {
         if [[ $os == darwin ]]; then
             timeout 300 ssh "$name" bash -s "$camp" <<'EOF' || true
 camp=$1
-pkill -KILL -f "soak-start $camp " 2>/dev/null || true
+pkill -KILL -f "soak-macos.sh $camp " 2>/dev/null || true
 pkill -KILL -f "cargo build --release -p graphix-fuzz" 2>/dev/null || true
 ~/bin/soak-stop "$camp" 2>&1 | tail -2 || true
 EOF
@@ -211,7 +211,7 @@ camp=$1
 pkill -KILL -f "fuzz/$camp/graphix-fuzz" 2>/dev/null || true
 sleep 2
 n=$(pgrep -f "fuzz/$camp/graphix-fuzz" | wc -l | tr -d ' ')
-echo $((n + $(pgrep -f "soak-start $camp " | wc -l | tr -d ' ')))
+echo $((n + $(pgrep -f "soak-macos.sh $camp " | wc -l | tr -d ' ')))
 EOF
 )
         else
@@ -340,7 +340,7 @@ launch() {
         asan=0
         if asan_host "$name"; then
             [[ $os == darwin ]] && die \
-                "FLEET_ASAN: $name is darwin — LSan is off on macOS and soak-start has no asan knob"
+                "FLEET_ASAN: $name is darwin — LSan is off on macOS and soak-macos.sh has no asan knob"
             asan=1
             workers=$((workers / 4)); ((workers >= 8)) || workers=8
             scale=$((scale * 2))
@@ -359,7 +359,7 @@ nohup bash -lc "
     cargo build --release -p graphix-fuzz
     mkdir -p ~/tmp/target/release
     cp /Volumes/Games/cargo/release/graphix-fuzz ~/tmp/target/release/graphix-fuzz
-    GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale ~/bin/soak-start $camp $seed $workers $mix
+    GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale ./graphix-fuzz/soak-macos.sh $camp $seed $workers $mix
     echo FLEET_LAUNCH_OK
 " > "$log" 2>&1 < /dev/null &
 disown || true
