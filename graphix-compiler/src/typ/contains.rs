@@ -763,12 +763,22 @@ impl Type {
                     // a union the cell's constraints refuse whole may
                     // still hold it in one member: `['b, null] ⊇ 'r`
                     // with `'r` within `Array<_>`, by `'b`
-                    return match t0 {
-                        Self::Set(s) => {
-                            Ok(Self::set_commit(s, flags, env, hist, t)?.unwrap_or(false))
-                        }
-                        _ => Ok(false),
-                    };
+                    if let Self::Set(s) = t0 {
+                        return Ok(
+                            Self::set_commit(s, flags, env, hist, t)?.unwrap_or(false)
+                        );
+                    }
+                    // a t0 wider than the cell's witness holds it
+                    // ('a ⊆ W ⊆ t0): the cell settles to W
+                    let Ok(w) = t1.witness(env)? else { return Ok(false) };
+                    if !t0.contains_int(BitFlags::empty(), env, hist, &w)? {
+                        return Ok(false);
+                    }
+                    if !commit || t1.is_rigid() {
+                        return Ok(true);
+                    }
+                    t1.bind(w.clone());
+                    return t0.contains_int(flags, env, hist, &w);
                 }
                 if commit && !t1.is_rigid() {
                     if graphix_dbg_bind() {

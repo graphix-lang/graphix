@@ -2073,6 +2073,29 @@ run!(widest_arg_last, WIDEST_ARG_LAST, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "\"B\""
 });
 
+// A wider argument after the one that settled the variable is checked
+// as written, whatever its shape.
+run!(
+    widest_arg_literal,
+    r#"{ let a = [1]; array::concat(a, [4, null]) }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:1, i64:4, null]"
+);
+
+// A generalized callback's result is at most its inferred shape: an
+// annotation may widen it, never narrow it.
+run!(
+    generalized_callback_result_widens,
+    r#"{ let f = |a| (a, u8:100); let v: Array<(i64, [u8, null])> = array::map([1], f); v }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[[i64:1, u8:100]]"
+);
+
+run!(
+    generalized_callback_result_does_not_narrow,
+    r#"{ let f = |a| (a, null); let v: Array<(i64, u8)> = array::map([1], f); v }"#,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    graphix_package_core::testing::FuseExpect::None
+);
+
 // No argument holds the others: refused, in either order.
 run!(
     no_widest_arg_refused,

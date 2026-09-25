@@ -46,6 +46,13 @@ rule — `TVar::settle` binds an unbound constrained cell to the
 narrowest conjunct every other conjunct contains, and "no witness" is
 the "unsatisfiable constraints on 'a: i64 & string" error.
 
+A conjunct is an upper bound, so a type wider than the cell's witness
+holds the cell without the cell becoming it: `t ⊇ 'a` that the
+conjuncts refuse as a binding (`'a := t`) settles `'a` to its witness
+`W` and asks `t ⊇ W` (`'a ⊆ W ⊆ t`). This is how an annotation widens
+a generalized lambda's partially inferred result (`let f = |a| (a,
+u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
+
 ### Producers
 
 - The explicit `'a: C |...|` form is sugar: the parser

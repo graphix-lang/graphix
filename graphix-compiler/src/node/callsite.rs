@@ -259,6 +259,7 @@ fn quantified_formal(
 fn typecheck_arg<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     typ: &Type,
+    hint: Option<&Type>,
     n: &mut Node<R, E>,
 ) -> Result<bool> {
     // A reference instantiates its signature in its own typecheck0,
@@ -268,7 +269,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
     }
     match quantified_formal(&ctx.env, typ)? {
         None => {
-            Type::pre_unify_arg(&ctx.env, typ, n.typ())?;
+            Type::pre_unify_arg(&ctx.env, hint.unwrap_or(typ), n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
@@ -343,6 +344,52 @@ impl Widening {
         Self { fresh, cells: None, deferred: LPooled::take() }
     }
 
+    fn cells<'a>(
+        cells: &'a mut Option<LPooled<AHashMap<ArcStr, TVar>>>,
+        def: &Type,
+        inst: &FnType,
+    ) -> &'a AHashMap<ArcStr, TVar> {
+        cells.get_or_insert_with(|| {
+            def.with_deref(|t| match t {
+                Some(Type::Fn(def)) => widenable(def, inst),
+                _ => LPooled::take(),
+            })
+        })
+    }
+
+    /// A copy of `formal` with the widenable variables it holds unbound,
+    /// and the copy's variables by name.
+    fn open(
+        formal: &Type,
+        cells: &AHashMap<ArcStr, TVar>,
+    ) -> (Type, LPooled<AHashMap<ArcStr, TVar>>) {
+        let open = formal.reset_tvars();
+        let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        open.collect_tvars(&mut opened);
+        for name in cells.keys() {
+            if let Some(tv) = opened.get(name) {
+                tv.unbind()
+            }
+        }
+        (open, opened)
+    }
+
+    /// The formal an argument is pre-unified with: once an earlier
+    /// argument settled a widenable variable `formal` holds, the copy
+    /// with it open, so the hint cannot refuse a wider argument before
+    /// [`Self::misfit`] probes it.
+    fn hint(&mut self, def: &Type, inst: &FnType, formal: &Type) -> Option<Type> {
+        if !self.fresh {
+            return None;
+        }
+        let cells = Self::cells(&mut self.cells, def, inst);
+        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        formal.collect_tvars(&mut held);
+        held.iter()
+            .any(|(name, tv)| cells.contains_key(name) && tv.is_bound())
+            .then(|| Self::open(formal, cells).0)
+    }
+
     /// The argument `n` for `key` did not fit `formal`: widen, defer, or
     /// the mismatch error.
     fn misfit<R: Rt, E: UserEvent>(
@@ -358,24 +405,11 @@ impl Widening {
         if !self.fresh || n.typ().has_unbound() {
             return check();
         }
-        let cells = match &self.cells {
-            Some(cells) => cells,
-            None => match def.with_deref(|t| match t {
-                Some(Type::Fn(def)) => Some(widenable(def, inst)),
-                _ => None,
-            }) {
-                None => return check(),
-                Some(cells) => self.cells.insert(cells),
-            },
-        };
-        let open = formal.reset_tvars();
-        let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        open.collect_tvars(&mut opened);
-        for name in cells.keys() {
-            if let Some(tv) = opened.get(name) {
-                tv.unbind()
-            }
+        let cells = Self::cells(&mut self.cells, def, inst);
+        if cells.is_empty() {
+            return check();
         }
+        let (open, opened) = Self::open(formal, cells);
         if !open.contains(env, n.typ())? {
             return check();
         }
@@ -1922,20 +1956,36 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         };
         let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
-            if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut())
-                && !typecheck_arg(ctx, &farg.typ, n)?
-            {
-                widening.misfit(&ctx.env, self.fnode.typ(), ftype, &key, &farg.typ, n)?;
+            if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
+                let hint = widening.hint(self.fnode.typ(), ftype, &farg.typ);
+                if !typecheck_arg(ctx, &farg.typ, hint.as_ref(), n)? {
+                    widening.misfit(
+                        &ctx.env,
+                        self.fnode.typ(),
+                        ftype,
+                        &key,
+                        &farg.typ,
+                        n,
+                    )?;
+                }
             }
         }
         if let Some(typ) = &ftype.vargs {
             let positional = ftype.args.iter().filter(|a| a.is_positional()).count();
             for key in ArgKey::variadic(positional) {
                 let Some(arg) = self.args.get_mut(&key) else { break };
-                if let Some(n) = arg.node.as_mut()
-                    && !typecheck_arg(ctx, typ, n)?
-                {
-                    widening.misfit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n)?;
+                if let Some(n) = arg.node.as_mut() {
+                    let hint = widening.hint(self.fnode.typ(), ftype, typ);
+                    if !typecheck_arg(ctx, typ, hint.as_ref(), n)? {
+                        widening.misfit(
+                            &ctx.env,
+                            self.fnode.typ(),
+                            ftype,
+                            &key,
+                            typ,
+                            n,
+                        )?;
+                    }
                 }
             }
         }

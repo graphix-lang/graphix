@@ -22,22 +22,21 @@ use smallvec::SmallVec;
 use std::fmt::Write;
 
 impl TVar {
-    /// Bind a constrained-unbound cell to its conjunction's witness,
-    /// the narrowest conjunct every other conjunct contains. Bound and
-    /// unconstrained cells are untouched. No witness is a type error,
-    /// unless no conjunct could be one (all traits or self-referential):
-    /// then the cell stays open for its writers to refine.
-    pub fn settle(&self, env: &Env) -> Result<()> {
+    /// The narrowest conjunct every other conjunct contains, as a
+    /// private copy (the store's type verbatim would alias its interior
+    /// cells into live inference). `Err(true)` when there is none,
+    /// `Err(false)` when no conjunct could be one (all traits or
+    /// self-referential). Bound and unconstrained cells have none.
+    pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
         let cons = {
             let cell = self.cell();
             let cell = cell.read();
             if cell.binding.is_some() || cell.constraints.is_empty() {
-                return Ok(());
+                return Ok(Err(false));
             }
             cell.constraints.clone()
         };
         let mut hist = ContainsHist::new();
-        let mut witness = None;
         let mut candidates = false;
         let addr = self.cell_addr();
         'cand: for c in cons.iter() {
@@ -52,22 +51,29 @@ impl TVar {
                     continue 'cand;
                 }
             }
-            witness = Some(c.clone());
-            break;
+            return Ok(Ok(c.reset_tvars()));
         }
-        match witness {
-            // A private copy: binding the store's type verbatim would
-            // alias its interior cells into live inference.
-            Some(w) => {
-                let w = w.reset_tvars();
+        Ok(Err(candidates))
+    }
+
+    /// Bind a constrained-unbound cell to its conjunction's [witness].
+    /// Bound and unconstrained cells are untouched. No witness is a type
+    /// error, unless no conjunct could be one: then the cell stays open
+    /// for its writers to refine.
+    ///
+    /// [witness]: Self::witness
+    pub fn settle(&self, env: &Env) -> Result<()> {
+        match self.witness(env)? {
+            Ok(w) => {
                 if graphix_dbg_bind() {
                     eprintln!("SETTLE '{}({:x}) := {w:?}", self.name, self.cell_addr());
                 }
                 self.bind(w);
                 Ok(())
             }
-            None if !candidates => Ok(()),
-            None => {
+            Err(false) => Ok(()),
+            Err(true) => {
+                let cons = self.cell_constraints();
                 format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
                     let mut cs: LPooled<String> = LPooled::take();
                     for (i, c) in cons.iter().enumerate() {

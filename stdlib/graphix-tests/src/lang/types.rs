@@ -154,7 +154,7 @@ run!(typed_arrays0, TYPED_ARRAYS0, |v: Result<&Value>| match v {
 const TYPED_ARRAYS1: &str = r#"
 {
   let f = |x: Array<'a>, y: Array<'a>| -> Array<Array<'a>> [x, y];
-  f([1, 2, 3], [u32:1, 2, 3])
+  f([1, 2, 3], [u32:1, u32:2, u32:3])
 }
 "#;
 
