@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e16668c7.js";
+            window.path_to_searchindex_js = "searchindex-c9b6ee5b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -985,7 +985,12 @@ in the <code>array</code> module of the standard library for working with arrays
 <li><code>a[1..3]</code> a slice from index 1 to index 2</li>
 <li><code>a[-1]</code> the last element in the array</li>
 <li><code>a[-2]</code> the second to last element in the array</li>
+<li><code>a[-2..]</code> the last two elements of the array</li>
+<li><code>a[..-1]</code> every element but the last</li>
 </ul>
+<p>A negative index or slice bound counts from the end of the array. A bound past
+either end is an out-of-bounds error, as is a slice whose start comes after its
+end.</p>
 <p><code>..=</code> is not supported however, the second part of the slice will always be the
 exclusive bound. Literal numbers can always be replaced with a Graphix
 expression, e.g. <code>a[i..j]</code> is perfectly valid.</p>

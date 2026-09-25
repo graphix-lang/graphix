@@ -70,14 +70,33 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
 );
 
-// A negative slice bound is refused by name, on either side.
+// A negative slice bound counts from the end, on either side.
 run!(
     array_slice_negative_bound,
-    r#"{ let a = [1, 2, 3]; (a[-1..], a[..-1]) }"#,
+    r#"{ let a = [1, 2, 3]; (a[-2..], a[..-1], a[-3..-1], a[-1..-1]) }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap())
+        == "[[i64:2, i64:3], [i64:1, i64:2], [i64:1, i64:2], []]"
+);
+
+// A bound past either end, counted from the end or not, is out of bounds;
+// so is a start after the end.
+run!(
+    array_slice_bound_out_of_range,
+    r#"{
+  let a = [1, 2, 3];
+  (is_err(a[-4..]), is_err(a[..-4]), is_err(a[4..]), is_err(a[-1..-2]), a[-3..], a[..3])
+}"#,
     |v: Result<&Value>| {
-        let s = format!("{}", v.unwrap());
-        s.matches("a slice bound must not be negative").count() == 2
+        format!("{}", v.unwrap())
+            == "[true, true, true, true, [i64:1, i64:2, i64:3], [i64:1, i64:2, i64:3]]"
     }
+);
+
+// Bytes slice by the same rule.
+run!(
+    bytes_slice_negative_bound,
+    r#"{ let b = bytes:AQID; (b[-2..], is_err(b[-4..])) }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[bytes:AgM=, true]"
 );
 
 // An unsigned bound above i64::MAX is out of range, not negative.
@@ -175,12 +194,11 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Bool(true)))
 );
 
-// A negative slice bound is the same out-of-bounds error on every
-// backend.
+// A computed negative bound counts from the end on every backend.
 run!(
     array_slice_negative,
     r#"{ let a = [0, 1, 2]; let s = -1; a[s..] }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Error(_)))
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[i64:2]"
 );
 
 const ARRAY_INDEXING5: &str = r#"

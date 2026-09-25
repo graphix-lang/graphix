@@ -298,6 +298,12 @@ Graphix supports array subslicing, the syntax will be familiar to Rust programme
 - `a[1..3]` a slice from index 1 to index 2
 - `a[-1]` the last element in the array
 - `a[-2]` the second to last element in the array
+- `a[-2..]` the last two elements of the array
+- `a[..-1]` every element but the last
+
+A negative index or slice bound counts from the end of the array. A bound past
+either end is an out-of-bounds error, as is a slice whose start comes after its
+end.
 
 `..=` is not supported however, the second part of the slice will always be the
 exclusive bound. Literal numbers can always be replaced with a Graphix

@@ -3,7 +3,7 @@ use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     defetyp,
     env::Env,
-    err, errf,
+    err,
     expr::{Expr, ExprId},
     fusion::emit::{
         BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
@@ -25,11 +25,7 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{
-    fmt::Debug,
-    marker::PhantomData,
-    ops::Bound::{Excluded, Included, Unbounded},
-};
+use std::{fmt::Debug, marker::PhantomData, ops::Range};
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
@@ -112,11 +108,28 @@ pub(crate) fn index_i64(v: &Value) -> Option<i64> {
     }
 }
 
-/// The position index `i` names in a sequence of `len` elements:
-/// non-negative counts from the start, negative from the end.
+/// The offset `i` names in a sequence of `len` elements: non-negative
+/// counts from the start, negative from the end. Unchecked against `len`.
+fn offset(len: usize, i: i64) -> Option<usize> {
+    usize::try_from(if i < 0 { len as i64 + i } else { i }).ok()
+}
+
+/// The position index `i` names in a sequence of `len` elements.
 pub(crate) fn index(len: usize, i: i64) -> Option<usize> {
-    let j = if i < 0 { len as i64 + i } else { i };
-    usize::try_from(j).ok().filter(|j| *j < len)
+    offset(len, i).filter(|j| *j < len)
+}
+
+/// The range `[start..end]` names in a sequence of `len` elements; an
+/// absent bound is the start or the end.
+fn slice_range(len: usize, start: Option<i64>, end: Option<i64>) -> Option<Range<usize>> {
+    let bound = |b: Option<i64>, absent| match b {
+        None => Some(absent),
+        Some(i) => offset(len, i).filter(|j| *j <= len),
+    };
+    match (bound(start, 0), bound(end, len)) {
+        (Some(i), Some(j)) if i <= j => Some(i..j),
+        _ => None,
+    }
 }
 
 /// `array[i]`, shared by the node-walk and the JIT: the bare element,
@@ -139,31 +152,17 @@ pub(crate) fn bytes_index(b: &PBytes, i: i64) -> Value {
 
 /// `a[i..j]` / `a[i..]` / `a[..j]` / `a[..]` over an array or bytes,
 /// shared by the node-walk and the JIT: the sub-array / sub-bytes, or
-/// the `ArrayIndexError` value for a negative or out-of-range bound.
+/// the `ArrayIndexError` value for a bound out of range.
 pub(crate) fn array_slice(src: &Value, start: Option<i64>, end: Option<i64>) -> Value {
-    let bound = |b: Option<i64>| b.map(usize::try_from).transpose();
-    let (Ok(start), Ok(end)) = (bound(start), bound(end)) else {
-        return err!(ERR_TAG, "a slice bound must not be negative");
+    let v = match src {
+        Value::Array(elts) => slice_range(elts.len(), start, end)
+            .and_then(|r| elts.subslice(r).ok())
+            .map(Value::Array),
+        Value::Bytes(b) => slice_range(b.len(), start, end)
+            .map(|r| Value::Bytes(PBytes::new(b.slice(r)))),
+        _ => return err!(ERR_TAG, "expected array"),
     };
-    match src {
-        Value::Array(elts) => {
-            let range =
-                (start.map_or(Unbounded, Included), end.map_or(Unbounded, Excluded));
-            match elts.subslice(range) {
-                Ok(a) => Value::Array(a),
-                Err(e) => errf!(ERR_TAG, "{e}"),
-            }
-        }
-        Value::Bytes(b) => {
-            let (i, j) = (start.unwrap_or(0), end.unwrap_or(b.len()));
-            if i <= j && j <= b.len() {
-                Value::Bytes(PBytes::new(b.slice(i..j)))
-            } else {
-                err!(ERR_TAG, "slice out of bounds")
-            }
-        }
-        _ => err!(ERR_TAG, "expected array"),
-    }
+    v.unwrap_or_else(|| err!(ERR_TAG, "slice out of bounds"))
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {

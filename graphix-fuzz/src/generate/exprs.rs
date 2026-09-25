@@ -95,7 +95,7 @@ fn try_accessor(
                     cands.push(format!("*({name}[{idx}]$)"));
                 }
                 if ty == t {
-                    let slice = if rng.below(2) == 0 { "..1" } else { "1.." };
+                    let slice = pick(rng, &["..1", "1..", "-1..", "..-1", "-3..-1"]);
                     cands.push(format!("{name}[{slice}]$"));
                     // narrow-int slice bound
                     if rng.below(8) == 0 {
