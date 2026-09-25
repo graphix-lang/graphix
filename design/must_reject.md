@@ -18,6 +18,9 @@ Must-reject mutation fills it: take a program the checker accepts,
 apply ONE mutation that must be rejected by construction, and require
 the rejection. An accepted mutant is the finding.
 
+A seventh family, and the generation it needs, covers labeled and
+optional arguments; that generation also feeds the regular soak.
+
 The mutations of interest are not shallow ones (a fresh field name, a
 dropped argument): those test name resolution and arity, which rarely
 break. They are mutations that only unification, instantiation,
@@ -128,6 +131,73 @@ a writer `v <- u` added. Rule: an unannotated `let` takes its
 initializer's type, and a later writer must fit it
 (`node/mod.rs::write_mismatch`); the pinned use then conflicts.
 
+**7. Labeled and optional arguments.** The rules, as the checker has
+them:
+- a call supplies every required label, names no label the callee
+  lacks, and may omit a label with a default; labels match by name,
+  never by position;
+- a default is checked at the definition against its parameter's type
+  (or a declared variable's constraints, `lambda.rs::check_defaults`)
+  and again at each site that omits it, where it may narrow that site's
+  cells;
+- `F ⊇ G` for function types (`fntyp.rs::align`): the same number of
+  positionals, paired in order; every label of `F` present in `G`;
+  every label of `G` that `F` lacks optional in `G`; and never `?#x` in
+  `F` against a required `#x` in `G` (a caller of `F` may omit `x`).
+
+Mutations, shallow first: a label the callee lacks; a required label
+dropped; a label passed twice. Deep, from the type map: a labeled
+argument of a type disjoint from the parameter's resolved type; an
+omitted default made explicit with a disjoint value (the site then
+narrows differently from the definition); a labeled function passed
+where the expected function type fails `align`, by a label the
+expected type has and the value lacks, or a required label where the
+expected type says optional. Skip: a parameter typed `Any`, a
+polymorphic labeled parameter whose other uses are not concrete.
+
+## Labeled and optional arguments across the fuzzer
+
+Family 7 needs call sites to work on, and today the generators have
+almost none: they pass the required labels of a few stdlib functions
+(`str::sub(#start: .., #len: ..)`, `take(#n: ..)`), always all of them,
+always in one order, and never define a function with a labeled
+parameter; about a dozen corpus pins have labeled lambdas, and no
+mutation knows about labels. The logic is soaked only by accident, in
+either direction, and it has runtime semantics as well as typing ones
+(a default is born with the binding and delivers FIRED at a fresh
+callee's first dispatch, `representable_bottom.md`), so the work serves
+the regular soak, not only this lane.
+
+**Generation (every lane).** The generators define functions with
+labeled parameters, required and defaulted, and call them:
+- defaults are literals, expressions over earlier bindings, and
+  occasionally a value a stream supplies, so the born-with-the-binding
+  delivery is exercised under the schedules;
+- some labeled parameters are polymorphic (`#x: 'a = ..`, with the
+  default checked against the variable) and some are function-typed
+  (a labeled callback);
+- each call supplies or omits each default at random and orders the
+  labeled arguments at random;
+- labeled functions travel as values: bound, passed to a function that
+  calls them (supplying some labels, omitting others), and stored in
+  arrays or structs whose element type names the labels, so function
+  type containment with labels runs on every such site;
+- the reactive generator adds labeled calls inside select arms and seq
+  steps, so a default's first dispatch meets sleep and wake.
+
+Program generation stays type-correct by construction: a generated call
+always satisfies the rules above, and `gen-check`'s compile rate must
+stay at its current level.
+
+**Must-accept transforms (typemorph).**
+- `label-permute`: reorder the labeled arguments of a call. Labels bind
+  by name, so this is graded SOUND: a flip is a compiler bug.
+- `default-materialize`: write an omitted default out explicitly, as
+  the default expression itself; and its reverse, `default-elide`:
+  drop an explicit argument whose text is the callee's default. Graded
+  EXPECTED: the omitting site's check may narrow cells differently from
+  a supplied argument, which is a rule to learn, not necessarily a bug.
+
 ## Hops
 
 Families 4, 5 and 6 follow the value from the mutation to the consumer.
@@ -181,8 +251,11 @@ CPU-second once it runs.
 2. Families 1 (instantiation) and 5 (variant widening): the two areas
    with the most history (reference instantiation, `poly_binds`,
    coverage).
-3. Families 4 and 6 (the hop rule is shared with 5).
-4. Families 2 and 3.
+3. Labeled and optional generation in the generators (every lane
+   gains from it), then `label-permute` and the `default-*` transforms,
+   then family 7.
+4. Families 4 and 6 (the hop rule is shared with 5).
+5. Families 2 and 3.
 
 Each family lands with a unit test in the style of typemorph's
 (`extract_skips_param_type_reads`): sites it must take, sites it must

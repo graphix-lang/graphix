@@ -68,5 +68,5 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 |---|---|
 | `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
 | `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, routes, twins, HDD, typemorph |
-| `must_reject.md` | PROPOSED: must-reject mutation from the base's types (rigid consumers, six families, verdicts) |
+| `must_reject.md` | PROPOSED: must-reject mutation from the base's types (rigid consumers, seven families, verdicts); labeled/optional argument generation for every lane |
 | `program_image.md` | proposal: cached compilation in three steps (gate facts, kernels, the program image); block-relocated IDs, the lexical edit log, first-dispatch materialization |
