@@ -95,7 +95,7 @@ f_os()      { echo "$1" | cut -d: -f5; }
 # ASan's ~20TB shadow reservation — under an RSS cap instead). The
 # other knobs adjust automatically: workers/4 (ASan is ~3x RSS per
 # child; floor 8) and timeout scale x2 (~2x slowdown). Darwin hosts
-# refuse loudly (LSan is off on macOS and soak-macos.sh has no knob).
+# refuse loudly (LSan is off on macOS).
 # Composes with FLEET_ONLY/FLEET_EXCLUDE; the seed math is unchanged.
 asan_host() {
     [[ -n ${FLEET_ASAN:-} && ",${FLEET_ASAN}," == *",$1,"* ]]
@@ -173,69 +173,25 @@ pull() {
 
 # ---------------------------------------------------------------- stop
 
-# A campaign has three kinds of process: its launcher (the detached
-# `soak.sh start` still building, which starts the campaign AFTER a
-# stop that found nothing — aieka ran sep11c under sep11d and sep11e
-# that way, 300 orphans deep into swap), the soak, and its children,
-# which Linux spawns as `/proc/self/exe` so no argv pattern names them.
-# The launcher's session dies first; the soak's own stop takes its
-# session; the sweep and the count go by the executable link.
+# `soak.sh stop` takes everything of a campaign on any host (a launch
+# still building, the soak's process group, every process running the
+# campaign's binary) and ends by counting what is left: the stop is a
+# claim, the count its proof.
 stop() {
-    local camp=$1 h name os rc=0 left
+    local camp=$1 h name rc=0 left
     [[ -n $camp ]] || usage
     for h in "${HOSTS[@]}"; do
-        name=$(f_name "$h"); os=$(f_os "$h")
+        name=$(f_name "$h")
         skip_host "$name" && continue
-        if [[ $os == darwin ]]; then
-            timeout 300 ssh "$name" bash -s "$camp" <<'EOF' || true
-camp=$1
-pkill -KILL -f "soak-macos.sh $camp " 2>/dev/null || true
-pkill -KILL -f "cargo build --release -p graphix-fuzz" 2>/dev/null || true
-~/bin/soak-stop "$camp" 2>&1 | tail -2 || true
-EOF
-        else
-            timeout 300 ssh "$name" bash -s "$camp" <<'EOF' || true
-camp=$1
-for pid in $(pgrep -f "soak.sh start $camp "); do
-    sid=$(ps -o sid= -p "$pid" | tr -d ' ')
-    [ -n "$sid" ] && pkill -KILL -s "$sid" 2>/dev/null
-done
-cd ~/proj/graphix && ./graphix-fuzz/soak.sh stop "$camp" 2>&1 | tail -2 || true
-EOF
-        fi
-        # The stop is a CLAIM; this is the verification. katana's own
-        # stop script lied for weeks while leaving ~70 orphans behind.
-        if [[ $os == darwin ]]; then
-            left=$(timeout 120 ssh "$name" bash -s "$camp" <<'EOF' || echo unreachable
-camp=$1
-pkill -KILL -f "fuzz/$camp/graphix-fuzz" 2>/dev/null || true
-sleep 2
-n=$(pgrep -f "fuzz/$camp/graphix-fuzz" | wc -l | tr -d ' ')
-echo $((n + $(pgrep -f "soak-macos.sh $camp " | wc -l | tr -d ' ')))
+        left=$(timeout 300 ssh "$name" bash -s "$camp" <<'EOF' || true
+cd ~/proj/graphix && ./graphix-fuzz/soak.sh stop "$1" 2>&1 | tail -1
 EOF
 )
-        else
-            left=$(timeout 120 ssh "$name" bash -s "$camp" <<'EOF' || echo unreachable
-camp=$1; bin=$HOME/tmp/target/fuzz/$camp/graphix-fuzz
-sweep() {
-    n=0
-    for pid in $(ps -eo pid=); do
-        case "$(readlink /proc/$pid/exe 2>/dev/null)" in
-            "$bin"*) [ "$1" = kill ] && kill -KILL "$pid" 2>/dev/null; n=$((n + 1)) ;;
-        esac
-    done
-    echo "$n"
-}
-sweep kill > /dev/null
-sleep 2
-echo $(( $(sweep count) + $(pgrep -f "soak.sh start $camp " | wc -l | tr -d ' ') ))
-EOF
-)
-        fi
+        left=$(sed -n 's/^stopped .*: \([0-9]*\) survivors$/\1/p' <<<"$left")
         if [[ $left == 0 ]]; then
             say "$(printf '%-8s stopped, 0 survivors' "$name")"
         else
-            warn "$(printf '%-8s STOP FAILED: %s processes left' "$name" "$left")"
+            warn "$(printf '%-8s STOP FAILED: %s processes left' "$name" "${left:-unreachable}")"
             rc=1
         fi
     done
@@ -340,7 +296,7 @@ launch() {
         asan=0
         if asan_host "$name"; then
             [[ $os == darwin ]] && die \
-                "FLEET_ASAN: $name is darwin — LSan is off on macOS and soak-macos.sh has no asan knob"
+                "FLEET_ASAN: $name is darwin — LSan is off on macOS"
             asan=1
             workers=$((workers / 4)); ((workers >= 8)) || workers=8
             scale=$((scale * 2))
@@ -348,27 +304,11 @@ launch() {
         say "$(printf '%-8s launching %s seed=%s workers=%s scale=%s%s' \
              "$name" "$camp" "$seed" "$workers" "$scale" \
              "$([[ $asan == 1 ]] && echo ' ASAN' || true)")"
-        if [[ $os == darwin ]]; then
-            timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" <<'EOF'
-camp=$1; seed=$2; workers=$3; scale=$4; mix=$5
-log=~/tmp/fleet-$camp-launch.log
-nohup bash -lc "
-    set -e
-    df -h /Volumes/Games | tail -1
-    cd ~/proj/graphix
-    cargo build --release -p graphix-fuzz
-    mkdir -p ~/tmp/target/release
-    cp /Volumes/Games/cargo/release/graphix-fuzz ~/tmp/target/release/graphix-fuzz
-    GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale ./graphix-fuzz/soak-macos.sh $camp $seed $workers $mix
-    echo FLEET_LAUNCH_OK
-" > "$log" 2>&1 < /dev/null &
-disown || true
-EOF
-        else
-            timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" "$asan" <<'EOF'
+        timeout 120 ssh "$name" bash -s "$camp" "$seed" "$workers" "$scale" "$MIX" "$asan" <<'EOF'
 camp=$1; seed=$2; workers=$3; scale=$4; mix=$5; asan=$6
 log=~/tmp/fleet-$camp-launch.log
-setsid nohup bash -lc "
+perl -MPOSIX -e 'exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' \
+    bash -lc "
     set -e
     export PATH=\$HOME/.cargo/bin:\$PATH
     export GRAPHIX_FUZZ_TIMEOUT_SCALE=$scale
@@ -376,10 +316,8 @@ setsid nohup bash -lc "
     cd ~/proj/graphix
     ./graphix-fuzz/soak.sh start $camp $workers $seed $mix
     echo FLEET_LAUNCH_OK
-" > "$log" 2>&1 < /dev/null &
-disown || true
+" > "$log" 2>&1 < /dev/null
 EOF
-        fi
     done
     say "launched; run 'fleet.sh verify $camp' (it waits for the builds)"
 }

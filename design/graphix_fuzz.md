@@ -255,7 +255,13 @@ Three rules learned from a campaign that died of its own exhaust:
 
 The fleet deploy is a script (`fleet.sh deploy`), every step of which
 verifies a fact (pgrep, content fingerprint, the campaign's own gate
-line with the embedded corpus count).
+line with the embedded corpus count). Everything a box runs is in the
+repo: `soak.sh start|stop|status` is the one launcher for Linux and
+macOS (builds where the box's cargo builds; the soak leads its own
+process group; a campaign's processes are found by executable, since
+Linux children run as `/proc/self/exe`), and `soak.sh stop` takes a
+launch still building, the group and every stray, then counts the
+survivors, which is what `fleet.sh stop` reports.
 
 ## 5. Minimization: typed-AST hierarchical delta debugging
 

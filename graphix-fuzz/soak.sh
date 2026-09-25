@@ -1,32 +1,26 @@
 #!/usr/bin/env bash
 
-# Launch/stop/inspect a soak campaign.
+# Launch/stop/inspect a soak campaign, on Linux and macOS alike.
 #
 # ONE process, not one per source. The campaign's four work sources
 # (corpus mutation, generated programs, generated scheduled programs,
-# typemorph acceptance probes) share a
-# single pool that divides the box by MEASURED CPU — see `soak` in
-# main.rs. Three separate lane processes could only divide a box through
-# the OS scheduler, which arbitrates between runnable processes, so equal
-# worker counts bought wildly unequal CPU: measured 13/19/66 on a
-# three-lane box, the reactive lane taking two thirds while looking
-# evenly provisioned. `workers` is now the whole box's in-flight checks
-# and `mix` is where their CPU goes.
+# typemorph acceptance probes) share a single pool that divides the box
+# by MEASURED CPU — see `soak` in main.rs. Three separate lane processes
+# could only divide a box through the OS scheduler, which arbitrates
+# between runnable processes, so equal worker counts bought wildly
+# unequal CPU: measured 13/19/66 on a three-lane box, the reactive lane
+# taking two thirds while looking evenly provisioned. `workers` is the
+# whole box's in-flight checks and `mix` is where their CPU goes.
+#
+# A campaign is its binary's processes: the soak leads its own process
+# group, and every child runs the campaign's copy of the binary (Linux
+# spawns them as /proc/self/exe, so no argv pattern names them — they
+# are found by executable).
 
 set -euo pipefail
 
-if [[ $(uname -s) != Linux ]]; then
-    echo "soak.sh requires Linux (nproc, setsid, /proc)." >&2
-    echo "On macOS (katana): build, cp the binary to" >&2
-    echo "~/tmp/target/release/, then graphix-fuzz/soak-macos.sh <campaign>" >&2
-    echo "<base-seed> [workers] [mix] — note the different arg order." >&2
-    exit 2
-fi
-
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-target=${GRAPHIX_FUZZ_TARGET:-"$HOME/tmp/target"}
-fuzz_root="$target/fuzz"
-binary="$target/release/graphix-fuzz"
+fuzz_root="${GRAPHIX_FUZZ_TARGET:-"$HOME/tmp/target"}/fuzz"
 nice_level=${GRAPHIX_FUZZ_NICE:-19}
 
 usage() {
@@ -35,6 +29,8 @@ usage() {
     echo "       $0 status <campaign>" >&2
     exit 2
 }
+
+ncpu() { getconf _NPROCESSORS_ONLN; }
 
 campaign_dir() {
     local campaign=$1
@@ -54,41 +50,68 @@ soak_pid() {
     printf '%s\n' "$pid"
 }
 
-soak_live() {
-    local dir=$1 pid exe
-    pid=$(soak_pid "$dir") || return 1
-    [[ -e /proc/$pid/exe ]] || return 1
-    exe=$(readlink -f "/proc/$pid/exe") || return 1
-    [[ $exe == "$dir/graphix-fuzz" ]]
+# Every process whose executable is the campaign's binary (a deleted
+# binary reads as "<path> (deleted)" on Linux, hence the prefix match).
+campaign_procs() {
+    local bin=$1/graphix-fuzz
+    if [[ -d /proc/self ]]; then
+        find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$bin*" 2>/dev/null |
+            cut -d/ -f3
+    else
+        ps -axo pid=,comm= | awk -v bin="$bin" 'index($2, bin) == 1 { print $1 }'
+    fi
 }
 
-session_live() {
-    local dir=$1 pid process exe
+# Not `campaign_procs | grep -q`: grep's early exit kills the writer and
+# pipefail reads that as a dead soak.
+soak_live() {
+    local dir=$1 pid
     pid=$(soak_pid "$dir") || return 1
-    while read -r process; do
-        [[ -e /proc/$process/exe ]] || continue
-        exe=$(readlink -f "/proc/$process/exe") || continue
-        [[ $exe == "$dir/graphix-fuzz" ]] && return 0
-    done < <(ps --sid "$pid" -o pid= 2>/dev/null)
-    return 1
+    grep -qx "$pid" <<<"$(campaign_procs "$dir")"
+}
+
+campaign_live() {
+    [[ -n $(campaign_procs "$1") ]]
+}
+
+# The launcher of a campaign still building or gating: `soak.sh start`
+# and whatever it runs (cargo, the regress gate) share its process group.
+# Matched as the script itself, run directly or by a shell, never as a
+# command line that merely mentions it.
+launcher_groups() {
+    local campaign=$1 own pid pgid
+    local script="^(([^ ]*/)?(ba)?sh )?[^ ]*soak\\.sh start $campaign( |$)"
+    own=$(ps -o pgid= -p $$ | tr -d ' ')
+    for pid in $(pgrep -f "$script" || true); do
+        pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+        [[ -n $pgid && $pgid != "$own" ]] && echo "$pgid"
+    done | sort -u
 }
 
 stop_campaign() {
     local dir=$1 pid
-    session_live "$dir" || return 0
-    pid=$(soak_pid "$dir")
-    /usr/bin/pkill -TERM -s "$pid" 2>/dev/null || true
+    if pid=$(soak_pid "$dir"); then
+        kill -TERM -- "-$pid" 2>/dev/null || true
+    fi
     for _ in {1..100}; do
-        session_live "$dir" || return 0
+        campaign_live "$dir" || return 0
         sleep 0.1
     done
-    /usr/bin/pkill -KILL -s "$pid" 2>/dev/null || true
+    [[ -n ${pid:-} ]] && kill -KILL -- "-$pid" 2>/dev/null || true
+    for pid in $(campaign_procs "$dir"); do
+        kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
+# setsid(1) is util-linux; perl's is on every box the fleet runs.
+detach() {
+    perl -MPOSIX -e 'exit 0 if fork; POSIX::setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!"' "$@"
 }
 
 launch() {
     local dir=$1 seed=$2 workers=$3 mix=$4
     local pidfile="$dir/state/soak.pid"
-    /usr/bin/setsid --fork /bin/sh -c '
+    detach /bin/sh -c '
         pidfile=$1
         nice_level=$2
         workers=$3
@@ -96,22 +119,20 @@ launch() {
         binary=$5
         shift 5
         printf "%s\n" "$$" > "$pidfile"
-        /usr/bin/renice -n "$nice_level" -p "$$" >/dev/null
-        exec /usr/bin/env \
+        renice -n "$nice_level" -p "$$" >/dev/null
+        exec env \
             GRAPHIX_FUZZ_PAR="$workers" \
             GRAPHIX_FUZZ_CORPUS="$corpus" \
             "$binary" "$@"
     ' soak-lane "$pidfile" "$nice_level" "$workers" "$dir/corpus" \
-        "$dir/graphix-fuzz" soak forever "$seed" "$mix" > "$dir/soak.log" 2>&1
+        "$dir/graphix-fuzz" soak forever "$seed" "$mix" > "$dir/soak.log" 2>&1 < /dev/null
     for _ in {1..100}; do
-        [[ -s $pidfile ]] && break
+        soak_live "$dir" && return 0
         sleep 0.1
     done
-    soak_live "$dir" || {
-        echo "soak failed to launch" >&2
-        tail -n 20 "$dir/soak.log" >&2 || true
-        return 1
-    }
+    echo "soak failed to launch" >&2
+    tail -n 20 "$dir/soak.log" >&2 || true
+    return 1
 }
 
 # The campaign must clear its own regression corpus before it is allowed
@@ -163,13 +184,13 @@ verify_campaign() {
         return 1
     }
     pid=$(soak_pid "$dir")
-    while read -r ni; do
+    for ni in $(ps -o ni= -p "$(pgrep -g "$pid" | paste -sd, -)"); do
         [[ $ni == - ]] && continue
         [[ $ni == "$nice_level" ]] || {
-            echo "soak session $pid contains process at nice $ni" >&2
+            echo "soak group $pid contains process at nice $ni" >&2
             return 1
         }
-    done < <(ps --sid "$pid" -o ni=)
+    done
 }
 
 start() {
@@ -180,9 +201,8 @@ start() {
         echo "campaign directory already exists: $dir" >&2
         exit 1
     }
-    # The WHOLE box now, not a third of it per lane: one pool, so the
-    # 8x oversubscription is claimed once.
-    workers=${2:-$(( $(nproc) * 8 ))}
+    # The WHOLE box: one pool, so the 8x oversubscription is claimed once.
+    workers=${2:-$(( $(ncpu) * 8 ))}
     seed=${3:-$(date +%s)}
     mix=${4:-50:25:25:10}
     [[ $workers =~ ^[1-9][0-9]*$ ]] || {
@@ -191,8 +211,8 @@ start() {
     }
     # A seed passed in the workers position launches billions of
     # children and OOM-kills the box (it happened — twice, 2026-07-19).
-    (( workers <= $(nproc) * 16 )) || {
-        echo "workers $workers exceeds $(nproc)*16 — arguments are" \
+    (( workers <= $(ncpu) * 16 )) || {
+        echo "workers $workers exceeds $(ncpu)*16 — arguments are" \
              "<campaign> [workers] [base-seed] [mix]; did you pass the" \
              "seed as workers?" >&2
         exit 2
@@ -211,21 +231,22 @@ start() {
     }
 
     # Every in-flight check holds several descriptors (three pipes and a
-    # verdict file), so the default 1024 caps `par` near 200 — and the
-    # campaign does not degrade at the cap, it DIES: the harness treats a
-    # spawn error as broken-environment and aborts, which it did after
-    # passing its gate ("child spawn failed: Too many open files"). The
-    # macOS launcher has raised this from the start.
+    # verdict file), so the default 1024 (256 on macOS) caps `par` — and
+    # the campaign does not degrade at the cap, it DIES: the harness
+    # treats a spawn error as broken-environment and aborts, which it did
+    # right after passing its gate ("child spawn failed: Too many open
+    # files").
     ulimit -n 10240 2>/dev/null || true
 
-    # Every in-flight check holds several descriptors (three pipes and a
-    # verdict file), so the default 1024 caps `par` near 200 — and the
-    # campaign does not degrade at the cap, it DIES: the harness treats a
-    # spawn error as broken-environment and aborts, which it did right
-    # after passing its gate ("child spawn failed: Too many open files").
-    # The macOS launcher has raised this from the start.
-    ulimit -n 10240 2>/dev/null || true
-
+    # Built where this box's cargo builds (~/tmp/target on the Linux
+    # boxes, /Volumes/Games/cargo on katana).
+    local build binary
+    build=$(cargo metadata --no-deps --format-version 1 --manifest-path "$repo/Cargo.toml" |
+        sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+    [[ -n $build ]] || {
+        echo "cannot find cargo's target directory" >&2
+        exit 2
+    }
     # SOAK_ASAN=1 (fleet.sh FLEET_ASAN): build the campaign binary under
     # AddressSanitizer — nightly plus an explicit --target so host
     # proc-macros/build scripts stay uninstrumented (E0463 otherwise).
@@ -234,21 +255,25 @@ start() {
     # is the containment instead. Reports ride child stderr into the
     # harness's crash findings; LSan runs at each child exit.
     if [[ ${SOAK_ASAN:-0} == 1 ]]; then
-        rustup toolchain list 2>/dev/null | grep -q '^nightly' || {
+        [[ $(uname -s) == Linux ]] || {
+            echo "SOAK_ASAN=1 is Linux only: LSan is off on macOS" >&2
+            exit 2
+        }
+        grep -q '^nightly' <<<"$(rustup toolchain list 2>/dev/null)" || {
             echo "SOAK_ASAN=1 needs a rustup nightly toolchain" >&2
             exit 2
         }
         local triple
         triple=$(rustc -vV | awk '/^host:/{print $2}')
-        RUSTFLAGS="-Zsanitizer=address" CARGO_TARGET_DIR="$target" \
+        RUSTFLAGS="-Zsanitizer=address" \
             cargo +nightly build --release --target "$triple" -p graphix-fuzz \
             --manifest-path "$repo/Cargo.toml"
-        binary="$target/$triple/release/graphix-fuzz"
+        binary="$build/$triple/release/graphix-fuzz"
         export GRAPHIX_FUZZ_MEM_LIMIT=0
         export ASAN_OPTIONS="hard_rss_limit_mb=${SOAK_ASAN_RSS_MB:-2048}"
     else
-        CARGO_TARGET_DIR="$target" cargo build --release -p graphix-fuzz \
-            --manifest-path "$repo/Cargo.toml"
+        cargo build --release -p graphix-fuzz --manifest-path "$repo/Cargo.toml"
+        binary="$build/release/graphix-fuzz"
     fi
     "$binary" regress
 
@@ -266,16 +291,21 @@ start() {
     status "$campaign"
 }
 
+# Stops everything of the campaign, a launch still in progress included,
+# then counts what is left: the stop is a claim, the count its proof
+# (katana's old stop script printed success over ~70 orphans for weeks).
 stop() {
     [[ $# == 1 ]] || usage
-    local campaign=$1 dir
+    local campaign=$1 dir pgid left
     dir=$(campaign_dir "$campaign")
-    [[ -d $dir ]] || {
-        echo "campaign does not exist: $dir" >&2
-        exit 1
-    }
+    for pgid in $(launcher_groups "$campaign"); do
+        kill -KILL -- "-$pgid" 2>/dev/null || true
+    done
     stop_campaign "$dir"
-    status "$campaign"
+    sleep 1
+    left=$(( $(campaign_procs "$dir" | wc -l) + $(launcher_groups "$campaign" | wc -l) ))
+    echo "stopped $campaign: $left survivors"
+    (( left == 0 ))
 }
 
 status() {
@@ -289,7 +319,7 @@ status() {
     echo "$dir"
     if soak_live "$dir"; then
         pid=$(soak_pid "$dir")
-        ps -p "$pid" -o pid=,sid=,ni=,stat=,etime=,cmd= | sed 's/^/soak: /'
+        ps -p "$pid" -o pid=,pgid=,ni=,stat=,etime=,args= | sed 's/^/soak: /'
         # The per-source CPU split, which is the number the mix controls.
         # A soak seconds old has logged no counter line yet, and under
         # `pipefail` that empty grep failed the whole pipeline — so
@@ -298,9 +328,8 @@ status() {
         grep -aoE '^  [a-z]*….*% cpu' "$dir/soak.log" 2>/dev/null |
             awk -F'…' '{ last[$1] = $0 } END { for (k in last) print "  " last[k] }' |
             sort || true
-    elif session_live "$dir"; then
-        pid=$(soak_pid "$dir")
-        echo "soak: orphaned session $pid"
+    elif campaign_live "$dir"; then
+        echo "soak: $(campaign_procs "$dir" | wc -l | tr -d ' ') orphaned processes"
     else
         echo "soak: stopped"
     fi
