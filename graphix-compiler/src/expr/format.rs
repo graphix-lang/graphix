@@ -457,6 +457,18 @@ mod tests {
     }
 
     #[test]
+    fn a_spliced_string_constant_stays_spliced() {
+        for src in [
+            "let x = 1; \"hello[\"-\"][x]\"",
+            "\"[\"a\"]\"",
+            "\"a[\"b\"][\"c\"]d\"",
+            "\"[\"\"]x\"",
+        ] {
+            stable(SourceKind::Program, src);
+        }
+    }
+
+    #[test]
     fn seq_trigger_reads_back_as_written() {
         stable(SourceKind::Program, "seqq let (a, b) = (x$, y) { f(a, b)? }");
         stable(

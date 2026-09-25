@@ -1794,11 +1794,23 @@ enum StrPart<'a> {
 }
 
 impl<'a> StrPart<'a> {
-    fn of(e: &'a Expr) -> Self {
-        match &e.kind {
-            ExprKind::Constant(Value::String(s)) if !s.is_empty() => Self::Text(s),
-            _ => Self::Splice(e),
-        }
+    /// The parts of an interpolation. The parser reads the text between
+    /// two splices as one constant, so a string constant after text, or
+    /// alone, was spliced (`"a["b"]"`, `"["a"]"`) and prints as one.
+    fn of_all(args: &'a [Expr]) -> impl Iterator<Item = Self> + Clone {
+        let lone = args.len() == 1;
+        args.iter().scan(false, move |after_text, e| {
+            let part = match &e.kind {
+                ExprKind::Constant(Value::String(s))
+                    if !s.is_empty() && !lone && !*after_text =>
+                {
+                    Self::Text(s)
+                }
+                _ => Self::Splice(e),
+            };
+            *after_text = part.text().is_some();
+            Some(part)
+        })
     }
 
     fn text(&self) -> Option<&'a str> {
@@ -1885,7 +1897,7 @@ fn write_interpolation(
     args: &[Expr],
     form: StrForm,
 ) -> fmt::Result {
-    let parts = args.iter().map(StrPart::of);
+    let parts = StrPart::of_all(args);
     let texts = || parts.clone().filter_map(|p| p.text());
     let template = match form {
         form if print_as_written() => form == StrForm::Template,
