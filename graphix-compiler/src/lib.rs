@@ -2026,6 +2026,7 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
                 pos: spec.pos,
                 end: spec.end.get(),
                 typ: n.typ().resolve_tvars(),
+                cell: matches!(n.typ(), typ::Type::TVar(_)),
             })
         });
     }

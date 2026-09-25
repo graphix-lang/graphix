@@ -119,6 +119,9 @@ pub struct ExprTypeSite {
     /// `None` for an expression the parser did not write.
     pub end: Option<SourcePosition>,
     pub typ: Type,
+    /// The node's own type is a cell its uses decided (a `let` over ⊥),
+    /// `typ` what the cell resolved to.
+    pub cell: bool,
 }
 
 /// Every IDE/LSP side-channel accumulated during a compile. Installed

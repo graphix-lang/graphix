@@ -1545,7 +1545,7 @@ impl Type {
 
     /// No TVar anywhere beneath (Ref params, not expansions). A
     /// tvar-free type's identity is stable, so it can key a cache.
-    pub(crate) fn tvar_free(&self) -> bool {
+    pub fn tvar_free(&self) -> bool {
         ensure_sufficient(|| match self {
             Type::TVar(_) => false,
             t => t

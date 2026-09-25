@@ -5015,6 +5015,26 @@ mod tests {
                 "mono-reuse#",
             ),
             ("{ let v: [`A, `B] = `A; select v { `A => 1, `B => 2 } }", "variant-widen#"),
+            ("{ let a = 1; let b = a + 2; b }", "widen-consumer#"),
+            ("{ let s = {x: 1}; s.x }", "widen-consumer#"),
+            ("{ let f = |x: i64| -> i64 x; f(3) }", "widen-consumer#"),
+            ("{ let v = 1; let w = v + 1; w }", "retype#"),
+            // the hop: the widened `a` reaches `+` through `w`'s let
+            ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-consumer#"),
+            ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
+            ("{ let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }", "shared-var#"),
+            ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-unknown#"),
+            ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-missing#"),
+            (
+                "{ let f = |#a: i64 = 1, x: i64| -> i64 a + x; \
+                 let w = |h: fn(?#a: i64, x: i64) -> i64| -> i64 h(2); w(f) }",
+                "label-default#",
+            ),
+            // the retyped `m` reaches the writer of `src` through `src`'s let
+            (
+                "{ let m = 1; let src = [m]; src <- [2]; let w = m + 1; (src, w) }",
+                "retype#",
+            ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");
@@ -5032,6 +5052,16 @@ mod tests {
             "{:?}",
             rep.rejects
         );
+        // a let over ⊥ takes its first writer's type: no retype site
+        let bottom = "{ let v = { catch(e) 7; (error(true))? }; let w = v + 1; w }";
+        let rep = typemorph_subject(bottom, per, TM_CAP).await.unwrap();
+        assert!(
+            !rep.rejects.iter().any(|(id, _)| id.starts_with("retype#")),
+            "{:?}",
+            rep.rejects
+        );
+        // no family's mutant was accepted or refused elsewhere
+        assert!(rep.rejects.iter().all(|(_, f)| f.is_none()), "{:?}", rep.rejects);
     }
 
     #[test]
