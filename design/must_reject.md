@@ -1,11 +1,10 @@
 # Must-reject mutation
 
-Status: PROPOSED (2026-09-25), in part built: the type map
-(`Ide::expr_types`, `GXHandle::check_with_types`), the right-site check,
-families 1 and 5 (`graphix-fuzz/src/mustreject.rs`, run by every
-typemorph subject); the rest is proposal. An exception to this folder's
-as-built rule until it is built; then this document is rewritten as
-built, or folded into `graphix_fuzz.md` §8.
+Status: BUILT (2026-09-25): the type map (`Ide::expr_types`,
+`GXHandle::check_with_types`), the right-site check, every family
+(`graphix-fuzz/src/mustreject.rs`, run by every typemorph subject), the
+labeled/optional generation and its typemorph transforms. Each family
+says what of it is built; what it lists as open is not.
 Pins: `graphix-fuzz` `must_reject_families_are_refused_where_their_rules_say`;
 `graphix-tests` `lib_tests::expr_types`.
 
@@ -89,7 +88,9 @@ one to a concrete type (`x == 1`). Rule: a def's declared variables are
 rigid in its body check: none binds to a concrete type and no two
 unify. Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
-but keep the first cut to unconstrained variables).
+but keep the first cut to unconstrained variables). Built: a first
+statement comparing a parameter `x: 'a` with a literal, right site the
+definition. Open: equating two declared variables.
 
 **3. Call conflicts.** Site: a call argument. (a) The callee's resolved
 parameter type is concrete: substitute a literal of a disjoint type.
@@ -99,7 +100,9 @@ is contained by that argument's. Rule: containment for (a); for (b) the
 widest-argument rule refuses when no argument's type contains all the
 others, and a variable a callback or reference holds keeps the first
 argument's type, so both paths refuse (`callsite.rs::Widening`). Skip:
-labeled defaults, variadic positions, a parameter typed `Any`.
+labeled defaults, variadic positions, a parameter typed `Any`. Built:
+(b), two positionals of one variable, the first a concrete primitive,
+right site the call; (a) is family 4's argument case.
 
 **4. Widening into a rigid consumer.** Site: a use of a value `v: T`
 whose parent is one of:
@@ -112,14 +115,18 @@ whose parent is one of:
 - the value of a writer to a binding typed by its initializer or an
   annotation.
 
-Mutation: replace the use with `select c { true => v, false => u }`,
-`u` of a disjoint type `U`, `c` a fresh `bool` that is never a
-constant. Rule: the consumer's. Skip: any of the parent forms above
-that can absorb `U`.
+Mutation: replace the use with `select (i64:1 == i64:1) { true => v,
+false => u }`, `u` a literal of a disjoint type (typing never evaluates
+the scrutinee). Rule: the consumer's. Skip: any of the parent forms above
+that can absorb `U`. Built: the value directly under an arithmetic or
+comparison operator, a field read, or an argument whose parameter is a
+concrete primitive; right site the consumer. One hop is built (see
+Hops).
 
-**5. Variant widening (the common case of 4).** Built so far: the
-widened scrutinee, directly under a select with no catch-all and no
-type-test arm, right site the select. Site: a value whose
+**5. Variant widening (the common case of 4).** Built: the widened
+scrutinee, directly under a select with no catch-all and no type-test
+arm, right site the select. Open: the new arm at the producer and the
+retyped payload. Site: a value whose
 type is a set of variants `` [`A, `B(..)] `` consumed by a select that
 covers exactly those tags. Mutations:
 - a new tag into the flow: `` select c { true => v, false => `Fresh } ``,
@@ -139,7 +146,13 @@ non-⊥ initializer and a use pinned by a literal (`v + 1`, `v == "s"`).
 Mutations: the initializer replaced with a value of a disjoint type, or
 a writer `v <- u` added. Rule: an unannotated `let` takes its
 initializer's type, and a later writer must fit it
-(`node/mod.rs::write_mismatch`); the pinned use then conflicts.
+(`node/mod.rs::write_mismatch`); the pinned use then conflicts. A `let`
+over ⊥ is skipped (its type is a cell the first use decides, so an
+inserted writer decides it; `ExprTypeSite::cell` marks it). Right site:
+for the writer, the writer or the `let`; for the retyped initializer,
+the `let` and every later statement that reads or writes `v` or a `let`
+built from it, since every one now meets the new type and the checker
+reports whichever it reaches first.
 
 **7. Labeled and optional arguments.** The rules, as the checker has
 them:
@@ -163,7 +176,13 @@ narrows differently from the definition); a labeled function passed
 where the expected function type fails `align`, by a label the
 expected type has and the value lacks, or a required label where the
 expected type says optional. Skip: a parameter typed `Any`, a
-polymorphic labeled parameter whose other uses are not concrete.
+polymorphic labeled parameter whose other uses are not concrete. Built,
+as three families so their ids stay distinct: `label-unknown` (a label
+the callee lacks) and `label-missing` (a required label dropped), right
+site the call; `label-default` (a labeled lambda passed as a value
+loses a default the expected type lets a caller omit), right site the
+definition and every statement using the lambda. Open: a label passed
+twice, the disjoint labeled argument, the explicit disjoint default.
 
 ## Labeled and optional arguments across the fuzzer
 
@@ -219,7 +238,11 @@ select that builds a union, a callback, a reference) ends the chain and
 the site is skipped. Distance is capped (a few hops): the certainty of
 the argument falls with each one, and false findings cost triage time
 (sep25a: 42 of 49 typemorph flips were transform assumptions, not
-checker bugs).
+checker bugs). Built: one hop for family 4, an unannotated, non-⊥,
+concrete top-level `let w = e` whose `w` a reached use puts under an
+arithmetic or comparison operator or a field read gets `e` widened;
+right site the `let` and every statement `w`'s new type meets (family
+6's closure). Open: longer chains, and hops for 5.
 
 ## Verdicts
 
@@ -240,11 +263,12 @@ warm runtime, `--check` semantics, a fresh process to confirm).
   clean run most likely means the certainty argument was wrong, and the
   catalog is corrected.
 
-A finding is written once per class (family + consumer kind +
-normalized head), as `typeleak_N.gx` for an accepted mutant and
-`typemisplaced_N.gx` for a rejection elsewhere, the mutant under a
-comment header that names the base and the site, so it reproduces as it
-stands.
+A mutant's line in a typemorph report is `REJECT <family>#<site> ok`,
+or `FLIP <id> LEAK: accepted` / `FLIP <id> MISPLACED: <head>`; a FLIP is
+confirmed in a fresh process and recorded like any typemorph flip, as
+`typeflip_N.gx` once per class (the id without its site + the
+normalized head), so both lanes share confirmation and dedup. Open: the
+differential run that adjudicates a LEAK.
 
 ## Integration
 
@@ -255,21 +279,21 @@ The cap per family per subject is typemorph's (`TM_CAP`). No new soak
 source: the typemorph share covers it, re-weighed from findings per
 CPU-second once it runs.
 
-## Order of work
+## Tests
 
-1. The type map sink, and the right-site check.
-2. Families 1 (instantiation) and 5 (variant widening): the two areas
-   with the most history (reference instantiation, `poly_binds`,
-   coverage).
-3. Labeled and optional generation in the generators (every lane
-   gains from it), then `label-permute` and the `default-*` transforms,
-   then family 7.
-4. Families 4 and 6 (the hop rule is shared with 5).
-5. Families 2 and 3.
-
-Each family lands with a unit test in the style of typemorph's
+Each family has cases in the lib test in the style of typemorph's
 (`extract_skips_param_type_reads`): sites it must take, sites it must
 skip, and the text of the mutant.
+
+## Findings
+
+The first runs (150 generated programs and the 507 corpus pins, about
+1,400 right-site refusals) found no LEAK. One MISPLACED was a checker
+bug: a select's scrutinee and guard errors were not wrapped, so the
+error sat on the whole select (`node/select.rs`, pin
+`lang::select::a_guard_or_scrutinee_error_is_placed_there`). The rest
+were skip-list holes (a retyped `let` meets its other uses first; a
+`let` over ⊥ is a cell), fixed in the catalog.
 
 ## Risks
 

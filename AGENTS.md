@@ -669,7 +669,10 @@ blocker profile, not a gap count.
   path (`GXConfig::program`), never the REPL's `rt.compile`; a corpus
   pin both engines reject is a regression unless it says
   `// expect: reject`; `check`/`run`/`generate`/`fuzz`/`minimize`/
-  `regress`/`selfcheck`/`gen-check`/`detcheck`/`typemorph`. The
+  `regress`/`selfcheck`/`gen-check`/`detcheck`/`typemorph`; every
+  typemorph subject also yields must-reject mutants
+  (`design/must_reject.md`), each family citing a checker rule: a rule
+  change updates its family in the same commit. The
   committed `findings/` corpus is the regression gate: `regress` runs
   every pin through `check` and also compares each pin's fused-region
   count with `graphix-fuzz/fusecheck.manifest`, so a de-fusion fails

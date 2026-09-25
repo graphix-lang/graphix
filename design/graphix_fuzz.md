@@ -447,8 +447,11 @@ inferred types as annotations — blocked on the open ruling that
 body-annotation tvars are fresh, not the signature's), type-stress
 generation (strip annotations the generator certifies inferable — legal
 only where the generator constrains shapes, since on arbitrary programs
-an annotation may be load-bearing by language rule), and must-reject
-mutation.
+an annotation may be load-bearing by language rule).
+
+Must-reject mutation (`must_reject.md`) runs on every typemorph
+subject: mutants that a rigid consumer must refuse, graded by where the
+refusal lands, their FLIPs recorded as typeflips.
 
 ## 9. Ruled out
 
