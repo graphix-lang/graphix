@@ -15,8 +15,8 @@ use crate::mutate;
 use arcstr::ArcStr;
 use graphix_compiler::{
     expr::{
-        BindExpr, Expr, ExprKind, LambdaExpr, ModPath, Name, StructurePattern,
-        TypeDefBody, TypeDefExpr,
+        BindExpr, Expr, ExprKind, LambdaExpr, ModPath, Name, SeqTrigger,
+        StructurePattern, TypeDefBody, TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
@@ -83,9 +83,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         return (out, 0);
     };
     let pre = mutate::preorder(&root);
+    // a candidate is its printed text only when that text reads back as
+    // the candidate: a print that parses as another program probes that one
     let push = |out: &mut Vec<TmProbe>, noparse: &mut usize, kind, site, cand: &Expr| {
         let text = cand.to_string();
-        if mutate::parse(&text).is_some() {
+        if mutate::parse(&text).is_some_and(|back| back == *cand) {
             out.push(TmProbe { kind, site, body: text });
         } else {
             *noparse += 1;
@@ -102,14 +104,17 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         }
     }
     // block-wrap: `e` -> `{ let tm__0 = e; tm__0 }`; not on lambda
-    // literals (let-extract's probe) or blocks
+    // literals (let-extract's probe) or blocks, nor on `never()`: a `let`
+    // over ⊥ is typed by its writers, an open cell where `never()` is ⊥
     {
         let sites: Vec<usize> = (0..pre.len())
             .filter(|&i| {
                 value_pos(&pre[i].kind)
                     && !matches!(
                         pre[i].kind,
-                        ExprKind::Lambda(_) | ExprKind::Block { .. }
+                        ExprKind::Lambda(_)
+                            | ExprKind::Block { .. }
+                            | ExprKind::Never { .. }
                     )
                     && !leaks_binds(&pre[i])
             })
@@ -178,7 +183,9 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 break;
             }
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
-            if b.rec || b.typ.is_some() {
+            // a `let` over `never()` is an open cell, the value inlined ⊥
+            if b.rec || b.typ.is_some() || matches!(b.value.kind, ExprKind::Never { .. })
+            {
                 continue;
             }
             let StructurePattern::Bind(name) = &b.pattern else { continue };
@@ -186,28 +193,17 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let vrefs = stmt_names(&stmts[si]).refs;
             let mut uses = 0usize;
             let mut ok = true;
+            // a later binder of the name shadows the use; a later binder
+            // of a name the value references, at any depth, captures it
             for later in &stmts[si + 1..] {
                 later.fold((), &mut |(), n| match &n.kind {
                     ExprKind::Ref { name } if name.to_string() == nm => uses += 1,
                     ExprKind::Connect { name, .. } if name.to_string() == nm => {
                         ok = false
                     }
-                    ExprKind::Bind(lb) if pattern_binds(&lb.pattern, &nm) => ok = false,
-                    ExprKind::Lambda(l)
-                        if l.args.iter().any(|a| pattern_binds(&a.pattern, &nm)) =>
-                    {
-                        ok = false
-                    }
+                    _ if binds(n, &nm) || vrefs.iter().any(|r| binds(n, r)) => ok = false,
                     _ => (),
                 });
-                // a later top-level bind shadowing a name the value
-                // references would capture the moved expression
-                if let ExprKind::Bind(lb) = &later.kind
-                    && let StructurePattern::Bind(ln) = &lb.pattern
-                    && vrefs.contains(&ln.to_string())
-                {
-                    ok = false;
-                }
             }
             if !ok || uses != 1 || stmts.len() < 3 {
                 continue;
@@ -218,7 +214,9 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             ) else {
                 continue;
             };
-            let replaced = mutate::replace(&root, gi, &b.value);
+            let value =
+                ExprKind::ExplicitParens(Arc::new(b.value.clone())).to_expr_nopos();
+            let replaced = mutate::replace(&root, gi, &value);
             let ExprKind::Block { exprs } = &replaced.kind else { continue };
             let v: Vec<Expr> = exprs
                 .iter()
@@ -346,8 +344,9 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
 }
 
 /// Whether the body needs an unannotated parameter's type before it
-/// checks: a select over the parameter (a type test binds it) or a field
-/// read on it. Only the call supplies that type, so a `let` of the
+/// checks: a select over a value the parameter's type decides (a type
+/// test binds it, coverage reads it), or a field read or a `with` update
+/// on it. Only the call supplies that type, so a `let` of the
 /// lambda is refused by language rule, not by an ordering bug.
 fn reads_param_type(l: &LambdaExpr) -> bool {
     let untyped: HashSet<&str> = l
@@ -367,12 +366,14 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
         }
         matches!(&e.kind, ExprKind::Ref { name } if untyped.contains(name.to_string().as_str()))
     };
+    let mentions_param = |e: &Expr| e.fold(false, &mut |found, n| found || is_param(n));
     body.fold(false, &mut |found, n| {
         found
             || match &n.kind {
-                ExprKind::Select(s) => is_param(&s.arg),
+                ExprKind::Select(s) => mentions_param(&s.arg),
                 ExprKind::StructRef { source, .. }
                 | ExprKind::TupleRef { source, .. } => is_param(source),
+                ExprKind::StructWith(w) => is_param(&w.source),
                 _ => false,
             }
     })
@@ -476,6 +477,28 @@ fn leaks_binds(e: &Expr) -> bool {
 
 /// Does the pattern bind `name` anywhere? Conservative: an
 /// unrecognized pattern form claims it does.
+/// Whether `n` itself introduces `name`. A form whose names this does not
+/// enumerate (`use`, `mod`, traits and impls) binds anything.
+fn binds(n: &Expr, name: &str) -> bool {
+    match &n.kind {
+        ExprKind::Bind(b) => pattern_binds(&b.pattern, name),
+        ExprKind::Lambda(l) => l.args.iter().any(|a| pattern_binds(&a.pattern, name)),
+        ExprKind::Select(s) => {
+            s.arms.iter().any(|(p, _)| pattern_binds(&p.structure_predicate, name))
+        }
+        ExprKind::Catch(c) => &*c.bind == name,
+        ExprKind::TryWith(t) => &*t.bind == name,
+        ExprKind::Seq { trigger: Some(SeqTrigger::Bind(b)), .. } => {
+            pattern_binds(&b.pattern, name)
+        }
+        ExprKind::Use { .. }
+        | ExprKind::Module { .. }
+        | ExprKind::Trait(_)
+        | ExprKind::Impl(_) => true,
+        _ => false,
+    }
+}
+
 fn pattern_binds(p: &StructurePattern, name: &str) -> bool {
     let all_binds = |all: &Option<Name>, binds: &Arc<[StructurePattern]>| {
         all.as_ref().is_some_and(|a| &**a == name)
@@ -545,6 +568,72 @@ mod test {
     }
 
     #[test]
+    fn inline_does_not_capture() {
+        // (body, the let whose one use sits where a name its value reads
+        // is rebound)
+        for (body, kept) in [
+            (
+                "{ let v6 = &f64:3.14; let v7 = [v6, v6]; let z = { let v6: f64 = f64:0.1; *(v7[0]$) }; z }",
+                "let v7",
+            ),
+            (
+                "{ let a = i64:1; let b = a + i64:1; let z = select i64:2 { a => b + a }; z }",
+                "let b",
+            ),
+            (
+                "{ let a = i64:1; let b = a + i64:1; let f = |a: i64| b + a; f(i64:3) }",
+                "let b",
+            ),
+        ] {
+            let (probes, _) = probes(body, 8);
+            assert!(
+                probes
+                    .iter()
+                    .all(|p| p.kind != TmKind::LetInline || p.body.contains(kept)),
+                "`{kept}` inlined into a scope that rebinds its reads: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn never_moves_through_no_let() {
+        let body =
+            "{ let n = never(); let a = [((1, never()), 10), ((100, 4), 20)]; (a, n) }";
+        let (probes, _) = probes(body, 16);
+        for p in &probes {
+            match p.kind {
+                TmKind::BlockWrap => {
+                    assert!(!p.body.contains("tm__0 = never()"), "wrapped: {}", p.body)
+                }
+                TmKind::LetInline => {
+                    assert!(p.body.contains("let n = never()"), "inlined: {}", p.body)
+                }
+                _ => (),
+            }
+        }
+        assert!(probes.iter().any(|p| p.kind == TmKind::BlockWrap), "other sites wrap");
+    }
+
+    #[test]
+    fn inline_keeps_the_value_whole() {
+        // `~` binds loosest: unparenthesized, `.. - v1` with `v1 = in0 ~ e`
+        // prints as `(.. - in0) ~ e`, another program
+        let body =
+            "{ let v0 = in0 ~ i64:1; let v1 = in0 ~ (i64:7 * v0); (v0 - v0) - v1 }";
+        let (probes, noparse) = probes(body, 8);
+        assert_eq!(noparse, 0);
+        let inlined: Vec<_> =
+            probes.iter().filter(|p| p.kind == TmKind::LetInline).collect();
+        assert!(!inlined.is_empty(), "v1 has one use");
+        for p in inlined {
+            let back = mutate::parse(&p.body).expect("a probe parses");
+            assert_eq!(back.to_string(), p.body, "a probe reads back as printed");
+        }
+        let bodies: Vec<&str> = probes.iter().map(|p| p.body.as_str()).collect();
+        assert!(bodies.iter().any(|b| b.contains("- (in0 ~")), "{bodies:?}");
+    }
+
+    #[test]
     fn guard_refs_are_dependencies() {
         // `m`'s only use is inside a select guard: a dependency for
         // stmt-permute and a single use for let-inline
@@ -562,7 +651,7 @@ mod test {
             .collect();
         assert_eq!(inlined.len(), 1, "one inline of the guard use");
         assert!(
-            inlined[0].body.contains("1 == 0") && !inlined[0].body.contains("let m"),
+            inlined[0].body.contains("(1) == 0") && !inlined[0].body.contains("let m"),
             "the guard use takes the value: {}",
             inlined[0].body
         );
@@ -574,6 +663,8 @@ mod test {
             "{ let k = i64:0; array::map([k], |x| select x { i64 as n => n, _ => i64:0 }) }",
             "{ let k = u8:1; map::filter({\"k\" => k}, |kv| str::len(kv.0) > i64:1) }",
             "{ let k = i64:1; array::map([{a: k}], |r| (r).a) }",
+            "{ let k = u8:1; array::map([{n: k, y: k}], |r| { r with y: k }) }",
+            "{ let k = u8:1; array::fold([true], k, |acc, x| select (acc %? acc) { error as _ => acc, u8 as n => n }) }",
         ] {
             let (probes, _) = probes(body, 8);
             assert!(

@@ -396,11 +396,15 @@ accepts, apply an acceptance-preserving `Expr → Expr` transform, print
 it back, check again; accept→reject is a flip. Transforms are graded,
 and the grade is the triage default: parens-wrap is SOUND (a flip is a
 compiler bug); block-wrap (`e` → `{ let __t = e; __t }`, not on direct
-lambda-literal arguments), let-extract (`f(.., |x| body)` → `let __c =
+lambda-literal arguments nor on `never()`: a `let` over ⊥ is an open
+cell its writers type, where the bare `never()` is ⊥), let-extract (`f(.., |x| body)` → `let __c =
 |x| body; f(.., __c)` — THE order probe: declared-param push vs
-body-first inference; not on a callback whose body selects over or
-reads a field of an unannotated parameter, which by language rule only
-the call types), let-inline (the reverse), stmt-permute (adjacent
+body-first inference; not on a callback whose body selects over a
+value an unannotated parameter's type decides, or reads a field of or
+`with`-updates such a parameter, which by language rule only the call
+types), let-inline (the reverse: the value goes in parenthesized, never
+a `never()`, and never where a later binder at any depth rebinds the
+name or a name the value reads), stmt-permute (adjacent
 independent binds — tvar allocation order) and alias-swap (hoist an
 annotation's structural spelling into a typedef, and the reverse — the
 Ref-vs-expansion channels) are EXPECTED (a flip files for triage:
@@ -409,6 +413,7 @@ needed words — "a free union member stays free" is the kind of rule
 this lane forces into the open, witnesses attached). union-permute is
 AST-invisible (the parser sorts unions) and eta-expand needs arity
 knowledge; both are deferred. A candidate the printer cannot round-trip
+(its text must reparse to the candidate itself, not merely parse)
 is DROPPED and counted (`noparse`) — a printer-fidelity signal, never an
 inference finding.
 
