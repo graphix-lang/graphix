@@ -2420,6 +2420,27 @@ run!(capture_ignored_slot, CAPTURE_IGNORED_SLOT, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
 });
 
+// A slice's rest is typed from the scrutinee like a capture: under `_`
+// its element is the scrutinee's, never the wildcard's `Any`, when a
+// guard or the body reads it.
+const CAPTURE_SLICE_REST: &str = r#"
+{
+  let b = true;
+  let r0 = &b;
+  let refs = [r0, r0];
+  let bools = [false, true];
+  let l = [<1, 2, 3>];
+  let a = select refs { [_, r..] if *(r[-1]$) => 1, _ => 0 };
+  let c = select bools { [_, r..] if r[-1]$ => 10, _ => 0 };
+  let d = select l { [<_, t..>] => list::len(t) * 100, _ => 0 };
+  a + c + d
+}
+"#;
+
+run!(capture_slice_rest, CAPTURE_SLICE_REST, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(211)))
+});
+
 const CAPTURE_UNION_MEMBER: &str = r#"
 {
   type Pair = { left: i64, right: i64 };

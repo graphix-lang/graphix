@@ -714,8 +714,9 @@ blocker profile, not a gap count.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
   inferred predicate a capture is a type variable that
   `PatternNode::bind_captures` binds, after the select narrows the arm,
-  to its part of the narrowed predicate (a `_` slot and the fields a
-  partial struct pattern leaves out carry the scrutinee's types; shared
+  to its part of the narrowed predicate (a `_` slot, the fields a
+  partial struct pattern leaves out and a slice's rest carry the
+  scrutinee's types; shared
   or-alternative captures union). Never type a capture from
   `infer_type_predicate`. Pins: `lang::select::capture_*`.
 - **Or-patterns** (`design/or_patterns.md`): select arms and bracketed

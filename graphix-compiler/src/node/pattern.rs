@@ -247,6 +247,12 @@ impl StructPatternNode {
             Self::Slice { kind: SliceKind::Array | SliceKind::List, all, binds }
             | Self::SlicePrefix { prefix: binds, all, .. }
             | Self::SliceSuffix { suffix: binds, all, .. } => {
+                // the rest of a prefix or suffix pattern is the slice's type
+                if let Self::SlicePrefix { tail: Some(id), .. }
+                | Self::SliceSuffix { head: Some(id), .. } = self
+                {
+                    out.push((*id, typ.clone()));
+                }
                 let et = typ.with_deref(|t| match t {
                     Some(Type::Array(et) | Type::List(et)) => Some((**et).clone()),
                     _ => None,
