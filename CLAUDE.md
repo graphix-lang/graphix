@@ -506,7 +506,9 @@ blocker profile, not a gap count.
   that must act on every event samples it. Both are tools, not lints.
 - **`never<T>()` is syntax** (`ExprKind::Never`): typed bottom or `T`;
   args stay live and are consumed. An unannotated `let` over a ⊥
-  initializer takes its type from its writers.
+  initializer takes its type from its first use, a writer or a reader;
+  a later writer must fit it, and a refused one is told the declaration
+  that holds both (`node/mod.rs::write_mismatch`).
 - **Sets and coverage**: select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member;
   bool literals and variant heads (payload irrefutable) pool per position

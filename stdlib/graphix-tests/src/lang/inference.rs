@@ -46,6 +46,23 @@ const FOLD_INIT_ANNOTATED: &str = r#"{
   select m { null as _ => 0, n => n }
 }"#;
 
+// The first use of a let over ⊥ fixes its type; a wider writer after it
+// is told what to declare.
+const WRITER_WIDER_THAN_FIRST: &str = r#"{
+  let n: [i64, null] = null;
+  let x = never();
+  x <- 1;
+  x <- n;
+  select x { null as _ => 0, v => v }
+}"#;
+const WRITER_TARGET_DECLARED: &str = r#"{
+  let n: [i64, null] = null;
+  let x: [i64, null] = never();
+  x <- 1;
+  x <- n;
+  select x { null as _ => 0, v => v }
+}"#;
+
 // Arms of different types are not a problem: an inferred or declared
 // type variable against i64, and [] against [1].
 const MIXED_ARMS_INFERRED: &str = r#"{
@@ -119,6 +136,11 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
         (TYPE_TEST_BINDS_PARAM, "unreachable arm"),
         (FOLD_NULL_INIT, "unreachable arm"),
         (FOLD_CALLBACK_ANNOTATED, "does not contain"),
+        (
+            WRITER_WIDER_THAN_FIRST,
+            "x is i64, inferred from an earlier use, and cannot hold [i64, null]; \
+             declare x: [i64, null] where it is bound (line 3, column 7)",
+        ),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => format!("{e:#}"),
@@ -133,6 +155,7 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
         (MIXED_ARMS_INFERRED, 3),
         (MIXED_ARMS_DECLARED, 3),
         (EMPTY_ARRAY_ARM, 0),
+        (WRITER_TARGET_DECLARED, 1),
     ] {
         let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
         assert_eq!(v, Value::I64(expected), "{src}");

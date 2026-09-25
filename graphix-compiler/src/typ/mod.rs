@@ -36,6 +36,7 @@ mod cast;
 pub use cast::IsAFlags;
 mod contains;
 pub use contains::ContainsFlags;
+pub(crate) use contains::TypeMismatch;
 pub mod fntyp;
 mod matches;
 mod normalize;

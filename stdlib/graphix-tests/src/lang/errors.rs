@@ -448,7 +448,14 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
         Ok((v, _)) => anyhow::bail!("expected a type mismatch, got {v}"),
         Err(e) => format!("{e:#}"),
     };
-    assert!(e.contains("does not contain"), "{e}");
+    assert!(
+        e.contains(
+            "err1 is Error<ErrChain<`ArithError(string)>> and cannot hold \
+             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`B>>, \
+             Error<ErrChain<`ArithError(string)>>] where it is bound"
+        ),
+        "{e}"
+    );
     Ok(())
 }
 

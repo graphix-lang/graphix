@@ -1,11 +1,12 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, Refs, Rt,
-    Scope, Tag, TagValue, Update, UserEvent,
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, PrintFlag,
+    Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     env::{self, Env, ImportEntry, UseAnchor},
     expr::{
         At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody,
         UseItem,
     },
+    format_with_flags,
     fusion::{
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_const_node,
@@ -20,10 +21,11 @@ use crate::{
             NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
         },
     },
-    typ::{TVal, TVar, Type},
+    typ::{TVal, TVar, Type, TypeMismatch},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
+use compact_str::format_compact;
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
 use netidx_core::{
@@ -1406,7 +1408,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
         };
-        wrap!(self, bind.typ.check_contains(&ctx.env, self.node.typ()))
+        let written = self.node.typ();
+        wrap!(
+            self,
+            bind.typ.check_contains(&ctx.env, written).map_err(|e| {
+                match e.downcast_ref::<TypeMismatch>() {
+                    Some(_) if self.spec.end.get().is_some() => {
+                        write_mismatch(bind, written, &self.spec.ori)
+                    }
+                    _ => e,
+                }
+            })
+        )
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -1421,6 +1434,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     fn emit_clif(&self, _cx: &mut BodyCx) -> Result<CompiledExpr> {
         Err(anyhow::anyhow!("emit_clif: connect is an effect — node-walks"))
     }
+}
+
+/// A written `<-` whose value `bind` cannot hold: the target, its type,
+/// and the declaration that would hold both.
+fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow::Error {
+    let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
+    let (held, written) = (deref(&bind.typ), deref(written));
+    let both = Type::Set(Arc::from_iter([held.clone(), written.clone()])).normalize();
+    let inferred = match &bind.typ {
+        Type::TVar(_) => ", inferred from an earlier use,",
+        _ => "",
+    };
+    let file = match bind.ori == *at {
+        true => format_compact!(""),
+        false => format_compact!(" {}", bind.ori),
+    };
+    let (name, line, col) = (&bind.name, bind.pos.line, bind.pos.column);
+    format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+        anyhow!(
+            "{name} is {held}{inferred} and cannot hold {written}; declare \
+             {name}: {both} where it is bound (line {line}, column {col}{file})"
+        )
+    })
 }
 
 /// Where a write through a reference lands: a bound variable, or a
