@@ -15,12 +15,12 @@ use crate::mutate;
 use arcstr::ArcStr;
 use graphix_compiler::{
     expr::{
-        BindExpr, Expr, ExprKind, LambdaExpr, ModPath, Name, SeqTrigger,
+        ApplyExpr, BindExpr, Expr, ExprKind, LambdaExpr, ModPath, Name, SeqTrigger,
         StructurePattern, TypeDefBody, TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
-use netidx_core::utils::Either;
+use netidx_core::{path::Path, utils::Either};
 use std::collections::HashSet;
 use triomphe::Arc;
 
@@ -32,6 +32,9 @@ pub enum TmKind {
     LetInline,
     StmtPermute,
     AliasSwap,
+    LabelPermute,
+    DefaultMaterialize,
+    DefaultElide,
 }
 
 impl std::fmt::Display for TmKind {
@@ -43,6 +46,9 @@ impl std::fmt::Display for TmKind {
             TmKind::LetInline => "let-inline",
             TmKind::StmtPermute => "stmt-permute",
             TmKind::AliasSwap => "alias-swap",
+            TmKind::LabelPermute => "label-permute",
+            TmKind::DefaultMaterialize => "default-materialize",
+            TmKind::DefaultElide => "default-elide",
         };
         write!(f, "{s}")
     }
@@ -132,6 +138,31 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 ExprKind::Block { exprs: Arc::from_iter([bind, r]) }.to_expr_nopos();
             let cand = mutate::replace(&root, i, &repl);
             push(&mut out, &mut noparse, TmKind::BlockWrap, i, &cand);
+        }
+    }
+    // label-permute: rotate a call's labeled arguments; labels bind by
+    // name, so the order is never observable
+    {
+        let sites: Vec<usize> = (0..pre.len())
+            .filter(|&i| match &pre[i].kind {
+                ExprKind::Apply(ap) => {
+                    ap.args.iter().filter(|(l, _)| l.is_some()).count() > 1
+                }
+                _ => false,
+            })
+            .collect();
+        for i in sample(&sites, cap) {
+            let ExprKind::Apply(ap) = &pre[i].kind else { continue };
+            let n = ap.args.iter().filter(|(l, _)| l.is_some()).count();
+            let mut args: Vec<_> = ap.args.to_vec();
+            args[..n].rotate_left(1);
+            let repl = ExprKind::Apply(ApplyExpr {
+                args: Arc::from_iter(args),
+                function: ap.function.clone(),
+            })
+            .to_expr_nopos();
+            let cand = mutate::replace(&root, i, &repl);
+            push(&mut out, &mut noparse, TmKind::LabelPermute, i, &cand);
         }
     }
     let ExprKind::Block { exprs: stmts } = &root.kind else {
@@ -242,6 +273,71 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             v.swap(i, i + 1);
             let cand = ExprKind::Block { exprs: Arc::from_iter(v) }.to_expr_nopos();
             push(&mut out, &mut noparse, TmKind::StmtPermute, i, &cand);
+        }
+    }
+    // default-materialize / default-elide: write an omitted default out
+    // at a call, or drop an explicit argument that is the default. Only
+    // a default that reads no name moves (elsewhere a name could be
+    // captured), and only to a call the lambda's own binding reaches.
+    {
+        let mut defaults: Vec<(usize, ArcStr, ArcStr, Expr)> = Vec::new();
+        for (si, stmt) in stmts.iter().enumerate() {
+            let ExprKind::Bind(b) = &stmt.kind else { continue };
+            let (StructurePattern::Bind(f), ExprKind::Lambda(l)) =
+                (&b.pattern, &b.value.kind)
+            else {
+                continue;
+            };
+            for a in l.args.iter() {
+                if let (Some(Some(d)), StructurePattern::Bind(label)) =
+                    (&a.labeled, &a.pattern)
+                    && reads_no_name(d)
+                {
+                    defaults.push((si, f.name.clone(), label.name.clone(), d.clone()));
+                }
+            }
+        }
+        let (mut materialize, mut elide): (Vec<(usize, Expr)>, Vec<(usize, Expr)>) =
+            (Vec::new(), Vec::new());
+        for (si, f, label, d) in &defaults {
+            let mut calls: Vec<usize> = Vec::new();
+            for (j, st) in stmts.iter().enumerate().skip(si + 1) {
+                let mut idx = offsets[j];
+                calls_reached(st, f, true, &mut idx, &mut calls);
+                if binds(st, f) {
+                    break;
+                }
+            }
+            for i in calls {
+                let ExprKind::Apply(ap) = &pre[i].kind else { continue };
+                let given =
+                    ap.args.iter().position(|(l, _)| l.as_deref() == Some(&**label));
+                let mut args: Vec<_> = ap.args.to_vec();
+                let list = match given {
+                    None => {
+                        args.insert(0, (Some(label.clone()), d.clone()));
+                        &mut materialize
+                    }
+                    Some(j) if args[j].1 == *d => {
+                        args.remove(j);
+                        &mut elide
+                    }
+                    Some(_) => continue,
+                };
+                let repl = ExprKind::Apply(ApplyExpr {
+                    args: Arc::from_iter(args),
+                    function: ap.function.clone(),
+                })
+                .to_expr_nopos();
+                list.push((i, mutate::replace(&root, i, &repl)));
+            }
+        }
+        for (kind, cands) in
+            [(TmKind::DefaultMaterialize, materialize), (TmKind::DefaultElide, elide)]
+        {
+            for (i, cand) in cands.into_iter().take(cap) {
+                push(&mut out, &mut noparse, kind, i, &cand);
+            }
         }
     }
     // alias-swap: hoist a bind's annotation into `type Tm__0 = T`
@@ -477,8 +573,49 @@ fn leaks_binds(e: &Expr) -> bool {
 
 /// Does the pattern bind `name` anywhere? Conservative: an
 /// unrecognized pattern form claims it does.
-/// Whether `n` itself introduces `name`. A form whose names this does not
-/// enumerate (`use`, `mod`, traits and impls) binds anything.
+/// The preorder indices (from `idx`) of the calls of `f` under `e` that
+/// the binding of `f` in force at `e` reaches: a block's later statements
+/// lose it after one rebinds `f`, and a form that binds `f` itself (a
+/// lambda parameter, a select arm, a catch) hides all of its children.
+fn calls_reached(
+    e: &Expr,
+    f: &str,
+    reached: bool,
+    idx: &mut usize,
+    out: &mut Vec<usize>,
+) {
+    let at = *idx;
+    *idx += 1;
+    if reached
+        && let ExprKind::Apply(ap) = &e.kind
+        && matches!(&ap.function.kind, ExprKind::Ref { name } if name.to_string() == f)
+    {
+        out.push(at);
+    }
+    match &e.kind {
+        ExprKind::Block { exprs } => {
+            let mut reached = reached;
+            for st in exprs.iter() {
+                calls_reached(st, f, reached, idx, out);
+                reached &= !binds(st, f);
+            }
+        }
+        _ => {
+            let reached = reached && !binds(e, f);
+            e.for_each_child(&mut |c| calls_reached(c, f, reached, idx, out));
+        }
+    }
+}
+
+/// Whether an expression reads no name at all (a literal, an operator
+/// over literals), so it means the same thing anywhere.
+fn reads_no_name(e: &Expr) -> bool {
+    !e.fold(false, &mut |found, n| found || matches!(n.kind, ExprKind::Ref { .. }))
+}
+
+/// Whether `n` itself introduces `name`. A `use` binds each item's
+/// rename or last segment, a glob anything; a form whose names this does
+/// not enumerate (`mod`, traits and impls) binds anything.
 fn binds(n: &Expr, name: &str) -> bool {
     match &n.kind {
         ExprKind::Bind(b) => pattern_binds(&b.pattern, name),
@@ -491,10 +628,14 @@ fn binds(n: &Expr, name: &str) -> bool {
         ExprKind::Seq { trigger: Some(SeqTrigger::Bind(b)), .. } => {
             pattern_binds(&b.pattern, name)
         }
-        ExprKind::Use { .. }
-        | ExprKind::Module { .. }
-        | ExprKind::Trait(_)
-        | ExprKind::Impl(_) => true,
+        ExprKind::Use { names, .. } => names.iter().any(|u| {
+            u.is_glob()
+                || match &u.rename {
+                    Some(r) => &**r == name,
+                    None => Path::basename(&u.path.0) == Some(name),
+                }
+        }),
+        ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_) => true,
         _ => false,
     }
 }
@@ -612,6 +753,47 @@ mod test {
             }
         }
         assert!(probes.iter().any(|p| p.kind == TmKind::BlockWrap), "other sites wrap");
+    }
+
+    fn bodies(body: &str, kind: TmKind) -> Vec<String> {
+        let (probes, noparse) = probes(body, 8);
+        assert_eq!(noparse, 0, "{body}");
+        probes.into_iter().filter(|p| p.kind == kind).map(|p| p.body).collect()
+    }
+
+    #[test]
+    fn label_transforms() {
+        let f = "let f = |#a: i64 = 3, #b: string, x: i64| -> i64 a + x";
+        let permuted =
+            bodies(&format!("{{ {f}; f(#a: 1, #b: \"s\", 2) }}"), TmKind::LabelPermute);
+        assert!(
+            permuted.iter().any(|b| b.contains("f(#b: \"s\", #a: 1, 2)")),
+            "{permuted:?}"
+        );
+        let made =
+            bodies(&format!("{{ {f}; f(#b: \"s\", 4) }}"), TmKind::DefaultMaterialize);
+        assert!(made.iter().any(|b| b.contains("f(#a: 3, #b: \"s\", 4)")), "{made:?}");
+        let elided =
+            bodies(&format!("{{ {f}; f(#a: 3, #b: \"s\", 4) }}"), TmKind::DefaultElide);
+        assert!(elided.iter().any(|b| b.contains("f(#b: \"s\", 4)")), "{elided:?}");
+    }
+
+    #[test]
+    fn defaults_move_only_where_they_mean_the_same() {
+        // the default reads a name
+        let reads = "{ let k = 3; let f = |#a: i64 = k, x: i64| -> i64 a + x; f(4) }";
+        assert!(bodies(reads, TmKind::DefaultMaterialize).is_empty());
+        // `f` is rebound after its definition
+        let shadowed = "{ let f = |#a: i64 = 3, x: i64| -> i64 a + x; let f = |x: i64| -> i64 x; f(4) }";
+        assert!(bodies(shadowed, TmKind::DefaultMaterialize).is_empty());
+        // a lambda parameter named `f` hides only its own body's calls
+        let nested = "{ let f = |#a: i64 = 3, x: i64| -> i64 a + x; \
+                      let g = |f: i64| f + 1; let z = f(4); g(z) }";
+        let made = bodies(nested, TmKind::DefaultMaterialize);
+        assert!(made.iter().any(|b| b.contains("f(#a: 3, 4)")), "{made:?}");
+        let hidden = "{ let f = |#a: i64 = 3, x: i64| -> i64 a + x; \
+                      let g = |f: fn(x: i64) -> i64| f(4); g(|x| x) }";
+        assert!(bodies(hidden, TmKind::DefaultMaterialize).is_empty());
     }
 
     #[test]

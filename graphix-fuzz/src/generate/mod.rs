@@ -421,7 +421,7 @@ fn gen_slots(
             if chance(rng, cfg.p_poly) {
                 stmts.extend(funcs::gen_poly_lambda(ctx, rng, cfg, stats));
             } else {
-                stmts.push(funcs::gen_typed_lambda(ctx, rng, cfg, stats));
+                stmts.extend(funcs::gen_typed_lambda(ctx, rng, cfg, stats));
             }
         } else {
             let variant = chance(rng, cfg.p_variant);

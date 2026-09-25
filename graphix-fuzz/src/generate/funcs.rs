@@ -68,15 +68,16 @@ fn lambda_body(
 
 /// A typed lambda binding (`let f = |x: i64, s: string| -> i64 body`),
 /// with `p_labeled` labeled params first (`|#a: i64, #b: string = "x",
-/// x: i64|`, then possibly no positionals). Params may shadow outer
-/// names; the body sees params + everything outer, so it captures
-/// naturally. A default sees only the outer scope.
+/// x: i64|`, then possibly no positionals) and then usually a call of it
+/// that supplies or omits each default. Params may shadow outer names;
+/// the body sees params + everything outer, so it captures naturally. A
+/// default sees only the outer scope.
 pub(super) fn gen_typed_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
     cfg: &GenCfg,
     stats: &mut GenStats,
-) -> String {
+) -> Vec<String> {
     let nlabels = if chance(rng, cfg.p_labeled) { 1 + rng.below(3) } else { 0 };
     let arity = if nlabels > 0 { rng.below(3) } else { 1 + rng.below(3) };
     let params: Vec<GenType> = (0..arity).map(|_| types::scalar_type(rng)).collect();
@@ -85,7 +86,12 @@ pub(super) fn gen_typed_lambda(
     let mut labeled: Vec<(Label, Option<String>)> = Vec::new();
     for name in param_names_excluding(ctx, rng, cfg, nlabels, &names) {
         let ty = types::scalar_type(rng);
-        let default = chance(rng, 0.5).then(|| exprs::gen_typed(ctx, rng, &ty, 1));
+        // half the defaults a literal, half an expression over the outer
+        // scope
+        let default = chance(rng, 0.5).then(|| match chance(rng, 0.5) {
+            true => types::literal(rng, &ty),
+            false => exprs::gen_typed(ctx, rng, &ty, 1),
+        });
         labeled.push((Label { name, ty, optional: default.is_some() }, default));
     }
     if !labeled.is_empty() {
@@ -118,9 +124,23 @@ pub(super) fn gen_typed_lambda(
     ) {
         stats.lambda_rebind = true;
     }
-    let stmt = format!("let {name} = |{}| -> {} {body}", sig.join(", "), ret.render());
-    ctx.push(name, GenType::Fn { labels, params, ret: Box::new(ret) });
-    stmt
+    let mut stmts =
+        vec![format!("let {name} = |{}| -> {} {body}", sig.join(", "), ret.render())];
+    let call = !labels.is_empty() && chance(rng, 0.7);
+    let fty = GenType::Fn {
+        labels: labels.clone(),
+        params: params.clone(),
+        ret: Box::new(ret.clone()),
+    };
+    // bound before the call's arguments: they must see `name` as the lambda
+    ctx.push(name.clone(), fty);
+    if call {
+        let args = exprs::call_args(ctx, rng, &labels, &params, 1);
+        let c = ctx.fresh();
+        stmts.push(format!("let {c}: {} = {name}({args})", ret.render()));
+        ctx.push(c, ret);
+    }
+    stmts
 }
 
 /// `n` names for params, distinct from each other and from `taken`.
