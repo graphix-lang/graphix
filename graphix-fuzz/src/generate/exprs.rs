@@ -31,6 +31,28 @@ fn try_call(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<S
     Some(format!("{name}({})", call_args(ctx, rng, &labels, &param_tys, depth)))
 }
 
+/// A value of `ty` whose type is exactly `ty`: a literal can be narrower
+/// (all nulls, or all non-null, of a nullable element; one variant of a
+/// union), which a callback typed from `ty` or a sibling argument then
+/// contradicts, so such a `ty` is pinned by an annotation.
+pub(super) fn gen_pinned(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    ty: &GenType,
+    depth: usize,
+) -> String {
+    let v = gen_typed(ctx, rng, ty, depth);
+    let narrows = |e: &GenType| e.contains_nullable() || matches!(e, GenType::Variant(_));
+    let wide = match ty {
+        GenType::Array(e) | GenType::List(e) | GenType::Map(e) => narrows(e),
+        t => narrows(t),
+    };
+    match wide {
+        true => format!("{{ let mt: {} = {v}; mt }}", ty.render()),
+        false => v,
+    }
+}
+
 /// A call's arguments: every required label and each optional one at
 /// even odds, the labeled ones in random order, then the positionals.
 pub(super) fn call_args(
@@ -256,7 +278,7 @@ fn map_parts(
     d_ty: GenType,
     d: usize,
 ) -> HofParts {
-    let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
+    let src = gen_pinned(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
     let mut inner = ctx.clone();
     let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
     let body = gen_typed(&inner, rng, e, d.min(2));
@@ -271,7 +293,7 @@ fn filter_parts(
     e: &GenType,
     d: usize,
 ) -> HofParts {
-    let src = gen_typed(ctx, rng, ty, d);
+    let src = gen_pinned(ctx, rng, ty, d);
     let mut inner = ctx.clone();
     let binder = callback_binder(&mut inner, rng, e, &[]);
     let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
@@ -361,14 +383,14 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
                 } else {
                     types::scalar_type(rng)
                 };
-                let src = gen_typed(ctx, rng, &GenType::List(Box::new(d_ty.clone())), d);
+                let src = gen_pinned(ctx, rng, &GenType::List(Box::new(d_ty.clone())), d);
                 let mut inner = ctx.clone();
                 let binder = callback_binder(&mut inner, rng, &d_ty, &[]);
                 let body = gen_typed(&inner, rng, e, d.min(2));
                 Some(format!("list::map({src}, |{binder}| {body})"))
             }
             3 => {
-                let src = gen_typed(ctx, rng, ty, d);
+                let src = gen_pinned(ctx, rng, ty, d);
                 let mut inner = ctx.clone();
                 let binder = callback_binder(&mut inner, rng, e, &[]);
                 let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
@@ -378,7 +400,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
         },
         // find: the union return `[e, null]` is the Nullable type
         GenType::Nullable(e) if e.is_scalar() => {
-            let src = gen_typed(ctx, rng, &GenType::Array(Box::new((**e).clone())), d);
+            let src = gen_pinned(ctx, rng, &GenType::Array(Box::new((**e).clone())), d);
             let mut inner = ctx.clone();
             let binder = callback_binder(&mut inner, rng, e, &[]);
             let body = gen_typed(&inner, rng, &GenType::Bool, d.min(2));
@@ -394,7 +416,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
         _ if ty.is_scalar() => {
             let d_ty =
                 if rng.below(2) == 0 { ty.clone() } else { types::random_type(rng, 1) };
-            let src = gen_typed(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
+            let src = gen_pinned(ctx, rng, &GenType::Array(Box::new(d_ty.clone())), d);
             let init = gen_typed(ctx, rng, ty, d.min(2));
             let mut inner = ctx.clone();
             let acc = callback_param(&mut inner, rng, &[]);
@@ -681,13 +703,7 @@ fn try_map_builtin(
             Some(format!("map::len({m})"))
         }
         GenType::Map(e) => {
-            let m = gen_typed(ctx, rng, ty, d);
-            // a literal of all nulls (or of one variant) is narrower than
-            // `e`, and beside the inserted value neither side is widest
-            let m = match e.contains_nullable() || matches!(**e, GenType::Variant(_)) {
-                true => format!("{{ let mt: {} = {m}; mt }}", ty.render()),
-                false => m,
-            };
+            let m = gen_pinned(ctx, rng, ty, d);
             let k = types::KEYS[rng.below(types::KEYS.len())];
             match rng.below(3) {
                 0 => {

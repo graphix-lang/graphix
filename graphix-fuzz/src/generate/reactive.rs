@@ -395,7 +395,8 @@ fn cross_cycle(
     let (expr, ty) = match ity {
         GenType::Num(NumTy::I64) => match rng.below(7) {
             0 => (format!("count({input})"), I64),
-            1 => (format!("sum({input})"), I64),
+            // `sum` is declared `-> Number`: an i64 only through a cast
+            1 => (format!("cast<i64>(sum({input}))$"), I64),
             2 => (format!("uniq({input})"), I64),
             3 => (format!("once({input})"), I64),
             4 => (format!("take(#n: i64:{}, {input})", 1 + rng.below(3)), I64),
