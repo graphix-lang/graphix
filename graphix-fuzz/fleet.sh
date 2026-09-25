@@ -444,14 +444,17 @@ EOF
 
 # -------------------------------------------------------------- deploy
 
+# The sync precedes the stop: the stop is the synced tree's `soak.sh
+# stop`, and a running campaign runs its own copy of the binary.
 deploy() {
     local new=$1 base=$2 old=${3:-}
     [[ -n $new && -n $base ]] || usage
-    if [[ -n $old ]]; then
-        say "== pull $old =="; pull "$old"
-        say "== stop $old ==";  stop "$old" || die "refusing to deploy over a fleet that would not stop"
-    fi
+    [[ -n $old ]] && { say "== pull $old =="; pull "$old"; }
     say "== sync ==";   sync_tree || die "refusing to launch on a stale tree"
+    if [[ -n $old ]]; then
+        say "== stop $old =="
+        stop "$old" || die "refusing to deploy over a fleet that would not stop"
+    fi
     say "== launch =="; launch "$new" "$base"
     say "== verify =="; verify "$new"
 }
