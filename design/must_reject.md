@@ -165,7 +165,7 @@ parameter; about a dozen corpus pins have labeled lambdas, and no
 mutation knows about labels. The logic is soaked only by accident, in
 either direction, and it has runtime semantics as well as typing ones
 (a default is born with the binding and delivers FIRED at a fresh
-callee's first dispatch, `representable_bottom.md`), so the work serves
+callee's first dispatch, `wake_catchup.md`), so the work serves
 the regular soak, not only this lane.
 
 **Generation (every lane).** The generators define functions with
