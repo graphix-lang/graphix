@@ -824,27 +824,36 @@ impl<X: GXExt> GX<X> {
             info!("resolve time: {:?}", st.elapsed());
             self.prune_static_resolution();
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
-            let mut scope = Scope::root();
-            for e in exprs.iter() {
-                let res = graphix_compiler::compile_stmt(
-                    &mut self.ctx,
-                    self.flags,
-                    &scope,
-                    e.clone(),
-                )
-                .with_context(|| ori.clone());
-                match res {
-                    Ok((n, advanced)) => {
-                        scope = advanced;
-                        nodes.push(n);
-                    }
-                    Err(e) => {
-                        for mut n in nodes.drain(..) {
-                            n.delete(&mut self.ctx);
-                        }
-                        return Err(e);
-                    }
+            let res = match &initial_scope {
+                Some(_) => exprs.iter().try_for_each(|e| {
+                    let (n, _) = graphix_compiler::compile_stmt(
+                        &mut self.ctx,
+                        self.flags,
+                        &Scope::root(),
+                        e.clone(),
+                    )?;
+                    nodes.push(n);
+                    Ok(())
+                }),
+                // A script checks as it runs: its file is one block.
+                None => {
+                    let stmts = Arc::from_iter(exprs.iter().cloned());
+                    let spec = wrap_file_in_do(stmts.clone(), Arc::new(ori.clone()));
+                    graphix_compiler::compile_script(
+                        &mut self.ctx,
+                        self.flags,
+                        &Scope::root(),
+                        spec,
+                        &stmts,
+                    )
+                    .map(|n| nodes.push(n))
                 }
+            };
+            if let Err(e) = res.with_context(|| ori.clone()) {
+                for mut n in nodes.drain(..) {
+                    n.delete(&mut self.ctx);
+                }
+                return Err(e);
             }
             let env = self.ctx.env.clone();
             let ide = match self.ctx.env.ide.as_ref() {

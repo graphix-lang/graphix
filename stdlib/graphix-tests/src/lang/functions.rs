@@ -2033,3 +2033,85 @@ const BUILTIN_BINDING_SHADOWED: &str = r#"
 run!(builtin_binding_shadowed, BUILTIN_BINDING_SHADOWED, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(42)))
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// A type variable only data arguments hold settles to the widest
+// argument, whatever the order.
+const WIDEST_ARG_EITHER_ORDER: &str = r#"
+{
+  let n: [u64, null] = null;
+  let f = |x: 'a, y: 'a| -> 'a y;
+  (f(u64:0, n), f(n, u64:0))
+}
+"#;
+
+run!(widest_arg_either_order, WIDEST_ARG_EITHER_ORDER, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[null, u64:0]"
+});
+
+const LIST_CONS_WIDER_TAIL: &str = r#"
+{
+  let t: List<[u64, null]> = [<u64:1, null>];
+  list::cons(u64:0, t)
+}
+"#;
+
+run!(list_cons_wider_tail, LIST_CONS_WIDER_TAIL, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "[u64:0, [u64:1, [null, []]]]"
+});
+
+// Two arguments neither of which holds the other wait for a later
+// argument that holds both.
+const WIDEST_ARG_LAST: &str = r#"
+{
+  let f = |x: 'a, y: 'a, z: 'a| -> 'a y;
+  let ab: [`A, `B] = `A;
+  f(`A, `B, ab)
+}
+"#;
+
+run!(widest_arg_last, WIDEST_ARG_LAST, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == "\"B\""
+});
+
+// No argument holds the others: refused, in either order.
+run!(
+    no_widest_arg_refused,
+    r#"{ let f = |x: 'a, y: 'a| -> 'a y; (f(`A, `B), f(`B, `A)) }"#,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// The call's type is the widest argument's.
+run!(
+    widest_arg_types_the_result,
+    r#"{ let n: [u64, null] = null; let f = |x: 'a, y: 'a| -> 'a y; let r: u64 = f(u64:0, n); r }"#,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// A variable a callback holds does not widen: the callback was checked
+// at the type the variable had when it was reached.
+run!(
+    callback_variable_does_not_widen,
+    r#"{
+  let n: [u64, null] = null;
+  let g = |x: 'a, f: fn(v: 'a) -> 'a, y: 'a| -> 'a f(y);
+  g(u64:0, |v| v, n)
+}"#,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// Nor one a reference holds: the callee could write the wider type
+// through it.
+run!(
+    reference_variable_does_not_widen,
+    r#"{
+  let r: &u64 = &u64:0;
+  let n: &[u64, null] = &null;
+  let f = |x: &'a, y: &'a| -> &'a y;
+  f(r, n)
+}"#,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
+    graphix_package_core::testing::FuseExpect::None
+);

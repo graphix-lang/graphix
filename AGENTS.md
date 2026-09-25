@@ -431,7 +431,8 @@ file outside every project. A root at `<crate>/src/graphix/mod.gx` of a
 `mod <x>` over the copy registered at startup: `Env::
 unbind_scope_subtree` must drop everything a package registers, so a new
 global registry is cleared there. `--check` and the server share one
-path (`GXRt::check`); a root loads through `RootFile::load`, open
+path (`GXRt::check`), which checks a script's file as one block, as
+it runs, with its names at the root (`compile_script`); a root loads through `RootFile::load`, open
 buffers first, paired with its `.gxi`, and under buffer overrides a path
 is never canonicalized (the editor's names rule). Checks are lazy and
 coalesced: a change marks its roots dirty and `ServerState::flush`
@@ -616,7 +617,10 @@ node graph IS the IR — there is no parallel typed IR
   freely; a labeled default is checked at the definition against its
   parameter's type, or a declared tvar's constraints (`check_defaults`),
   and again at each omitting site, where it may narrow that site's
-  cells; a formal with its own quantifiers (`f: fn<'b: C>(..)`) is
+  cells; a call's type variable that only data positions hold (never a
+  function or a reference) settles to the widest argument whatever
+  the order, one a callback or a reference holds to the first
+  (`callsite.rs::Widening`); a formal with its own quantifiers (`f: fn<'b: C>(..)`) is
   rank-2: its argument is checked with `'b` rigid, and an open
   quantifier never binds to its bound (`design/tvar_constraints.md`);
   union collapse requires strict tvar identity; a free union member stays free (a type test over an

@@ -29,7 +29,8 @@ use crate::{
     },
     perfdbg,
     profile::{self, Phase},
-    typ::{FnArgKind, FnArgType, FnType, TVar, Type, tvar::RigidGate},
+    stack::ensure_sufficient,
+    typ::{ContainsFlags, FnArgKind, FnArgType, FnType, TVar, Type, tvar::RigidGate},
     wrap,
 };
 use ahash::{AHashMap, AHashSet};
@@ -253,12 +254,13 @@ fn quantified_formal(
     Ok(Some((formal.clone(), gates)))
 }
 
-/// Check a call's argument node against its formal's type `typ`.
+/// Check a call's argument node against its formal's type `typ`: false
+/// when the argument's type does not fit the formal as it stands.
 fn typecheck_arg<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     typ: &Type,
     n: &mut Node<R, E>,
-) -> Result<()> {
+) -> Result<bool> {
     // A reference instantiates its signature in its own typecheck0,
     // which must precede the pre-unify.
     if matches!(n.view(), NodeView::Ref(_)) {
@@ -268,13 +270,136 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
         None => {
             Type::pre_unify_arg(&ctx.env, typ, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
-            wrap!(n, typ.check_contains(&ctx.env, &n.typ()))
+            typ.contains(&ctx.env, n.typ())
         }
         Some((formal, _rigid)) => {
             Type::pre_unify_arg(&ctx.env, &formal, n.typ())?;
             wrap!(n, n.typecheck0(ctx))?;
-            wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))
+            wrap!(n, formal.check_contains_rigid(&ctx.env, &n.typ()))?;
+            Ok(true)
         }
+    }
+}
+
+/// Every type variable under `t` by name, with whether each occurrence
+/// is data: never under a function, a reference, a typedef application,
+/// a nominal type or a constructor application. Bindings are walked.
+fn data_positions(
+    t: &Type,
+    data: bool,
+    seen: &mut AHashSet<(usize, bool)>,
+    out: &mut AHashMap<ArcStr, (TVar, bool)>,
+) {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            out.entry(tv.name.clone()).or_insert_with(|| (tv.clone(), true)).1 &= data;
+            if seen.insert((tv.cell_addr(), data))
+                && let Some(b) = tv.binding()
+            {
+                data_positions(&b, data, seen, out)
+            }
+        }
+        Type::Fn(_)
+        | Type::ByRef(_)
+        | Type::Ref(_)
+        | Type::Abstract { .. }
+        | Type::App(..) => t.for_each_child(&mut |c| data_positions(c, false, seen, out)),
+        t => t.for_each_child(&mut |c| data_positions(c, data, seen, out)),
+    })
+}
+
+/// A fresh instance's type variables that settle to the widest argument
+/// rather than the first: open in the definition `def`, and met only as
+/// data in `inst`, so a value of a wider type is well typed wherever the
+/// signature holds one.
+fn widenable(def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
+    let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    def.collect_tvars(&mut at_def);
+    let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
+    let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
+    inst.for_each_type(&mut |t| data_positions(t, true, &mut seen, &mut found));
+    found
+        .drain()
+        .filter(|(name, (tv, data))| {
+            *data && !tv.is_rigid() && at_def.get(name).is_some_and(|d| !d.is_bound())
+        })
+        .map(|(name, (tv, _))| (name, tv))
+        .collect()
+}
+
+/// How a fresh instance's arguments settle its [`widenable`] variables:
+/// to the widest argument, whatever the order. An argument that does not
+/// fit is probed once against its formal with those variables open; it
+/// widens the variables it holds wider, and waits for the end of the
+/// argument loop when it is neither wider nor narrower.
+struct Widening {
+    fresh: bool,
+    cells: Option<LPooled<AHashMap<ArcStr, TVar>>>,
+    deferred: LPooled<Vec<(ArgKey, Type)>>,
+}
+
+impl Widening {
+    fn new(fresh: bool) -> Self {
+        Self { fresh, cells: None, deferred: LPooled::take() }
+    }
+
+    /// The argument `n` for `key` did not fit `formal`: widen, defer, or
+    /// the mismatch error.
+    fn misfit<R: Rt, E: UserEvent>(
+        &mut self,
+        env: &Env,
+        def: &Type,
+        inst: &FnType,
+        key: &ArgKey,
+        formal: &Type,
+        n: &Node<R, E>,
+    ) -> Result<()> {
+        let check = || wrap!(n, formal.check_contains(env, n.typ()));
+        if !self.fresh || n.typ().has_unbound() {
+            return check();
+        }
+        let cells = match &self.cells {
+            Some(cells) => cells,
+            None => match def.with_deref(|t| match t {
+                Some(Type::Fn(def)) => Some(widenable(def, inst)),
+                _ => None,
+            }) {
+                None => return check(),
+                Some(cells) => self.cells.insert(cells),
+            },
+        };
+        let open = formal.reset_tvars();
+        let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        open.collect_tvars(&mut opened);
+        for name in cells.keys() {
+            if let Some(tv) = opened.get(name) {
+                tv.unbind()
+            }
+        }
+        if !open.contains(env, n.typ())? {
+            return check();
+        }
+        let probe = ContainsFlags::RigidCheck.into();
+        let mut wider: LPooled<Vec<(TVar, Type)>> = LPooled::take();
+        for (name, cell) in cells.iter() {
+            let (Some(new), Some(old)) =
+                (opened.get(name).and_then(|tv| tv.binding()), cell.binding())
+            else {
+                continue;
+            };
+            if old.contains_with_flags(probe, env, &new)? {
+                continue;
+            }
+            if !new.contains_with_flags(probe, env, &old)? {
+                self.deferred.push((key.clone(), formal.clone()));
+                return Ok(());
+            }
+            wider.push((cell.clone(), new));
+        }
+        for (cell, t) in wider.drain(..) {
+            cell.bind(t)
+        }
+        check()
     }
 }
 
@@ -1718,6 +1843,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             return n.typecheck0(ctx);
         }
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
+        let mut fresh = false;
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
             None => {
@@ -1746,6 +1872,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     // A shallow clone shares the def's TVar cells.
                     (*ftype).clone()
                 } else {
+                    fresh = true;
                     let ftype = ftype.reset_tvars();
                     ftype.alias_tvars(&mut LPooled::take());
                     ftype
@@ -1793,18 +1920,28 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 ftype
             }
         };
+        let mut widening = Widening::new(fresh);
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
-            if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
-                typecheck_arg(ctx, &farg.typ, n)?;
+            if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut())
+                && !typecheck_arg(ctx, &farg.typ, n)?
+            {
+                widening.misfit(&ctx.env, self.fnode.typ(), ftype, &key, &farg.typ, n)?;
             }
         }
         if let Some(typ) = &ftype.vargs {
             let positional = ftype.args.iter().filter(|a| a.is_positional()).count();
             for key in ArgKey::variadic(positional) {
                 let Some(arg) = self.args.get_mut(&key) else { break };
-                if let Some(n) = arg.node.as_mut() {
-                    typecheck_arg(ctx, typ, n)?;
+                if let Some(n) = arg.node.as_mut()
+                    && !typecheck_arg(ctx, typ, n)?
+                {
+                    widening.misfit(&ctx.env, self.fnode.typ(), ftype, &key, typ, n)?;
                 }
+            }
+        }
+        for (key, formal) in widening.deferred.drain(..) {
+            if let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) {
+                wrap!(n, formal.check_contains(&ctx.env, n.typ()))?;
             }
         }
         // A constrained cell reachable from the rtype/throws but no arg is

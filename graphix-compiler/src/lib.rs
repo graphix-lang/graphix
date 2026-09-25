@@ -1985,6 +1985,38 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     scope: &Scope,
     spec: Expr,
 ) -> Result<(Node<R, E>, Scope)> {
+    compile_top(ctx, flags, spec, |ctx, spec, top_id| {
+        node::compile_statement(ctx, flags, spec, scope, top_id, node::StmtAt::TopLevel)
+    })
+}
+
+/// Compile a script's statements `exprs` as the one block it runs as,
+/// with its names at `scope` itself: every statement is built before any
+/// is checked, so a `let` takes its type from the writers below it.
+/// `spec` is the block's expression.
+pub fn compile_script<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    spec: Expr,
+    exprs: &Arc<[Expr]>,
+) -> Result<Node<R, E>> {
+    compile_top(ctx, flags, spec, |ctx, spec, top_id| {
+        let n =
+            node::Block::compile(ctx, flags, spec.clone(), scope, top_id, false, exprs)?;
+        Ok((n, scope.clone()))
+    })
+    .map(|(n, _)| n)
+}
+
+/// Build the top-level node `spec` with `build`, then check and fuse it,
+/// unwinding what it registered on failure.
+fn compile_top<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: Expr,
+    build: impl FnOnce(&mut ExecCtx<R, E>, &Expr, ExprId) -> Result<(Node<R, E>, Scope)>,
+) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
     // Fusion also runs in check/lsp runtimes: `#[native]` needs it to
     // verify its contract, and a malformed input only de-fuses. The JIT
@@ -2003,8 +2035,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     let env = ctx.env.clone();
     let st = Instant::now();
     let build_profile = profile::phase(Phase::BuildGraph);
-    let compiled =
-        node::compile_statement(ctx, flags, &spec, scope, top_id, node::StmtAt::TopLevel);
+    let compiled = build(ctx, &spec, top_id);
     drop(build_profile);
     let (mut node, out_scope) = match compiled {
         Ok(n) => n,
