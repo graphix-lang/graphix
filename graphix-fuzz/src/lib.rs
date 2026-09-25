@@ -1764,12 +1764,18 @@ fn batch_size() -> usize {
         .max(1)
 }
 
+/// The soak pool's sources, in mix order.
+pub const SOURCES: usize = 4;
+
 /// Which generator a work order asks the child to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
     Fuzz,
     Generate,
     Reactive,
+    /// Acceptance probes (`typemorph`): the corpus pins once, then
+    /// generated programs and mutants; a flip is the finding.
+    Typemorph,
 }
 
 impl SourceKind {
@@ -1778,6 +1784,15 @@ impl SourceKind {
             SourceKind::Fuzz => "fuzz",
             SourceKind::Generate => "generate",
             SourceKind::Reactive => "reactive",
+            SourceKind::Typemorph => "typemorph",
+        }
+    }
+
+    /// What this source's findings are called in its progress line.
+    pub fn findings(&self) -> &'static str {
+        match self {
+            SourceKind::Typemorph => "flips",
+            _ => "divergences",
         }
     }
 
@@ -1786,6 +1801,7 @@ impl SourceKind {
             "fuzz" => Some(SourceKind::Fuzz),
             "generate" => Some(SourceKind::Generate),
             "reactive" => Some(SourceKind::Reactive),
+            "typemorph" => Some(SourceKind::Typemorph),
             _ => None,
         }
     }
@@ -1794,23 +1810,27 @@ impl SourceKind {
 /// What the parent asks a child to do, instead of what to run, so the
 /// parent's cost is per batch and per finding rather than per subject.
 /// `ring` is a small sample of the mutation ring for the child to breed
-/// from, not a snapshot.
+/// from, not a snapshot. `pins` are regression corpus indices checked
+/// before anything is drawn.
 #[derive(Debug, Clone)]
 pub struct WorkOrder {
     pub kind: SourceKind,
     pub seed: u64,
     pub count: usize,
     pub ring: Vec<String>,
+    pub pins: std::ops::Range<usize>,
 }
 
 impl WorkOrder {
     pub fn encode(&self) -> String {
         let mut out = format!(
-            "{} {} {} {}\n",
+            "{} {} {} {} {} {}\n",
             self.kind.tag(),
             self.seed,
             self.count,
-            self.ring.len()
+            self.ring.len(),
+            self.pins.start,
+            self.pins.end,
         );
         for p in &self.ring {
             out.push_str(&format!("{}\n", p.len()));
@@ -1830,6 +1850,8 @@ impl WorkOrder {
         let seed: u64 = it.next().unwrap_or("0").parse()?;
         let count: usize = it.next().unwrap_or("0").parse()?;
         let nring: usize = it.next().unwrap_or("0").parse()?;
+        let pins: usize = it.next().unwrap_or("0").parse()?;
+        let pins = pins..it.next().unwrap_or("0").parse()?;
         let mut ring = Vec::with_capacity(nring);
         for _ in 0..nring {
             let (len, tail) = rest
@@ -1842,7 +1864,7 @@ impl WorkOrder {
             ring.push(tail[..len].to_string());
             rest = &tail[len..];
         }
-        Ok(WorkOrder { kind, seed, count, ring })
+        Ok(WorkOrder { kind, seed, count, ring, pins })
     }
 
     /// Build the generator this order describes. Seeded from the order,
@@ -1858,23 +1880,45 @@ impl WorkOrder {
                 let seeds = corpus::all_seeds();
                 let donors = mutate::donor_pool(&seeds);
                 let ring = self.ring.clone();
-                Box::new(move || {
-                    for _ in 0..8 {
-                        let s = if !ring.is_empty() && rng.below(2) == 0 {
-                            ring[rng.below(ring.len())].clone()
-                        } else {
-                            seeds[rng.below(seeds.len())].to_string()
-                        };
-                        if let Some(p) = mutate::mutate_wrapper(&s, &donors, &mut rng, 5)
-                        {
-                            return p;
-                        }
-                    }
-                    seeds[rng.below(seeds.len())].to_string()
+                Box::new(move || mutant(&mut rng, &seeds, &donors, &ring))
+            }
+            SourceKind::Typemorph => {
+                let seeds = corpus::all_seeds();
+                let donors = mutate::donor_pool(&seeds);
+                let ring = self.ring.clone();
+                let mut pins = self.pins.clone();
+                Box::new(move || match pins.next() {
+                    Some(i) => corpus::REGRESSION_CORPUS[i].1.to_string(),
+                    None => match rng.below(3) {
+                        0 => generate::gen_program(&mut rng),
+                        1 => generate::reactive::gen_reactive_program(&mut rng),
+                        _ => mutant(&mut rng, &seeds, &donors, &ring),
+                    },
                 })
             }
         }
     }
+}
+
+/// A mutant of a ring sample or a corpus seed, half each while the ring
+/// has anything; the seed itself when eight mutation tries fail.
+fn mutant(
+    rng: &mut mutate::Rng,
+    seeds: &[&'static str],
+    donors: &[Expr],
+    ring: &[String],
+) -> String {
+    for _ in 0..8 {
+        let s = if !ring.is_empty() && rng.below(2) == 0 {
+            ring[rng.below(ring.len())].clone()
+        } else {
+            seeds[rng.below(seeds.len())].to_string()
+        };
+        if let Some(p) = mutate::mutate_wrapper(&s, donors, rng, 5) {
+            return p;
+        }
+    }
+    seeds[rng.below(seeds.len())].to_string()
 }
 
 /// The `gen-batch` child body: generate the order's subjects, run them
@@ -1888,6 +1932,9 @@ pub async fn run_work_order(
 ) {
     let mut next = order.generator();
     let progs: Vec<String> = (0..order.count).map(|_| next()).collect();
+    if order.kind == SourceKind::Typemorph {
+        return typemorph_work_order(&progs, timeout, out).await;
+    }
     // ring admission is computed here: the child has the parsed program
     let novel: Vec<Option<(u64, usize, bool)>> =
         progs.iter().map(|p| mutate::shape_stats(p)).collect();
@@ -1919,6 +1966,31 @@ pub async fn run_work_order(
         let _ = writeln!(out, "P {i} {}", p.len());
         let _ = out.write_all(p.as_bytes());
         let _ = writeln!(out);
+    }
+    let _ = writeln!(out, "CPU {}", self_cpu().as_micros());
+    let _ = out.flush();
+}
+
+/// The typemorph body of a work order: every subject's probes, a line
+/// per subject, and the program text of each that flipped for the
+/// parent to confirm in a fresh process.
+async fn typemorph_work_order(
+    progs: &[String],
+    timeout: Duration,
+    out: &mut impl std::io::Write,
+) {
+    for (i, p) in progs.iter().enumerate() {
+        let flipped = match typemorph_subject(p, timeout, TM_CAP).await {
+            Ok(rep) => rep.probes.iter().any(|(_, v)| matches!(v, TmVerdict::Reject(_))),
+            Err(_) => false,
+        };
+        let _ = writeln!(out, "V {i} A");
+        if flipped {
+            let _ = writeln!(out, "P {i} {}", p.len());
+            let _ = out.write_all(p.as_bytes());
+            let _ = writeln!(out);
+        }
+        let _ = out.flush();
     }
     let _ = writeln!(out, "CPU {}", self_cpu().as_micros());
     let _ = out.flush();
@@ -2027,8 +2099,13 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(order.encode().as_bytes()).await;
     }
-    // progress-based deadline: a healthy child flushes a line per subject
-    let stall = timeout * 4 + Duration::from_secs(90);
+    // progress-based deadline: a healthy child flushes a line per
+    // subject, and a typemorph subject is its base and every probe
+    let per_subject = match order.kind {
+        SourceKind::Typemorph => 1 + 6 * TM_CAP as u32,
+        _ => 4,
+    };
+    let stall = timeout * per_subject + Duration::from_secs(90);
     let mut last_len = 0u64;
     res.clean = loop {
         tokio::select! {
@@ -2567,6 +2644,9 @@ fn tm_error_head(e: &str) -> String {
     }
     out
 }
+
+/// Candidates per transform kind a subject's typemorph probes draw.
+pub const TM_CAP: usize = 3;
 
 /// Run one subject's metamorphic probes against a single warmed
 /// runtime (`GXHandle::check_with_resolvers` never executes and
@@ -3133,6 +3213,8 @@ impl Corpus {
                 if let Ok(body) = std::fs::read_to_string(&path) {
                     if let Some(m) = extract_minimized(&body) {
                         seen.insert(m);
+                    } else if let Some(class) = typeflip_class_of(&body) {
+                        seen.insert(class);
                     } else if let Some((_, p)) = body.split_once("// mutant:\n") {
                         // crash finding: dedup by `record_crash`'s key
                         seen.insert(crash_key(p));
@@ -3142,7 +3224,9 @@ impl Corpus {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .and_then(|s| {
-                        s.strip_prefix("divergence_").or_else(|| s.strip_prefix("crash_"))
+                        s.strip_prefix("divergence_")
+                            .or_else(|| s.strip_prefix("crash_"))
+                            .or_else(|| s.strip_prefix("typeflip_"))
                     })
                     .and_then(|s| s.parse::<usize>().ok())
                 {
@@ -3242,6 +3326,41 @@ impl Corpus {
         }
         true
     }
+
+    /// Record a confirmed acceptance flip if its class is new. The file
+    /// is the subject under a comment header, so `graphix-fuzz typemorph
+    /// <file>` reproduces it as it stands.
+    pub fn record_typeflip(&self, prog: &str, id: &str, head: &str) -> bool {
+        let class = typeflip_class(id, head);
+        {
+            let mut seen = self.seen.lock().unwrap();
+            if !seen.insert(class.clone()) {
+                return false;
+            }
+        }
+        let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let body = format!("// typeflip {id}: {head}\n{TYPEFLIP_CLASS}{class}\n{prog}\n");
+        if let Err(e) = std::fs::write(self.dir.join(format!("typeflip_{n:06}.gx")), body)
+        {
+            eprintln!("FATAL fuzz harness: cannot write finding: {e}");
+            std::process::exit(2);
+        }
+        true
+    }
+}
+
+/// The typeflip dedup key: the transform kind (the probe id without its
+/// site) and the normalized rejection head. Shared by `record_typeflip`
+/// and `Corpus::load`.
+fn typeflip_class(id: &str, head: &str) -> String {
+    let kind = id.split_once('#').map_or(id, |(k, _)| k);
+    format!("TYPEFLIP:{kind}: {head}")
+}
+
+const TYPEFLIP_CLASS: &str = "// class: ";
+
+fn typeflip_class_of(body: &str) -> Option<String> {
+    body.lines().find_map(|l| l.strip_prefix(TYPEFLIP_CLASS)).map(str::to_string)
 }
 
 /// Extract the minimized program (the text after the `// minimized:`
@@ -4115,17 +4234,21 @@ pub async fn run_aggregator(
     corpus: &std::sync::Arc<Corpus>,
     iters: Option<usize>,
     timeout: Duration,
-    weights: [f64; 3],
+    weights: [f64; SOURCES],
 ) -> Vec<(&'static str, FuzzStats, Duration)> {
     use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
     use tokio::task::JoinSet;
-    const KINDS: [SourceKind; 3] =
-        [SourceKind::Fuzz, SourceKind::Generate, SourceKind::Reactive];
+    const KINDS: [SourceKind; SOURCES] = [
+        SourceKind::Fuzz,
+        SourceKind::Generate,
+        SourceKind::Reactive,
+        SourceKind::Typemorph,
+    ];
     // findings are confirmed in detached `derive` tasks, so the tally
     // crosses tasks
     struct Found {
-        divergences: [AtomicUsize; 3],
-        crashes: [AtomicUsize; 3],
+        divergences: [AtomicUsize; SOURCES],
+        crashes: [AtomicUsize; SOURCES],
     }
     let found = std::sync::Arc::new(Found {
         divergences: std::array::from_fn(|_| AtomicUsize::new(0)),
@@ -4136,14 +4259,16 @@ pub async fn run_aggregator(
     const RING_CAP: usize = 256;
     let par = parallelism();
     let bsize = batch_size().max(1);
-    let mut stats = [FuzzStats::default(), FuzzStats::default(), FuzzStats::default()];
-    let mut cpu = [Duration::ZERO; 3];
-    let mut inflight = [0usize; 3];
-    let mut done = [0usize; 3];
+    let mut stats: [FuzzStats; SOURCES] = std::array::from_fn(|_| FuzzStats::default());
+    let mut cpu = [Duration::ZERO; SOURCES];
+    let mut inflight = [0usize; SOURCES];
+    let mut done = [0usize; SOURCES];
     // subjects a batch child could not resolve, re-derived one process
     // each; batching everything is only right while this stays small
-    let mut suspect = [0usize; 3];
-    let mut seed_ctr = [0u64; 3];
+    let mut suspect = [0usize; SOURCES];
+    let mut seed_ctr = [0u64; SOURCES];
+    // the regression corpus goes through typemorph once, first
+    let mut pins_next = 0usize;
     let mut launched = 0usize;
     let mut ring: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     let mut ring_sigs: ahash::AHashSet<u64> = ahash::AHashSet::default();
@@ -4160,7 +4285,7 @@ pub async fn run_aggregator(
             let total_done: usize = done.iter().sum();
             let total_cpu: f64 = cpu.iter().map(|c| c.as_secs_f64()).sum();
             let mean = if total_done > 0 { total_cpu / total_done as f64 } else { 1.0 };
-            let proj: Vec<f64> = (0..3)
+            let proj: Vec<f64> = (0..SOURCES)
                 .map(|i| {
                     let m = if done[i] > 0 {
                         cpu[i].as_secs_f64() / done[i] as f64
@@ -4173,16 +4298,13 @@ pub async fn run_aggregator(
             let tot: f64 = proj.iter().sum();
             let mut si = 0;
             let mut best = f64::NEG_INFINITY;
-            for i in 0..3 {
-                let target = weights[i].max(0.0) / wsum;
+            for i in (0..SOURCES).filter(|&i| weights[i] > 0.0) {
+                let target = weights[i] / wsum;
                 let actual = if tot > 0.0 { proj[i] / tot } else { 0.0 };
                 if target - actual > best {
                     best = target - actual;
                     si = i;
                 }
-            }
-            if weights[si] <= 0.0 {
-                break;
             }
             let count = match iters {
                 Some(n) => bsize.min(n.saturating_sub(launched)),
@@ -4191,8 +4313,8 @@ pub async fn run_aggregator(
             if count == 0 {
                 break;
             }
-            let sample: Vec<String> = if KINDS[si] == SourceKind::Fuzz && !ring.is_empty()
-            {
+            let breeds = matches!(KINDS[si], SourceKind::Fuzz | SourceKind::Typemorph);
+            let sample: Vec<String> = if breeds && !ring.is_empty() {
                 (0..RING_SAMPLE.min(ring.len()))
                     .map(|_| ring[rng.below(ring.len())].clone())
                     .collect()
@@ -4200,6 +4322,14 @@ pub async fn run_aggregator(
                 Vec::new()
             };
             seed_ctr[si] += 1;
+            let pins = match KINDS[si] {
+                SourceKind::Typemorph => {
+                    let start = pins_next;
+                    pins_next = (start + count).min(corpus::REGRESSION_CORPUS.len());
+                    start..pins_next
+                }
+                _ => 0..0,
+            };
             let order = WorkOrder {
                 kind: KINDS[si],
                 // distinct per (source, order) without a shared counter
@@ -4208,6 +4338,7 @@ pub async fn run_aggregator(
                     .wrapping_add(seed_ctr[si]),
                 count,
                 ring: sample,
+                pins,
             };
             launched += count;
             inflight[si] += count;
@@ -4247,9 +4378,10 @@ pub async fn run_aggregator(
                         0
                     };
                     eprintln!(
-                        "  {}…{} run, {} divergences, {} crashes, {} in corpus, \
+                        "  {}…{} run, {} {}, {} crashes, {} in corpus, \
                          {} novel shapes, {}% cpu, {}% individual",
                         KINDS[si].tag(), stats[si].run, stats[si].divergences,
+                        KINDS[si].findings(),
                         stats[si].crashes, corpus.len(), stats[si].novel, pct, ipct
                     );
                 }
@@ -4263,6 +4395,12 @@ pub async fn run_aggregator(
                     let corpus = corpus.clone();
                     let found = found.clone();
                     derive.spawn(async move {
+                        if KINDS[si] == SourceKind::Typemorph {
+                            if confirm_typeflip(&corpus, &prog, timeout).await {
+                                found.divergences[si].fetch_add(1, Relaxed);
+                            }
+                            return;
+                        }
                         let (res, _) = check_isolated(&prog, timeout).await;
                         match res {
                             PoolResult::Agree { .. } => (),
@@ -4307,11 +4445,34 @@ pub async fn run_aggregator(
         }
     }
     while derive.join_next().await.is_some() {}
-    for i in 0..3 {
+    for i in 0..SOURCES {
         stats[i].divergences = found.divergences[i].load(Relaxed);
         stats[i].crashes = found.crashes[i].load(Relaxed);
     }
-    (0..3).map(|i| (KINDS[i].tag(), stats[i].clone(), cpu[i])).collect()
+    (0..SOURCES).map(|i| (KINDS[i].tag(), stats[i].clone(), cpu[i])).collect()
+}
+
+/// Re-probe a subject that flipped in a batch child in a fresh process
+/// and record each flip class it shows there; a flip the fresh process
+/// does not reproduce is an acceptance flap, its own class. True when
+/// the fresh process flipped too.
+async fn confirm_typeflip(corpus: &Corpus, prog: &str, timeout: Duration) -> bool {
+    let flips = match typemorph_child(prog, timeout).await {
+        Ok(rep) => tm_flips(&rep),
+        Err(e) => vec![("harness".to_string(), e)],
+    };
+    let confirmed = !flips.is_empty();
+    let flips = match confirmed {
+        true => flips,
+        false => vec![("unconfirmed".to_string(), "fresh-process flap".to_string())],
+    };
+    for (id, head) in flips {
+        if corpus.record_typeflip(prog, &id, &head) {
+            println!("TYPEFLIP — {id}: {head}");
+            println!("    program: {}", prog.replace('\n', "\\n"));
+        }
+    }
+    confirmed
 }
 
 /// Run several sources through one pool, dividing the box by measured
@@ -4734,6 +4895,40 @@ mod tests {
             oracle_tier("// a header naming throttle\ncount(x)"),
             OracleTier::Exact
         );
+    }
+
+    #[test]
+    fn work_order_round_trips_its_pins() {
+        let order = WorkOrder {
+            kind: SourceKind::Typemorph,
+            seed: 7,
+            count: 3,
+            ring: vec!["1 + 2".into(), "{ let x = 1; x }".into()],
+            pins: 4..6,
+        };
+        let back = WorkOrder::decode(&order.encode()).unwrap();
+        assert_eq!(back.kind, SourceKind::Typemorph);
+        assert_eq!((back.seed, back.count, back.pins.clone()), (7, 3, 4..6));
+        assert_eq!(back.ring, order.ring);
+        let mut next = back.generator();
+        for i in 4..6 {
+            assert_eq!(next(), corpus::REGRESSION_CORPUS[i].1, "pins come first");
+        }
+    }
+
+    #[test]
+    fn a_typeflip_class_is_recorded_once_across_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let corpus = Corpus::load(dir.path());
+        let head = "N: unreachable arm";
+        assert!(corpus.record_typeflip("f(1)", "let-extract#3", head));
+        assert!(!corpus.record_typeflip("g(2)", "let-extract#9", head), "same class");
+        assert!(corpus.record_typeflip("g(2)", "block-wrap#0", head), "another kind");
+        let reloaded = Corpus::load(dir.path());
+        assert!(!reloaded.record_typeflip("h(3)", "let-extract#1", head));
+        assert!(reloaded.record_typeflip("h(3)", "let-extract#1", "N: type mismatch"));
+        let files = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(files, 3);
     }
 
     #[test]

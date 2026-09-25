@@ -2,8 +2,9 @@
 
 # Launch/stop/inspect a soak campaign.
 #
-# ONE process, not three. The campaign's three work sources (corpus
-# mutation, generated programs, generated scheduled programs) share a
+# ONE process, not one per source. The campaign's four work sources
+# (corpus mutation, generated programs, generated scheduled programs,
+# typemorph acceptance probes) share a
 # single pool that divides the box by MEASURED CPU — see `soak` in
 # main.rs. Three separate lane processes could only divide a box through
 # the OS scheduler, which arbitrates between runnable processes, so equal
@@ -29,7 +30,7 @@ binary="$target/release/graphix-fuzz"
 nice_level=${GRAPHIX_FUZZ_NICE:-19}
 
 usage() {
-    echo "usage: $0 start <campaign> [workers] [base-seed] [fuzz:generate:reactive]" >&2
+    echo "usage: $0 start <campaign> [workers] [base-seed] [fuzz:generate:reactive:typemorph]" >&2
     echo "       $0 stop <campaign>" >&2
     echo "       $0 status <campaign>" >&2
     exit 2
@@ -183,7 +184,7 @@ start() {
     # 8x oversubscription is claimed once.
     workers=${2:-$(( $(nproc) * 8 ))}
     seed=${3:-$(date +%s)}
-    mix=${4:-50:25:25}
+    mix=${4:-50:25:25:10}
     [[ $workers =~ ^[1-9][0-9]*$ ]] || {
         echo "workers must be positive" >&2
         exit 2
@@ -200,8 +201,8 @@ start() {
         echo "base-seed must be an unsigned integer" >&2
         exit 2
     }
-    [[ $mix =~ ^[0-9]+(\.[0-9]+)?:[0-9]+(\.[0-9]+)?:[0-9]+(\.[0-9]+)?$ ]] || {
-        echo "mix must be fuzz:generate:reactive, e.g. 50:25:25" >&2
+    [[ $mix =~ ^[0-9]+(\.[0-9]+)?(:[0-9]+(\.[0-9]+)?){3}$ ]] || {
+        echo "mix must be fuzz:generate:reactive:typemorph, e.g. 50:25:25:10" >&2
         exit 2
     }
     [[ $nice_level =~ ^-?[0-9]+$ ]] && ((nice_level >= -20 && nice_level <= 19)) || {

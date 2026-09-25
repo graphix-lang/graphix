@@ -70,7 +70,7 @@ HOSTS=(
     "ryouko:rsync:80:1:linux"
 )
 
-MIX=${FLEET_MIX:-50:25:25}
+MIX=${FLEET_MIX:-50:25:25:10}
 SYNC_WAIT=${FLEET_SYNC_WAIT:-600}     # seconds to wait for syncthing
 LAUNCH_WAIT=${FLEET_LAUNCH_WAIT:-5400} # seconds to wait for build+gate
 

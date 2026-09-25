@@ -77,9 +77,10 @@ typechecker mutates `Expr.typ` and TVars in place, so reusing a typed
 bookkeeping with the compiler's. Every test case is also human-readable
 for triage.
 
-**The campaign is one process** (`soak.sh`): the three work sources
+**The campaign is one process** (`soak.sh`): the four work sources
 share a single pool that divides the box by measured CPU
-(`fuzz:generate:reactive` shares). Three lane processes could only
+(`fuzz:generate:reactive:typemorph` shares; §8 for the typemorph
+source). Three lane processes could only
 divide a box through the OS scheduler, and equal worker counts bought
 13/19/66 CPU splits. **The evolutionary ring**: agreeing mutants where
 both modes produced runtime traces and whose AST shape signature is
@@ -420,7 +421,15 @@ flip. Rejection heads are normalized (digit runs collapsed) so
 positions and fresh-counter ids do not split buckets. `typemorph
 <file>` is the triage tool; `typemorph-scan [n] [seed]` scans the
 findings corpus plus generated subjects — a hand-run gate, re-run when
-the transform catalog or the typechecker changes.
+the transform catalog or the typechecker changes. **In a soak** it is
+the fourth source: its orders take the regression corpus once, then
+generated, reactive and mutant subjects a third each (mutants breed
+from the fuzz ring); a batch child probes each subject and returns the
+ones that flipped, the parent re-probes each in a fresh process, and
+each flip class (transform kind + normalized head) is written once as
+`typeflip_N.gx`, the subject under a comment header, so `typemorph
+<file>` reproduces it as it stands; a flip the fresh process does not
+reproduce is the `unconfirmed` class (an acceptance flap).
 
 Not built: the reflective oracle (re-insert the checker's own printed
 inferred types as annotations — blocked on the open ruling that

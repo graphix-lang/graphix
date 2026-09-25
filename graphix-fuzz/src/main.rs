@@ -20,18 +20,18 @@ use std::{
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Default soak mix, as CPU shares `fuzz:generate:reactive`, weighted
-/// by measured findings per CPU-second.
-const DEFAULT_MIX: &str = "50:25:25";
+/// Default soak mix, as CPU shares `fuzz:generate:reactive:typemorph`,
+/// the first three weighted by measured findings per CPU-second.
+const DEFAULT_MIX: &str = "50:25:25:10";
 
-/// Parse a `fuzz:generate:reactive` CPU-share mix. Shares are relative;
-/// the pool normalizes them.
-fn parse_mix(spec: &str) -> Result<[f64; 3]> {
+/// Parse a `fuzz:generate:reactive:typemorph` CPU-share mix. Shares are
+/// relative; the pool normalizes them.
+fn parse_mix(spec: &str) -> Result<[f64; graphix_fuzz::SOURCES]> {
     let parts: Vec<&str> = spec.split(':').collect();
-    if parts.len() != 3 {
-        bail!("mix must be fuzz:generate:reactive, got {spec:?}");
+    if parts.len() != graphix_fuzz::SOURCES {
+        bail!("mix must be fuzz:generate:reactive:typemorph, got {spec:?}");
     }
-    let mut out = [0.0; 3];
+    let mut out = [0.0; graphix_fuzz::SOURCES];
     for (i, p) in parts.iter().enumerate() {
         out[i] = p
             .parse::<f64>()
@@ -708,11 +708,16 @@ async fn main() -> Result<()> {
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("typemorph-one <outfile>"))?;
             let code = read_stdin()?;
-            let text =
-                match graphix_fuzz::typemorph_subject(code.trim(), timeout(), 3).await {
-                    Ok(rep) => rep.render(),
-                    Err(e) => format!("HARNESS {e}\n"),
-                };
+            let text = match graphix_fuzz::typemorph_subject(
+                code.trim(),
+                timeout(),
+                graphix_fuzz::TM_CAP,
+            )
+            .await
+            {
+                Ok(rep) => rep.render(),
+                Err(e) => format!("HARNESS {e}\n"),
+            };
             std::fs::write(&out, text)?;
         }
         // one-shot triage: every applicable transform on <file>, flips
@@ -964,8 +969,10 @@ async fn main() -> Result<()> {
             for (name, stats, cpu) in &per_source {
                 let pct =
                     if total > 0.0 { cpu.as_secs_f64() * 100.0 / total } else { 0.0 };
+                let findings = graphix_fuzz::SourceKind::parse(name)
+                    .map_or("divergences", |k| k.findings());
                 println!(
-                    "done {name}: {} programs, {} divergences, {} crashes, \
+                    "done {name}: {} programs, {} {findings}, {} crashes, \
                      {} novel shapes, {:.0}% cpu",
                     stats.run, stats.divergences, stats.crashes, stats.novel, pct
                 );
@@ -1066,7 +1073,7 @@ async fn main() -> Result<()> {
         }
         _ => bail!(
             "usage: graphix-fuzz <check|run|minimize|typemorph> <file>  |  \
-             graphix-fuzz soak [iters] [seed] [fuzz:generate:reactive]  |  \
+             graphix-fuzz soak [iters] [seed] [fuzz:generate:reactive:typemorph]  |  \
              graphix-fuzz <fuzz|generate> [iters] [seed] [--reactive]  |  \
              graphix-fuzz <gen|gen-check> [n] [seed] [--reactive]  |  \
              graphix-fuzz reactive-check [n] [seed]  |  \
