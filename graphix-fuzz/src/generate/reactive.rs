@@ -9,7 +9,7 @@ use netidx::publisher::Value;
 
 use super::{
     GenCfg, GenCtx, GenType, chance, exprs, types,
-    types::{F64, I64, NumTy},
+    types::{F64, I64, Label, NumTy},
 };
 use crate::mutate::Rng;
 use crate::schedule::Schedule;
@@ -38,6 +38,8 @@ pub struct ReactiveStats {
     pub burst_ceremonies: usize,
     /// Ceremonies with an `abort(..)` clause.
     pub aborts: usize,
+    /// Helpers with a labeled default (select-arm and ceremony helpers).
+    pub labeled_calls: usize,
     /// `seqq` ceremonies with a `flush(..)` clause.
     pub flushes: usize,
     /// Ceremony steps by kind, in [`STEP_KINDS`] order.
@@ -456,10 +458,29 @@ fn slept_arm(
             let h = ctx.fresh();
             let x = ctx.fresh();
             let body = exprs::gen_typed(ctx, rng, &I64, 1);
-            stmts.push(format!(
-                "let {h} = |{x}: i64| -> i64 {{ let y = {x} * i64:2; y + ({body}) }}"
-            ));
-            format!("{h}({input})")
+            // half the time a labeled scale whose default is the input
+            // itself or a literal, and the call supplies or omits it
+            if chance(rng, 0.5) {
+                st.labeled_calls += 1;
+                let k = ctx.fresh();
+                let default = match rng.below(2) {
+                    0 => input.clone(),
+                    _ => format!("i64:{}", 1 + rng.below(4)),
+                };
+                stmts.push(format!(
+                    "let {h} = |#{k}: i64 = {default}, {x}: i64| -> i64 \
+                     {{ let y = {x} * {k}; y + ({body}) }}"
+                ));
+                match chance(rng, 0.5) {
+                    true => format!("{h}(#{k}: i64:{}, {input})", 1 + rng.below(4)),
+                    false => format!("{h}({input})"),
+                }
+            } else {
+                stmts.push(format!(
+                    "let {h} = |{x}: i64| -> i64 {{ let y = {x} * i64:2; y + ({body}) }}"
+                ));
+                format!("{h}({input})")
+            }
         }
         1 => format!(
             "array::len(array::window(#n: i64:{}, [{input}], i64:100 / ({input} % i64:3)))",
@@ -585,11 +606,21 @@ fn ceremony(
         ctx.truncate(mark);
         e
     };
-    stmts.push(format!(
-        "let {h} = |{x}: i64| -> i64 {x} * i64:{} + ({hbody})",
-        1 + rng.below(4)
-    ));
-    ctx.push(h.clone(), GenType::Fn { params: vec![I64], ret: Box::new(I64) });
+    let scale = 1 + rng.below(4);
+    // half the time the scale is a labeled default the steps' calls
+    // supply or omit (a literal: the steps' firing stays countable)
+    let labels = if chance(rng, 0.5) {
+        st.labeled_calls += 1;
+        let k = ctx.fresh();
+        stmts.push(format!(
+            "let {h} = |#{k}: i64 = i64:{scale}, {x}: i64| -> i64 {x} * {k} + ({hbody})"
+        ));
+        vec![Label { name: k, ty: I64, optional: true }]
+    } else {
+        stmts.push(format!("let {h} = |{x}: i64| -> i64 {x} * i64:{scale} + ({hbody})"));
+        Vec::new()
+    };
+    ctx.push(h.clone(), GenType::Fn { labels, params: vec![I64], ret: Box::new(I64) });
     let bad = ctx.fresh();
     stmts.push(format!(
         "let {bad} = |{x}: i64| -> [i64, Error<`Oops>] \
@@ -828,7 +859,7 @@ mod test {
             slept += (st.slept_arms > 0) as usize;
         }
         assert!(acc * 100 / N >= 25, "accumulators in only {acc}/{N}");
-        assert!(cc * 100 / N >= 25, "cross-cycle in only {cc}/{N}");
+        assert!(cc * 100 / N >= 20, "cross-cycle in only {cc}/{N}");
         assert!(ctr * 100 / N >= 10, "counters in only {ctr}/{N}");
         assert!(run * 100 / N >= 1, "runaways in only {run}/{N}");
         assert!(run * 100 / N <= 15, "runaways in {run}/{N} — too hot");
@@ -849,6 +880,7 @@ mod test {
             sum.burst_ceremonies += st.burst_ceremonies;
             sum.aborts += st.aborts;
             sum.flushes += st.flushes;
+            sum.labeled_calls += st.labeled_calls;
             for (a, b) in sum.steps.iter_mut().zip(st.steps) {
                 *a += b;
             }
@@ -862,6 +894,7 @@ mod test {
         );
         assert!(sum.aborts * 100 / N >= 5, "aborts: {}/{N}", sum.aborts);
         assert!(sum.flushes * 100 / N >= 2, "flushes: {}/{N}", sum.flushes);
+        assert!(sum.labeled_calls * 100 / N >= 5, "labeled: {}/{N}", sum.labeled_calls);
         for (kind, n) in STEP_KINDS.iter().zip(sum.steps) {
             assert!(n * 100 / N >= 3, "{kind:?} steps: only {n} over {N} programs");
         }

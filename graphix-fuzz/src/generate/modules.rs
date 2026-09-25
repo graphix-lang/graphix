@@ -44,7 +44,7 @@ fn map_abstract(t: &mut GenType, f: &impl Fn(&mut String)) {
         GenType::Variant(vs) => vs
             .iter_mut()
             .for_each(|(_, ts)| ts.iter_mut().for_each(|t| map_abstract(t, f))),
-        GenType::Fn { params, ret } => {
+        GenType::Fn { params, ret, .. } => {
             params.iter_mut().for_each(|t| map_abstract(t, f));
             map_abstract(ret, f)
         }
@@ -168,7 +168,7 @@ pub(super) fn gen_module(
             .into_iter()
             .filter(|(n, _)| n.contains("::"))
             .filter_map(|(n, t)| match t {
-                GenType::Fn { params, ret } => {
+                GenType::Fn { params, ret, .. } => {
                     Some((n.to_string(), params.clone(), (**ret).clone()))
                 }
                 _ => None,
@@ -238,7 +238,11 @@ pub(super) fn gen_module(
                 ret.render()
             ));
         }
-        let fty = GenType::Fn { params: params.clone(), ret: Box::new(ret.clone()) };
+        let fty = GenType::Fn {
+            labels: Vec::new(),
+            params: params.clone(),
+            ret: Box::new(ret.clone()),
+        };
         if chance(rng, 0.15) {
             gxi.push_str("/// generated\n");
         }
@@ -311,11 +315,19 @@ pub(super) fn gen_module(
             }
             ctx.push(
                 format!("{mname}::Tr::tv"),
-                GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+                GenType::Fn {
+                    labels: Vec::new(),
+                    params: vec![aty.clone()],
+                    ret: Box::new(I64),
+                },
             );
             ctx.push(
                 format!("{mname}::via"),
-                GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+                GenType::Fn {
+                    labels: Vec::new(),
+                    params: vec![aty.clone()],
+                    ret: Box::new(I64),
+                },
             );
             stats.trait_call = true;
             // union dispatch: a second abstract implementing the same
@@ -331,7 +343,11 @@ pub(super) fn gen_module(
                 // seed one T2-routed call as a statement
                 ctx.push(
                     format!("{mname}::both"),
-                    GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+                    GenType::Fn {
+                        labels: Vec::new(),
+                        params: vec![aty.clone()],
+                        ret: Box::new(I64),
+                    },
                 );
                 let arg = exprs::gen_typed(ctx, rng, &I64, 1);
                 let w = ctx.fresh();
@@ -354,6 +370,7 @@ pub(super) fn gen_module(
                 ctx.push(
                     format!("{mname}::tsum"),
                     GenType::Fn {
+                        labels: Vec::new(),
                         params: vec![GenType::Array(Box::new(aty.clone()))],
                         ret: Box::new(I64),
                     },
@@ -375,6 +392,7 @@ pub(super) fn gen_module(
             gx.push_str(impls);
             gx.push_str(fns);
             let f2 = GenType::Fn {
+                labels: Vec::new(),
                 params: vec![aty.clone(), aty.clone()],
                 ret: Box::new(GenType::Bool),
             };
@@ -383,13 +401,18 @@ pub(super) fn gen_module(
             ctx.push(
                 format!("{mname}::tmap"),
                 GenType::Fn {
+                    labels: Vec::new(),
                     params: vec![aty.clone(), aty.clone()],
                     ret: Box::new(I64),
                 },
             );
             ctx.push(
                 format!("{mname}::tshow"),
-                GenType::Fn { params: vec![aty.clone()], ret: Box::new(GenType::Str) },
+                GenType::Fn {
+                    labels: Vec::new(),
+                    params: vec![aty.clone()],
+                    ret: Box::new(GenType::Str),
+                },
             );
             stats.core_trait = true;
         }
@@ -409,18 +432,30 @@ pub(super) fn gen_module(
             ] {
                 ctx.push(
                     format!("{mname}::csize"),
-                    GenType::Fn { params: vec![pty], ret: Box::new(I64) },
+                    GenType::Fn {
+                        labels: Vec::new(),
+                        params: vec![pty],
+                        ret: Box::new(I64),
+                    },
                 );
             }
             stats.collection_generic = true;
         }
         ctx.push(
             format!("{mname}::mk"),
-            GenType::Fn { params: vec![I64], ret: Box::new(aty.clone()) },
+            GenType::Fn {
+                labels: Vec::new(),
+                params: vec![I64],
+                ret: Box::new(aty.clone()),
+            },
         );
         ctx.push(
             format!("{mname}::un"),
-            GenType::Fn { params: vec![aty.clone()], ret: Box::new(I64) },
+            GenType::Fn {
+                labels: Vec::new(),
+                params: vec![aty.clone()],
+                ret: Box::new(I64),
+            },
         );
         // seed one T-typed binding; production and consumption are
         // organic vocabulary from here
@@ -548,7 +583,7 @@ pub(super) fn gen_dynamic_module(
             sigp.join(", "),
             ret.render()
         ));
-        let fty = GenType::Fn { params, ret: Box::new(ret) };
+        let fty = GenType::Fn { labels: Vec::new(), params, ret: Box::new(ret) };
         sig.push_str(&format!("val {fname}: {}; ", fty.render()));
         public.push((fname, fty));
     }
@@ -572,7 +607,7 @@ pub(super) fn gen_dynamic_module(
     )];
     // consume one public fn through the status gate
     let (fname, fty) = &public[rng.below(public.len())];
-    let GenType::Fn { params, ret } = fty else { unreachable!() };
+    let GenType::Fn { params, ret, .. } = fty else { unreachable!() };
     let args: Vec<String> =
         params.iter().map(|t| exprs::gen_typed(ctx, rng, t, 1)).collect();
     let fallback = exprs::gen_typed(ctx, rng, ret, 1);

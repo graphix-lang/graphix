@@ -42,6 +42,11 @@ pub struct GenCfg {
     pub p_mono_pair: f64,
     /// A typed lambda's body is a block with a collision-prone local.
     pub p_body_block: f64,
+    /// A typed lambda takes labeled params (required or defaulted).
+    pub p_labeled: f64,
+    /// A statement slot passes a visible labeled lambda to a wrapper
+    /// that calls it through a view of its type.
+    pub p_labeled_hof: f64,
     /// A statement slot emits a terminating `let rec` + call.
     pub p_rec: f64,
     /// A statement slot emits the whole shadowed-lambda-name template.
@@ -96,6 +101,8 @@ impl Default for GenCfg {
             p_bare: 0.05,
             p_mono_pair: 0.5,
             p_body_block: 0.4,
+            p_labeled: 0.7,
+            p_labeled_hof: 0.3,
             p_rec: 0.06,
             p_lambda_shadow_template: 0.05,
             p_variant: 0.08,
@@ -134,6 +141,10 @@ pub struct GenStats {
     pub collision_local: bool,
     /// A `let rec` was emitted.
     pub rec: bool,
+    /// A typed lambda with labeled params was emitted.
+    pub labeled_fn: bool,
+    /// A labeled lambda was passed to a wrapper through a view.
+    pub labeled_hof: bool,
     /// The error-arm-lambda template was emitted.
     pub error_lambda: bool,
     /// A module (wrapper file sections) was emitted.
@@ -290,12 +301,17 @@ impl GenCtx {
     }
 
     /// Visible typed lambdas returning `ty` (a lambda name shadowed by
-    /// a value is NOT callable).
-    fn fns_returning(&self, ty: &GenType) -> Vec<(&str, Vec<GenType>)> {
+    /// a value is NOT callable), with their labels and positionals.
+    fn fns_returning(
+        &self,
+        ty: &GenType,
+    ) -> Vec<(&str, Vec<types::Label>, Vec<GenType>)> {
         self.visible_entries()
             .into_iter()
             .filter_map(|(n, t)| match t {
-                GenType::Fn { params, ret } if **ret == *ty => Some((n, params.clone())),
+                GenType::Fn { labels, params, ret } if **ret == *ty => {
+                    Some((n, labels.clone(), params.clone()))
+                }
                 _ => None,
             })
             .collect()
@@ -392,6 +408,11 @@ fn gen_slots(
                 format!("{{ let m = e; {acc} <- m }}")
             };
             stmts.push(format!("catch(e) {handler}"));
+        } else if chance(rng, cfg.p_labeled_hof)
+            && let hof = funcs::gen_labeled_hof(ctx, rng, cfg, stats)
+            && !hof.is_empty()
+        {
+            stmts.extend(hof);
         } else if chance(rng, cfg.p_lambda_shadow_template) {
             stmts.extend(funcs::gen_shadowed_lambda_template(ctx, rng, cfg, stats));
         } else if chance(rng, cfg.p_bare) {
@@ -496,6 +517,25 @@ mod test {
                 Some(&rest[..end])
             })
             .collect()
+    }
+
+    /// Labeled lambdas and labeled lambdas passed through a view reach
+    /// a campaign.
+    #[test]
+    fn labeled_presence() {
+        let mut rng = Rng::new(0x1abe);
+        let cfg = GenCfg::default();
+        let (mut labeled, mut hof, mut defined) = (0usize, 0usize, 0usize);
+        const N: usize = 300;
+        for _ in 0..N {
+            let (p, stats) = gen_program_stats(&cfg, &mut rng);
+            labeled += stats.labeled_fn as usize;
+            hof += stats.labeled_hof as usize;
+            defined += p.contains(" = |#") as usize;
+        }
+        assert!(labeled * 100 / N >= 10, "labeled lambdas in {labeled}/{N}");
+        assert!(hof * 100 / N >= 2, "labeled views in {hof}/{N}");
+        assert!(defined * 100 / N >= 10, "labeled definitions in {defined}/{N}");
     }
 
     /// A healthy fraction of default-profile programs embed a nested

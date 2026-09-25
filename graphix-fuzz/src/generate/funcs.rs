@@ -5,7 +5,7 @@
 
 use super::{
     GenCfg, GenCtx, GenStats, chance, exprs,
-    types::{self, GenType, I64},
+    types::{self, GenType, I64, Label},
 };
 use crate::mutate::Rng;
 
@@ -66,30 +66,51 @@ fn lambda_body(
     }
 }
 
-/// A typed lambda binding (`let f = |x: i64, s: string| -> i64 body`).
-/// Params may shadow outer names; the body sees params + everything
-/// outer, so it captures naturally.
+/// A typed lambda binding (`let f = |x: i64, s: string| -> i64 body`),
+/// with `p_labeled` labeled params first (`|#a: i64, #b: string = "x",
+/// x: i64|`, then possibly no positionals). Params may shadow outer
+/// names; the body sees params + everything outer, so it captures
+/// naturally. A default sees only the outer scope.
 pub(super) fn gen_typed_lambda(
     ctx: &mut GenCtx,
     rng: &mut Rng,
     cfg: &GenCfg,
     stats: &mut GenStats,
 ) -> String {
-    let arity = 1 + rng.below(3);
+    let nlabels = if chance(rng, cfg.p_labeled) { 1 + rng.below(3) } else { 0 };
+    let arity = if nlabels > 0 { rng.below(3) } else { 1 + rng.below(3) };
     let params: Vec<GenType> = (0..arity).map(|_| types::scalar_type(rng)).collect();
     let ret = types::scalar_type(rng);
     let names = param_names(ctx, rng, cfg, arity);
+    let mut labeled: Vec<(Label, Option<String>)> = Vec::new();
+    for name in param_names_excluding(ctx, rng, cfg, nlabels, &names) {
+        let ty = types::scalar_type(rng);
+        let default = chance(rng, 0.5).then(|| exprs::gen_typed(ctx, rng, &ty, 1));
+        labeled.push((Label { name, ty, optional: default.is_some() }, default));
+    }
+    if !labeled.is_empty() {
+        stats.labeled_fn = true;
+    }
     let mark = ctx.mark();
+    for (l, _) in &labeled {
+        ctx.push(l.name.clone(), l.ty.clone());
+    }
     for (n, t) in names.iter().zip(params.iter()) {
         ctx.push(n.clone(), t.clone());
     }
     let body = lambda_body(ctx, rng, cfg, stats, &ret);
     ctx.truncate(mark);
-    let sig: Vec<_> = names
+    let sig: Vec<_> = labeled
         .iter()
-        .zip(params.iter())
-        .map(|(n, t)| format!("{n}: {}", t.render()))
+        .map(|(l, d)| match d {
+            Some(d) => format!("#{}: {} = {d}", l.name, l.ty.render()),
+            None => format!("#{}: {}", l.name, l.ty.render()),
+        })
+        .chain(
+            names.iter().zip(params.iter()).map(|(n, t)| format!("{n}: {}", t.render())),
+        )
         .collect();
+    let labels: Vec<Label> = labeled.into_iter().map(|(l, _)| l).collect();
     let name = ctx.name_for_bind(rng, cfg);
     if matches!(
         ctx.visible_type(&name),
@@ -98,8 +119,90 @@ pub(super) fn gen_typed_lambda(
         stats.lambda_rebind = true;
     }
     let stmt = format!("let {name} = |{}| -> {} {body}", sig.join(", "), ret.render());
-    ctx.push(name, GenType::Fn { params, ret: Box::new(ret) });
+    ctx.push(name, GenType::Fn { labels, params, ret: Box::new(ret) });
     stmt
+}
+
+/// `n` names for params, distinct from each other and from `taken`.
+fn param_names_excluding(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    n: usize,
+    taken: &[String],
+) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for _ in 0..n {
+        let mut name = ctx.name_for_bind(rng, cfg);
+        while names.contains(&name) || taken.contains(&name) {
+            name = ctx.fresh();
+        }
+        names.push(name);
+    }
+    names
+}
+
+/// A labeled lambda passed as a value: a wrapper taking a function of a
+/// VIEW of its type and calling it, then the wrapper applied to it. The
+/// view keeps every required label and each optional one dropped, kept
+/// optional or made required (`fntyp.rs::align` admits all three); the
+/// wrapper's call supplies what the view requires and each optional
+/// label of the view at even odds. The wrapper stays out of the callable
+/// vocabulary (a function-typed argument has no generated value).
+pub(super) fn gen_labeled_hof(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    cfg: &GenCfg,
+    stats: &mut GenStats,
+) -> Vec<String> {
+    let labeled: Vec<(String, Vec<Label>, Vec<GenType>, GenType)> = ctx
+        .visible_entries()
+        .into_iter()
+        .filter_map(|(n, t)| match t {
+            GenType::Fn { labels, params, ret } if !labels.is_empty() => {
+                Some((n.to_string(), labels.clone(), params.clone(), (**ret).clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    if labeled.is_empty() {
+        return Vec::new();
+    }
+    stats.labeled_hof = true;
+    let (f, labels, params, ret) = labeled[rng.below(labeled.len())].clone();
+    let view: Vec<Label> = labels
+        .into_iter()
+        .filter_map(|l| match (l.optional, rng.below(3)) {
+            (false, _) => Some(l),
+            (true, 0) => None,
+            (true, 1) => Some(l),
+            (true, _) => Some(Label { optional: false, ..l }),
+        })
+        .collect();
+    let fty = GenType::Fn {
+        labels: view.clone(),
+        params: params.clone(),
+        ret: Box::new(ret.clone()),
+    };
+    let h = ctx.fresh();
+    // the wrapper must not shadow the function it is applied to
+    let mut w = ctx.name_for_bind(rng, cfg);
+    while w == f {
+        w = ctx.fresh();
+    }
+    let mark = ctx.mark();
+    ctx.push(h.clone(), GenType::Opaque);
+    let call = exprs::call_args(ctx, rng, &view, &params, 1);
+    ctx.truncate(mark);
+    let r = ctx.fresh();
+    let stmts = vec![
+        format!("let {w} = |{h}: {}| -> {} {h}({call})", fty.render(), ret.render()),
+        format!("let {r} = {w}({f})"),
+    ];
+    // w masks whatever it shadowed and is never called by the generator
+    ctx.push(w, GenType::Opaque);
+    ctx.push(r, ret);
+    stmts
 }
 
 /// A polymorphic lambda binding in the explicit constraint form
@@ -209,7 +312,11 @@ pub(super) fn gen_shadowed_lambda_template(
     ));
     ctx.push(
         f.clone(),
-        GenType::Fn { params: vec![ty.clone()], ret: Box::new(ty.clone()) },
+        GenType::Fn {
+            labels: Vec::new(),
+            params: vec![ty.clone()],
+            ret: Box::new(ty.clone()),
+        },
     );
     let g = ctx.fresh();
     let p1 = ctx.fresh();
@@ -220,7 +327,11 @@ pub(super) fn gen_shadowed_lambda_template(
     ));
     ctx.push(
         g.clone(),
-        GenType::Fn { params: vec![ty.clone()], ret: Box::new(ty.clone()) },
+        GenType::Fn {
+            labels: Vec::new(),
+            params: vec![ty.clone()],
+            ret: Box::new(ty.clone()),
+        },
     );
     if rng.below(2) == 0 {
         let p2 = ctx.fresh();
@@ -229,7 +340,14 @@ pub(super) fn gen_shadowed_lambda_template(
             ["-", "*"][rng.below(2)],
             types::literal(rng, &ty)
         ));
-        ctx.push(f, GenType::Fn { params: vec![ty.clone()], ret: Box::new(ty.clone()) });
+        ctx.push(
+            f,
+            GenType::Fn {
+                labels: Vec::new(),
+                params: vec![ty.clone()],
+                ret: Box::new(ty.clone()),
+            },
+        );
     } else {
         stmts.push(format!("let {f} = {}", types::literal(rng, &ty)));
         ctx.push(f, ty.clone());

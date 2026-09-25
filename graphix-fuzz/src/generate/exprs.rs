@@ -3,8 +3,8 @@
 //! in-scope references.
 
 use super::{
-    GenCtx,
-    types::{self, GenType, I64, NUM_TYS, NumTy},
+    GenCtx, chance,
+    types::{self, GenType, I64, Label, NUM_TYS, NumTy},
 };
 use crate::mutate::Rng;
 
@@ -21,15 +21,36 @@ fn try_call(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<S
         return None;
     }
     let n = rng.below(typed.len() + polys.len());
-    let (name, param_tys) = if n < typed.len() {
-        let (name, params) = &typed[n];
-        (name.to_string(), params.clone())
+    let (name, labels, param_tys) = if n < typed.len() {
+        let (name, labels, params) = &typed[n];
+        (name.to_string(), labels.clone(), params.clone())
     } else {
         let (name, arity) = polys[n - typed.len()];
-        (name.to_string(), vec![ty.clone(); arity])
+        (name.to_string(), Vec::new(), vec![ty.clone(); arity])
     };
-    let args: Vec<_> = param_tys.iter().map(|p| gen_typed(ctx, rng, p, depth)).collect();
-    Some(format!("{name}({})", args.join(", ")))
+    Some(format!("{name}({})", call_args(ctx, rng, &labels, &param_tys, depth)))
+}
+
+/// A call's arguments: every required label and each optional one at
+/// even odds, the labeled ones in random order, then the positionals.
+pub(super) fn call_args(
+    ctx: &GenCtx,
+    rng: &mut Rng,
+    labels: &[Label],
+    params: &[GenType],
+    depth: usize,
+) -> String {
+    let mut given: Vec<&Label> =
+        labels.iter().filter(|l| !l.optional || chance(rng, 0.5)).collect();
+    for i in (1..given.len()).rev() {
+        given.swap(i, rng.below(i + 1));
+    }
+    let mut args: Vec<String> = given
+        .into_iter()
+        .map(|l| format!("#{}: {}", l.name, gen_typed(ctx, rng, &l.ty, depth)))
+        .collect();
+    args.extend(params.iter().map(|p| gen_typed(ctx, rng, p, depth)));
+    args.join(", ")
 }
 
 /// An accessor over a visible composite producing `ty`: a struct field,
@@ -661,6 +682,12 @@ fn try_map_builtin(
         }
         GenType::Map(e) => {
             let m = gen_typed(ctx, rng, ty, d);
+            // a literal of all nulls (or of one variant) is narrower than
+            // `e`, and beside the inserted value neither side is widest
+            let m = match e.contains_nullable() || matches!(**e, GenType::Variant(_)) {
+                true => format!("{{ let mt: {} = {m}; mt }}", ty.render()),
+                false => m,
+            };
             let k = types::KEYS[rng.below(types::KEYS.len())];
             match rng.below(3) {
                 0 => {

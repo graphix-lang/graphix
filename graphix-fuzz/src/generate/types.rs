@@ -158,6 +158,22 @@ impl NumTy {
     }
 }
 
+/// A labeled parameter: `#name: ty`, or `?#name: ty` when it has a
+/// default a call may omit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Label {
+    pub name: String,
+    pub ty: GenType,
+    pub optional: bool,
+}
+
+impl Label {
+    pub fn render(&self) -> String {
+        let opt = if self.optional { "?" } else { "" };
+        format!("{opt}#{}: {}", self.name, self.ty.render())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GenType {
     Num(NumTy),
@@ -179,8 +195,10 @@ pub enum GenType {
     /// An option (`[T, null]`).
     Nullable(Box<GenType>),
     /// A lambda with fully annotated params/return. Never produced by
-    /// `random_type`; enters scope only through lambda bindings.
+    /// `random_type`; enters scope only through lambda bindings. Labeled
+    /// params precede the positional ones, in definitions and calls.
     Fn {
+        labels: Vec<Label>,
         params: Vec<GenType>,
         ret: Box<GenType>,
     },
@@ -247,11 +265,16 @@ impl GenType {
             GenType::Abstract { module } => format!("{module}::T"),
             GenType::Ref(t) => format!("&{}", t.render()),
             // fn-type annotations name their positional params
-            GenType::Fn { params, ret } => {
-                let parts: Vec<_> = params
+            GenType::Fn { labels, params, ret } => {
+                let parts: Vec<_> = labels
                     .iter()
-                    .enumerate()
-                    .map(|(i, p)| format!("a{i}: {}", p.render()))
+                    .map(Label::render)
+                    .chain(
+                        params
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| format!("a{i}: {}", p.render())),
+                    )
                     .collect();
                 format!("fn({}) -> {}", parts.join(", "), ret.render())
             }
