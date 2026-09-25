@@ -245,6 +245,18 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             ) else {
                 continue;
             };
+            let under = |k: fn(&ExprKind) -> bool| {
+                (0..gi).any(|j| k(&pre[j].kind) && gi < j + sizes[j])
+            };
+            // a name under `&` may be a place root; a seq body refuses a `catch`
+            let holds_catch = b
+                .value
+                .fold(false, &mut |a, n| a || matches!(n.kind, ExprKind::Catch(_)));
+            if under(|k| matches!(k, ExprKind::ByRef(_)))
+                || (holds_catch && under(|k| matches!(k, ExprKind::Seq { .. })))
+            {
+                continue;
+            }
             let value =
                 ExprKind::ExplicitParens(Arc::new(b.value.clone())).to_expr_nopos();
             let replaced = mutate::replace(&root, gi, &value);
@@ -732,6 +744,27 @@ mod test {
                     .iter()
                     .all(|p| p.kind != TmKind::LetInline || p.body.contains(kept)),
                 "`{kept}` inlined into a scope that rebinds its reads: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_keeps_places_and_seq_bodies() {
+        // (body, the let that must stay: its use is a place root, or its
+        // value holds a catch and its use sits in a seq body)
+        for (body, kept) in [
+            ("{ let a = [10, 20]; let r = &a[1]; let t = *r; t }", "let a"),
+            (
+                "{ let v = { catch(e) 1; (in0 %? in0)? }; let t = in0; seq t { v } }",
+                "let v",
+            ),
+        ] {
+            let (probes, _) = probes(body, 8);
+            assert!(
+                probes
+                    .iter()
+                    .all(|p| p.kind != TmKind::LetInline || p.body.contains(kept)),
+                "`{kept}` inlined: {body}"
             );
         }
     }
