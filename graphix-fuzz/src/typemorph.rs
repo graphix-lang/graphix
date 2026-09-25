@@ -15,11 +15,12 @@ use crate::mutate;
 use arcstr::ArcStr;
 use graphix_compiler::{
     expr::{
-        BindExpr, Expr, ExprKind, ModPath, Name, StructurePattern, TypeDefBody,
-        TypeDefExpr,
+        BindExpr, Expr, ExprKind, LambdaExpr, ModPath, Name, StructurePattern,
+        TypeDefBody, TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
+use netidx_core::utils::Either;
 use std::collections::HashSet;
 use triomphe::Arc;
 
@@ -334,11 +335,47 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
         );
     *idx += 1;
     e.for_each_child(&mut |c| {
-        if at_apply && matches!(c.kind, ExprKind::Lambda(_)) {
+        if at_apply
+            && let ExprKind::Lambda(l) = &c.kind
+            && !reads_param_type(l)
+        {
             f(*idx);
         }
         find_lambda_args(c, idx, blocked, f);
     });
+}
+
+/// Whether the body needs an unannotated parameter's type before it
+/// checks: a select over the parameter (a type test binds it) or a field
+/// read on it. Only the call supplies that type, so a `let` of the
+/// lambda is refused by language rule, not by an ordering bug.
+fn reads_param_type(l: &LambdaExpr) -> bool {
+    let untyped: HashSet<&str> = l
+        .args
+        .iter()
+        .filter(|a| a.constraint.is_none())
+        .filter_map(|a| match &a.pattern {
+            StructurePattern::Bind(n) => Some(n.as_str()),
+            _ => None,
+        })
+        .collect();
+    let Either::Left(body) = &l.body else { return false };
+    let is_param = |e: &Expr| {
+        let mut e = e;
+        while let ExprKind::ExplicitParens(inner) = &e.kind {
+            e = inner;
+        }
+        matches!(&e.kind, ExprKind::Ref { name } if untyped.contains(name.to_string().as_str()))
+    };
+    body.fold(false, &mut |found, n| {
+        found
+            || match &n.kind {
+                ExprKind::Select(s) => is_param(&s.arg),
+                ExprKind::StructRef { source, .. }
+                | ExprKind::TupleRef { source, .. } => is_param(source),
+                _ => false,
+            }
+    })
 }
 
 struct StmtNames {
@@ -528,6 +565,27 @@ mod test {
             inlined[0].body.contains("1 == 0") && !inlined[0].body.contains("let m"),
             "the guard use takes the value: {}",
             inlined[0].body
+        );
+    }
+
+    #[test]
+    fn extract_skips_param_type_reads() {
+        for body in [
+            "{ let k = i64:0; array::map([k], |x| select x { i64 as n => n, _ => i64:0 }) }",
+            "{ let k = u8:1; map::filter({\"k\" => k}, |kv| str::len(kv.0) > i64:1) }",
+            "{ let k = i64:1; array::map([{a: k}], |r| (r).a) }",
+        ] {
+            let (probes, _) = probes(body, 8);
+            assert!(
+                probes.iter().all(|p| p.kind != TmKind::LetExtract),
+                "the callback reads its parameter's type: {body}"
+            );
+        }
+        let (probes, _) =
+            probes("{ let k = i64:1; array::map([k], |x: i64| select x { n => n }) }", 8);
+        assert!(
+            probes.iter().any(|p| p.kind == TmKind::LetExtract),
+            "an annotated parameter is extractable"
         );
     }
 

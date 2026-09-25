@@ -2115,3 +2115,32 @@ run!(
     |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain"));
     graphix_package_core::testing::FuseExpect::None
 );
+
+// A generalized function's reference is its own instance from compile
+// on: a call's argument types reach it through parens or a block
+// before it typechecks, and must not bind the definition's cells.
+const WRAPPED_POLY_REF_TWICE: &str = r#"
+{
+  let a = filter((array::flat_map), |x| true);
+  let b = filter({ let z = 1; array::flat_map }, |x| true);
+  let c = filter((array::flat_map), |x| true);
+  (a([1], |x| [x, x]), b(["s"], |x| x), c([2], |x| x))
+}
+"#;
+
+run!(wrapped_poly_ref_twice, WRAPPED_POLY_REF_TWICE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"], [i64:2]]"#
+});
+
+const FORWARDED_POLY_REF_TWICE: &str = r#"
+{
+  let t = array::flat_map;
+  let a = filter((t), |x| true);
+  let b = filter({ let z = 1; t }, |x| true);
+  (a([1], |x| [x, x]), b(["s"], |x| x))
+}
+"#;
+
+run!(forwarded_poly_ref_twice, FORWARDED_POLY_REF_TWICE, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"]]"#
+});

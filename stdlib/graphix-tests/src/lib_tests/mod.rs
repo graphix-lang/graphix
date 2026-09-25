@@ -26,6 +26,7 @@ mod net;
 mod pack;
 mod packed_ast;
 mod process;
+mod recheck;
 mod sqlite;
 #[path = "str.rs"]
 mod str_tests;

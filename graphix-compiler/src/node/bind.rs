@@ -12,6 +12,7 @@ use crate::{
     Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     dbgenv,
+    env::Env,
     expr::{self, At, Expr, ExprId, ExprKind, ModPath},
     format_with_flags,
     fusion::{
@@ -23,7 +24,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag, tag_len},
     },
-    typ::Type,
+    typ::{FnType, Type},
     wrap,
 };
 use anyhow::{Result, bail};
@@ -35,7 +36,7 @@ use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_le
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::any::Any;
+use std::{any::Any, mem};
 use triomphe::Arc;
 
 #[derive(Debug)]
@@ -205,7 +206,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
-        if matches!(node.view(), NodeView::Lambda(_)) {
+        if matches!(node.view(), NodeView::Lambda(_)) || forwards(&ctx.env, b, &node) {
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert_cow(id);
             });
@@ -398,20 +399,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck0(ctx))?;
-        // `let g = f` with `f` generalized and no annotation: `g` shares
-        // `f`'s scheme; unifying with a fresh instance would pin it.
         let forwards = match &self.spec.kind {
-            ExprKind::Bind(b) if b.typ.is_none() => match self.node.view() {
-                NodeView::Ref(r) => ctx.env.poly_binds.contains(&r.id),
-                _ => false,
-            },
+            ExprKind::Bind(b) => forwards(&ctx.env, b, &self.node),
             _ => false,
         };
-        if forwards {
-            self.pattern.ids(&mut |id| {
-                ctx.env.poly_binds.insert_cow(id);
-            });
-        } else {
+        if !forwards {
             wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
         }
         if let Some(fv) = self.lambda_def_value() {
@@ -453,10 +445,42 @@ pub struct Ref {
     pub id: BindId,
     pub(super) top_id: ExprId,
     pub(crate) resident: TagValue,
-    /// The first `typecheck0` decided this occurrence's signature, once:
-    /// fresh cells, or the definition's own (a rec knot, a gate
-    /// parameter, the instance being elaborated).
-    pub(crate) instantiated: bool,
+    pub(crate) signature: Signature,
+}
+
+/// Whose cells a reference's signature holds. The first `typecheck0`
+/// decides, once: fresh cells, or the definition's own (a rec knot, a
+/// gate parameter, the instance being elaborated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Signature {
+    /// The binding's, undecided.
+    Binding,
+    /// A generalized binding's reference holds a fresh cell until
+    /// `typecheck0` binds it to the decided signature, so nothing that
+    /// reaches it first unifies into the definition's cells.
+    Pending,
+    Decided,
+}
+
+/// A fresh instance of a generalized signature.
+fn instance(ft: &FnType) -> FnType {
+    let fresh = ft.reset_tvars();
+    fresh.alias_tvars(&mut LPooled::take());
+    fresh
+}
+
+/// `let g = f` with `f` generalized and no annotation: `g` shares `f`'s
+/// scheme; unifying with a fresh instance would pin it.
+fn forwards<R: Rt, E: UserEvent>(
+    env: &Env,
+    b: &expr::BindExpr,
+    node: &Node<R, E>,
+) -> bool {
+    b.typ.is_none()
+        && match node.view() {
+            NodeView::Ref(r) => env.poly_binds.contains(&r.id),
+            _ => false,
+        }
 }
 
 /// The `BindId` a `#bind::N` path names, if `name` is one.
@@ -478,6 +502,17 @@ impl Ref {
         top_id: ExprId,
         spec: impl Into<Arc<Expr>>,
     ) -> Node<R, E> {
+        Self::with_signature(ctx, id, typ, Signature::Binding, top_id, spec)
+    }
+
+    fn with_signature<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        id: BindId,
+        typ: Type,
+        signature: Signature,
+        top_id: ExprId,
+        spec: impl Into<Arc<Expr>>,
+    ) -> Node<R, E> {
         ctx.rt.ref_var(id, top_id);
         Node::new(Self {
             spec: spec.into(),
@@ -485,7 +520,7 @@ impl Ref {
             id,
             top_id,
             resident: TagValue::phantom(),
-            instantiated: false,
+            signature,
         })
     }
 
@@ -515,7 +550,10 @@ impl Ref {
             None => bailat!(spec, "{name} not defined"),
             Some((_, bind)) => {
                 let bind_id = bind.id;
-                let typ = bind.typ.clone();
+                let (typ, signature) = match ctx.env.poly_binds.contains(&bind_id) {
+                    true => (Type::empty_tvar(), Signature::Pending),
+                    false => (bind.typ.clone(), Signature::Binding),
+                };
                 let def_pos = bind.pos;
                 let def_ori = bind.ori.clone();
                 if ctx.env.lsp_mode {
@@ -528,13 +566,33 @@ impl Ref {
                         def_ori,
                     });
                 }
-                Ok(Self::new(ctx, bind_id, typ, top_id, spec))
+                Ok(Self::with_signature(ctx, bind_id, typ, signature, top_id, spec))
             }
         }
     }
 }
 
 impl Ref {
+    /// The signature a reference to the generalized `ft` holds: the
+    /// definition's own cells in a rec knot or a gate parameter, the
+    /// innermost active instance (a bare value reference has no
+    /// arguments to key an instance identity on), else fresh cells.
+    fn decide<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &ExecCtx<R, E>,
+        ft: Arc<FnType>,
+    ) -> Arc<FnType> {
+        let rec_knot = !ctx.rec_defs.is_empty()
+            && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
+        if rec_knot || ctx.def_gate_params.contains(&self.id) {
+            return ft;
+        }
+        match ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id)) {
+            Some(active) => Arc::new(active.ftype),
+            None => Arc::new(instance(&ft)),
+        }
+    }
+
     /// Replays the reference registration `compile` made with the runtime.
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
@@ -640,32 +698,29 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     /// parameter during its gate, and a reference to the instance
     /// being elaborated, which must share the definition's cells.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        if self.instantiated || !ctx.env.poly_binds.contains(&self.id) {
-            return Ok(());
-        }
-        let Type::Fn(ft) = &self.typ else { return Ok(()) };
-        self.instantiated = true;
-        let rec_knot = !ctx.rec_defs.is_empty()
-            && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-        if rec_knot || ctx.def_gate_params.contains(&self.id) {
-            return Ok(());
-        }
-        // A bare value reference has no arguments to key an instance
-        // identity on; it takes the innermost active instance.
-        let active = ft
-            .lambda_ids
-            .own()
-            .and_then(|id| ctx.resolving_innermost(id))
-            .map(|a| a.ftype);
-        let fresh = match active {
-            Some(ft) => ft,
-            None => {
-                let fresh = ft.reset_tvars();
-                fresh.alias_tvars(&mut LPooled::take());
-                fresh
-            }
+        let poly = ctx.env.poly_binds.contains(&self.id);
+        let def = match self.signature {
+            Signature::Decided => return Ok(()),
+            Signature::Binding if !poly => return Ok(()),
+            Signature::Binding => self.typ.clone(),
+            Signature::Pending => match ctx.env.by_id.get(&self.id) {
+                None => bail!("BUG missing bind {:?}", self.id),
+                Some(b) => b.typ.clone(),
+            },
         };
-        self.typ = Type::Fn(Arc::new(fresh));
+        let ft = def.with_deref(|t| match t {
+            Some(Type::Fn(ft)) if poly => Some(ft.clone()),
+            _ => None,
+        });
+        let signature = match (ft, self.signature) {
+            (Some(ft), _) => Type::Fn(self.decide(ctx, ft)),
+            (None, Signature::Pending) => def,
+            (None, _) => return Ok(()),
+        };
+        let held = mem::replace(&mut self.typ, signature);
+        if mem::replace(&mut self.signature, Signature::Decided) == Signature::Pending {
+            held.check_contains(&ctx.env, &self.typ).map_err(|e| e.at(&*self.spec))?;
+        }
         Ok(())
     }
 

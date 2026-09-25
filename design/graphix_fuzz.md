@@ -391,7 +391,9 @@ and the grade is the triage default: parens-wrap is SOUND (a flip is a
 compiler bug); block-wrap (`e` → `{ let __t = e; __t }`, not on direct
 lambda-literal arguments), let-extract (`f(.., |x| body)` → `let __c =
 |x| body; f(.., __c)` — THE order probe: declared-param push vs
-body-first inference), let-inline (the reverse), stmt-permute (adjacent
+body-first inference; not on a callback whose body selects over or
+reads a field of an unannotated parameter, which by language rule only
+the call types), let-inline (the reverse), stmt-permute (adjacent
 independent binds — tvar allocation order) and alias-swap (hoist an
 annotation's structural spelling into a typedef, and the reverse — the
 Ref-vs-expansion channels) are EXPECTED (a flip files for triage:
