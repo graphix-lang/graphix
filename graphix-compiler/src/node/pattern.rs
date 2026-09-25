@@ -423,10 +423,12 @@ impl StructPatternNode {
         spec: &StructurePattern,
         mut mode: BindMode,
     ) -> Result<Self> {
-        let type_predicate = match type_predicate {
-            Type::Ref(TypeRef { .. }) => type_predicate.lookup_ref(&ctx.env)?,
-            t => t.clone(),
-        };
+        // an alias of an alias expands to its body: typedefs are
+        // contractive, so the chain ends
+        let mut type_predicate = type_predicate.clone();
+        while let Type::Ref(TypeRef { .. }) = type_predicate {
+            type_predicate = type_predicate.lookup_ref(&ctx.env)?;
+        }
         let type_predicate = &type_predicate;
         let t = match &spec {
             StructurePattern::Or(alts) => {

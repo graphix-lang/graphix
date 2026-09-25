@@ -100,6 +100,23 @@ run!(nestedmatch0, NESTEDMATCH0, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A partial pattern annotated through an alias of an alias expands the
+// whole chain to the struct.
+const NESTEDMATCH0_ALIAS: &str = r#"
+{
+  type T = { foo: (string, f64, f64), bar: i64, baz: f64 };
+  type U = T;
+  let x = { foo: ("bar", 42.0, 5.0), bar: 42, baz: 84.0 };
+  let { foo: (_, x, y), .. }: U = x;
+  x + y
+}
+"#;
+
+run!(nestedmatch0_alias, NESTEDMATCH0_ALIAS, |v: Result<&Value>| match v {
+    Ok(Value::F64(47.0)) => true,
+    _ => false,
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 const NESTEDMATCH1: &str = r#"
 {
   type T = { foo: {x: string, y: f64, z: f64}, bar: i64, baz: f64 };
