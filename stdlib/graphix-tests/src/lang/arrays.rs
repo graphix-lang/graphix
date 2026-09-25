@@ -496,3 +496,17 @@ run!(filter_div0_slot_cache, FILTER_DIV0_SLOT_CACHE, |v: Result<&Value>| {
         _ => false,
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
+
+// An index into a parameter whose type is not known yet types the
+// element from the argument: the source is assumed an array, not bytes.
+const INDEX_UNTYPED_PARAM: &str = r#"
+{
+  let first = |xs| xs[0]$;
+  let second = |acc, xs| xs[1]$;
+  (first(["a"]), array::fold([["b", "c"]], "x", second))
+}
+"#;
+
+run!(index_untyped_param, INDEX_UNTYPED_PARAM, |v: Result<&Value>| {
+    format!("{}", v.unwrap()) == r#"["a", "c"]"#
+});

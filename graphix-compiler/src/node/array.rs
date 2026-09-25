@@ -115,6 +115,14 @@ fn offset(len: usize, i: i64) -> Option<usize> {
 }
 
 /// The position index `i` names in a sequence of `len` elements.
+/// An indexed or sliced source is bytes only when its type says so; a
+/// source not known yet (an open cell) is assumed to be an array.
+fn known_bytes(env: &Env, source: &Type) -> Result<bool> {
+    let bytes = Type::Primitive(Typ::Bytes.into());
+    Ok(!source.with_deref(|t| t.is_none())
+        && bytes.contains_with_flags(BitFlags::empty(), env, source)?)
+}
+
 pub(crate) fn index(len: usize, i: i64) -> Option<usize> {
     offset(len, i).filter(|j| *j < len)
 }
@@ -201,13 +209,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         wrap!(self.i, self.i.typecheck0(ctx))?;
-        let bytes_typ = Type::Primitive(Typ::Bytes.into());
         let source_typ = self.source.typ();
-        if bytes_typ.contains_with_flags(BitFlags::empty(), &ctx.env, source_typ)? {
+        if known_bytes(&ctx.env, source_typ)? {
             let byte = Type::Primitive(Typ::U8.into());
             wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
         } else {
-            // if we don't already know it's a bytes, assume it will be an array
             let at = Type::Array(Arc::new(self.etyp.clone()));
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
@@ -360,10 +366,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
-        let bytes_typ = Type::Primitive(Typ::Bytes.into());
         let source_typ = self.source.typ();
-        if !bytes_typ.contains_with_flags(BitFlags::empty(), &ctx.env, source_typ)? {
-            // if we don't already know it's bytes, assume it will be an array
+        if !known_bytes(&ctx.env, source_typ)? {
             let at = Type::Array(Arc::new(Type::empty_tvar()));
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
