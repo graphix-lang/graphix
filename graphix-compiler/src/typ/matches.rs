@@ -233,6 +233,18 @@ impl Type {
         if (self as *const Type) == (impl_type as *const Type) {
             return Ok(());
         }
+        // a filled application is its filled type (`self<'b>` with `self`
+        // an array is `Array<'b>`)
+        if let Self::App(c, a) = impl_type
+            && let Some(filled) = Self::app_filled(c, a)
+        {
+            return self.sig_matches_int(env, &filled, tvar_map, hist);
+        }
+        if let Self::App(c, a) = self
+            && let Some(filled) = Self::app_filled(c, a)
+        {
+            return filled.sig_matches_int(env, impl_type, tvar_map, hist);
+        }
         match (self, impl_type) {
             (Self::Bottom, Self::Bottom) => Ok(()),
             (Self::Any, Self::Any) => Ok(()),

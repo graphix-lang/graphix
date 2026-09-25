@@ -1031,3 +1031,20 @@ run!(
         trait Show { val show: fn(self) -> i64 }
     "#
 ; graphix_package_core::testing::FuseExpect::None);
+
+// An implementation's type may be a constructor application the
+// signature spells out: `Collection::map` returns `self<'b>`, an array.
+run!(
+    signature_holds_a_filled_application,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = array::len(inner::f(1))
+    "#,
+    "/test/inner.gxi" => r#"
+        val f: fn(x: i64) -> Array<i64>;
+    "#,
+    "/test/inner.gx" => r#"
+        let f = |x: i64| Collection::map(["a", "b"], |s| x)
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
