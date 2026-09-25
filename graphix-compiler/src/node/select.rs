@@ -1158,7 +1158,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     // and one `Ladder`. Two passes remain: coverage must not bind the arms' tvars
     // (it runs before narrowing), the dead-arm walk runs after and may.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.arg.node.typecheck0(ctx)?;
+        wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
         // A partial struct pattern infers only its named fields;
         // complete each inferred predicate against the typed scrutinee
         // before coverage or dispatch reads it.
@@ -1191,7 +1191,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             // The guard typechecks after the narrowing so it sees the
             // arm's binds at their settled type; it must be bool.
             if let Some(guard) = &mut pat.guard {
-                guard.node.typecheck0(ctx)?;
+                wrap!(guard.node, guard.node.typecheck0(ctx))?;
                 let bt = Type::Primitive(Typ::Bool.into());
                 wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
             }

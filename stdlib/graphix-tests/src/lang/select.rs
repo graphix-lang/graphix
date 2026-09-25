@@ -2674,3 +2674,24 @@ run!(pattern_error_site, PATTERN_ERROR_SITE, |v: Result<&Value>| match v {
         .is_some_and(|site| (site.expr().pos.line, site.expr().pos.column) == (2, 13)),
     Ok(_) => false,
 }; graphix_package_core::testing::FuseExpect::None);
+
+// An error in a scrutinee or a guard is placed there, not on the select.
+#[tokio::test(flavor = "current_thread")]
+async fn a_guard_or_scrutinee_error_is_placed_there() -> Result<()> {
+    use graphix_compiler::expr::ErrorSite;
+    for (src, site) in [
+        (r#"select 1 { x if str::contains("a") => 1, _ => 2 }"#, r#"str::contains("a")"#),
+        (
+            r#"select str::contains("a") { true => 1, false => 2 }"#,
+            r#"str::contains("a")"#,
+        ),
+    ] {
+        let e = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => e,
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        let at = e.downcast_ref::<ErrorSite>().map(|s| s.expr().to_string());
+        assert_eq!(at.as_deref(), Some(site), "{src}: {e:#}");
+    }
+    Ok(())
+}
