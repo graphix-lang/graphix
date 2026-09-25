@@ -24,7 +24,7 @@ use ratatui::{
     backend::{Backend, TestBackend},
     buffer::Buffer,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::{TuiW, compile, input_handler::event_to_value};
@@ -119,34 +119,55 @@ impl TuiTestHarness {
         })
     }
 
-    /// Drain pending reactive updates into the widget tree. Returns
-    /// once no new updates have arrived for ~50ms.
+    /// Deliver reactive updates into the widget tree until the runtime is
+    /// idle and none are left. A pending timer or IO reply is not waited
+    /// for: `next_update` waits for what it brings.
     pub async fn drain(&mut self) -> Result<()> {
-        let timeout = tokio::time::sleep(Duration::from_millis(100));
-        tokio::pin!(timeout);
+        self.drain_timed().await.map(|_| ())
+    }
+
+    /// `drain`, answering when the last update batch arrived (`None` when
+    /// there was none).
+    async fn drain_timed(&mut self) -> Result<Option<Instant>> {
+        let mut last = None;
         loop {
-            tokio::select! {
-                biased;
-                Some(mut batch) = self.rx.recv() => {
-                    for event in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = event {
-                            if self.watched.contains_key(&id) {
-                                self.watched.insert(id, v.clone());
-                            }
-                            self.widget
-                                .handle_update(id, v)
-                                .await
-                                .context("widget handle_update")?;
+            let idle = self.gx.wait_idle();
+            tokio::pin!(idle);
+            let mut delivered = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(batch) = self.rx.recv() => {
+                        if deliver(&mut self.widget, &mut self.watched, batch).await? {
+                            delivered = true;
+                            last = Some(Instant::now());
                         }
                     }
-                    timeout.as_mut().reset(
-                        tokio::time::Instant::now() + Duration::from_millis(50)
-                    );
+                    r = &mut idle => break r?,
                 }
-                _ = &mut timeout => break,
+            }
+            if !delivered {
+                return Ok(last);
             }
         }
-        Ok(())
+    }
+
+    /// Wait up to `timeout` for the runtime to send an update, then
+    /// `drain`. False when nothing arrived.
+    pub async fn next_update(&mut self, timeout: Duration) -> Result<bool> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, self.rx.recv()).await {
+                Ok(Some(batch)) => {
+                    if deliver(&mut self.widget, &mut self.watched, batch).await? {
+                        self.drain().await?;
+                        return Ok(true);
+                    }
+                }
+                Ok(None) => bail!("the runtime is gone"),
+                Err(_) => return Ok(false),
+            }
+        }
     }
 
     /// Track a graphix variable by name so its updates land in
@@ -183,39 +204,13 @@ impl TuiTestHarness {
     }
 
     /// Deliver a crossterm event and report how long the runtime took
-    /// to settle after it: dispatch to the LAST update batch, with the
-    /// quiescence wait excluded (zero when the event produced no update).
+    /// to settle after it: dispatch to the LAST update batch (zero when
+    /// the event produced no update).
     pub async fn dispatch_event_timed(&mut self, e: Event) -> Result<Duration> {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let v = event_to_value(&e);
         self.widget.handle_event(e, v).await.context("widget handle_event")?;
-        let mut settled = Duration::ZERO;
-        let timeout = tokio::time::sleep(Duration::from_millis(100));
-        tokio::pin!(timeout);
-        loop {
-            tokio::select! {
-                biased;
-                Some(mut batch) = self.rx.recv() => {
-                    for event in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = event {
-                            if self.watched.contains_key(&id) {
-                                self.watched.insert(id, v.clone());
-                            }
-                            self.widget
-                                .handle_update(id, v)
-                                .await
-                                .context("widget handle_update")?;
-                        }
-                    }
-                    settled = start.elapsed();
-                    timeout.as_mut().reset(
-                        tokio::time::Instant::now() + Duration::from_millis(50)
-                    );
-                }
-                _ = &mut timeout => break,
-            }
-        }
-        Ok(settled)
+        Ok(self.drain_timed().await?.map_or(Duration::ZERO, |t| t - start))
     }
 
     /// Render the widget into the test backend's buffer and return a
@@ -322,6 +317,26 @@ impl TuiTestHarness {
         }
         Ok(())
     }
+}
+
+/// Deliver a batch's updates; false when it held none (the runtime sends
+/// a batch every cycle, empty or not).
+async fn deliver(
+    widget: &mut TuiW,
+    watched: &mut IntMap<ExprId, Value>,
+    mut batch: GPooled<Vec<GXEvent>>,
+) -> Result<bool> {
+    let mut updated = false;
+    for event in batch.drain(..) {
+        if let GXEvent::Updated(id, v) = event {
+            updated = true;
+            if watched.contains_key(&id) {
+                watched.insert(id, v.clone());
+            }
+            widget.handle_update(id, v).await.context("widget handle_update")?;
+        }
+    }
+    Ok(updated)
 }
 
 /// Wait up to 5s for a specific expression's update.

@@ -503,6 +503,10 @@ enum ToGX<X: GXExt> {
         id: ExprId,
         res: oneshot::Sender<Option<Value>>,
     },
+    /// Answer when the runtime next goes idle. See [`GXHandle::wait_idle`].
+    WaitIdle {
+        res: oneshot::Sender<()>,
+    },
     /// Start (or restart) runtime-side tracing. See
     /// [`GXHandle::trace_start`].
     TraceStart {
@@ -816,6 +820,14 @@ impl<X: GXExt> GXHandle<X> {
     /// stream, so drain the event subscription on `None`.
     pub async fn wait_result_or_idle(&self, id: ExprId) -> Result<Option<Value>> {
         self.exec(|res| ToGX::WaitResultOrIdle { id, res }).await
+    }
+
+    /// Wait until the runtime has no cycle ready, confirmed on a second
+    /// pass. Every update of the cycles before it is already in the event
+    /// stream. A pending timer, IO or spawned task reads as idle: what it
+    /// brings later is not waited for.
+    pub async fn wait_idle(&self) -> Result<()> {
+        self.exec(|res| ToGX::WaitIdle { res }).await
     }
 
     /// Start (or restart) runtime-side tracing: every value a registered

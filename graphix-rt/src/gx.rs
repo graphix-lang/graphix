@@ -222,6 +222,8 @@ pub(super) struct GX<X: GXExt> {
     /// watched expr emits, or `None` when the runtime next goes idle. See
     /// `GXHandle::wait_result_or_idle`.
     result_watch: Option<(ExprId, oneshot::Sender<Option<Value>>)>,
+    /// Pending `WaitIdle` requests, answered at the next idle verdict.
+    idle_waiters: Vec<oneshot::Sender<()>>,
     /// The program compiled or restored at construction; a compile
     /// failure is kept for the embedder to report, the runtime starts.
     program: Option<Result<ProgramRoot, String>>,
@@ -276,6 +278,7 @@ impl<X: GXExt> GX<X> {
             batch_pool: Pool::new(10, 1000000),
             flags: cfg.flags,
             result_watch: None,
+            idle_waiters: Vec::new(),
             trace: None,
             scope: Scope::root(),
             program: None,
@@ -619,6 +622,7 @@ impl<X: GXExt> GX<X> {
                     // second request supersedes a pending one (its sender drops).
                     self.result_watch = Some((id, res));
                 }
+                ToGX::WaitIdle { res } => self.idle_waiters.push(res),
                 ToGX::TraceStart { max_events, max_cycles } => {
                     // Replacing an active trace drops its pending waiter and events.
                     self.trace = Some(TraceState::new(max_events, max_cycles));
@@ -1034,16 +1038,21 @@ impl<X: GXExt> GX<X> {
                 || !tasks.is_empty()
                 || !custom_tasks.is_empty()
                 || !input.is_empty();
-            // A `WaitResultOrIdle` watcher resolves `None` once the runtime is
-            // idle, confirmed on a second consecutive pass: the first may race
-            // an in-flight spawned task.
+            // An idle waiter resolves once the runtime is idle, confirmed on
+            // a second consecutive pass: the first may race an in-flight
+            // spawned task.
             if !ready {
-                let waiter = self.result_watch.is_some() || self.trace.is_some();
+                let waiter = self.result_watch.is_some()
+                    || self.trace.is_some()
+                    || !self.idle_waiters.is_empty();
                 if waiter && idle_passes == 0 {
                     idle_passes = 1;
                 } else {
                     if let Some((_, tx)) = self.result_watch.take() {
                         let _ = tx.send(None);
+                    }
+                    for tx in self.idle_waiters.drain(..) {
+                        let _ = tx.send(());
                     }
                     if let Some(tr) = self.trace.as_mut() {
                         tr.resolve(self.ctx.rt.cycle);
