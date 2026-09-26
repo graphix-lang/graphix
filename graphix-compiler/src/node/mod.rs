@@ -8,6 +8,7 @@ use crate::{
     },
     format_with_flags,
     fusion::{
+        self,
         emit::{
             BodyCx, CompiledExpr, emit_block_node, emit_cast_node, emit_const_node,
             emit_string_interpolate_node,
@@ -1181,6 +1182,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts(self.args.iter_mut(), ctx)
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck0(ctx))?;
@@ -1307,6 +1312,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.node.sleep(ctx);
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.node], ctx)
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -1642,6 +1651,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.sleep(ctx);
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.n], ctx)
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.n.refs(refs)
     }
@@ -1742,6 +1755,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1856,6 +1873,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -2055,6 +2076,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.arg.sleep(ctx);
         self.trigger.sleep(ctx);
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.trigger, &mut self.arg.node], ctx)
     }
 
     fn spec(&self) -> &Expr {

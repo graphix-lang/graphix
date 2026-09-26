@@ -309,7 +309,7 @@ const CATCH_IN_LAMBDA_THROWS: &str = r#"
 run!(catch_in_lambda_throws, CATCH_IN_LAMBDA_THROWS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 /// A catch installed by one `GXHandle::compile` input covers later
 /// inputs; the `?`'s delivery crosses tops via `set_var`.

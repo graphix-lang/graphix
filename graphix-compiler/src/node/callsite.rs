@@ -2051,17 +2051,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if let Some(n) = &mut self.lowered {
             return n.fuse(ctx);
         }
-        // Reached when this call did not inline. Descend via `Update::fuse`
-        // (not `fusion::fuse`, which would fuse constant args into 0-input
-        // kernels), then give the callee its hook.
-        for arg in self.args.values_mut() {
-            if let Some(node) = &mut arg.node {
-                if let Some(new) = node.fuse(ctx)? {
-                    let mut old = mem::replace(node, new);
-                    old.delete(ctx);
-                }
-            }
-        }
+        // Reached when this call did not inline: fuse its args, in ArgKey
+        // order (the map is hash-ordered), then give the callee its hook.
+        let mut args: LPooled<Vec<(&ArgKey, &mut Node<R, E>)>> = self
+            .args
+            .iter_mut()
+            .filter_map(|(k, a)| a.node.as_mut().map(|n| (k, n)))
+            .collect();
+        args.sort_by(|(a, _), (b, _)| a.cmp(b));
+        fusion::fuse_parts(args.drain(..).map(|(_, n)| n), ctx)?;
         if let Some(apply) = self.callee.apply_mut() {
             apply.fuse(ctx)?;
         }

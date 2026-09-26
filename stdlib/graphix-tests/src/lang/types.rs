@@ -517,7 +517,7 @@ run!(
         }
         _ => false,
     };
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // The Fn-element twin: the union is `[i64, fn(...)]`.

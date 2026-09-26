@@ -1747,7 +1747,7 @@ const FN_FORMAL_REBOUND: &str = r#"
 run!(fn_formal_rebound, FN_FORMAL_REBOUND, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(1100))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // A helper forwarding its fn formal to another helper: the two
 // forwarding instances key two kernels (110 vs 102 in the low part).

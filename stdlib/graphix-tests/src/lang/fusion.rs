@@ -1790,3 +1790,99 @@ run!(lambda_literal_call_fuses, LAMBDA_LITERAL_CALL_FUSES, |v: Result<&Value>| m
     v,
     Ok(Value::I64(7))
 ); FuseExpect::Jit);
+
+// A call that is the argument of a node fusion does not descend into
+// as a whole (a builtin without a fast call) is its own region: the
+// kernel whose only input is `m` is the loop's call.
+const LOOP_UNDER_A_NODE_WALKED_BUILTIN: &str = r#"
+{
+  let m = 10;
+  let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) };
+  count(f(m, 0))
+}
+"#;
+
+run!(loop_under_a_node_walked_builtin, LOOP_UNDER_A_NODE_WALKED_BUILTIN, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); FuseExpect::Jit; shape: graphix_compiler::node_shape::NodeShape::contains_fused(
+    graphix_compiler::node_shape::KernelMatcher::new().params(&["m"])
+));
+
+// The same in every position a failed region descends: an array element
+// beside a node-walked sibling, an operand, a sample, a connect.
+const LOOP_BESIDE_NODE_WALKED_SIBLINGS: &str = r#"
+{
+  let m = 10;
+  let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) };
+  let y = never();
+  y <- #[native] f(m, 0);
+  let a = [#[native] f(m, 0), count(m)];
+  let b = (#[native] f(m, 0)) + count(m);
+  let c = m ~ (#[native] f(m, 0));
+  select y { y => (a, b, c, y) }
+}
+"#;
+
+run!(loop_beside_node_walked_siblings, LOOP_BESIDE_NODE_WALKED_SIBLINGS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(
+        &t[..],
+        [Value::Array(a), Value::I64(56), Value::I64(55), Value::I64(55)]
+            if matches!(&a[..], [Value::I64(55), Value::I64(1)])
+    ),
+    _ => false,
+}; FuseExpect::Jit);
+
+// A local `let rec` fuses wherever its block sits: an operand, an array
+// element, a collection callback. A kernel calls a local lambda
+// statically, so the binding emits nothing.
+const LOCAL_LET_REC_IN_NESTED_BLOCKS: &str = r#"
+{
+  let a = { let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) }; #[native] f(10, 0) } + 1;
+  let b = [1, { let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) }; #[native] f(10, 0) }];
+  let c = array::init(2, |x| { let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) }; #[native] f(10, x) });
+  (a, b, c)
+}
+"#;
+
+run!(local_let_rec_in_nested_blocks, LOCAL_LET_REC_IN_NESTED_BLOCKS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => match &t[..] {
+        [Value::I64(56), Value::Array(b), Value::Array(c)] => {
+            matches!(&b[..], [Value::I64(1), Value::I64(55)])
+                && matches!(&c[..], [Value::I64(55), Value::I64(56)])
+        }
+        _ => false,
+    },
+    _ => false,
+}; FuseExpect::Jit);
+
+// A lambda bound by a `let` inside a loop body does not keep the loop
+// out of native code.
+const LOCAL_LAMBDA_IN_A_LOOP_BODY: &str = r#"
+{
+  let rec g = |n: i64| -> i64 select n { 0 => { let h = |k: i64| k + 1; h(n) }, _ => g(n - 1) };
+  #[native] g(3)
+}
+"#;
+
+run!(local_lambda_in_a_loop_body, LOCAL_LAMBDA_IN_A_LOOP_BODY, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); FuseExpect::Jit);
+
+// A lambda call whose arguments do not all fuse (an effect, a stateful
+// builtin) fuses with each such argument as a feeder: the node-walk runs
+// it and the kernel reads its production as an input.
+const CALL_FED_BY_NODE_WALKED_ARGS: &str = r#"
+{
+  let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => f(n - 1, acc + n) };
+  let a = #[native] f(10, { let s = 0; s <- 1; s });
+  let b = #[native] f(10, count(a));
+  (a, b)
+}
+"#;
+
+run!(call_fed_by_node_walked_args, CALL_FED_BY_NODE_WALKED_ARGS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(55), Value::I64(56)]),
+    _ => false,
+}; FuseExpect::Jit);

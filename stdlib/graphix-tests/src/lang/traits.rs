@@ -147,7 +147,7 @@ run!(
         let pick = |b: bool, i: i64, c: Counter| -> [i64, Counter] select b { true => i, false => c };
         let result = "[Show::show(pick(true, 5, Counter(6)))] [Show::show(pick(false, 5, Counter(6)))]"
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // A union member without an implementation is refused at the call.
@@ -220,7 +220,7 @@ run!(
         };
         let result = Show::show([1, 2])
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // The interface declares the trait and the implementation; a consumer
@@ -314,7 +314,7 @@ run!(
         let f = 'a: Number |x: 'a| x;
         let result = "[array::map([1], f)] [array::map([1.5], f)]"
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // The same for a trait method passed as a value, then called on
@@ -431,7 +431,7 @@ run!(
         let show = 'a: Display |x: 'a| Display::fmt(x);
         let result = "[same(1, 1)]|[same("a", "b")]|[Ord::cmp(1, 2)]|[Ord::cmp((1, 2), (1, 2))]|[Ord::cmp("b", "a")]|[show((1, 2))]|[show(Color({r: 1, g: 2, b: 3}))]"
     "##
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // A core trait method runs inside the comparison, so it is implicitly
@@ -496,7 +496,7 @@ run!(
         let f = |x: [A, B]| Show::show(x);
         let result = "[f(A(1))] [f(B("x"))]"
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // Under `Any` (or an open cell) the runtime tag is the type id: an
@@ -1076,7 +1076,7 @@ run!(
         impl Display for Counter { let fmt = |c| "C<[c.0]>" };
         let make = |x| Counter(x)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // ...and the implementation IS refused when the type turns out to be

@@ -21,7 +21,7 @@ use crate::{
     ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, PrintFlag, Refs, Rt, Update,
     UserEvent,
     env::Env,
-    expr::{Expr, ExprId, ExprKind, Origin},
+    expr::{Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
     fusion::{
         kernel_abi::{
@@ -30,8 +30,7 @@ use crate::{
         },
         lowering::expand_refs,
     },
-    node,
-    node::genn,
+    node::{self, callsite::CallSite, genn},
     profile::{self, Phase},
     typ::{FnType, Type},
 };
@@ -39,7 +38,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::LazyLock};
 use triomphe::Arc;
 
 #[derive(Debug, Clone)]
@@ -601,7 +600,7 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
     /// identity.
     pub(crate) bodies: BTreeMap<kernel_abi::KernelKey, CalleeBody<'n, R, E>>,
     /// The decorated nodes a successful build absorbs.
-    pub(crate) decorated: LPooled<nohash::IntSet<ExprId>>,
+    pub(crate) decorated: LPooled<Vec<&'n Node<R, E>>>,
     /// Call sites whose lambda has no kernel, with the reason.
     pub(crate) refused: LPooled<Vec<(&'n Expr, CompactString)>>,
 }
@@ -639,7 +638,7 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
             if collect_decorated
                 && n.spec().dec.as_ref().is_some_and(|dec| !dec.attrs.is_empty())
             {
-                d.decorated.insert(n.spec().id);
+                d.decorated.push(n);
             }
             let NodeView::CallSite(cs) = n.view() else {
                 return;
@@ -719,12 +718,133 @@ pub fn fuse<R: Rt, E: UserEvent>(
         check_node_attributes(child, ctx)?;
         return Ok(());
     }
+    if let Some(new) = try_fuse_feeding_args(child, ctx)? {
+        let mut old = std::mem::replace(child, new);
+        old.delete(ctx);
+        check_node_attributes(child, ctx)?;
+        return Ok(());
+    }
+    descend(child, ctx)
+}
+
+/// The scope of the bindings that name a fed argument: no source can
+/// name it.
+static FED_ARGS: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["#fed"]));
+
+/// A lambda call whose arguments do not all fuse (an effect, a stateful
+/// builtin) fuses with each such argument as a feeder: the node-walk
+/// runs it and the kernel reads its production as an input, as it would
+/// read a `let` bound to the argument.
+fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
+    child: &mut Node<R, E>,
+    ctx: &mut ExecCtx<R, E>,
+) -> anyhow::Result<Option<Node<R, E>>> {
+    let top_id = ctx.fusion.top_id.unwrap_or(child.spec().id);
+    let Some(cs) = child.downcast_mut::<CallSite<R, E>>() else { return Ok(None) };
+    if cs.lowered.is_some() || !matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_)))
+    {
+        return Ok(None);
+    }
+    let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
+    for arg in cs.args.values_mut() {
+        let Some(node) = arg.node.as_mut() else { continue };
+        let mut discovery = lowering::BuiltinCallDiscovery::default();
+        if lowering::walk_node_for_builtin_calls(node, ctx, &mut discovery).is_ok() {
+            continue;
+        }
+        let typ = node.typ().clone();
+        let (id, read) = genn::bind(ctx, &FED_ARGS, "arg", typ, top_id);
+        if free_var_input(id, ctx).is_none() {
+            let mut read = read;
+            read.delete(ctx);
+            continue;
+        }
+        fed.push((id, std::mem::replace(node, read)));
+    }
+    if fed.is_empty() {
+        return Ok(None);
+    }
+    // Every fed argument must be an input: an argument the kernel skips
+    // would drop its effect.
+    let kernel = match try_fuse(child, ctx)? {
+        Some(mut new) => {
+            let k = new
+                .downcast_mut::<FusedKernel<R, E>>()
+                .expect("try_fuse builds a kernel");
+            if fed.iter().all(|(id, _)| k.has_input(*id)) {
+                Some(new)
+            } else {
+                new.delete(ctx);
+                None
+            }
+        }
+        None => None,
+    };
+    match kernel {
+        Some(mut new) => {
+            let kernel = new.downcast_mut::<FusedKernel<R, E>>().expect("checked above");
+            for (id, mut node) in fed.drain(..) {
+                fuse_parts([&mut node], ctx)?;
+                kernel.feed(ctx, id, node);
+            }
+            Ok(Some(new))
+        }
+        None => {
+            let cs = child.downcast_mut::<CallSite<R, E>>().expect("still the call");
+            for arg in cs.args.values_mut() {
+                let Some(node) = arg.node.as_mut() else { continue };
+                let NodeView::Ref(r) = node.view() else { continue };
+                let id = r.id;
+                if let Some(i) = fed.iter().position(|(fid, _)| *fid == id) {
+                    let (_, orig) = fed.swap_remove(i);
+                    std::mem::replace(node, orig).delete(ctx);
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn descend<R: Rt, E: UserEvent>(
+    child: &mut Node<R, E>,
+    ctx: &mut ExecCtx<R, E>,
+) -> anyhow::Result<()> {
     if let Some(new) = child.fuse(ctx)? {
         let mut old = std::mem::replace(child, new);
         old.delete(ctx);
     }
-    check_node_attributes(child, ctx)?;
-    Ok(())
+    check_node_attributes(child, ctx)
+}
+
+/// Fuse the parts of a node that did not fuse as a whole: a part that
+/// calls a function is tried as a region of its own ([`fuse`]), any
+/// other part only descends (arithmetic over a leaf is not worth a
+/// kernel). The `fuse` of every node with children that is not a
+/// container ends here.
+pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
+    parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
+    ctx: &mut ExecCtx<R, E>,
+) -> anyhow::Result<Option<Node<R, E>>> {
+    for part in parts {
+        if calls_a_function(part) { fuse(part, ctx)? } else { descend(part, ctx)? }
+    }
+    Ok(None)
+}
+
+/// Does the subtree call a lambda or run a collection operation, the
+/// computations that can loop?
+fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut calls = false;
+    for_each_node(node, &mut |n| {
+        calls |= match n.view() {
+            NodeView::CallSite(cs) => {
+                matches!(cs.resolved_apply(), Some(ApplyView::Lambda(_)))
+            }
+            NodeView::MapQ(_) | NodeView::FoldQ(_) => true,
+            _ => false,
+        }
+    });
+    calls
 }
 
 /// Dispatch each registered attribute's check ([`crate::AttributeCheckFn`])
@@ -747,6 +867,22 @@ fn check_node_attributes<R: Rt, E: UserEvent>(
         }
         if any {
             ctx.attr_dispatched.lock().insert(node.spec().id);
+        }
+    }
+    Ok(())
+}
+
+/// The target half of the attribute checks on a node absorbed into a
+/// kernel ([`crate::AttributeTargetFn`]).
+fn check_attribute_targets<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    ctx: &ExecCtx<R, E>,
+) -> anyhow::Result<()> {
+    if let Some(dec) = &node.spec().dec {
+        for attr in dec.attrs.iter() {
+            if let Some(check) = ctx.lookup_attribute_target(&attr.name) {
+                check(attr, node)?;
+            }
         }
     }
     Ok(())
@@ -933,9 +1069,10 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         }
     }
     ctx.fusion.stats.record_fused(node.spec());
-    if !lambdas.decorated.is_empty() {
-        ctx.attr_absorbed.lock().extend(lambdas.decorated.iter().copied());
+    for n in lambdas.decorated.iter() {
+        check_attribute_targets(n, ctx)?;
     }
+    ctx.attr_absorbed.lock().extend(lambdas.decorated.iter().map(|n| n.spec().id));
     Ok(Some(n))
 }
 

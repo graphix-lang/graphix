@@ -3,7 +3,10 @@ use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp, err, errf,
     expr::{Expr, ExprId},
-    fusion::emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
+    fusion::{
+        self,
+        emit::{BodyCx, CompiledExpr, emit_map_new_node, emit_map_ref_node},
+    },
     image::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag, tag_len},
@@ -160,6 +163,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         let _ = self.each(|n| Ok(n.sleep(ctx)));
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts(self.entries.iter_mut().flat_map(|(k, v)| [k, v]), ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -339,6 +346,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.slept.set();
         self.source.sleep(ctx);
         self.key.sleep(ctx);
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.source, &mut self.key], ctx)
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

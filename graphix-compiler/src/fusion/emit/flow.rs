@@ -370,6 +370,9 @@ fn emit_let_node<R: Rt, E: UserEvent>(
             let cv = value.emit_clif(cx)?;
             bind_local(cx, name.clone(), cv.disc, cv.payload, LocalKind::String, bind_id);
         }
+        // A kernel calls a local lambda statically and never reads it as
+        // a value; a value read is an undefined local, refused.
+        _ if is_lambda_literal(value) => (),
         other => {
             // A lambda is not a kernel value: the binding node-walks, its call
             // sites fuse. Distinct message so probes can tell it from a gap.
@@ -385,6 +388,18 @@ fn emit_let_node<R: Rt, E: UserEvent>(
         }
     }
     Ok(())
+}
+
+/// Is `node` a lambda literal, seen through grouping parentheses?
+fn is_lambda_literal<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
+    let mut view = node.view();
+    loop {
+        view = match view {
+            NodeView::ExplicitParens(p) => p.n.view(),
+            NodeView::Lambda(_) => return true,
+            _ => return false,
+        }
+    }
 }
 
 /// Drop a discarded statement's result if it owns an allocation.

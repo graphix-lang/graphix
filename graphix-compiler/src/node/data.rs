@@ -3,10 +3,13 @@ use crate::{
     CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
     abstract_value, bailat, deref_typ,
     expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
-    fusion::emit::{
-        BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
-        emit_struct_new_node, emit_struct_ref_node, emit_struct_with_node,
-        emit_tuple_new_node, emit_tuple_ref_node, emit_variant_new_node,
+    fusion::{
+        self,
+        emit::{
+            BodyCx, CompiledExpr, emit_abstract_ref_node, emit_construct_node,
+            emit_struct_new_node, emit_struct_ref_node, emit_struct_with_node,
+            emit_tuple_new_node, emit_tuple_ref_node, emit_variant_new_node,
+        },
     },
     image::{
         self, ImageBuf,
@@ -46,6 +49,10 @@ macro_rules! composite_plumbing {
         fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
             self.slept.set();
             self.n.iter_mut().for_each(|n| n.sleep(ctx))
+        }
+
+        fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+            fusion::fuse_parts(self.n.iter_mut(), ctx)
         }
 
         fn refs(&self, refs: &mut Refs) {
@@ -359,6 +366,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts(
+            iter::once(&mut self.source).chain(self.replace.iter_mut().map(|r| &mut r.n)),
+            ctx,
+        )
+    }
+
     fn refs(&self, refs: &mut Refs) {
         self.source.refs(refs);
         self.replace.iter().for_each(|r| r.n.refs(refs))
@@ -524,6 +538,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.source.sleep(ctx)
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.source], ctx)
     }
 
     fn typ(&self) -> &Type {
@@ -921,6 +939,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         self.arg.sleep(ctx)
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.arg], ctx)
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.arg, self.arg.typecheck0(ctx))?;
         wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ()))
@@ -1114,6 +1136,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.source.sleep(ctx);
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.source], ctx)
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

@@ -466,7 +466,7 @@ let result = a + f(1) + map::len(m) + map::get_or(m, 2, 3)
     "/test/helper.gx" => "let x = 2",
     "/test/helper2.gx" => "let x = 2",
     "/test/helper3.gx" => "let x = 2"
-    ; graphix_package_core::testing::FuseExpect::None);
+    ; graphix_package_core::testing::FuseExpect::Jit);
 
 // A module inside a module of its own name is another module, not an
 // import cycle (a real cycle: graphix-shell/tests/import_cycle.rs).

@@ -538,6 +538,11 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.fuse(ctx))
     }
 
+    pub(crate) fn downcast_mut<T: Update<R, E>>(&mut self) -> Option<&mut T> {
+        let node: &mut dyn Update<R, E> = &mut **self.0;
+        (node as &mut dyn Any).downcast_mut::<T>()
+    }
+
     pub fn image_len(&self) -> usize {
         stack::ensure_sufficient(|| self.0.image_len())
     }
@@ -924,6 +929,11 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
 /// are compiler-reserved, not registry attributes.
 pub type AttributeCheckFn<R, E> = fn(&ExecCtx<R, E>, &Attr, &Node<R, E>) -> Result<()>;
 
+/// What an attribute demands of its target whatever fusion made of it:
+/// it also runs on a node absorbed into a larger kernel, where
+/// [`AttributeCheckFn`] never does.
+pub type AttributeTargetFn<R, E> = fn(&Attr, &Node<R, E>) -> Result<()>;
+
 /// A definition assertion (`#[tail_recursive]` / `#[sync]` /
 /// `#[async]`), verified at the tail of `analysis::analyze` once the
 /// definition is reached; until then it stays pending.
@@ -964,6 +974,10 @@ pub trait Attribute<R: Rt, E: UserEvent> {
     /// global namespace.
     const NAME: &str;
     fn check(ctx: &ExecCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()>;
+    /// See [`AttributeTargetFn`].
+    fn check_target(_attr: &Attr, _node: &Node<R, E>) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// `#[native]`: the decorated expression must compile to native code
@@ -974,7 +988,7 @@ pub struct Native;
 impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
     const NAME: &str = "native";
 
-    fn check(ctx: &ExecCtx<R, E>, _attr: &Attr, node: &Node<R, E>) -> Result<()> {
+    fn check_target(_attr: &Attr, node: &Node<R, E>) -> Result<()> {
         if let Type::Fn(_) = node.typ() {
             crate::bailat!(
                 node.spec(),
@@ -982,15 +996,22 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
                  put it on the call site, not the definition"
             );
         }
-        if let NodeView::FusedKernel(_) = node.view() {
-            return Ok(());
-        }
-        if !fusion::region_is_candidate(node) {
+        if !matches!(node.view(), NodeView::FusedKernel(_))
+            && !fusion::region_is_candidate(node)
+        {
             crate::bailat!(
                 node.spec(),
                 "#[native] annotates a computation; a declaration or a bare \
                  variable read has nothing to fuse — put it on the initializer"
             );
+        }
+        Ok(())
+    }
+
+    fn check(ctx: &ExecCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
+        <Self as Attribute<R, E>>::check_target(attr, node)?;
+        if let NodeView::FusedKernel(_) = node.view() {
+            return Ok(());
         }
         // Report only the leaf-most failures whose subtree contains no
         // fused region: `try_fuse` records a failure for every region
@@ -1336,7 +1357,7 @@ struct BuiltinEntry<R: Rt, E: UserEvent> {
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     builtins: AHashMap<&'static str, BuiltinEntry<R, E>>,
-    attributes: AHashMap<&'static str, AttributeCheckFn<R, E>>,
+    attributes: AHashMap<&'static str, (AttributeCheckFn<R, E>, AttributeTargetFn<R, E>)>,
     // Sandboxing.
     builtins_allowed: bool,
     tags: AHashSet<ArcStr>,
@@ -1505,7 +1526,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     pub fn register_attribute<T: Attribute<R, E>>(&mut self) -> Result<()> {
         match self.attributes.entry(T::NAME) {
             Entry::Vacant(e) => {
-                e.insert(T::check);
+                e.insert((T::check, T::check_target));
             }
             Entry::Occupied(_) => {
                 bail!("attribute {} is already registered", T::NAME)
@@ -1516,7 +1537,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
 
     /// The check fn for a registered attribute.
     pub fn lookup_attribute(&self, name: &str) -> Option<AttributeCheckFn<R, E>> {
-        self.attributes.get(name).copied()
+        self.attributes.get(name).map(|(check, _)| *check)
+    }
+
+    /// The target check for a registered attribute.
+    pub fn lookup_attribute_target(&self, name: &str) -> Option<AttributeTargetFn<R, E>> {
+        self.attributes.get(name).map(|(_, target)| *target)
     }
 
     /// A registered builtin's [`Effect`]; `Async` for unknown names.

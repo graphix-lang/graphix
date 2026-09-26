@@ -5,9 +5,12 @@ use crate::{
     env::Env,
     err,
     expr::{Expr, ExprId},
-    fusion::emit::{
-        BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
-        emit_list_new_node, emit_tuple_new_node,
+    fusion::{
+        self,
+        emit::{
+            BodyCx, CompiledExpr, emit_array_ref_node, emit_array_slice_node,
+            emit_list_new_node, emit_tuple_new_node,
+        },
     },
     image::{
         ImageBuf,
@@ -25,7 +28,7 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{fmt::Debug, marker::PhantomData, ops::Range};
+use std::{fmt::Debug, iter, marker::PhantomData, ops::Range};
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
@@ -250,6 +253,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.i.sleep(ctx);
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.source, &mut self.i], ctx)
+    }
+
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::ArrayRef(self)
     }
@@ -421,6 +428,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         if let Some(end) = &mut self.end {
             end.sleep(ctx);
         }
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts(
+            iter::once(&mut self.source)
+                .chain(self.start.as_mut())
+                .chain(self.end.as_mut()),
+            ctx,
+        )
     }
 
     fn typ(&self) -> &Type {
@@ -614,6 +630,10 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
     fn refs(&self, refs: &mut Refs) {

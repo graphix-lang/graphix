@@ -429,7 +429,7 @@ const SELECT_SLICE_COVER_LADDER: &str = r#"
 
 run!(select_slice_cover_ladder, SELECT_SLICE_COVER_LADDER, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(10)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // The pool covers the array member; the null member needs its own arm.
 const SELECT_SLICE_COVER_UNION: &str = r#"
@@ -939,7 +939,7 @@ const VARIANT_PAYLOAD_ARM_NARROWS: &str = r#"
 run!(variant_payload_arm_narrows, VARIANT_PAYLOAD_ARM_NARROWS, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(45))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // The same through a named member and an ignored payload.
 const VARIANT_IGNORED_PAYLOAD_ARM_NARROWS: &str = r#"
@@ -1589,7 +1589,7 @@ run!(
         };
         let result = pick(`A(2)) + pick(`A("x"))
     "#;
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 run!(
@@ -1607,7 +1607,7 @@ run!(
         let result = score(`Pair(20, 1)) + score(`One(2))
             + score(`Nil) + score("xx") + score([1, 2])
     "#;
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // Or-patterns

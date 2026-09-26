@@ -7,7 +7,7 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
     expr::Expr,
     fusion::{
         emit::{
@@ -135,6 +135,23 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     /// The kernel signature this region fused into.
     pub fn kernel(&self) -> &Arc<KernelSig> {
         &self.kernel
+    }
+
+    /// Whether an input is bound to `id`.
+    pub(crate) fn has_input(&self, id: BindId) -> bool {
+        self.kernel.params.iter().any(|p| p.bind_id == Some(id))
+    }
+
+    /// Feed the input bound to `id` ([`Self::has_input`]) from `node` in
+    /// place of its variable read.
+    pub(crate) fn feed(&mut self, ctx: &mut ExecCtx<R, E>, id: BindId, node: Node<R, E>) {
+        let i = self
+            .kernel
+            .params
+            .iter()
+            .position(|p| p.bind_id == Some(id))
+            .expect("an input bound to the id");
+        std::mem::replace(&mut self.feeders[i], node).delete(ctx);
     }
 
     /// The feeder nodes, one per kernel input slot.

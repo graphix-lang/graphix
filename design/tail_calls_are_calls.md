@@ -1,7 +1,7 @@
 # Tail calls are calls
 
-Status: ruled 2026-09-26 (Eric). Step 1 built 2026-09-26; steps 3
-(G1–G4) in progress.
+Status: ruled 2026-09-26 (Eric). Steps 1 and 2 built 2026-09-26; step 3
+G1–G3 built 2026-09-26, G4 in progress.
 Pins: `findings/tail-calls-are-calls-sep2026/` (the sep25b over-fire),
 `lang::functions::{tail_depth_catches_up_an_outer_write, tail_loop_deep}`
 (the deep loop is JIT-only: the node-walk recurses past the stack
@@ -87,6 +87,33 @@ embedder, and the fuzzer's interp engine are the whole cost.
    takes).
 3. **Close G1–G4**, each with a probe that node-walks today and a
    fusion pin (`FuseExpect::Jit`, `#[native]`) that holds it.
+   - G1 and G2, built: a node that does not fuse whole descends
+     (`fusion::fuse_parts`, the `fuse` of every node with children
+     that is not a container); a part that calls a function (a lambda
+     call, a collection operation) is tried as a region of its own, any
+     other part only descends — arithmetic over a leaf is not worth a
+     kernel. A `let` bound to a lambda literal emits nothing in a
+     kernel, which calls the lambda statically (a value read of it is
+     an undefined local, refused), so a block defining a local
+     recursion fuses whole, a collection callback included. The
+     absorbed attribute keeps its target rule (`#[native]` on a
+     function or a declaration is an error wherever it sits,
+     `Attribute::check_target`). Pins: `lang::fusion::{loop_under_a_node_walked_builtin,
+     loop_beside_node_walked_siblings, local_let_rec_in_nested_blocks,
+     local_lambda_in_a_loop_body}`.
+   - G3, built: a lambda call whose argument fails discovery (an
+     effect, a stateful builtin) fuses with that argument as a feeder
+     of its kernel (`fusion::try_fuse_feeding_args`): the node-walk
+     runs it and the kernel reads its production as an input, the
+     equivalence `f(e)` ≡ `{ let a = e; f(a) }` gives. A fed argument
+     the kernel does not read (a skipped invariant fn formal) would
+     drop its effect, so the call then stays whole in the node-walk.
+     Pin: `lang::fusion::call_fed_by_node_walked_args`.
+   - G4: the function-valued `let` is closed by G2's rule. Open: a
+     slice rest bind, a nullable bind of a non-scalar payload, a tail
+     and a non-tail self call together, a primitive-union result, and
+     a cast from a varint wire type (`v32`/`z32`/`v64`/`z64` have no
+     kernel representation; the corpus case was `cast<i64>(z64:1)`).
 
 What users are told (the book's performance chapter): a recursive
 function whose body fuses runs as a native loop; one that does not

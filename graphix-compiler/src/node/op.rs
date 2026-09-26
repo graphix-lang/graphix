@@ -4,9 +4,12 @@ use crate::{
     defetyp,
     env::Env,
     expr::{Expr, ExprId},
-    fusion::emit::{
-        BodyCx, CompiledExpr, emit_arith_node, emit_bool_node, emit_checked_arith_node,
-        emit_cmp_node, emit_neg_node, emit_not_node,
+    fusion::{
+        self,
+        emit::{
+            BodyCx, CompiledExpr, emit_arith_node, emit_bool_node,
+            emit_checked_arith_node, emit_cmp_node, emit_neg_node, emit_not_node,
+        },
     },
     image::{
         ImageBuf,
@@ -156,6 +159,10 @@ macro_rules! binary_node {
                 self.slept.set();
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx);
+            }
+
+            fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+                fusion::fuse_parts([&mut self.lhs, &mut self.rhs], ctx)
             }
 
             fn view(&self) -> NodeView<'_, R, E> {
@@ -438,6 +445,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         self.n.sleep(ctx);
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.n], ctx)
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
@@ -558,6 +569,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.n], ctx)
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

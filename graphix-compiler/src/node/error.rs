@@ -8,6 +8,7 @@ use crate::{
     expr::{self, CatchRole, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     format_with_flags,
     fusion::{
+        self,
         emit::{BodyCx, CompiledExpr, QopSink, emit_qop_node},
         fuse,
     },
@@ -875,6 +876,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.sleep(ctx);
     }
 
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.n], ctx)
+    }
+
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
@@ -1306,6 +1311,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.sleep(ctx);
+    }
+
+    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fusion::fuse_parts([&mut self.n], ctx)
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

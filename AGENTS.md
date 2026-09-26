@@ -653,10 +653,16 @@ included), structural select destructuring with scalar and variant
 payload binds, `never()` arms as bottom productions of the merge
 shape, or-patterns, list patterns, tail loops over any kernel param
 kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
-calls, trait default bodies. Fusion descends through
-Module/Block/Bind/CallSite/Catch/Lambda/Select/ExplicitParens; not
-through `~`, `<-` or operator operands. `FusionStats.failed` is a
-blocker profile, not a gap count.
+calls, trait default bodies. A subtree that does not fuse whole
+descends: every part that calls a function (a lambda call, a collection
+operation) is tried as a region of its own, any other part only
+descends (`fusion::fuse_parts`); a lambda call whose argument does not
+fuse takes that argument as a node-walked feeder of its kernel
+(`fusion::try_fuse_feeding_args`); a `let` bound to a lambda literal
+emits nothing in a kernel, which calls it statically. An attribute on a
+node absorbed into a larger kernel still has its target checked
+(`Attribute::check_target`). `FusionStats.failed` is a blocker profile,
+not a gap count.
 
 ## Testing is differential
 
