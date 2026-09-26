@@ -1886,3 +1886,29 @@ run!(call_fed_by_node_walked_args, CALL_FED_BY_NODE_WALKED_ARGS, |v: Result<&Val
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(55), Value::I64(56)]),
     _ => false,
 }; FuseExpect::Jit);
+
+// A select nested in tail position reads its outer arm's binds on every
+// path: a tail jump in one inner arm drops them at run time only, and
+// the sibling arm still reads them (the `filter_map` shape).
+const NESTED_TAIL_SELECT_KEEPS_OUTER_BINDS: &str = r#"
+{
+  type L = [`C(i64, L), `N];
+  let rec fm = |l: L| -> L select l {
+    `N => `N,
+    `C(x, rest) => select x > 1 { false => fm(rest), true => `C(x, fm(rest)) }
+  };
+  let r = #[native] fm(`C(1, `C(2, `C(3, `N))));
+  r
+}
+"#;
+
+run!(nested_tail_select_keeps_outer_binds, NESTED_TAIL_SELECT_KEEPS_OUTER_BINDS, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => match &a[..] {
+        [Value::String(c), Value::I64(2), Value::Array(t)] if &**c == "C" => matches!(
+            &t[..],
+            [Value::String(c), Value::I64(3), Value::String(n)] if &**c == "C" && &**n == "N"
+        ),
+        _ => false,
+    },
+    _ => false,
+}; FuseExpect::Jit);

@@ -75,11 +75,12 @@ fn lookup_slot(
 /// The rebind-and-jump core of a self tail-call. Rebinds the leading
 /// formal slots, writing both the payload and the disc (the
 /// terminating arm returns a formal, whose disc must be the last
-/// iteration's fired-ness), drops every local above the param mark,
-/// truncates the env to the params, and jumps to the loop head.
+/// iteration's fired-ness), drops every local above the param mark and
+/// jumps to the loop head. The compile-time scope is the caller's: a
+/// sibling arm still reads the binds this path dropped.
 pub(super) fn emit_tail_rebind_jump(
     b: &mut FunctionBuilder,
-    env: &mut JitEnv,
+    env: &JitEnv,
     ctx: &LowerCtx,
     rebinds: SmallVec<[TailRebind; 8]>,
 ) -> Result<()> {
@@ -134,7 +135,6 @@ pub(super) fn emit_tail_rebind_jump(
     for (kind, vv) in drops {
         emit_drop_local(b, ctx, kind, vv)?;
     }
-    env.truncate(ctx.tail.param_mark);
     b.ins().jump(head, &[]);
     Ok(())
 }

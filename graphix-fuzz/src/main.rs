@@ -1160,6 +1160,23 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          array::len(f(x % i64:100 + i64:100, [x]))\n",
     ),
     (
+        // an owned payload bind read beside a jump, in a select nested
+        // in tail position: every arm's exit drops it once
+        "nested-tail-select-payload",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         type L = [`C(Array<i64>, L), `N];\n\
+         let rec f = |l: L, k: i64, acc: i64| -> i64 select l {\n\
+             `N => acc,\n\
+             `C(xs, rest) => select k {\n\
+                 i64:0 => f(rest, k, acc + array::len(xs)),\n\
+                 _ => acc + array::len(xs)\n\
+             }\n\
+         };\n\
+         f(`C([x, i64:1, i64:2], `C([x, i64:3], `N)), x % i64:2, i64:0)\n",
+    ),
+    (
         // a string read into a value-shaped formal, owned by the call
         "string-into-value-formal",
         "let clk = sys::time::timer(duration:0.001s, true);\n\

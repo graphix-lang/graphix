@@ -109,10 +109,17 @@ embedder, and the fuzzer's interp engine are the whole cost.
      the kernel does not read (a skipped invariant fn formal) would
      drop its effect, so the call then stays whole in the node-walk.
      Pin: `lang::fusion::call_fed_by_node_walked_args`.
-   - G4: the function-valued `let` is closed by G2's rule. Open: a
-     slice rest bind, a nullable bind of a non-scalar payload, a tail
-     and a non-tail self call together, a primitive-union result, and
-     a cast from a varint wire type (`v32`/`z32`/`v64`/`z64` have no
+   - G4: the function-valued `let` is closed by G2's rule. "A tail and
+     a non-tail self call together" was a select nested in tail
+     position losing its outer arm's binds: the tail jump truncated the
+     compile-time env to the loop's formals, so a sibling arm emitted
+     after it read an undefined local. The jump now drops those locals
+     at run time only and leaves compile-time scope to its callers
+     (`emit_tail_rebind_jump`). Pin:
+     `lang::fusion::nested_tail_select_keeps_outer_binds`; leak witness
+     `nested-tail-select-payload`. Open: a slice rest bind, a nullable
+     bind of a non-scalar payload, a primitive-union result, and a
+     cast from a varint wire type (`v32`/`z32`/`v64`/`z64` have no
      kernel representation; the corpus case was `cast<i64>(z64:1)`).
 
 What users are told (the book's performance chapter): a recursive
