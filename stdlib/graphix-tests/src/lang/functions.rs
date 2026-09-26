@@ -2073,6 +2073,27 @@ run!(widest_arg_last, WIDEST_ARG_LAST, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "\"B\""
 });
 
+// A lambda in parentheses is a lambda: its binding generalizes.
+run!(
+    parenthesized_lambda_generalizes,
+    r#"{ let f = (|v| v * v); (array::map([u8:3], f), array::map([4], f)) }"#,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == "[[u8:9], [i64:16]]"
+);
+
+// A call's refusal is placed at the call, in parentheses or not.
+#[tokio::test(flavor = "current_thread")]
+async fn a_call_error_is_placed_at_the_call() -> Result<()> {
+    use graphix_compiler::expr::ErrorSite;
+    let src = "{ let f = |x: i64| x; (f(#y: 1, 2)) }";
+    let e = match eval(src, crate::TEST_REGISTER).await {
+        Err(e) => e,
+        Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+    };
+    let at = e.downcast_ref::<ErrorSite>().map(|s| s.expr().to_string());
+    assert_eq!(at.as_deref(), Some("f(#y: 1, 2)"), "{e:#}");
+    Ok(())
+}
+
 // A wider argument after the one that settled the variable is checked
 // as written, whatever its shape.
 run!(

@@ -113,8 +113,8 @@ fn builtin_binding<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     value: &Expr,
 ) -> Option<BuiltinBindInfo> {
-    let (NodeView::Lambda(l), ExprKind::Lambda(lam), Type::Fn(typ)) =
-        (node.view(), &value.kind, node.typ())
+    let (Some(l), ExprKind::Lambda(lam), Type::Fn(typ)) =
+        (lambda_value(node), &unparen(value).kind, node.typ())
     else {
         return None;
     };
@@ -206,7 +206,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
-        if matches!(node.view(), NodeView::Lambda(_)) || forwards(&ctx.env, b, &node) {
+        if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
             pattern.ids(&mut |id| {
                 ctx.env.poly_binds.insert_cow(id);
             });
@@ -237,14 +237,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// The LambdaDef `Value` this binding holds when its value node is
     /// a lambda; `None` otherwise.
     pub(crate) fn lambda_def_value(&self) -> Option<Value> {
-        let mut view = self.node.view();
-        loop {
-            view = match view {
-                NodeView::ExplicitParens(p) => p.n.view(),
-                NodeView::Lambda(l) => return Some(l.def_value().clone()),
-                _ => return None,
-            }
-        }
+        lambda_value(&self.node).map(|l| l.def_value().clone())
     }
 }
 
@@ -365,7 +358,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             ctx.bind_to_lambda.remove(&id);
             ctx.connect_targets.remove(&id);
         });
-        if let NodeView::Lambda(l) = self.node.view()
+        if let Some(l) = lambda_value(&self.node)
             && let Some(lambda) = l.lambda_id::<R, E>()
             && let Some(id) = self.pattern.single_bind_id()
             && let Some(b) = ctx.env.by_id.get(&id)
@@ -808,6 +801,20 @@ enum PlaceSpec {
     Tuple(usize),
     Field(expr::Name),
     Key(Expr),
+}
+
+/// The lambda `node` is, seen through grouping parentheses.
+fn lambda_value<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+) -> Option<&super::lambda::Lambda> {
+    let mut view = node.view();
+    loop {
+        view = match view {
+            NodeView::ExplicitParens(p) => p.n.view(),
+            NodeView::Lambda(l) => return Some(l),
+            _ => return None,
+        }
+    }
 }
 
 /// `e` without its grouping parentheses.

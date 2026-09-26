@@ -346,12 +346,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.n.typecheck0(ctx)
+        wrap!(self.n, self.n.typecheck0(ctx))
     }
 
     fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        self.n.typecheck1(ctx)?;
-        Ok(())
+        wrap!(self.n, self.n.typecheck1(ctx))
     }
 
     fn spec(&self) -> &Expr {

@@ -243,6 +243,24 @@ run!(array_indexing6, ARRAY_INDEXING6, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A slice of a select is the select's type: an annotation cannot retype it.
+run!(
+    array_slice_of_select_refuses_annotation,
+    r#"{ let t: i64 = (select 1 { 1 => ["a"], _ => ["b"] })[..-1]$; t }"#,
+    |v: Result<&Value>| v.is_err_and(|e| format!("{e:?}").contains("does not contain"));
+    graphix_package_core::testing::FuseExpect::None
+);
+
+// ... and a call that dispatches on its argument's type sees it.
+run!(
+    array_slice_of_select_dispatches,
+    r#"{
+  let size = |c: Collection| Collection::fold(c, 0, |acc, x| acc + 1);
+  size((select 1 { 1 => ["a", "b"], _ => ["c"] })[..-1]$)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)))
+);
+
 const ARRAY_SLICE_NON_ARRAY: &str = r#"
   ("foo")[..]
 "#;

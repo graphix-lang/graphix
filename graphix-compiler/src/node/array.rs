@@ -371,6 +371,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
             let at = Type::Array(Arc::new(Type::empty_tvar()));
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
+        // `typ` copied the source's type at compile; a source whose type
+        // is decided in its typecheck0 (a select) is related here
+        let Type::Set(members) = &self.typ else { unreachable!() };
+        wrap!(self, members[0].check_contains(&ctx.env, source_typ))?;
         if let Some(start) = self.start.as_mut() {
             wrap!(start, start.typecheck0(ctx))?;
             check_index(&ctx.env, start)?;
