@@ -207,8 +207,6 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Default)]

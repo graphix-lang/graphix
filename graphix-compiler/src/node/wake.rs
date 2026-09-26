@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 /// arm evaluation that reads it, so a woken arm receives exactly the
 /// fires no selected reader saw, once, at the current standing value.
 /// Guards, the scrutinee and pattern binds (of any enclosing select)
-/// are not tracked. Survives sleep and `reset_replay`; frames excluded.
+/// are not tracked. Survives sleep.
 #[derive(Debug, Default)]
 pub(crate) struct TrackedFires {
     /// Per arm: the body's free refs, keyed by the input they are
@@ -106,9 +106,6 @@ impl TrackedFires {
         evaluated: &[usize],
         carried: Option<&IntSet<BindId>>,
     ) {
-        if ctx.frame_depth > 0 {
-            return;
-        }
         let Self { all, pending, per_arm, .. } = self;
         for id in all.iter() {
             if !pending.contains(id)
@@ -135,7 +132,7 @@ impl TrackedFires {
         i: usize,
     ) -> SmallVec<[(BindId, Option<TagValue>); 4]> {
         let mut injected: SmallVec<[(BindId, Option<TagValue>); 4]> = SmallVec::new();
-        if ctx.frame_depth > 0 || self.pending.is_empty() {
+        if self.pending.is_empty() {
             return injected;
         }
         if let Some(consumed) = self.consumes.get(i) {

@@ -48,10 +48,6 @@ macro_rules! composite_plumbing {
             self.n.iter_mut().for_each(|n| n.sleep(ctx))
         }
 
-        fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-            self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
-        }
-
         fn refs(&self, refs: &mut Refs) {
             self.n.iter().for_each(|n| n.refs(refs))
         }
@@ -75,10 +71,10 @@ macro_rules! composite_plumbing {
 macro_rules! gathered {
     ($self:ident, $ctx:ident, $event:ident, $empty:expr) => {{
         if $self.n.is_empty() {
-            return super::produce_constant($ctx, $event, &mut $self.resident, || $empty);
+            return super::produce_constant($event, &mut $self.resident, || $empty);
         }
         let (tag, prods) = gather($ctx, $event, &mut $self.n);
-        dense_gate!($self, $ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!($self, tag.triggers(), tag.is_bottom());
         (prods.into_iter().map(|tv| tv.value_cloned()), tag)
     }};
 }
@@ -326,7 +322,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         let tag = vals.iter().fold(src.tag(), |t, v| t.join(v.tag()));
         // an unshaped (non-struct-rep) source is bottom
         let shaped = src.with_value(|v| matches!(v, Value::Array(_)));
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom() || !shaped);
+        dense_gate!(self, tag.triggers(), tag.is_bottom() || !shaped);
         let v = src.with_value(|src| {
             let Value::Array(src) = src else { unreachable!("gated on the shape") };
             let mut fields: LPooled<Vec<Value>> = src.iter().cloned().collect();
@@ -361,11 +357,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.slept.set();
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_replay(ctx);
-        self.replace.iter_mut().for_each(|r| r.n.reset_replay(ctx))
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -533,10 +524,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.source.sleep(ctx)
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_replay(ctx)
     }
 
     fn typ(&self) -> &Type {
@@ -895,7 +882,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.arg.update(ctx, event);
         let tag = tv.tag();
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         // XCR claude for eric: dense gate added. `params` stays lazy: it is taken
         // once, at the first construction, after both typecheck passes over the
         // whole program; this node's typecheck1 still precedes its later siblings'
@@ -932,10 +919,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.arg.sleep(ctx)
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.arg.reset_replay(ctx)
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -1131,10 +1114,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.source.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

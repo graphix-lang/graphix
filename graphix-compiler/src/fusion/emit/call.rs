@@ -332,14 +332,13 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 
 /// The callee's context word: our init view, forced on this site's
 /// first call ever (the node-walk primes an instance's first dispatch
-/// the same way), plus the inherited quiet bit.
+/// the same way).
 fn emit_callee_context_word(cx: &mut BodyCx) -> ClifValue {
-    let quiet = cx.quiet_flag();
     // XCR claude for eric: kept as built (kernel_instance_state.md; the contract 3
     // text was the stale one, fixed). An init view only sets constants' FIRED bits,
     // and a late first call rides a fire that already reaches the output (the
     // select's scrutinee or guard, the loop's resize); probes p_first_call*.gx agree.
-    let callee_init = match cx.claim_state_word_loop_invariant() {
+    match cx.claim_state_word_loop_invariant() {
         Some(off) => {
             let sp = cx.state_ptr();
             let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
@@ -351,9 +350,7 @@ fn emit_callee_context_word(cx: &mut BodyCx) -> ClifValue {
             cx.b.ins().bor(init, first_i)
         }
         None => cx.init_flag(),
-    };
-    let quiet_bit = cx.b.ins().ishl_imm(quiet, 1);
-    cx.b.ins().bor(callee_init, quiet_bit)
+    }
 }
 
 /// Claim a contiguous run of `layout.words` words from this body's own

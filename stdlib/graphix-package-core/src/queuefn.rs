@@ -154,11 +154,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.sleep(ctx);
     }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // Queued calls survive anything short of sleep.
-        self.pred.reset_replay(ctx);
-    }
 }
 
 /// The `queuefn` builtin. Constructs a wrapper LambdaDef the first time `f`
@@ -459,8 +454,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         s.pop_count = 1;
         s.last_written_depth = 0;
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 fn build_wrapper_apply<R: Rt, E: UserEvent>(

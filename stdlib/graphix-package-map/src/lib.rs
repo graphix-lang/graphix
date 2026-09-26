@@ -180,8 +180,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -320,8 +318,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         self.triggered = 0;
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 graphix_package_core::unit_image_state!(GetEv, GetOrEv, InsertEv, RemoveEv);

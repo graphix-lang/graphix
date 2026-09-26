@@ -316,8 +316,8 @@ but keeps cross-invocation state, or depends on WHICH args arrived), or
 `Stateless(Option<FastCall>)` (a pure function of its args; the payload
 is the direct-call entry the JIT uses, `Plain` or `Typed` by the site's
 resolved return type; `None` for effects and partial-delivery
-producers). A wrong `Stateless` is a semantics bug (the tail-loop
-collapse shares state across iterations); a wrong `Sync` only costs the
+producers). A wrong `Stateless` is a semantics bug (the JIT's native
+tail loop shares state across iterations); a wrong `Sync` only costs the
 loop. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`; raw `Apply` authors read args through
 `seam_arg`/`seam_tick`/`seam_value`. Configuration a fast fn derives
@@ -372,9 +372,8 @@ node graph IS the IR — there is no parallel typed IR
   per fired input — scrutinee delivery, a CONSULTED guard, or the taken
   arm's own production; same-arm re-matches emit the arm's current
   value. Constants fire at init (and at an arm's wake); every
-  argument-less literal (`` `Tag ``, `[]`, `{}`) is a constant and
-  follows the one frame rule (`node::produce_constant`: inside a framed
-  tail pass it fires only on a genuine init dispatch). Kernel outputs
+  argument-less literal (`` `Tag ``, `[]`, `{}`) is a constant
+  (`node::produce_constant`). Kernel outputs
   fire only when an input feeding them fired; collection loops fire on
   resize, a fired slot, a fired empty source, a fired fold carry, or a
   source back from bottom (a bottom source forgets the length).
@@ -407,16 +406,18 @@ node graph IS the IR — there is no parallel typed IR
 - **Activation state** (`design/activation_state.md`,
   `design/recursive_activations.md`, `design/atomic_recursion.md`):
   held state never decides output bottomness; activations ARE
-  collection slots; non-tail recursion is an activation per level, a
-  STATELESS tail loop is one activation; instances are retained
+  collection slots; every call is an activation, tail or not: the
+  node-walk has no frames, and the JIT runs a STATELESS tail recursion
+  as one native loop held to the activations' answers
+  (`design/tail_calls_are_calls.md`); instances are retained
   unconditionally; shrink = delete (a depth not reached this cycle is
   deleted; re-reaching it is fresh). No depth limit; evaluation is
   atomic within a cycle; containment is the cooperative interrupt
   (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`). Kernel
   interior memory (`design/kernel_instance_state.md`) gives one compiled
   body the interp's per-slot/per-activation multiplicity for exactly the
-  state that decides firing; the QUIET FLAG (a framed pass on a non-init
-  cycle) is not an init view; only a site's first-ever dispatch is.
+  state that decides firing; only a site's first-ever dispatch is an
+  init view.
 - **`let rec` is monomorphic-recursive**; a def's declared tvars are
   rigid in its body check: none binds to a concrete type and no two
   unify (`contains.rs` Distinct), while a call instantiates them
@@ -633,7 +634,6 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_PROFILE_INSTANCES=1` | with `GRAPHIX_PROFILE`, per-instance construction/check costs (`bench/instances.py`) |
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
-| `GXDBG_TAIL=1` | every tail-loop dispatch pass |
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |
 | `GXDBG_CS=1` / `GXDBG_DYNC=1` | every CallSite dispatch and result tag / every fastcall trampoline dispatch |

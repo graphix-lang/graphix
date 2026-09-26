@@ -1,12 +1,12 @@
 # Tail calls are calls
 
-Status: ruled 2026-09-26 (Eric); in progress. When built, this rewrites
-`recursive_activations.md` §1–2, `activation_state.md` Ruling 2's
-tail-loop clause, `dense_delivery.md` "Frames and `reset_replay`" and
-the frame lines of `wake_catchup.md`, and this document becomes the
-record of what the node-walk no longer has.
-Pins: `findings/` (the tail and frame pins keep their programs; their
-node-walk now recurses), the sep25b over-fire (`divergence_000035`).
+Status: ruled 2026-09-26 (Eric). Step 1 built 2026-09-26; steps 3
+(G1–G4) in progress.
+Pins: `findings/tail-calls-are-calls-sep2026/` (the sep25b over-fire),
+`lang::functions::{tail_depth_catches_up_an_outer_write, tail_loop_deep}`
+(the deep loop is JIT-only: the node-walk recurses past the stack
+budget), and every `findings/` tail and frame pin, whose node-walk now
+recurses.
 
 ## The rule
 
@@ -77,14 +77,14 @@ embedder, and the fuzzer's interp engine are the whole cost.
    `TrackedFires` loses its frame exclusion. `GXLambda::tail_loop`
    stays: it is the JIT's gate (`KernelSig::has_tail_loop`) and what
    `#[tail_recursive]` asserts.
-2. **The JIT answers what the activations answer.** The native loop's
-   frame mirrors — THE QUIET FLAG on every non-init pass
-   (`fusion/emit/lower.rs`), the tail-spine STALE fold, the
-   frame-depth reads in `FusedKernel::update` — are re-derived from the
-   per-activation reference, and deleted where the per-level answer
-   needs nothing. Where a loop cannot answer as the activations do, the
-   body recurses natively instead (the path a stateful tail loop takes
-   today). Gate: the corpus and the fixtures agree across engines.
+2. **The JIT answers what the activations answer.** With the node-walk
+   recursing, the corpus (508 programs) and the fixtures agree across
+   engines with no JIT change beyond deleting its frame mirrors: the
+   context word's quiet bit had no reader (the wake bit is now bit 1),
+   and `FusedKernel::update`'s frame-depth reads went with
+   `frame_depth`. Where a loop is ever found to answer differently, the
+   body recurses natively instead (the path a stateful tail loop
+   takes).
 3. **Close G1–G4**, each with a probe that node-walks today and a
    fusion pin (`FuseExpect::Jit`, `#[native]`) that holds it.
 

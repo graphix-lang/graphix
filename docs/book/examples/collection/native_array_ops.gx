@@ -1,8 +1,7 @@
 // The collection operations written as plain Graphix loops over an
 // array — the spellings a Collection implementation for your own
-// array-backed type would use. Each is an index tail recursion: one
-// activation reused per iteration, and the whole loop compiles to a
-// native kernel.
+// array-backed type would use. Each is an index tail recursion, and the
+// whole loop compiles to a native kernel.
 use Collection::*;
 
 // fold: the primitive. ~6x the intrinsic per element (the loop's own

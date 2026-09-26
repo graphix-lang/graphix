@@ -54,8 +54,8 @@ The five knobs it replaced (`EFFECT`/`STATELESS`/`SLEEP_RESTARTS`/
 easy to forget after declaring Sync + stateless; now the invalid
 combinations are unrepresentable and declaring a builtin stateless puts
 the fast-fn question in the author's face. The `Option` keeps the
-tail-loop collapse fact for the stateless builtins that can never be
-fast fns — effects (`print`/`log`/`exit`/`now`) and the
+stateless fact (the JIT's native tail loop, a sleep-free arm) for the
+builtins that can never be fast fns — effects (`print`/`log`/`exit`/`now`) and the
 partial-delivery producers (opt's short-circuits, `divide`,
 `filter_err`), whose result depends on which args arrived while a fast
 fn sees every arg present. Marking those `Sync` would have made a tail
@@ -113,7 +113,7 @@ around nested invocations reached through the value hooks).
 (= execution) order, through `node::error::deliver_error`, the handler
 path factored out of `Qop::update` so both engines run one function:
 same-top Vacant-insert / `set_var` on an occupied entry, cross-top
-`set_var`, in-frame `frame_outbox` parking. Delivery keys on a FRESH
+`set_var`. Delivery keys on a FRESH
 error (not tainted, not stale), exactly `Qop::update`'s fired-only
 rule. The value side is untouched: the failing `?` is the tainted
 placeholder that continues.
@@ -142,14 +142,13 @@ view on its first call ever), and the per-call-site blocks /
 per-slot anchor chains / per-activation block trees that give those
 words per-slot and per-activation multiplicity
 (`kernel_instance_state.md`), plus the shrink reclaim of unreached
-activations. No replay caches (`FusedKernel::reset_replay` resets only
-its feeders — every word a kernel keeps is semantic), no selection
-memory, no inner
+activations. No replay caches (every word a kernel keeps is semantic),
+no selection memory, no inner
 `Apply`s or `Node`s beyond its input feeders. The runtime loans an
 invocation exactly four things through scoped thread-locals:
 `KERNEL_ABORT` (the interrupt / stack-budget / bottom-abort channel),
 `KERNEL_ENV`, `QOP_RAISES` and the core-trait value hooks. Wire slot 0
-bit 2 is the kernel's own `slept` bit, so a wake delivers standing args
+bit 1 is the wake view (the kernel's own `slept` bit or the arm's), so a wake delivers standing args
 STALE and a stateless re-eval's STALE result (`wake_catchup.md`).
 
 ## What was deleted, and why

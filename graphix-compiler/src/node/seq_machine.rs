@@ -385,15 +385,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         self.current = None;
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.pc.reset_replay(ctx);
-        for s in self.steps.iter_mut() {
-            for n in s.nodes.iter_mut() {
-                n.reset_replay(ctx)
-            }
-        }
-    }
-
     fn refs(&self, refs: &mut Refs) {
         self.pc.refs(refs);
         for s in self.steps.iter() {
@@ -524,11 +515,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.snapshot.sleep(ctx);
         self.live.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.snapshot.reset_replay(ctx);
-        self.live.reset_replay(ctx);
     }
 
     fn refs(&self, refs: &mut Refs) {

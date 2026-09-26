@@ -258,10 +258,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         self.defaults.sleep(ctx)
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.defaults.reset_replay(ctx)
-    }
-
     fn typ(&self) -> &Type {
         Type::BOTTOM
     }
@@ -697,10 +693,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.body.sleep(ctx)
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.body.reset_replay(ctx)
     }
 
     fn typ(&self) -> &Type {

@@ -192,8 +192,7 @@ and depth is unbounded.
 Not a mutable-state channel for user programs (`<-` is the only
 cross-cycle mutation, and a connect node-walks), not a second
 bottom/taint channel, and not selection memory. The words carry firing
-bookkeeping only, invisible to value semantics; `FusedKernel::reset_replay`
-is a no-op because there is nothing to reset. The former slot 3 (a
+bookkeeping only, invisible to value semantics. The former slot 3 (a
 derivation-changed bit) died with the organic-firing ruling — firing
 needs no recursion machinery — and the selection words, DynCall
 identity words and arm-lift re-seed died with strict fusion.

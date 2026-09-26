@@ -819,10 +819,8 @@ pub struct SiteLeaf {
 /// kernel.
 ///
 /// Slot 0 is the cycle-context word: bit 0 = init (the forced view,
-/// wakes included), bit 1 = quiet (a re-derivation inside a frame or
-/// tail loop that is not its own init; callees inherit it), bit 2 =
-/// wake (an arm's `wake_init` or the kernel's own slept bit). Genuine
-/// init is `bit0 & !bit2`.
+/// wakes included), bit 1 = wake (an arm's `wake_init` or the kernel's
+/// own slept bit). Genuine init is `bit0 & !bit1`.
 ///
 /// Slot 1 is the per-instance state pointer (`*mut u64`, 0 when the
 /// kernel claimed no words); only the region's root body may claim

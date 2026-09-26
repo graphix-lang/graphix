@@ -7,12 +7,11 @@ use super::{
         BuiltInLambda, GXLambda, Lambda, LambdaDef, build_builtin_check, same_parameters,
     },
     pattern::StructPatternNode,
-    read_quiet,
 };
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, Event, ExecCtx, FnArgIdentity, LambdaId,
-    LambdaInstanceId, Node, NodeView, PendingTailCall, Refs, ResolvingLambda, Rt, Scope,
-    Tag, TagValue, Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
+    LambdaInstanceId, Node, NodeView, Refs, ResolvingLambda, Rt, Scope, Tag, TagValue,
+    Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     fusion::{
@@ -49,10 +48,7 @@ use smallvec::SmallVec;
 use std::{
     collections::hash_map::Entry,
     fmt, mem,
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, Ordering::Relaxed},
-    },
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 use triomphe::Arc as TArc;
 
@@ -555,11 +551,6 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) flags: BitFlags<CFlag>,
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
-    /// Set by `analysis::analyze` when this is a tail-position self-call
-    /// in a sync tail-recursive body: the rebind args in callee-signature
-    /// order. `update` then stashes its args in `ctx.pending_tail_call`,
-    /// keyed by `static_target`'s definition, instead of dispatching.
-    tail_arg_order: OnceLock<Box<[BindId]>>,
     pub(super) resident: TagValue,
 }
 
@@ -591,15 +582,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             flags,
             scope,
             top_id,
-            tail_arg_order: OnceLock::new(),
             resident: TagValue::phantom(),
         }
-    }
-
-    /// Mark this site a tail self-call rebinding the callee's formals
-    /// from `order` (`analysis::analyze`); a site is marked once.
-    pub(crate) fn mark_self_tail_call(&self, order: Box<[BindId]>) {
-        let _ = self.tail_arg_order.set(order);
     }
 
     /// The function type at this call site with the site's tvars unified
@@ -1330,7 +1314,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ctx: &mut ExecCtx<R, E>,
         event: &mut Event<E>,
     ) -> &TagValue {
-        let woke = self.slept.take() && ctx.frame_depth == 0;
+        let woke = self.slept.take();
         if matches!(self.callee, Callee::Imaged { .. })
             && let Err(e) = self.materialize(ctx)
         {
@@ -1339,10 +1323,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         let mut arg_fired = false;
-        let tail = self
-            .tail_arg_order
-            .get()
-            .zip(self.static_target.as_ref().map(|target| target.definition));
         // XCR claude for eric: a bind seeds from the quiet productions only, so only
         // those are captured, and a static callee's fnode value is no longer cloned.
         // A dynamic site still clones its quiet args each cycle: whether it rebinds
@@ -1358,34 +1338,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let tv = node.update(ctx, event);
             let fired = tv.tag().triggers();
             arg_fired |= fired;
-            if tail.is_some() || (may_bind && !fired) {
+            if may_bind && !fired {
                 prods.push((arg.id, tv.clone()));
             }
             if publish_production(ctx, event, Feeds::Id(arg.id), tv, false, root) {
                 set.push(arg.id);
             }
-        }
-        // Tail-call interception: stash the rebind args for the enclosing
-        // `GXLambda::update` loop instead of dispatching. Only a genuine
-        // call (an arg fired, or an init view) enters the loop.
-        if let Some((order, lambda)) = tail {
-            if event.init || arg_fired {
-                let args = order
-                    .iter()
-                    .map(|id| match prods.iter().find(|(pid, _)| pid == id) {
-                        Some((_, tv)) => Some(tv.clone()),
-                        None => read_quiet(ctx, event, id),
-                    })
-                    .collect();
-                debug_assert!(ctx.pending_tail_call.is_none());
-                ctx.pending_tail_call = Some(PendingTailCall { lambda, args });
-            }
-            // A quiet tail self-call rides without dispatching, or it
-            // would consume the callee's first-dispatch init view.
-            for id in set.drain(..) {
-                event.variables.remove(&id);
-            }
-            return self.resident.ride();
         }
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
@@ -1451,10 +1409,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         if dbgenv::gxdbg_cs() {
             eprintln!(
-                "CS-RES spec={} res={:?} fd={}",
+                "CS-RES spec={} res={:?}",
                 self.spec,
                 res.as_ref().map(|tv| tv.tag()),
-                ctx.frame_depth
             );
         }
         for id in set.drain(..) {
@@ -1672,7 +1629,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let flags = image::flags_decode(buf)?;
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        let tail_arg_order = Option::<Vec<BindId>>::decode(buf)?;
         let mut site =
             Self::unbound(spec, ftype, rtype, fnode, args, scope, flags, top_id);
         site.arg_refs = arg_refs;
@@ -1680,9 +1636,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         site.static_target = static_target;
         site.lowered = lowered;
         site.recursive_edge = AtomicBool::new(recursive_edge);
-        if let Some(order) = tail_arg_order {
-            site.mark_self_tail_call(order.into_boxed_slice());
-        }
         Ok(Node::new(site))
     }
 }
@@ -1726,8 +1679,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             + image::flags_len(self.flags)
             + image::scope_len(&self.scope)
             + self.top_id.encoded_len()
-            + 1
-            + self.tail_arg_order.get().map_or(0, |order| image::slice_len(order))
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1780,15 +1731,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         self.recursive_edge.load(Relaxed).encode(buf)?;
         image::flags_encode(self.flags, buf)?;
         image::scope_encode(&self.scope, buf)?;
-        self.top_id.encode(buf)?;
-        match self.tail_arg_order.get() {
-            None => buf.put_u8(0),
-            Some(order) => {
-                buf.put_u8(1);
-                image::slice_encode(order, buf)?;
-            }
-        }
-        Ok(())
+        self.top_id.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -1840,24 +1783,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         for n in &mut self.arg_refs {
             n.sleep(ctx);
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(n) = &mut self.lowered {
-            return n.reset_replay(ctx);
-        }
-        if let Some(f) = self.callee.apply_mut() {
-            f.reset_replay(ctx)
-        }
-        self.fnode.reset_replay(ctx);
-        for arg in self.args.values_mut() {
-            if let Some(ref mut n) = arg.node {
-                n.reset_replay(ctx);
-            }
-        }
-        for n in &mut self.arg_refs {
-            n.reset_replay(ctx);
         }
     }
 
@@ -2229,8 +2154,7 @@ pub(crate) enum Feeds<'a> {
     Pattern(&'a StructPatternNode),
 }
 
-/// What a quiet production does at depth 0, where the store serves the
-/// value channel.
+/// What a quiet production does; the store serves the value channel.
 #[derive(Clone, Copy)]
 pub(crate) enum QuietAtRoot {
     /// Nothing: the store already holds it.
@@ -2242,10 +2166,8 @@ pub(crate) enum QuietAtRoot {
 }
 
 /// Publish `tv`, a production feeding `feeds`, to the readers of this
-/// dispatch. A fire (a value or a fresh bottom) is stored, at depth 0
-/// only, and delivered on the overlay. A quiet one is delivered on the
-/// overlay in a frame, whose store holds the pre-frame value, and per
-/// `root` at depth 0. `born` delivers a quiet value FIRED: a fresh
+/// dispatch. A fire (a value or a fresh bottom) is stored and delivered
+/// on the overlay; a quiet one per `root`. `born` delivers a quiet value FIRED: a fresh
 /// callee's first dispatch reads its arguments as new. Returns whether
 /// the overlay was written.
 pub(crate) fn publish_production<R: Rt, E: UserEvent>(
@@ -2261,9 +2183,7 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
     let delivered = if born && !bottom { Tag::FIRED } else { tag };
     let (store, overlay) = if tag.triggers() {
         let store = if bottom { Tag::FRESH_BOTTOM } else { Tag::FIRED };
-        ((ctx.frame_depth == 0).then_some((store, false)), Some(tag))
-    } else if ctx.frame_depth > 0 {
-        (None, Some(delivered))
+        (Some((store, false)), Some(tag))
     } else {
         match root {
             QuietAtRoot::Skip => return false,

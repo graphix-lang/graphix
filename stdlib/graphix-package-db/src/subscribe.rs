@@ -235,10 +235,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.out = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.tree_val = None;
-    }
-
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
@@ -358,10 +354,6 @@ macro_rules! db_event_accessor {
                 }
                 self.cached.clear();
                 self.out = TagValue::phantom();
-            }
-
-            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-                self.cached.clear()
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

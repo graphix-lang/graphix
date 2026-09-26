@@ -11,8 +11,7 @@ what they cost.
 ## The operations as loops
 
 Over an array-backed structure, the operations are index tail
-recursions — one activation reused per iteration, compiled to a
-native loop:
+recursions, compiled to a native loop:
 
 ```graphix
 {{#include ../examples/collection/native_array_ops.gx}}

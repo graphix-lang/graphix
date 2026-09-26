@@ -157,9 +157,9 @@ is insufficient; the forced recompute republishes `p2` at the present
   `deliver` injects the unconsumed bits an arm reads into
   `event.variables` as FIRED entries at the standing value, scoped to
   exactly that arm's evaluation (`restore` afterwards), and clears
-  them. Semantic state: survives sleep and `reset_replay`; frames are
-  excluded (a framed pass runs against private maps — loop plumbing,
-  not the reactive world). The bits record only fires that HAPPENED in
+  them. Semantic state: survives sleep. Each recursion depth is an
+  activation with its own selects, so each depth owns its bits
+  (`tail_calls_are_calls.md`). The bits record only fires that HAPPENED in
   the awake graph; a paused async producer produces nothing to catch
   up and resumes on wake.
 
@@ -218,13 +218,11 @@ fuses, so every edge-consuming arm interior sits under an interpreter
 select whose tracker injects THROUGH the kernel boundary (an
 arm-position kernel's params read the injected fires). Pure arms
 recompute anyway — kernels compute always. What a kernel needs is the
-wake VIEW: wire slot 0 bit 2 = WAKE (the arm's `event.wake_init` or the
-kernel's own `slept` bit, depth 0 only); genuine init is `bit0 &
-!bit2` and is what gates the fastcall stale-mask suppression, so a wake
-delivers standing args STALE and the trampoline produces the stateless
-re-eval's STALE result. Frames are excluded on both engines: every wake
-predicate is depth-0 only, which keeps the frame-formal init-view seed
-intact.
+wake VIEW: wire slot 0 bit 1 = WAKE (the arm's `event.wake_init` or the
+kernel's own `slept` bit); genuine init is `bit0 & !bit1` and is what
+gates the fastcall stale-mask suppression, so a wake delivers standing
+args STALE and the trampoline produces the stateless re-eval's STALE
+result.
 
 ### The birth rule
 

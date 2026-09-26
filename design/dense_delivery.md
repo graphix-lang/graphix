@@ -2,7 +2,7 @@
 
 Status: built 2026-08-13
 Pins: `stdlib/graphix-tests/src/lang/dense_deltas.rs` (one fixture per ruled delta below); `stdlib/graphix-tests/src/lib_tests/bottom.rs`; `graphix-fuzz/findings/dyncall-tagblind-print-aug2026/`, `module-state-callee-reactivity-aug2026/`, `dyncall-stale-arg-fired-aug2026/`, `sleep-restart-gate-aug2026/`, `sleep-preserves-caches-jul2026/`
-Supersedes: `replay_frames.md` (frames survive as overlays; the `reset_replay` replay-vs-semantic classification survives), `pure_dataflow_plan.md` part B (sparse delivery, withdrawn)
+Supersedes: `replay_frames.md` (frames and `reset_replay` are gone: `tail_calls_are_calls.md`), `pure_dataflow_plan.md` part B (sparse delivery, withdrawn)
 
 ## The model
 
@@ -76,14 +76,9 @@ entry), absence as the phantom. `store_insert_standing` stamps an entry
 as an earlier cycle — value-channel maintenance that is deliberately not
 a delivery (`ByRef`'s seed).
 
-`event.variables` is the INNERMOST OVERLAY, not the store: same-cycle
-transient deliveries (select arm binds, call-site formal publishes) at
-depth 0, or a framed pass's private writes; `event.frames` holds the
-enclosing overlays. Reads fall through the frame stack to the store
-(`node::read_var`). Frame writes are private and never reach the store
-(the store keeps ENTRY values for the framed seed); notifies are
-deferred to escape (`frame_outbox` is the one channel that outlives a
-frame drop).
+`event.variables` is the OVERLAY, not the store: same-cycle transient
+deliveries (select arm binds, call-site formal publishes). Reads fall
+through it to the store (`node::read_var`).
 
 ### The three laws
 
@@ -91,18 +86,16 @@ frame drop).
 inputs' current values after every update; the tag plane is the join.
 A node may skip the recompute and Stale-downgrade in place when no
 consumed input triggered (Fired|FreshBottom), valid only where "Stale ⇒
-payload unchanged since the last recompute" holds: frame depth 0, an
-awake node. Framed passes recompute unconditionally (tail-jump STALE
-chains carry advancing values by ruling — exactly the kernel), and so
-does the first update after a sleep (`design/wake_catchup.md`). The
+payload unchanged since the last recompute" holds: an awake node. The
+first update after a sleep recomputes (`design/wake_catchup.md`). The
 uniform gate is `dense_gate!` (`node/mod.rs`): bottom in ⇒ bottom out
 (FreshBottom iff a delivery triggered); otherwise ride unless `trig ∨
-bottom-resident ∨ frame_depth > 0 ∨ woke`. `read_prod!`/`node::gather`
+bottom-resident ∨ woke`. `read_prod!`/`node::gather`
 are the per-child join accumulators every computing node uses.
 
 **R2 — read-side init.** There are no FIRED backfills. One rule at the
-store read: a reader under an init view (`event.init`, or `dispatch_init`
-inside a frame) interprets a standing entry as Fired; otherwise as
+store read: a reader under an init view (`event.init`) interprets a standing
+entry as Fired; otherwise as
 Stale. A wake (`event.wake_init`) is NOT genuine init — standing entries
 read Stale under it.
 
@@ -120,20 +113,7 @@ activation_state.md`), a pattern guard's truth (`is_match` takes
 ("sample the latest" is the contract; `~!` is the strict form — a
 trigger that finds the RHS bottom produces bottom and banks nothing).
 In dataflow terms these are the language's `pre`/`fby`, not ambient
-cache behaviour. `Held::reset_replay` clears the value between frames
-unless the subtree references no bindings (a closed expression is
-identical in every frame and cannot re-produce without an init view).
-
-### Frames and `reset_replay`
-
-A framed pass (a tail-loop iteration, a per-activation dispatch) runs
-against a private overlay pushed by `Event::enter_frame`. `Update::
-reset_replay` is called between frames and clears REPLAY memory only
-("the last value I saw") while preserving SEMANTIC state (`count`'s
-tally, `once`'s flag, a select's selection, an accumulated queue). It
-is required with no default impl: the replay-vs-semantic classification
-is a per-node decision the compiler must force. `FusedKernel::reset_replay`
-is a no-op — a kernel carries no replay caches.
+cache behaviour.
 
 ### The north star
 
@@ -209,7 +189,7 @@ the JIT and the engine did not get simpler.
   value for a fired param, value+`STALE` for a quiet ride, bare `TAINT`
   for a triggering bottom, `TAINT|STALE` for a standing one — a
   standing bottom must not fire loop or select machinery. Wire slot 0 is
-  a context word: bit 0 init, bit 1 quiet frame, bit 2 wake.
+  a context word: bit 0 init, bit 1 wake.
 - **Output.** Every kernel returns its result's honest TAINT/STALE tag
   in-band on the disc; `FusedKernel::update` decodes it — Fired/Stale carry
   the value into the resident, bottoms produce the shared
@@ -256,4 +236,4 @@ what `dense_deltas.rs` cites.
 12. Guard stale re-deliveries do not force re-matches.
 13. Builtins bottom on any bottomed argument (`array::window` over an
     absent value, `max(fired, bottomed)`).
-14. In-frame error logging appears (frames used to be silent).
+14. Error logging inside a recursion appears.

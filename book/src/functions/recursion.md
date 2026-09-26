@@ -2,14 +2,20 @@
 
 Functions can be recursive. Every call creates an *activation*: the
 function's body, live, with its own state — its subscriptions, its
-timers, its `count`s, its own bindings. A recursive call in tail
-position whose body holds no such state runs as a loop instead, one
-activation reused for every iteration, constant stack, any depth —
-nothing could tell the difference. A body that does hold state (an
-async operation, a stateful builtin such as `count` or `uniq`, a `<-`
-to one of its own bindings) keeps an activation per iteration whatever
-the call position: each iteration owns its state, exactly as each
-element owns its callback in `array::map`.
+timers, its `count`s, its own bindings. Each iteration of a recursion
+owns its state, exactly as each element owns its callback in
+`array::map`.
+
+A recursive call in tail position whose body holds no state (no async
+operation, no stateful builtin such as `count` or `uniq`, no `<-` to one
+of its own bindings) and compiles to native code runs as a native loop
+instead: constant stack, any depth, answering exactly what the
+activations would. A body that does not compile keeps an activation per
+iteration, which costs memory and time at every level. The things that
+keep a body out of native code are reading a reference (`*r`), a `?`
+raising to a handler, a `<-` to a variable outside the function, and a
+builtin without a fast call; move them out of the loop when the loop is
+deep.
 
 That is what makes recursion the way to write a reactive traversal:
 
@@ -41,10 +47,12 @@ If you rely on a function running as a constant-space loop, assert it:
 let rec sum_to = |n: i64, acc: i64| -> i64 select n {
   0 => acc,
   _ => sum_to(n - 1, acc + n)
-}
+};
+let total = #[native] sum_to(1000000, 0)
 ```
 
-`#[tail_recursive]` is a compile-time check: if any recursive call is
+`#[tail_recursive]` asserts the shape and `#[native]` that the call
+compiles to native code. `#[tail_recursive]` is a compile-time check: if any recursive call is
 not in tail position, if the body is stateful or async, if a parameter
 is labeled or variadic (the loop rebinds positional parameters), if the
 function does not recurse at all, or if it recurses mutually, the

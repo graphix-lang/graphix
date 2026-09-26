@@ -590,8 +590,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         ctx.rt.ref_var(self.0, self.1);
         self.2 = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -703,8 +701,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         self.triggered = 0;
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 graphix_package_core::unit_image_state!(

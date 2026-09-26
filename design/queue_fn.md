@@ -114,8 +114,7 @@ user asked for.
 - `#count` resolves the outer ByRef through `byref_chain` to its target
   bind and writes through that.
 - `sleep` clears the queue and resets `pop_count` to 1 (the arm-rewake
-  restart, not a frame reset — `reset_replay` leaves the queue alone,
-  because queued calls are semantic buffering). The wrapper's `sleep`
+  restart). The wrapper's `sleep`
   and `delete` forward to its `pred`; the node's `delete` unrefs `fid`.
 - Containers: `QueueEntry.updates` and the per-cycle delta are
   `LPooled<Vec<(BindId, Value)>>`; `arg_bids` is `Arc<[BindId]>`, set

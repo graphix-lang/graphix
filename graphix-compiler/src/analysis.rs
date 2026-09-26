@@ -14,10 +14,9 @@ use crate::{
     expr::{At, ExprKind, ModuleKind},
     fusion::{self, lowering},
     node::{
-        callsite::{ArgKey, CallSite},
+        callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
         module::Module,
-        select::Select,
         seq_machine::{SeqCapture, SeqMachine},
     },
     profile::{self, Phase},
@@ -641,10 +640,10 @@ fn mark_recursion<R: Rt, E: UserEvent>(
                 lambda_def(ctx, g.id()).map_or(LambdaFacts::ASYNC, def_facts)
             })
             .is_pure();
-        let looped =
-            pure && self_bind.is_some_and(|self_bind| {
+        let looped = pure
+            && self_bind.is_some_and(|self_bind| {
                 lowering::structural_tail_loop(g, self_bind, ctx)
-            }) && tail_calls.mark();
+            });
         g.set_tail_loop(looped);
         let summary = match (tail, looped) {
             (true, true) => RecursionKind::TailRecursive,
@@ -659,16 +658,14 @@ fn mark_recursion<R: Rt, E: UserEvent>(
     }
 }
 
-/// An instance's self-calls in tail position ([`fusion::for_each_tail_leaf`])
-/// and the selects on the tail spine above them.
+/// An instance's self-calls in tail position ([`fusion::for_each_tail_leaf`]).
 struct TailSelfCalls<'a, R: Rt, E: UserEvent> {
     sites: SmallVec<[&'a CallSite<R, E>; 4]>,
-    spine: SmallVec<[&'a Select<R, E>; 4]>,
 }
 
 impl<'a, R: Rt, E: UserEvent> TailSelfCalls<'a, R, E> {
     fn collect(body: &'a Node<R, E>, instance: LambdaInstanceId) -> Self {
-        let mut res = Self { sites: SmallVec::new(), spine: SmallVec::new() };
+        let mut res = Self { sites: SmallVec::new() };
         fusion::for_each_tail_leaf(
             body,
             &mut |n| match n.view() {
@@ -678,7 +675,7 @@ impl<'a, R: Rt, E: UserEvent> TailSelfCalls<'a, R, E> {
                 }
                 _ => false,
             },
-            &mut |s| res.spine.push(s),
+            &mut |_| (),
         );
         res
     }
@@ -696,22 +693,6 @@ impl<'a, R: Rt, E: UserEvent> TailSelfCalls<'a, R, E> {
         });
         missed
     }
-
-    /// Mark every site as a loop iteration and every spine select as a
-    /// tail dispatch (`Select::tail_dispatch_select`). Refused, marking
-    /// nothing, unless every site is purely positional.
-    fn mark(&self) -> bool {
-        let orders: Option<SmallVec<[Box<[BindId]>; 4]>> =
-            self.sites.iter().map(|cs| positional_arg_order(cs)).collect();
-        let Some(orders) = orders.filter(|o| !o.is_empty()) else { return false };
-        for (cs, order) in self.sites.iter().zip(orders) {
-            cs.mark_self_tail_call(order);
-        }
-        for s in self.spine.iter() {
-            s.tail_dispatch_select.store(true, Ordering::Relaxed);
-        }
-        true
-    }
 }
 
 fn is_call_to<R: Rt, E: UserEvent>(
@@ -719,21 +700,6 @@ fn is_call_to<R: Rt, E: UserEvent>(
     instance: LambdaInstanceId,
 ) -> bool {
     cs.static_target().map(|target| target.instance) == Some(instance)
-}
-
-/// The call's positional argument `BindId`s in order, the tail-loop's
-/// per-iteration rebind list. `None` unless the call is purely positional.
-fn positional_arg_order<R: Rt, E: UserEvent>(
-    cs: &CallSite<R, E>,
-) -> Option<Box<[BindId]>> {
-    let mut order: LPooled<Vec<BindId>> = LPooled::take();
-    while let Some(a) = cs.args.get(&ArgKey::Positional(order.len())) {
-        order.push(a.id);
-    }
-    if order.is_empty() || cs.args.len() != order.len() {
-        return None;
-    }
-    Some(order.drain(..).collect())
 }
 
 fn lambda_def<'a, R: Rt, E: UserEvent>(

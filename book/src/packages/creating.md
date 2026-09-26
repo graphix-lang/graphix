@@ -153,9 +153,9 @@ answered in one place:
   for a builtin that cannot have one (an effect such as `print`, or a
   function that produces before all its arguments have arrived).
 
-Stateless matters twice: a tail-recursive loop reuses one activation
-across its iterations only when every builtin it reaches is stateless,
-and fusion into native code needs the fast call.
+Stateless matters twice: a tail recursion compiles to a native loop
+only when every builtin it reaches is stateless, and fusion into native
+code needs the fast call.
 
 #### Fast calls
 

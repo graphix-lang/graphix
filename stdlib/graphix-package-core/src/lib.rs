@@ -699,7 +699,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.woke_pending) && !ctx.in_frame();
+        let woke = std::mem::take(&mut self.woke_pending);
         // A loan inside `eval` has no event; this one seeds the seam's.
         coretraits::seed(ctx, event);
         let (ev, cached, last_result) =
@@ -726,10 +726,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.woke_pending = true;
-    }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The arg slots are the value channel and survive replay resets.
     }
 }
 
@@ -977,8 +973,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         ctx.rt.ref_var(id, self.top_id);
         self.id = id;
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 fn fc_is_err(args: &[Value]) -> Option<Value> {
@@ -1061,8 +1055,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 fn fc_error(args: &[Value]) -> Option<Value> {
@@ -1150,10 +1142,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.val = false
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // Once per lifetime, not once per frame; only sleep restarts it.
-    }
 }
 
 #[derive(Debug)]
@@ -1228,10 +1216,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.n = None
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The countdown spans the node's lifetime; only sleep restarts it.
-    }
 }
 
 #[derive(Debug)]
@@ -1305,10 +1289,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.n = None
-    }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        // The countdown spans the node's lifetime; only sleep restarts it.
     }
 }
 
@@ -1834,11 +1814,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         self.pending = None;
         self.pred.sleep(ctx);
     }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.pending = None;
-        self.pred.reset_replay(ctx);
-    }
 }
 
 #[derive(Debug)]
@@ -1947,8 +1922,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
         self.queue.clear();
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -2030,8 +2003,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         self.triggered = 0;
         self.current = None;
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -2137,8 +2108,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -2295,8 +2264,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.last_v = None;
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -2359,8 +2326,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.count = 0
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Default)]
@@ -2459,8 +2424,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.0 = None
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug, Clone, Copy, netidx_derive::FromValue)]
@@ -2611,8 +2574,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
     fn typecheck0(
         &mut self,
         _ctx: &mut ExecCtx<R, E>,
@@ -2731,8 +2692,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! printfn {
@@ -2816,8 +2775,6 @@ macro_rules! printfn {
             }
 
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }

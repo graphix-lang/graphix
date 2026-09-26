@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c9b6ee5b.js";
+            window.path_to_searchindex_js = "../searchindex-b12cd77a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -177,14 +177,19 @@
                         <h1 id="recursion"><a class="header" href="#recursion">Recursion</a></h1>
 <p>Functions can be recursive. Every call creates an <em>activation</em>: the
 function’s body, live, with its own state — its subscriptions, its
-timers, its <code>count</code>s, its own bindings. A recursive call in tail
-position whose body holds no such state runs as a loop instead, one
-activation reused for every iteration, constant stack, any depth —
-nothing could tell the difference. A body that does hold state (an
-async operation, a stateful builtin such as <code>count</code> or <code>uniq</code>, a <code>&lt;-</code>
-to one of its own bindings) keeps an activation per iteration whatever
-the call position: each iteration owns its state, exactly as each
-element owns its callback in <code>array::map</code>.</p>
+timers, its <code>count</code>s, its own bindings. Each iteration of a recursion
+owns its state, exactly as each element owns its callback in
+<code>array::map</code>.</p>
+<p>A recursive call in tail position whose body holds no state (no async
+operation, no stateful builtin such as <code>count</code> or <code>uniq</code>, no <code>&lt;-</code> to one
+of its own bindings) and compiles to native code runs as a native loop
+instead: constant stack, any depth, answering exactly what the
+activations would. A body that does not compile keeps an activation per
+iteration, which costs memory and time at every level. The things that
+keep a body out of native code are reading a reference (<code>*r</code>), a <code>?</code>
+raising to a handler, a <code>&lt;-</code> to a variable outside the function, and a
+builtin without a fast call; move them out of the loop when the loop is
+deep.</p>
 <p>That is what makes recursion the way to write a reactive traversal:</p>
 <pre><code class="language-graphix">let rec publish_all = |paths: Array&lt;string&gt;, i: i64| select paths {
   [] =&gt; null,
@@ -208,9 +213,11 @@ exceeds the budget is stopped the way Ctrl-C stops it.</p>
 let rec sum_to = |n: i64, acc: i64| -&gt; i64 select n {
   0 =&gt; acc,
   _ =&gt; sum_to(n - 1, acc + n)
-}
+};
+let total = #[native] sum_to(1000000, 0)
 </code></pre>
-<p><code>#[tail_recursive]</code> is a compile-time check: if any recursive call is
+<p><code>#[tail_recursive]</code> asserts the shape and <code>#[native]</code> that the call
+compiles to native code. <code>#[tail_recursive]</code> is a compile-time check: if any recursive call is
 not in tail position, if the body is stateful or async, if a parameter
 is labeled or variadic (the loop rebinds positional parameters), if the
 function does not recurse at all, or if it recurses mutually, the

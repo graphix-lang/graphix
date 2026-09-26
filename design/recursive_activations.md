@@ -1,7 +1,8 @@
 # Recursive activations and the Collection trait
 
 Status: built 2026-08-25 (shrink = delete ruled and built 2026-08-29;
-carried-kind tail loops 2026-08-30)
+carried-kind tail loops 2026-08-30; the node-walk's one-activation tail
+loop deleted 2026-09-26, `tail_calls_are_calls.md`)
 Pins: `lang/functions.rs` (`tail_stateful_per_iteration`,
 `fold_stateful_per_slot`, `tail_stateless_collapses`,
 `tail_stateful_scalar`, `fn_invariant_tail_loop`,
@@ -52,18 +53,17 @@ clause: a tail loop collapsed to ONE activation, so a tail-recursive
 
 ## 1. The ruling
 
-> **A tail call creates an activation like any other call. A tail loop
-> may reuse ONE activation only when its body is STATELESS — because
-> then no program can tell the difference.**
+> **A tail call creates an activation like any other call.** The JIT
+> runs a STATELESS tail recursion as one native loop, and may only
+> because the loop answers what the activations answer.
 
-Ruling 2 said a tail loop is one activation "FORCED, not chosen:
-inlining semantics for general recursion plus constant-space tail loops
-are jointly incompatible with per-depth history". The amendment keeps
-both halves and puts the boundary where the history is: a stateless
-body HAS no per-depth history, so constant space costs nothing; a
-stateful body has O(n) history, and O(n) space is exactly what a slot
-vector costs for the same n live things. Space is O(n) precisely when
-there is O(n) state.
+The node-walk has no loop: every depth is an activation there
+(`tail_calls_are_calls.md` — a one-activation interpreter loop was a
+second evaluator for the same programs, and it answered differently).
+A stateless body has no per-depth history the JIT loop could lose, so
+constant space costs nothing where it fuses; a stateful body has O(n)
+history, and O(n) space is exactly what a slot vector costs for the
+same n live things.
 
 **Stateless**, of a lambda body (`analysis::infer_effects` computes
 `LambdaFacts { effect, stateless }` by a worklist fixpoint over each
@@ -91,11 +91,11 @@ fails the assertion.
 
 What follows for the three kinds of body:
 
-| body | activations |
-|---|---|
-| stateless (arith, pattern, stateless builtins) | one, the framed loop |
-| stateful Sync (`count`, `uniq`, `<-` ...) | one per iteration |
-| Async | one per level, memory-bounded |
+| body | node-walk | JIT |
+|---|---|---|
+| stateless (arith, pattern, stateless builtins) | one per level | one, the native loop |
+| stateful Sync (`count`, `uniq`, `<-` ...) | one per level | one per level, native recursion |
+| Async | one per level, memory-bounded | does not fuse |
 
 The two facts that forced the boundary, measured on both engines:
 async recursion ALREADY allocated an activation per iteration (the
@@ -124,9 +124,6 @@ The non-tail dispatch path (`node/lambda.rs`, the body update under
   threaded THROUGH an async value serializes, and FoldQ serializes
   identically (slot i's acc is slot i−1's output).
 - **Stack** is heap-segmented under `ensure_sufficient`.
-- The interpreter's tail loop reads the stateless gate instead of the
-  sync gate; the frame machinery stays as the re-derivation discipline
-  for a body with nothing to keep.
 
 **Shrink = delete.** A depth not reached this cycle is deleted
 immediately; re-reaching it is a fresh activation. This is MapQ's rule

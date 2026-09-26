@@ -260,8 +260,8 @@ run!(late_binding4, LATE_BINDING4, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// A tail loop collapses to one activation only when its body is
-// stateless; `count` is stateful, so each iteration owns its own.
+// Every depth of a recursion is its own activation, so each iteration
+// owns its `count`.
 const TAIL_STATEFUL_PER_ITERATION: &str = r#"
 {
   let rec go = |a: Array<i64>, acc: i64| -> i64 select a {
@@ -303,7 +303,7 @@ run!(fold_stateful_per_slot, FOLD_STATEFUL_PER_SLOT, |v: Result<&Value>| matches
     Ok(Value::I64(3))
 ); graphix_package_core::testing::FuseExpect::None);
 
-// A stateless body still collapses: the same loop over `+` alone.
+// The same loop over `+` alone: a stateless body.
 const TAIL_STATELESS_COLLAPSES: &str = r#"
 {
   let rec go = |a: Array<i64>, acc: i64| -> i64 select a {
@@ -364,7 +364,8 @@ run!(fused_tail_loop, KIR_FUSED_TAIL_LOOP, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// Deep sync tail recursion runs in constant stack on both engines.
+// Deep tail recursion runs in constant stack as a native loop. The
+// node-walk recurses, an activation per level.
 const TAIL_LOOP_DEEP: &str = r#"
 {
     let rec count = |n: i64, acc: i64| -> i64
@@ -379,7 +380,25 @@ const TAIL_LOOP_DEEP: &str = r#"
 run!(tail_loop_deep, TAIL_LOOP_DEEP, |v: Result<&Value>| match v {
     Ok(Value::I64(500000)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::Jit);
+}; graphix_package_core::testing::FuseExpect::Jit; jit_only);
+
+// A depth kept from an earlier cycle catches up what it missed: `y`
+// fired while depth 1 took arm `0`, so its move to arm `1` writes `y`.
+const TAIL_DEPTH_CATCHES_UP_AN_OUTER_WRITE: &str = r#"
+{
+    let t = array::iter([1, 2]);
+    let y = uniq(select t { _ => 10 });
+    let n = select t { 1 => 2, _ => 3 };
+    let x = 0;
+    let rec f = |n| select n { 0 => 0, 1 => { x <- y; 1 }, n => f(n - 2) };
+    select (f(n), x) { (_, 10) => true, _ => never() }
+}
+"#;
+
+run!(tail_depth_catches_up_an_outer_write, TAIL_DEPTH_CATCHES_UP_AN_OUTER_WRITE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Bool(true))
+), timeout: 5; graphix_package_core::testing::FuseExpect::Jit);
 
 // A self-call in operand position (`n * fact(n - 1)`) is not a tail
 // call and must not be looped.
@@ -997,8 +1016,7 @@ run!(
     graphix_package_core::testing::FuseExpect::Jit
 );
 
-// A rec lambda nested in another lambda's body tail-loops on both
-// engines.
+// A tail-recursive `let rec` nested in another lambda's body.
 const NESTED_TAIL_LOOP: &str = r#"
 {
   let f = |x: i64| -> i64 {
@@ -1009,7 +1027,7 @@ const NESTED_TAIL_LOOP: &str = r#"
 }
 "#;
 
-// Pins the tail loop's mode parity at depth 500.
+// Mode parity at depth 500.
 run!(nested_tail_loop, NESTED_TAIL_LOOP, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(125251)))
 }; graphix_package_core::testing::FuseExpect::Jit);
@@ -1177,8 +1195,7 @@ run!(select_variant_nonexhaustive, SELECT_VARIANT_NONEXHAUSTIVE, |v: Result<&Val
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// A tail-recursive `let rec` inside a HOF callback tail-loops on the
-// node-walk (depth 500).
+// A tail-recursive `let rec` inside a HOF callback (depth 500).
 const REC_IN_HOF_CALLBACK: &str = r#"
 {
   let a = array::init(i64:1, |x: i64| -> i64 {
@@ -1195,7 +1212,7 @@ run!(rec_in_hof_callback, REC_IN_HOF_CALLBACK, |v: Result<&Value>| matches!(
 ); graphix_package_core::testing::FuseExpect::Jit);
 
 // The split-callback twin: a catch in the same callback splits it and
-// the rec runs in the node-walk residue; it still tail-loops.
+// the rec runs in the node-walk residue.
 const REC_IN_SPLIT_CALLBACK: &str = r#"
 {
   let v0 = array::fold([i64:-1], i64:255, |acc, x| {
@@ -1962,10 +1979,10 @@ run!(required_label_connect_refused, REQUIRED_LABEL_CONNECT, |v: Result<&Value>|
     matches!(v, Err(_))
 }; graphix_package_core::testing::FuseExpect::None);
 
-// A quiet bottom argument inside a tail loop's frame is bottom to the
+// A quiet bottom argument inside a tail recursion is bottom to the
 // callee: after `g(5)` ran and `x` went bottom, `f(2, x)` is bottom, as
 // the inline body `x + 1` is.
-const FRAME_QUIET_BOTTOM_CALL: &str = r#"{
+const TAIL_QUIET_BOTTOM_CALL: &str = r#"{
   let t = array::iter([0, 1, 2, 3, 4]);
   let g = |y| y + 1;
   let rec f = |n, x| select n { 0 => g(x), n => f(n - 1, x) };
@@ -1974,7 +1991,7 @@ const FRAME_QUIET_BOTTOM_CALL: &str = r#"{
   f(n, 5 / b)
 }"#;
 
-const FRAME_QUIET_BOTTOM_INLINE: &str = r#"{
+const TAIL_QUIET_BOTTOM_INLINE: &str = r#"{
   let t = array::iter([0, 1, 2, 3, 4]);
   let rec f = |n, x| select n { 0 => x + 1, n => f(n - 1, x) };
   let n = uniq(select t { 0 => 0, 1 => 1, 2 => 1, _ => 2 });
@@ -1982,30 +1999,30 @@ const FRAME_QUIET_BOTTOM_INLINE: &str = r#"{
   f(n, 5 / b)
 }"#;
 
-async fn frame_quiet_bottom(code: &str, fusion_disabled: bool) -> Result<()> {
+async fn tail_quiet_bottom(code: &str, fusion_disabled: bool) -> Result<()> {
     let (values, _) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
     assert_eq!(super::dense_deltas::as_i64s(&values), vec![6, 6]);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn frame_quiet_bottom_call_interp() -> Result<()> {
-    frame_quiet_bottom(FRAME_QUIET_BOTTOM_CALL, true).await
+async fn tail_quiet_bottom_call_interp() -> Result<()> {
+    tail_quiet_bottom(TAIL_QUIET_BOTTOM_CALL, true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn frame_quiet_bottom_call_jit() -> Result<()> {
-    frame_quiet_bottom(FRAME_QUIET_BOTTOM_CALL, false).await
+async fn tail_quiet_bottom_call_jit() -> Result<()> {
+    tail_quiet_bottom(TAIL_QUIET_BOTTOM_CALL, false).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn frame_quiet_bottom_inline_interp() -> Result<()> {
-    frame_quiet_bottom(FRAME_QUIET_BOTTOM_INLINE, true).await
+async fn tail_quiet_bottom_inline_interp() -> Result<()> {
+    tail_quiet_bottom(TAIL_QUIET_BOTTOM_INLINE, true).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn frame_quiet_bottom_inline_jit() -> Result<()> {
-    frame_quiet_bottom(FRAME_QUIET_BOTTOM_INLINE, false).await
+async fn tail_quiet_bottom_inline_jit() -> Result<()> {
+    tail_quiet_bottom(TAIL_QUIET_BOTTOM_INLINE, false).await
 }
 
 // A `let rec` annotation reads a trait parameter as a bounded

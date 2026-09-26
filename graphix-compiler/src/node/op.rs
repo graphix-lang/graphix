@@ -158,11 +158,6 @@ macro_rules! binary_node {
                 self.rhs.sleep(ctx);
             }
 
-            fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-                self.lhs.reset_replay(ctx);
-                self.rhs.reset_replay(ctx);
-            }
-
             fn view(&self) -> NodeView<'_, R, E> {
                 NodeView::$name(self)
             }
@@ -183,7 +178,7 @@ macro_rules! gated_operands {
         let r = $self.rhs.update($ctx, $event);
         let (lt, rt) = (l.tag(), r.tag());
         let trig = lt.triggers() || rt.triggers();
-        dense_gate!($self.resident, $ctx, trig, lt.is_bottom() || rt.is_bottom(), woke);
+        dense_gate!($self.resident, trig, lt.is_bottom() || rt.is_bottom(), woke);
         let tag = if lt.is_fired() || rt.is_fired() { Tag::FIRED } else { Tag::STALE };
         (l, r, trig, tag)
     }};
@@ -412,7 +407,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         match tv.with_value(|v| match v {
             Value::Bool(b) => Some(!*b),
             _ => None,
@@ -441,10 +436,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -529,7 +520,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         // Integers wrap, matching the JIT's `ineg`.
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let neg = tv.with_value(|v| match v {
             Value::I8(x) => Some(Value::I8(x.wrapping_neg())),
             Value::I16(x) => Some(Value::I16(x.wrapping_neg())),
@@ -567,10 +558,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

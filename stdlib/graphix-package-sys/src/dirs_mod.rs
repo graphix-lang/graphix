@@ -71,8 +71,6 @@ macro_rules! dirs_builtin {
             fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
                 self.once.reset();
             }
-
-            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }

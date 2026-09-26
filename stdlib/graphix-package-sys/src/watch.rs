@@ -357,8 +357,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -478,12 +476,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         self.path = None;
         self.watcher_val = None;
         self.out = TagValue::phantom();
-    }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.interest = None;
-        self.path = None;
-        self.watcher_val = None;
     }
 }
 
@@ -643,10 +635,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         self.out = TagValue::phantom();
     }
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.cached.clear()
-    }
-
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in &self.bind_ids {
             ctx.rt.unref_var(*bid, self.top_id);
@@ -743,10 +731,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
         }
         self.cached.clear();
         self.out = TagValue::phantom();
-    }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.cached.clear()
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {

@@ -496,13 +496,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.pred.sleep(ctx);
     }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The published pred-fn/length/element values are replay memory;
-        // the queue, the group buffer and the ready flag aggregate across
-        // events and survive.
-        self.pred.reset_replay(ctx);
-    }
 }
 
 #[derive(Debug)]
@@ -581,8 +574,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
         ctx.rt.ref_var(self.0, self.1);
         self.2 = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -694,8 +685,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
         self.triggered = 0;
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 fn fc_iota(args: &[Value]) -> Option<Value> {

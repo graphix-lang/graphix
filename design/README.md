@@ -12,7 +12,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | doc | rule |
 |---|---|
 | `representable_bottom.md` | bottom is a value with a taint channel; the bottom-scrutinee and consulted-guard rules |
-| `dense_delivery.md` | `TagValue` every cycle; the fired×bottom algebra; store and overlays; frames |
+| `dense_delivery.md` | `TagValue` every cycle; the fired×bottom algebra; store and overlay |
 | `organic_firing.md` | a node fires iff a consumed input fires; the numbered deltas |
 | `wake_catchup.md` | sleep is pause; a reselected arm recomputes from the present and re-raises only unseen fires, once |
 | `activation_state.md` | held state never decides bottomness; state multiplicity = activation multiplicity |

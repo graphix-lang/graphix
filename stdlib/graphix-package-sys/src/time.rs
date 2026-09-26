@@ -154,11 +154,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         self.timeout_v = None;
         self.last_v = None
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.timeout_v = None;
-        self.last_v = None
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -399,10 +394,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
             release(ctx, id, self.eid);
         }
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.repeat_v = None
-    }
 }
 
 #[derive(Debug)]
@@ -459,8 +450,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! time_fn {

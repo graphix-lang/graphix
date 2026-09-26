@@ -480,33 +480,38 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// `#[tokio::test(flavor = "current_thread")]` functions.
 #[macro_export]
 macro_rules! run {
-    // The `; shape:` arms must precede the plain `; $fexpect` arms so
-    // the longer token sequence matches first.
+    // The `; shape:` and `; jit_only` arms must precede the plain
+    // `; $fexpect` arms so the longer token sequence matches first.
+    // The JIT alone: a program the node-walk cannot run (a native loop
+    // deeper than the stack budget allows activations).
+    ($name:ident, $code:expr, $pred:expr; $fexpect:expr; jit_only) => {
+        $crate::run!(@impl cfg(any()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+    };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr; shape: $shape:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr; shape: $shape:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::Some($shape), "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr) => {
-        $crate::run!(@impl $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl cfg(all()), $name, $pred, $timeout, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+) => {
-        $crate::run!(@impl $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
+        $crate::run!(@impl cfg(all()), $name, $pred, 30, $crate::testing::FuseExpect::Jit, ::std::option::Option::None, $($path => $code),+);
     };
     ($name:ident, $code:expr, $pred:expr; $fexpect:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $code:expr, $pred:expr, timeout: $timeout:expr; $fexpect:expr) => {
-        $crate::run!(@impl $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
+        $crate::run!(@impl cfg(all()), $name, $pred, $timeout, $fexpect, ::std::option::Option::None, "/test.gx" => format!("let result = {}", $code));
     };
     ($name:ident, $pred:expr, $($path:literal => $code:expr),+ ; $fexpect:expr) => {
-        $crate::run!(@impl $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
+        $crate::run!(@impl cfg(all()), $name, $pred, 30, $fexpect, ::std::option::Option::None, $($path => $code),+);
     };
-    (@impl $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $shape:expr, $($path:literal => $code:expr),+) => {
+    (@impl $interp:meta, $name:ident, $pred:expr, $timeout:expr, $fexpect:expr, $shape:expr, $($path:literal => $code:expr),+) => {
         mod $name {
             use super::*;
 
@@ -618,6 +623,7 @@ macro_rules! run {
                 Ok(())
             }
 
+            #[$interp]
             #[::tokio::test(flavor = "current_thread")]
             async fn interp() -> ::anyhow::Result<()> {
                 run_with_flags(

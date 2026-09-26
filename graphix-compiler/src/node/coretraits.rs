@@ -385,8 +385,6 @@ fn call_hook_over<R: Rt, E: UserEvent>(
 ) -> Option<Option<Value>> {
     let mut loan = take_site(ctx, t, args)?;
     let s = &mut loan.site;
-    // every dispatch is a fresh invocation
-    s.call.site.reset_replay(ctx);
     for (id, g) in s.call.args.iter().zip(args.iter()) {
         let v = as_value(g);
         ctx.rt.store_insert(*id, TagValue::fired(v.clone()));

@@ -196,7 +196,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         let s = self.source.update(ctx, event);
         let i = self.i.update(ctx, event);
         let tag = s.tag().join(i.tag());
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = s.with_value(|s| match (s, i.with_value(index_i64)) {
             (_, None) => err!(ERR_TAG, "expected an integer"),
             (Value::Array(elts), Some(i)) => array_index(elts, i),
@@ -248,11 +248,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.slept.set();
         self.source.sleep(ctx);
         self.i.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_replay(ctx);
-        self.i.reset_replay(ctx);
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -353,7 +348,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         let start = self.start.as_mut().map(|n| n.update(ctx, event));
         let end = self.end.as_mut().map(|n| n.update(ctx, event));
         let tag = [start, end].iter().flatten().fold(s.tag(), |t, b| t.join(b.tag()));
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let bound = |b: Option<&TagValue>| {
             b.map(|b| b.with_value(index_i64).ok_or(())).transpose()
         };
@@ -425,16 +420,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
         if let Some(end) = &mut self.end {
             end.sleep(ctx);
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_replay(ctx);
-        if let Some(start) = &mut self.start {
-            start.reset_replay(ctx);
-        }
-        if let Some(end) = &mut self.end {
-            end.reset_replay(ctx);
         }
     }
 
@@ -606,10 +591,10 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.n.is_empty() {
-            return produce_constant(ctx, event, &mut self.resident, K::empty);
+            return produce_constant(event, &mut self.resident, K::empty);
         }
         let (tag, prods) = gather(ctx, event, &mut self.n);
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = K::build(prods.into_iter().map(|tv| tv.value_cloned()));
         self.resident.set(TagValue::tagged(v, tag))
     }
@@ -629,10 +614,6 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
     }
 
     fn refs(&self, refs: &mut Refs) {

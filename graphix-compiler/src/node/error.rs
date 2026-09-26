@@ -360,9 +360,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             {
                 abort.pending = false;
                 let init = std::mem::replace(&mut event.init, true);
-                let dispatch_init = std::mem::replace(&mut ctx.dispatch_init, true);
                 let _ = abort.node.update(ctx, event);
-                ctx.dispatch_init = dispatch_init;
                 event.init = init;
             }
         }
@@ -390,14 +388,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             if let AbortRole::Machine { pc, .. } = abort.role {
                 ctx.rt.set_var(pc, Value::String(literal!("Idle")));
             }
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.handler.reset_replay(ctx);
-        if let Some(abort) = &mut self.seq_abort {
-            abort.node.reset_replay(ctx);
-            abort.manual_mut().into_iter().for_each(|n| n.reset_replay(ctx));
         }
     }
 
@@ -647,8 +637,7 @@ pub(crate) use report_ignored;
 /// `?` at `spec` under `own_top`. The one handler path, shared by
 /// `Qop::update` and the fused kernel's delivery drain: same-top
 /// deliveries land in this cycle's event, cross-top ones go through
-/// `rt.set_var`, and inside an evaluation frame the delivery is parked
-/// in `ExecCtx::frame_outbox`.
+/// `rt.set_var`.
 pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     event: &mut Event<E>,
@@ -662,8 +651,6 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     let v = Value::Error(e.into());
     if handler_top != own_top {
         ctx.rt.set_var(id, v)
-    } else if ctx.frame_depth > 0 {
-        ctx.frame_outbox.push((id, v));
     } else {
         match event.variables.entry(id) {
             Entry::Vacant(slot) => {
@@ -888,10 +875,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
-    }
-
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
@@ -1112,11 +1095,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.state = GuardState::Sleeping;
-        self.n.reset_replay(ctx);
-    }
-
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         self.n.typecheck0(ctx)
     }
@@ -1215,10 +1193,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -1332,10 +1306,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {

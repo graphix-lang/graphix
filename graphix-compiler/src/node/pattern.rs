@@ -1266,10 +1266,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
             event.variables.insert(id, TagValue::tagged(v.clone(), tag));
-            // the store twin carries the same tag; frames never write the store
-            if ctx.frame_depth == 0 {
-                ctx.rt.store_insert(id, TagValue::tagged(v, tag));
-            }
+            ctx.rt.store_insert(id, TagValue::tagged(v, tag));
         })
     }
 

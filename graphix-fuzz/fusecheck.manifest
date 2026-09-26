@@ -421,6 +421,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 1	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 2	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx
+1	tail-calls-are-calls-sep2026/00_fire_bit_consumed_in_a_frame.gx
 2	tail-jump-honest-tags-jul2026/00_ignored_capture_arg.gx
 2	tail-loop-internal-connect-aug2026/00_internal_connect_in_tail_arm.gx
 3	tail-loop-internal-connect-aug2026/01_campaign_witness.gx

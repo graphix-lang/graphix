@@ -270,9 +270,8 @@ through `event.variables` like a collection slot's callback; built on
 first use, resolved-or-`None` STICKY (an impl loaded by a dynamic
 module after a tag's first comparison is not picked up), a POOL per
 key so a re-entrant comparison (an impl whose body compares its own
-type) mints a fresh site per activation. Every dispatch calls
-`reset_replay` on its site first: a dispatch is a fresh logical
-invocation. Core-trait methods are implicitly `#[sync]`, with
+type) mints a fresh site per activation. Every dispatch delivers its
+arguments FIRED: a dispatch is a fresh logical invocation. Core-trait methods are implicitly `#[sync]`, with
 prototype call sites on the `Impl` node (`NodeView::Impl`) so the
 effect analysis covers and enforces it — no timers in `fmt`.
 

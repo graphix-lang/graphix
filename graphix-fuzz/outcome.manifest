@@ -421,6 +421,7 @@ trace	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
 trace	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 trace	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 trace	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx
+trace	tail-calls-are-calls-sep2026/00_fire_bit_consumed_in_a_frame.gx
 trace	tail-jump-honest-tags-jul2026/00_ignored_capture_arg.gx
 trace	tail-loop-internal-connect-aug2026/00_internal_connect_in_tail_arm.gx
 trace	tail-loop-internal-connect-aug2026/01_campaign_witness.gx

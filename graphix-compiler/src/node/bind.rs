@@ -279,7 +279,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let woke = self.slept.take() && ctx.frame_depth == 0;
+        let woke = self.slept.take();
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
         // A stale RHS is already served by the store, except before the
@@ -309,11 +309,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
                 || wake_refresh);
         if dbgenv::gxdbg_letbind() {
             eprintln!(
-                "LETBIND {} tag={tag:?} val={:?} ever_published={} fd={} keep_connect_target_value={keep_connect_target_value} publishing={publish}",
+                "LETBIND {} tag={tag:?} val={:?} ever_published={} keep_connect_target_value={keep_connect_target_value} publishing={publish}",
                 self.spec.pos,
                 tv.value_cloned(),
                 self.ever_published,
-                ctx.frame_depth,
             );
         }
         if publish {
@@ -376,10 +375,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.node.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.node.reset_replay(ctx);
     }
 
     fn typ(&self) -> &Type {
@@ -633,17 +628,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 self.resident.set(tv.clone())
             }
             Some(VarRead::Standing(tv)) => {
-                let tv = standing_view(ctx, event, tv);
+                let tv = standing_view(event, tv);
                 if dbg {
                     eprintln!(
-                        "REF {} @{} {:?} STANDING (ei={} wi={} fd={} fi={}) tag={:?} val={:?}",
+                        "REF {} @{} {:?} STANDING (ei={} wi={}) tag={:?} val={:?}",
                         self.spec,
                         self.spec.pos,
                         self.id,
                         event.init,
                         event.wake_init,
-                        ctx.frame_depth,
-                        ctx.dispatch_init,
                         tv.tag(),
                         tv.value_cloned()
                     );
@@ -674,8 +667,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn spec(&self) -> &Expr {
         &self.spec
@@ -1284,10 +1275,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.referent.each(&mut |n| n.sleep(ctx));
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.referent.each(&mut |n| n.reset_replay(ctx));
-    }
-
     fn spec(&self) -> &Expr {
         &self.spec
     }
@@ -1456,7 +1443,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         let (id, moved) = self.address(ctx, cell);
         let res = match read_var(ctx, event, &id) {
             Some(VarRead::Delivered(tv)) => Some(tv.clone()),
-            Some(VarRead::Standing(tv)) => Some(standing_view(ctx, event, tv)),
+            Some(VarRead::Standing(tv)) => Some(standing_view(event, tv)),
             None => None,
         };
         let res = match (res, &self.addr) {
@@ -1497,10 +1484,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.child.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.child.reset_replay(ctx);
     }
 
     fn spec(&self) -> &Expr {

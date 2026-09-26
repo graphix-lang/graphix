@@ -1,0 +1,8 @@
+// NODE-WALK over-fire (sep25b divergence_000035): the framed tail loop
+// ran every depth through one select, and a fire bit arm `0` consumed
+// only inside a frame (the tracker skipped frames) stood until cycle 3,
+// whose unframed pass delivered it as a catch-up: the node-walk emitted
+// a third `1` where only `x` fired and arm `0` reads only `n`. The
+// node-walk now has no frames (design/tail_calls_are_calls.md): each
+// depth is an activation with its own select, as the JIT loop answers.
+{ let t = array::iter([1, 2, 3]); let n = uniq(select t { 1 => 1, _ => 0 }); let rec f = |n, x| select n { 0 => n + 1, n => f(n - 1, x) }; f(n, t) }

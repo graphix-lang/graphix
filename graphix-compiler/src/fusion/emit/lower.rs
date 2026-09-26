@@ -17,8 +17,7 @@ use crate::{
 };
 use anyhow::{Context as AnyContext, Result, anyhow, bail};
 use cranelift_codegen::ir::{
-    AbiParam, Block, FuncRef, Function, InstBuilder, Signature, Value as ClifValue,
-    condcodes::IntCC, types,
+    AbiParam, Block, FuncRef, Function, InstBuilder, Signature, Value as ClifValue, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_jit::JITModule;
@@ -62,26 +61,13 @@ pub(super) fn compile_into_function<'a>(
     let mut env = JitEnv::new();
     let mut initial_vals: LPooled<Vec<ClifValue>> = LPooled::take();
     initial_vals.extend_from_slice(b.block_params(entry));
-    // Wire slot 0 is the context word: bit 0 init, bit 1 quiet, bit 2
-    // wake. Under a wake view init is not genuine: consumers read
-    // `init & !wake`.
+    // Wire slot 0 is the context word: bit 0 init, bit 1 wake. Under a
+    // wake view init is not genuine: consumers read `init & !wake`.
     let ctx_word = initial_vals[0];
     let init_flag = b.ins().band_imm(ctx_word, 1);
     let wake_flag = {
-        let w = b.ins().band_imm(ctx_word, 4);
-        b.ins().ushr_imm(w, 2)
-    };
-    let quiet_flag = {
-        let q = b.ins().band_imm(ctx_word, 2);
-        let q = b.ins().ushr_imm(q, 1);
-        if kernel.has_tail_loop {
-            // Every non-init pass of a tail loop is a quiet pass.
-            let not_init = b.ins().icmp_imm(IntCC::Equal, init_flag, 0);
-            let not_init = b.ins().uextend(types::I64, not_init);
-            b.ins().bor(q, not_init)
-        } else {
-            q
-        }
+        let w = b.ins().band_imm(ctx_word, 2);
+        b.ins().ushr_imm(w, 1)
     };
     let helper_refs = HelperRefs::new(helper_ids, module);
     let helper = |b: &mut FunctionBuilder, name: &str| {
@@ -167,7 +153,6 @@ pub(super) fn compile_into_function<'a>(
             tail_scrut_stale_acc,
         },
         init_flag,
-        quiet_flag,
         wake_flag,
         callee_refs,
         self_thunk,
@@ -437,10 +422,7 @@ pub(crate) struct LowerCtx<'a> {
     pub(super) tail: TailCtx<'a>,
     /// Wire slot 0 bit 0: 1 on the kernel's init cycle.
     pub(super) init_flag: ClifValue,
-    /// Wire slot 0 bit 1: the invocation re-derives inside a frame or
-    /// tail loop that is not its own init; grants no init view.
-    pub(super) quiet_flag: ClifValue,
-    /// Wire slot 0 bit 2: a wake view, under which init is not genuine
+    /// Wire slot 0 bit 1: a wake view, under which init is not genuine
     /// (`init & !wake`).
     pub(super) wake_flag: ClifValue,
     /// The channel this body claims from.

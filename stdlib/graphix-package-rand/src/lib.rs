@@ -92,10 +92,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
-    }
 }
 
 #[derive(Debug)]
@@ -156,8 +152,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -222,10 +216,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.buf.clear()
-    }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.buf.clear()
     }
 }

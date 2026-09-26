@@ -47,7 +47,6 @@ dbg_flag!(gxdbg_resolve, "GXDBG_RESOLVE");
 dbg_flag!(gxdbg_seqplan, "GXDBG_SEQPLAN");
 dbg_flag!(gxdbg_swallow, "GXDBG_SWALLOW");
 dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");
-dbg_flag!(gxdbg_tail, "GXDBG_TAIL");
 dbg_flag!(gxdbg_typeref, "GXDBG_TYPEREF");
 
 /// The value of GRAPHIX_DBG_BIND_BT: a target TVarId for per-cell

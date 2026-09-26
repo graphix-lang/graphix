@@ -69,8 +69,7 @@ flow — `design/seq_blocks.md` §7).
   Vacant-insert, including an inner handler's rethrow) lands in the
   cycle the error was raised. Cross-top deliveries (a REPL catch in an
   earlier input) take the `set_var` next-cycle path; the shell threads
-  a session scope so a toplevel catch covers later inputs. Inside a
-  recursion frame the delivery parks in `frame_outbox`.
+  a session scope so a toplevel catch covers later inputs.
 - `catch(e: T)` ascribes `T` to `e` in the handler. Coverage is
   unchanged: `T` must contain the accumulated throw union, snapshotted
   before ascription and checked at typecheck1; an unannotated `catch(e)`

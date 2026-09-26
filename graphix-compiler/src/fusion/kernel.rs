@@ -45,7 +45,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     typ: Type,
     /// One feeder Node per kernel input slot.
     feeders: Box<[Node<R, E>]>,
-    /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 2.
+    /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 1.
     slept: WakeBit,
     /// The ABI contract; the `Arc` pointer is also the kernel's identity
     /// in the JIT's `by_kernel` cache.
@@ -72,7 +72,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> Drop for FusedKernel<R, E> {
     fn drop(&mut self) {
         // Only instance death frees the slot chains and activation trees;
-        // neither `sleep` nor `reset_replay` touches them.
+        // `sleep` does not touch them.
         // SAFETY: the words are taken out of the state, so each chain and
         // tree is freed once, by the layout the wrapper describes.
         for a in self.jit.slot_table_words.iter() {
@@ -280,7 +280,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let woke = self.slept.take() && ctx.frame_depth == 0;
+        let woke = self.slept.take();
         let mut any_updated = false;
         let mut any_bottom = false;
         let mut polled: SmallVec<[&TagValue; 8]> = SmallVec::new();
@@ -293,19 +293,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         }
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
-                "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?} fd={}",
+                "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?}",
                 self.kernel.fn_name,
                 event.init,
                 polled.iter().map(|tv| tv.tag().bits()).collect::<Vec<_>>(),
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>(),
-                ctx.frame_depth
             );
         }
         if !(any_updated
             || any_bottom
             || event.init
             || woke
-            || ctx.frame_depth > 0
             || self.resident.tag().is_bottom())
         {
             return self.resident.ride();
@@ -322,11 +320,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         #[cfg(debug_assertions)]
         record_fusion_invocation();
         let mut slots: LPooled<Vec<u64>> = LPooled::take();
-        // Slot 0: bit 0 init view, bit 1 quiet frame, bit 2 wake.
-        let init = if ctx.frame_depth > 0 { ctx.dispatch_init } else { event.init };
-        let quiet = ctx.frame_depth > 0 && !ctx.dispatch_init;
-        let wake = (ctx.frame_depth == 0 && event.wake_init) || woke;
-        slots.push(init as u64 | (quiet as u64) << 1 | (wake as u64) << 2);
+        // Slot 0: bit 0 init view, bit 1 wake.
+        let wake = event.wake_init || woke;
+        slots.push(event.init as u64 | (wake as u64) << 1);
         slots.push(if self.state.is_empty() {
             0
         } else {
@@ -424,13 +420,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         if pending {
             // The out slot is a sentinel, not a Value.
             if crate::dbgenv::graphix_dbg_invoke() {
-                eprintln!(
-                    "KERNEL RESULT {} PENDING fd={}",
-                    self.kernel.fn_name, ctx.frame_depth
-                );
-            }
-            if ctx.frame_depth > 0 {
-                return TagValue::bottom_null(true);
+                eprintln!("KERNEL RESULT {} PENDING", self.kernel.fn_name);
             }
             return self.resident.ride();
         }
@@ -462,13 +452,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         self.slept.set();
         for feeder in self.feeders.iter_mut() {
             feeder.sleep(ctx);
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // A kernel holds no replay caches; its interior memory is semantic.
-        for feeder in self.feeders.iter_mut() {
-            feeder.reset_replay(ctx);
         }
     }
 

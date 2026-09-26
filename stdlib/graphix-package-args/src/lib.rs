@@ -224,8 +224,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.once.reset();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 graphix_derive::defpackage! {

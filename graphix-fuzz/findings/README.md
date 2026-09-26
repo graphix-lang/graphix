@@ -483,3 +483,14 @@ Regression tests: `lang::functions::declared_rtype_proven_through_open_callee`
 plus `declared_rtype_drives_open_callee` and
 `open_callee_obligation_is_per_instance` as the counterparts that must
 keep compiling.
+
+## tail-calls-are-calls-sep2026
+
+The node-walk's framed tail loop ran every depth of a stateless tail
+recursion through one activation, and the wake-catch-up tracker skipped
+frames, so a fire bit an arm consumed only inside a frame was delivered
+two cycles later (00, sep25b `divergence_000035`). The frames are gone
+(`design/tail_calls_are_calls.md`): the node-walk dispatches every call
+as an activation and the JIT's native loop is held to its answers.
+Regression test for the outer write a retained depth owes:
+`lang::functions::tail_depth_catches_up_an_outer_write`.

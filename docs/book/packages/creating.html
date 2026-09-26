@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c9b6ee5b.js";
+            window.path_to_searchindex_js = "../searchindex-b12cd77a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -298,9 +298,9 @@ on the arguments. <code>fast</code> is the fast call described next, or <code>No
 for a builtin that cannot have one (an effect such as <code>print</code>, or a
 function that produces before all its arguments have arrived).</li>
 </ul>
-<p>Stateless matters twice: a tail-recursive loop reuses one activation
-across its iterations only when every builtin it reaches is stateless,
-and fusion into native code needs the fast call.</p>
+<p>Stateless matters twice: a tail recursion compiles to a native loop
+only when every builtin it reaches is stateless, and fusion into native
+code needs the fast call.</p>
 <h4 id="fast-calls"><a class="header" href="#fast-calls">Fast calls</a></h4>
 <p>A builtin fuses into a native kernel only through a <strong>fast call</strong>: a
 plain function the kernel calls directly on its argument values in

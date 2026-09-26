@@ -102,10 +102,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
         self.args.clear()
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {
-        self.args.clear()
-    }
 }
 
 pub mod auto_iterate;

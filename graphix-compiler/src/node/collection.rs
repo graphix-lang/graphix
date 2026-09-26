@@ -856,7 +856,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let woke = self.slept.take() && ctx.frame_depth == 0;
+        let woke = self.slept.take();
         let old_len = self.slots.len();
         let mut production = None;
         let (tag, sval) = {
@@ -886,7 +886,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 // Elements move only on a fire, in a frame (a rebound loop
                 // variable arrives stale) or past a sleep; a fresh slot
                 // always takes its element.
-                let moved = src_trig || ctx.frame_depth > 0 || woke;
+                let moved = src_trig || woke;
                 let from = if moved { 0 } else { old_len.min(self.slots.len()) };
                 for (slot, value) in
                     self.slots[from..].iter().zip(source.values().skip(from))
@@ -1011,15 +1011,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         self.base.source.sleep(ctx);
         for slot in self.slots.iter_mut() {
             slot.call.sleep(ctx);
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.base.source.reset_replay(ctx);
-        self.current = C::default();
-        for slot in self.slots.iter_mut() {
-            slot.state = SlotState::Empty;
-            slot.call.reset_replay(ctx);
         }
     }
 
@@ -1285,7 +1276,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let woke = self.slept.take() && ctx.frame_depth == 0;
+        let woke = self.slept.take();
         let old_len = self.slots.len();
         let (tag, sval) = {
             let tv = self.base.source.update(ctx, event);
@@ -1310,7 +1301,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                     });
                 // Elements move only on a fire, in a frame or past a sleep; a
                 // fresh slot always takes its element.
-                let moved = src_trig || ctx.frame_depth > 0 || woke;
+                let moved = src_trig || woke;
                 let from = if moved { 0 } else { old_len.min(self.slots.len()) };
                 for (slot, value) in
                     self.slots[from..].iter().zip(source.values().skip(from))
@@ -1440,15 +1431,6 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         self.base.init.sleep(ctx);
         for slot in self.slots.iter_mut() {
             slot.call.sleep(ctx);
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.base.source.reset_replay(ctx);
-        self.base.init.reset_replay(ctx);
-        for slot in self.slots.iter_mut() {
-            slot.state = SlotState::Empty;
-            slot.call.reset_replay(ctx);
         }
     }
 

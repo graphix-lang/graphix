@@ -62,18 +62,16 @@ pub(crate) mod wake;
 
 /// A variable read's provenance under dense delivery — see [`read_var`].
 pub(crate) enum VarRead<'a> {
-    /// Found in an overlay (this cycle's transient deliveries, or a
-    /// frame's private writes) or store-stamped THIS cycle: the
-    /// entry's own tag applies.
+    /// Found in the overlay (this cycle's transient deliveries) or
+    /// store-stamped THIS cycle: the entry's own tag applies.
     Delivered(&'a TagValue),
     /// A standing store entry from an earlier cycle: the value
     /// channel. Readers view it Stale, or Fired under an init view.
     Standing(&'a TagValue),
 }
 
-/// Read a variable: innermost overlay, then the enclosing frame stack
-/// (an inner dispatch's captures live in its caller's frame), then the
-/// persistent store. `None` means the bind has never delivered.
+/// Read a variable: the overlay, then the persistent store. `None`
+/// means the bind has never delivered.
 pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
     ctx: &'a ExecCtx<R, E>,
     event: &'a Event<E>,
@@ -81,11 +79,6 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
 ) -> Option<VarRead<'a>> {
     if let Some(tv) = event.variables.get(id) {
         return Some(VarRead::Delivered(tv));
-    }
-    for f in event.frames.iter().rev() {
-        if let Some(tv) = f.get(id) {
-            return Some(VarRead::Delivered(tv));
-        }
     }
     match ctx.rt.store().get(id) {
         Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
@@ -96,39 +89,13 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
 
 /// A standing entry as a reader sees it: fresh under a genuine init
 /// view only. A wake-forced view reads it stale, its value is a past
-/// event the graph already consumed; frames force `event.init`, so a
-/// framed read consults `dispatch_init`.
-pub(crate) fn standing_view<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    event: &Event<E>,
-    tv: &TagValue,
-) -> TagValue {
-    let init = if ctx.frame_depth > 0 {
-        ctx.dispatch_init
-    } else {
-        event.init && !event.wake_init
-    };
-    let tag = if init { tv.tag().fresh() } else { tv.tag().quiet() };
+/// event the graph already consumed.
+pub(crate) fn standing_view<E: UserEvent>(event: &Event<E>, tv: &TagValue) -> TagValue {
+    let tag =
+        if event.init && !event.wake_init { tv.tag().fresh() } else { tv.tag().quiet() };
     let mut tv = tv.clone();
     tv.retag(tag);
     tv
-}
-
-/// [`read_var`] with a standing entry retagged quiet.
-pub(crate) fn read_quiet<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
-    event: &Event<E>,
-    id: &BindId,
-) -> Option<TagValue> {
-    read_var(ctx, event, id).map(|r| match r {
-        VarRead::Delivered(tv) => tv.clone(),
-        VarRead::Standing(tv) => {
-            let mut tv = tv.clone();
-            let tag = tv.tag().quiet();
-            tv.retag(tag);
-            tv
-        }
-    })
 }
 
 #[macro_export]
@@ -256,8 +223,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
     fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
         Ok(())
     }
@@ -341,10 +306,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
-    }
-
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))
     }
@@ -379,10 +340,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 /// the readers that must read history a production cannot carry: the
 /// select scrutinee, a pattern guard's truth, and `~`'s held arg.
 /// Everything else reads its children's productions directly.
-// XCR claude for eric: `invariant` is an `Option<bool>` now. The four
-// (value, bottom) pairs are all live states: never produced, present, bottom
-// before any value, bottom over a held value (what `~` banking and the wake read),
-// so no invalid state to remove; an accessor would only shorten select.rs/pattern.rs.
+// XCR claude for eric: the four (value, bottom) pairs are all live states:
+// never produced, present, bottom before any value, bottom over a held value
+// (what `~` banking and the wake read), so no invalid state to remove; an
+// accessor would only shorten select.rs/pattern.rs.
 #[derive(Debug)]
 pub struct Held<R: Rt, E: UserEvent> {
     /// The last value-bearing production (`Some` = there was once a
@@ -393,10 +354,6 @@ pub struct Held<R: Rt, E: UserEvent> {
     /// held memory.
     pub tag: Tag,
     pub node: Node<R, E>,
-    /// Lazily computed: the subtree references no bindings at all, so
-    /// its value is identical in every evaluation frame — see
-    /// [`Self::reset_replay`].
-    invariant: Option<bool>,
 }
 
 impl<R: Rt, E: UserEvent> Held<R, E> {
@@ -416,7 +373,7 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     }
 
     pub fn new(node: Node<R, E>) -> Self {
-        Self { value: None, tag: Tag::FIRED, node, invariant: None }
+        Self { value: None, tag: Tag::FIRED, node }
     }
 
     /// Update the node, returning the production's tag. A bottom
@@ -432,25 +389,9 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     }
 
     /// Sleep is pause, not reset: the held value and its at-rest taint
-    /// survive. Contrast [`Self::reset_replay`].
+    /// survive.
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.node.sleep(ctx)
-    }
-
-    /// Clears the held value, except when the subtree references no
-    /// bindings: such a value is identical in every frame and the
-    /// subtree cannot re-produce it without an init view.
-    pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let invariant = *self.invariant.get_or_insert_with(|| {
-            let mut refs = Refs::default();
-            self.node.refs(&mut refs);
-            refs.refed.is_empty()
-        });
-        if !invariant {
-            self.value = None;
-            self.tag = Tag::FIRED;
-        }
-        self.node.reset_replay(ctx)
     }
 }
 
@@ -479,15 +420,15 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
 /// A strict computation propagates consumed bottom before considering
 /// its cached result. Quiet recomputation cannot manufacture an event.
 macro_rules! dense_gate {
-    ($self:ident, $ctx:ident, $trig:expr, $bottom:expr) => {{
+    ($self:ident, $trig:expr, $bottom:expr) => {{
         let woke = $self.slept.take();
-        $crate::node::dense_gate!($self.resident, $ctx, $trig, $bottom, woke);
+        $crate::node::dense_gate!($self.resident, $trig, $bottom, woke);
     }};
-    ($resident:expr, $ctx:ident, $trig:expr, $bottom:expr, $woke:expr) => {{
+    ($resident:expr, $trig:expr, $bottom:expr, $woke:expr) => {{
         if $bottom {
             return $resident.set_bottom($trig);
         }
-        if !($trig || $resident.tag().is_bottom() || $ctx.frame_depth > 0 || $woke) {
+        if !($trig || $resident.tag().is_bottom() || $woke) {
             return $resident.ride();
         }
     }};
@@ -706,8 +647,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
     fn typ(&self) -> &Type {
         Type::BOTTOM
     }
@@ -747,27 +686,14 @@ impl Constant {
     }
 }
 
-/// A constant's production: fired at a genuine init, stale inside a
-/// framed pass that is not one (a frame forces `event.init`), standing
-/// otherwise. Every argument-less literal is a constant.
-pub(crate) fn produce_constant<'a, R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
+/// A constant's production: fired at an init view, standing otherwise.
+/// Every argument-less literal is a constant.
+pub(crate) fn produce_constant<'a, E: UserEvent>(
     event: &Event<E>,
     resident: &'a mut TagValue,
     value: impl FnOnce() -> Value,
 ) -> &'a TagValue {
-    if ctx.frame_depth > 0 {
-        let v = value();
-        resident.set(if ctx.dispatch_init {
-            TagValue::fired(v)
-        } else {
-            TagValue::stale(v)
-        })
-    } else if event.init {
-        resident.set(TagValue::fired(value()))
-    } else {
-        resident.ride()
-    }
+    if event.init { resident.set(TagValue::fired(value())) } else { resident.ride() }
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
@@ -785,15 +711,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         self.typ.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        produce_constant(ctx, event, &mut self.resident, || self.value.clone())
+    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+        produce_constant(event, &mut self.resident, || self.value.clone())
     }
 
     fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     fn refs(&self, _refs: &mut Refs) {}
 
@@ -1084,12 +1008,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         }
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for n in &mut self.children {
-            n.reset_replay(ctx)
-        }
-    }
-
     fn refs(&self, refs: &mut Refs) {
         for n in &self.children {
             n.refs(refs)
@@ -1222,7 +1140,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         // rendered under the value-hook loan so a core `Display` impl on
         // an abstract part applies (`coretraits::with_display_hooks`)
         let (tag, prods) = gather(ctx, event, &mut self.args);
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let mut buf: LPooled<String> = LPooled::take();
         coretraits::with_display_hooks(ctx, event, |env| {
             for (typ, tv) in self.typs.iter().zip(prods.iter()) {
@@ -1260,12 +1178,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         self.slept.set();
         for n in &mut self.args {
             n.sleep(ctx);
-        }
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for n in &mut self.args {
-            n.reset_replay(ctx);
         }
     }
 
@@ -1395,10 +1307,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.node.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.node.reset_replay(ctx);
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
@@ -1618,10 +1526,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.sleep(ctx);
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.rhs.reset_replay(ctx);
-    }
-
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
         let bind = match ctx.env.by_id.get(&self.src_id) {
@@ -1715,7 +1619,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let tv = self.n.update(ctx, event);
         let tag = tv.tag();
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = tv.value_cloned();
         let v = self.target.cast_from(&ctx.env, self.n.typ(), v);
         self.resident.set(TagValue::tagged(v, tag))
@@ -1736,10 +1640,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.reset_replay(ctx);
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1842,10 +1742,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -1960,10 +1856,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.n.iter_mut().for_each(|n| n.reset_replay(ctx))
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -2163,12 +2055,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.arg.sleep(ctx);
         self.trigger.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // the held RHS is this node's contract and survives a frame reset
-        self.arg.node.reset_replay(ctx);
-        self.trigger.reset_replay(ctx);
     }
 
     fn spec(&self) -> &Expr {

@@ -123,7 +123,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         if self.entries.is_empty() {
-            return super::produce_constant(ctx, event, &mut self.resident, || {
+            return super::produce_constant(event, &mut self.resident, || {
                 Value::Map(CMap::new())
             });
         }
@@ -134,7 +134,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let vals: SmallVec<[&TagValue; 8]> =
             vals.iter_mut().map(|v| v.update(ctx, event)).collect();
         let tag = keys.iter().chain(vals.iter()).fold(Tag::STALE, |t, p| t.join(p.tag()));
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let m = with_hooks(ctx, event, || {
             let mut m = CMap::new();
             for (k, v) in keys.iter().zip(vals.iter()) {
@@ -160,10 +160,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
         let _ = self.each(|n| Ok(n.sleep(ctx)));
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        let _ = self.each(|n| Ok(n.reset_replay(ctx)));
     }
 
     fn refs(&self, refs: &mut Refs) {
@@ -298,7 +294,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         let s = self.source.update(ctx, event);
         let k = self.key.update(ctx, event);
         let tag = s.tag().join(k.tag());
-        dense_gate!(self, ctx, tag.triggers(), tag.is_bottom());
+        dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v =
             with_hooks(ctx, event, || s.with_value(|s| k.with_value(|k| map_get(s, k))));
         self.resident.set(TagValue::tagged(v, tag))
@@ -343,11 +339,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.slept.set();
         self.source.sleep(ctx);
         self.key.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.source.reset_replay(ctx);
-        self.key.reset_replay(ctx);
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

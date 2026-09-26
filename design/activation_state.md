@@ -128,31 +128,26 @@ when it happens — we have to bottom."
 **State has the multiplicity of activations. Non-tail recursion creates
 an activation per level — full inlining, lazily materialised, each
 level's state standing across cycles. Collection slots are each an
-activation. A tail call creates an activation like any other; a tail
-loop may reuse ONE activation across its iterations only when its body
-is STATELESS** (`analysis::lambda_is_stateless`: every builtin reached
-is `Effect::Stateless`, no `<-` target, callees transitively
-stateless) — because then no program can tell. A stateless body has no
-per-depth history, so constant space is free; a stateful one has O(n)
-history and pays O(n) space, exactly as a slot vector does (`acc +
-count(x)` in a tail call counts every iteration; the same body as a
-fold counts per slot). Depth is bounded by memory on both engines
-(`design/recursive_activations.md`).
+activation. A tail call creates an activation like any other.** The JIT
+runs a STATELESS tail recursion (`analysis::LambdaFacts::is_pure`: Sync,
+every builtin reached `Effect::Stateless`, no `<-` to an own binding,
+callees transitively stateless) as one native loop, held to the
+activations' answers (`design/tail_calls_are_calls.md`); a stateful one
+pays O(n) space, exactly as a slot vector does (`acc + count(x)` in a
+tail call counts every iteration; the same body as a fold counts per
+slot). Depth is bounded by memory (`design/recursive_activations.md`).
 
 Corollaries:
 
 - A connect target's identity has the multiplicity of its binds:
-  per-slot in collection callbacks, per-activation in recursion, one
-  reused cell for a stateless tail loop's lifted counter.
+  per-slot in collection callbacks, per-activation in recursion.
 - MapQ/FoldQ per-slot live instances (`design/collection_intrinsics.md`);
   retained per-depth instances are the inlining's standing nodes,
   materialised on demand.
-- Tail and non-tail twins of a STATE-carrying body legitimately differ
-  by ruling: do not read tail-vs-native agreement as an invariant for
-  such bodies.
-- Scope: the collapse covers SELF tail calls. Mutual tail recursion
-  (`f`→`g`→`f`) is per-level, retained, not constant-space — narrower
-  than Scheme's guarantee, deliberate and predictable from the source.
+- Scope: the JIT's native loop covers SELF tail calls. Mutual tail
+  recursion (`f`→`g`→`f`) is per-level, retained, not constant-space —
+  narrower than Scheme's guarantee, deliberate and predictable from the
+  source.
 
 Kernel realisation: a self-call roots a lazily grown per-ACTIVATION
 block tree (`graphix_site_child_block`, one root per self-call site so

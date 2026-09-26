@@ -921,17 +921,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         self.sleep_nodes(ctx);
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Body::Dynamic { source, .. } = &mut self.body {
-            source.reset_replay(ctx);
-        }
-        ctx.with_restored_mut(&mut self.env, |ctx| {
-            for n in &mut self.nodes {
-                n.reset_replay(ctx);
-            }
-        });
-    }
-
     fn spec(&self) -> &Expr {
         &self.spec
     }

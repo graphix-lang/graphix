@@ -27,23 +27,18 @@ use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::sync::atomic::{AtomicBool, Ordering};
 use triomphe::Arc;
 
 atomic_id!(SelectId);
 
 #[derive(Debug)]
 pub struct Select<R: Rt, E: UserEvent> {
-    /// The selected arm. Semantic state: survives sleep and
-    /// `reset_replay`.
+    /// The selected arm. Semantic state: survives sleep.
     selected: Option<usize>,
     pub arg: Held<R, E>,
     pub arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
     pub typ: Type,
     pub(crate) spec: Expr,
-    /// In a frame, a tail re-selection rides the arm's tag instead of
-    /// firing.
-    pub(crate) tail_dispatch_select: AtomicBool,
     /// Bit i = arm i's guard was consulted by the last re-match. Quiet
     /// cycles read it so a standing bottom on a consulted guard keeps
     /// the select bottom.
@@ -180,7 +175,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         arms: Vec<(PatternNode<R, E>, Node<R, E>)>,
         typ: Type,
         spec: Expr,
-        tail_dispatch_select: bool,
     ) -> Node<R, E> {
         Node::new(Self {
             selected: None,
@@ -188,7 +182,6 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             arms,
             typ,
             spec,
-            tail_dispatch_select: AtomicBool::new(tail_dispatch_select),
             consulted_guard_mask: ArmMask::default(),
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
@@ -210,8 +203,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         }
         let typ = Type::decode(buf)?;
         let spec = Expr::decode(buf)?;
-        let tail_dispatch_select = bool::decode(buf)?;
-        Ok(Self::new(arg, arms, typ, spec, tail_dispatch_select))
+        Ok(Self::new(arg, arms, typ, spec))
     }
 
     pub(crate) fn compile(
@@ -246,7 +238,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             })
             .collect::<Result<Vec<_>>>()
             .at(&spec)?;
-        Ok(Self::new(arg, arms, Type::empty_tvar(), spec, false))
+        Ok(Self::new(arg, arms, Type::empty_tvar(), spec))
     }
 }
 
@@ -877,8 +869,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             n.image_encode(buf)?;
         }
         self.typ.encode(buf)?;
-        self.spec.encode(buf)?;
-        self.tail_dispatch_select.load(Ordering::Relaxed).encode(buf)
+        self.spec.encode(buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -892,7 +883,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec,
-            tail_dispatch_select,
             consulted_guard_mask,
             resident,
             slept,
@@ -900,7 +890,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         } = self;
         let LazyArmFacts { tracked, sleep_on_deselect, shallow } =
             arm_facts.as_mut().expect("arm facts built above");
-        let woke = slept.take() && ctx.frame_depth == 0;
+        let woke = slept.take();
         // Per-arm guard production tags; `None` = unguarded. Only guards
         // the chain consults contribute fires or bottomness.
         let mut guard_tags: SmallVec<[Option<Tag>; 8]> =
@@ -943,24 +933,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let v = arg.value.as_ref().expect("Held keeps every non-bottom production");
         if crate::dbgenv::graphix_dbg_select() {
             eprintln!(
-                "SELECT[{}] upd init={} fd={} pat_up={pat_up} sel={selected:?} argc={v:?} vars={}",
+                "SELECT[{}] upd init={} pat_up={pat_up} sel={selected:?} argc={v:?} vars={}",
                 spec.pos,
                 event.init,
-                ctx.frame_depth,
                 event.variables.len()
             );
         }
-        let tail = tail_dispatch_select.load(Ordering::Relaxed) && ctx.frame_depth > 0;
-        // Inside frames selection is value-driven: a jump-rebound loop
-        // variable arrives STALE, so a triggers-only driver would spin.
-        let arg_trig = arg_prod.triggers() || ctx.frame_depth > 0;
         enum ChainOut {
             Quiet(usize),
             Taken(Option<usize>),
             Undet,
         }
         let chain = match *selected {
-            Some(i) if !(arg_trig || pat_up || woke) => ChainOut::Quiet(i),
+            Some(i) if !(arg_prod.triggers() || pat_up || woke) => ChainOut::Quiet(i),
             _ => {
                 consulted_guard_mask.clear(arms.len());
                 let mut out = ChainOut::Taken(None);
@@ -988,10 +973,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
         };
         let planes = EmissionPlanes::new(&guard_tags, arg_prod, consulted_guard_mask);
-        // Sound only: a bottom must never upgrade a stale result to FIRED.
-        if planes.sound && tail_dispatch_select.load(Ordering::Relaxed) {
-            ctx.tail_scrut_fired = true;
-        }
         // A selection stays undecidable while a consulted guard stands
         // bottom: no arm is evaluated.
         let chain = match chain {
@@ -1015,8 +996,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             ChainOut::Taken(Some(i)) => {
                 if crate::dbgenv::graphix_dbg_select() {
                     eprintln!(
-                        "SELECT[{}] BECOMING-SELECTED {selected:?} -> {i} fd={} init={}",
-                        spec.pos, ctx.frame_depth, event.init
+                        "SELECT[{}] BECOMING-SELECTED {selected:?} -> {i} init={}",
+                        spec.pos, event.init
                     );
                 }
                 if let Some(j) = selected.replace(i) {
@@ -1025,7 +1006,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // A stale scrutinee binds stale, a past event at a first consult
                 // or a wake alike; only a consulted guard's flip binds FIRED, and
                 // under an init view a guard's fire is its birth, not a flip.
-                let bind_tag = if tail || arg_prod.triggers() {
+                let bind_tag = if arg_prod.triggers() {
                     arg_prod
                 } else if planes.guard_fire && !event.init && !woke {
                     Tag::FIRED
@@ -1064,7 +1045,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_dispatch_select: _,
             consulted_guard_mask: _,
             resident: _,
             slept: _,
@@ -1084,7 +1064,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_dispatch_select: _,
             consulted_guard_mask: _,
             resident: _,
             slept,
@@ -1100,30 +1079,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        // The selection is semantic state, not a replay cache: a frame
-        // pass that re-derives the same selection stays quiet.
-        let Self {
-            selected: _,
-            arg,
-            arms,
-            typ: _,
-            spec: _,
-            tail_dispatch_select: _,
-            consulted_guard_mask: _,
-            resident: _,
-            slept: _,
-            arm_facts: _,
-        } = self;
-        arg.reset_replay(ctx);
-        for (pat, body) in arms {
-            body.reset_replay(ctx);
-            if let Some(n) = &mut pat.guard {
-                n.reset_replay(ctx)
-            }
-        }
-    }
-
     fn refs(&self, refs: &mut Refs) {
         let Self {
             selected: _,
@@ -1131,7 +1086,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             arms,
             typ: _,
             spec: _,
-            tail_dispatch_select: _,
             consulted_guard_mask: _,
             resident: _,
             slept: _,

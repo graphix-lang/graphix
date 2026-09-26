@@ -383,12 +383,9 @@ pub struct Event<E: UserEvent> {
     /// wake rather than a birth: a `<-` target that already holds a
     /// value keeps it instead of being reseeded.
     pub wake_init: bool,
-    /// The innermost overlay: same-cycle transient deliveries at depth
-    /// 0, or the current evaluation frame's private writes. Not the
-    /// value store: reads fall through the frame stack to [`Rt::store`].
+    /// The overlay: this cycle's transient deliveries. Not the value
+    /// store: reads fall through to [`Rt::store`].
     pub variables: IntMap<BindId, TagValue>,
-    /// The enclosing overlays of the frame stack, innermost last.
-    pub(crate) frames: Vec<IntMap<BindId, TagValue>>,
     pub custom: IntMap<BindId, Box<dyn CustomBuiltinType>>,
     pub user: E,
 }
@@ -399,34 +396,18 @@ impl<E: UserEvent> Event<E> {
             init: false,
             wake_init: false,
             variables: IntMap::default(),
-            frames: Vec::new(),
             custom: IntMap::default(),
             user,
         }
     }
 
     pub fn clear(&mut self) {
-        let Self { init, wake_init, variables, frames, custom, user } = self;
+        let Self { init, wake_init, variables, custom, user } = self;
         *init = false;
         *wake_init = false;
         variables.clear();
-        debug_assert!(frames.is_empty(), "unbalanced enter_frame at cycle end");
-        frames.clear();
         custom.clear();
         user.clear();
-    }
-
-    /// Push the current `variables` onto the frame stack and make
-    /// `frame` the innermost overlay.
-    pub fn enter_frame(&mut self, frame: IntMap<BindId, TagValue>) {
-        self.frames.push(std::mem::replace(&mut self.variables, frame));
-    }
-
-    /// Leave the frame entered by [`Self::enter_frame`], handing back
-    /// its final map.
-    pub fn exit_frame(&mut self) -> IntMap<BindId, TagValue> {
-        let outer = self.frames.pop().expect("exit_frame without enter_frame");
-        std::mem::replace(&mut self.variables, outer)
     }
 }
 
@@ -547,10 +528,6 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
 
     pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         stack::ensure_sufficient(|| self.0.sleep(ctx))
-    }
-
-    pub fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        stack::ensure_sufficient(|| self.0.reset_replay(ctx))
     }
 
     pub fn emit_clif(&self, cx: &mut BodyCx) -> Result<fusion::emit::CompiledExpr> {
@@ -699,11 +676,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// builtins clear their latches.
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
 
-    /// Clear replay caches (cached argument values), preserve semantic
-    /// state (accumulators, memos); see [`Update::reset_replay`]. No
-    /// default: every builtin classifies its own state.
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>);
-
     /// Emit this call site into the open JIT kernel as CLIF.
     /// `Ok(Some(cv))`: emitted. `Ok(None)`: shape not handled, and no
     /// instructions may have been emitted. `Err`: abort the kernel
@@ -837,12 +809,6 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 
     /// Pause the node (an unselected arm).
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
-
-    /// Clear replay caches (the last-seen input values a node combines
-    /// a fresh input with) while preserving semantic state (a tally, a
-    /// queue, a fired flag). Called between tail-loop frames. No
-    /// default: the classification is per node. Recurses like `sleep`.
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>);
 
     /// The node's typed view for compile-time analysis.
     fn view(&self) -> NodeView<'_, R, E>;
@@ -1298,20 +1264,6 @@ impl AbstractTypeRegistry {
     }
 }
 
-/// Side channel for the interpreter's tail-recursion loop: a
-/// tail-position self-call stashes its rebind args here and returns;
-/// the enclosing `GXLambda::update` rebinds the formals and re-runs the
-/// body. One slot suffices: a tail call is the last thing evaluated.
-pub(crate) struct PendingTailCall {
-    /// The recursive callee's `LambdaId`.
-    pub(crate) lambda: LambdaId,
-    /// The self-call's argument productions in callee-formal order,
-    /// each with its own tag (a bottom bottoms the formal), so freshness
-    /// rides the dataflow as the kernel's disc carry does. `None`: the
-    /// arg never produced and the formal rides its previous value.
-    pub(crate) args: smallvec::SmallVec<[Option<TagValue>; 4]>,
-}
-
 /// A call site's instantiation identity: per argument, sorted by its
 /// key, the source lambda ([`node::lambda::LambdaDef::source`]) it
 /// statically resolves to, or `None`. Two sites reaching one def with the same identity are
@@ -1441,8 +1393,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub(crate) pending_settles: Vec<Vec<PendingSettle>>,
     /// The fusion subsystem's state; see [`fusion::FusionCtx`].
     pub fusion: fusion::FusionCtx,
-    /// See [`PendingTailCall`].
-    pub(crate) pending_tail_call: Option<PendingTailCall>,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// at the end of [`compile_stmt`].
@@ -1450,27 +1400,14 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
-    /// Non-zero while a tail-loop re-entry runs against a private
-    /// per-frame variables map; frame-only behaviors gate on it. A
-    /// counter: frames nest.
-    pub(crate) frame_depth: u32,
-    /// The real `event.init` of the dispatch whose frames are running
-    /// (frames force `event.init` for re-derivation). Only meaningful
-    /// when `frame_depth > 0`.
-    pub(crate) dispatch_init: bool,
     /// Set only while a `Select::update` sleeps an arm it is
     /// deselecting: a recursive-edge `CallSite::sleep` under it deletes
     /// its callee (shrink = delete). Cleared crossing into any callee
     /// body, so a whole-recursion pause retains.
-    // XCR claude for eric: agreed in direction. The five are read and written at
-    // ~35 sites in callsite.rs, lambda.rs and select.rs (calls, select-coll) and
-    // carry tail-loop and wake semantics; threading them through the dispatch is
-    // its own change after this round, with a soak.
+    // XCR claude for eric: agreed in direction; threading it from
+    // `Select::update` through `sleep` to the recursive call sites is its own
+    // change, with a soak.
     pub(crate) deselecting_arm: bool,
-    /// Whether any tail-spine select's scrutinee fired during the
-    /// current tail-loop dispatch: the dispatch's result fires if its
-    /// value chain did or any such scrutinee did.
-    pub(crate) tail_scrut_fired: bool,
     /// Pending definition assertions; see [`DefAssertion`].
     pub(crate) def_assertions: Mutex<Vec<DefAssertion>>,
     /// Registry attributes recorded this `compile_stmt`; each must be
@@ -1481,18 +1418,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// The tables of the image this session was restored from, for
     /// anything decoded later.
     pub(crate) image_decoder: Option<image::ImageDecoder>,
-    /// Variable deliveries raised inside an evaluation frame that must
-    /// escape it (an error delivery to a `catch` handler); drained into
-    /// the real map at `frame_depth == 0`.
-    pub(crate) frame_outbox: Vec<(BindId, Value)>,
 }
 
 impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
-    /// True while an evaluation frame (a tail-loop pass) is running.
-    pub fn in_frame(&self) -> bool {
-        self.frame_depth > 0
-    }
-
     /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
@@ -1525,19 +1453,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fn_forward_resolutions: IntMap::default(),
             pending_settles: vec![Vec::new()],
             fusion: fusion::FusionCtx::new()?,
-            pending_tail_call: None,
             pending_imports: Vec::new(),
             control: Arc::new(Control::new()),
-            frame_depth: 0,
-            dispatch_init: false,
             deselecting_arm: false,
-            tail_scrut_fired: false,
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),
             attr_dispatched: Mutex::new(IntSet::default()),
             attr_absorbed: Mutex::new(IntSet::default()),
             image_decoder: None,
-            frame_outbox: Vec::new(),
         };
         this.register_attribute::<Native>()?;
         Ok(this)

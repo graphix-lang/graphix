@@ -197,8 +197,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
             Either::Right(_) => (),
         }
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 impl Write {
@@ -294,7 +292,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         event: &mut Event<E>,
     ) -> &TagValue {
         static ERR_TAG: ArcStr = literal!("SubscribeError");
-        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
+        let woke = std::mem::take(&mut self.slept);
         let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
         match (path, path_fired || woke) {
             (_, false) => (),
@@ -385,8 +383,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 #[derive(Debug)]
@@ -538,8 +534,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
     }
-
-    fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 }
 
 macro_rules! list {
@@ -657,8 +651,6 @@ macro_rules! list {
                 self.current = None;
                 self.out = TagValue::phantom();
             }
-
-            fn reset_replay(&mut self, _ctx: &mut ExecCtx<R, E>) {}
         }
     };
 }
@@ -828,7 +820,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
             }};
         }
-        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
+        let woke = std::mem::take(&mut self.slept);
         let (fv, f_fired) = seam_arg(ctx, &mut from[0], event);
         let (pathv, path_fired) = seam_arg(ctx, &mut from[1], event);
         let (val, val_fired) = seam_arg(ctx, &mut from[2], event);
@@ -917,10 +909,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             NetState::get(ctx).unpublish(val);
         }
         self.on_write.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.on_write.reset_replay(ctx);
     }
 }
 
@@ -1168,7 +1156,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         from: &mut [Node<R, E>],
         event: &mut Event<E>,
     ) -> &TagValue {
-        let woke = std::mem::take(&mut self.slept) && !ctx.in_frame();
+        let woke = std::mem::take(&mut self.slept);
         let (pathv, path_fired) = seam_arg(ctx, &mut from[0], event);
         let (docv, doc_fired) = seam_arg(ctx, &mut from[1], event);
         let (specv, spec_fired) = seam_arg(ctx, &mut from[2], event);
@@ -1355,9 +1343,5 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.argbuf.clear();
         self.ready = true;
         self.f.sleep(ctx);
-    }
-
-    fn reset_replay(&mut self, ctx: &mut ExecCtx<R, E>) {
-        self.f.reset_replay(ctx);
     }
 }
