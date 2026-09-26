@@ -237,6 +237,19 @@ fn concrete(t: &Type) -> bool {
     t.resolve_tvars().tvar_free()
 }
 
+fn literal(e: &Expr) -> bool {
+    matches!(e.kind, ExprKind::Constant(_))
+}
+
+/// A comparison holds two operands of one type, so it refuses a widened
+/// operand only when the other side cannot take the union too: a
+/// literal. The other side may derive from the widened value (`v < v`,
+/// a capture of it) or be an open cell the comparison binds.
+fn comparison(op: BinOp) -> bool {
+    use BinOp::*;
+    matches!(op, Eq | Ne | Lt | Gt | Lte | Gte)
+}
+
 fn arith_or_compare(op: BinOp) -> bool {
     !matches!(op, BinOp::And | BinOp::Or | BinOp::Sample | BinOp::StrictSample)
 }
@@ -505,9 +518,9 @@ fn labels_default(
 }
 
 /// Family 4. A value directly under a rigid consumer is widened by a
-/// literal of a type its own does not relate to: an arithmetic or
-/// comparison operand (exactly one type, each containing the other), a
-/// field read's source (a union with a non-struct is refused), or an
+/// literal of a type its own does not relate to: an arithmetic operand
+/// or a comparison operand opposite a literal (exactly one type, each
+/// containing the other), a field read's source (a union with a non-struct is refused), or an
 /// argument whose parameter is concretely typed (containment).
 fn widen_consumer(
     root: &Expr,
@@ -523,8 +536,15 @@ fn widen_consumer(
             break;
         }
         let target: Option<(usize, &Expr)> = match &e.kind {
-            k if BinOp::of(k).is_some_and(|(op, _, _)| arith_or_compare(op)) => {
-                BinOp::of(k).map(|(_, lhs, _)| (i + 1, &**lhs))
+            k if let Some((op, lhs, rhs)) = BinOp::of(k)
+                && arith_or_compare(op) =>
+            {
+                match comparison(op) {
+                    false => Some((i + 1, &**lhs)),
+                    true if literal(rhs) => Some((i + 1, &**lhs)),
+                    true if literal(lhs) => Some((i + 1 + sizes[i + 1], &**rhs)),
+                    true => None,
+                }
             }
             ExprKind::StructRef { source, .. } => {
                 let is_struct = types.of(source).first().is_some_and(|t| {
@@ -685,7 +705,8 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
 
 /// Family 4 through a `let` (the hop): an unannotated `let w = e` over a
 /// concrete type whose variable a reached use puts directly under an
-/// arithmetic or comparison operator or a field read gets `e` widened.
+/// arithmetic operator, a comparison opposite a literal, or a field read
+/// gets `e` widened.
 /// An unannotated `let` takes its initializer's type, so `w` carries the
 /// union to the consumer. Right site: the let and every statement `w`'s
 /// new type meets.
@@ -728,8 +749,15 @@ fn widen_through_let(
         }
         let struct_t = t.with_deref(|d| matches!(d, Some(Type::Struct(_))));
         let consumed = pre.iter().enumerate().any(|(j, n)| match &n.kind {
-            k if BinOp::of(k).is_some_and(|(op, _, _)| arith_or_compare(op)) => {
-                refs.contains(&(j + 1)) || refs.contains(&(j + 1 + sizes[j + 1]))
+            k if let Some((op, lhs, rhs)) = BinOp::of(k)
+                && arith_or_compare(op) =>
+            {
+                let (l, r) =
+                    (refs.contains(&(j + 1)), refs.contains(&(j + 1 + sizes[j + 1])));
+                match comparison(op) {
+                    true => (l && literal(rhs)) || (r && literal(lhs)),
+                    false => l || r,
+                }
             }
             ExprKind::StructRef { .. } => struct_t && refs.contains(&(j + 1)),
             _ => false,

@@ -2596,11 +2596,19 @@ pub enum TmVerdict {
 /// candidates the printer failed to round-trip.
 pub struct TmReport {
     pub base: TmVerdict,
-    pub probes: Vec<(String, TmVerdict)>,
+    pub probes: Vec<Probed<TmVerdict>>,
     pub noparse: usize,
     /// Each must-reject mutant (`mustreject`) and its finding, `None`
     /// when it was refused where its rule says.
-    pub rejects: Vec<(String, Option<String>)>,
+    pub rejects: Vec<Probed<Option<String>>>,
+}
+
+/// One mutant of a subject and what checking it said.
+#[derive(Debug)]
+pub struct Probed<V> {
+    pub id: String,
+    pub mutant: String,
+    pub verdict: V,
 }
 
 impl TmReport {
@@ -2617,36 +2625,41 @@ impl TmReport {
             TmVerdict::Hung => s.push_str("BASE hung\n"),
         }
         let _ = writeln!(s, "NOPARSE {}", self.noparse);
-        for (id, v) in &self.probes {
-            match v {
-                TmVerdict::Accept => {
-                    let _ = writeln!(s, "PROBE {id} accept");
-                }
-                TmVerdict::Hung => {
-                    let _ = writeln!(s, "PROBE {id} hung");
-                }
-                TmVerdict::Reject(e) => {
-                    let _ = writeln!(s, "FLIP {id} {e}");
-                }
+        let mut flip = |id: &str, head: &str, mutant: &str| {
+            let _ = writeln!(s, "FLIP {id} {head}");
+            let _ = writeln!(s, "MUTANT {}", escape_line(mutant));
+        };
+        for p in &self.probes {
+            if let TmVerdict::Reject(e) = &p.verdict {
+                flip(&p.id, e, &p.mutant);
             }
         }
-        for (id, finding) in &self.rejects {
-            match finding {
-                None => {
-                    let _ = writeln!(s, "REJECT {id} ok");
-                }
-                Some(head) => {
-                    let _ = writeln!(s, "FLIP {id} {head}");
-                }
+        for p in &self.rejects {
+            if let Some(head) = &p.verdict {
+                flip(&p.id, head, &p.mutant);
             }
+        }
+        for p in &self.probes {
+            match p.verdict {
+                TmVerdict::Accept => {
+                    let _ = writeln!(s, "PROBE {} accept", p.id);
+                }
+                TmVerdict::Hung => {
+                    let _ = writeln!(s, "PROBE {} hung", p.id);
+                }
+                TmVerdict::Reject(_) => (),
+            }
+        }
+        for p in self.rejects.iter().filter(|p| p.verdict.is_none()) {
+            let _ = writeln!(s, "REJECT {} ok", p.id);
         }
         s
     }
 
     /// Whether any probe, either way, came back a finding.
     pub fn flipped(&self) -> bool {
-        self.probes.iter().any(|(_, v)| matches!(v, TmVerdict::Reject(_)))
-            || self.rejects.iter().any(|(_, f)| f.is_some())
+        self.probes.iter().any(|p| matches!(p.verdict, TmVerdict::Reject(_)))
+            || self.rejects.iter().any(|p| p.verdict.is_some())
     }
 }
 
@@ -2724,8 +2737,8 @@ pub async fn typemorph_subject(
     let mut results = Vec::new();
     if base == TmVerdict::Accept {
         for p in &probes {
-            let v = check_accept(&ctx, &compose(&p.body), per_check).await;
-            results.push((p.id(), v));
+            let verdict = check_accept(&ctx, &compose(&p.body), per_check).await;
+            results.push(Probed { id: p.id(), mutant: p.body.clone(), verdict });
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
@@ -2746,7 +2759,7 @@ async fn must_reject(
     compose: &impl Fn(&str) -> String,
     per_check: Duration,
     cap: usize,
-) -> Result<Vec<(String, Option<String>)>, String> {
+) -> Result<Vec<Probed<Option<String>>>, String> {
     use graphix_compiler::expr::ErrorSite;
     let (tx, _rx) = mpsc::channel(64);
     let sink = graphix_package_core::PrintSink::default();
@@ -2790,7 +2803,7 @@ async fn must_reject(
     if let Some((Ok(checked), body_col)) = check(compose(body), true).await {
         let types = mustreject::TypeMap::new(&checked.ide.expr_types, "test", body_col);
         for p in mustreject::probes(body, &types, cap) {
-            let finding = match check(compose(&p.body), false).await {
+            let verdict = match check(compose(&p.body), false).await {
                 None => continue,
                 Some((Ok(_), _)) => Some("LEAK: accepted".to_string()),
                 Some((Err(e), body_col)) => {
@@ -2808,7 +2821,7 @@ async fn must_reject(
                     }
                 }
             };
-            out.push((p.id(), finding));
+            out.push(Probed { id: p.id(), mutant: p.body, verdict });
         }
     }
     let _ = tokio::time::timeout(Duration::from_secs(5), ctx.shutdown()).await;
@@ -2845,14 +2858,55 @@ pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, 
     std::fs::read_to_string(&out_path).map_err(|e| format!("verdicts: {e}"))
 }
 
-fn tm_flips(report: &str) -> Vec<(String, String)> {
-    report
-        .lines()
-        .filter_map(|l| l.strip_prefix("FLIP "))
-        .filter_map(|l| {
-            l.split_once(' ').map(|(id, head)| (id.to_string(), head.to_string()))
-        })
-        .collect()
+/// A flip a verdict file reports: the probe, the normalized rejection
+/// head (or `LEAK`/`MISPLACED`), and the mutant's source.
+struct Flip {
+    id: String,
+    head: String,
+    mutant: Option<String>,
+}
+
+impl Flip {
+    fn harness(id: &str, head: String) -> Self {
+        Flip { id: id.to_string(), head, mutant: None }
+    }
+}
+
+/// `s` on one line: `\\` and `\n` escaped; `unescape_line` inverts it.
+fn escape_line(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+fn unescape_line(l: &str) -> String {
+    let mut out = String::with_capacity(l.len());
+    let mut chars = l.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some(c) => out.push(c),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+fn tm_flips(report: &str) -> Vec<Flip> {
+    let mut out: Vec<Flip> = Vec::new();
+    for l in report.lines() {
+        if let Some((id, head)) = l.strip_prefix("FLIP ").and_then(|l| l.split_once(' '))
+        {
+            out.push(Flip { id: id.to_string(), head: head.to_string(), mutant: None });
+        } else if let Some(m) = l.strip_prefix("MUTANT ")
+            && let Some(f) = out.last_mut()
+        {
+            f.mutant = Some(unescape_line(m));
+        }
+    }
+    out
 }
 
 /// One child per program; a subject reporting flips is confirmed by a
@@ -2895,15 +2949,14 @@ pub async fn typemorph_scan(
                             )),
                             Ok(rep2) => {
                                 let again: std::collections::HashSet<String> =
-                                    tm_flips(&rep2)
-                                        .into_iter()
-                                        .map(|(id, _)| id)
-                                        .collect();
-                                for (id, head) in flips {
+                                    tm_flips(&rep2).into_iter().map(|f| f.id).collect();
+                                for Flip { id, head, mutant } in flips {
                                     if again.contains(&id) {
+                                        let mutant =
+                                            escape_line(&mutant.unwrap_or_default());
                                         out.push((
                                             programs[i].0.clone(),
-                                            format!("{id}: {head}"),
+                                            format!("{id}: {head}\n    mutant: {mutant}"),
                                         ));
                                     } else {
                                         out.push((
@@ -3439,7 +3492,13 @@ impl Corpus {
     /// Record a confirmed acceptance flip if its class is new. The file
     /// is the subject under a comment header, so `graphix-fuzz typemorph
     /// <file>` reproduces it as it stands.
-    pub fn record_typeflip(&self, prog: &str, id: &str, head: &str) -> bool {
+    pub fn record_typeflip(
+        &self,
+        prog: &str,
+        id: &str,
+        head: &str,
+        mutant: Option<&str>,
+    ) -> bool {
         let class = typeflip_class(id, head);
         {
             let mut seen = self.seen.lock().unwrap();
@@ -3448,7 +3507,12 @@ impl Corpus {
             }
         }
         let n = self.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let body = format!("// typeflip {id}: {head}\n{TYPEFLIP_CLASS}{class}\n{prog}\n");
+        let mutant = mutant
+            .map(|m| format!("// mutant: {}\n", escape_line(m)))
+            .unwrap_or_default();
+        let body = format!(
+            "// typeflip {id}: {head}\n{TYPEFLIP_CLASS}{class}\n{mutant}{prog}\n"
+        );
         if let Err(e) = std::fs::write(self.dir.join(format!("typeflip_{n:06}.gx")), body)
         {
             eprintln!("FATAL fuzz harness: cannot write finding: {e}");
@@ -4568,15 +4632,15 @@ pub async fn run_aggregator(
 async fn confirm_typeflip(corpus: &Corpus, prog: &str, timeout: Duration) -> bool {
     let flips = match typemorph_child(prog, timeout).await {
         Ok(rep) => tm_flips(&rep),
-        Err(e) => vec![("harness".to_string(), e)],
+        Err(e) => vec![Flip::harness("harness", e)],
     };
     let confirmed = !flips.is_empty();
     let flips = match confirmed {
         true => flips,
-        false => vec![("unconfirmed".to_string(), "fresh-process flap".to_string())],
+        false => vec![Flip::harness("unconfirmed", "fresh-process flap".to_string())],
     };
-    for (id, head) in flips {
-        if corpus.record_typeflip(prog, &id, &head) {
+    for Flip { id, head, mutant } in flips {
+        if corpus.record_typeflip(prog, &id, &head, mutant.as_deref()) {
             println!("TYPEFLIP — {id}: {head}");
             println!("    program: {}", prog.replace('\n', "\\n"));
         }
@@ -5039,7 +5103,9 @@ mod tests {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");
             assert!(
-                rep.rejects.iter().any(|(id, f)| id.starts_with(family) && f.is_none()),
+                rep.rejects
+                    .iter()
+                    .any(|p| p.id.starts_with(family) && p.verdict.is_none()),
                 "{prog}: {:?}",
                 rep.rejects
             );
@@ -5048,7 +5114,7 @@ mod tests {
         let calls = "{ let f = |x| x + x; let a = f(1); let b = f(1.5); (a, b) }";
         let rep = typemorph_subject(calls, per, TM_CAP).await.unwrap();
         assert!(
-            !rep.rejects.iter().any(|(id, _)| id.starts_with("mono-reuse#")),
+            !rep.rejects.iter().any(|p| p.id.starts_with("mono-reuse#")),
             "{:?}",
             rep.rejects
         );
@@ -5056,12 +5122,12 @@ mod tests {
         let bottom = "{ let v = { catch(e) 7; (error(true))? }; let w = v + 1; w }";
         let rep = typemorph_subject(bottom, per, TM_CAP).await.unwrap();
         assert!(
-            !rep.rejects.iter().any(|(id, _)| id.starts_with("retype#")),
+            !rep.rejects.iter().any(|p| p.id.starts_with("retype#")),
             "{:?}",
             rep.rejects
         );
         // no family's mutant was accepted or refused elsewhere
-        assert!(rep.rejects.iter().all(|(_, f)| f.is_none()), "{:?}", rep.rejects);
+        assert!(rep.rejects.iter().all(|p| p.verdict.is_none()), "{:?}", rep.rejects);
     }
 
     #[test]
@@ -5088,12 +5154,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let corpus = Corpus::load(dir.path());
         let head = "N: unreachable arm";
-        assert!(corpus.record_typeflip("f(1)", "let-extract#3", head));
-        assert!(!corpus.record_typeflip("g(2)", "let-extract#9", head), "same class");
-        assert!(corpus.record_typeflip("g(2)", "block-wrap#0", head), "another kind");
+        assert!(corpus.record_typeflip("f(1)", "let-extract#3", head, None));
+        assert!(
+            !corpus.record_typeflip("g(2)", "let-extract#9", head, None),
+            "same class"
+        );
+        assert!(
+            corpus.record_typeflip("g(2)", "block-wrap#0", head, Some("g(3)")),
+            "another kind"
+        );
         let reloaded = Corpus::load(dir.path());
-        assert!(!reloaded.record_typeflip("h(3)", "let-extract#1", head));
-        assert!(reloaded.record_typeflip("h(3)", "let-extract#1", "N: type mismatch"));
+        assert!(!reloaded.record_typeflip("h(3)", "let-extract#1", head, None));
+        assert!(reloaded.record_typeflip(
+            "h(3)",
+            "let-extract#1",
+            "N: type mismatch",
+            None
+        ));
         let files = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(files, 3);
     }

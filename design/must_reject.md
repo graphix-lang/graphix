@@ -118,10 +118,12 @@ whose parent is one of:
 Mutation: replace the use with `select (i64:1 == i64:1) { true => v,
 false => u }`, `u` a literal of a disjoint type (typing never evaluates
 the scrutinee). Rule: the consumer's. Skip: any of the parent forms above
-that can absorb `U`. Built: the value directly under an arithmetic or
-comparison operator, a field read, or an argument whose parameter is a
-concrete primitive; right site the consumer. One hop is built (see
-Hops).
+that can absorb `U`. Built: the value directly under an arithmetic
+operator, a comparison opposite a literal, a field read, or an argument
+whose parameter is a concrete primitive; right site the consumer. A
+comparison holds two operands of one type, so any other opposite side
+can take `U` too: one that derives from `v` (`v < v`, a capture of it)
+or an open cell the comparison binds. One hop is built (see Hops).
 
 **5. Variant widening (the common case of 4).** Built: the widened
 scrutinee, directly under a select with no catch-all and no type-test
@@ -240,7 +242,8 @@ the argument falls with each one, and false findings cost triage time
 (sep25a: 42 of 49 typemorph flips were transform assumptions, not
 checker bugs). Built: one hop for family 4, an unannotated, non-⊥,
 concrete top-level `let w = e` whose `w` a reached use puts under an
-arithmetic or comparison operator or a field read gets `e` widened;
+arithmetic operator, a comparison opposite a literal, or a field read
+gets `e` widened;
 right site the `let` and every statement `w`'s new type meets (family
 6's closure). Open: longer chains, and hops for 5.
 

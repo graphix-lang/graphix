@@ -89,6 +89,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         return (out, 0);
     };
     let pre = mutate::preorder(&root);
+    let sizes = mutate::sizes(&root);
     // a candidate is its printed text only when that text reads back as
     // the candidate: a print that parses as another program probes that one
     let push = |out: &mut Vec<TmProbe>, noparse: &mut usize, kind, site, cand: &Expr| {
@@ -111,11 +112,16 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     }
     // block-wrap: `e` -> `{ let tm__0 = e; tm__0 }`; not on lambda
     // literals (let-extract's probe) or blocks, nor on `never()`: a `let`
-    // over ⊥ is typed by its writers, an open cell where `never()` is ⊥
+    // over ⊥ is typed by its writers, an open cell where `never()` is ⊥;
+    // nor under `&`, where `e` may be a place's root
     {
+        let under_ref = |i: usize| {
+            (0..i).any(|j| matches!(pre[j].kind, ExprKind::ByRef(_)) && i < j + sizes[j])
+        };
         let sites: Vec<usize> = (0..pre.len())
             .filter(|&i| {
-                value_pos(&pre[i].kind)
+                !under_ref(i)
+                    && value_pos(&pre[i].kind)
                     && !matches!(
                         pre[i].kind,
                         ExprKind::Lambda(_)
@@ -169,7 +175,6 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
         return (out, noparse);
     };
     let stmts: Vec<Expr> = stmts.to_vec();
-    let sizes = mutate::sizes(&root);
     let offsets: Vec<usize> = {
         let mut off = 1usize;
         let mut v = Vec::with_capacity(stmts.len());
@@ -181,10 +186,19 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     };
     // let-extract: `f(.., |x| body)` -> `let tm__0 = |x| body; f(.., tm__0)`.
     // Only at Apply sites reachable from the statement root through
-    // non-scoping nodes, else the lambda's captures would be stranded.
+    // non-scoping nodes, else the lambda's captures would be stranded;
+    // nor in a statement that binds names inside itself, which the
+    // hoisted lambda may read.
     {
         let mut found: Vec<(usize, usize)> = Vec::new();
         for (si, stmt) in stmts.iter().enumerate() {
+            let inner_binds = match &stmt.kind {
+                ExprKind::Bind(b) => leaks_binds(&b.value),
+                _ => leaks_binds(stmt),
+            };
+            if inner_binds {
+                continue;
+            }
             let mut idx = offsets[si];
             find_lambda_args(stmt, &mut idx, false, &mut |gi| found.push((si, gi)));
         }
@@ -214,8 +228,12 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 break;
             }
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
-            // a `let` over `never()` is an open cell, the value inlined ⊥
-            if b.rec || b.typ.is_some() || matches!(b.value.kind, ExprKind::Never { .. })
+            // a `let` over `never()` is an open cell, the value inlined ⊥;
+            // a value that binds names binds them for the statements between
+            if b.rec
+                || b.typ.is_some()
+                || matches!(b.value.kind, ExprKind::Never { .. })
+                || leaks_binds(&b.value)
             {
                 continue;
             }
@@ -457,15 +475,12 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
 /// on it. Only the call supplies that type, so a `let` of the
 /// lambda is refused by language rule, not by an ordering bug.
 fn reads_param_type(l: &LambdaExpr) -> bool {
-    let untyped: HashSet<&str> = l
-        .args
-        .iter()
-        .filter(|a| a.constraint.is_none())
-        .filter_map(|a| match &a.pattern {
-            StructurePattern::Bind(n) => Some(n.as_str()),
-            _ => None,
-        })
-        .collect();
+    let mut untyped: HashSet<&str> = HashSet::new();
+    for a in l.args.iter().filter(|a| a.constraint.is_none()) {
+        a.pattern.with_names(&mut |n| {
+            untyped.insert(n.as_str());
+        });
+    }
     let Either::Left(body) = &l.body else { return false };
     let is_param = |e: &Expr| {
         let mut e = e;
@@ -749,15 +764,18 @@ mod test {
     }
 
     #[test]
-    fn inline_keeps_places_and_seq_bodies() {
-        // (body, the let that must stay: its use is a place root, or its
-        // value holds a catch and its use sits in a seq body)
+    fn inline_keeps_places_seq_bodies_and_binders() {
+        // (body, the let that must stay: its use is a place root, its
+        // value holds a catch and its use sits in a seq body, or its value
+        // binds a name a statement before the use reads)
         for (body, kept) in [
             ("{ let a = [10, 20]; let r = &a[1]; let t = *r; t }", "let a"),
             (
                 "{ let v = { catch(e) 1; (in0 %? in0)? }; let t = in0; seq t { v } }",
                 "let v",
             ),
+            ("{ let s = let f = |i: i64| i * 0; f; s }", "let s"),
+            ("{ let a0 = [let f = 1, 2]; let a1 = [f]; (a0, a1) }", "let a0"),
         ] {
             let (probes, _) = probes(body, 8);
             assert!(
@@ -767,6 +785,17 @@ mod test {
                 "`{kept}` inlined: {body}"
             );
         }
+    }
+
+    #[test]
+    fn block_wrap_keeps_place_roots() {
+        let (probes, _) = probes("{ let a = [10, 20]; let r = &a[1]; *r }", 16);
+        assert!(
+            probes
+                .iter()
+                .all(|p| p.kind != TmKind::BlockWrap || p.body.contains("&a[1]")),
+            "a place root wrapped"
+        );
     }
 
     #[test]
@@ -880,6 +909,7 @@ mod test {
             "{ let k = i64:1; array::map([{a: k}], |r| (r).a) }",
             "{ let k = u8:1; array::map([{n: k, y: k}], |r| { r with y: k }) }",
             "{ let k = u8:1; array::fold([true], k, |acc, x| select (acc %? acc) { error as _ => acc, u8 as n => n }) }",
+            "{ let k = 1; array::map([((1, 2), k)], |(pt, n)| pt.0 + n) }",
         ] {
             let (probes, _) = probes(body, 8);
             assert!(
@@ -897,12 +927,17 @@ mod test {
 
     #[test]
     fn extract_does_not_cross_scopes() {
-        // the callback lambda sits inside another lambda's body
-        let body = "{ let f = |y: i64| array::map([i64:1], |x| x + y); f(i64:1) }";
-        let (probes, _) = probes(body, 8);
-        assert!(
-            probes.iter().all(|p| p.kind != TmKind::LetExtract),
-            "must not extract across a lambda boundary"
-        );
+        for body in [
+            // the callback lambda sits inside another lambda's body
+            "{ let f = |y: i64| array::map([i64:1], |x| x + y); f(i64:1) }",
+            // the statement binds `x` before the callback reads it
+            "{ let n = 1; array::map([let x = 10, 9], |y| x + y) }",
+        ] {
+            let (probes, _) = probes(body, 8);
+            assert!(
+                probes.iter().all(|p| p.kind != TmKind::LetExtract),
+                "must not extract out of the callback's scope: {body}"
+            );
+        }
     }
 }
