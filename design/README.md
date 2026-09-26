@@ -24,6 +24,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 |---|---|
 | `atomic_recursion.md` | evaluation is atomic within a cycle; containment is the cooperative interrupt |
 | `recursive_activations.md` | activations are collection slots; shrink = delete; no depth limit; `trait Collection` |
+| `tail_calls_are_calls.md` | the node-walk has no frames: every call is an activation; the JIT's native loop must answer the same (in progress) |
 | `kernel_instance_state.md` | per-instance / per-call-site / per-activation kernel words for firing exactness |
 | `collection_intrinsics.md` | MapQ/FoldQ as compiler nodes; inline CLIF loops |
 | `queue_fn.md` | `queuefn` |
