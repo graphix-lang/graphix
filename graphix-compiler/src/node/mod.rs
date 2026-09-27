@@ -783,14 +783,13 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     ctx.pending_settles.push(Vec::new());
     let res = f(ctx);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
-    for s in pending.iter() {
-        if let Err(e) = s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.exempt) {
-            if crate::dbgenv::gxdbg_swallow() {
-                eprintln!("SWALLOWED-LAZY-SETTLE at {}: {e:#}", s.spec);
-            }
-            log::trace!("bind: lazy-bound callee settle failed: {e:#}");
+    let _ = crate::PendingSettle::drain(&pending, &ctx.env, |spec, e| {
+        if crate::dbgenv::gxdbg_swallow() {
+            eprintln!("SWALLOWED-LAZY-SETTLE at {spec}: {e:#}");
         }
-    }
+        log::trace!("bind: lazy-bound callee settle failed: {e:#}");
+        Ok(())
+    });
     res
 }
 

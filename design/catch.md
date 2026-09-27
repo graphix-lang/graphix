@@ -72,7 +72,8 @@ flow — `design/seq_blocks.md` §7).
   a session scope so a toplevel catch covers later inputs.
 - `catch(e: T)` ascribes `T` to `e` in the handler. Coverage is
   unchanged: `T` must contain the accumulated throw union, snapshotted
-  before ascription and checked at typecheck1; an unannotated `catch(e)`
+  before ascription and checked with the check's settle (a
+  `PendingSettle::Contains`), never by elaboration; an unannotated `catch(e)`
   infers `e` from that union.
 - A handler in a callee stays in the callee; a handler's `?` rethrows
   to the previous install or the next one out.

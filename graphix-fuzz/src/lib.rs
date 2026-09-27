@@ -90,6 +90,9 @@ pub enum Outcome {
     /// trace budget within the wall-clock backstop, or the stack budget
     /// aborted it first.
     Timeout(Containment),
+    /// Accepted by the check alone ([`check_only`]): only the check side
+    /// of a [`Pair::Check`] holds it.
+    Checked,
 }
 
 /// What stopped a contained run. The two agree with each other: which
@@ -190,6 +193,7 @@ impl Outcome {
             Outcome::CompileErr(_) => 1,
             Outcome::RuntimeErr(_) => 2,
             Outcome::Timeout(_) => 3,
+            Outcome::Checked => 4,
         }
     }
 }
@@ -310,6 +314,38 @@ pub async fn compile_program(code: &str, mode: Mode) -> Option<String> {
             Some("stack budget exceeded: the runtime aborted".to_string())
         }
     }
+}
+
+/// Compile `code` the way `--check` does under [`CFlag::CheckOnly`]: the
+/// check alone, no elaboration, never run. `Err` is the refusal, or a
+/// runtime that failed to start.
+pub async fn check_only(code: &str, timeout: Duration) -> Result<(), String> {
+    let subj = Subject::parse(code, "test")?;
+    let (tx, _rx) = mpsc::channel(64);
+    let resolver = VfsResolver::new(subj.table.clone());
+    let registration = registration_image_source().await;
+    let flags = Mode::Interp.flags() | CFlag::CheckOnly;
+    let ctx = init_session_with_setup(
+        tx,
+        REGISTER,
+        vec![resolver],
+        flags,
+        registration,
+        None,
+        None,
+        None,
+        |_| {},
+    )
+    .await
+    .map_err(|e| format!("runtime init failed: {e:?}"))?;
+    let src = graphix_compiler::expr::Source::Internal(ArcStr::from(subj.compile_text()));
+    let res = match tokio::time::timeout(timeout, ctx.rt.check(src, None)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!("{e:?}")),
+        Err(_) => Err("check timed out".to_string()),
+    };
+    ctx.shutdown().await;
+    res
 }
 
 /// A compile-only measurement. `Rejected` is the compiler's verdict on
@@ -1170,6 +1206,10 @@ pub enum Pair {
     /// rejection) without saying `// expect: reject`: a rejection agrees
     /// with itself, so a pin that stopped compiling would otherwise pass.
     Rejected,
+    /// The check alone accepted (`interp` holds [`Outcome::Checked`]) a
+    /// program both engines' builds refused (`jit` holds the refusal):
+    /// elaboration refused what the check accepted, a type-system bug.
+    Check,
 }
 
 /// The label of one session run, for a finding's outcome fields.
@@ -1213,6 +1253,11 @@ impl Divergence {
                     "corpus pin rejected by both engines without `// expect: reject` \
                      (it no longer compiles or runs, so it pins nothing)"
                 }
+                (Pair::Check, _) => {
+                    "the check accepted what the build refused (elaboration refused \
+                     a program the definition and call-site checks passed: a \
+                     type-system bug)"
+                }
                 (Pair::Route, _) => {
                     "route bug (in-language call != embedder-callable dispatch, interp)"
                 }
@@ -1250,6 +1295,7 @@ impl Divergence {
             Pair::Route => ("in-language", "dispatch"),
             Pair::Twin => ("trace", "trace"),
             Pair::Rejected => ("interp", "jit"),
+            Pair::Check => ("check", "build"),
             Pair::Cold(m, r) => (
                 session_label(m, r, Session::NoCache),
                 session_label(m, r, Session::Cold),
@@ -1352,6 +1398,20 @@ pub async fn check_verdict(
         run_program(code, Mode::Interp, timeout),
         run_program(code, Mode::Jit, timeout),
     );
+    // a compile verdict owes nothing to values, so an excluded program
+    // is checked too
+    if let (Outcome::CompileErr(_), Outcome::CompileErr(_)) = (&interp, &jit)
+        && check_only(code, timeout).await.is_ok()
+    {
+        let d = Divergence {
+            code: code.to_string(),
+            interp: Outcome::Checked,
+            jit,
+            tier,
+            pair: Pair::Check,
+        };
+        return (Some(d), Verdict::Unsure);
+    }
     if tier == OracleTier::Excluded {
         return (None, Verdict::Excluded);
     }

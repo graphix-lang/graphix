@@ -927,7 +927,7 @@ impl<X: GXExt> GX<X> {
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
         self.ctx.begin_runtime_node(eid);
-        graphix_compiler::check_and_fuse(&mut self.ctx, &mut n)?;
+        graphix_compiler::check_and_fuse(&mut self.ctx, self.flags, &mut n)?;
         self.event.init = true;
         n.update(&mut self.ctx, &mut self.event);
         self.event.clear();

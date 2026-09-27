@@ -99,6 +99,10 @@ pub enum CFlag {
     /// Print each `seq`'s lowered machine to stdout as it is compiled
     /// (`graphix --expand`): the source position, then the program.
     ExpandSeq,
+    /// Stop after the check: typecheck0 and the settle it records, no
+    /// elaboration, analysis or fusion. The nodes compiled this way are
+    /// only for inspection, never for running.
+    CheckOnly,
 }
 
 /// Runtime control signals shared between a runtime handle and the
@@ -1558,17 +1562,48 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     }
 }
 
-/// A call site's deferred terminal settle; see [`ExecCtx::pending_settles`].
-pub(crate) struct PendingSettle {
-    /// The site's resolved signature.
-    pub(crate) ftype: FnType,
-    /// The site's return-type cell.
-    pub(crate) rtype: Option<typ::TVar>,
-    /// Cells (by address) exempt from settling: an omitted defaulted
-    /// argument's, and those the signature of an enclosing definition
-    /// reaches (generalized, settled by each call).
-    pub(crate) exempt: AHashSet<usize>,
-    pub(crate) spec: Arc<Expr>,
+/// What the check defers to its statement's settle; see
+/// [`ExecCtx::pending_settles`].
+pub(crate) enum PendingSettle {
+    /// A call site's terminal settle.
+    Site {
+        /// The site's resolved signature.
+        ftype: FnType,
+        /// The site's return-type cell.
+        rtype: Option<typ::TVar>,
+        /// Cells (by address) exempt from settling: an omitted defaulted
+        /// argument's, and those the signature of an enclosing definition
+        /// reaches (generalized, settled by each call).
+        exempt: AHashSet<usize>,
+        spec: Arc<Expr>,
+    },
+    /// `outer ⊇ inner`, judged once the frame's sites have settled.
+    Contains { outer: Type, inner: Type, spec: Arc<Expr> },
+}
+
+impl PendingSettle {
+    /// Run every site settle of `frame`, then every containment.
+    pub(crate) fn drain(
+        frame: &[PendingSettle],
+        env: &Env,
+        mut on_err: impl FnMut(&Arc<Expr>, anyhow::Error) -> Result<()>,
+    ) -> Result<()> {
+        for s in frame.iter() {
+            if let PendingSettle::Site { ftype, rtype, exempt, spec } = s
+                && let Err(e) = ftype.settle_terminal(env, rtype.as_ref(), exempt)
+            {
+                on_err(spec, e)?
+            }
+        }
+        for s in frame.iter() {
+            if let PendingSettle::Contains { outer, inner, spec } = s
+                && let Err(e) = outer.check_contains(env, inner)
+            {
+                on_err(spec, e)?
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A deferred import-existence check; see [`ExecCtx::pending_imports`].
@@ -1822,11 +1857,13 @@ pub fn compile<R: Rt, E: UserEvent>(
 }
 
 /// The passes every node runs after it is built and before it updates:
-/// both typecheck passes, the deferred settles, function-property
-/// analysis, typedef resolution-cell seeding (in both modes) and
-/// fusion. The caller restores its env on `Err`.
+/// the check (typecheck0 and its settle), elaboration (typecheck1 and
+/// its settle), function-property analysis, typedef resolution-cell
+/// seeding (in both modes) and fusion; only the check under
+/// [`CFlag::CheckOnly`]. The caller restores its env on `Err`.
 pub fn check_and_fuse<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,
 ) -> Result<()> {
     let st = Instant::now();
@@ -1837,6 +1874,9 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
         return Err(e);
     }
     drop(p);
+    if flags.contains(CFlag::CheckOnly) {
+        return Ok(());
+    }
     let p = profile::phase(Phase::Typecheck1);
     if let Err(e) = node.typecheck1(ctx) {
         ctx.pending_settles.clear();
@@ -1868,10 +1908,7 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
-    for s in pending.iter() {
-        s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.exempt).at(&*s.spec)?;
-    }
-    Ok(())
+    PendingSettle::drain(&pending, &ctx.env, |spec, e| Err(e.at(&**spec)))
 }
 
 /// A `use` whose name did not exist at its compile position must name
@@ -1993,7 +2030,7 @@ fn compile_top<R: Rt, E: UserEvent>(
     if let Err(err) = check_pending_imports(ctx) {
         return Err(abandon_stmt(ctx, node, env, err));
     }
-    if let Err(e) = check_and_fuse(ctx, &mut node) {
+    if let Err(e) = check_and_fuse(ctx, flags, &mut node) {
         return Err(abandon_stmt(ctx, node, env, e));
     }
     // An attribute the fusion walk neither dispatched nor absorbed

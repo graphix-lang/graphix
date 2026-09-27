@@ -179,6 +179,7 @@ fn render(o: &Outcome) -> String {
         Outcome::CompileErr(e) => format!("CompileErr({})", e.replace('\n', " | ")),
         Outcome::RuntimeErr(e) => format!("RuntimeErr({})", first_line(e)),
         Outcome::Timeout(c) => format!("Timeout({c:?})"),
+        Outcome::Checked => "Checked".to_string(),
     }
 }
 
@@ -625,6 +626,7 @@ async fn main() -> Result<()> {
                             compiled += 1;
                             wedged += 1;
                         }
+                        Outcome::Checked => unreachable!("a run never answers Checked"),
                         Outcome::Trace(t) => {
                             compiled += 1;
                             if !t.epochs.iter().any(|e| e.capped) {
@@ -699,6 +701,9 @@ async fn main() -> Result<()> {
                 graphix_fuzz::Outcome::Timeout(_) => std::process::exit(4),
                 graphix_fuzz::Outcome::Trace(_)
                 | graphix_fuzz::Outcome::RuntimeErr(_) => std::process::exit(0),
+                graphix_fuzz::Outcome::Checked => {
+                    unreachable!("a run never answers Checked")
+                }
             }
         }
         // typemorph child: base program on stdin, verdict lines to the

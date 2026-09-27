@@ -504,7 +504,9 @@ not a gap count.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
   per-cycle trace oracle, each engine also no-cache vs cold-image vs
-  warm-image (`GRAPHIX_FUZZ_SESSIONS`); every run on the shell's script
+  warm-image (`GRAPHIX_FUZZ_SESSIONS`), and a program both builds refuse
+  also against the check alone (`Pair::Check`: elaboration refused what
+  the check passed); every run on the shell's script
   path (`GXConfig::program`), never the REPL's `rt.compile`; a corpus
   pin both engines reject is a regression unless it says
   `// expect: reject`; `check`/`run`/`generate`/`fuzz`/`minimize`/

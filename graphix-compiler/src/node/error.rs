@@ -387,7 +387,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                 let contents = tv.binding().unwrap_or(Type::Bottom);
                 self.thrown = Some(contents);
             }
-            tv.bind(t);
+            tv.bind(t.clone());
+            // `T` must cover every error the region throws, judged with
+            // the check's settle
+            let inner = self.thrown.clone().unwrap_or(Type::Bottom);
+            let spec = Arc::new(self.spec.clone());
+            ctx.pending_settles
+                .last_mut()
+                .expect("settle frame")
+                .push(crate::PendingSettle::Contains { outer: t, inner, spec });
         }
         wrap!(self.handler, self.handler.typecheck0(ctx))?;
         let Some(abort) = &mut self.seq_abort else { return Ok(()) };
@@ -433,16 +441,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
             if let Some(manual) = abort.manual_mut() {
                 wrap!(manual, manual.typecheck1(ctx))?;
             }
-        }
-        // `T` must cover every error the region throws (the typecheck0
-        // snapshot); a call site's `ftype.throws` supersets later
-        // instance interiors, so this holds for runtime-bound callees
-        if let Some(t) = &self.constraint {
-            let accumulated = self
-                .thrown
-                .as_ref()
-                .ok_or_else(|| anyhow!("BUG: catch ascription snapshot missing"))?;
-            wrap!(self, t.check_contains(&ctx.env, accumulated))?;
         }
         Ok(())
     }

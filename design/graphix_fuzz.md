@@ -182,6 +182,17 @@ puts it under a `do` block, and a bug in that difference agreed with
 itself. A batch child runs each subject on fresh runtimes; what it
 amortizes is the registration image, built once per process.
 
+**Check vs build (the elaboration axis).** When both engines' builds
+refuse a program, `check` compiles it once more under
+`CFlag::CheckOnly` (`check_only`: the `--check` path, typecheck0 and
+its settle, no elaboration, never run). If the check alone accepts, the
+build's refusal came from elaboration, which must never refuse what the
+definition and call-site checks passed: a type-system bug
+(`Pair::Check`, `check: Checked`). A compile verdict owes nothing to
+values, so it runs at every tier, `Excluded` included. The reverse
+cannot happen: the build runs the check first. Every committed reject
+pin passes through it in `regress`.
+
 **Sessions (the image axis).** Besides the engine pair (the `nocache`
 runs), `check` runs each engine three ways: `nocache` (compiled, no
 image machinery), `cold` (compiled and written to a program image) and

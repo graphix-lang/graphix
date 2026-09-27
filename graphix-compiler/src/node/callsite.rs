@@ -842,7 +842,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Type::TVar(tv) => Some(tv.clone()),
             _ => None,
         };
-        crate::PendingSettle {
+        crate::PendingSettle::Site {
             ftype: ftype.clone(),
             rtype,
             exempt,

@@ -1092,7 +1092,9 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         let mut sig: LPooled<AHashSet<usize>> = LPooled::take();
         self.sig.reached_cells(&mut sig);
         for s in frame.iter_mut() {
-            s.exempt.extend(sig.iter().copied());
+            if let crate::PendingSettle::Site { exempt, .. } = s {
+                exempt.extend(sig.iter().copied());
+            }
         }
         ctx.pending_settles.last_mut().expect("root settle frame").extend(frame);
         ctx.def_gate_depth -= 1;
