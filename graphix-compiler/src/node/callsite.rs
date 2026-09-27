@@ -887,11 +887,35 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let instance_ftype = apply.typ().as_ref().clone();
         // `site_ftype` is a deep clone: the instance's inferred return
         // must be unified back into the site's live rtype cell.
-        if let Some(site_ft) = self.ftype.as_ref()
-            && let Err(e) = site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
-        {
-            apply.delete(ctx);
-            return Err(e.at(self.fnode.spec()));
+        if let Some(site_ft) = self.ftype.as_ref() {
+            let before =
+                dbgenv::graphix_elab_audit().then(|| site_ft.rtype.resolve_tvars());
+            if let Err(e) = site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
+            {
+                if ctx.def_gate_depth == 0 {
+                    super::lambda::elab_audit::report(
+                        "unify-back",
+                        &self.spec,
+                        format_args!("{e:#}"),
+                    );
+                }
+                apply.delete(ctx);
+                return Err(e.at(self.fnode.spec()));
+            }
+            if let Some(before) = before
+                && ctx.def_gate_depth == 0
+            {
+                let after = site_ft.rtype.resolve_tvars();
+                if before != after {
+                    super::lambda::elab_audit::report(
+                        "unify-back",
+                        &self.spec,
+                        format_args!(
+                            "narrowed the site's return from {before} to {after}"
+                        ),
+                    );
+                }
+            }
         }
         Ok((apply, instance_ftype))
     }

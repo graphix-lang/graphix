@@ -303,18 +303,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     ) -> Result<()> {
         let mut p = profile::phase(Phase::InstanceCheck);
         profile::instance(&mut p, self.instance_id, self.id, self.body.spec());
-        for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter()) {
-            wrap!(arg, arg.typecheck0(ctx))?;
-            wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
-        }
-        let env = self.env.clone();
-        ctx.with_restored(env, |ctx| {
-            wrap!(self.body, self.body.typecheck0(ctx))?;
-            wrap!(
-                self.body,
-                self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
-            )
-        })?;
+        elab_audit::enter();
+        let res = (|| {
+            for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter())
+            {
+                wrap!(arg, arg.typecheck0(ctx))?;
+                wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
+            }
+            let env = self.env.clone();
+            ctx.with_restored(env, |ctx| {
+                wrap!(self.body, self.body.typecheck0(ctx))?;
+                wrap!(
+                    self.body,
+                    self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
+                )
+            })
+        })();
+        elab_audit::leave(ctx.def_gate_depth, "typecheck0", self.body.spec(), &res);
+        res?;
         profile::instance_signature(self.instance_id, &self.typ, None);
         Ok(())
     }
@@ -327,8 +333,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
     ) -> Result<()> {
+        elab_audit::enter();
         let env = self.env.clone();
-        ctx.with_restored(env, |ctx| wrap!(self.body, self.body.typecheck1(ctx)))
+        let res =
+            ctx.with_restored(env, |ctx| wrap!(self.body, self.body.typecheck1(ctx)));
+        elab_audit::leave(ctx.def_gate_depth, "typecheck1", self.body.spec(), &res);
+        res
     }
 
     fn emit_clif(
@@ -1246,5 +1256,47 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
 
     fn view(&self) -> NodeView<'_, R, E> {
         NodeView::Lambda(self)
+    }
+}
+
+/// `GRAPHIX_ELAB_AUDIT`: reports every error an instance's check raises
+/// outside a definition gate, once, at the innermost instance that
+/// raised it. The definition and call-site checks are meant to leave
+/// elaboration nothing to refuse.
+pub(crate) mod elab_audit {
+    use crate::{dbgenv, expr::Expr};
+    use anyhow::Result;
+    use std::cell::Cell;
+
+    thread_local! {
+        static REPORTED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn enter() {
+        if dbgenv::graphix_elab_audit() {
+            REPORTED.set(false)
+        }
+    }
+
+    pub(crate) fn leave<T>(gate_depth: usize, kind: &str, spec: &Expr, res: &Result<T>) {
+        if let Err(e) = res
+            && dbgenv::graphix_elab_audit()
+            && gate_depth == 0
+            && !REPORTED.replace(true)
+        {
+            report(kind, spec, format_args!("{e:#}"))
+        }
+    }
+
+    pub(crate) fn report(kind: &str, spec: &Expr, what: std::fmt::Arguments) {
+        let text = spec.to_string().replace('\n', " ");
+        let text = text.get(..160).unwrap_or(&text);
+        eprintln!(
+            "ELAB-AUDIT {kind} at {:?}:{} `{text}`: {what}",
+            spec.ori.source, spec.pos
+        );
+        if std::env::var_os("GRAPHIX_ELAB_AUDIT").is_some_and(|v| v == "bt") {
+            eprintln!("{}", std::backtrace::Backtrace::force_capture());
+        }
     }
 }

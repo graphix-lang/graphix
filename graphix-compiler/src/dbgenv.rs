@@ -23,6 +23,7 @@ dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
 dbg_flag!(graphix_dbg_tval, "GRAPHIX_DBG_TVAL");
 dbg_flag!(graphix_dump_clif, "GRAPHIX_DUMP_CLIF");
+dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
 dbg_flag!(graphix_profile, "GRAPHIX_PROFILE");
 dbg_flag!(graphix_profile_instances, "GRAPHIX_PROFILE_INSTANCES");
 dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
