@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8cb582cc.js";
+            window.path_to_searchindex_js = "../searchindex-8512fca7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -479,58 +479,26 @@ need to create here is a function call site, that will handle all the
 details of late binding, optional arguments, default args, etc. The
 <code>genn</code> module is specifically for generating nodes.</p>
 <h3 id="typecheck"><a class="header" href="#typecheck">Typecheck</a></h3>
-<p>Because we generated code, we have to hook into the <code>typecheck</code>
-compiler phase and make sure the type checker runs on it. This
-requires that we implement the <code>typecheck</code> method. In our case all we
-have to do is typecheck our generated call site.</p>
-<h4 id="two-phase-typecheck-for-higher-order-functions"><a class="header" href="#two-phase-typecheck-for-higher-order-functions">Two-Phase Typecheck for Higher-Order Functions</a></h4>
-<p>Higher-order builtins <strong>must</strong> return <code>TypecheckResult::NeedsCallSite</code>
-and handle the <code>TypecheckPhase::CallSite(resolved)</code> phase. This is
-required so that type information from the call site propagates
-through to the inner predicate function. Without this, if the user
-passes a builtin like <code>json::read</code> that requires a concrete return
-type, the type checker won’t be able to verify or initialize it.</p>
-<p>The pattern is:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>fn typecheck(
-    &amp;mut self,
-    ctx: &amp;mut ExecCtx&lt;R, E&gt;,
-    _from: &amp;mut [Node&lt;R, E&gt;],
-    phase: TypecheckPhase&lt;'_&gt;,
-) -&gt; anyhow::Result&lt;TypecheckResult&gt; {
-    // During CallSite phase, update stored types from the resolved FnType
-    if let TypecheckPhase::CallSite(resolved) = phase {
-        self.mftyp = match &amp;resolved.args[PRED_INDEX].typ {
-            Type::Fn(ft) =&gt; ft.clone(),
-            t =&gt; bail!("expected a function not {t}"),
-        };
-        // Update any other stored types (element type, etc.)
-    }
-    // Create and typecheck the inner CallSite — this is critical
-    // because it pushes deferred checks that cascade type information
-    // to inner builtins (e.g. json::read getting its cast_typ set)
-    let (_, node) = genn::bind(ctx, &amp;self.scope.lexical, "x", self.etyp.clone(), self.top_id);
-    let ft = self.mftyp.clone();
-    let fnode = genn::reference(ctx, self.predid, Type::Fn(ft.clone()), self.top_id);
-    let mut node = genn::apply(fnode, self.scope.clone(), vec![node], &amp;ft, self.top_id);
-    node.typecheck(ctx)?;
-    node.delete(ctx);
-    Ok(TypecheckResult::NeedsCallSite)
-}
-<span class="boring">}</span></code></pre>
-<p>The <code>NeedsCallSite</code> return value tells the compiler to store this
-builtin for deferred type checking. When the outer call site’s
-deferred check runs, it calls <code>typecheck(CallSite(resolved))</code> with
-the fully resolved function type. The builtin updates its stored
-predicate type (<code>mftyp</code>) from the resolved type, then creates and
-typechecks an inner <code>CallSite</code> node. This inner typecheck pushes its
-own deferred checks, cascading type information to any inner builtins
-that need it.</p>
-<p>For builtins that store a persistent predicate node (like <code>filter</code> or
-<code>group</code>), the CallSite phase should rebuild the predicate node with
-the resolved types, since the original was built with unresolved type
-variables.</p>
+<p>An <code>Apply</code> has two typecheck hooks, both with defaults that do nothing.
+<code>typecheck0(ctx, from)</code> runs once the argument nodes have typechecked;
+a builtin that generated nodes (the predicate call site above)
+typechecks them here. <code>typecheck1(ctx, from, resolved)</code> runs after
+static resolution with the call site’s resolved signature, and it is
+where a builtin learns the types it acts on: a callback’s signature, an
+element type, a cast target.</p>
+<h4 id="type-directed-builtins"><a class="header" href="#type-directed-builtins">Type-directed builtins</a></h4>
+<p>A builtin whose behaviour depends on a type the program chooses, such as
+<code>str::parse</code> or <code>json::read</code> choosing what to decode, declares that type
+<code>Concrete</code> in its signature, in the <code>.gx</code> and the <code>.gxi</code> alike:</p>
+<pre><code class="language-graphix">let parse = 'b: Concrete |s: string| -&gt; Result&lt;'b, `ParseError(string)&gt; 'str_parse
+val parse: fn&lt;'b: Concrete&gt;(s: string) -&gt; Result&lt;'b, `ParseError(string)&gt;;
+</code></pre>
+<p>The type checker then refuses every program in which <code>'b</code> is not fully
+known where it settles, at the call or inside a function that is never
+called, and a generic wrapper (<code>let p = |s| str::parse(s)</code>) carries the
+requirement to its own callers. The builtin’s <code>typecheck1</code> only extracts
+the type with <code>extract_cast_type(Some(resolved))</code>. It never refuses: a
+program that type checked has a known type there.</p>
 <h3 id="bindids-and-refs"><a class="header" href="#bindids-and-refs">BindIds and Refs</a></h3>
 <p><code>BindId</code> is a very fundamental type in compiler guts. The
 <a href="https://docs.rs/graphix-compiler/latest/graphix_compiler/struct.Event.html"><code>Event</code></a>

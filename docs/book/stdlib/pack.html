@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8cb582cc.js";
+            window.path_to_searchindex_js = "../searchindex-8512fca7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -181,7 +181,7 @@ deserialization.</p>
 <pre><code class="language-graphix">/// Decode a value from packed binary bytes.
 ///
 /// To decode from a stream, read it first — `pack::read(Read::read_all(f)?)`.
-val read: fn(input: bytes) -&gt; Result&lt;'b, [`PackErr(string), `InvalidCast(string)]&gt;;
+val read: fn&lt;'b: Concrete&gt;(input: bytes) -&gt; Result&lt;'b, [`PackErr(string), `InvalidCast(string)]&gt;;
 
 /// Encode a value to packed binary bytes.
 ///

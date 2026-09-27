@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8cb582cc.js";
+            window.path_to_searchindex_js = "../searchindex-8512fca7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -181,7 +181,7 @@ inferred from the type annotation at the call site.</p>
 <pre><code class="language-graphix">/// Parse JSON from a string or bytes.
 ///
 /// To parse a stream, read it first — `json::read(Read::read_all(f)?)`.
-val read: fn(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
+val read: fn&lt;'b: Concrete&gt;(input: [string, bytes]) -&gt; Result&lt;'b, [`JsonErr(string), `InvalidCast(string)]&gt;;
 
 /// Serialize a value to a JSON string.
 val write_str: fn(?#pretty: bool, value: Any) -&gt; Result&lt;string, `JsonErr(string)&gt;;
