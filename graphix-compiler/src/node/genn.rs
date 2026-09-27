@@ -13,7 +13,6 @@ use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Value;
-use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::sync::LazyLock;
 use triomphe::Arc;
@@ -67,7 +66,7 @@ pub fn apply<R: Rt, E: UserEvent>(
     top_id: ExprId,
 ) -> Node<R, E> {
     let ftype = typ.reset_tvars();
-    ftype.alias_tvars(&mut LPooled::take());
+    ftype.freeze_shared_tvars();
     apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
 }
 

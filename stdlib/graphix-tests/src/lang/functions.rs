@@ -2248,3 +2248,20 @@ run!(extracted_filter_map_callback, EXTRACTED_FILTER_MAP_CALLBACK, |v: Result<
 >| {
     format!("{}", v.unwrap()) == "[[i64:1, i64:1], [i64:2, i64:2]]"
 });
+
+// A callback's argument type holding another function's `'b` stays apart
+// from the collection's own `'b`: type variables are cells, not names.
+const SAME_NAMED_TVAR_IN_CALLBACK_ARG: &str = r#"
+{
+  let g = |x: 'b| x;
+  let a = array::map([100, g, 3], |x| [x, 1]);
+  let b = array::filter_map([100, array::find_map, 3], |x| [x, 1]);
+  (array::len(a), array::len(b))
+}
+"#;
+
+run!(same_named_tvar_in_callback_arg, SAME_NAMED_TVAR_IN_CALLBACK_ARG, |v: Result<
+    &Value,
+>| {
+    format!("{}", v.unwrap()) == "[i64:3, i64:3]"
+}; graphix_package_core::testing::FuseExpect::None);

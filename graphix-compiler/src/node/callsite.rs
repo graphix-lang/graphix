@@ -1815,7 +1815,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 } else {
                     fresh = true;
                     let ftype = ftype.reset_tvars();
-                    ftype.alias_tvars(&mut LPooled::take());
+                    ftype.freeze_shared_tvars();
                     ftype
                 };
                 self.ftype = Some(ftype.clone());

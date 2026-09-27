@@ -659,11 +659,12 @@ impl TVar {
 // plain recursion (chiefly whether `Ref` params are walked); the rest
 // routes through `Type::try_for_each_child` / `Type::cow_children`.
 impl Type {
-    pub fn unfreeze_tvars(&self) {
+    /// Every type variable the structure holds, bindings not entered.
+    pub(crate) fn tvar_occurrences(&self, out: &mut Vec<TVar>) {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => tv.write().frozen = false,
-            Type::Fn(ft) => ft.unfreeze_tvars(),
-            t => t.for_each_child(&mut |c| c.unfreeze_tvars()),
+            Type::TVar(tv) => out.push(tv.clone()),
+            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.tvar_occurrences(out)),
+            t => t.for_each_child(&mut |c| c.tvar_occurrences(out)),
         })
     }
 

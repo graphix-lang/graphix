@@ -1,4 +1,3 @@
-// expect: reject
 // bisect: NONDETERMINISTIC COMPILE LIVENESS (typechecker deadlock /
 // stack overflow, ~2-4 of 6 runs, ASLR-order dependent via the Set
 // sort) — soak jul06h crash_000000. A polymorphic BUILTIN as a
@@ -13,4 +12,7 @@
 // checks its witnesses; TVar::{alias,copy} occurs-check cell merges
 // (THE cycle vectors); TVar Display carries a print-stack guard. Now
 // compiles deterministically, 24/24, and both modes agree.
+// The rejection that remained was false: the collection's callback
+// site aliased its type's variables by NAME, joining find_map's 'b
+// with filter_map's. Accepted since 2026-09-27; both modes agree.
 {let a = [i64:100, array::find_map, i64:3]; array::filter_map(a, |x| [x, i64:1 * i64:1])}

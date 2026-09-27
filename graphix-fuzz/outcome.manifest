@@ -471,7 +471,7 @@ trace	twochannel-jul2026/t1_taint_leak.gx
 trace	twochannel-jul2026/t4_small.gx
 trace	twochannel-jul2026/t6_nontail_rec.gx
 trace	twochannel-jul2026/v1_recursion.gx
-reject	typecheck-liveness-jul2026/01_builtin_as_value_filter_map.gx
+trace	typecheck-liveness-jul2026/01_builtin_as_value_filter_map.gx
 reject	typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx
 reject	typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx
 reject	typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx

@@ -686,8 +686,21 @@ impl FnType {
         self.for_each_part(&mut |t, _| t.alias_tvars(known))
     }
 
-    pub fn unfreeze_tvars(&self) {
-        self.for_each_part(&mut |t, _| t.unfreeze_tvars())
+    /// Freeze each type variable whose cell the signature holds more than
+    /// once: a frozen variable keeps its cell when it unifies with an
+    /// unfrozen one.
+    pub fn freeze_shared_tvars(&self) {
+        let mut occurrences: LPooled<Vec<TVar>> = LPooled::take();
+        self.for_each_part(&mut |t, _| t.tvar_occurrences(&mut occurrences));
+        let mut count: LPooled<AHashMap<usize, usize>> = LPooled::take();
+        for tv in occurrences.iter() {
+            *count.entry(tv.cell_addr()).or_default() += 1;
+        }
+        for tv in occurrences.iter() {
+            if count[&tv.cell_addr()] > 1 {
+                tv.freeze()
+            }
+        }
     }
 
     /// Conjuncts are visited in their canonical form: a tvar in a
