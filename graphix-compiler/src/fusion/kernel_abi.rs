@@ -217,7 +217,10 @@ fn abi_kind_d(t: &Type, seen: Option<&Seen>) -> Option<AbiKind> {
             if let Some(prim) = PrimType::from_type(resolved) {
                 return Some(AbiKind::Scalar(prim));
             }
-            return None;
+            if p.is_empty() {
+                return None;
+            }
+            return Some(AbiKind::Value);
         }
         if let Type::Set(members) = resolved {
             if let Some(succ) = option_result_success(members) {
@@ -394,9 +397,12 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                     }
                     return Err(Unsupported);
                 }
-                PrimType::from_type(resolved)
-                    .map(|_| Type::Primitive(*p))
-                    .ok_or(Unsupported)
+                // A primitive with no register form (a varint, a decimal,
+                // an error) and a union of several are one two-word Value.
+                if p.is_empty() {
+                    return Err(Unsupported);
+                }
+                Ok(Type::Primitive(*p))
             }
             Type::Array(inner) => {
                 let inner = freeze_for_abi_d(inner, seen)?;

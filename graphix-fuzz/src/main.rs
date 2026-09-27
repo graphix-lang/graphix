@@ -1178,6 +1178,33 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          f(`C([x, i64:1, i64:2], `C([x, i64:3], `N)), x % i64:2, i64:0)\n",
     ),
     (
+        // a fused select's owned bind of a nullable's non-scalar payload,
+        // taken and masked by a guard every tick
+        "select-nullable-bind",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let s: [null, string] = select x % i64:3 { i64:0 => null, _ => \"abc[x]\" };\n\
+         let a: [null, Array<i64>] = select x % i64:2 { i64:0 => null, _ => [x, x] };\n\
+         let n = select s { null as _ => i64:0, s if str::len(s) > i64:4 => i64:1, s => str::len(s) };\n\
+         let m = select a { null as _ => i64:0, a => array::len(a) };\n\
+         n + m\n",
+    ),
+    (
+        // owned subslice and non-scalar element binds in a fused tail
+        // loop over a fresh array every tick
+        "select-slice-binds",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let rec g = |a: Array<string>, acc: i64| -> i64 select a {\n\
+             [] => acc,\n\
+             [s, tail..] if str::len(s) > i64:3 => g(tail, acc + i64:1),\n\
+             [s, tail..] => g(tail, acc + str::len(s))\n\
+         };\n\
+         g([\"a[x]\", \"bc[x]\", \"d\"], i64:0)\n",
+    ),
+    (
         // a recursion that shrinks and regrows every tick: each fresh
         // activation's lazy bind settles its own types
         "regrown-recursion",

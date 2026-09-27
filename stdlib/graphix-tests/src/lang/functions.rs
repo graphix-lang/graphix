@@ -317,7 +317,7 @@ const TAIL_STATELESS_COLLAPSES: &str = r#"
 run!(tail_stateless_collapses, TAIL_STATELESS_COLLAPSES, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(60))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 const RECURSIVE_LAMBDA0: &str = r#"
 {
@@ -1166,7 +1166,7 @@ const ARM_UNION_KEEPS_BOTH_TVARS: &str = r#"
 
 run!(arm_union_keeps_both_tvars, ARM_UNION_KEEPS_BOTH_TVARS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // An unannotated variant-returning non-tail rec lambda infers its union.
 const REC_VARIANT_UNION_INFERS: &str = r#"

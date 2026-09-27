@@ -182,12 +182,12 @@ const PRODUCT: &str = r#"
 }
 "#;
 
-// None: `product` over a heterogeneous `Array<Number>`; the fixture
-// mixes i64 and f64.
+// `product` over a heterogeneous `Array<Number>`: the literal fuses (a
+// primitive union is a Value), `product` itself node-walks.
 run!(product, PRODUCT, |v: Result<&Value>| match v {
     Ok(Value::F64(21.0)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const DIVIDE: &str = r#"
 {
@@ -273,11 +273,10 @@ const INDEX: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — the body does not fuse into a kernel yet.
 run!(index, INDEX, |v: Result<&Value>| match v {
     Ok(Value::I64(3)) => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SLICE: &str = r#"
 {

@@ -603,12 +603,11 @@ const REC_BLOCK_MULTI_MEMBER_COLLAPSES: &str = r#"
 }
 "#;
 
-// ASPIRE: Jit — union/string cross-kernel return.
 run!(
     rec_block_multi_member_collapses,
     REC_BLOCK_MULTI_MEMBER_COLLAPSES,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "a");
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // A genuine infinite type through the cell is still refused.

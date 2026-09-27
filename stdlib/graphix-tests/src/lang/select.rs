@@ -399,7 +399,7 @@ const SELECT_SLICE_COVER_SUFFIX: &str = r#"
 
 run!(select_slice_cover_suffix, SELECT_SLICE_COVER_SUFFIX, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(90)))
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 const SELECT_SLICE_COVER_PREFIX: &str = r#"
 {

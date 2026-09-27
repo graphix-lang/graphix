@@ -649,14 +649,18 @@ node graph IS the IR — there is no parallel typed IR
   the module retires whole and the region rebuilds in a fresh one; a
   module's code is freed when the module and every kernel compiled into
   it have dropped (each `WrappedKernel` holds its code). Kernel ABI: kind-grouped params from
-  `KernelSig::abi_params`; recursive types and abstract types are opaque
-  2-word values (`design/unified_value_abi.md`).
+  `KernelSig::abi_params`; recursive types, abstract types, primitive
+  unions and the primitives with no register form (varints, decimal,
+  error) are opaque 2-word values (`design/unified_value_abi.md`).
 
 Coverage today: scalar arithmetic/comparison/logic/casts, producers and
 accessors, `?`/`$`, the eight array HOFs as native loops (nesting
 included), structural select destructuring with scalar and variant
-payload binds, `never()` arms as bottom productions of the merge
-shape, or-patterns, list patterns, tail loops over any kernel param
+payload binds, owned binds of a nullable's payload, of a slice's rest,
+head or whole (`[x, tail..]`, `all@ [..]`) and of non-scalar elements,
+tag tests and binds over a primitive union, `never()` arms as bottom
+productions of the merge shape, or-patterns, list patterns, tail loops
+over any kernel param
 kind, every fast-fn builtin and non-inline cast, cross-kernel lambda
 calls, trait default bodies. A subtree that does not fuse whole
 descends: every part that calls a function (a lambda call, a collection

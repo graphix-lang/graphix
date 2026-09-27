@@ -1,7 +1,7 @@
 # Tail calls are calls
 
-Status: ruled 2026-09-26 (Eric). Steps 1 and 2 built 2026-09-26; step 3
-G1–G3 built 2026-09-26, G4 in progress.
+Status: ruled 2026-09-26 (Eric). Built 2026-09-26/27: steps 1–3,
+G1–G4.
 Pins: `findings/tail-calls-are-calls-sep2026/` (the sep25b over-fire),
 `lang::functions::{tail_depth_catches_up_an_outer_write, tail_loop_deep}`
 (the deep loop is JIT-only: the node-walk recurses past the stack
@@ -117,10 +117,28 @@ embedder, and the fuzzer's interp engine are the whole cost.
      at run time only and leaves compile-time scope to its callers
      (`emit_tail_rebind_jump`). Pin:
      `lang::fusion::nested_tail_select_keeps_outer_binds`; leak witness
-     `nested-tail-select-payload`. Open: a slice rest bind, a nullable
-     bind of a non-scalar payload, a primitive-union result, and a
-     cast from a varint wire type (`v32`/`z32`/`v64`/`z64` have no
-     kernel representation; the corpus case was `cast<i64>(z64:1)`).
+     `nested-tail-select-payload`. The rest, built: a nullable's
+     non-scalar payload binds as an owned local (`NullableValue`); a
+     slice's rest, head or whole binds as an owned subslice
+     (`Subslice`), and a non-scalar element of an array, tuple or struct
+     pattern as an owned element (`ElemValue`), each read total, so a
+     guard's masked install of a short or mismatched scrutinee holds a
+     drop-safe default, which also lets an untested bind over a result
+     union read its payload; a union of several primitives and every
+     primitive with no register form (the varints, decimal, error) are
+     one two-word Value (`design/unified_value_abi.md`), so a loop may
+     return `i64 | f64`, a select tests and binds a union's members by
+     tag, and a varint passes through and casts natively (its
+     arithmetic node-walks). Pins: `lang::fusion::{nullable_value_binds,
+     slice_rest_binds, non_scalar_element_binds, primitive_union_values,
+     varint_values, result_union_binds}`; leak witnesses
+     `select-nullable-bind`, `select-slice-binds`.
+
+What stays out of native code, beside the rule row: a union of null
+and variants (`[null, `A(i64), `B]` has no kernel form), a varint or
+union operand of arithmetic, and a length ladder nested in a tuple
+pattern is not counted as coverage by the checker (so such a select
+needs a catch-all arm).
 
 What users are told (the book's performance chapter): a recursive
 function whose body fuses runs as a native loop; one that does not

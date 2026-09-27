@@ -24,6 +24,14 @@ encoding:
   - strings: the `ArcStr` bits (identical to `Value::String`'s
     payload);
   - variant / nullable / bare-value shapes: the `Value` payload word.
+    A bare value is anything without a register or composite form: a
+    map, an error, an abstract, a list, a datetime/duration/bytes, a
+    varint (`v32`/`z32`/`v64`/`z64`), a decimal, and a union of several
+    primitives (`[i64, f64]`, `Number`), whose arms merge by the same
+    boxing a scalar gets at any value seam. A select over a primitive
+    union tests the value's tag against each primitive of an arm's
+    predicate. Arithmetic takes scalars only, so a varint or a union
+    operand keeps its operator in the node-walk.
 
 Every kernel returns two words. Because every seam
 pair IS a tagged `Value`, the runtime decodes every kernel result

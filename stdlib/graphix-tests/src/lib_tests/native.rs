@@ -263,16 +263,16 @@ async fn native_hof_composite_leaf_ok() {
     );
 }
 
-// A named rest binding (`[x, rest..]`) still de-fuses, so `#[native]`
-// on it is a compile error.
+// A named rest binding (`[x, rest..]`) is an owned subslice arm local,
+// so `#[native]` on it compiles.
 #[tokio::test]
-async fn native_select_named_rest_defuses() {
+async fn native_select_named_rest_fuses() {
     let prog = "{ let a = [1, 2, 3]; \
                 #[native] select a { [x, rest..] => x + array::len(rest), _ => 0 } }";
     let r = eval(prog, crate::TEST_REGISTER).await;
     assert!(
-        r.is_err(),
-        "a named-rest select must still de-fuse (owned subslice arm local), got {:?}",
+        matches!(r.as_ref().map(|(v, _)| v), Ok(Value::I64(3))),
+        "a named-rest select must fuse, got {:?}",
         r.map(|(v, _)| v)
     );
 }

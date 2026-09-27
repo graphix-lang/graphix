@@ -1912,3 +1912,124 @@ run!(nested_tail_select_keeps_outer_binds, NESTED_TAIL_SELECT_KEEPS_OUTER_BINDS,
     },
     _ => false,
 }; FuseExpect::Jit);
+
+// A nullable's non-scalar payload binds natively: a string, an array, a
+// struct; the guard's masked bind of a null is a drop-safe default.
+const NULLABLE_VALUE_BINDS: &str = r#"
+{
+  let s: [null, string] = "abc";
+  let z: [null, string] = null;
+  let a: [null, Array<i64>] = [1, 2, 3];
+  let t: [null, {x: i64, y: string}] = {x: 3, y: "ab"};
+  let b = #[native] select s { null as _ => 0, s => str::len(s) };
+  let c = #[native] select z { null as _ => 10, s if str::len(s) > 1 => 1, _ => 2 };
+  let d = #[native] select a { null as _ => 0, a => array::len(a) };
+  let e = #[native] select t { null as _ => 0, t => t.x + str::len(t.y) };
+  (b, c, d, e)
+}
+"#;
+
+run!(nullable_value_binds, NULLABLE_VALUE_BINDS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => {
+        matches!(&t[..], [Value::I64(3), Value::I64(10), Value::I64(3), Value::I64(5)])
+    }
+    _ => false,
+}; FuseExpect::Jit);
+
+// Slice patterns bind their rest, head and whole slice natively, as
+// owned subslices; a guard's masked bind of a short array reads empty.
+const SLICE_REST_BINDS: &str = r#"
+{
+  let rec g = |a: Array<i64>, acc: i64| -> i64 select a { [] => acc, [x, tail..] => g(tail, acc + x) };
+  let a = [1, 2, 3];
+  let p = #[native] g([1, 2, 3, 4], 0);
+  let q = #[native] select a { [init.., l] => l * 10 + array::len(init), [] => 0 };
+  let r = #[native] select a { all@ [x, ..] => x + array::len(all), [] => 0 };
+  let s = #[native] select [5] { [x, rest..] if array::len(rest) > 0 => x, [x, ..] => x + 100, [] => 0 };
+  (p, q, r, s)
+}
+"#;
+
+run!(slice_rest_binds, SLICE_REST_BINDS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => {
+        matches!(&t[..], [Value::I64(10), Value::I64(32), Value::I64(4), Value::I64(105)])
+    }
+    _ => false,
+}; FuseExpect::Jit);
+
+// A composite pattern binds non-scalar elements natively: strings and
+// arrays out of arrays, tuples and structs.
+const NON_SCALAR_ELEMENT_BINDS: &str = r#"
+{
+  let rec g = |a: Array<string>, acc: i64| -> i64 select a { [] => acc, [s, tail..] => g(tail, acc + str::len(s)) };
+  let p = #[native] g(["ab", "c"], 0);
+  let q = #[native] select (3, "abcd") { (n, s) => n + str::len(s) };
+  let r = #[native] select {x: 3, y: "ab"} { {x, y} => x + str::len(y) };
+  let s = #[native] select [[1, 2], [3]] { [a, b] => array::len(a) * 10 + array::len(b), _ => 0 };
+  (p, q, r, s)
+}
+"#;
+
+run!(non_scalar_element_binds, NON_SCALAR_ELEMENT_BINDS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => {
+        matches!(&t[..], [Value::I64(3), Value::I64(7), Value::I64(5), Value::I64(21)])
+    }
+    _ => false,
+}; FuseExpect::Jit);
+
+// A primitive union is one two-word Value in a kernel: a loop may return
+// one, and a select over one tests and binds its members natively.
+const PRIMITIVE_UNION_VALUES: &str = r#"
+{
+  let rec g = |n: i64| select n { 0 => 1.5, 1 => 2, _ => g(n - 1) };
+  let n = 0;
+  let u = select n { 0 => null, 1 => 7, _ => 2.5 };
+  let a = #[native] g(5);
+  let b = #[native] g(0);
+  let c = #[native] select g(0) { i64 as i => i, f => cast<i64>(f)$ + 10 };
+  let d = #[native] select u { null as _ => 99, i64 as i => i, f64 as _ => 3 };
+  (a, b, c, d)
+}
+"#;
+
+run!(primitive_union_values, PRIMITIVE_UNION_VALUES, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => {
+        matches!(&t[..], [Value::I64(2), Value::F64(b), Value::I64(11), Value::I64(99)] if *b == 1.5)
+    }
+    _ => false,
+}; FuseExpect::Jit);
+
+// A varint is a Value in a kernel: it passes through and casts natively;
+// its arithmetic stays in the node-walk.
+const VARINT_VALUES: &str = r#"
+{
+  let z = z64:-5;
+  let n = 300;
+  let a = #[native] cast<i64>(z)$ + 1;
+  let b = #[native] cast<v64>(n)$;
+  let c = #[native] select n { 300 => v32:7, _ => v32:0 };
+  (a, b, c)
+}
+"#;
+
+run!(varint_values, VARINT_VALUES, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(-4), Value::V64(300), Value::V32(7)]),
+    _ => false,
+}; FuseExpect::Jit);
+
+// Over a result union, `error as _` tests the error tag and a later
+// untested bind reads the success payload.
+const RESULT_UNION_BINDS: &str = r#"
+{
+  let o: [Error<`E>, string] = "abc";
+  let e: [Error<`E>, string] = error(`E);
+  let a = #[native] select o { error as _ => 0, s => str::len(s) };
+  let b = #[native] select e { error as _ => 10, s => str::len(s) };
+  (a, b)
+}
+"#;
+
+run!(result_union_binds, RESULT_UNION_BINDS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(3), Value::I64(10)]),
+    _ => false,
+}; FuseExpect::Jit);

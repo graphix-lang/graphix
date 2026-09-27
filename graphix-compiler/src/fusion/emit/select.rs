@@ -35,8 +35,8 @@ use super::{
     lower::resolve_node_typ,
     nodes::{emit_bottom_of_kind, emit_owned_value_operand_node},
     scalar::{
-        cast_u64_to_prim, compile_cmp, compile_const, prim_to_clif, struct_get_helper,
-        valarray_get_helper, variant_payload_helper,
+        ElementRead, cast_u64_to_prim, compile_cmp, compile_const, element_read_helper,
+        prim_to_clif, struct_get_helper, valarray_get_helper, variant_payload_helper,
     },
 };
 
@@ -121,21 +121,30 @@ fn read_scrut_elem(
     idx: ElemIdx,
     prim: PrimType,
 ) -> Result<ClifValue> {
-    let (helper_name, idx_v) = match idx {
-        ElemIdx::FromStart(j) => {
-            (valarray_get_helper(prim), cx.b.ins().iconst(types::I64, j as i64))
-        }
-        ElemIdx::FromEnd { back, len } => {
-            let b = cx.b.ins().iconst(types::I64, back as i64);
-            (valarray_get_helper(prim), cx.b.ins().isub(len, b))
-        }
-        ElemIdx::StructField(i) => {
-            (struct_get_helper(prim), cx.b.ins().iconst(types::I64, i as i64))
-        }
+    let (read, idx_v) = elem_index(cx, idx);
+    let helper_name = match read {
+        ElementRead::ArrayIndex => valarray_get_helper(prim),
+        ElementRead::StructField => struct_get_helper(prim),
     };
     let helper = cx.helper(helper_name)?;
     let call = cx.b.ins().call(helper, &[ptr, idx_v]);
     Ok(cx.b.inst_results(call)[0])
+}
+
+/// The read family and index value of an element position.
+fn elem_index(cx: &mut BodyCx, idx: ElemIdx) -> (ElementRead, ClifValue) {
+    match idx {
+        ElemIdx::FromStart(j) => {
+            (ElementRead::ArrayIndex, cx.b.ins().iconst(types::I64, j as i64))
+        }
+        ElemIdx::FromEnd { back, len } => {
+            let b = cx.b.ins().iconst(types::I64, back as i64);
+            (ElementRead::ArrayIndex, cx.b.ins().isub(len, b))
+        }
+        ElemIdx::StructField(i) => {
+            (ElementRead::StructField, cx.b.ins().iconst(types::I64, i as i64))
+        }
+    }
 }
 
 /// A pattern binding installed in the arm's matched region under the
@@ -146,6 +155,10 @@ enum SelectArmBind {
     /// `T as n` over a `[T, null]` scrutinee — bind the matched
     /// non-null scalar payload after the type-predicate branch.
     NullableScalar { id: BindId, prim: PrimType },
+    /// The same over a non-scalar `T`: the payload cloned out as an
+    /// owned local of `kind`, dropped at the arm's scope exit; legal
+    /// under a mask, where null yields a drop-safe default.
+    NullableValue { id: BindId, kind: LocalKind },
     /// `` `Tag(n) `` — bind one scalar variant payload; a wrong-tag read
     /// yields 0.
     Payload { id: BindId, idx: usize, prim: PrimType },
@@ -163,6 +176,20 @@ enum SelectArmBind {
     /// composite scrutinee (the scrutinee, or a borrowed interior pointer
     /// for a nested pattern).
     Elem { id: BindId, idx: ElemIdx, prim: PrimType, parent_ptr: ClifValue },
+    /// The same for a non-scalar leaf of type `typ`, cloned out as an
+    /// owned local of `kind`; a short or mismatched read yields a
+    /// drop-safe default.
+    ElemValue {
+        id: BindId,
+        idx: ElemIdx,
+        typ: Type,
+        kind: LocalKind,
+        parent_ptr: ClifValue,
+    },
+    /// `[h, rest..]` / `[init.., l]` / `all@ [..]` — bind the elements
+    /// `[start, len - back)` of an array scrutinee, cloned out as an
+    /// owned composite local.
+    Subslice { id: BindId, start: usize, back: usize, parent_ptr: ClifValue },
 }
 
 /// `select` at expression position. Canonical semantics are
@@ -368,11 +395,19 @@ fn emit_composite_pattern_cond_inner(
             if matches!(kind, SliceKind::List) {
                 return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
             }
-            if all.is_some() {
-                return Err(anyhow!(
-                    "emit_clif: whole-slice @ binding not lowerable (owned \
-                     composite arm local)"
-                ));
+            if let Some(id) = all {
+                if matches!(kind, SliceKind::Tuple) {
+                    return Err(anyhow!(
+                        "emit_clif: whole-tuple @ binding not lowerable (owned \
+                         composite arm local)"
+                    ));
+                }
+                binds.push(SelectArmBind::Subslice {
+                    id: *id,
+                    start: 0,
+                    back: 0,
+                    parent_ptr: ptr,
+                });
             }
             let elt = |j: usize| -> Result<Type> {
                 if matches!(kind, SliceKind::Tuple) {
@@ -408,11 +443,17 @@ fn emit_composite_pattern_cond_inner(
             if *list {
                 return Err(anyhow!("emit_clif: list pattern not lowerable yet"));
             }
-            if all.is_some() || tail.is_some() {
-                return Err(anyhow!(
-                    "emit_clif: slice-prefix @/rest binding not lowerable \
-                     (owned subslice arm local)"
-                ));
+            for (id, start) in all
+                .iter()
+                .map(|id| (id, 0))
+                .chain(tail.iter().map(|id| (id, prefix.len())))
+            {
+                binds.push(SelectArmBind::Subslice {
+                    id: *id,
+                    start,
+                    back: 0,
+                    parent_ptr: ptr,
+                });
             }
             let t = match &styp {
                 Type::Array(t) => (**t).clone(),
@@ -434,11 +475,17 @@ fn emit_composite_pattern_cond_inner(
             (leaves, IntCC::SignedGreaterThanOrEqual, prefix.len())
         }
         StructPatternNode::SliceSuffix { all, head, suffix } => {
-            if all.is_some() || head.is_some() {
-                return Err(anyhow!(
-                    "emit_clif: slice-suffix @/head binding not lowerable \
-                     (owned subslice arm local)"
-                ));
+            for (id, back) in all
+                .iter()
+                .map(|id| (id, 0))
+                .chain(head.iter().map(|id| (id, suffix.len())))
+            {
+                binds.push(SelectArmBind::Subslice {
+                    id: *id,
+                    start: 0,
+                    back,
+                    parent_ptr: ptr,
+                });
             }
             let t = match &styp {
                 Type::Array(t) => (**t).clone(),
@@ -500,20 +547,29 @@ fn emit_composite_pattern_cond_inner(
                 return Err(anyhow!("emit_clif: abstract pattern leaf not lowerable"));
             }
             StructPatternNode::Ignore => {}
-            StructPatternNode::Bind(id) => {
-                let prim = kernel_abi::scalar_prim(&leaf.typ).ok_or_else(|| {
-                    anyhow!(
-                        "emit_clif: non-scalar select pattern leaf bind {:?}",
-                        leaf.typ
-                    )
-                })?;
-                binds.push(SelectArmBind::Elem {
+            StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(&leaf.typ) {
+                Some(prim) => binds.push(SelectArmBind::Elem {
                     id: *id,
                     idx: leaf.idx,
                     prim,
                     parent_ptr: ptr,
-                });
-            }
+                }),
+                None => {
+                    let kind = payload_local_kind(&leaf.typ).ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: select pattern leaf bind {:?} not lowerable",
+                            leaf.typ
+                        )
+                    })?;
+                    binds.push(SelectArmBind::ElemValue {
+                        id: *id,
+                        idx: leaf.idx,
+                        typ: leaf.typ.clone(),
+                        kind,
+                        parent_ptr: ptr,
+                    })
+                }
+            },
             StructPatternNode::Literal(v) => {
                 let prim = kernel_abi::scalar_prim_of_value(v).ok_or_else(|| {
                     anyhow!("emit_clif: non-scalar literal pattern leaf {v:?}")
@@ -870,6 +926,41 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
             )
         })?;
         match &pred {
+            // Over a primitive union, a primitive predicate is a test of
+            // the value's tag against each of its members.
+            Type::Primitive(p)
+                if matches!(scrut_kind, AbiKind::Value)
+                    && matches!(scrut_typ, Type::Primitive(_)) =>
+            {
+                let SelectScrut::Value { disc, .. } = scrut else {
+                    bail!("emit_clif: a primitive union scrutinee that is not a value")
+                };
+                let cd = clean_disc(cx.b, disc);
+                let mut cond: Option<ClifValue> = None;
+                for t in p.iter() {
+                    let td = match t {
+                        netidx_value::Typ::Null => {
+                            cx.b.ins().iconst(types::I64, value_disc::NULL)
+                        }
+                        netidx_value::Typ::String => {
+                            cx.b.ins().iconst(types::I64, value_disc::STRING)
+                        }
+                        t => match PrimType::from_typ(t) {
+                            Some(prim) => scalar_disc(cx.b, prim),
+                            None => bail!(
+                                "emit_clif: type predicate member {t:?} over a \
+                                 primitive union not lowerable"
+                            ),
+                        },
+                    };
+                    let eq = cx.b.ins().icmp(IntCC::Equal, cd, td);
+                    cond = Some(match cond {
+                        None => eq,
+                        Some(c) => cx.b.ins().bor(c, eq),
+                    });
+                }
+                cond
+            }
             Type::Primitive(p)
                 if p.contains(netidx_value::Typ::Null) && p.iter().count() == 1 =>
             {
@@ -935,6 +1026,13 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                                         value_disc::STRING,
                                     ))
                                 }
+                                None if pt == netidx_value::Typ::Error => {
+                                    Some(cx.b.ins().icmp_imm(
+                                        IntCC::Equal,
+                                        cd,
+                                        value_disc::ERROR,
+                                    ))
+                                }
                                 None => {
                                     return Err(anyhow!(
                                         "emit_clif: non-register type \
@@ -968,7 +1066,6 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
         cx,
         &pat.structure_predicate,
         &pat.type_predicate,
-        pat.explicit_type_predicate,
         tcond.is_some(),
         scrut,
         scrut_kind,
@@ -1106,6 +1203,30 @@ fn install_arm_binds(
                 let value = cast_u64_to_prim(cx.b, value_payload()?, *prim);
                 (*id, scalar_disc(cx.b, *prim), value, LocalKind::Scalar(*prim))
             }
+            SelectArmBind::NullableValue { id, kind } => {
+                let args = [sdisc, value_payload()?];
+                let (d, p) = match kind {
+                    LocalKind::Composite => {
+                        let call = cx.call_helper("graphix_nullable_array", &args)?;
+                        let bits = cx.b.inst_results(call)[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::ARRAY), bits)
+                    }
+                    LocalKind::String => {
+                        let call = cx.call_helper("graphix_nullable_string", &args)?;
+                        let bits = cx.b.inst_results(call)[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::STRING), bits)
+                    }
+                    LocalKind::Value => {
+                        let call = cx.call_helper("graphix_value_clone", &args)?;
+                        let rs = cx.b.inst_results(call);
+                        (rs[0], rs[1])
+                    }
+                    LocalKind::Scalar(_) => {
+                        bail!("emit_clif: scalar payload routed to the value bind path")
+                    }
+                };
+                (*id, d, p, *kind)
+            }
             SelectArmBind::Payload { id, idx, prim } => {
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
                 let call = cx.call_helper(
@@ -1176,6 +1297,50 @@ fn install_arm_binds(
                     cx.call_helper("graphix_list_tail", &[sdisc, value_payload()?, kc])?;
                 let rs = cx.b.inst_results(call);
                 (*id, rs[0], rs[1], LocalKind::Value)
+            }
+            SelectArmBind::ElemValue { id, idx, typ, kind, parent_ptr } => {
+                if !matches!(scrut, SelectScrut::Composite { .. }) {
+                    bail!("emit_clif: element bind without a composite scrutinee");
+                }
+                let (read, idx_v) = elem_index(cx, *idx);
+                let call = cx.call_helper(
+                    element_read_helper(typ, read)?,
+                    &[*parent_ptr, idx_v],
+                )?;
+                let rs = cx.b.inst_results(call);
+                let (d, p) = match kind {
+                    LocalKind::Composite => {
+                        let p = rs[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::ARRAY), p)
+                    }
+                    LocalKind::String => {
+                        let p = rs[0];
+                        (cx.b.ins().iconst(types::I64, value_disc::STRING), p)
+                    }
+                    LocalKind::Value => (rs[0], rs[1]),
+                    LocalKind::Scalar(_) => {
+                        bail!("emit_clif: scalar leaf routed to the value bind path")
+                    }
+                };
+                (*id, d, p, *kind)
+            }
+            SelectArmBind::Subslice { id, start, back, parent_ptr } => {
+                if !matches!(scrut, SelectScrut::Composite { .. }) {
+                    bail!("emit_clif: subslice bind without a composite scrutinee");
+                }
+                let start = cx.b.ins().iconst(types::I64, *start as i64);
+                let back = cx.b.ins().iconst(types::I64, *back as i64);
+                let call = cx.call_helper(
+                    "graphix_valarray_subslice",
+                    &[*parent_ptr, start, back],
+                )?;
+                let bits = cx.b.inst_results(call)[0];
+                (
+                    *id,
+                    cx.b.ins().iconst(types::I64, value_disc::ARRAY),
+                    bits,
+                    LocalKind::Composite,
+                )
             }
             SelectArmBind::Elem { id, idx, prim, parent_ptr } => {
                 if !matches!(scrut, SelectScrut::Composite { .. }) {
@@ -1307,12 +1472,11 @@ fn emit_select_arm_value<R: Rt, E: UserEvent>(
 /// One structure pattern's condition against the scrutinee: the
 /// per-shape half of [`emit_arm_cond`], also called by [`emit_or_chain`]
 /// once per alternative with that alternative's member of the arm's
-/// inferred predicate (`explicit_pred`/`has_tcond` both false).
+/// inferred predicate (`has_tcond` false).
 fn emit_structure_cond(
     cx: &mut BodyCx,
     sp: &StructPatternNode,
     pred_typ: &Type,
-    explicit_pred: bool,
     has_tcond: bool,
     scrut: SelectScrut,
     scrut_kind: AbiKind,
@@ -1335,27 +1499,43 @@ fn emit_structure_cond(
                 binds.push(SelectArmBind::Scrut(*id));
                 None
             }
-            SelectScrut::Value { .. } if matches!(scrut_kind, AbiKind::Nullable) => {
+            // A bind under a primitive union: the scalar the arm's
+            // predicate names, its string, or the value itself.
+            SelectScrut::Value { .. }
+                if matches!(scrut_kind, AbiKind::Value)
+                    && matches!(scrut_typ, Type::Primitive(_)) =>
+            {
                 let pred = kernel_abi::freeze_for_abi(pred_typ);
-                let Some(prim) =
-                    pred.as_ref().and_then(|typ| kernel_abi::scalar_prim(typ))
-                else {
-                    return Err(anyhow!(
-                        "emit_clif: nullable scrutinee bind predicate is not scalar"
-                    ));
+                binds.push(match pred.as_ref().and_then(kernel_abi::scalar_prim) {
+                    Some(prim) => SelectArmBind::NullableScalar { id: *id, prim },
+                    None => {
+                        let kind = match pred.as_ref().and_then(kernel_abi::abi_kind) {
+                            Some(AbiKind::String) => LocalKind::String,
+                            _ => LocalKind::Value,
+                        };
+                        SelectArmBind::NullableValue { id: *id, kind }
+                    }
+                });
+                None
+            }
+            SelectScrut::Value { .. } if matches!(scrut_kind, AbiKind::Nullable) => {
+                // Every payload read is total (a scalar reads bits, a
+                // clone defaults on a mismatch), so a bind needs no test of
+                // its own: the chain took this arm.
+                let pred = kernel_abi::freeze_for_abi(pred_typ);
+                let bind = match pred.as_ref().and_then(kernel_abi::scalar_prim) {
+                    Some(prim) => SelectArmBind::NullableScalar { id: *id, prim },
+                    None => {
+                        let kind = pred.as_ref().and_then(payload_local_kind).ok_or_else(|| {
+                            anyhow!(
+                                "emit_clif: nullable scrutinee bind predicate {pred:?} \
+                                 not lowerable"
+                            )
+                        })?;
+                        SelectArmBind::NullableValue { id: *id, kind }
+                    }
                 };
-                // Over a result union the payload read is safe only under
-                // the explicit predicate's positive disc test; an
-                // inferred-predicate bind has no test, so it refuses.
-                if !explicit_pred
-                    && kernel_abi::nullable_error_marked(&scrut_typ) != Some(false)
-                {
-                    return Err(anyhow!(
-                        "emit_clif: untested bind over a result union \
-                             {scrut_typ:?} not lowerable"
-                    ));
-                }
-                binds.push(SelectArmBind::NullableScalar { id: *id, prim });
+                binds.push(bind);
                 None
             }
             SelectScrut::Value { .. }
@@ -1507,11 +1687,14 @@ fn select_bind_id(b: &SelectArmBind) -> BindId {
     match b {
         SelectArmBind::Scrut(id)
         | SelectArmBind::NullableScalar { id, .. }
+        | SelectArmBind::NullableValue { id, .. }
         | SelectArmBind::Payload { id, .. }
         | SelectArmBind::PayloadValue { id, .. }
         | SelectArmBind::ListHead { id, .. }
         | SelectArmBind::ListTail { id, .. }
-        | SelectArmBind::Elem { id, .. } => *id,
+        | SelectArmBind::Elem { id, .. }
+        | SelectArmBind::ElemValue { id, .. }
+        | SelectArmBind::Subslice { id, .. } => *id,
     }
 }
 
@@ -1584,7 +1767,7 @@ fn emit_or_chain(
         };
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
         let scond = emit_structure_cond(
-            cx, alt, at, false, false, scrut, scrut_kind, scrut_typ, &mut binds,
+            cx, alt, at, false, scrut, scrut_kind, scrut_typ, &mut binds,
         )?;
         let mk = cx.b.create_block();
         match scond {

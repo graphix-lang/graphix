@@ -874,6 +874,28 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
     unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
 }
 
+/// Owned `ArcStr` clone of a nullable's string payload; null yields the
+/// static empty string.
+safe fn graphix_nullable_string(v: TagValue) -> u64 {
+    let r = v.with_value(|v| match v {
+        Value::String(s) => s.clone(),
+        _ => arcstr::ArcStr::new(),
+    });
+    std::mem::forget(v);
+    unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
+}
+
+/// Owned `ValArray` clone of a nullable's composite payload; null
+/// yields the empty array.
+safe fn graphix_nullable_array(v: TagValue) -> u64 {
+    let r = v.with_value(|v| match v {
+        Value::Array(a) => a.clone(),
+        _ => EMPTY_ARR.clone(),
+    });
+    std::mem::forget(v);
+    va_bits(r)
+}
+
 /// List-pattern structure test: `k` cells exist; `exact` also requires
 /// nil after them. A non-list fails the walk.
 safe fn graphix_list_match(v: TagValue, k: usize, exact: u8) -> u8 {
@@ -1430,6 +1452,18 @@ jit_helpers! { registry = elem_helpers;
 
 unsafe fn graphix_valarray_len(bits: u64) -> usize {
     unsafe { va_ref(&bits) }.len()
+}
+
+/// Owned subslice `[start, len - back)` of borrowed ValArray bits; a
+/// range the array is too short for yields the empty array (a masked
+/// bind reads an array its pattern did not match).
+unsafe fn graphix_valarray_subslice(bits: u64, start: usize, back: usize) -> u64 {
+    let a = unsafe { va_ref(&bits) };
+    let r = match a.len().checked_sub(back) {
+        Some(end) if end >= start => a.subslice(start..end).unwrap_or_else(|_| EMPTY_ARR.clone()),
+        _ => EMPTY_ARR.clone(),
+    };
+    va_bits(r)
 }
 
 /// Source-level `arr[idx]` via the shared [`array_index`]: the element
