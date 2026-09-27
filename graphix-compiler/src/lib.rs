@@ -1831,7 +1831,7 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let st = Instant::now();
     let p = profile::phase(Phase::Typecheck0);
-    if let Err(e) = node.typecheck0(ctx) {
+    if let Err(e) = node.typecheck0(ctx).and_then(|()| drain_pending_settles(ctx)) {
         ctx.pending_settles.clear();
         ctx.pending_settles.push(Vec::new());
         return Err(e);

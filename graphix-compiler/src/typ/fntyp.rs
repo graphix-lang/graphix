@@ -1,6 +1,5 @@
 use crate::{
     LambdaId,
-    dbgenv::graphix_dbg_bind,
     env::Env,
     expr::{
         ModPath,
@@ -589,36 +588,9 @@ impl FnType {
         self.for_each_type(&mut |t| t.unbind_tvars())
     }
 
-    /// [`Type::unbind_open_tvars`] over the signature.
-    pub fn unbind_open_tvars(&self) {
-        self.for_each_type(&mut |t| t.unbind_open_tvars())
-    }
-
-    /// Record the def gate's inferred facts as cell constraints. With
-    /// `closed_only` (a nested gate) only bindings with no open
-    /// interior are recorded: a partial one snapshots mid-solve state
-    /// the enclosing gate may still revise.
-    pub fn constrain_known(&self, closed_only: bool) {
-        let mut known = LPooled::take();
-        self.collect_tvars(&mut known);
-        for (_, tv) in sorted_tvars(known.drain()).drain(..) {
-            // Cloned out through the alias chain: add_cell_constraint
-            // write-locks the same cell.
-            let bound = Type::TVar(tv.clone()).deref_cloned();
-            let Some(t) = bound.filter(|t| *t != Type::Bottom && *t != Type::Any) else {
-                continue;
-            };
-            if closed_only && t.has_unbound() {
-                continue;
-            }
-            // Private cells, open leaves left open: a partial fact
-            // must not be closed to `Array<Any>`.
-            let tc = t.reset_tvars().normalize();
-            if graphix_dbg_bind() {
-                eprintln!("CONSTRAIN-KNOWN '{}({:x}) += {tc:?}", tv.name, tv.cell_addr());
-            }
-            tv.add_cell_constraint(tc);
-        }
+    /// [`Type::unbind_vacuous_tvars`] over the signature.
+    pub fn unbind_vacuous_tvars(&self) {
+        self.for_each_type(&mut |t| t.unbind_vacuous_tvars())
     }
 
     pub fn reset_tvars(&self) -> Self {

@@ -33,6 +33,9 @@ which follows the call graph. So the plan covers all three parts.
 
 ## The rule that makes it possible
 
+BUILT on the branch: the gate keeps what the body bound, and the check's
+settle drains before elaboration (`design/tvar_constraints.md`).
+
 The definition check plus the call-site check are all of type checking.
 An instance is never checked for acceptance. If an instance's check fails
 where the definition and the site passed, that is a type-system bug.

@@ -59,9 +59,11 @@ u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
   (`typexp::fntype`) and `Lambda::compile` alias same-named signature
   leaves onto the declared quantifier's cell first, then
   `add_cell_constraint` — the conjunct lands in the one shared cell.
-- `constrain_known` seeds a cell from its def-time binding even for an
-  explicitly listed name: `'a: Number |x: 'a| -> 'a f64:0.` gets
-  conjuncts `[Number, f64]`, so `f(i64:3)` rejects at the argument. A
+- A definition's gate keeps what its body bound: the signature is the
+  scheme, relations between its positions included (`|x| [x, x]` is
+  `fn(x: 'a) -> Array<'a>`), so a call's types follow from the signature
+  without elaborating the body. Only a cell bound to ⊥ reopens
+  (`unbind_vacuous_tvars`: `throws := ⊥` means nothing was observed). A
   def-time binding is a fact, never erased by instantiation.
 - Arith and `Neg` constrain instead of binding: an unbound operand
   cell gets a `Primitive(Typ::number())` conjunct (`node/op.rs`).

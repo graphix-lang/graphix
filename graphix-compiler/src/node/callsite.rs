@@ -1976,12 +1976,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
-        // a definition's check runs no typecheck1: its sites settle through
-        // the gate's frame
-        if ctx.def_gate_depth > 0 {
-            let settle = self.pending_settle(ftype);
-            ctx.pending_settles.last_mut().expect("gate settle frame").push(settle);
-        }
+        // the check settles before elaboration (typecheck1) runs; a
+        // definition's check runs no typecheck1, its gate's frame hands the
+        // settle to the enclosing statement
+        let settle = self.pending_settle(ftype);
+        ctx.pending_settles.last_mut().expect("settle frame").push(settle);
         Ok(())
     }
 

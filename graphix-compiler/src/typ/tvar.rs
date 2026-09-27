@@ -855,27 +855,18 @@ impl Type {
         })
     }
 
-    /// [`Self::unbind_tvars`], except a cell whose binding is fully
-    /// closed stays bound: a closed def-body inference is a solved
-    /// fact. Partial bindings snapshot mid-solve state and still unbind.
-    pub(crate) fn unbind_open_tvars(&self) {
+    /// Reopen every cell bound to ⊥: at a definition's gate that is a
+    /// vacuous fact (`throws := ⊥`, the body observed nothing). Every other
+    /// binding stays, shared with the cells it relates.
+    pub(crate) fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                // Bottom is a vacuous fact (`throws := ⊥` means the
-                // body observed nothing); Any is not.
-                if let Some(t) = tv.binding()
-                    && (t == Type::Bottom || t.has_unbound())
-                {
-                    // A partial inference is still a fact about shape;
-                    // it survives as a constraint. Bottom bounds nothing.
-                    if t != Type::Bottom {
-                        tv.add_cell_constraint(t);
-                    }
+                if tv.binding().is_some_and(|t| t == Type::Bottom) {
                     tv.unbind()
                 }
             }
             Type::Ref(_) => (),
-            t => t.for_each_child(&mut |c| c.unbind_open_tvars()),
+            t => t.for_each_child(&mut |c| c.unbind_vacuous_tvars()),
         })
     }
 }

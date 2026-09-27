@@ -495,6 +495,41 @@ async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
     Ok(())
 }
 
+// A generic function's signature is what its body bound: a call's types
+// follow from it, so a mismatch is refused at the call, never inside an
+// instance.
+#[tokio::test(flavor = "current_thread")]
+async fn a_signature_types_its_calls() -> Result<()> {
+    for src in [
+        r#"{ let first = |xs| xs[0]$; let n: i64 = first(["a"]); n }"#,
+        r#"{ let tm = |x| [x, x]; let r: Array<string> = tm(1); 0 }"#,
+        r#"{ let g = |(k, v)| select k == 2 { true => v, false => null }; let r: [string, null] = g((2, 3)); 0 }"#,
+    ] {
+        let msg = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => format!("{e:#}"),
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(msg.contains("does not contain"), "wrong refusal for {src}: {msg}");
+        assert!(
+            !msg.contains("in the instance of"),
+            "refused by elaboration: {src}: {msg}"
+        );
+    }
+    for (src, expected) in [
+        (r#"{ let first = |xs| xs[0]$; let n: string = first(["a"]); str::len(n) }"#, 1),
+        (r#"{ let tm = |x| [x, x]; let r: Array<i64> = tm(1); r[1]$ }"#, 1),
+        (
+            r#"{ let g = |(k, v)| select k == 2 { true => v, false => null }; let r: [i64, null] = g((2, 3)); r$ }"#,
+            3,
+        ),
+    ] {
+        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        assert_eq!(v, Value::I64(expected), "{src}");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
 // A let-bound bare cast (no `$`/`?`) has the fallible union type and
 // marshals as a Value.
 const CAST_LET_WIRE_SHAPE: &str = r#"

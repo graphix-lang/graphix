@@ -429,15 +429,12 @@ All pre-existing, all pinned through the trait's defaults
    whole declared return on first contact (`Option<'b2>` ⊇ open cell),
    and a generic `filter_map` wrapper was uncompilable. The return is
    judged after the body types.
-2. **`FnType::constrain_known` follows alias chains**: a cell bound to
-   a bare tvar is not a fact — recorded as one, every later occurs check
-   read the fresh conjunct as a cycle.
-3. **Wildcard narrowing skips union scrutinees** (`Select::typecheck0`):
+2. **Wildcard narrowing skips union scrutinees** (`Select::typecheck0`):
    the walk that teaches `select n { 0 => .. }` its scrutinee is `i64`
    bound an open union member to an arm's type test (`select acc { null
    as _ => .., found => .. }` over `[e, null]` bound `e := null` and
    reported the second arm dead). A free union member stays free.
-4. **The TVar×TVar fast path compares CELL identity** (`TVar::same_cell`),
+3. **The TVar×TVar fast path compares CELL identity** (`TVar::same_cell`),
    not tvar identity: two vars already aliased into one cell are
    unified, and falling through to the cycle guard poisoned both.
 

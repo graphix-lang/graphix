@@ -80,10 +80,9 @@ compiles the body from source through `def.init`, typechecks it and
 deletes it (`graphix-compiler/src/node/lambda.rs:1199`, `:1233`).
 That is 339 bodies and about 64 ms of the 90 ms registration.
 
-The gate produces three things: validation; the definition's scheme
-facts, recorded as cell constraints by `constrain_known`
-(`typ/fntyp.rs:596`) with closed inferences kept by
-`unbind_open_tvars` (`lambda.rs:1262`); and the builtin check applies
+The gate produces three things: validation; the definition's scheme,
+its signature's cells as the body bound them (`unbind_vacuous_tvars`
+reopens only a vacuous ⊥, `node/lambda.rs`); and the builtin check applies
 retained for per-site `typecheck1` (`node/callsite.rs:120`). Only the
 scheme facts are data the runtime needs afterward, and the builtin
 checks are cheap and stay.

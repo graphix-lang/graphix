@@ -45,7 +45,7 @@ in both modes, consistent with their direct forms.
 
 | site | why it is legal |
 |---|---|
-| `node/callsite.rs` site instantiation | the def→site boundary: the def gate has closed, body facts live as cell conjuncts (`constrain_known`), bindings are solved facts. This is THE instantiation. |
+| `node/callsite.rs` site instantiation | the def→site boundary: the def gate has closed and the signature holds what the body bound, relations between its positions included. This is THE instantiation. |
 | `node/genn.rs` builtin generic ftype | the same boundary |
 | `typ/fntyp.rs` settle witness snapshot | copies the constraint store's type; the store is finished by construction, and the copy is what keeps live inference from writing into the store |
 | `replace_auto_constrained` | display only |

@@ -1237,16 +1237,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             let inferred_throws =
                 gate.thrown(ctx).scope_refs(&def.scope.lexical).normalize();
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
-            // record the gate's inferred facts as cell conjuncts; a nested
-            // gate records closed facts only (`FnType::constrain_known`)
-            ftyp.constrain_known(ctx.def_gate_depth > 1);
             Ok(())
         });
         let res = res.and_then(|()| check_defaults(ctx, def, &gate.scope));
         gate.close(ctx);
-        // closed inferred bindings survive the gate: a solved fact must not
-        // degrade to an upper bound a consumer can narrow first
-        self.typ.unbind_open_tvars();
+        // what the body bound is the signature: a call's types follow from
+        // it without elaborating the body
+        self.typ.unbind_vacuous_tvars();
         // GRAPHIX_RIGID_AUDIT=1 is a cataloging tool: a rejected def that
         // continues may compile to a different shape, so never trust its
         // value output
