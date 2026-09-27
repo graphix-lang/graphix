@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b12cd77a.js";
+            window.path_to_searchindex_js = "searchindex-8cb582cc.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -13478,7 +13478,7 @@ caller owns the data pipeline end to end.</p>
 <pre><code class="language-graphix">use gui::{
   window,
   column::column,
-  data_table::{SortBy, SortDirection, Table, data_table},
+  data_table::{SortBy, Table, data_table},
   pick_list::pick_list,
   row::row,
   text::text,
@@ -13536,57 +13536,14 @@ tbl &lt;- select str::len(pattern) {
 // already sorted flips its direction; a second click removes it.
 let sort_by: Array&lt;SortBy&gt; = [];
 
-// CR claude for estokes: the `column ~ { ... }` sampling and the
-// `matches[0]$` + separate `let dir = m0.direction` split are both
-// workarounds for sharp edges in graphix reactivity / parsing:
-//
-//   1. Without `column ~` on the RHS of `sort_by &lt;-`, the compiled
-//      dataflow evaluates `array::filter(sort_by, ...)` at its
-//      initial empty sort_by value and never re-fires on callback
-//      invocation — so the callback appears to do nothing.
-//      The lang reference already documents that `~` is required in
-//      callbacks to sample current state at event time; this example
-//      makes that concrete.
-//
-//   2. `array::find` hits a MapQ fast-path in graphix-package-core
-//      (`MapQ::update`, around lib.rs:679) that returns the empty
-//      input array for an empty collection instead of calling
-//      `finish()`. For HOFs whose element-returning `finish()` would
-//      produce a different type than the collection (find → Option,
-//      find_map → Option), the fast-path returns the wrong type —
-//      so `array::find(&lt;empty&gt;, pred)` emits `[]` instead of `null`
-//      and the null arm of the outer select never fires. The
-//      `array::filter` + `array::len` pair below sidesteps this
-//      because filter's natural "empty → empty" happens to match
-//      its output type.
-//
-//   3. `matches[0]$.direction` fails to parse — the `$` error-drop
-//      postfix followed immediately by `.field` confuses the parser
-//      into reporting the outer callsite as unexpected, which is a
-//      red herring. Binding `matches[0]$` to a local first parses
-//      cleanly.
-//
-// Also, every lambda needs `|sb: SortBy|` annotations (and the `map`
-// callback needs `-&gt; SortBy`) because graphix narrows sort_by's
-// element type based on the `direction: `Ascending` literal in the
-// push arm and then rejects `sb.direction` elsewhere as non-matching.
 let cycle_sort = |#column: string|
-    sort_by &lt;- column ~ {
-        let matches = array::filter(sort_by, |sb: SortBy| sb.column == column);
-        let n = array::len(matches);
-        let m0 = matches[0]$;
-        let dir: SortDirection = m0.direction;
-        select n {
-            0 =&gt; array::push(sort_by, { column: column, direction: `Ascending }),
-            _ =&gt; select dir {
-                `Ascending =&gt; array::map(sort_by, |s: SortBy| -&gt; SortBy
-                    select s.column == column {
-                        true =&gt; { s with direction: `Descending },
-                        false =&gt; s
-                    }),
-                `Descending =&gt; array::filter(sort_by, |s: SortBy| s.column != column)
-            }
-        }
+    sort_by &lt;- column ~ select array::find(sort_by, |s| s.column == column) {
+        null =&gt; array::push(sort_by, { column, direction: `Ascending }),
+        { direction: `Ascending, .. } =&gt; array::map(sort_by, |s| select s.column == column {
+            true =&gt; { s with direction: `Descending },
+            false =&gt; s
+        }),
+        { direction: `Descending, .. } =&gt; array::filter(sort_by, |s| s.column != column)
     };
 
 let controls = row(
