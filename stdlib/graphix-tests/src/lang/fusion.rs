@@ -2067,6 +2067,24 @@ run!(literal_over_a_value_scrutinee, LITERAL_OVER_A_VALUE_SCRUTINEE, |v: Result<
     _ => false,
 }; FuseExpect::Jit);
 
+// A varint is a two-word Value: its literal matches by its own tag, not
+// its fixed-width prim's.
+const LITERAL_OVER_A_VARINT: &str = r#"
+{
+  let z: z32 = z32:0;
+  let v: v64 = v64:7;
+  let a = #[native] select z { z32:0 => 1, _ => 2 };
+  let b = #[native] select v { v64:7 => 1, _ => 2 };
+  let c = #[native] select v { v64:0 => 1, _ => 2 };
+  (a, b, c)
+}
+"#;
+
+run!(literal_over_a_varint, LITERAL_OVER_A_VARINT, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(1), Value::I64(1), Value::I64(2)]),
+    _ => false,
+}; FuseExpect::Jit);
+
 // Variant payload patterns nest natively: a variant in a payload, a
 // literal in a payload, binds under both, a guard over a nested bind.
 const NESTED_VARIANT_PATTERNS: &str = r#"

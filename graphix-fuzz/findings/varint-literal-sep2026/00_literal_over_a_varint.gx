@@ -1,0 +1,5 @@
+// JIT wrong arm (sep27a, 88 divergences): a literal pattern over a
+// varint scrutinee tested the tag of the literal's fixed-width prim
+// (`i32` for `z32:0`), which a `z32` Value never carries, so the arm
+// never matched.
+{ let v1 = z32:0 * z32:1; let v3 = u8:0; select v1 { z32:0 => v3, v3 => cast<u8>(i8:127) } }

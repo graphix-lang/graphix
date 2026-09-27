@@ -5128,6 +5128,20 @@ mod tests {
         );
         // no family's mutant was accepted or refused elsewhere
         assert!(rep.rejects.iter().all(|p| p.verdict.is_none()), "{:?}", rep.rejects);
+        // a parameter wider than its argument, a binding that a nested
+        // `let` or a seq step shadows: every mutant is refused in place
+        for prog in [
+            "{ let f = |a: [string, null]| -> i64 1; f(null) }",
+            "{ let x = 8; let a = let x = 1; let c = x * 3; c }",
+            "{ let a = 0; let s = 0; seq true { let a = 7; s <- a + 1 }; (a, s) }",
+        ] {
+            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+            assert!(
+                rep.rejects.iter().all(|p| p.verdict.is_none()),
+                "{prog}: {:?}",
+                rep.rejects
+            );
+        }
     }
 
     #[test]

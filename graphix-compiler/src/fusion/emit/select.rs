@@ -20,7 +20,7 @@ use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
 };
-use netidx_value::Value;
+use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
 
 use super::{
@@ -1573,7 +1573,7 @@ fn emit_structure_cond(
                     if matches!(scrut_kind, AbiKind::Nullable | AbiKind::Value) =>
                 {
                     let cd = clean_disc(cx.b, disc);
-                    let td = scalar_disc(cx.b, lit_prim);
+                    let td = cx.b.ins().iconst(types::I64, Typ::get(v) as i64);
                     let is_prim = cx.b.ins().icmp(IntCC::Equal, cd, td);
                     let value = cast_u64_to_prim(cx.b, payload, lit_prim);
                     let lit = compile_const(cx.b, v, lit_prim)?;

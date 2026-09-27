@@ -292,9 +292,26 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     }
     // stmt-permute: swap adjacent independent statements
     {
+        // a let over ⊥ takes its type from its first use, so two
+        // readers of one do not commute
+        let open: HashSet<String> = stmts
+            .iter()
+            .filter_map(|st| match &st.kind {
+                ExprKind::Bind(b)
+                    if b.typ.is_none()
+                        && matches!(b.value.kind, ExprKind::Never { .. }) =>
+                {
+                    match &b.pattern {
+                        StructurePattern::Bind(n) => Some(n.to_string()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
         let mut sites = Vec::new();
         for i in 0..stmts.len().saturating_sub(1) {
-            if permutable(&stmts[i], &stmts[i + 1]) {
+            if permutable(&stmts[i], &stmts[i + 1], &open) {
                 sites.push(i);
             }
         }
@@ -334,7 +351,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             for (j, st) in stmts.iter().enumerate().skip(si + 1) {
                 let mut idx = offsets[j];
                 calls_reached(st, f, true, &mut idx, &mut calls);
-                if binds(st, f) {
+                if binds_after(st, f) {
                     break;
                 }
             }
@@ -545,7 +562,7 @@ fn stmt_names(e: &Expr) -> StmtNames {
     StmtNames { bound, refs, connects }
 }
 
-fn permutable(a: &Expr, b: &Expr) -> bool {
+fn permutable(a: &Expr, b: &Expr, open: &HashSet<String>) -> bool {
     let kind_ok = |e: &Expr| {
         !matches!(
             e.kind,
@@ -574,6 +591,7 @@ fn permutable(a: &Expr, b: &Expr) -> bool {
             !nb.refs.contains(&n) && !bb.iter().any(|m| m.as_str() == n)
         })
         && bb.iter().all(|n| !na.refs.contains(&n.to_string()))
+        && !na.refs.iter().any(|r| open.contains(r) && nb.refs.contains(r))
 }
 
 /// Does this subtree introduce names the enclosing statement list can
@@ -598,12 +616,58 @@ fn leaks_binds(e: &Expr) -> bool {
     }
 }
 
-/// Does the pattern bind `name` anywhere? Conservative: an
-/// unrecognized pattern form claims it does.
-/// The preorder indices (from `idx`) of the calls of `f` under `e` that
-/// the binding of `f` in force at `e` reaches: a block's later statements
-/// lose it after one rebinds `f`, and a form that binds `f` itself (a
-/// lambda parameter, a select arm, a catch) hides all of its children.
+/// Visit, with its preorder index (from `idx`), every node under `e`
+/// that the binding of `f` in force at `e` reaches: the statements of a
+/// block, a seq body or a `try` lose it after one rebinds `f`
+/// ([`binds_after`]), and a form that binds `f` itself (a lambda
+/// parameter, a select arm, a catch) hides all of its children.
+pub(crate) fn for_each_reached(
+    e: &Expr,
+    f: &str,
+    reached: bool,
+    idx: &mut usize,
+    visit: &mut impl FnMut(usize, &Expr),
+) {
+    if reached {
+        visit(*idx, e);
+    }
+    *idx += 1;
+    fn stmts(
+        stmts: &[Expr],
+        f: &str,
+        mut reached: bool,
+        idx: &mut usize,
+        visit: &mut impl FnMut(usize, &Expr),
+    ) {
+        for st in stmts {
+            for_each_reached(st, f, reached, idx, visit);
+            reached &= !binds_after(st, f);
+        }
+    }
+    let inner = reached && !binds(e, f);
+    match &e.kind {
+        ExprKind::Block { exprs } => stmts(exprs, f, reached, idx, visit),
+        ExprKind::Seq { kind, trigger, abort, body } => {
+            let heads = trigger
+                .iter()
+                .map(|t| t.expr())
+                .chain(abort.iter().map(|a| &**a))
+                .chain(kind.flush().into_iter().map(|a| &**a));
+            for h in heads {
+                for_each_reached(h, f, inner, idx, visit);
+            }
+            stmts(body, f, inner, idx, visit)
+        }
+        ExprKind::TryWith(t) => {
+            stmts(&t.body, f, inner, idx, visit);
+            stmts(&t.handler, f, inner, idx, visit)
+        }
+        _ => e.for_each_child(&mut |c| for_each_reached(c, f, inner, idx, visit)),
+    }
+}
+
+/// The preorder indices of the calls of `f` under `e` that the binding
+/// of `f` in force at `e` reaches ([`for_each_reached`]).
 pub(crate) fn calls_reached(
     e: &Expr,
     f: &str,
@@ -611,27 +675,13 @@ pub(crate) fn calls_reached(
     idx: &mut usize,
     out: &mut Vec<usize>,
 ) {
-    let at = *idx;
-    *idx += 1;
-    if reached
-        && let ExprKind::Apply(ap) = &e.kind
-        && matches!(&ap.function.kind, ExprKind::Ref { name } if name.to_string() == f)
-    {
-        out.push(at);
-    }
-    match &e.kind {
-        ExprKind::Block { exprs } => {
-            let mut reached = reached;
-            for st in exprs.iter() {
-                calls_reached(st, f, reached, idx, out);
-                reached &= !binds(st, f);
-            }
+    for_each_reached(e, f, reached, idx, &mut |at, n| {
+        if let ExprKind::Apply(ap) = &n.kind
+            && matches!(&ap.function.kind, ExprKind::Ref { name } if name.to_string() == f)
+        {
+            out.push(at)
         }
-        _ => {
-            let reached = reached && !binds(e, f);
-            e.for_each_child(&mut |c| calls_reached(c, f, reached, idx, out));
-        }
-    }
+    });
 }
 
 /// Whether an expression reads no name at all (a literal, an operator
@@ -667,6 +717,35 @@ pub(crate) fn binds(n: &Expr, name: &str) -> bool {
     }
 }
 
+/// Whether statement `st` binds `name` for the statements after it: by
+/// its own form, or by a declaration nested where it leaks out
+/// (`let a = let x = e` binds `x` too; see [`leaks_binds`]).
+pub(crate) fn binds_after(st: &Expr, name: &str) -> bool {
+    fn leaks(e: &Expr, name: &str) -> bool {
+        let mut found = false;
+        let mut child = |c: &Expr| {
+            let declares = matches!(
+                c.kind,
+                ExprKind::Bind(_)
+                    | ExprKind::Use { .. }
+                    | ExprKind::Module { .. }
+                    | ExprKind::Trait(_)
+                    | ExprKind::Impl(_)
+            );
+            found = found || (declares && binds(c, name)) || leaks(c, name)
+        };
+        match &e.kind {
+            ExprKind::Block { .. } | ExprKind::Lambda(_) => (),
+            ExprKind::Select(s) => child(&s.arg),
+            _ => e.for_each_child(&mut child),
+        }
+        found
+    }
+    binds(st, name) || leaks(st, name)
+}
+
+/// Does the pattern bind `name` anywhere? Conservative: an
+/// unrecognized pattern form claims it does.
 fn pattern_binds(p: &StructurePattern, name: &str) -> bool {
     let all_binds = |all: &Option<Name>, binds: &Arc<[StructurePattern]>| {
         all.as_ref().is_some_and(|a| &**a == name)
@@ -898,6 +977,17 @@ mod test {
             inlined[0].body.contains("(1) == 0") && !inlined[0].body.contains("let m"),
             "the guard use takes the value: {}",
             inlined[0].body
+        );
+    }
+
+    #[test]
+    fn readers_of_a_bottom_let_do_not_commute() {
+        let body = "{ let g = never(); let a: Array<fn(?#x: i64) -> i64> = [g]; \
+                    let b: Array<fn(#x: i64) -> i64> = [g]; array::len(a) + array::len(b) }";
+        let (probes, _) = probes(body, 8);
+        assert!(
+            probes.iter().all(|p| p.kind != TmKind::StmtPermute || p.site != 1),
+            "the first reader of `g` decides its type"
         );
     }
 

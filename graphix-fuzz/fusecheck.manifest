@@ -487,6 +487,8 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 2	variant-arity-tag-only-aug2026/02_reactive_kernel_goes_silent.gx
 1	variant-arity-tag-only-aug2026/03_no_annotation_needed.gx
 1	variant-rec-depth-jul2026/01_variant_nontail_depth_guard.gx
+2	varint-literal-sep2026/00_literal_over_a_varint.gx
+1	varint-literal-sep2026/01_varint_or_pattern.gx
 3	wake-bind-init-view-aug2026/01_builtin_over_pattern_interp.gx
 3	wake-catchup-sep2026/00_wake_recompute_table.gx
 3	wake-catchup-sep2026/01_shared_input_spent.gx

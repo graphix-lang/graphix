@@ -466,7 +466,7 @@ fn labels_default(
         let mut idx = offset;
         for later in &stmts[si + 1..] {
             uses_reached(later, f, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds(later, f) {
+            if typemorph::binds_after(later, f) {
                 break;
             }
         }
@@ -521,7 +521,8 @@ fn labels_default(
 /// literal of a type its own does not relate to: an arithmetic operand
 /// or a comparison operand opposite a literal (exactly one type, each
 /// containing the other), a field read's source (a union with a non-struct is refused), or an
-/// argument whose parameter is concretely typed (containment).
+/// argument whose parameter is concretely typed (containment), by a
+/// literal outside the parameter's type.
 fn widen_consumer(
     root: &Expr,
     pre: &[Expr],
@@ -535,14 +536,16 @@ fn widen_consumer(
         if taken >= cap {
             break;
         }
-        let target: Option<(usize, &Expr)> = match &e.kind {
+        // the consumer's own type, where it is wider than the value's (a
+        // parameter): the widening literal must lie outside it
+        let target: Option<(usize, &Expr, Option<Type>)> = match &e.kind {
             k if let Some((op, lhs, rhs)) = BinOp::of(k)
                 && arith_or_compare(op) =>
             {
                 match comparison(op) {
-                    false => Some((i + 1, &**lhs)),
-                    true if literal(rhs) => Some((i + 1, &**lhs)),
-                    true if literal(lhs) => Some((i + 1 + sizes[i + 1], &**rhs)),
+                    false => Some((i + 1, &**lhs, None)),
+                    true if literal(rhs) => Some((i + 1, &**lhs, None)),
+                    true if literal(lhs) => Some((i + 1 + sizes[i + 1], &**rhs, None)),
                     true => None,
                 }
             }
@@ -550,7 +553,7 @@ fn widen_consumer(
                 let is_struct = types.of(source).first().is_some_and(|t| {
                     t.with_deref(|d| matches!(d, Some(Type::Struct(_))))
                 });
-                is_struct.then(|| (i + 1, &**source))
+                is_struct.then(|| (i + 1, &**source, None))
             }
             ExprKind::Apply(ap) => {
                 // the first argument whose parameter is a concrete primitive
@@ -574,7 +577,7 @@ fn widen_consumer(
                         && concrete(&p.typ)
                         && p.typ.with_deref(|d| matches!(d, Some(Type::Primitive(_))))
                     {
-                        found = Some((idx, arg));
+                        found = Some((idx, arg, Some(p.typ.clone())));
                     }
                     idx += sizes[idx];
                 }
@@ -582,12 +585,12 @@ fn widen_consumer(
             }
             _ => None,
         };
-        let Some((at, value)) = target else { continue };
+        let Some((at, value, consumer)) = target else { continue };
         let Some(t) = types.of(value).first() else { continue };
         if !concrete(t) {
             continue;
         }
-        let Some(u) = disjoint_literal(t) else { continue };
+        let Some(u) = disjoint_literal(consumer.as_ref().unwrap_or(t)) else { continue };
         let cand = mutate::replace(root, at, &widen(value, u));
         // the consumer keeps its index: what changed comes after it
         out.extend(finish(Family::WidenConsumer, i, &cand, |_, pre| {
@@ -651,7 +654,7 @@ fn retype(
         let mut idx = offset;
         for later in &stmts[si + 1..] {
             uses_reached(later, v, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds(later, v) {
+            if typemorph::binds_after(later, v) {
                 break;
             }
         }
@@ -696,7 +699,7 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
                 affected.push(w.name.as_str());
             }
         }
-        if typemorph::binds(later, v) {
+        if typemorph::binds_after(later, v) {
             break;
         }
     }
@@ -743,7 +746,7 @@ fn widen_through_let(
         let mut idx = offset;
         for later in &stmts[si + 1..] {
             uses_reached(later, w, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds(later, w) {
+            if typemorph::binds_after(later, w) {
                 break;
             }
         }
@@ -810,7 +813,7 @@ fn mono_reuse(
             let before = refs.len();
             uses_reached(later, f, true, &mut idx, &mut calls, &mut refs);
             stmt_of.extend(std::iter::repeat_n(j, refs.len() - before));
-            if typemorph::binds(later, f) {
+            if typemorph::binds_after(later, f) {
                 break;
             }
         }
@@ -866,30 +869,13 @@ fn uses_reached(
     calls: &mut Vec<usize>,
     refs: &mut Vec<usize>,
 ) {
-    let at = *idx;
-    *idx += 1;
-    if reached {
-        match &e.kind {
-            ExprKind::Apply(ap) if matches!(&ap.function.kind, ExprKind::Ref { name } if name.to_string() == f) => {
-                calls.push(at)
-            }
-            ExprKind::Ref { name } if name.to_string() == f => refs.push(at),
-            _ => (),
-        }
-    }
-    match &e.kind {
-        ExprKind::Block { exprs } => {
-            let mut reached = reached;
-            for st in exprs.iter() {
-                uses_reached(st, f, reached, idx, calls, refs);
-                reached &= !typemorph::binds(st, f);
-            }
-        }
-        _ => {
-            let reached = reached && !typemorph::binds(e, f);
-            e.for_each_child(&mut |c| uses_reached(c, f, reached, idx, calls, refs));
-        }
-    }
+    let is_f =
+        |n: &Expr| matches!(&n.kind, ExprKind::Ref { name } if name.to_string() == f);
+    typemorph::for_each_reached(e, f, reached, idx, &mut |at, n| match &n.kind {
+        ExprKind::Apply(ap) if is_f(&ap.function) => calls.push(at),
+        _ if is_f(n) => refs.push(at),
+        _ => (),
+    });
 }
 
 /// Family 5. A select over a set of variants with no catch-all and no

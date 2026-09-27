@@ -79,7 +79,7 @@ impl RegionPrint {
 pub(crate) type Redirect = ((ErrorHandler, ExprId), (ErrorHandler, ExprId));
 pub(crate) type Redirects = Box<[Redirect]>;
 
-struct SharedRegion {
+pub(crate) struct SharedRegion {
     root: ExprId,
     kernel: Arc<KernelSig>,
     jit: WrappedKernel,

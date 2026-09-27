@@ -1,0 +1,2 @@
+// The same wrong tag under an or-pattern (sep27a aieka divergence_000028).
+{ let v3 = v32:7; select v3 { v8 if (!true) => -(100), v32:7 | v32:1 => 7, v8 => -100 } }
