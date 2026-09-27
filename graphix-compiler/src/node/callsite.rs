@@ -1938,7 +1938,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an
-        // annotation could narrow it unsoundly.
+        // annotation could narrow it unsoundly. Its writers are not checked
+        // yet, so a ⊥-fed cell is not ⊥ here.
         {
             let mut arg_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
             for a in ftype.args.iter() {
@@ -1954,7 +1955,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             ftype.throws.collect_tvars(&mut rt_tvs);
             for (_, tv) in rt_tvs.drain() {
                 if !arg_cells.contains(&tv.cell_addr()) {
-                    wrap!(self, tv.settle(&ctx.env))?;
+                    wrap!(self, tv.settle_witness(&ctx.env))?;
                 }
             }
         }

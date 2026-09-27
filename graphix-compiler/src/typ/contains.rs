@@ -565,8 +565,13 @@ impl Type {
                 })
             }
             // ⊥ fits whatever the cell becomes; binding would only
-            // foreclose its writers. An unrefined cell settles to ⊥.
-            (Self::TVar(_), Self::Bottom) => Ok(true),
+            // foreclose its writers. The cell remembers it was fed ⊥.
+            (Self::TVar(t0), Self::Bottom) => {
+                if commit && t0.binding().is_none() {
+                    t0.mark_bottom_fed();
+                }
+                Ok(true)
+            }
             // ⊥ ⊇ 'r has one solution, so an open cell commits; a bound
             // cell answers for its binding.
             (Self::Bottom, Self::TVar(t0)) => match t0.binding() {

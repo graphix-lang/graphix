@@ -118,6 +118,17 @@ fact, and erasing it made the static type lie about the runtime value
   binding: an unannotated `let` over a ⊥ initializer seeds a fresh
   cell, writers refine it at their tc0, and `Bind::typecheck1` settles
   a cell nobody refined to ⊥.
+- A cell remembers that ⊥ reached it while open (`TCell::bottom_fed`,
+  set by that `contains` arm, merged by aliasing, copied at
+  instantiation like the conjuncts). Every other production binds a
+  cell, so a ⊥-fed cell still open at a settle after its writers binds
+  ⊥ whatever conjuncts its readers gave it (`TVar::settle`: an
+  operator's operand settle, `Bind::typecheck1`, the terminal walk):
+  `let t = never(); let u = never(); t + u` and `g(true) + { let t =
+  g(false); t }` with `g = |b| never()` are accepted as
+  `g(true) + g(false)` is. The `CallSite::typecheck0` eager settle takes
+  only the witness (`settle_witness`): the cell's writers are not
+  checked yet.
 
 ### Quantified function formals
 

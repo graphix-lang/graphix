@@ -1166,11 +1166,18 @@ fn cell_len(cell: &Arc<RwLock<TCell>>) -> usize {
         |k| (*k, cell.clone()),
         |e| &mut e.cells,
         || {
-            let (typ, constraints, refused) = {
+            let (typ, constraints, flags) = {
                 let c = cell.read();
-                (c.binding.clone(), c.constraints.to_vec(), c.cycle_refused)
+                (
+                    c.binding.clone(),
+                    c.constraints.to_vec(),
+                    (c.cycle_refused, c.bottom_fed),
+                )
             };
-            typ.encoded_len() + slice_len(&constraints) + refused.encoded_len()
+            typ.encoded_len()
+                + slice_len(&constraints)
+                + flags.0.encoded_len()
+                + flags.1.encoded_len()
         },
     )
 }
@@ -1523,7 +1530,7 @@ fn cell_encode(
         |e| &mut e.cells,
         buf,
         |buf| {
-            let (typ, constraints, refused) = {
+            let (typ, constraints, flags) = {
                 let c = cell.read();
                 if c.rigid_gates != 0 {
                     log::warn!(
@@ -1534,11 +1541,16 @@ fn cell_encode(
                     );
                     return Err(PackError::InvalidFormat);
                 }
-                (c.binding.clone(), c.constraints.to_vec(), c.cycle_refused)
+                (
+                    c.binding.clone(),
+                    c.constraints.to_vec(),
+                    (c.cycle_refused, c.bottom_fed),
+                )
             };
             typ.encode(buf)?;
             slice_encode(&constraints, buf)?;
-            refused.encode(buf)
+            flags.0.encode(buf)?;
+            flags.1.encode(buf)
         },
     )
 }
@@ -1597,10 +1609,12 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
                 let typ = Pack::decode(sub)?;
                 let constraints: Vec<_> = Pack::decode(sub)?;
                 let refused = bool::decode(sub)?;
+                let bottom_fed = bool::decode(sub)?;
                 let mut c = cell.write();
                 c.binding = typ;
                 c.constraints = constraints.into_iter().collect();
                 c.cycle_refused = refused;
+                c.bottom_fed = bottom_fed;
                 drop(c);
                 Ok(cell)
             }

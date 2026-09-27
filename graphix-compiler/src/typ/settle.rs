@@ -56,13 +56,26 @@ impl TVar {
         Ok(Err(candidates))
     }
 
+    /// Bind an unbound cell once its writers are checked: to ⊥ when only
+    /// ⊥ was produced into it ([`TCell::bottom_fed`]), whatever bounds
+    /// it, else as [`Self::settle_witness`].
+    ///
+    /// [`TCell::bottom_fed`]: super::tvar::TCell::bottom_fed
+    pub fn settle(&self, env: &Env) -> Result<()> {
+        if self.cell().read().bottom_fed {
+            return self.settle_bottom();
+        }
+        self.settle_witness(env)
+    }
+
     /// Bind a constrained-unbound cell to its conjunction's [witness].
     /// Bound and unconstrained cells are untouched. No witness is a type
     /// error, unless no conjunct could be one: then the cell stays open
-    /// for its writers to refine.
+    /// for its writers to refine. The only settle before a cell's writers
+    /// are checked, where a ⊥-fed cell may still take a writer's type.
     ///
     /// [witness]: Self::witness
-    pub fn settle(&self, env: &Env) -> Result<()> {
+    pub fn settle_witness(&self, env: &Env) -> Result<()> {
         match self.witness(env)? {
             Ok(w) => {
                 if graphix_dbg_bind() {
@@ -92,35 +105,34 @@ impl TVar {
     /// nothing produced or bounded it. Only the terminal walk uses this
     /// (an earlier call would foreclose writers not yet typechecked).
     pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
-        {
-            let cell = self.cell();
-            let mut cell = cell.write();
-            if cell.binding.is_some() {
-                return Ok(());
-            }
-            if cell.constraints.is_empty() {
-                // The only solution was infinite; ⊥ would be a lie.
-                if cell.cycle_refused {
-                    if graphix_dbg_bind() {
-                        eprintln!(
-                            "SETTLE-INFINITE '{}({:x})",
-                            self.name,
-                            self.cell_addr()
-                        );
-                    }
-                    bail!("{INFINITE_TYPE_MSG}")
-                }
-                if graphix_dbg_bind() {
-                    eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
-                }
-                if graphix_dbg_bind_bt_id().is_some() {
-                    eprintln!("{}", std::backtrace::Backtrace::force_capture());
-                }
-                cell.binding = Some(Type::Bottom);
-                return Ok(());
-            }
+        match self.cell_constraints().is_empty() {
+            true => self.settle_bottom(),
+            false => self.settle(env),
         }
-        self.settle(env)
+    }
+
+    /// Bind an unbound cell to ⊥; a bound one is untouched.
+    fn settle_bottom(&self) -> Result<()> {
+        let cell = self.cell();
+        let mut cell = cell.write();
+        if cell.binding.is_some() {
+            return Ok(());
+        }
+        // The only solution was infinite; ⊥ would be a lie.
+        if cell.cycle_refused {
+            if graphix_dbg_bind() {
+                eprintln!("SETTLE-INFINITE '{}({:x})", self.name, self.cell_addr());
+            }
+            bail!("{INFINITE_TYPE_MSG}")
+        }
+        if graphix_dbg_bind() {
+            eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
+        }
+        if graphix_dbg_bind_bt_id().is_some() {
+            eprintln!("{}", std::backtrace::Backtrace::force_capture());
+        }
+        cell.binding = Some(Type::Bottom);
+        Ok(())
     }
 }
 

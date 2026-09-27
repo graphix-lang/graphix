@@ -91,6 +91,10 @@ pub struct TCell {
     /// solution was an infinite type). A flagged cell still open at
     /// the terminal settle must error rather than default to ⊥.
     pub(crate) cycle_refused: bool,
+    /// A ⊥ was produced into this cell while it was unbound. Every other
+    /// production binds a cell, so one still open once its writers are
+    /// checked had only ⊥ produced into it (`TVar::settle`).
+    pub(crate) bottom_fed: bool,
     /// Nonzero while a declared (named) lambda tvar is inside its def's
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
@@ -458,12 +462,14 @@ impl TVar {
             }
         }
         // Dedup computed lock-free: the identity walk can re-enter these cells.
-        let (mut to_add, refused) = if same {
-            (LPooled::take(), false)
+        let (mut to_add, (refused, bottom_fed)) = if same {
+            (LPooled::take(), (false, false))
         } else {
             let mine = s_cell.read().constraints.clone();
             let theirs = o_cell.read().constraints.clone();
-            (new_conjuncts(&theirs, mine), s_cell.read().cycle_refused)
+            let conjuncts = new_conjuncts(&theirs, mine);
+            let s = s_cell.read();
+            (conjuncts, (s.cycle_refused, s.bottom_fed))
         };
         let oid = other.read().id;
         let mut s = self.write();
@@ -487,6 +493,7 @@ impl TVar {
             let mut oc = o_cell.write();
             oc.constraints.extend(to_add.drain(..));
             oc.cycle_refused |= refused;
+            oc.bottom_fed |= bottom_fed;
         }
         // Forward-link the abandoned cell: other TVars may share it and
         // must follow the merge. The occurs check above guarantees the
@@ -571,6 +578,14 @@ impl TVar {
         self.read().cell.read().rigid_gates > 0
     }
 
+    /// Record a ⊥ produced into the open cell; see [`TCell::bottom_fed`].
+    pub(super) fn mark_bottom_fed(&self) {
+        if graphix_dbg_bind() {
+            eprintln!("BOTTOM-FED '{}({:x})", self.name, self.cell_addr());
+        }
+        self.cell().write().bottom_fed = true;
+    }
+
     /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
     pub(super) fn mark_cycle_refused(&self) {
         if graphix_dbg_bind() {
@@ -622,8 +637,16 @@ impl TVar {
         }
         // A var whose only solution was infinite in the source is
         // infinite in every copy.
-        if self.read().cell.read().cycle_refused {
-            f.read().cell.write().cycle_refused = true;
+        let (refused, bottom_fed) = {
+            let c = self.cell();
+            let c = c.read();
+            (c.cycle_refused, c.bottom_fed)
+        };
+        {
+            let c = f.cell();
+            let mut c = c.write();
+            c.cycle_refused |= refused;
+            c.bottom_fed |= bottom_fed;
         }
         if let Some(t) = self.binding() {
             f.bind(walk(&t, fresh, memo).unwrap_or(t));

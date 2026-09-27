@@ -1211,3 +1211,24 @@ const BOTTOM_OPERAND: &str = r#"{
 }"#;
 
 run!(bottom_operand, BOTTOM_OPERAND, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))));
+
+// An operand only ⊥ was produced into is ⊥, whatever the operator bounds
+// it by: a let over ⊥, a call whose body is ⊥, in any arrangement. A
+// writer still gives the let its type.
+const BOTTOM_FED_OPERANDS: &str = r#"{
+  let g = |b: bool| never();
+  let t = never();
+  let u = never();
+  let a = t + u;
+  let b = g(true) + { let v = g(false); v };
+  let c = { let v = g(false); let w = g(true); v * w };
+  let d = t < u;
+  let w = never();
+  let e = w + w;
+  w <- 2.5;
+  e
+}"#;
+
+run!(bottom_fed_operands, BOTTOM_FED_OPERANDS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::F64(5.0)))
+});
