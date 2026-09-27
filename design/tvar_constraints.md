@@ -1,7 +1,7 @@
 # TVar cell constraints
 
 Status: built 2026-07-12
-Pins: `stdlib/graphix-tests/src/lang/select.rs` (`gated_scalar_unannotated`), `stdlib/graphix-tests/src/lang/functions.rs` (`lazy_three_level`, `inlang_map`), `stdlib/graphix-package-rand/src/test.rs` (`rand_float_default`), `graphix-compiler/src/expr/test.rs` (the round-trip proptest), `graphix-fuzz/findings/{settle-order-jul2026,infinite-type-jul2026,tvar-alias-sever-jul2026,bound-cell-cycle-accepts-aug2026}/`
+Pins: `stdlib/graphix-tests/src/lang/select.rs` (`gated_scalar_unannotated`), `stdlib/graphix-tests/src/lang/types.rs` (`concrete_targets_are_known_where_they_settle`), `stdlib/graphix-tests/src/lang/functions.rs` (`same_named_tvar_in_callback_arg`), `stdlib/graphix-tests/src/lang/functions.rs` (`lazy_three_level`, `inlang_map`), `stdlib/graphix-package-rand/src/test.rs` (`rand_float_default`), `graphix-compiler/src/expr/test.rs` (the round-trip proptest), `graphix-fuzz/findings/{settle-order-jul2026,infinite-type-jul2026,tvar-alias-sever-jul2026,bound-cell-cycle-accepts-aug2026}/`
 
 ## The problem this solves
 
@@ -135,6 +135,35 @@ fact, and erasing it made the static type lie about the runtime value
   only the witness (`settle_witness`): the cell's writers are not
   checked yet.
 
+### `Concrete`: a conjunct that is a predicate
+
+`'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever
+binds the cell is fully known: no open cell and no ⊥ in it. The
+type-directed builtins declare it on their target (`str::parse`, the
+json/toml/pack/sqlite reads, `sys::net::subscribe`/`call`, the db
+trees); their `Apply::typecheck1` hooks only extract the type they cast
+to and never refuse.
+
+- `Concrete ⊇ t` is a probe: no ⊥ in `t`, bound cells judged by their
+  bindings, open cells admitted. A bind of a `Concrete` cell hands the
+  conjunct to every open cell its binding reaches (`TVar::bind`), so the
+  requirement is hereditary.
+- It is never a witness, like a trait conjunct. A cell whose conjunct it
+  is stays open until the terminal settle, which refuses it open or ⊥
+  ("the type 'b must be fully known here"), but only at a position of
+  the settled signature: a conjunct's own cells are no position.
+- It travels as a conjunct: merged by aliasing, copied at instantiation,
+  packed and imaged with the type, printed in the `fn<'b: Concrete>`
+  header. A rigid variable absorbs it the way `|x: 'r| x + x` absorbs
+  `Number`, and the inferred signature carries it to every call.
+
+A definition's check runs no `typecheck1`, so its call sites record
+their terminal settle in the gate's frame (`CallSite::typecheck0` under
+a gate), and the gate hands them to the enclosing statement's drain with
+every cell its signature reaches exempt (`DefGate::close`): a cell the
+definition owns is judged at the definition, called or not; a
+signature's cell stays generalized and each call settles its copy.
+
 ### Quantified function formals
 
 A formal of function type with its own quantifiers (`|f: F|`, `type F
@@ -211,10 +240,12 @@ former consumer derives from the cells:
   guards, marking `cycle_refused`). Scope-aware alias legs were
   diagnosed before implementation (`GRAPHIX_DBG_CYCLE_BT`): the benign
   cross-scope class and genuine infinite types have IDENTICAL refusal
-  channel profiles (~50% positional `would_cycle` in argument
-  acceptance walks, ~25% CallSite containment, ~15% instance checks,
-  ~5% via `alias_tvars`), so scoping the alias legs would remove only
-  that last 5% and change no outcome. The only discriminator is the
+  channel profiles (positional `would_cycle` in argument acceptance
+  walks, CallSite containment, instance checks). A fresh call signature
+  is never aliased by name: `reset_tvars` keeps its topology by cell and
+  only freezes the cells that repeat (`FnType::freeze_shared_tvars`), so
+  a callback argument holding another function's `'b` stays apart from
+  the callee's own. The only discriminator is the
   marked cell's STATE at terminal settle (open and unconstrained →
   error), which the dependency-ordered settle controls
   deterministically. Nested-fn name flatness within one signature is

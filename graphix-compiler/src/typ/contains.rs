@@ -524,6 +524,8 @@ impl Type {
             return behind.contains_int(flags, env, hist, t);
         }
         match (self, t) {
+            (Self::Concrete, t) => Ok(t.concrete_holds()),
+            (_, Self::Concrete) => Ok(false),
             (Self::Hole, Self::Hole) => Ok(true),
             (Self::Hole, Self::TVar(tv)) => match tv.binding() {
                 Some(b) => Self::Hole.contains_int(flags, env, hist, &b),

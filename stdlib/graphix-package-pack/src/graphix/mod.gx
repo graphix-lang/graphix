@@ -1,2 +1,2 @@
-let read = |input: bytes| -> Result<'b, [`PackErr(string), `InvalidCast(string)]> 'pack_read;
+let read = 'b: Concrete |input: bytes| -> Result<'b, [`PackErr(string), `InvalidCast(string)]> 'pack_read;
 let write_bytes = |value: Any| -> Result<bytes, `PackErr(string)> 'pack_write_bytes

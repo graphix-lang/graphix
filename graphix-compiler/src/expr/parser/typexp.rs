@@ -75,7 +75,9 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    sep_by1(typ(), attempt(spaces().with(token('+'))))
+    let concrete = attempt(spaces().with(string("Concrete")).skip(not_prefix()))
+        .map(|_| Type::Concrete);
+    sep_by1(choice((concrete, typ())), attempt(spaces().with(token('+'))))
 }
 
 /// Flatten `(tvar, bounds)` pairs into one `(tvar, type)` pair per

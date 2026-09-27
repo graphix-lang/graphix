@@ -1564,8 +1564,10 @@ pub(crate) struct PendingSettle {
     pub(crate) ftype: FnType,
     /// The site's return-type cell.
     pub(crate) rtype: Option<typ::TVar>,
-    /// Defaulted-argument cells (by address) exempt from settling.
-    pub(crate) defaulted: AHashSet<usize>,
+    /// Cells (by address) exempt from settling: an omitted defaulted
+    /// argument's, and those the signature of an enclosing definition
+    /// reaches (generalized, settled by each call).
+    pub(crate) exempt: AHashSet<usize>,
     pub(crate) spec: Arc<Expr>,
 }
 
@@ -1829,7 +1831,11 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let st = Instant::now();
     let p = profile::phase(Phase::Typecheck0);
-    node.typecheck0(ctx)?;
+    if let Err(e) = node.typecheck0(ctx) {
+        ctx.pending_settles.clear();
+        ctx.pending_settles.push(Vec::new());
+        return Err(e);
+    }
     drop(p);
     let p = profile::phase(Phase::Typecheck1);
     if let Err(e) = node.typecheck1(ctx) {
@@ -1863,7 +1869,7 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
     use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
     for s in pending.iter() {
-        s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.defaulted).at(&*s.spec)?;
+        s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.exempt).at(&*s.spec)?;
     }
     Ok(())
 }

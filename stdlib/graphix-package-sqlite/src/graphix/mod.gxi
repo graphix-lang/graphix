@@ -15,7 +15,7 @@ val exec_batch: fn(conn: Connection, sql: string) -> Result<null, `SqliteError(s
 
 /// Query rows, deserializing each into the annotated type.
 /// Annotate as Array<{...}> for typed structs, or Array<Map<string, SqlVal>> for raw maps.
-val query: fn(conn: Connection, sql: string, params: Array<SqlVal>) -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]>;
+val query: fn<'a: Concrete>(conn: Connection, sql: string, params: Array<SqlVal>) -> Result<Array<'a>, [`SqliteError(string), `InvalidCast(string)]>;
 
 /// Begin a transaction.
 val begin: fn(conn: Connection) -> Result<null, `SqliteError(string)>;

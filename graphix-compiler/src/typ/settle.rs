@@ -42,7 +42,10 @@ impl TVar {
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
             // conjunct reaching this cell has no finite witness.
-            if c.is_trait_ref(env) || would_cycle_inner(addr, c) {
+            if matches!(c, Type::Concrete)
+                || c.is_trait_ref(env)
+                || would_cycle_inner(addr, c)
+            {
                 continue;
             }
             candidates = true;
@@ -107,8 +110,22 @@ impl TVar {
     pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
         match self.cell_constraints().is_empty() {
             true => self.settle_bottom(),
-            false => self.settle(env),
+            false => {
+                self.settle(env)?;
+                if !self.is_bound() && self.requires_concrete() {
+                    return Err(self.not_concrete());
+                }
+                Ok(())
+            }
         }
+    }
+
+    fn not_concrete(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "the type '{} must be fully known here, a type-directed operation reads it: \
+             annotate it",
+            self.name
+        )
     }
 
     /// Bind an unbound cell to ⊥; a bound one is untouched.
@@ -117,6 +134,10 @@ impl TVar {
         let mut cell = cell.write();
         if cell.binding.is_some() {
             return Ok(());
+        }
+        if cell.constraints.iter().any(|c| matches!(c, Type::Concrete)) {
+            drop(cell);
+            return Err(self.not_concrete());
         }
         // The only solution was infinite; ⊥ would be a lie.
         if cell.cycle_refused {
@@ -171,12 +192,12 @@ impl FnType {
     /// dependency order: a member settles only after every member its
     /// binding or constraints reach. Ordering keys are (name, TVarId)
     /// only — `cell_addr` is ASLR-dependent and used for identity alone.
-    /// `defaulted` cells are ordered but not settled.
+    /// `exempt` cells are ordered but not settled.
     pub fn settle_terminal(
         &self,
         env: &Env,
         rtype_cell: Option<&TVar>,
-        defaulted: &AHashSet<usize>,
+        exempt: &AHashSet<usize>,
     ) -> Result<()> {
         let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut tvs);
@@ -225,12 +246,77 @@ impl FnType {
         for i in 0..nodes.len() {
             visit(i, &edges, &mut seen, &mut order);
         }
+        // a `Concrete` cell met only inside a conjunct is no position of
+        // the signature: nothing reads it, so it is left as it stands
+        let mut positional: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.for_each_part(&mut |t, constraint| {
+            if !constraint {
+                position_cells(t, &mut positional)
+            }
+        });
         for i in order.drain(..) {
             let tv = &nodes[i].1;
-            if !defaulted.contains(&tv.cell_addr()) {
-                tv.settle_or_bottom(env)?;
+            let addr = tv.cell_addr();
+            if exempt.contains(&addr)
+                || (!positional.contains_key(&addr) && tv.requires_concrete())
+            {
+                continue;
+            }
+            tv.settle_or_bottom(env)?;
+        }
+        // a position under a binding is read too: nothing settles it, so
+        // an open `Concrete` one is refused here
+        for (addr, tv) in positional.iter() {
+            if !exempt.contains(addr) && !tv.is_bound() && tv.requires_concrete() {
+                return Err(tv.not_concrete());
             }
         }
         Ok(())
     }
+}
+
+impl FnType {
+    /// Every cell the signature reaches, through bindings and conjuncts.
+    pub(crate) fn reached_cells(&self, out: &mut AHashSet<usize>) {
+        self.for_each_part(&mut |t, _| reached_cells(t, out))
+    }
+}
+
+fn reached_cells(t: &Type, out: &mut AHashSet<usize>) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if out.insert(tv.cell_addr()) {
+                let (bound, cons) = {
+                    let cell = tv.cell();
+                    let cell = cell.read();
+                    (cell.binding.clone(), cell.constraints.clone())
+                };
+                for t in bound.iter().chain(cons.iter()) {
+                    reached_cells(t, out)
+                }
+            }
+        }
+        Type::Fn(ft) => ft.reached_cells(out),
+        t => t.for_each_child(&mut |c| reached_cells(c, out)),
+    })
+}
+
+/// The cells `t` holds as positions, through bindings, never through
+/// conjuncts.
+fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            if out.insert(tv.cell_addr(), tv.clone()).is_none()
+                && let Some(b) = tv.binding()
+            {
+                position_cells(&b, out)
+            }
+        }
+        Type::Fn(ft) => ft.for_each_part(&mut |t, constraint| {
+            if !constraint {
+                position_cells(t, out)
+            }
+        }),
+        t => t.for_each_child(&mut |c| position_cells(c, out)),
+    })
 }

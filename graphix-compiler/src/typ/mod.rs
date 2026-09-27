@@ -76,6 +76,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         Type::Map { .. }
         | Type::App(..)
         | Type::Hole
+        | Type::Concrete
         | Type::Primitive(_)
         | Type::Any
         | Type::Bottom
@@ -639,6 +640,10 @@ pub enum Type {
     /// The hole in a type constructor, written `'_` (`impl Collection
     /// for Array<'_>`). Legal nowhere else.
     Hole,
+    /// The conjunct `'a: Concrete`: whatever binds the cell is fully known,
+    /// with no open cell and no ⊥ in it, so a type-directed builtin can act
+    /// on it. Legal only as a constraint.
+    Concrete,
 }
 
 mod tag {
@@ -660,6 +665,7 @@ mod tag {
     pub const ABSTRACT: u8 = 15;
     pub const APP: u8 = 16;
     pub const HOLE: u8 = 17;
+    pub const CONCRETE: u8 = 18;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -714,6 +720,7 @@ impl Type {
             Type::Bottom => out.put_u8(tag::BOTTOM),
             Type::Any => out.put_u8(tag::ANY),
             Type::Hole => out.put_u8(tag::HOLE),
+            Type::Concrete => out.put_u8(tag::CONCRETE),
             Type::Primitive(p) => {
                 out.put_u8(tag::PRIMITIVE);
                 out.put_u64_le(p.bits() as u64);
@@ -801,7 +808,7 @@ impl Type {
 
     fn shape_len_inner(&self) -> usize {
         1 + match self {
-            Type::Bottom | Type::Any | Type::Hole => 0,
+            Type::Bottom | Type::Any | Type::Hole | Type::Concrete => 0,
             Type::Primitive(p) => p.encoded_len(),
             Type::Ref(r) => r.encoded_len(),
             Type::Fn(f) => f.encoded_len(),
@@ -827,6 +834,7 @@ impl Type {
             Type::Bottom => Ok(buf.put_u8(tag::BOTTOM)),
             Type::Any => Ok(buf.put_u8(tag::ANY)),
             Type::Hole => Ok(buf.put_u8(tag::HOLE)),
+            Type::Concrete => Ok(buf.put_u8(tag::CONCRETE)),
             Type::Primitive(p) => {
                 buf.put_u8(tag::PRIMITIVE);
                 p.encode(buf)
@@ -902,6 +910,7 @@ impl Type {
             tag::BOTTOM => Type::Bottom,
             tag::ANY => Type::Any,
             tag::HOLE => Type::Hole,
+            tag::CONCRETE => Type::Concrete,
             tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
             tag::REF => Type::Ref(PackTrait::decode(buf)?),
             tag::FN => Type::Fn(PackTrait::decode(buf)?),
@@ -972,6 +981,7 @@ impl PartialEq for Type {
             (Type::Bottom, _) => matches!(other, Type::Bottom),
             (Type::Any, _) => matches!(other, Type::Any),
             (Type::Hole, _) => matches!(other, Type::Hole),
+            (Type::Concrete, _) => matches!(other, Type::Concrete),
             (Type::Primitive(a), _) => matches!(other, Type::Primitive(b) if a == b),
             _ => ensure_sufficient(|| self.eq_composite(other)),
         }
@@ -992,6 +1002,7 @@ impl Type {
             Type::Bottom => matches!(other, Type::Bottom),
             Type::Any => matches!(other, Type::Any),
             Type::Hole => matches!(other, Type::Hole),
+            Type::Concrete => matches!(other, Type::Concrete),
             Type::Primitive(a) => matches!(other, Type::Primitive(b) if a == b),
             Type::Ref(a) => matches!(other, Type::Ref(b) if a == b),
             Type::Fn(a) => {
@@ -1047,6 +1058,7 @@ impl Type {
             Type::Abstract { .. } => tag::ABSTRACT,
             Type::App(..) => tag::APP,
             Type::Hole => tag::HOLE,
+            Type::Concrete => tag::CONCRETE,
         }
     }
 
@@ -1088,9 +1100,11 @@ impl PartialOrd for Type {
 impl Ord for Type {
     fn cmp(&self, other: &Self) -> Ordering {
         self.rank().cmp(&other.rank()).then_with(|| match self {
-            Type::Bottom | Type::Any | Type::Hole | Type::Primitive(_) => {
-                self.cmp_fields(other)
-            }
+            Type::Bottom
+            | Type::Any
+            | Type::Hole
+            | Type::Concrete
+            | Type::Primitive(_) => self.cmp_fields(other),
             _ => ensure_sufficient(|| self.cmp_fields(other)),
         })
     }
@@ -1100,7 +1114,7 @@ impl Hash for Type {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.rank().hash(state);
         match self {
-            Type::Bottom | Type::Any | Type::Hole => (),
+            Type::Bottom | Type::Any | Type::Hole | Type::Concrete => (),
             Type::Primitive(p) => p.hash(state),
             t => ensure_sufficient(|| match t {
                 Type::Ref(r) => r.hash(state),
@@ -1128,7 +1142,11 @@ impl Hash for Type {
                     c.hash(state);
                     a.hash(state)
                 }
-                Type::Bottom | Type::Any | Type::Hole | Type::Primitive(_) => (),
+                Type::Bottom
+                | Type::Any
+                | Type::Hole
+                | Type::Concrete
+                | Type::Primitive(_) => (),
             }),
         }
     }
@@ -1157,6 +1175,7 @@ impl Drop for Type {
             Type::Bottom
             | Type::Any
             | Type::Hole
+            | Type::Concrete
             | Type::Primitive(_)
             | Type::TVar(_) => false,
             Type::Ref(tr) => tr.params.is_unique() || tr.resolved.is_unique(),
@@ -1178,7 +1197,11 @@ impl Drop for Type {
         // SAFETY: each field is read out once and `t` is never dropped.
         ensure_sufficient(|| unsafe {
             match &*t {
-                Type::Bottom | Type::Any | Type::Hole | Type::Primitive(_) => (),
+                Type::Bottom
+                | Type::Any
+                | Type::Hole
+                | Type::Concrete
+                | Type::Primitive(_) => (),
                 Type::Ref(r) => drop(ptr::read(r)),
                 Type::Fn(f) => drop(ptr::read(f)),
                 Type::TVar(tv) => drop(ptr::read(tv)),
@@ -1234,7 +1257,8 @@ impl Type {
             | Type::Any
             | Type::Primitive(_)
             | Type::TVar(_)
-            | Type::Hole => ControlFlow::Continue(()),
+            | Type::Hole
+            | Type::Concrete => ControlFlow::Continue(()),
             Type::App(c, a) => {
                 f(c)?;
                 f(a)
@@ -1293,7 +1317,8 @@ impl Type {
             | Type::Any
             | Type::Primitive(_)
             | Type::TVar(_)
-            | Type::Hole => None,
+            | Type::Hole
+            | Type::Concrete => None,
             Type::App(c, a) => match (f(c), f(a)) {
                 (None, None) => None,
                 (c2, a2) => Some(Type::app(
@@ -1811,7 +1836,7 @@ impl Type {
                 Some(filled) => ensure_sufficient(|| filled.with_deref(f)),
                 None => f(Some(self)),
             },
-            Self::Hole => f(Some(self)),
+            Self::Hole | Self::Concrete => f(Some(self)),
             Self::Bottom
             | Self::Abstract { .. }
             | Self::Any

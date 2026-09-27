@@ -2,7 +2,6 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::bail;
 use arcstr::ArcStr;
 use graphix_compiler::{
     ExecCtx, Node, Rt, Scope, UserEvent, errf,
@@ -215,9 +214,6 @@ impl EvalCachedAsync for SqliteQueryEv {
         resolved: &FnType,
     ) -> anyhow::Result<()> {
         self.cast_typ = extract_cast_type(Some(resolved));
-        if self.cast_typ.is_none() {
-            bail!("sqlite::query requires a concrete return type annotation")
-        }
         Ok(())
     }
 

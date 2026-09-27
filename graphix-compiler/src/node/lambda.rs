@@ -28,7 +28,7 @@ use crate::{
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds, tvar::RigidGate},
     wrap,
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
@@ -1044,6 +1044,7 @@ impl Lambda {
 /// its own cells (`ExecCtx::rec_defs`). Every path leaves by `close`.
 struct DefGate<R: Rt, E: UserEvent> {
     def: LambdaId,
+    sig: Arc<FnType>,
     faux_id: BindId,
     args: LPooled<Vec<Node<R, E>>>,
     scope: Scope,
@@ -1075,7 +1076,8 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
-        Self { def: def.id, faux_id, args, scope, rigid }
+        ctx.pending_settles.push(Vec::new());
+        Self { def: def.id, sig: def.typ.clone(), faux_id, args, scope, rigid }
     }
 
     /// The error type the body raised to the gate's catch.
@@ -1083,7 +1085,16 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         ctx.env.by_id[&self.faux_id].typ.deref_cloned().unwrap_or(Type::Bottom)
     }
 
+    /// The body's sites settle with the enclosing statement, all but the
+    /// cells this signature reaches: those stay open, generalized.
     fn close(mut self, ctx: &mut ExecCtx<R, E>) {
+        let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
+        let mut sig: LPooled<AHashSet<usize>> = LPooled::take();
+        self.sig.reached_cells(&mut sig);
+        for s in frame.iter_mut() {
+            s.exempt.extend(sig.iter().copied());
+        }
+        ctx.pending_settles.last_mut().expect("root settle frame").extend(frame);
         ctx.def_gate_depth -= 1;
         ctx.rec_defs.remove(&self.def);
         ctx.env.by_id.remove_cow(&self.faux_id);

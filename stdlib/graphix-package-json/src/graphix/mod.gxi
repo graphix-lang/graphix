@@ -1,7 +1,7 @@
 /// Parse JSON from a string or bytes.
 ///
 /// To parse a stream, read it first — `json::read(Read::read_all(f)?)`.
-val read: fn(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
+val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`JsonErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a JSON string.
 val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `JsonErr(string)>;

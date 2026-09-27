@@ -1,7 +1,7 @@
 /// Decode a value from packed binary bytes.
 ///
 /// To decode from a stream, read it first — `pack::read(Read::read_all(f)?)`.
-val read: fn(input: bytes) -> Result<'b, [`PackErr(string), `InvalidCast(string)]>;
+val read: fn<'b: Concrete>(input: bytes) -> Result<'b, [`PackErr(string), `InvalidCast(string)]>;
 
 /// Encode a value to packed binary bytes.
 ///

@@ -14,8 +14,7 @@ use graphix_compiler::{
     typ::{FnType, Type},
 };
 use graphix_package_core::{
-    CachedArgs, CachedVals, EvalCached, FastMemo, cast_target, extract_cast_type,
-    fast_eval, fast_eval_typed,
+    CachedArgs, CachedVals, EvalCached, FastMemo, cast_target, fast_eval, fast_eval_typed,
 };
 use netidx::{path::Path, subscriber::Value};
 use netidx_derive::FromValue;
@@ -861,9 +860,6 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        if extract_cast_type(Some(resolved)).is_none() {
-            bail!("str::parse requires a concrete return type")
-        }
         self.rtype = Some(resolved.rtype.clone());
         Ok(())
     }

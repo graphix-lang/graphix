@@ -345,9 +345,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         resolved: &FnType,
     ) -> Result<()> {
         self.cast_typ = extract_cast_type(Some(resolved));
-        if self.cast_typ.is_none() {
-            bail!("sys::net::subscribe requires a concrete return type")
-        }
         Ok(())
     }
 
@@ -489,9 +486,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         resolved: &FnType,
     ) -> Result<()> {
         self.cast_typ = extract_cast_type(Some(resolved));
-        if self.cast_typ.is_none() {
-            bail!("sys::net::call requires a concrete return type")
-        }
         if let Some(args_arg) = resolved.args.get(1) {
             deref_typ!("struct, null, or Any", ctx, &args_arg.typ,
                 Some(Type::Struct(_)) => Ok(()),

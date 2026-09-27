@@ -1,7 +1,7 @@
 /// Parse TOML from a string or bytes.
 ///
 /// To parse a stream, read it first — `toml::read(Read::read_all(f)?)`.
-val read: fn(input: [string, bytes]) -> Result<'b, [`TomlErr(string), `InvalidCast(string)]>;
+val read: fn<'b: Concrete>(input: [string, bytes]) -> Result<'b, [`TomlErr(string), `InvalidCast(string)]>;
 
 /// Serialize a value to a TOML string.
 val write_str: fn(?#pretty: bool, value: Any) -> Result<string, `TomlErr(string)>;

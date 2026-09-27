@@ -372,7 +372,10 @@ impl TVar {
 
     /// Bind the cell, replacing any binding.
     pub(crate) fn bind(&self, t: Type) {
-        self.read().cell.write().binding = Some(t)
+        if self.requires_concrete() {
+            t.require_concrete();
+        }
+        self.cell().write().binding = Some(t)
     }
 
     /// Add a conjunct to this var's cell constraints (deduped).
@@ -506,6 +509,11 @@ impl TVar {
         self.write().frozen = true;
     }
 
+    /// Whether the cell holds the `Concrete` conjunct.
+    pub(crate) fn requires_concrete(&self) -> bool {
+        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Concrete))
+    }
+
     /// Bind self to `binding` (other's, read by the caller), merging
     /// other's constraints into self's cell.
     pub(super) fn copy(&self, other: &Self, binding: Type) {
@@ -540,9 +548,15 @@ impl TVar {
         }
         let existing = s_cell.read().constraints.clone();
         let mut to_add = new_conjuncts(&existing, ocons);
-        let mut sc = s_cell.write();
-        sc.binding = Some(binding);
-        sc.constraints.extend(to_add.drain(..));
+        let concrete = {
+            let mut sc = s_cell.write();
+            sc.binding = Some(binding.clone());
+            sc.constraints.extend(to_add.drain(..));
+            sc.constraints.iter().any(|c| matches!(c, Type::Concrete))
+        };
+        if concrete {
+            binding.require_concrete();
+        }
     }
 
     pub fn normalize(&self) -> Self {
@@ -659,6 +673,39 @@ impl TVar {
 // plain recursion (chiefly whether `Ref` params are walked); the rest
 // routes through `Type::try_for_each_child` / `Type::cow_children`.
 impl Type {
+    /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ anywhere,
+    /// bound cells judged by their bindings, open cells admitted (a bind
+    /// hands them the conjunct).
+    pub(crate) fn concrete_holds(&self) -> bool {
+        ensure_sufficient(|| match self {
+            Type::Bottom => false,
+            Type::TVar(tv) => tv.binding().is_none_or(|b| b.concrete_holds()),
+            Type::Fn(ft) => {
+                let mut holds = true;
+                ft.for_each_part(&mut |t, _| holds &= t.concrete_holds());
+                holds
+            }
+            t => {
+                let mut holds = true;
+                t.for_each_child(&mut |c| holds &= c.concrete_holds());
+                holds
+            }
+        })
+    }
+
+    /// Hand the `Concrete` conjunct to every open cell the type reaches:
+    /// a concrete cell's binding is concrete all the way down.
+    pub(crate) fn require_concrete(&self) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => b.require_concrete(),
+                None => tv.add_cell_constraint(Type::Concrete),
+            },
+            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.require_concrete()),
+            t => t.for_each_child(&mut |c| c.require_concrete()),
+        })
+    }
+
     /// Every type variable the structure holds, bindings not entered.
     pub(crate) fn tvar_occurrences(&self, out: &mut Vec<TVar>) {
         ensure_sufficient(|| match self {

@@ -81,7 +81,8 @@ fn union_identical_inner(t0: &Type, t1: &Type) -> bool {
         }
         (Type::Bottom, Type::Bottom)
         | (Type::Any, Type::Any)
-        | (Type::Hole, Type::Hole) => true,
+        | (Type::Hole, Type::Hole)
+        | (Type::Concrete, Type::Concrete) => true,
         (Type::App(c0, a0), Type::App(c1, a1)) => {
             union_identical(c0, c1) && union_identical(a0, a1)
         }
@@ -224,7 +225,9 @@ impl Type {
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)
-            | (_, Type::Hole) => {
+            | (_, Type::Hole)
+            | (Type::Concrete, _)
+            | (_, Type::Concrete) => {
                 if self == t {
                     Ok(self.clone())
                 } else {
@@ -362,7 +365,9 @@ impl Type {
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)
-            | (_, Type::Hole) => Ok(if self == t {
+            | (_, Type::Hole)
+            | (Type::Concrete, _)
+            | (_, Type::Concrete) => Ok(if self == t {
                 Type::Primitive(BitFlags::empty())
             } else {
                 self.clone()

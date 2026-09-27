@@ -6,10 +6,10 @@ type RpcArg<'a> = { default: 'a, doc: string };
 val write: fn(path: string, value: Any) -> Result<_, `WriteError(string)>;
 
 /// subscribe to the specified path
-val subscribe: fn(path: string) -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]>;
+val subscribe: fn<'a: Concrete>(path: string) -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]>;
 
 /// call the specified rpc. args must be a struct or null.
-val call: fn(path: string, args: 'a) -> Result<'b, [`RpcError(string), `InvalidCast(string)]>;
+val call: fn<'b: Concrete>(path: string, args: 'a) -> Result<'b, [`RpcError(string), `InvalidCast(string)]>;
 
 /// Publish an rpc,
 /// - spec ('spec) must be a struct where every field is a RpcArg, or null (no arguments)

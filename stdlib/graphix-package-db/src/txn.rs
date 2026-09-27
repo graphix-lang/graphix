@@ -507,9 +507,6 @@ impl EvalCachedAsync for DbTxnTreeEv {
         let (k, v) = extract_type_strings_from_rtype(Some(resolved));
         self.key_typ_str = k;
         self.val_typ_str = v;
-        if self.key_typ.is_none() {
-            bail!("db::tree requires concrete key and value types")
-        }
         Ok(())
     }
 

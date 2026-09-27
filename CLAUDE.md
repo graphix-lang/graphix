@@ -327,7 +327,12 @@ loop. Bottom never reaches builtin authors: a bottomed arg bottoms the
 invocation before `eval`; raw `Apply` authors read args through
 `seam_arg`/`seam_tick`/`seam_value`. Configuration a fast fn derives
 from its args (a regex, a template registry) lives in a bounded
-thread-local `FastMemo`, never in state.
+thread-local `FastMemo`, never in state. A type-directed builtin
+(`str::parse`, the reads) declares its target `'b: Concrete`; the checker
+refuses the target where it settles open, and the builtin's
+`typecheck1` only extracts the type, never refuses
+(`design/tvar_constraints.md`). A definition's call sites settle with
+the enclosing statement, the signature's cells exempt.
 
 **Collection intrinsics** (`node/collection.rs`,
 `design/collection_intrinsics.md`): the Array/List/Map traversal HOFs

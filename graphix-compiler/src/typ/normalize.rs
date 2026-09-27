@@ -70,6 +70,7 @@ pub(crate) fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Abstract { .. }
         | Type::App(..)
         | Type::Hole
+        | Type::Concrete
         | Type::Ref(_)
         | Type::TVar(_)
         | Type::Variant(_, _, _) => None,
@@ -201,7 +202,11 @@ impl Type {
             return r.clone();
         }
         let r = match self {
-            Type::Bottom | Type::Any | Type::Primitive(_) | Type::Hole => None,
+            Type::Bottom
+            | Type::Any
+            | Type::Primitive(_)
+            | Type::Hole
+            | Type::Concrete => None,
             Type::App(c, a) => {
                 match (c.resolve_tvars_seen_int(cx), a.resolve_tvars_seen_int(cx)) {
                     (None, None) => None,
@@ -317,7 +322,8 @@ impl Type {
             | Type::Any
             | Type::Abstract { .. }
             | Type::Primitive(_)
-            | Type::Hole => None,
+            | Type::Hole
+            | Type::Concrete => None,
             Type::App(c, a) => match (c.normalize_int(cx), a.normalize_int(cx)) {
                 (None, None) => None,
                 (c2, a2) => Some(Type::app(
@@ -437,7 +443,9 @@ impl Type {
             (Type::App(..), _)
             | (_, Type::App(..))
             | (Type::Hole, _)
-            | (_, Type::Hole) => {
+            | (_, Type::Hole)
+            | (Type::Concrete, _)
+            | (_, Type::Concrete) => {
                 if self == t {
                     Some(self.clone())
                 } else {

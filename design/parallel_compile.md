@@ -86,7 +86,8 @@ must not change output. `detcheck` is the test for that.
 
 ## Open design items
 
-**Type-directed builtins.** About 17 builtins have an `Apply::typecheck1`
+**Type-directed builtins.** BUILT on the branch as the `Concrete`
+conjunct (`design/tvar_constraints.md`). About 17 builtins have an `Apply::typecheck1`
 hook (`str::parse`; the json, toml, pack, sqlite, db and hbs reads). It
 both learns the builtin's target type and refuses one it cannot use. When
 the site is inside a lambda, the hook runs only in the instance, so

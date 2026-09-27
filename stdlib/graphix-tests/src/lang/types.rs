@@ -453,6 +453,48 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
+// A type-directed builtin's target is `'b: Concrete`: refused where it
+// settles open, at the definition when the definition owns the cell (a
+// function never called included), at each call when the signature
+// carries it.
+#[tokio::test(flavor = "current_thread")]
+async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
+    for src in [
+        r#"{ let f = |x| { let y = str::parse("1"); x }; 0 }"#,
+        r#"{ let p = |s| str::parse(s); p("1") }"#,
+        r#"{ let p = 'b: Concrete |s: string| -> Result<'b, `ParseError(string)> str::parse(s); p("1") }"#,
+        r#"{ let m = {"a" => 1}; map::map(m, |(k, v)| (json::read("1"), v)) }"#,
+    ] {
+        let msg = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => format!("{e:#}"),
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(
+            msg.contains("must be fully known here"),
+            "wrong refusal for {src}: {msg}"
+        );
+    }
+    for (src, expected) in [
+        (
+            r#"{ let p = |s| str::parse(s); let x: Result<i64, `ParseError(string)> = p("41"); x$ + 1 }"#,
+            42,
+        ),
+        (
+            r#"{ let r: Result<i64, [`JsonErr(string), `InvalidCast(string)]> = json::read("41"); r$ + 1 }"#,
+            42,
+        ),
+        (
+            r#"{ let p = |s: string| -> Result<i64, `ParseError(string)> str::parse(s); p("41")$ + 1 }"#,
+            42,
+        ),
+    ] {
+        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        assert_eq!(v, Value::I64(expected), "{src}");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
 // A let-bound bare cast (no `$`/`?`) has the fallible union type and
 // marshals as a Value.
 const CAST_LET_WIRE_SHAPE: &str = r#"

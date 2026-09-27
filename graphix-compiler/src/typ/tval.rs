@@ -142,6 +142,7 @@ impl<'a> TVal<'a> {
                 Type::Primitive(_)
                 | Type::Abstract { .. }
                 | Type::Hole
+                | Type::Concrete
                 | Type::Bottom
                 | Type::Any
                 | Type::Error(_),

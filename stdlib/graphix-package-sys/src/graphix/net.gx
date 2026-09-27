@@ -1,6 +1,6 @@
 let write = |path: string, value: Any| -> Result<_, `WriteError(string)> 'sys_net_write;
-let subscribe = |path: string| -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]> 'sys_net_subscribe;
-let call = |path: string, args: 'a| -> Result<'b, [`RpcError(string), `InvalidCast(string)]> 'sys_net_call;
+let subscribe = 'a: Concrete |path: string| -> Result<'a, [`SubscribeError(string), `InvalidCast(string)]> 'sys_net_subscribe;
+let call = 'b: Concrete |path: string, args: 'a| -> Result<'b, [`RpcError(string), `InvalidCast(string)]> 'sys_net_call;
 let rpc = |
     #path: string,
     #doc: string,

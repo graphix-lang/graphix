@@ -784,8 +784,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     let res = f(ctx);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
     for s in pending.iter() {
-        if let Err(e) = s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.defaulted)
-        {
+        if let Err(e) = s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.exempt) {
             if crate::dbgenv::gxdbg_swallow() {
                 eprintln!("SWALLOWED-LAZY-SETTLE at {}: {e:#}", s.spec);
             }

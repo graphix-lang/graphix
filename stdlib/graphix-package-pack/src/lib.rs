@@ -2,7 +2,7 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use anyhow::{Result, bail};
+use anyhow::Result;
 use arcstr::ArcStr;
 use bytes::Bytes;
 use graphix_compiler::{
@@ -56,9 +56,6 @@ impl EvalCachedAsync for PackReadEv {
         resolved: &FnType,
     ) -> Result<()> {
         self.cast_typ = extract_cast_type(Some(resolved));
-        if self.cast_typ.is_none() {
-            bail!("pack::read requires a concrete return type")
-        }
         Ok(())
     }
 

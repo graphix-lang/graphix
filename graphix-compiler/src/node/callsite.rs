@@ -815,6 +815,35 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(())
     }
 
+    /// This site's terminal settle of still-unbound constrained cells,
+    /// deferred to the statement boundary. Cells reachable from an
+    /// omitted defaulted arg are exempt: the default expression binds
+    /// them at static resolution.
+    fn pending_settle(&self, ftype: &FnType) -> crate::PendingSettle {
+        let mut dtv: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        for farg in ftype.args.iter() {
+            if let FnArgKind::Labeled { name, .. } = &farg.kind
+                && let Some(a) = self.args.get(&ArgKey::Named(name.clone()))
+                && a.is_default
+            {
+                farg.typ.collect_tvars(&mut dtv);
+            }
+        }
+        let exempt: AHashSet<usize> = dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
+        // The call's own result cell joins the settle set: a literal ⊥
+        // rtype unifies without binding it.
+        let rtype = match &self.rtype {
+            Type::TVar(tv) => Some(tv.clone()),
+            _ => None,
+        };
+        crate::PendingSettle {
+            ftype: ftype.clone(),
+            rtype,
+            exempt,
+            spec: self.spec.clone(),
+        }
+    }
+
     fn instance_ftype(&self) -> Option<FnType> {
         self.callee.apply().map(|apply| apply.typ().resolve_tvars())
     }
@@ -1941,6 +1970,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
+        // a definition's check runs no typecheck1: its sites settle through
+        // the gate's frame
+        if ctx.def_gate_depth > 0 {
+            let settle = self.pending_settle(ftype);
+            ctx.pending_settles.last_mut().expect("gate settle frame").push(settle);
+        }
         Ok(())
     }
 
@@ -1967,37 +2002,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         let leftover = ctx.pending_settles.pop().expect("settle frame");
         ctx.pending_settles.last_mut().expect("root settle frame").extend(leftover);
         res?;
-        // Terminal settle of still-unbound constrained cells, deferred to
-        // the statement boundary. Cells reachable from an omitted defaulted
-        // arg are exempt: the default expression binds them at static
-        // resolution.
-        {
-            let mut dtv: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            for farg in ftype.args.iter() {
-                if let FnArgKind::Labeled { name, .. } = &farg.kind
-                    && let Some(a) = self.args.get(&ArgKey::Named(name.clone()))
-                    && a.is_default
-                {
-                    farg.typ.collect_tvars(&mut dtv);
-                }
-            }
-            let defaulted: AHashSet<usize> =
-                dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
-            // The call's own result cell joins the settle set: a literal ⊥
-            // rtype unifies without binding it.
-            let rtc = match &self.rtype {
-                Type::TVar(tv) => Some(tv.clone()),
-                _ => None,
-            };
-            ctx.pending_settles.last_mut().expect("root settle frame").push(
-                crate::PendingSettle {
-                    ftype: ftype.clone(),
-                    rtype: rtc,
-                    defaulted,
-                    spec: self.spec.clone(),
-                },
-            );
-        }
+        let settle = self.pending_settle(&ftype);
+        ctx.pending_settles.last_mut().expect("root settle frame").push(settle);
         Ok(())
     }
 
