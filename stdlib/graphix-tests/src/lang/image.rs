@@ -508,7 +508,6 @@ async fn program_package_root_is_the_script() -> Result<()> {
 #[tokio::test]
 async fn a_bad_registration_image_runs_cold() -> Result<()> {
     use bytes::{Buf, BufMut, BytesMut};
-    use graphix_compiler::image::IdCounts;
     let (tx, _rx) = mpsc::channel(10);
     let (image_tx, image_rx) = oneshot::channel();
     let cold =
@@ -519,7 +518,6 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
     // the trailer's first count, the instance table's length, made huge
     let table_at = {
         let mut b = &image[5..];
-        IdCounts::decode(&mut b)?;
         String::decode(&mut b)?;
         b.advance(8);
         b.get_u64() as usize

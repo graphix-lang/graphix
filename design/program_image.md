@@ -290,10 +290,10 @@ cell, a resolution cell), so it ends, having entered one definition at
 most twice; a third entry is a corrupt image and fails the read. The trailer carries the
 ordinal-to-offset table the reader loads before anything decodes (every
 decode buffer is a slice of the mapped image). An occurrence costs its
-reference, a function of its ordinal alone, in the length pass and in
-any length query of the encode pass, whatever was measured or written
-before it, which is what lets a derived `Pack` frame an image object by
-its measured length. (Earlier versions wrote a definition at its first
+reference, a function of its ordinal alone, in any length query of the
+encode, whatever was measured or written before it, which is what lets
+a derived `Pack` frame an image object by its measured length. The
+writer makes one pass: nothing is measured ahead of the encode. (Earlier versions wrote a definition at its first
 occurrence: an offset-sized reference over-counted, and an ordinal
 reference beside inline definitions could not tell a frame's sibling
 fields from a repeated measurement.) With that, any part of the image
@@ -476,7 +476,9 @@ correctness by recompiling.
 ### IDs: written as minted, block relocation
 
 Encode writes every ID as minted and records each domain's span, the
-smallest and one past the largest. Decode reserves, per domain, one
+smallest and one past the largest; the spans are known only once the
+session ends, so they follow the trailer, at an offset the header
+carries, and the reader takes them before anything decodes. Decode reserves, per domain, one
 block the span's length at or above the span's extent, with a single
 update of that domain's allocator, and offsets every ID into it: an
 allocator never moves backwards and never overlaps anything already

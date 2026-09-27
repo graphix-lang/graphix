@@ -1091,14 +1091,6 @@ pub struct PatternNode<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> PatternNode<R, E> {
-    pub(crate) fn image_len(&self) -> usize {
-        self.explicit_type_predicate.encoded_len()
-            + self.type_predicate.encoded_len()
-            + self.structure_predicate.encoded_len()
-            + 1
-            + self.guard.as_ref().map_or(0, |g| g.image_len())
-    }
-
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.explicit_type_predicate.encode(buf)?;
         self.type_predicate.encode(buf)?;

@@ -12,9 +12,7 @@ use crate::{
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
     image::{
         self, ImageBuf,
-        nodes::{
-            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-        },
+        nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
@@ -889,26 +887,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
-    fn image_len(&self) -> usize {
-        let body = 1 + match &self.body {
-            Body::Static => 0,
-            Body::Dynamic { source, sig_env } => {
-                source.image_len() + sig_env.encoded_len()
-            }
-        };
-        tag_len()
-            + self.spec.encoded_len()
-            + image::flags_len(self.flags)
-            + body
-            + image::lexical_len(&self.env)
-            + self.sig.encoded_len()
-            + image::scope_len(&self.scope)
-            + self.proxy.encoded_len()
-            + nodes_len(&self.nodes)
-            + image::slice_len(&self.catches)
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Module, buf);
         self.spec.encode(buf)?;

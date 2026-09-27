@@ -71,10 +71,6 @@ struct WrapperApply<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         // the wrapper lambda is a runtime definition, built once a cycle ran
         let _ = buf;
@@ -328,17 +324,6 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
-    fn image_len(&self) -> usize {
-        let s = self.state.lock();
-        s.pop_count.encoded_len()
-            + s.count_ref.encoded_len()
-            + s.last_written_depth.encoded_len()
-            + self.fid.encoded_len()
-            + self.top_id.encoded_len()
-            + self.ftyp.as_deref().cloned().encoded_len()
-            + image::scope_len(&self.scope)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let s = self.state.lock();
         // the wrapper lambda and queued invocations exist only once a cycle ran

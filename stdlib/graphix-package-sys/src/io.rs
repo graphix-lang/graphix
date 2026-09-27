@@ -161,10 +161,6 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED
 }
 
 impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> {
-    fn image_len(&self) -> usize {
-        self.id.encoded_len() + self.top_id.encoded_len()
-    }
-
     /// A started instance has a reader task holding the stream.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.started {

@@ -522,10 +522,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
-    fn image_len(&self) -> usize {
-        self.once.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.once.encode(buf)
     }
@@ -581,10 +577,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }

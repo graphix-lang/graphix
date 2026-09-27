@@ -8,7 +8,7 @@
 
 use crate::{ExecCtx, Node, Rt, UserEvent, image::ImageBuf, node};
 use bytes::{Buf, BufMut};
-use netidx_core::pack::{PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{PackError, decode_varint, encode_varint};
 
 /// `PackError::Application` payload: a node kind with no image codec.
 pub const NOT_IMAGED: u64 = 1;
@@ -39,16 +39,8 @@ node_tags! {
     SeqCapture,
 }
 
-pub(crate) fn tag_len() -> usize {
-    1
-}
-
 pub(crate) fn put_tag(tag: NodeTag, buf: &mut ImageBuf) {
     buf.put_u8(tag as u8)
-}
-
-pub fn nodes_len<R: Rt, E: UserEvent>(nodes: &[Node<R, E>]) -> usize {
-    varint_len(nodes.len() as u64) + nodes.iter().map(|n| n.image_len()).sum::<usize>()
 }
 
 pub fn encode_nodes<R: Rt, E: UserEvent>(
@@ -60,10 +52,6 @@ pub fn encode_nodes<R: Rt, E: UserEvent>(
         n.image_encode(buf)?;
     }
     Ok(())
-}
-
-pub(crate) fn opt_node_len<R: Rt, E: UserEvent>(node: Option<&Node<R, E>>) -> usize {
-    1 + node.map_or(0, |n| n.image_len())
 }
 
 pub(crate) fn opt_node_encode<R: Rt, E: UserEvent>(

@@ -13,7 +13,7 @@ use crate::{
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     image::{
         self, ImageBuf,
-        nodes::{NodeTag, decode_node, put_tag, tag_len},
+        nodes::{NodeTag, decode_node, put_tag},
     },
     typ::Type,
     wrap,
@@ -22,7 +22,7 @@ use anyhow::{Result, anyhow};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -852,16 +852,6 @@ impl PoolGroup {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.arg.image_len()
-            + varint_len(self.arms.len() as u64)
-            + self.arms.iter().map(|(p, n)| p.image_len() + n.image_len()).sum::<usize>()
-            + self.typ.encoded_len()
-            + self.spec.encoded_len()
-            + 1
-    }
-
     /// The selection, the consulted mask and the tracker exist only once
     /// a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {

@@ -21,8 +21,8 @@ use crate::{
     },
     image::{
         self, ImageBuf,
-        env::{lexical_decode, lexical_encode, lexical_len},
-        nodes::{NodeTag, decode_node, put_tag, tag_len},
+        env::{lexical_decode, lexical_encode},
+        nodes::{NodeTag, decode_node, put_tag},
     },
     profile::{self, Phase},
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds, tvar::RigidGate},
@@ -257,17 +257,6 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
-    fn image_len(&self) -> usize {
-        self.id.encoded_len()
-            + self.instance_id.encoded_len()
-            + image::slice_len(&self.args)
-            + self.typ.encoded_len()
-            + self.body.image_len()
-            + 2
-            + self.self_bind.lock().encoded_len()
-            + lexical_len(&self.env)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.id.encode(buf)?;
         self.instance_id.encode(buf)?;
@@ -603,10 +592,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for UnknownBuiltIn {
         &self.0
     }
 
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, _: &mut ImageBuf) -> Result<(), PackError> {
         Err(PackError::Application(crate::image::NOT_IMAGED))
     }
@@ -615,10 +600,6 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for UnknownBuiltIn {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
-    fn image_len(&self) -> usize {
-        self.typ.encoded_len() + self.name.encoded_len() + self.apply.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.typ.encode(buf)?;
         self.name.encode(buf)?;
@@ -1155,11 +1136,6 @@ fn check_defaults<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
-    fn image_len(&self) -> usize {
-        let id = self.lambda_id::<R, E>().map_or(0, |id| id.encoded_len());
-        tag_len() + self.spec.encoded_len() + id + self.typ.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Lambda, buf);
         self.spec.encode(buf)?;

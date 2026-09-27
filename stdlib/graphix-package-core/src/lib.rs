@@ -18,7 +18,7 @@ use graphix_compiler::{
 use graphix_rt::GXRt;
 use netidx::{path::Path, publisher::Typ, subscriber::Value};
 use netidx_core::{
-    pack::{Pack, PackError, decode_varint, encode_varint, varint_len},
+    pack::{Pack, PackError, decode_varint, encode_varint},
     utils::Either,
 };
 use netidx_value::{FromValue, ValArray};
@@ -329,7 +329,6 @@ pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 /// implements it for a payload with no state, `pack_image_state!` for
 /// one whose state is its `Pack` encoding.
 pub trait ImageState: Sized {
-    fn image_len(&self) -> usize;
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError>;
     fn image_decode<R: Rt, E: UserEvent>(
         ctx: &mut ExecCtx<R, E>,
@@ -343,11 +342,6 @@ pub trait ImageState: Sized {
 macro_rules! unit_image_state {
     ($($t:ident),* $(,)?) => {$(
         impl $crate::ImageState for $t {
-            fn image_len(&self) -> usize {
-                let $t = self;
-                0
-            }
-
             fn image_encode(
                 &self,
                 _buf: &mut ::graphix_compiler::image::ImageBuf,
@@ -372,10 +366,6 @@ macro_rules! unit_image_state {
 macro_rules! pack_image_state {
     ($($t:ident),* $(,)?) => {$(
         impl $crate::ImageState for $t {
-            fn image_len(&self) -> usize {
-                ::netidx_core::pack::Pack::encoded_len(self)
-            }
-
             fn image_encode(
                 &self,
                 buf: &mut ::graphix_compiler::image::ImageBuf,
@@ -394,12 +384,6 @@ macro_rules! pack_image_state {
 }
 
 impl CachedVals {
-    pub fn image_len(&self) -> usize {
-        varint_len(self.0.len() as u64)
-            + self.0.iter().map(|v| v.encoded_len()).sum::<usize>()
-            + self.1.len()
-    }
-
     pub fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         encode_varint(self.0.len() as u64, buf);
         for v in self.0.iter() {
@@ -683,10 +667,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
-    fn image_len(&self) -> usize {
-        self.woke_pending.encoded_len() + self.cached.image_len() + self.t.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.woke_pending.encode(buf)?;
         self.cached.image_encode(buf)?;
@@ -887,14 +867,6 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
 }
 
 impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T> {
-    fn image_len(&self) -> usize {
-        self.cached.image_len()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-            + self.running.encoded_len()
-            + self.t.image_len()
-    }
-
     /// The queue holds arguments already prepared for `eval`, which
     /// exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1028,10 +1000,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let _ = buf;
         Ok(())
@@ -1108,10 +1076,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
-    fn image_len(&self) -> usize {
-        self.val.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.val.encode(buf)
     }
@@ -1177,10 +1141,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
-    fn image_len(&self) -> usize {
-        self.n.map(|n| n as u64).encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.n.map(|n| n as u64).encode(buf)
     }
@@ -1251,10 +1211,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
-    fn image_len(&self) -> usize {
-        self.n.map(|n| n as u64).encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.n.map(|n| n as u64).encode(buf)
     }
@@ -1745,13 +1701,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
-    fn image_len(&self) -> usize {
-        self.pred.image_len()
-            + self.pending.encoded_len()
-            + self.fid.encoded_len()
-            + self.x.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.pred.image_encode(buf)?;
         self.pending.encode(buf)?;
@@ -1867,14 +1816,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
-    fn image_len(&self) -> usize {
-        varint_len(self.triggered as u64)
-            + varint_len(self.queue.len() as u64)
-            + self.queue.iter().map(|v| v.encoded_len()).sum::<usize>()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         encode_varint(self.triggered as u64, buf);
         encode_varint(self.queue.len() as u64, buf);
@@ -1966,10 +1907,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
-    fn image_len(&self) -> usize {
-        varint_len(self.triggered as u64) + self.current.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         encode_varint(self.triggered as u64, buf);
         self.current.encode(buf)
@@ -2050,10 +1987,6 @@ fn range_len_exceeds_cap(i: i64, j: i64) -> bool {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
-    fn image_len(&self) -> usize {
-        self.id.encoded_len() + self.top_id.encoded_len() + self.args.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.id.encode(buf)?;
         self.top_id.encode(buf)?;
@@ -2164,10 +2097,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
-    fn image_len(&self) -> usize {
-        self.wait.encoded_len() + self.top_id.encoded_len() + self.last_v.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         // a running timer and its wall-clock mark exist only once a cycle ran
         if self.last.is_some() || self.tid.is_some() {
@@ -2298,10 +2227,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
-    fn image_len(&self) -> usize {
-        self.count.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.count.encode(buf)
     }
@@ -2393,10 +2318,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
-    fn image_len(&self) -> usize {
-        self.0.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.0.encode(buf)
     }
@@ -2532,13 +2453,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
-    fn image_len(&self) -> usize {
-        self.spec.encoded_len()
-            + self.dest.encoded_len()
-            + self.typ.encoded_len()
-            + self.buf.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.spec.encode(buf)?;
         self.dest.encode(buf)?;
@@ -2654,10 +2568,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
-    fn image_len(&self) -> usize {
-        image::scope_len(&self.scope) + self.dest.encoded_len() + self.buf.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         image::scope_encode(&self.scope, buf)?;
         self.dest.encode(buf)?;
@@ -2734,10 +2644,6 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> Apply<R, E> for $type {
-            fn image_len(&self) -> usize {
-                self.dest.encoded_len() + self.buf.encoded_len()
-            }
-
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 self.dest.encode(buf)?;
                 self.buf.encode(buf)

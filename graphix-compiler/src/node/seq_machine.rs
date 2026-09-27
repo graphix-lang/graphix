@@ -20,16 +20,14 @@ use crate::{
     },
     image::{
         self, ImageBuf,
-        nodes::{
-            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-        },
+        nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     typ::Type,
 };
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -259,26 +257,6 @@ fn evaluate<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.id.encoded_len()
-            + self.pc.image_len()
-            + varint_len(self.steps.len() as u64)
-            + self
-                .steps
-                .iter()
-                .map(|s| {
-                    s.label.encoded_len()
-                        + s.until.encoded_len()
-                        + nodes_len(&s.nodes)
-                        + image::slice_len(&s.catches)
-                        + s.next.map(|n| n as u64).encoded_len()
-                        + 1
-                })
-                .sum::<usize>()
-    }
-
     /// The awake step and the tracker exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.current.is_some() || self.tracked.is_some() {
@@ -484,15 +462,6 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.machine.encoded_len()
-            + self.snapshot.image_len()
-            + self.live.image_len()
-            + 1
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqCapture, buf);
         self.spec.encode(buf)?;

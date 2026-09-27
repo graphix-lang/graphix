@@ -533,10 +533,6 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         (node as &mut dyn Any).downcast_mut::<T>()
     }
 
-    pub fn image_len(&self) -> usize {
-        stack::ensure_sufficient(|| self.0.image_len())
-    }
-
     pub fn image_encode(
         &self,
         buf: &mut image::ImageBuf,
@@ -635,10 +631,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     ) -> Result<()> {
         Ok(())
     }
-
-    /// The image codec of an application, written before any cycle
-    /// runs; a builtin's decoder is [`BuiltIn::image_decode`].
-    fn image_len(&self) -> usize;
 
     fn image_encode(
         &self,
@@ -803,12 +795,6 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 
     /// The node's typed view for compile-time analysis.
     fn view(&self) -> NodeView<'_, R, E>;
-
-    /// The bytes [`Update::image_encode`] writes: the node's tag and
-    /// compile-time data, children included.
-    fn image_len(&self) -> usize {
-        0
-    }
 
     /// Write this node into an image: its `NodeTag` and the data its
     /// `image_decode` rebuilds it from. State is never written; an

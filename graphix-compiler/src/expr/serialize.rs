@@ -81,19 +81,7 @@ impl Expr {
 impl Pack for Expr {
     fn encoded_len(&self) -> usize {
         if image::is_encoding() {
-            image::object_len(
-                &image::expr_key(self),
-                |k| (*k, ()),
-                |e| &mut e.exprs,
-                || match self.id == NOP.id {
-                    true => 1,
-                    false => {
-                        1 + self.id.encoded_len()
-                            + image::origin_len(&self.ori)
-                            + self.syntax_len()
-                    }
-                },
-            )
+            image::object_len(&image::expr_key(self), |k| (*k, ()), |e| &mut e.exprs)
         } else {
             self.syntax_len()
         }

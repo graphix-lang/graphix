@@ -728,15 +728,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
-    fn image_len(&self) -> usize {
-        self.id.encoded_len()
-            + self.top_id.encoded_len()
-            + self.handler.image_len()
-            + self.pid.encoded_len()
-            + self.x.encoded_len()
-            + self.ready.encoded_len()
-    }
-
     /// `abort` is a running server; `queue` holds requests awaiting a
     /// reply.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {

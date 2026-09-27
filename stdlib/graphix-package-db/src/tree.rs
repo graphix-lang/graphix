@@ -393,16 +393,6 @@ pub(crate) struct DbTreeArgs {
     val_typ_str: ArcStr,
 }
 
-pub(crate) fn tree_types_len(
-    key_typ: Option<Typ>,
-    key_typ_str: &ArcStr,
-    val_typ_str: &ArcStr,
-) -> usize {
-    key_typ.map(|t| t as u64).encoded_len()
-        + key_typ_str.encoded_len()
-        + val_typ_str.encoded_len()
-}
-
 pub(crate) fn tree_types_encode(
     key_typ: Option<Typ>,
     key_typ_str: &ArcStr,
@@ -438,10 +428,6 @@ pub(crate) struct DbTreeEv {
 }
 
 impl ImageState for DbTreeEv {
-    fn image_len(&self) -> usize {
-        tree_types_len(self.key_typ, &self.key_typ_str, &self.val_typ_str)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         tree_types_encode(self.key_typ, &self.key_typ_str, &self.val_typ_str, buf)
     }

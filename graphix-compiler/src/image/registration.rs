@@ -1,17 +1,18 @@
 //! The registration image: a compiler session's state after the
 //! package root modules compiled and before any cycle ran, so a warm
 //! start restores it instead of compiling. Layout: magic, version, the
-//! id counts, the ISA description, the heap and trailer offsets, then
-//! the environment, the definitions, the context's tables, the root
-//! nodes, the root scope and the program root, all under one image
-//! session, then the instance heap, the shared objects' definitions and
-//! the trailer (the instance table, the eager object counts and every
-//! definition's offset). The writer measures everything first, then
-//! encodes.
+//! ISA description, the heap, trailer and id-count offsets, then the
+//! environment, the definitions, the context's tables, the root nodes,
+//! the root scope and the program root, all under one image session,
+//! then the instance heap, the shared objects' definitions, the trailer
+//! (the instance table, the eager object counts and every definition's
+//! offset) and last the id counts, known once the session ends. The
+//! writer encodes in one pass; the reader takes the counts before
+//! anything decodes.
 
 use super::{
     DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder, defs,
-    nodes, scope_decode, scope_encode, scope_len,
+    nodes, scope_decode, scope_encode,
 };
 use crate::{
     BindId, BuiltinBindInfo, ExecCtx, LambdaId, LambdaInstanceId, Node, Rt, Scope,
@@ -28,14 +29,14 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes};
 use compact_str::CompactString;
 use log::{info, warn};
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 17;
+pub const REGISTRATION_FORMAT: u8 = 18;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -136,17 +137,6 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
         })
     }
 
-    fn len(&self) -> usize {
-        varint_len(self.defs.len() as u64)
-            + self.defs.iter().map(|d| defs::def_len(d)).sum::<usize>()
-            + self.bind_to_lambda.encoded_len()
-            + self.builtin_bindings.encoded_len()
-            + self.fn_forward_resolutions.encoded_len()
-            + self.connect_targets.encoded_len()
-            + self.batch_connect_targets.encoded_len()
-            + self.tags.encoded_len()
-    }
-
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         encode_varint(self.defs.len() as u64, buf);
         for d in &self.defs {
@@ -208,108 +198,78 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let tables = Tables::collect(self)?;
         let mut enc = ImageEncoder::new();
         enc.defer_instances = program.is_some();
-        // XCR claude for eric: agreed, but dropping this pass leaves `image_len`
-        // dead on every node kind, `Apply` and builtin (40 files, every package):
-        // one mechanical deletion after the review merges, not a half here. The
-        // cost is the cold write's only (a warm start measures nothing).
-        let measure = |enc: &mut ImageEncoder| {
-            enc.deferred_len = 0;
-            EncodeImage::with(enc, || {
-                let env_len = self.env.encoded_len();
-                let tables_len = tables.len();
-                let nodes_len = varint_len(nodes.len() as u64)
-                    + nodes
-                        .iter()
-                        .map(|(id, n)| id.encoded_len() + n.image_len())
-                        .sum::<usize>();
-                info!(
-                    "registration image bounds: env {env_len} defs {tables_len} nodes {nodes_len} bytes"
-                );
-                env_len
-                    + tables_len
-                    + nodes_len
-                    + scope_len(scope)
-                    + 1
-                    + program.map_or(0, |p| p.encoded_len())
-            })
-        };
-        let p = profile::phase(Phase::ImageMeasure);
-        let body_bound = measure(&mut enc) + enc.deferred_len + enc.defs_len;
-        drop(p);
-        let counts = enc.counts();
         let isa = crate::fusion::emit::isa_description();
-        let mut buf = ImageBuf::with_capacity(
-            MAGIC.len() + 1 + counts.encoded_len() + isa.encoded_len() + 16 + body_bound,
-        );
+        let mut buf = ImageBuf::default();
         buf.put_slice(MAGIC);
         buf.put_u8(REGISTRATION_FORMAT);
-        counts.encode(&mut buf)?;
         isa.encode(&mut buf)?;
         let offsets_at = buf.len();
         buf.put_u64(0);
         buf.put_u64(0);
+        buf.put_u64(0);
+        let body_at = buf.len();
         EncodeImage::with(&mut enc, || -> Result<(), PackError> {
-            {
-                let p = profile::phase(Phase::ImageEncode);
-                self.env.encode(&mut buf)?;
-                let env_bytes = buf.len();
-                tables.encode(&mut buf)?;
-                let defs_bytes = buf.len() - env_bytes;
-                encode_varint(nodes.len() as u64, &mut buf);
-                for (id, n) in nodes {
-                    id.encode(&mut buf)?;
-                    n.image_encode(&mut buf)?;
-                }
-                let nodes_bytes = buf.len() - env_bytes - defs_bytes;
-                scope_encode(scope, &mut buf)?;
-                program.is_some().encode(&mut buf)?;
-                if let Some(p) = program {
-                    p.encode(&mut buf)?;
-                }
-                let heap_at = buf.len();
-                drop(p);
-                let p = profile::phase(Phase::ImageHeap);
-                let eager = image::encoding(|e| e.object_counts()).unwrap_or_default();
-                loop {
-                    let Some((id, body)) =
-                        image::encoding(|e| e.deferred.pop()).flatten()
-                    else {
-                        break;
-                    };
-                    let at = buf.len() as u64;
-                    body(&mut buf)?;
-                    image::encoding(|e| e.instances.insert(id, at));
-                }
-                let defs_at = buf.len();
-                let offsets = image::encoding(|e| e.finish(&mut buf))
-                    .ok_or(PackError::InvalidFormat)?;
-                let table_at = buf.len();
-                drop(p);
-                let _p = profile::phase(Phase::ImageTrailer);
-                let instances = image::encoding(|e| std::mem::take(&mut e.instances))
-                    .unwrap_or_default();
-                encode_varint(instances.len() as u64, &mut buf);
-                for (id, at) in instances {
-                    id.encode(&mut buf)?;
-                    encode_varint(at, &mut buf);
-                }
-                eager.encode(&mut buf)?;
-                encode_varint(offsets.len() as u64, &mut buf);
-                for at in offsets {
-                    encode_varint(at, &mut buf);
-                }
-                buf.patch_u64(offsets_at, heap_at as u64);
-                buf.patch_u64(offsets_at + 8, table_at as u64);
-                info!(
-                    "registration image: env {env_bytes} defs {defs_bytes} nodes {nodes_bytes} \
-                     heap {} objects {} total {} bytes",
-                    defs_at - heap_at,
-                    table_at - defs_at,
-                    buf.len()
-                );
-                Ok(())
+            let p = profile::phase(Phase::ImageEncode);
+            self.env.encode(&mut buf)?;
+            let env_bytes = buf.len() - body_at;
+            tables.encode(&mut buf)?;
+            let defs_bytes = buf.len() - body_at - env_bytes;
+            encode_varint(nodes.len() as u64, &mut buf);
+            for (id, n) in nodes {
+                id.encode(&mut buf)?;
+                n.image_encode(&mut buf)?;
             }
+            let nodes_bytes = buf.len() - body_at - env_bytes - defs_bytes;
+            scope_encode(scope, &mut buf)?;
+            program.is_some().encode(&mut buf)?;
+            if let Some(p) = program {
+                p.encode(&mut buf)?;
+            }
+            let heap_at = buf.len();
+            drop(p);
+            let p = profile::phase(Phase::ImageHeap);
+            let eager = image::encoding(|e| e.object_counts()).unwrap_or_default();
+            loop {
+                let Some((id, body)) = image::encoding(|e| e.deferred.pop()).flatten()
+                else {
+                    break;
+                };
+                let at = buf.len() as u64;
+                body(&mut buf)?;
+                image::encoding(|e| e.instances.insert(id, at));
+            }
+            let defs_at = buf.len();
+            let offsets = image::encoding(|e| e.finish(&mut buf))
+                .ok_or(PackError::InvalidFormat)?;
+            let table_at = buf.len();
+            drop(p);
+            let _p = profile::phase(Phase::ImageTrailer);
+            let instances =
+                image::encoding(|e| std::mem::take(&mut e.instances)).unwrap_or_default();
+            encode_varint(instances.len() as u64, &mut buf);
+            for (id, at) in instances {
+                id.encode(&mut buf)?;
+                encode_varint(at, &mut buf);
+            }
+            eager.encode(&mut buf)?;
+            encode_varint(offsets.len() as u64, &mut buf);
+            for at in offsets {
+                encode_varint(at, &mut buf);
+            }
+            buf.patch_u64(offsets_at, heap_at as u64);
+            buf.patch_u64(offsets_at + 8, table_at as u64);
+            info!(
+                "registration image: env {env_bytes} defs {defs_bytes} nodes {nodes_bytes} \
+                 heap {} objects {} total {} bytes",
+                defs_at - heap_at,
+                table_at - defs_at,
+                buf.len()
+            );
+            Ok(())
         })?;
+        let counts_at = buf.len();
+        enc.counts().encode(&mut buf)?;
+        buf.patch_u64(offsets_at + 16, counts_at as u64);
         Ok(buf.freeze())
     }
 
@@ -352,18 +312,23 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         if bytes.get_u8() != REGISTRATION_FORMAT {
             return Err(PackError::InvalidFormat);
         }
-        let counts = IdCounts::decode(&mut bytes)?;
         let isa = String::decode(&mut bytes)?;
         if isa != crate::fusion::emit::isa_description() {
             warn!("the image was written for another isa: {isa}");
             return Err(PackError::InvalidFormat);
         }
-        if bytes.remaining() < 16 {
+        if bytes.remaining() < 24 {
             return Err(PackError::BufferShort);
         }
         let heap_at = bytes.get_u64() as usize;
         let table_at = bytes.get_u64() as usize;
-        if heap_at > table_at || table_at > image.len() {
+        let counts_at = bytes.get_u64() as usize;
+        if heap_at > table_at || table_at > counts_at || counts_at > image.len() {
+            return Err(PackError::InvalidFormat);
+        }
+        let mut counts_bytes = &image[counts_at..];
+        let counts = IdCounts::decode(&mut counts_bytes)?;
+        if counts_bytes.has_remaining() {
             return Err(PackError::InvalidFormat);
         }
         let mut dec = ImageDecoder::new(counts)?;
@@ -376,7 +341,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         );
         let (scope, program) =
             DecodeImage::with(&mut dec, || -> Result<_, PackError> {
-                let mut table = &image[table_at..];
+                let mut table = &image[table_at..counts_at];
                 // every entry is two varints at least, every offset one
                 let n = decode_varint(&mut table)? as usize;
                 let mut instances = AHashMap::with_capacity(n.min(table.len() / 2));

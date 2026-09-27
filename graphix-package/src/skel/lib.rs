@@ -45,12 +45,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
     // The image is written before any cycle runs: encode exactly the state
-    // `init` built (bind ids, generated nodes, configuration), keeping
-    // `image_len` in lockstep with `image_encode`.
-    fn image_len(&self) -> usize {
-        0
-    }
-
+    // `init` built (bind ids, generated nodes, configuration).
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }

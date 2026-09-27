@@ -9,7 +9,7 @@ use graphix_compiler::{
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::subscriber::Value;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::ValArray;
 use poolshark::local::LPooled;
 use std::{collections::VecDeque, fmt::Debug};
@@ -138,10 +138,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
-    fn image_len(&self) -> usize {
-        self.id.encoded_len() + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.id.encode(buf)?;
         self.top_id.encode(buf)
@@ -238,22 +234,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
-    fn image_len(&self) -> usize {
-        self.triggered.encoded_len()
-            + varint_len(self.queue.len() as u64)
-            + self
-                .queue
-                .iter()
-                .map(|(i, pairs)| {
-                    i.encoded_len()
-                        + varint_len(pairs.len() as u64)
-                        + pairs.iter().map(|p| p.encoded_len()).sum::<usize>()
-                })
-                .sum::<usize>()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.triggered.encode(buf)?;
         encode_varint(self.queue.len() as u64, buf);

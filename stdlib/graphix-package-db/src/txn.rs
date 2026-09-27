@@ -3,7 +3,7 @@ use crate::{
     tree::{
         DEFAULT_TREE_META, META_TREE, check_or_store_meta, extract_key_typ_from_rtype,
         extract_type_strings_from_rtype, get_db, read_meta, tree_types_decode,
-        tree_types_encode, tree_types_len, types_are_concrete,
+        tree_types_encode, types_are_concrete,
     },
 };
 use ahash::AHashMap;
@@ -458,10 +458,6 @@ pub(crate) struct DbTxnTreeEv {
 }
 
 impl ImageState for DbTxnTreeEv {
-    fn image_len(&self) -> usize {
-        tree_types_len(self.key_typ, &self.key_typ_str, &self.val_typ_str)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         tree_types_encode(self.key_typ, &self.key_typ_str, &self.val_typ_str, buf)
     }

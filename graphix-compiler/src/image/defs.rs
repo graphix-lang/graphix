@@ -5,8 +5,8 @@
 //! `Apply` is rebuilt on first use.
 
 use super::{
-    env::{lexical_decode, lexical_encode, lexical_len},
-    flags_decode, flags_encode, flags_len, scope_decode, scope_encode, scope_len,
+    env::{lexical_decode, lexical_encode},
+    flags_decode, flags_encode, scope_decode, scope_encode,
 };
 use crate::{
     ExecCtx, LambdaId, Rt, UserEvent,
@@ -19,14 +19,6 @@ use netidx_core::pack::{Pack, PackError};
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use triomphe::Arc;
-
-fn body_len(body: &DefBody) -> usize {
-    1 + match body {
-        DefBody::Expr(e) => e.encoded_len(),
-        DefBody::BuiltIn(name) => name.encoded_len(),
-        DefBody::Collection(intrinsic) => intrinsic.encoded_len(),
-    }
-}
 
 fn body_encode(body: &DefBody, buf: &mut impl BufMut) -> Result<(), PackError> {
     match body {
@@ -55,36 +47,6 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
         2 => Ok(DefBody::Collection(Pack::decode(buf)?)),
         _ => Err(PackError::UnknownTag),
     }
-}
-
-pub(crate) fn def_len<R: Rt, E: UserEvent>(def: &LambdaDef<R, E>) -> usize {
-    let LambdaDef {
-        id,
-        env,
-        scope,
-        argspec,
-        typ,
-        init: _,
-        check: _,
-        intrinsic_effect,
-        stateless,
-        recursion,
-        source,
-        origin,
-    } = def;
-    let DefOrigin::Source { body, flags, spec } = origin else { return 0 };
-    id.encoded_len()
-        + lexical_len(env)
-        + scope_len(scope)
-        + argspec.encoded_len()
-        + typ.encoded_len()
-        + intrinsic_effect.lock().encoded_len()
-        + stateless.load(Ordering::Relaxed).encoded_len()
-        + recursion.lock().encoded_len()
-        + source.encoded_len()
-        + body_len(body)
-        + flags_len(*flags)
-        + spec.encoded_len()
 }
 
 pub(crate) fn def_encode<R: Rt, E: UserEvent>(

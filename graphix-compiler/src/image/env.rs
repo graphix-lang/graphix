@@ -203,18 +203,6 @@ impl Pack for ImplDef {
 /// A scope-keyed map of name-keyed maps, shared at both levels.
 type Nested<V> = Map<ModPath, Map<CompactString, V>>;
 
-fn nested_len<V>(m: &Nested<V>) -> usize
-where
-    V: Pack + Clone + Send + Sync + 'static,
-{
-    shared_map::map_len(m, &mut |scope, inner| {
-        scope.encoded_len()
-            + shared_map::map_len(inner, &mut |name, v| {
-                name.encoded_len() + v.encoded_len()
-            })
-    })
-}
-
 fn nested_encode<V, B: BufMut>(m: &Nested<V>, buf: &mut B) -> Result<(), PackError>
 where
     V: Pack + Clone + Send + Sync + 'static,
@@ -244,10 +232,10 @@ where
 /// A definition's or a module's snapshot: only the lexical fields are
 /// ever read from it (`Env::restore_lexical_env`), so only they travel.
 pub(crate) fn lexical_len(env: &Env) -> usize {
-    nested_len(&env.binds)
+    shared_map::map_len(&env.binds)
         + SharedSet(env.modules.clone()).encoded_len()
-        + nested_len(&env.typedefs)
-        + nested_len(&env.traits)
+        + shared_map::map_len(&env.typedefs)
+        + shared_map::map_len(&env.traits)
 }
 
 pub(crate) fn lexical_encode(env: &Env, buf: &mut impl BufMut) -> Result<(), PackError> {

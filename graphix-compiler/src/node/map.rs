@@ -9,7 +9,7 @@ use crate::{
     },
     image::{
         ImageBuf,
-        nodes::{NodeTag, decode_node, put_tag, tag_len},
+        nodes::{NodeTag, decode_node, put_tag},
     },
     typ::Type,
     wrap,
@@ -18,7 +18,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -103,15 +103,6 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
-    fn image_len(&self) -> usize {
-        let entries = self.entries.iter().map(|(k, v)| k.image_len() + v.image_len());
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + varint_len(self.entries.len() as u64)
-            + entries.sum::<usize>()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Map, buf);
         self.spec.encode(buf)?;
@@ -279,15 +270,6 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.source.image_len()
-            + self.key.image_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.vtyp.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::MapRef, buf);
         self.source.image_encode(buf)?;

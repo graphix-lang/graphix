@@ -85,14 +85,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
-    fn image_len(&self) -> usize {
-        self.id.encoded_len()
-            + match &self.dv {
-                Either::Left(_) => 0,
-                Either::Right(queued) => queued.encoded_len(),
-            }
-    }
-
     /// `Left` is a live subscription.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let queued = match &self.dv {
@@ -267,13 +259,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
-    fn image_len(&self) -> usize {
-        self.slept.encoded_len()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-            + self.cast_typ.encoded_len()
-    }
-
     /// `cur` is a live subscription.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.cur.is_some() {
@@ -430,10 +415,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
-    fn image_len(&self) -> usize {
-        self.top_id.encoded_len() + self.id.encoded_len() + self.cast_typ.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.top_id.encode(buf)?;
         self.id.encode(buf)?;
@@ -587,10 +568,6 @@ macro_rules! list {
         }
 
         impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
-            fn image_len(&self) -> usize {
-                self.id.encoded_len() + self.top_id.encoded_len()
-            }
-
             /// `current` is a list the resolver is serving.
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 if self.current.is_some() {
@@ -774,16 +751,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
-    fn image_len(&self) -> usize {
-        self.slept.encoded_len()
-            + self.top_id.encoded_len()
-            + self.x.encoded_len()
-            + self.pid.encoded_len()
-            + self.wid.encoded_len()
-            + self.on_write.image_len()
-            + self.cast_typ.encoded_len()
-    }
-
     /// `current` is a live publication.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.current.is_some() {
@@ -1123,17 +1090,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
-    fn image_len(&self) -> usize {
-        self.slept.encoded_len()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-            + self.f.image_len()
-            + self.pid.encoded_len()
-            + self.x.encoded_len()
-            + self.ready.encoded_len()
-            + self.cast_typ.encoded_len()
-    }
-
     /// `current` is a live procedure; `queue` holds calls awaiting a
     /// reply.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {

@@ -24,7 +24,7 @@ use cranelift_codegen::{
     ir::{GlobalValue, LibCall},
 };
 use cranelift_module::DataId;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -433,32 +433,6 @@ fn kind_tag(k: &RecordKind) -> u8 {
 
 /// A record is an image object: a body shared by several regions is
 /// written once, and its callees before it.
-pub(crate) fn record_len(r: &Arc<BodyRecord>) -> usize {
-    image::object_len(
-        &(Arc::as_ptr(r) as usize),
-        |k| (*k, r.clone()),
-        |e| &mut e.records,
-        || {
-            let BodyRecord { kind, label, bytes, align, relocs, callees, kernel } = &**r;
-            let kind_len = match kind {
-                RecordKind::Kernel { consts, thunk } => {
-                    image::slice_len(consts) + 1 + thunk.as_ref().map_or(0, record_len)
-                }
-                RecordKind::Thunk | RecordKind::Wrapper => 0,
-            };
-            1 + label.encoded_len()
-                + varint_len(bytes.len() as u64)
-                + bytes.len()
-                + varint_len(*align)
-                + image::slice_len(relocs)
-                + varint_len(callees.len() as u64)
-                + callees.iter().map(record_len).sum::<usize>()
-                + kernel_abi::kernel_sig_len(kernel)
-                + kind_len
-        },
-    )
-}
-
 pub(crate) fn record_encode(
     r: &Arc<BodyRecord>,
     buf: &mut impl BufMut,

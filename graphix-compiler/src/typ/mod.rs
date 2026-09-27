@@ -352,15 +352,6 @@ pub struct TypeRef {
     pub(in crate::typ) resolved: Arc<Mutex<Option<Weak<ResolvedRef>>>>,
 }
 
-pub(crate) fn resolved_len(r: &ResolvedRef) -> usize {
-    let ResolvedRef { canonical_scope, pos, ori, params, typ } = r;
-    canonical_scope.encoded_len()
-        + image::pos_len(pos)
-        + image::origin_len(ori)
-        + params.encoded_len()
-        + typ.encoded_len()
-}
-
 pub(crate) fn resolved_encode(
     r: &ResolvedRef,
     buf: &mut impl BufMut,
@@ -947,11 +938,7 @@ impl Type {
 /// written once and referenced afterwards.
 impl PackTrait for Type {
     fn encoded_len(&self) -> usize {
-        if image::is_encoding() {
-            image::type_len(self, || self.shape_len())
-        } else {
-            self.shape_len()
-        }
+        if image::is_encoding() { image::type_len(self) } else { self.shape_len() }
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {

@@ -10,7 +10,7 @@ use crate::{
     expr::ExprId,
     fusion::{
         FusedKernel, collect_region_inputs,
-        emit::{WrappedKernel, record_decode, record_encode, record_len},
+        emit::{WrappedKernel, record_decode, record_encode},
         for_each_reachable_node,
         kernel_abi::{KernelSig, SelfBlock, SiteAnchor},
     },
@@ -20,7 +20,7 @@ use crate::{
 };
 use anyhow::Result;
 use bytes::BufMut;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use triomphe::Arc;
 
 /// What a region's code bakes beyond its inputs: the callee bodies it
@@ -250,37 +250,6 @@ pub(crate) fn fuse_slot<R: Rt, E: UserEvent>(
 }
 
 impl SlotShare {
-    pub(crate) fn image_len(&self) -> usize {
-        varint_len(self.base as u64)
-            + varint_len(self.table.len() as u64)
-            + self
-                .table
-                .iter()
-                .map(|e| {
-                    1 + e.as_ref().map_or(0, |e| {
-                        let w = &e.jit;
-                        e.root.encoded_len()
-                            + varint_len(w.state_words as u64)
-                            + w.slot_table_words.encoded_len()
-                            + w.own_site.encoded_len()
-                            + w.state_self_blocks.encoded_len()
-                            + record_len(&w.wrapper)
-                            + e.print.callees.encoded_len()
-                            + varint_len(e.print.raises.len() as u64)
-                            + e.print
-                                .raises
-                                .iter()
-                                .map(|(h, t, s)| {
-                                    image::handler_len(h)
-                                        + t.encoded_len()
-                                        + s.encoded_len()
-                                })
-                                .sum::<usize>()
-                    })
-                })
-                .sum::<usize>()
-    }
-
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         encode_varint(self.base as u64, buf);
         encode_varint(self.table.len() as u64, buf);

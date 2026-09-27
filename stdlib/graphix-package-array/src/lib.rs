@@ -394,16 +394,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
-    fn image_len(&self) -> usize {
-        self.queue.encoded_len()
-            + self.buf.encoded_len()
-            + self.pred.image_len()
-            + self.ready.encoded_len()
-            + self.pid.encoded_len()
-            + self.nid.encoded_len()
-            + self.xid.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.queue.encode(buf)?;
         self.buf.encode(buf)?;
@@ -530,10 +520,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
-    fn image_len(&self) -> usize {
-        self.0.encoded_len() + self.1.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.0.encode(buf)?;
         self.1.encode(buf)
@@ -622,13 +608,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
-    fn image_len(&self) -> usize {
-        self.triggered.encoded_len()
-            + self.queue.encoded_len()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.triggered.encode(buf)?;
         self.queue.encode(buf)?;

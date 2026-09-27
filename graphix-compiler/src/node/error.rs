@@ -14,10 +14,7 @@ use crate::{
     },
     image::{
         self, ImageBuf,
-        nodes::{
-            NodeTag, decode_node, opt_node_decode, opt_node_encode, opt_node_len,
-            put_tag, tag_len,
-        },
+        nodes::{NodeTag, decode_node, opt_node_decode, opt_node_encode, put_tag},
     },
     typ::{Type, TypeRef},
     wrap,
@@ -276,27 +273,6 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.handler.image_len()
-            + opt_node_len(self.seq_abort.as_ref().map(|a| &a.node))
-            + self.seq_abort.as_ref().map_or(0, |a| {
-                true.encoded_len()
-                    + match &a.role {
-                        AbortRole::Machine { manual, pc } => {
-                            opt_node_len(manual.as_ref()) + pc.encoded_len()
-                        }
-                        AbortRole::Try { capture } => capture.encoded_len(),
-                    }
-            })
-            + image::handler_len(&self.own_handler)
-            + self.constraint.encoded_len()
-            + self.thrown.encoded_len()
-            + self.bind_id.encoded_len()
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Catch, buf);
         self.spec.encode(buf)?;
@@ -813,18 +789,6 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + 1
-            + self.handler.as_ref().map_or(0, image::handler_len)
-            + self.top_id.encoded_len()
-            + self.n.image_len()
-            + 1
-            + image::flags_len(self.flags)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Qop, buf);
         self.spec.encode(buf)?;
@@ -1017,14 +981,6 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.n.image_len()
-            + image::handler_len(&self.handler)
-            + image::handler_len(&self.machine)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqGuard, buf);
         self.spec.encode(buf)?;
@@ -1171,13 +1127,6 @@ impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.n.image_len()
-            + image::handler_len(&self.machine)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::SeqAbort, buf);
         self.spec.encode(buf)?;
@@ -1267,14 +1216,6 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.n.image_len()
-            + 1
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::OrNever, buf);
         self.spec.encode(buf)?;

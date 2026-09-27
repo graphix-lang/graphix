@@ -23,8 +23,8 @@ use crate::{
     image::{
         self, ImageBuf,
         nodes::{
-            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, opt_node_decode,
-            opt_node_encode, opt_node_len, put_tag, tag_len,
+            NodeTag, decode_node, decode_nodes, encode_nodes, opt_node_decode,
+            opt_node_encode, put_tag,
         },
     },
     perfdbg,
@@ -41,7 +41,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use indexmap::{IndexMap, map::Entry as ArgEntry};
 use log::{error, warn};
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -1471,13 +1471,6 @@ const CALLEE_INSTANCE: u8 = 1;
 const CALLEE_BUILTIN: u8 = 2;
 
 impl<R: Rt, E: UserEvent> Arg<R, E> {
-    fn image_len(&self, key: &ArgKey) -> usize {
-        key.encoded_len()
-            + self.id.encoded_len()
-            + opt_node_len(self.node.as_ref())
-            + self.is_default.encoded_len()
-    }
-
     fn image_encode(&self, key: &ArgKey, buf: &mut ImageBuf) -> Result<(), PackError> {
         key.encode(buf)?;
         self.id.encode(buf)?;
@@ -1646,46 +1639,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
-    fn image_len(&self) -> usize {
-        let mode = self.callee_mode().unwrap_or(CALLEE_UNBOUND);
-        let args: usize = self.args.iter().map(|(k, a)| a.image_len(k)).sum();
-        let callee = match (&self.callee, mode) {
-            (Callee::Static { apply, first_update }, CALLEE_INSTANCE) => {
-                let deferred = image::encoding(|e| e.defer_instances).unwrap_or(false);
-                let body = apply.image_len();
-                let body = match apply.view() {
-                    ApplyView::Lambda(g) if deferred => {
-                        image::encoding(|e| e.deferred_len += body);
-                        let summary =
-                            Self::with_refs_summary(&**apply, |s| s.encoded_len());
-                        g.instance_id().encoded_len() + summary.unwrap_or(0)
-                    }
-                    _ => body,
-                };
-                nodes_len(&self.arg_refs) + 1 + body + first_update.encoded_len()
-            }
-            (Callee::Static { apply, first_update }, CALLEE_BUILTIN) => {
-                nodes_len(&self.arg_refs) + apply.image_len() + first_update.encoded_len()
-            }
-            _ => 0,
-        };
-        tag_len()
-            + self.spec.encoded_len()
-            + self.ftype.encoded_len()
-            + self.rtype.encoded_len()
-            + self.fnode.image_len()
-            + varint_len(self.args.len() as u64)
-            + args
-            + 1
-            + callee
-            + self.static_target.encoded_len()
-            + opt_node_len(self.lowered.as_ref())
-            + 1
-            + image::flags_len(self.flags)
-            + image::scope_len(&self.scope)
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         let mode = self.callee_mode()?;
         put_tag(NodeTag::CallSite, buf);

@@ -22,7 +22,7 @@ use crate::{
 use ahash::AHashMap;
 use bytes::{Buf, BufMut};
 use immutable_chunkmap::map::{NodeHandle, NodeRef};
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use std::any::{Any, TypeId};
 
 /// A map packed with its sharing. The wrapped map is the environment's
@@ -71,27 +71,13 @@ where
     move |k| (*k, Box::new(keep))
 }
 
-fn tree_len<K, V>(
-    node: Option<NodeRef<'_, K, V, CHUNK>>,
-    pair_len: &mut impl FnMut(&K, &V) -> usize,
-) -> usize
+fn tree_len<K, V>(node: Option<NodeRef<'_, K, V, CHUNK>>) -> usize
 where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
     let Some(node) = node else { return 1 };
-    1 + image::object_len(
-        &node.identity(),
-        pinned(&node),
-        |e| &mut e.map_nodes,
-        || {
-            let pairs: usize = node.pairs().map(|(k, v)| pair_len(k, v)).sum();
-            varint_len(node.len() as u64)
-                + pairs
-                + tree_len(node.left(), pair_len)
-                + tree_len(node.right(), pair_len)
-        },
-    )
+    1 + image::object_len(&node.identity(), pinned(&node), |e| &mut e.map_nodes)
 }
 
 /// A definition is its pairs, then its left and right subtrees.
@@ -199,15 +185,12 @@ where
 /// The walkers behind the `Pack` impls, for a map whose values need
 /// their own codec: a map of maps shares at both levels only when the
 /// inner maps go through these too.
-pub(crate) fn map_len<K, V>(
-    map: &Map<K, V>,
-    pair_len: &mut impl FnMut(&K, &V) -> usize,
-) -> usize
+pub(crate) fn map_len<K, V>(map: &Map<K, V>) -> usize
 where
     K: Ord + Clone + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    tree_len(map.root(), pair_len)
+    tree_len(map.root())
 }
 
 pub(crate) fn map_encode<K, V, B: BufMut>(
@@ -240,7 +223,7 @@ where
     V: Clone + Pack + Send + Sync + 'static,
 {
     fn encoded_len(&self) -> usize {
-        map_len(&self.0, &mut |k: &K, v: &V| k.encoded_len() + v.encoded_len())
+        map_len(&self.0)
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -260,7 +243,7 @@ where
     K: Ord + Clone + Pack + Send + Sync + 'static,
 {
     fn encoded_len(&self) -> usize {
-        tree_len(self.0.root(), &mut |k: &K, _: &()| k.encoded_len())
+        tree_len(self.0.root())
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {

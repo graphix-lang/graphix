@@ -14,9 +14,7 @@ use crate::{
     ide::ReferenceSite,
     image::{
         self, ImageBuf,
-        nodes::{
-            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-        },
+        nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     typ::{TVal, TVar, Type, TypeMismatch},
 };
@@ -217,10 +215,6 @@ impl Nop {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
-    fn image_len(&self) -> usize {
-        tag_len() + self.typ.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Nop, buf);
         self.typ.encode(buf)
@@ -289,10 +283,6 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.n.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ExplicitParens, buf);
         self.spec.encode(buf)?;
@@ -364,10 +354,6 @@ pub struct Held<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Held<R, E> {
-    pub(crate) fn image_len(&self) -> usize {
-        self.node.image_len()
-    }
-
     pub(crate) fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.node.image_encode(buf)
     }
@@ -488,13 +474,6 @@ impl TypeDef {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.scope.encoded_len()
-            + self.name.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TypeDef, buf);
         self.spec.encode(buf)?;
@@ -576,13 +555,6 @@ pub(crate) fn produce_constant<'a, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.value.encoded_len()
-            + self.typ.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Constant, buf);
         self.spec.encode(buf)?;
@@ -858,14 +830,6 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.module.encoded_len()
-            + self.spec.encoded_len()
-            + nodes_len(&self.children)
-            + image::slice_len(&self.catches)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Block, buf);
         self.module.encode(buf)?;
@@ -1021,14 +985,6 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + image::slice_len(&self.typs)
-            + nodes_len(&self.args)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StringInterpolate, buf);
         self.spec.encode(buf)?;
@@ -1172,13 +1128,6 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.node.image_len()
-            + self.id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Connect, buf);
         self.spec.encode(buf)?;
@@ -1352,14 +1301,6 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.rhs.image_len()
-            + self.src_id.encoded_len()
-            + self.top_id.encoded_len()
-    }
-
     /// `target` is resolved at update: a resolved one is runtime state.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.target.is_some() {
@@ -1510,14 +1451,6 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.target.encoded_len()
-            + self.n.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TypeCast, buf);
         self.spec.encode(buf)?;
@@ -1624,10 +1557,6 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Never, buf);
         self.spec.encode(buf)?;
@@ -1726,10 +1655,6 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Any, buf);
         self.spec.encode(buf)?;
@@ -1900,16 +1825,6 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.top_id.encoded_len()
-            + self.debt_id().encoded_len()
-            + self.trigger.image_len()
-            + self.arg.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Sample, buf);
         self.spec.encode(buf)?;

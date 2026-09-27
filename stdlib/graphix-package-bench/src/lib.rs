@@ -46,10 +46,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MandelbrotIterate {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
-    fn image_len(&self) -> usize {
-        self.args.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.args.image_encode(buf)
     }

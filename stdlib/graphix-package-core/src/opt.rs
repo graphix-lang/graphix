@@ -241,10 +241,6 @@ struct HofState<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> HofState<R, E> {
-    fn image_len(&self) -> usize {
-        self.inner.image_len() + self.fid.encoded_len() + self.x.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.inner.image_encode(buf)?;
         self.fid.encode(buf)?;
@@ -393,10 +389,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
-    fn image_len(&self) -> usize {
-        self.s.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.s.image_encode(buf)
     }
@@ -473,10 +465,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
-    fn image_len(&self) -> usize {
-        self.s.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.s.image_encode(buf)
     }
@@ -556,10 +544,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
-    fn image_len(&self) -> usize {
-        self.s.image_len() + self.pending.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.s.image_encode(buf)?;
         self.pending.encode(buf)
@@ -664,10 +648,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
-    fn image_len(&self) -> usize {
-        self.s.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.s.image_encode(buf)
     }
@@ -744,10 +724,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
-    fn image_len(&self) -> usize {
-        self.s.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.s.image_encode(buf)
     }
@@ -799,13 +775,6 @@ struct OrElseShared<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
-    fn image_len(&self) -> usize {
-        self.inner.image_len()
-            + self.fid.encoded_len()
-            + self.last_a.encoded_len()
-            + self.last_f.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.inner.image_encode(buf)?;
         self.fid.encode(buf)?;
@@ -928,10 +897,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
-    fn image_len(&self) -> usize {
-        self.s.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.s.image_encode(buf)
     }
@@ -1020,10 +985,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
-    fn image_len(&self) -> usize {
-        self.s.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.s.image_encode(buf)
     }

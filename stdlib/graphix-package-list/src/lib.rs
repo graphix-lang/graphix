@@ -551,10 +551,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
-    fn image_len(&self) -> usize {
-        self.0.encoded_len() + self.1.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.0.encode(buf)?;
         self.1.encode(buf)
@@ -638,13 +634,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
-    fn image_len(&self) -> usize {
-        self.triggered.encoded_len()
-            + self.queue.encoded_len()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.triggered.encode(buf)?;
         self.queue.encode(buf)?;

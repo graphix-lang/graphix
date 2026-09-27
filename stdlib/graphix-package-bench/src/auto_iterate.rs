@@ -77,10 +77,6 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
 impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     ::graphix_compiler::Apply<R, E> for FusedIterateAuto
 {
-    fn image_len(&self) -> usize {
-        self.args.image_len()
-    }
-
     fn image_encode(
         &self,
         buf: &mut ::graphix_compiler::image::ImageBuf,

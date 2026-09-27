@@ -14,7 +14,7 @@ use crate::{
 };
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use netidx_core::pack::{Pack as PackTrait, PackError, varint_len};
+use netidx_core::pack::{Pack as PackTrait, PackError};
 use netidx_derive::Pack;
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
@@ -1061,11 +1061,6 @@ pub(crate) fn site_leaf_len(l: &Arc<SiteLeaf>) -> usize {
         &(Arc::as_ptr(l) as usize),
         |k| (*k, l.clone()),
         |e| &mut e.site_leaves,
-        || {
-            l.stride.encoded_len()
-                + crate::image::slice_len(&l.anchors)
-                + crate::image::slice_len(&l.self_blocks)
-        },
     )
 }
 
@@ -1106,24 +1101,6 @@ pub(crate) fn site_leaf_decode(buf: &mut impl Buf) -> Result<Arc<SiteLeaf>, Pack
 
 /// A kernel signature is an image object shared by the node that
 /// dispatches it and the records of its bodies.
-pub(crate) fn kernel_sig_len(k: &Arc<KernelSig>) -> usize {
-    use std::sync::atomic::Ordering::Relaxed;
-    crate::image::object_len(
-        &(Arc::as_ptr(k) as usize),
-        |_| (Arc::as_ptr(k) as usize, k.clone()),
-        |e| &mut e.kernel_sigs,
-        || {
-            k.fn_name.encoded_len()
-                + k.params.encoded_len()
-                + k.return_type.encoded_len()
-                + 1
-                + k.skipped_args.encoded_len()
-                + k.tail_invariant.encoded_len()
-                + varint_len(k.site_block_words.load(Relaxed))
-        },
-    )
-}
-
 pub(crate) fn kernel_sig_encode(
     k: &Arc<KernelSig>,
     buf: &mut impl BufMut,

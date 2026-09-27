@@ -15,8 +15,8 @@ use crate::{
     image::{
         ImageBuf,
         nodes::{
-            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, opt_node_decode,
-            opt_node_encode, opt_node_len, put_tag, tag_len,
+            NodeTag, decode_node, decode_nodes, encode_nodes, opt_node_decode,
+            opt_node_encode, put_tag,
         },
     },
     typ::Type,
@@ -178,15 +178,6 @@ pub(crate) fn array_slice(src: &Value, start: Option<i64>, end: Option<i64>) -> 
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.source.image_len()
-            + self.i.image_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.etyp.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ArrayRef, buf);
         self.source.image_encode(buf)?;
@@ -333,15 +324,6 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.source.image_len()
-            + opt_node_len(self.start.as_ref())
-            + opt_node_len(self.end.as_ref())
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ArraySlice, buf);
         self.source.image_encode(buf)?;
@@ -595,10 +577,6 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
 }
 
 impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(if K::LIST { NodeTag::ListLit } else { NodeTag::Array }, buf);
         self.spec.encode(buf)?;

@@ -26,7 +26,7 @@ use crate::{
     },
     image::{
         ImageBuf,
-        nodes::{NodeTag, decode_node, put_tag, tag_len},
+        nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{FnArgKind, FnType, TVar, Type, TypeRef},
     wrap,
@@ -36,7 +36,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -214,13 +214,6 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.def.encoded_len()
-            + self.defaults.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Trait, buf);
         self.spec.encode(buf)?;
@@ -609,21 +602,6 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.def.encoded_len()
-            + self.fulfils.encoded_len()
-            + self.trait_def.encoded_len()
-            + self.body.image_len()
-            + varint_len(self.prototypes.len() as u64)
-            + self
-                .prototypes
-                .iter()
-                .map(|p| p.site.image_len() + p.args.encoded_len())
-                .sum::<usize>()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Impl, buf);
         self.spec.encode(buf)?;

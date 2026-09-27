@@ -13,7 +13,7 @@ use crate::{
     },
     image::{
         ImageBuf,
-        nodes::{NodeTag, decode_node, put_tag, tag_len},
+        nodes::{NodeTag, decode_node, put_tag},
     },
     node::error::{diagnostic_site, report_failure},
     stack::ensure_sufficient,
@@ -121,14 +121,6 @@ macro_rules! binary_node {
         }
 
         impl<R: Rt, E: UserEvent> Update<R, E> for $name<R, E> {
-            fn image_len(&self) -> usize {
-                tag_len()
-                    + self.spec.encoded_len()
-                    + self.typ.encoded_len()
-                    + self.lhs.image_len()
-                    + self.rhs.image_len()
-            }
-
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 put_tag(NodeTag::$name, buf);
                 self.spec.encode(buf)?;
@@ -400,10 +392,6 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Not, buf);
         self.spec.encode(buf)?;
@@ -516,10 +504,6 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + self.n.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Neg, buf);
         self.spec.encode(buf)?;

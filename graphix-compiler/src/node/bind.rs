@@ -22,7 +22,7 @@ use crate::{
     ide::{FieldRefSite, ReferenceSite},
     image::{
         ImageBuf,
-        nodes::{NodeTag, decode_node, put_tag, tag_len},
+        nodes::{NodeTag, decode_node, put_tag},
     },
     typ::{FnType, Type},
     wrap,
@@ -32,7 +32,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -274,14 +274,6 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.pattern.encoded_len()
-            + self.node.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Bind, buf);
         self.spec.encode(buf)?;
@@ -610,14 +602,6 @@ impl Ref {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.id.encoded_len()
-            + self.top_id.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Ref, buf);
         self.spec.encode(buf)?;
@@ -759,14 +743,6 @@ struct Place<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
-    fn image_len(&self) -> usize {
-        1 + match self {
-            PlaceStep::Index(n) | PlaceStep::Key(n) => n.image_len(),
-            PlaceStep::Tuple(i) => i.encoded_len(),
-            PlaceStep::Field(f) => f.encoded_len(),
-        }
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         match self {
             PlaceStep::Index(n) => {
@@ -869,13 +845,6 @@ fn root_place<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Place<R, E> {
-    fn image_len(&self) -> usize {
-        self.root.image_len()
-            + varint_len(self.steps.len() as u64)
-            + self.steps.iter().map(|s| s.image_len()).sum::<usize>()
-            + self.scope.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.root.image_encode(buf)?;
         encode_varint(self.steps.len() as u64, buf);
@@ -1196,18 +1165,6 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.id.encoded_len()
-            + 1
-            + match &self.referent {
-                Referent::Channel(n) => n.image_len(),
-                Referent::Place(p) => p.image_len(),
-            }
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::ByRef, buf);
         self.spec.encode(buf)?;
@@ -1423,15 +1380,6 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.child.image_len()
-            + self.top_id.encoded_len()
-            + self.addr.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Deref, buf);
         self.spec.encode(buf)?;

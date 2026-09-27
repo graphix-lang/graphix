@@ -14,8 +14,8 @@ use crate::{
     },
     image::{
         self, ImageBuf,
-        nodes::{NodeTag, decode_node, put_tag, tag_len},
-        scope_decode, scope_encode, scope_len,
+        nodes::{NodeTag, decode_node, put_tag},
+        scope_decode, scope_encode,
     },
     typ::{FnArgKind, FnType, Type},
     wrap,
@@ -359,15 +359,6 @@ struct Callback {
 }
 
 impl Callback {
-    fn image_len(&self) -> usize {
-        scope_len(&self.scope)
-            + self.id.encoded_len()
-            + self.typ.encoded_len()
-            + self.top_id.encoded_len()
-            + 1
-            + self.share.as_ref().map_or(0, SlotShare::image_len)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         scope_encode(&self.scope, buf)?;
         self.id.encode(buf)?;
@@ -850,19 +841,6 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 }
 
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
-    fn image_len(&self) -> usize {
-        let intrinsic = CollectionIntrinsic::Map(self.base.op, self.base.flavor);
-        tag_len()
-            + intrinsic.encoded_len()
-            + self.base.source.image_len()
-            + self.base.prototype.image_len()
-            + self.base.element_type.encoded_len()
-            + self.base.prototype_id.encoded_len()
-            + self.base.spec.encoded_len()
-            + self.base.typ.encoded_len()
-            + self.callback.image_len()
-    }
-
     /// The slots and the current collection exist only once a cycle has
     /// run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1272,21 +1250,6 @@ fn deliver<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + CollectionIntrinsic::Fold(self.base.flavor).encoded_len()
-            + self.base.source.image_len()
-            + self.base.init.image_len()
-            + self.base.prototype.image_len()
-            + self.base.element_type.encoded_len()
-            + self.base.prototype_ids[0].encoded_len()
-            + self.base.prototype_ids[1].encoded_len()
-            + self.base.spec.encoded_len()
-            + self.base.typ.encoded_len()
-            + self.callback.image_len()
-            + self.acc_type.encoded_len()
-    }
-
     /// The slots exist only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.slots.is_empty() {

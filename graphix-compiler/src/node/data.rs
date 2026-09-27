@@ -13,9 +13,7 @@ use crate::{
     },
     image::{
         self, ImageBuf,
-        nodes::{
-            NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
-        },
+        nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     typ::{AbstractId, Type},
     wrap,
@@ -23,7 +21,7 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -149,14 +147,6 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + image::slice_len(&self.names)
-            + nodes_len(&self.n)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Struct, buf);
         self.spec.encode(buf)?;
@@ -214,10 +204,6 @@ pub struct Replace<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> Replace<R, E> {
-    fn image_len(&self) -> usize {
-        self.index.encoded_len() + self.name.encoded_len() + self.n.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.index.encode(buf)?;
         self.name.encode(buf)?;
@@ -299,15 +285,6 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.source.image_len()
-            + varint_len(self.replace.len() as u64)
-            + self.replace.iter().map(|r| r.image_len()).sum::<usize>()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructWith, buf);
         self.spec.encode(buf)?;
@@ -491,15 +468,6 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.source.image_len()
-            + self.sorted_field_idx.encoded_len()
-            + self.field_name.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructRef, buf);
         self.spec.encode(buf)?;
@@ -640,10 +608,6 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len() + self.spec.encoded_len() + self.typ.encoded_len() + nodes_len(&self.n)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Tuple, buf);
         self.spec.encode(buf)?;
@@ -741,14 +705,6 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.tag.encoded_len()
-            + nodes_len(&self.n)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Variant, buf);
         self.spec.encode(buf)?;
@@ -877,16 +833,6 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.id.encoded_len()
-            + self.name.encoded_len()
-            + self.rep.encoded_len()
-            + self.arg.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Construct, buf);
         self.spec.encode(buf)?;
@@ -1075,15 +1021,6 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
-    fn image_len(&self) -> usize {
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + self.source.image_len()
-            + self.field.encoded_len()
-            + self.scope.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::TupleRef, buf);
         self.spec.encode(buf)?;

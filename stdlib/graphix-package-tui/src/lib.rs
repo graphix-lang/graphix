@@ -568,10 +568,6 @@ impl EvalCachedAsync for SuspendEv {
 }
 
 impl ImageState for SuspendEv {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     /// A held resume signal is a suspended display, which only a cycle
     /// can produce.
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -622,10 +618,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }

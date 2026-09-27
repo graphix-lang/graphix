@@ -1285,13 +1285,7 @@ impl FnType {
 /// type and its definition share one).
 impl Pack for FnType {
     fn encoded_len(&self) -> usize {
-        if image::is_encoding() {
-            image::fntype_len(self, || {
-                self.lambda_ids.own().encoded_len() + self.shape_len()
-            })
-        } else {
-            self.shape_len()
-        }
+        if image::is_encoding() { image::fntype_len(self) } else { self.shape_len() }
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {

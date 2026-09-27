@@ -42,10 +42,6 @@ impl<Op: ClipboardOp> EvalCachedAsync for ClipboardBuiltin<Op> {
 }
 
 impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }

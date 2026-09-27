@@ -152,10 +152,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
-    fn image_len(&self) -> usize {
-        self.tree_val.encoded_len()
-    }
-
     /// A running watch task exists only once a cycle has run.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.abort.is_some() {
@@ -310,12 +306,6 @@ macro_rules! db_event_accessor {
         }
 
         impl<R: Rt, E: UserEvent> Apply<R, E> for $name {
-            fn image_len(&self) -> usize {
-                self.top_id.encoded_len()
-                    + self.cached.image_len()
-                    + self.bind_id.encoded_len()
-            }
-
             fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
                 self.top_id.encode(buf)?;
                 self.cached.image_encode(buf)?;

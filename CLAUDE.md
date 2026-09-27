@@ -172,7 +172,7 @@ bodies to a heap after the eager part with an instance table; a call
 site keeps `Callee::Imaged` (id, resolved type, reference summary) and
 decodes the body on its first dispatch, synchronously, through
 `ExecCtx::image_decoder`; a builtin callee travels as its own bytes:
-every `Apply` owns `image_len`/`image_encode` and every `BuiltIn` an
+every `Apply` owns `image_encode` and every `BuiltIn` an
 `image_decode` (no defaults — a builtin without a codec does not
 compile), wrapper payloads implement `graphix_package_core::ImageState`
 (`unit_image_state!` / `pack_image_state!` for the common shapes), a

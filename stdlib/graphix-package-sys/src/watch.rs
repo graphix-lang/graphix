@@ -283,10 +283,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
-    fn image_len(&self) -> usize {
-        self.poll_interval.encoded_len() + self.batch_size.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.poll_interval.encode(buf)?;
         self.batch_size.encode(buf)
@@ -404,10 +400,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
-    fn image_len(&self) -> usize {
-        self.interest.encoded_len() + self.path.encoded_len()
-    }
-
     /// `watcher_val` holds a live OS watcher.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.watcher_val.is_some() {
@@ -589,10 +581,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
-    fn image_len(&self) -> usize {
-        self.top_id.encoded_len() + self.cached.image_len()
-    }
-
     /// `bind_ids` are registered watches on live OS watchers.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.bind_ids.is_empty() {
@@ -687,10 +675,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
-    fn image_len(&self) -> usize {
-        self.top_id.encoded_len() + self.cached.image_len()
-    }
-
     /// `bind_ids` are registered watches on live OS watchers.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.bind_ids.is_empty() {

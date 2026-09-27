@@ -12,7 +12,7 @@ use crate::{
     fusion::{
         emit::{
             STALE, TAINT, WrappedKernel, pack_value_to_u64, prim_to_value_disc,
-            record_decode, record_encode, record_len,
+            record_decode, record_encode,
         },
         emit_helpers::{
             self, EMPTY_ARR, KERNEL_ABORT, SELF_BLOCK_GEN, SELF_BLOCK_REACHED, TagValue,
@@ -23,14 +23,14 @@ use crate::{
     },
     image::{
         self, ImageBuf,
-        nodes::{NodeTag, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len},
+        nodes::{NodeTag, decode_nodes, encode_nodes, put_tag},
     },
     node::WakeBit,
     tval::{Tag, value_words},
     typ::Type,
 };
 use anyhow::Result;
-use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -282,19 +282,6 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
-    fn image_len(&self) -> usize {
-        let w = &self.jit;
-        tag_len()
-            + self.spec.encoded_len()
-            + self.typ.encoded_len()
-            + nodes_len(&self.feeders)
-            + varint_len(w.state_words as u64)
-            + w.slot_table_words.encoded_len()
-            + w.own_site.encoded_len()
-            + w.state_self_blocks.encoded_len()
-            + record_len(&w.wrapper)
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.quiescent() || !self.redirects.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));

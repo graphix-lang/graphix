@@ -46,10 +46,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
-    fn image_len(&self) -> usize {
-        self.args.image_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.args.image_encode(buf)
     }
@@ -124,10 +120,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }
@@ -186,10 +178,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
-    fn image_len(&self) -> usize {
-        self.buf.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.buf.encode(buf)
     }

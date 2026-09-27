@@ -15,8 +15,8 @@ pub(crate) mod env;
 pub mod nodes;
 mod registration;
 
-pub(crate) use env::{lexical_decode, lexical_encode, lexical_len};
-pub use nodes::{NOT_IMAGED, decode_node, decode_nodes, encode_nodes, nodes_len};
+pub(crate) use env::{lexical_decode, lexical_encode};
+pub use nodes::{NOT_IMAGED, decode_node, decode_nodes, encode_nodes};
 pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
 
 use crate::{
@@ -185,8 +185,6 @@ pub struct ImageEncoder {
     defs: ImageBuf,
     /// Each definition's offset in `defs` by ordinal.
     offsets: Vec<Option<u64>>,
-    /// What the definitions measured at first sight add up to.
-    pub(crate) defs_len: usize,
     /// Buffers for definitions being written, one per nesting level.
     scratch: Vec<ImageBuf>,
     handlers: Table<usize, ErrorHandler>,
@@ -222,11 +220,9 @@ pub struct ImageEncoder {
     /// first dispatch to decode, rather than inline.
     pub(crate) defer_instances: bool,
     pub(crate) deferred: Vec<(LambdaInstanceId, Deferred)>,
-    /// The measured size of every deferred body, for the length bound.
-    pub(crate) deferred_len: usize,
     pub(crate) instances: AHashMap<LambdaInstanceId, u64>,
-    /// Every deferred instance's reference summary, walked once: the
-    /// measure passes and the encode all write it.
+    /// Every deferred instance's reference summary, walked once
+    /// however many sites write it.
     pub(crate) instance_refs:
         AHashMap<LambdaInstanceId, crate::node::callsite::RefsSummary>,
 }
@@ -236,8 +232,8 @@ impl ImageEncoder {
         Self::default()
     }
 
-    /// The span of the ids written so far, per domain. The image
-    /// writer stores these ahead of the body; read between sessions.
+    /// The span of the ids written so far, per domain; read between
+    /// sessions.
     pub fn counts(&self) -> IdCounts {
         self.ids
     }
@@ -602,12 +598,7 @@ fn path_key(path: &ModPath) -> &str {
 /// afterwards, so a scope repeated by every binding under it costs a
 /// varint and decodes to one shared string.
 pub(crate) fn path_len(path: &ModPath) -> usize {
-    object_len(
-        path_key(path),
-        |k| (ArcStr::from(k), ()),
-        |e| &mut e.paths,
-        || path.0.encoded_len(),
-    )
+    object_len(path_key(path), |k| (ArcStr::from(k), ()), |e| &mut e.paths)
 }
 
 pub(crate) fn path_encode(
@@ -669,12 +660,7 @@ fn cell_state(cell: &RefCell) -> (u8, Option<Resolved>) {
 
 pub(crate) fn refcell_len(cell: &RefCell) -> usize {
     let key = Arc::as_ptr(cell) as usize;
-    object_len(
-        &key,
-        |k| (*k, cell.clone()),
-        |e| &mut e.refcells,
-        || 1 + cell_state(cell).1.map_or(0, |r| resolved_len(&r)),
-    )
+    object_len(&key, |k| (*k, cell.clone()), |e| &mut e.refcells)
 }
 
 pub(crate) fn refcell_encode<B: BufMut>(
@@ -735,12 +721,7 @@ pub(crate) fn refcell_decode(buf: &mut impl Buf) -> Result<RefCell, PackError> {
 
 pub(crate) fn resolved_len(r: &Resolved) -> usize {
     let key = sync::Arc::as_ptr(r) as usize;
-    object_len(
-        &key,
-        |k| (*k, r.clone()),
-        |e| &mut e.resolveds,
-        || crate::typ::resolved_len(r),
-    )
+    object_len(&key, |k| (*k, r.clone()), |e| &mut e.resolveds)
 }
 
 pub(crate) fn resolved_encode<B: BufMut>(
@@ -828,10 +809,6 @@ fn resolved_decode_weak(buf: &mut impl Buf) -> Result<Weak<ResolvedRef>, PackErr
     })
 }
 
-pub(crate) fn flags_len(_flags: BitFlags<CFlag>) -> usize {
-    8
-}
-
 pub(crate) fn flags_encode(
     flags: BitFlags<CFlag>,
     buf: &mut impl BufMut,
@@ -855,18 +832,7 @@ fn dynscope_len(scope: &DynScope) -> usize {
         None => 1,
         Some(h) => {
             let key = h.identity();
-            object_len(
-                &key,
-                |k| (*k, h.clone()),
-                |e| &mut e.handlers,
-                || {
-                    let (bind, expr) = h.id();
-                    bind.encoded_len()
-                        + expr.encoded_len()
-                        + h.is_machine().encoded_len()
-                        + dynscope_len(&h.parent())
-                },
-            )
+            object_len(&key, |k| (*k, h.clone()), |e| &mut e.handlers)
         }
     }
 }
@@ -942,10 +908,6 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
     })
 }
 
-pub fn scope_len(scope: &Scope) -> usize {
-    scope.lexical.encoded_len() + dynscope_len(&scope.dynamic)
-}
-
 pub fn scope_encode(scope: &Scope, buf: &mut impl BufMut) -> Result<(), PackError> {
     scope.lexical.encode(buf)?;
     dynscope_encode(&scope.dynamic, buf)
@@ -996,17 +958,6 @@ fn path_from_bytes(b: &[u8]) -> Result<PathBuf, PackError> {
 #[cfg(not(unix))]
 fn path_from_bytes(b: &[u8]) -> Result<PathBuf, PackError> {
     std::str::from_utf8(b).map(PathBuf::from).map_err(|_| PackError::InvalidFormat)
-}
-
-fn source_len(s: &Source) -> usize {
-    1 + match s {
-        Source::File(p) => {
-            path_bytes(p).map_or(0, |b| varint_len(b.len() as u64) + b.len())
-        }
-        Source::Netidx(p) => p.encoded_len(),
-        Source::Internal(s) => s.encoded_len(),
-        Source::Unspecified => 0,
-    }
 }
 
 fn source_encode(s: &Source, buf: &mut impl BufMut) -> Result<(), PackError> {
@@ -1060,18 +1011,7 @@ fn source_decode(buf: &mut impl Buf) -> Result<Source, PackError> {
 /// carry the impl itself: the orphan rule.)
 pub(crate) fn origin_len(ori: &Arc<Origin>) -> usize {
     let key = Arc::as_ptr(ori) as usize;
-    object_len(
-        &key,
-        |k| (*k, ori.clone()),
-        |e| &mut e.origins,
-        || {
-            let parent = match &ori.parent {
-                Some(p) => origin_len(p),
-                None => 0,
-            };
-            1 + parent + source_len(&ori.source) + ori.text.encoded_len()
-        },
-    )
+    object_len(&key, |k| (*k, ori.clone()), |e| &mut e.origins)
 }
 
 pub(crate) fn origin_encode(
@@ -1138,41 +1078,7 @@ pub(crate) fn origin_decode(buf: &mut impl Buf) -> Result<Arc<Origin>, PackError
 /// cell that reaches its own wrapper through a constraint decodes.
 pub(crate) fn tvar_len(tv: &TVar) -> usize {
     let key = tv.wrapper_addr();
-    object_len(
-        &key,
-        |k| (*k, tv.clone()),
-        |e| &mut e.tvars,
-        || {
-            let (id, frozen, cell) = tv.parts();
-            tv.name.encoded_len()
-                + id.encoded_len()
-                + frozen.encoded_len()
-                + cell_len(&cell)
-        },
-    )
-}
-
-fn cell_len(cell: &Arc<RwLock<TCell>>) -> usize {
-    let key = Arc::as_ptr(cell) as usize;
-    object_len(
-        &key,
-        |k| (*k, cell.clone()),
-        |e| &mut e.cells,
-        || {
-            let (typ, constraints, flags) = {
-                let c = cell.read();
-                (
-                    c.binding.clone(),
-                    c.constraints.to_vec(),
-                    (c.cycle_refused, c.bottom_fed),
-                )
-            };
-            typ.encoded_len()
-                + slice_len(&constraints)
-                + flags.0.encoded_len()
-                + flags.1.encoded_len()
-        },
-    )
+    object_len(&key, |k| (*k, tv.clone()), |e| &mut e.tvars)
 }
 
 /// A boxed slice on the wire as the `Vec` it decodes to.
@@ -1274,34 +1180,28 @@ fn new_ordinal(e: &mut ImageEncoder) -> u32 {
 
 /// The image length of the object at `key`: a reference, always, so a
 /// length is exact whatever was measured or written before it. At the
-/// first sight `owned` builds the table's key and pin, and `contents`
-/// measures the definition, which is written elsewhere. An image
+/// first sight `owned` builds the table's key and pin and the object
+/// takes its ordinal; its definition is written elsewhere. An image
 /// object has no encoding outside a session.
 pub(crate) fn object_len<K, Q, P>(
     key: &Q,
     owned: impl FnOnce(&Q) -> (K, P),
     table: impl Fn(&mut ImageEncoder) -> &mut Table<K, P>,
-    contents: impl FnOnce() -> usize,
 ) -> usize
 where
     K: std::hash::Hash + Eq + std::borrow::Borrow<Q>,
     Q: std::hash::Hash + Eq + ?Sized,
 {
-    let seen = encoding(|e| match table(e).get(key) {
-        Some(s) => (s.ord, false),
+    let ord = encoding(|e| match table(e).get(key) {
+        Some(s) => s.ord,
         None => {
             let ord = new_ordinal(e);
             let (k, _pin) = owned(key);
             table(e).insert(k, Slot { ord, defined: false, _pin });
-            (ord, true)
+            ord
         }
     });
-    let Some((ord, first)) = seen else { return 0 };
-    if first {
-        let len = 1 + crate::stack::ensure_sufficient(contents);
-        encoding(|e| e.defs_len += len);
-    }
-    1 + varint_len(ord as u64)
+    ord.map_or(0, |ord| 1 + varint_len(ord as u64))
 }
 
 /// Write a reference to the object and, the first time, its definition
@@ -1441,10 +1341,10 @@ fn content_owned(k: &[u8]) -> (Box<[u8]>, ()) {
     (Box::from(k), ())
 }
 
-pub(crate) fn type_len(t: &Type, contents: impl FnOnce() -> usize) -> usize {
+pub(crate) fn type_len(t: &Type) -> usize {
     with_key(
         |key| t.content_key(key),
-        |key| object_len(key, content_owned, |e| &mut e.types, contents),
+        |key| object_len(key, content_owned, |e| &mut e.types),
     )
 }
 
@@ -1459,10 +1359,10 @@ pub(crate) fn type_encode<B: BufMut>(
     )
 }
 
-pub(crate) fn fntype_len(t: &FnType, contents: impl FnOnce() -> usize) -> usize {
+pub(crate) fn fntype_len(t: &FnType) -> usize {
     with_key(
         |key| t.content_key(key),
-        |key| object_len(key, content_owned, |e| &mut e.fntypes, contents),
+        |key| object_len(key, content_owned, |e| &mut e.fntypes),
     )
 }
 

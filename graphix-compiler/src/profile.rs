@@ -31,7 +31,7 @@ phases! {
     JitBuild, Clif, BackendBody, BackendWrapper, BackendStub, BackendSpill,
     Finalize, Freeze, Normalize, ExpandRefs, StaticBind, InstanceGraph,
     InstanceCheck, ModuleCheck, ModuleSignature, LambdaFinalize, EffectRefs, EffectRound,
-    InstanceCensus, ImageEnv, ImageDefs, ImageNodes, ImageMeasure,
+    InstanceCensus, ImageEnv, ImageDefs, ImageNodes,
     ImageEncode, ImageHeap, ImageTrailer,
 }
 

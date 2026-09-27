@@ -78,10 +78,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
-    fn image_len(&self) -> usize {
-        self.timeout_v.encoded_len() + self.last_v.encoded_len() + self.eid.encoded_len()
-    }
-
     /// `id` is an armed runtime timer.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.id.is_some() {
@@ -279,13 +275,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
-    fn image_len(&self) -> usize {
-        self.repeat_v.encoded_len()
-            + self.timeout.encoded_len()
-            + self.repeat.encoded_len()
-            + self.eid.encoded_len()
-    }
-
     /// `id` is an armed runtime timer.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if self.id.is_some() {
@@ -426,10 +415,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
-    fn image_len(&self) -> usize {
-        0
-    }
-
     fn image_encode(&self, _buf: &mut ImageBuf) -> Result<(), PackError> {
         Ok(())
     }

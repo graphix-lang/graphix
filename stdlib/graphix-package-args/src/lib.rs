@@ -166,10 +166,6 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
-    fn image_len(&self) -> usize {
-        self.once.encoded_len()
-    }
-
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.once.encode(buf)
     }
