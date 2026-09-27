@@ -752,6 +752,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             top_id,
             resident: TagValue::phantom(),
         };
+        let _module = profile::module(&scope.lexical);
         t.compile_inner(ctx, &exprs)
             .with_context(|| format_compact!("compiling module {}", scope.lexical))?;
         if ctx.env.ide.is_lsp() {
@@ -853,7 +854,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     /// Run the children's `typecheck1` under the module's private env.
     fn typecheck1_nodes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
-        let Self { env, nodes, catches, .. } = self;
+        let Self { env, nodes, catches, scope, .. } = self;
+        let _module = profile::module(&scope.lexical);
         ctx.with_restored_mut(env, |ctx| {
             super::typecheck_in_order(
                 ctx,
@@ -1060,6 +1062,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // A dynamic module's body compiles at run time (`compile_source`),
         // after fusion, and is never fused; its loader is not fused here.
+        let _module = profile::module(&self.scope.lexical);
         for child in self.nodes.iter_mut() {
             crate::fusion::fuse(child, ctx)?;
         }

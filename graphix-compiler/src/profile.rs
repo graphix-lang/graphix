@@ -1,7 +1,7 @@
 use crate::{
     FnArgIdentity, LambdaId, LambdaInstanceId,
     dbgenv::{graphix_profile, graphix_profile_instances},
-    expr::Expr,
+    expr::{Expr, ModPath},
     typ::{FnType, Type},
 };
 use ahash::AHashMap;
@@ -71,6 +71,10 @@ struct Profile {
     epoch_ns: u128,
     metrics: [Metric; PHASES.len()],
     census: Option<Census>,
+    /// The module whose code the running phase is working for, an index
+    /// into `modules`; `None` is the root's own statements.
+    module: Option<usize>,
+    modules: Vec<(ModPath, [u64; PHASES.len()])>,
 }
 
 thread_local! {
@@ -81,14 +85,19 @@ thread_local! {
         epoch_ns: 0,
         metrics: [Metric::default(); PHASES.len()],
         census: None,
+        module: None,
+        modules: Vec::new(),
     });
 }
 
 impl Profile {
     fn switch(&mut self, next: Option<Phase>, now: Instant) -> Option<Phase> {
         if let Some(current) = self.current {
-            self.metrics[current as usize].self_ns +=
-                now.duration_since(self.last).as_nanos() as u64;
+            let elapsed = now.duration_since(self.last).as_nanos() as u64;
+            self.metrics[current as usize].self_ns += elapsed;
+            if let Some(m) = self.module {
+                self.modules[m].1[current as usize] += elapsed;
+            }
         }
         self.last = now;
         std::mem::replace(&mut self.current, next)
@@ -123,6 +132,8 @@ pub fn phase(phase: Phase) -> Option<Span> {
             p.census = graphix_profile_instances().then(Census::default);
             p.epoch_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
             p.origin = start;
+            p.module = None;
+            p.modules.clear();
         }
         let parent = p.switch(Some(phase), start);
         p.metrics[phase as usize].calls += 1;
@@ -137,6 +148,41 @@ pub fn phase(phase: Phase) -> Option<Span> {
             instance: None,
         })
     })
+}
+
+/// Attributes the time until the guard drops to the module `path`
+/// (innermost wins), inside a root span only.
+pub struct ModuleSpan {
+    parent: Option<usize>,
+    thread: PhantomData<Rc<()>>,
+}
+
+pub(crate) fn module(path: &ModPath) -> Option<ModuleSpan> {
+    if !graphix_profile() {
+        return None;
+    }
+    PROFILE.with_borrow_mut(|p| {
+        p.current?;
+        p.switch(p.current, Instant::now());
+        let i = match p.modules.iter().position(|(m, _)| m == path) {
+            Some(i) => i,
+            None => {
+                p.modules.push((path.clone(), [0; PHASES.len()]));
+                p.modules.len() - 1
+            }
+        };
+        let parent = p.module.replace(i);
+        Some(ModuleSpan { parent, thread: PhantomData })
+    })
+}
+
+impl Drop for ModuleSpan {
+    fn drop(&mut self) {
+        PROFILE.with_borrow_mut(|p| {
+            p.switch(p.current, Instant::now());
+            p.module = self.parent;
+        })
+    }
 }
 
 pub(crate) fn instance(
@@ -248,6 +294,15 @@ impl Drop for Span {
                             "PROFILE phase={phase:?} thread={thread:?} calls={} self_ns={} total_ns={} failed_calls={} failed_ns={}",
                             m.calls, m.self_ns, m.total_ns, m.failed_calls, m.failed_ns,
                         );
+                    }
+                }
+                for (path, costs) in p.modules.iter() {
+                    for (phase, ns) in PHASES.iter().zip(costs) {
+                        if *ns > 0 {
+                            eprintln!(
+                                "PROFILE module={path} thread={thread:?} mphase={phase:?} self_ns={ns}",
+                            );
+                        }
                     }
                 }
                 if let Some(c) = &p.census {
