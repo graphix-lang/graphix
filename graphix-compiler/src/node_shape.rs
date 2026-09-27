@@ -269,10 +269,6 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
     })
 }
 
-// XCR claude for eric: declined after the merge: the walks answer different questions.
-// `for_each_node` is reachability (guards, module bodies; kernels opaque) that effect
-// analysis and discovery rely on; this is the tested shape (no guards or module
-// bodies, kernel feeders shown). One enumeration would carry a flag per difference.
 /// The child nodes of a view in a deterministic order; a kernel's are
 /// its input feeders.
 fn node_children<'a, R: Rt, E: UserEvent>(

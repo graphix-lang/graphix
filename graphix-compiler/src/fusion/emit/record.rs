@@ -30,9 +30,6 @@ use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use triomphe::Arc;
 
-// XCR claude for eric: triomphe and CompactString done. The address stays a
-// usize: the table crosses into cranelift's `Send` lookup fn, and a pointer
-// newtype would only rename the cast `KernelConst::pointer` already does.
 /// The addresses the module resolves imported constant symbols to,
 /// shared with its symbol lookup fn.
 pub(crate) type SymbolTable = Arc<Mutex<AHashMap<CompactString, usize>>>;

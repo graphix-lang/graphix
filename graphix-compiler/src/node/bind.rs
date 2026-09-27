@@ -131,6 +131,18 @@ fn builtin_binding<R: Rt, E: UserEvent>(
 }
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
+    /// Whether an input the initializer's fire can come through was
+    /// delivered fired this cycle, live or as a wake catch-up, and not
+    /// by a wake's constants.
+    fn input_fired(&self, ctx: &ExecCtx<R, E>, event: &Event<E>) -> bool {
+        let mut refs = Refs::default();
+        self.node.refs(&mut refs);
+        refs.triggering.difference(&refs.bound).any(|id| {
+            !event.wake_phantoms.contains(id)
+                && matches!(read_var(ctx, event, id), Some(VarRead::Delivered(tv)) if tv.tag().triggers())
+        })
+    }
+
     pub(crate) fn compile(
         ctx: &mut ExecCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -280,20 +292,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
         let woke = self.slept.take();
+        // At a wake the initializer's constants fire; the fire is the wake's,
+        // not an event's, unless one of its inputs fired too.
+        let wake_phantom = event.wake_init && !self.input_fired(ctx, event);
         let tv = self.node.update(ctx, event);
         let tag = tv.tag();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
-        // persists in the store.
-        // XCR claude for eric: a genuine fire at a wake is lost, but the named root
-        // cause is a rule (CLAUDE.md: constants fire at a wake) and a `let` is its
-        // node's name, so no tag tells the wake's fire from an event's. Needs a
-        // ruling: the proposal (an Event-scoped wake-derived id set) is in the report.
-        // A connect target's value is its last write: at a wake a quiet
-        // initializer republishes nothing over it, a standing bottom
-        // (`let x = never()`) included.
+        // persists in the store. A connect target's value is its last
+        // write: a wake's fire republishes nothing over it, nor does a
+        // standing bottom (`let x = never()`).
         let keep_connect_target_value =
-            event.wake_init && (self.ever_published || tag.is_bottom()) && {
+            wake_phantom && (self.ever_published || tag.is_bottom()) && {
                 let mut target = false;
                 self.pattern.ids(&mut |id| {
                     target = target || ctx.connect_targets.contains(&id);
@@ -317,6 +327,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         }
         if publish {
             let quiet = !tag.triggers();
+            if wake_phantom && !quiet {
+                self.pattern.ids(&mut |id| {
+                    event.wake_phantoms.insert(id);
+                });
+            }
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
                     event.variables.insert(id, TagValue::tagged(Value::Null, tag));
@@ -544,7 +559,7 @@ impl Ref {
                 };
                 let def_pos = bind.pos;
                 let def_ori = bind.ori.clone();
-                if ctx.env.lsp_mode {
+                if ctx.env.ide.is_lsp() {
                     ctx.env.push_reference(ReferenceSite {
                         pos: spec.pos,
                         ori: spec.ori.clone(),
@@ -1033,7 +1048,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                 PlaceStep::Tuple(i) => tuple_field_type(ctx, &self.scope, &cur, *i)?,
                 PlaceStep::Field(name) => {
                     let (_, t) = struct_field_type(ctx, &cur, &name.name)?;
-                    if ctx.env.lsp_mode {
+                    if ctx.env.ide.is_lsp() {
                         ctx.env.push_field_ref(FieldRefSite {
                             pos: name.pos_or(spec.pos),
                             ori: spec.ori.clone(),

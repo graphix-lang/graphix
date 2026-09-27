@@ -38,6 +38,31 @@ async fn button_click_produces_call() -> Result<()> {
     Ok(())
 }
 
+/// A row with fewer or more cells than the table has columns, rows of
+/// different lengths and a table with no columns lay out and take input.
+#[tokio::test(flavor = "current_thread")]
+async fn table_cell_count_mismatch_lays_out() -> Result<()> {
+    let cases = [
+        "[table_column(&text(&\"A\")), table_column(&text(&\"B\")), table_column(&text(&\"C\"))], \
+         [[text(&\"1\"), text(&\"2\")]]",
+        "[table_column(&text(&\"Only\"))], [[text(&\"a\"), text(&\"b\"), text(&\"c\")]]",
+        "[table_column(&text(&\"A\")), table_column(&text(&\"B\"))], \
+         [[], [text(&\"1\")], [text(&\"1\"), text(&\"2\"), text(&\"3\")]]",
+        "[], [[text(&\"orphan\")]]",
+    ];
+    for case in cases {
+        let code = format!(
+            "{IMPORTS};\nuse gui::table::{{self, *}};\nlet result = table(&{})",
+            case.replacen("], [", "], &[", 1)
+        );
+        let mut h = InteractionHarness::new(&code).await?;
+        let _ = h.view();
+        let _ = h.click(WIDGET_HIT);
+        h.resize(Size::new(40.0, 20.0));
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn checkbox_click_no_panic() -> Result<()> {
     let code = format!(

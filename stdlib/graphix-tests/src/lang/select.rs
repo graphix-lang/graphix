@@ -2510,6 +2510,49 @@ run!(select_arm_stale_bottom_at_wake, SELECT_ARM_STALE_BOTTOM_AT_WAKE, |v: Resul
     format!("{}", v.unwrap()) == "[i64:7, i64:0, i64:0, i64:0]"
 });
 
+// At a wake a connect target's initializer republishes when one of its
+// inputs fired, as it would had the arm never slept; the wake's own
+// constants, directly or through a `let`, leave the last write standing.
+const WAKE_INPUT_FIRE_REACHES_TARGET: &str = r#"
+{
+  let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
+  let y = n * 100;
+  let r = select n % 2 {
+    0 => { let x = y; x <- select n { 0 => 5, _ => never() }; x },
+    _ => -1
+  };
+  array::group(r, |i, _| i == 7)
+}
+"#;
+
+run!(wake_input_fire_reaches_target, WAKE_INPUT_FIRE_REACHES_TARGET, |v: Result<
+    &Value,
+>| {
+    format!("{}", v.unwrap())
+        == "[i64:0, i64:-1, i64:200, i64:-1, i64:400, i64:-1, i64:600]"
+});
+
+const WAKE_CONSTANT_KEEPS_TARGET: &str = r#"
+{
+  let n = array::iter([0, 1, 2, 3, 4, 5, 6]);
+  let r = select n % 2 {
+    0 => { let a = 10; let x = a; x <- n ~ x + 1; x },
+    _ => -1
+  };
+  let q = select n % 2 {
+    0 => { let x = 10; x <- n ~ x + 1; x },
+    _ => -1
+  };
+  array::group((r, q), |i, _| i == 7)
+}
+"#;
+
+run!(wake_constant_keeps_target, WAKE_CONSTANT_KEEPS_TARGET, |v: Result<&Value>| {
+    format!("{}", v.unwrap())
+        == "[[i64:10, i64:10], [i64:-1, i64:-1], [i64:11, i64:11], [i64:-1, i64:-1], \
+            [i64:12, i64:12], [i64:-1, i64:-1], [i64:13, i64:13]]"
+});
+
 // While a consulted guard stands bottom the selection is undecidable on
 // every cycle, quiet ones included: the held arm does not run.
 const SELECT_UNDECIDABLE_QUIET: &str = r#"
@@ -2531,6 +2574,34 @@ run!(select_undecidable_quiet, SELECT_UNDECIDABLE_QUIET, |v: Result<&Value>| {
 
 // A nested variant head is a pooled position: two arms that miss
 // `(true, `B)` do not cover the tuple.
+// A `null` literal arm covers `null`, its type's one value, beside a
+// type test or a pool of partial struct patterns.
+const NULL_LITERAL_COVERS_NULL: &str = r#"
+{
+  type S = {c: string, d: [`A, `B]};
+  let o: [null, i64] = null;
+  let a = select o { null => 1, i64 as x => x };
+  let s: [null, S] = {c: "x", d: `B};
+  let b = select s { null => 0, {d: `A, ..} => 10, {d: `B, ..} => 20 };
+  a + b
+}
+"#;
+
+run!(null_literal_covers_null, NULL_LITERAL_COVERS_NULL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(21)))
+});
+
+const NULL_LITERAL_ARM_DEAD: &str = r#"
+{
+  let o: [null, i64] = null;
+  select o { null => 0, i64 as x => x, null => 1 }
+}
+"#;
+
+run!(null_literal_arm_dead, NULL_LITERAL_ARM_DEAD, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("unreachable arm"))
+}; graphix_package_core::testing::FuseExpect::None);
+
 const POOL_NESTED_VARIANT_PARTIAL: &str = r#"
 {
   let v: (bool, [`A, `B]) = (true, `B);

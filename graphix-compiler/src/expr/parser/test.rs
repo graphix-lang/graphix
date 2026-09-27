@@ -1,14 +1,13 @@
 use super::*;
 use crate::{
     expr::{
-        ApplyExpr, Arg, BinOp, BindExpr, Doc, ExprKind, LambdaExpr, ModuleKind,
-        SelectExpr, SigKind, StructExpr, StructurePattern, UseItem, WrittenAt,
-        print::PrettyDisplay,
+        ApplyExpr, Arg, ArgKind, BinOp, BindExpr, Doc, ExprKind, LambdaBody, LambdaExpr,
+        ModuleKind, SelectExpr, SigKind, StructExpr, StructurePattern, UseItem,
+        WrittenAt, print::PrettyDisplay,
     },
     typ::{FnArgKind, FnArgType, TVar, Type, TypeRef},
 };
 use arcstr::literal;
-use netidx_core::utils::Either;
 use netidx_value::Typ;
 
 #[allow(unused)]
@@ -1039,13 +1038,13 @@ fn lambda() {
     let exp = ExprKind::Lambda(Arc::new(LambdaExpr {
         args: Arc::from_iter([
             Arg {
-                labeled: None,
+                kind: ArgKind::Positional,
                 pattern: StructurePattern::Bind("foo".into()),
                 constraint: None,
                 pos: Default::default(),
             },
             Arg {
-                labeled: None,
+                kind: ArgKind::Positional,
                 pattern: StructurePattern::Bind("bar".into()),
                 constraint: None,
                 pos: Default::default(),
@@ -1055,7 +1054,7 @@ fn lambda() {
         vargs: None,
         constraints: Arc::from_iter([]),
         throws: None,
-        body: Either::Left(
+        body: LambdaBody::Expr(
             ExprKind::Add {
                 lhs: Arc::new(
                     ExprKind::Add {
@@ -1097,14 +1096,14 @@ fn nested_lambda() {
         vargs: None,
         constraints: Arc::from_iter([]),
         throws: None,
-        body: Either::Left(
+        body: LambdaBody::Expr(
             ExprKind::Lambda(Arc::new(LambdaExpr {
                 args: Arc::from_iter([]),
                 rtype: None,
                 vargs: None,
                 constraints: Arc::from_iter([]),
                 throws: None,
-                body: Either::Left(e),
+                body: LambdaBody::Expr(e),
             }))
             .to_expr_nopos(),
         ),
@@ -1121,7 +1120,7 @@ fn apply_lambda() {
             None,
             ExprKind::Lambda(Arc::new(LambdaExpr {
                 args: Arc::from_iter([Arg {
-                    labeled: None,
+                    kind: ArgKind::Positional,
                     pattern: StructurePattern::Bind("a".into()),
                     constraint: None,
                     pos: Default::default(),
@@ -1130,7 +1129,7 @@ fn apply_lambda() {
                 rtype: None,
                 constraints: Arc::from_iter([]),
                 throws: None,
-                body: Either::Right("a".into()),
+                body: LambdaBody::Builtin("a".into()),
             }))
             .to_expr_nopos(),
         )]),
@@ -1150,13 +1149,13 @@ fn apply_typed_lambda() {
             ExprKind::Lambda(Arc::new(LambdaExpr {
                 args: Arc::from_iter([
                     Arg {
-                        labeled: None,
+                        kind: ArgKind::Positional,
                         pattern: StructurePattern::Bind("a".into()),
                         constraint: None,
                         pos: Default::default(),
                     },
                     Arg {
-                        labeled: None,
+                        kind: ArgKind::Positional,
                         pattern: StructurePattern::Bind("b".into()),
                         constraint: Some(Type::Set(Arc::from_iter([
                             Type::Primitive(Typ::Null.into()),
@@ -1173,7 +1172,7 @@ fn apply_typed_lambda() {
                 rtype: Some(Type::Bottom),
                 constraints: Arc::from_iter([]),
                 throws: None,
-                body: Either::Right("a".into()),
+                body: LambdaBody::Builtin("a".into()),
             }))
             .to_expr_nopos(),
         )]),
@@ -1193,7 +1192,7 @@ fn typed_array() {
         typ: None,
         value: ExprKind::Lambda(Arc::new(LambdaExpr {
             args: Arc::from_iter([Arg {
-                labeled: None,
+                kind: ArgKind::Positional,
                 pattern: StructurePattern::Bind("a".into()),
                 constraint: Some(Type::Array(Arc::new(Type::TVar(TVar::empty_named(
                     "a".into(),
@@ -1204,7 +1203,7 @@ fn typed_array() {
             constraints: Arc::from_iter([]),
             throws: None,
             rtype: Some(Type::TVar(TVar::empty_named("a".into()))),
-            body: Either::Left(ExprKind::Ref { name: ["a"].into() }.to_expr_nopos()),
+            body: LambdaBody::Expr(ExprKind::Ref { name: ["a"].into() }.to_expr_nopos()),
         }))
         .to_expr_nopos(),
     }))
@@ -1252,9 +1251,9 @@ fn labeled_argument_lambda() {
             args: Arc::from_iter([
                 Arg {
                     pattern: StructurePattern::Bind("foo".into()),
-                    labeled: Some(Some(
+                    kind: ArgKind::Defaulted(
                         ExprKind::Constant(Value::I64(3)).to_expr_nopos(),
-                    )),
+                    ),
                     constraint: Some(Type::Ref(TypeRef::synthetic(
                         ModPath::root(),
                         ["Number"].into(),
@@ -1264,21 +1263,21 @@ fn labeled_argument_lambda() {
                 },
                 Arg {
                     pattern: StructurePattern::Bind("bar".into()),
-                    labeled: Some(Some(
+                    kind: ArgKind::Defaulted(
                         ExprKind::Constant("hello".into()).to_expr_nopos(),
-                    )),
+                    ),
                     constraint: None,
                     pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("a".into()),
-                    labeled: Some(None),
+                    kind: ArgKind::Labeled,
                     constraint: None,
                     pos: Default::default(),
                 },
                 Arg {
                     pattern: StructurePattern::Bind("baz".into()),
-                    labeled: None,
+                    kind: ArgKind::Positional,
                     constraint: None,
                     pos: Default::default(),
                 },
@@ -1287,7 +1286,7 @@ fn labeled_argument_lambda() {
             rtype: None,
             throws: None,
             constraints: Arc::from_iter([]),
-            body: Either::Right("foo".into()),
+            body: LambdaBody::Builtin("foo".into()),
         }))
         .to_expr_nopos(),
     }))

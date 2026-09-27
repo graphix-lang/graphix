@@ -910,4 +910,16 @@ mod tests {
             "let add = 'a: Int |a: 'a, b: 'a| a + b\n",
         );
     }
+
+    #[test]
+    fn a_long_pattern_breaks_like_its_literal() {
+        let cfg = FormatConfig { width: 30, ..FormatConfig::default() };
+        let src = "let (alpha, `Beta(b, c), {gamma, ..}) = v; \
+                   select v { `Aa(x) | `Bb(x) | `Cc(x) | `Dd(x) => x, {alpha: 1, beta} => beta }";
+        let want = "let (\n    alpha,\n    `Beta(b, c),\n    { gamma, .. }\n) = v;\n\n\
+                    select v {\n    `Aa(x)\n    | `Bb(x)\n    | `Cc(x)\n    | `Dd(x) => x,\n    \
+                    { alpha: 1, beta } =>\n        beta\n}\n";
+        assert_eq!(&*format_source(SourceKind::Program, src, &cfg).unwrap(), want);
+        stable(SourceKind::Program, src)
+    }
 }

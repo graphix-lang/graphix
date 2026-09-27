@@ -102,10 +102,6 @@ macro_rules! image_id {
             /// typed value (e.g. a JIT'd kernel emitting `inner()` as a
             /// constant and reconstructing it on the other side). Do not
             /// use it to forge ids.
-            // XCR claude for eric: `mk` and lib.rs's unused `From<u64> for LambdaId`
-            // and `TryFrom<Value> for BindId` are deleted. The allow is not stale:
-            // TVarId's copy is in crate-private `typ::tvar`, unused. `From<u64> for
-            // BindId` stays: six callers in four crates decode a reference value.
             #[allow(dead_code)]
             pub fn from_inner(i: u64) -> Self {
                 $name(i)

@@ -190,6 +190,10 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
+        // iced's table divides its cells by its column count at layout.
+        if self.columns.is_empty() {
+            return iced_widget::Space::new().into();
+        }
         let num_rows = self.cells.len();
         let cells = &self.cells;
         let cols = self.columns.iter().enumerate().map(|(c, col)| {

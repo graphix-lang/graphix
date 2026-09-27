@@ -612,7 +612,7 @@ async fn a_restored_env_keeps_the_runtimes_lsp_mode() -> Result<()> {
     let warm =
         init_lsp_with_registration(tx, TEST_REGISTER, RegistrationImage::Load(image))
             .await?;
-    assert!(warm.rt.get_env().await?.lsp_mode);
+    assert!(warm.rt.get_env().await?.ide.is_lsp());
     warm.shutdown().await;
     Ok(())
 }

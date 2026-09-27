@@ -15,12 +15,12 @@ use crate::mutate;
 use arcstr::ArcStr;
 use graphix_compiler::{
     expr::{
-        ApplyExpr, BindExpr, Expr, ExprKind, LambdaExpr, ModPath, Name, SeqTrigger,
-        StructurePattern, TypeDefBody, TypeDefExpr,
+        ApplyExpr, ArgKind, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr, ModPath,
+        Name, SeqTrigger, StructurePattern, TypeDefBody, TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
-use netidx_core::{path::Path, utils::Either};
+use netidx_core::path::Path;
 use std::collections::HashSet;
 use triomphe::Arc;
 
@@ -336,8 +336,8 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 continue;
             };
             for a in l.args.iter() {
-                if let (Some(Some(d)), StructurePattern::Bind(label)) =
-                    (&a.labeled, &a.pattern)
+                if let (ArgKind::Defaulted(d), StructurePattern::Bind(label)) =
+                    (&a.kind, &a.pattern)
                     && reads_no_name(d)
                 {
                     defaults.push((si, f.name.clone(), label.name.clone(), d.clone()));
@@ -498,7 +498,7 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
             untyped.insert(n.as_str());
         });
     }
-    let Either::Left(body) = &l.body else { return false };
+    let LambdaBody::Expr(body) = &l.body else { return false };
     let is_param = |e: &Expr| {
         let mut e = e;
         while let ExprKind::ExplicitParens(inner) = &e.kind {

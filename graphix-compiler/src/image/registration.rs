@@ -400,8 +400,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 });
                 let p = profile::phase(Phase::ImageEnv);
                 let env: Env = Pack::decode(&mut bytes)?;
-                self.env =
-                    Env { lsp_mode: self.env.lsp_mode, ide: self.env.ide.take(), ..env };
+                self.env = Env { ide: std::mem::take(&mut self.env.ide), ..env };
                 drop(p);
                 let p = profile::phase(Phase::ImageDefs);
                 restore_tables(self, &mut bytes)?;

@@ -215,12 +215,11 @@ fn deselect<R: Rt, E: UserEvent>(
     j: usize,
     step: &mut Step<R, E>,
 ) {
-    let saved = ctx.deselecting_arm;
-    ctx.deselecting_arm = true;
-    for n in step.nodes.iter_mut() {
-        n.sleep(ctx)
-    }
-    ctx.deselecting_arm = saved;
+    super::deselecting_arm(true, || {
+        for n in step.nodes.iter_mut() {
+            n.sleep(ctx)
+        }
+    });
     tracked.refresh(&ctx.env, j, |r| step.refs(r));
 }
 

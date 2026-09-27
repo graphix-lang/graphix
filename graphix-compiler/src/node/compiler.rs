@@ -69,7 +69,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
-    if ctx.env.lsp_mode {
+    if ctx.env.ide.is_lsp() {
         ctx.env.push_scope_map_entry(ScopeMapEntry {
             pos: spec.pos,
             end: spec.end.0,
@@ -153,7 +153,7 @@ fn compile_module_inner<R: Rt, E: UserEvent>(
         ModuleKind::Resolved { exprs, .. } => exprs.first().map(|e| e.ori.clone()),
         _ => None,
     };
-    if ctx.env.lsp_mode {
+    if ctx.env.ide.is_lsp() {
         ctx.env.push_module_reference(ModuleRefSite {
             pos: name.pos_or(spec.pos),
             ori: spec.ori.clone(),
@@ -347,10 +347,6 @@ fn compile_kind<R: Rt, E: UserEvent>(
         }
         ExprKind::Seq { .. } => {
             let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
-            // XCR claude for eric: only the CLI's `--expand` sets ExpandSeq (the
-            // server never does), so stdout is its terminal. A sink would be a new
-            // ExecCtx field or CheckResult channel for one debug print; recommend
-            // it with the warning sink (env.rs `warn`), when both have a consumer.
             if flags.contains(CFlag::ExpandSeq) {
                 println!("// seq at {}\n{}\n", spec.pos, lowered.to_string_pretty(80));
             }

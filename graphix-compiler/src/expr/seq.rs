@@ -9,9 +9,9 @@
 //! consumes one argument snapshot per entry.
 
 use super::{
-    ApplyExpr, Arg, BindExpr, CatchExpr, CatchRole, Expr, ExprId, ExprKind, LambdaExpr,
-    ModPath, Pattern, SelectExpr, SeqCaptureExpr, SeqKind, SeqMachineExpr, SeqStep,
-    SeqTrigger, StructurePattern, TryWithExpr, WrittenAt,
+    ApplyExpr, Arg, ArgKind, BindExpr, CatchExpr, CatchRole, Expr, ExprId, ExprKind,
+    LambdaBody, LambdaExpr, ModPath, Pattern, SelectExpr, SeqCaptureExpr, SeqKind,
+    SeqMachineExpr, SeqStep, SeqTrigger, StructurePattern, TryWithExpr, WrittenAt,
 };
 use crate::{
     BindId,
@@ -26,7 +26,7 @@ use arcstr::{ArcStr, literal};
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use indexmap::IndexMap;
-use netidx_core::{path::Path, utils::Either};
+use netidx_core::path::Path;
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -1088,7 +1088,7 @@ fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
     let x = literal!("x");
     ExprKind::Lambda(Arc::new(LambdaExpr {
         args: Arc::from_iter([Arg {
-            labeled: None,
+            kind: ArgKind::Positional,
             pattern: StructurePattern::Bind(x.clone().into()),
             constraint: None,
             pos: WrittenAt(pos),
@@ -1097,7 +1097,7 @@ fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
         rtype: None,
         constraints: Arc::from(Vec::<(TVar, Type)>::new()),
         throws: None,
-        body: Either::Left(sample(pos, r#ref(pos, &x), r#ref(pos, level))),
+        body: LambdaBody::Expr(sample(pos, r#ref(pos, &x), r#ref(pos, level))),
     }))
     .to_expr(pos)
 }
@@ -1189,9 +1189,6 @@ fn entry_fire(e: Expr, pc: &str) -> Expr {
 /// holds a call, or a nested seq, whose result cell stands from its
 /// previous run. The rewrite keeps the answer, so it is the same before
 /// and after.
-// XCR claude for eric: the clone and the full fold are gone (a short-circuiting walk).
-// The Qop arm still asks once per nested `?` level, so the cost is depth x size over
-// directly nested `?`s only; not worth a flag threaded through the rewrite.
 fn has_call(e: &Expr) -> bool {
     ensure_sufficient(|| match &e.kind {
         ExprKind::Apply(_) | ExprKind::Seq { .. } => true,
@@ -1298,10 +1295,6 @@ fn rewrite_with(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
     ensure_sufficient(|| rewrite_with_inner(e, map, mode))
 }
 
-// XCR claude for eric: partly done: every sequential scope rides `rewrite_step`, so
-// a `let rec` is scoped once for all of them. The named arms stay: most carry mode
-// rules (Issue/Captures/deferred) besides scoping, which a scoped child visitor would
-// not remove; `map_children` patches a Pattern's `guard` the same way.
 fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
     if map.is_empty() && !matches!(mode, Rewrite::Issue(_)) {
         return e.clone();
@@ -1441,8 +1434,10 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 });
             }
             let args = Arc::from_iter(l.args.iter().map(|a| Arg {
-                labeled: match &a.labeled {
-                    Some(Some(d)) => Some(Some(rewrite_with(d, map, mode.deferred()))),
+                kind: match &a.kind {
+                    ArgKind::Defaulted(d) => {
+                        ArgKind::Defaulted(rewrite_with(d, map, mode.deferred()))
+                    }
                     other => other.clone(),
                 },
                 pattern: a.pattern.clone(),
@@ -1450,8 +1445,10 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
                 pos: a.pos,
             }));
             let body = match &l.body {
-                Either::Left(b) => Either::Left(rewrite_with(b, &inner, mode.deferred())),
-                Either::Right(s) => Either::Right(s.clone()),
+                LambdaBody::Expr(b) => {
+                    LambdaBody::Expr(rewrite_with(b, &inner, mode.deferred()))
+                }
+                LambdaBody::Builtin(s) => LambdaBody::Builtin(s.clone()),
             };
             ExprKind::Lambda(Arc::new(LambdaExpr {
                 args,

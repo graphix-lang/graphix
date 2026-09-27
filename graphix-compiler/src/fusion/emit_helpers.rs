@@ -111,10 +111,6 @@ impl_helper_arg! {
     f64 => &[AbiTy::F64];
     f32 => &[AbiTy::F32];
     arcstr::ArcStr => &[AbiTy::I64];
-    // XCR claude for eric: module doc fixed; the plan deferred: no Win64 host runs a
-    // kernel (`compile` gates fusion off there), and it spans ~55 pair-taking and
-    // ~29 pair-returning helpers (not the doc's 10) plus their call sites across
-    // emit/, which only the doc's wine run verifies. Its own change, not a review fix.
     TagValue => &[AbiTy::I64, AbiTy::I64];
 }
 
@@ -1044,10 +1040,6 @@ unsafe fn graphix_string_buf_new() -> *mut StringBuf {
     STRING_SHELLS.with(|s| s.take(LPooled::take()))
 }
 
-// XCR claude for eric: graphix_value_is_null is deleted. This one stays: it is
-// the abort-edge drop a string-interpolation buf needs once it is registered
-// for cleanup, the leak the CR at emit/nodes.rs:669 (literal bufs off
-// value_buf_stack) is about; that CR decides whether bufs register.
 /// Drop a string buf without finalizing.
 unsafe fn graphix_string_buf_drop(buf: *mut StringBuf) {
     assert!(!buf.is_null(), "graphix_string_buf_drop: null buf — JIT codegen bug");

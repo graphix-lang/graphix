@@ -527,11 +527,6 @@ enum ToGX<X: GXExt> {
 pub enum GXEvent {
     Updated(ExprId, Value),
     Env(Env),
-    /// A runtime diagnostic (see [`graphix_compiler::RtDiagnostic`]) for a
-    /// failure whose outcome is bottom, so nothing arrives on the value
-    /// channel. `id` is the top-level expression whose update produced it
-    /// (`None` outside a node update, e.g. a callable invocation).
-    Diagnostic(Option<ExprId>, graphix_compiler::RtDiagnostic),
 }
 
 /// One entry in a runtime-side trace (see [`GXHandle::trace_start`]).
@@ -697,7 +692,7 @@ impl<X: GXExt> GXHandle<X> {
     /// `SourcePosition`) rather than scraping messages.
     ///
     /// The `CheckResult` IDE side-channels are populated only when
-    /// `env.lsp_mode` is set. To check unsaved editor buffers, layer a
+    /// the runtime is built with `lsp_mode`. To check unsaved editor buffers, layer a
     /// buffer-override resolver into the resolver chain.
     pub async fn check(
         &self,

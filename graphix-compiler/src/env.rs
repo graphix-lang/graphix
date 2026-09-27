@@ -3,7 +3,7 @@ use crate::{
     dbgenv::graphix_dbg_bind,
     expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
-        FieldRefSite, Ide, ModuleInternalView, ModuleRefSite, ReferenceSite,
+        FieldRefSite, Ide, IdeMode, ModuleInternalView, ModuleRefSite, ReferenceSite,
         ScopeMapEntry, SigImplLink, TypeRefSite, Warning,
     },
     is_do_block, mod_root,
@@ -18,7 +18,6 @@ use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use netidx_core::path::Path;
 use netidx_derive::Pack;
-use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{
     fmt, iter, mem,
@@ -386,27 +385,31 @@ pub struct Env {
     /// Registered package names, usable as module path roots from
     /// anywhere. Global.
     pub package_roots: Set<ArcStr>,
-    // XCR claude for eric: three states exist: off; lsp between checks (true,
-    // None: registration records into nothing); a check (true, Some). Only
-    // GXRt::check installs a sink, under lsp_mode. Recommend `ide: IdeMode {Off,
-    // Lsp(Option<sink>)}` after the merge: 44 `lsp_mode` reads in every package.
-    /// Populate the IDE side-channels (the `ide` sink).
-    pub lsp_mode: bool,
-    /// The IDE side-channels ([`Ide`]); `Some` only under an LSP-style
-    /// check. Clones share the `Arc<Mutex>` so every compile within one
-    /// check drains into the same buffer.
-    pub ide: Option<Arc<Mutex<Ide>>>,
+    /// Whether compiles serve an editor, and the IDE side-channels
+    /// ([`Ide`]) a check records into.
+    pub ide: IdeMode,
 }
 
 impl Env {
-    // XCR claude for eric: the two restores are one now, and `clear` is gone. A
-    // `Lexical` sub-struct would rename 43 `env.binds`/`modules`/`typedefs`/
-    // `traits` reads across every package; worth it as its own change after
-    // the merge (the image's lexical codec would take the struct too).
     /// Restore the lexical environment to the snapshot `other`; the
     /// global registries and IDE sinks stay as they are on `self`.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
-        let Self { binds, modules, typedefs, traits, .. } = other;
+        let Self {
+            binds,
+            modules,
+            typedefs,
+            traits,
+            by_id: _,
+            byref_chain: _,
+            names: _,
+            abstract_reps: _,
+            trait_defs: _,
+            trait_methods: _,
+            impls: _,
+            poly_binds: _,
+            package_roots: _,
+            ide: _,
+        } = other;
         Self { binds, modules, typedefs, traits, ..self.clone() }
     }
 
@@ -425,7 +428,7 @@ impl Env {
 
     /// Run `f` on the active IDE sink, if any.
     pub fn with_ide(&self, f: impl FnOnce(&mut Ide)) {
-        if let Some(ide) = &self.ide {
+        if let Some(ide) = self.ide.sink() {
             f(&mut ide.lock())
         }
     }
@@ -438,10 +441,6 @@ impl Env {
         self.with_ide(|ide| ide.module_references.push(site))
     }
 
-    // XCR claude for eric: done for WarningsAreErrors: the flag is read here and the
-    // error carries the site. The stderr branch stays: without `--log-dir` the shell
-    // installs no logger, so `log::warn!` would silence every script's warnings. The
-    // fix is a warning sink the embedder installs (the Ide's, generalized).
     /// Warn about the text `[pos, end)` of `spec`: an error under
     /// `WarningsAreErrors`, else to the IDE sink under a check that has
     /// one, else to stderr.
@@ -456,7 +455,7 @@ impl Env {
         if flags.contains(CFlag::WarningsAreErrors) {
             return Err(anyhow!("{message}").at(spec));
         }
-        match &self.ide {
+        match self.ide.sink() {
             None => eprintln!("WARNING: {} at {pos} {message}", spec.ori),
             Some(ide) => ide.lock().warnings.push(Warning {
                 pos,
@@ -477,7 +476,7 @@ impl Env {
     }
 
     pub fn push_type_ref(&self, site: TypeRefSite) {
-        self.with_ide(|ide| ide.type_refs.push(site))
+        self.with_ide(|ide| ide.push_type_ref(site))
     }
 
     pub fn push_sig_link(&self, link: SigImplLink) {
@@ -1335,7 +1334,7 @@ impl Env {
                 bail!("unused type parameter {dec} in definition of {name}")
             }
         }
-        if self.lsp_mode {
+        if self.ide.is_lsp() {
             // Typedef bodies are stored, not checked, so their type
             // references are recorded here for the IDE.
             typ.record_ide_refs(self, scope);

@@ -558,7 +558,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         let (idx, typ) = wrap!(self, etyp)?;
         self.sorted_field_idx = Some(idx);
         if let ExprKind::StructRef { field, .. } = &self.spec.kind
-            && ctx.env.lsp_mode
+            && ctx.env.ide.is_lsp()
         {
             ctx.env.push_field_ref(crate::ide::FieldRefSite {
                 pos: field.pos_or(self.spec.pos),
@@ -901,10 +901,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         let tv = self.arg.update(ctx, event);
         let tag = tv.tag();
         dense_gate!(self, tag.triggers(), tag.is_bottom());
-        // XCR claude for eric: dense gate added. `params` stays lazy: it is taken
-        // once, at the first construction, after both typecheck passes over the
-        // whole program; this node's typecheck1 still precedes its later siblings'
-        // passes, which can bind a cell its type shares.
         let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
             Type::Abstract { params, .. } => params.clone(),
             _ => Arc::from_iter([]),

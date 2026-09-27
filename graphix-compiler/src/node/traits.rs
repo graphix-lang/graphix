@@ -20,7 +20,7 @@ use crate::{
     TagValue, Update, UserEvent, bailat,
     env::{Env, ImplDef, Map, TraitDef, TraitMethodRef},
     expr::{
-        ApplyExpr, Arg, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
+        ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
         ImplExpr, LambdaExpr, ModPath, Origin, Pattern, SelectExpr, StructurePattern,
         TraitExpr,
     },
@@ -80,13 +80,13 @@ fn annotate_lambda(value: &Expr, sig: &FnType) -> Expr {
         .collect();
     let mut pos = 0usize;
     let args = Arc::from_iter(l.args.iter().map(|a| {
-        let declared = match &a.labeled {
-            None => {
+        let declared = match &a.kind {
+            ArgKind::Positional => {
                 let t = positional.get(pos).copied();
                 pos += 1;
                 t
             }
-            Some(_) => a.pattern.single_bind().and_then(|n| {
+            ArgKind::Labeled | ArgKind::Defaulted(_) => a.pattern.single_bind().and_then(|n| {
                 sig.args
                     .iter()
                     .find(|d| matches!(&d.kind, FnArgKind::Labeled { name, .. } if name == n))

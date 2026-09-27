@@ -57,7 +57,6 @@ pub(super) async fn run_delta(
                     for e in batch.drain(..) {
                         match e {
                             GXEvent::Updated(id, v) if id == eid => values.push(v),
-                            GXEvent::Diagnostic(_, d) => eprintln!("{d}"),
                             _ => (),
                         }
                     }

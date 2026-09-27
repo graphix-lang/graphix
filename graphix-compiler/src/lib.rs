@@ -115,21 +115,6 @@ pub enum CtlFlag {
     Budget = 4,
 }
 
-/// A runtime diagnostic: a failure whose value-level outcome is bottom
-/// (nothing for `?` to catch), for the runtime's event stream. Nothing
-/// produces one yet.
-// XCR claude for eric: the ExecCtx channel and gx.rs's two drains per cycle are
-// gone; the type stays because `GXEvent::Diagnostic` carries it and netidx-admin
-// (e2e.rs) matches that variant. Deleting both is a netidx change too.
-#[derive(Debug, Clone)]
-pub enum RtDiagnostic {}
-
-impl std::fmt::Display for RtDiagnostic {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {}
-    }
-}
-
 /// Lock-free [`CtlFlag`] set. A loop polls [`Control::interrupted`];
 /// the run loop polls [`Control::aborted`]. Also this runtime's stack
 /// budget: the grown stack a recursion may hold before
@@ -383,6 +368,9 @@ pub struct Event<E: UserEvent> {
     /// wake rather than a birth: a `<-` target that already holds a
     /// value keeps it instead of being reseeded.
     pub wake_init: bool,
+    /// The binds a wake republished fired only because the woken arm's
+    /// constants fired, not an input.
+    pub wake_phantoms: IntSet<BindId>,
     /// The overlay: this cycle's transient deliveries. Not the value
     /// store: reads fall through to [`Rt::store`].
     pub variables: IntMap<BindId, TagValue>,
@@ -395,6 +383,7 @@ impl<E: UserEvent> Event<E> {
         Event {
             init: false,
             wake_init: false,
+            wake_phantoms: IntSet::default(),
             variables: IntMap::default(),
             custom: IntMap::default(),
             user,
@@ -402,9 +391,10 @@ impl<E: UserEvent> Event<E> {
     }
 
     pub fn clear(&mut self) {
-        let Self { init, wake_init, variables, custom, user } = self;
+        let Self { init, wake_init, wake_phantoms, variables, custom, user } = self;
         *init = false;
         *wake_init = false;
+        wake_phantoms.clear();
         variables.clear();
         custom.clear();
         user.clear();
@@ -655,10 +645,6 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
         buf: &mut image::ImageBuf,
     ) -> std::result::Result<(), netidx_core::pack::PackError>;
 
-    // XCR claude for eric: a required typ() breaks the five Apply impls in
-    // netidx-admin (ops.rs, lib.rs, local.rs, ceremony.rs); until they change, the
-    // default builds a fresh type per call, so no FnType cell is shared across
-    // ExecCtxs. Nothing reaches it today: the callee wrappers override.
     /// The lambda's type; the BuiltIn wrapper implements it for builtins.
     fn typ(&self) -> Arc<FnType> {
         Arc::new(FnType {
@@ -1421,14 +1407,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
-    /// Set only while a `Select::update` sleeps an arm it is
-    /// deselecting: a recursive-edge `CallSite::sleep` under it deletes
-    /// its callee (shrink = delete). Cleared crossing into any callee
-    /// body, so a whole-recursion pause retains.
-    // XCR claude for eric: agreed in direction; threading it from
-    // `Select::update` through `sleep` to the recursive call sites is its own
-    // change, with a soak.
-    pub(crate) deselecting_arm: bool,
     /// Pending definition assertions; see [`DefAssertion`].
     pub(crate) def_assertions: Mutex<Vec<DefAssertion>>,
     /// Registry attributes recorded this `compile_stmt`; each must be
@@ -1476,7 +1454,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             fusion: fusion::FusionCtx::new()?,
             pending_imports: Vec::new(),
             control: Arc::new(Control::new()),
-            deselecting_arm: false,
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),
             attr_dispatched: Mutex::new(IntSet::default()),

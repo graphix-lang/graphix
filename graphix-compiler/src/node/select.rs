@@ -245,7 +245,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
 impl<R: Rt, E: UserEvent> Select<R, E> {
     /// Exhaustiveness: the unguarded arms must cover `scrut`, by an arm
     /// that matches anything or by the union of what the irrefutable
-    /// atoms, bool literals, literal pools and slice ladders cover.
+    /// atoms, `null` (its type's one value), bool literals, literal pools
+    /// and slice ladders cover.
     fn check_coverage(&self, ctx: &ExecCtx<R, E>, scrut: &Type) -> Result<()> {
         let env = &ctx.env;
         let mut mtypes: LPooled<Vec<Type>> = LPooled::take();
@@ -275,6 +276,8 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                             if saw_true && saw_false {
                                 mtypes.push(Type::Primitive(Typ::Bool.into()));
                             }
+                        } else if let StructPatternNode::Literal(Value::Null) = sp {
+                            mtypes.push(Type::Primitive(Typ::Null.into()));
                         } else if Shape::of(sp).is_some() {
                             pooled.push(sp)
                         } else if let Some((k, exact)) = sp.array_len_coverage() {
@@ -461,12 +464,19 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 if !unguarded {
                     continue;
                 }
-                if let StructPatternNode::Literal(Value::Bool(b)) = sp {
-                    saw_t |= *b;
-                    saw_f |= !*b;
-                    if saw_t && saw_f {
-                        atype = atype.diff(env, &Type::Primitive(Typ::Bool.into()))?;
+                match sp {
+                    StructPatternNode::Literal(Value::Bool(b)) => {
+                        saw_t |= *b;
+                        saw_f |= !*b;
+                        if saw_t && saw_f {
+                            atype =
+                                atype.diff(env, &Type::Primitive(Typ::Bool.into()))?;
+                        }
                     }
+                    StructPatternNode::Literal(Value::Null) => {
+                        atype = atype.diff(env, &Type::Primitive(Typ::Null.into()))?;
+                    }
+                    _ => (),
                 }
                 if let Some(m) = pool.claim(env, scrut, sp)? {
                     atype = atype.diff(env, &m)?;
@@ -560,7 +570,7 @@ impl Ladder {
 }
 
 /// Deselect arm `j`: sleep it unless it is pure, then refresh its
-/// tracked refs. Under `deselecting_arm` a recursive-edge callee inside
+/// tracked refs. Under [`super::deselecting_arm`] a recursive-edge callee inside
 /// the arm is deleted, not retained (`CallSite::sleep`), so unreached
 /// activations are shed.
 fn deselect<R: Rt, E: UserEvent>(
@@ -571,10 +581,7 @@ fn deselect<R: Rt, E: UserEvent>(
     sleep: bool,
 ) {
     if sleep {
-        let saved = ctx.deselecting_arm;
-        ctx.deselecting_arm = true;
-        body.sleep(ctx);
-        ctx.deselecting_arm = saved;
+        super::deselecting_arm(true, || body.sleep(ctx));
     }
     tracked.refresh(&ctx.env, j, |r| {
         body.refs(r);
@@ -897,10 +904,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             SmallVec::with_capacity(arms.len());
         let arg_prod = arg.update(ctx, event);
         tracked.observe(ctx, event);
-        // XCR claude for eric: kept per cycle: unbound, a guard's binds read the
-        // store as Standing, which an init view reads FIRED where the delivered
-        // entry reads STALE, so skipping quiet cycles changes guard firing. The
-        // taken arm's rebind carries its own tag; shapes are sealed shallow tests.
         // Guards are live nodes and tick every cycle, even under a
         // tainted scrutinee. The bind is delivered only to an arm whose
         // shape admits the value: the checker narrowed the binds by that
@@ -1103,14 +1106,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    // XCR claude for eric: not the typecheck: GRAPHIX_PROFILE puts this select's
-    // compile at 9 ms at depth 14, while `graphix fmt` (parse + reparse) takes
-    // 9.7 s (as a let: 0.05 s). The arm parser (patternexp.rs `pattern`) tries
-    // the arm as a `T as` type first, the let path does not; parse-print's.
-    // XCR claude for eric: split into completion + narrowing here and
-    // `check_coverage` / `check_dead_arms`, which read one `LiteralPool::claim`
-    // and one `Ladder`. Two passes remain: coverage must not bind the arms' tvars
-    // (it runs before narrowing), the dead-arm walk runs after and may.
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
         // A partial struct pattern infers only its named fields;

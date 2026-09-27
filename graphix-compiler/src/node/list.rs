@@ -98,10 +98,6 @@ impl Iterator for Iter {
     }
 }
 
-// XCR claude for eric: gated on `len`, so no reader flattens a malformed spine.
-// The JIT flatten (`graphix_list_to_valarray`) still maps one to an empty array
-// where MapQ bottoms; a taint out of that helper would close it, not done since
-// no well-typed program builds a malformed spine (constructors and `cast` don't).
 pub fn to_array(value: &Value) -> Option<ValArray> {
     len(value).map(|_| ValArray::from_iter(Iter::new(value.clone())))
 }

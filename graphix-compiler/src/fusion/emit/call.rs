@@ -334,10 +334,6 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// first call ever (the node-walk primes an instance's first dispatch
 /// the same way).
 fn emit_callee_context_word(cx: &mut BodyCx) -> ClifValue {
-    // XCR claude for eric: kept as built (kernel_instance_state.md; the contract 3
-    // text was the stale one, fixed). An init view only sets constants' FIRED bits,
-    // and a late first call rides a fire that already reaches the output (the
-    // select's scrutinee or guard, the loop's resize); probes p_first_call*.gx agree.
     match cx.claim_state_word_loop_invariant() {
         Some(off) => {
             let sp = cx.state_ptr();

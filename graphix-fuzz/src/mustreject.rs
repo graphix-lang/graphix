@@ -11,13 +11,12 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     SourcePosition,
     expr::{
-        ApplyExpr, BinOp, BindExpr, Expr, ExprKind, LambdaExpr, ModPath, Name, Origin,
-        Pattern, SelectExpr, Source, StructurePattern,
+        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
+        ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern,
     },
     ide::ExprTypeSite,
     typ::{FnType, Type},
 };
-use netidx_core::utils::Either;
 use netidx_value::Typ;
 use triomphe::Arc;
 
@@ -299,9 +298,9 @@ fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
         }
         let ExprKind::Bind(b) = &stmt.kind else { continue };
         let ExprKind::Lambda(l) = &b.value.kind else { continue };
-        let Either::Left(body) = &l.body else { continue };
+        let LambdaBody::Expr(body) = &l.body else { continue };
         let Some(x) = l.args.iter().find_map(|a| match (&a.pattern, &a.constraint) {
-            (StructurePattern::Bind(x), Some(Type::TVar(_))) if a.labeled.is_none() => {
+            (StructurePattern::Bind(x), Some(Type::TVar(_))) if !a.kind.is_labeled() => {
                 Some(x)
             }
             _ => None,
@@ -327,7 +326,7 @@ fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
         }
         .to_expr_nopos();
         let lambda = ExprKind::Lambda(Arc::new(LambdaExpr {
-            body: Either::Left(body),
+            body: LambdaBody::Expr(body),
             ..(**l).clone()
         }))
         .to_expr_nopos();
@@ -492,14 +491,14 @@ fn labels_default(
         let Some(expected) = expected else { continue };
         // a defaulted label the expected type omits or keeps optional
         let Some(k) = l.args.iter().position(|a| {
-            matches!((&a.labeled, &a.pattern), (Some(Some(_)), StructurePattern::Bind(n))
+            matches!((&a.kind, &a.pattern), (ArgKind::Defaulted(_), StructurePattern::Bind(n))
                 if expected.args.iter().find(|e| e.label().map(|x| &**x) == Some(n.name.as_str()))
                     .is_none_or(|e| e.has_default()))
         }) else {
             continue;
         };
         let mut args = l.args.to_vec();
-        args[k].labeled = Some(None);
+        args[k].kind = ArgKind::Labeled;
         let lambda = ExprKind::Lambda(Arc::new(LambdaExpr {
             args: Arc::from_iter(args),
             ..(**l).clone()

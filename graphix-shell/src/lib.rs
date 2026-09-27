@@ -481,10 +481,6 @@ impl<X: GXExt> Shell<X> {
                                     env = e;
                                     newenv = Some(env.clone());
                                 }
-                                // A bottom with no value-channel event; report it directly.
-                                GXEvent::Diagnostic(_, d) => {
-                                    eprintln!("runtime: {d}")
-                                }
                             }
                         }
                     }

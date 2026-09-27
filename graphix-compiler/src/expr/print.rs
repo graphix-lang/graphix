@@ -1,17 +1,18 @@
 use crate::{
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, Decorations, Doc, Expr, ExprKind,
-        ImplExpr, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqKind, SeqTrigger, Sig,
-        SigItem, SigKind, StrForm, StructExpr, StructWithExpr, TraitExpr, TraitMethod,
-        TypeDefBody, TypeDefExpr, UseItem, format::FormatConfig, parser,
+        ImplExpr, LambdaBody, LambdaExpr, ModuleKind, Sandbox, SelectExpr, SeqKind,
+        SeqTrigger, Sig, SigItem, SigKind, StrForm, StructExpr, StructWithExpr,
+        StructurePattern, TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr, UseItem,
+        format::FormatConfig, parser,
     },
     print_as_written,
     stack::ensure_sufficient,
     typ::Type,
 };
 use arcstr::ArcStr;
-use compact_str::format_compact;
-use netidx_core::{path::Path, utils::Either};
+use compact_str::{CompactString, format_compact};
+use netidx_core::path::Path;
 use netidx_value::{Value, parser::VAL_ESC};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -465,10 +466,6 @@ impl fmt::Write for PrettyBuf {
     }
 }
 
-// XCR claude for eric: agreed that a flat `Display` beside a hand-written broken twin
-// drifts (the Construct, Deref, Sandbox and catch bugs were drift); describing each
-// node once as a group and rendering it flat or broken is a printer rewrite, its own
-// change, gated by the corpus harness. This change fixes the drifted twins in place.
 pub trait PrettyDisplay: fmt::Display {
     /// The multi-line layout; `fmt_pretty` calls it when the single-line
     /// form does not fit. It ends with a newline.
@@ -898,7 +895,8 @@ impl PrettyDisplay for BindExpr {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         let BindExpr { rec, pattern, typ, value } = self;
         let rec = if *rec { " rec" } else { "" };
-        write!(buf, "let{rec} {pattern}")?;
+        write!(buf, "let{rec} ")?;
+        pretty_pattern_then(buf, pattern, if typ.is_some() { ":" } else { " =" })?;
         if let Some(typ) = typ {
             write!(buf, ": ")?;
             let start = buf.mark();
@@ -913,6 +911,142 @@ impl PrettyDisplay for BindExpr {
             write!(buf, " =")?;
         }
         pretty_tail(buf, value)
+    }
+}
+
+/// `p`, flat when it and the `follows` text it is the head of fit the
+/// line, else laid out over lines; the line it ends on is left open.
+fn pretty_pattern_then(
+    buf: &mut PrettyBuf,
+    p: &StructurePattern,
+    follows: &str,
+) -> fmt::Result {
+    let start = buf.mark();
+    let col = buf.col();
+    write!(buf, "{p}")?;
+    if col + buf.width_since(start) + follows.len() > buf.limit {
+        buf.rollback(start);
+        p.fmt_pretty_inner(buf)?;
+        buf.kill_newline();
+    }
+    Ok(())
+}
+
+/// One element of a bracketed pattern.
+enum PatElt<'a> {
+    Pat(&'a StructurePattern),
+    Field(&'a str, &'a StructurePattern),
+    Text(CompactString),
+}
+
+/// A bracketed pattern, one element to a line.
+fn pretty_pattern_elts(
+    buf: &mut PrettyBuf,
+    open: &str,
+    elts: &[PatElt<'_>],
+    close: &str,
+) -> fmt::Result {
+    writeln!(buf, "{open}")?;
+    buf.nested(|buf| {
+        for (i, elt) in elts.iter().enumerate() {
+            if i > 0 {
+                buf.kill_newline();
+                writeln!(buf, ",")?
+            }
+            match elt {
+                PatElt::Pat(p) => p.fmt_pretty(buf)?,
+                PatElt::Field(name, p) => {
+                    write!(buf, "{name}: ")?;
+                    p.fmt_pretty(buf)?
+                }
+                PatElt::Text(t) => writeln!(buf, "{t}")?,
+            }
+        }
+        Ok(())
+    })?;
+    writeln!(buf, "{close}")
+}
+
+impl PrettyDisplay for StructurePattern {
+    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
+        use StructurePattern as P;
+        if let Some(all) = self.all() {
+            write!(buf, "{all}@ ")?
+        }
+        fn pats(ps: &[StructurePattern]) -> SmallVec<[PatElt<'_>; 8]> {
+            ps.iter().map(PatElt::Pat).collect()
+        }
+        let brackets = |list: bool| if list { ("[<", ">]") } else { ("[", "]") };
+        match self {
+            P::Ignore | P::Literal(_) | P::Bind(_) => writeln!(buf, "{self}"),
+            P::Slice { list, all: _, binds } => {
+                let (open, close) = brackets(*list);
+                pretty_pattern_elts(buf, open, &pats(binds), close)
+            }
+            P::SlicePrefix { list, all: _, prefix, tail } => {
+                let (open, close) = brackets(*list);
+                let mut elts = pats(prefix);
+                elts.push(PatElt::Text(match tail {
+                    None => format_compact!(".."),
+                    Some(name) => format_compact!("{name}.."),
+                }));
+                pretty_pattern_elts(buf, open, &elts, close)
+            }
+            P::SliceSuffix { all: _, head, suffix } => {
+                let mut elts: SmallVec<[PatElt<'_>; 8]> =
+                    SmallVec::from_iter([PatElt::Text(match head {
+                        None => format_compact!(".."),
+                        Some(name) => format_compact!("{name}.."),
+                    })]);
+                elts.extend(suffix.iter().map(PatElt::Pat));
+                pretty_pattern_elts(buf, "[", &elts, "]")
+            }
+            P::Tuple { all: _, binds } => {
+                pretty_pattern_elts(buf, "(", &pats(binds), ")")
+            }
+            P::Variant { all: _, tag, binds } if binds.is_empty() => {
+                writeln!(buf, "`{tag}")
+            }
+            P::Variant { all: _, tag, binds } => {
+                pretty_pattern_elts(buf, &format_compact!("`{tag}("), &pats(binds), ")")
+            }
+            P::Abstract { all: _, name, bind } => {
+                write!(buf, "{name}(")?;
+                bind.fmt_pretty(buf)?;
+                buf.kill_newline();
+                writeln!(buf, ")")
+            }
+            P::Or(alts) => {
+                for (i, p) in alts.iter().enumerate() {
+                    if i > 0 {
+                        write!(buf, "| ")?
+                    }
+                    p.fmt_pretty(buf)?
+                }
+                Ok(())
+            }
+            P::Struct { exhaustive, all: _, binds } => {
+                let mut written: SmallVec<[_; 16]> = binds.iter().collect();
+                if print_as_written() {
+                    written.sort_by_key(|(_, _, at)| at.order());
+                }
+                let mut elts: SmallVec<[PatElt<'_>; 8]> = written
+                    .iter()
+                    .map(|(name, pat, _)| match pat {
+                        P::Bind(n)
+                            if n.name == *name && !parser::is_reserved_binding(name) =>
+                        {
+                            PatElt::Text(name.as_str().into())
+                        }
+                        pat => PatElt::Field(name.as_str(), pat),
+                    })
+                    .collect();
+                if !exhaustive {
+                    elts.push(PatElt::Text(format_compact!("..")));
+                }
+                pretty_pattern_elts(buf, "{", &elts, "}")
+            }
+        }
     }
 }
 
@@ -1093,16 +1227,16 @@ impl PrettyDisplay for ApplyExpr {
 
 impl fmt::Display for Arg {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if self.labeled.is_some() {
+        if self.kind.is_labeled() {
             write!(f, "#")?;
         }
         write!(f, "{}", self.pattern)?;
         if let Some(t) = &self.constraint {
             write!(f, ": {t}")?
         }
-        match &self.labeled {
-            Some(Some(def)) => write!(f, " = {def}"),
-            Some(None) | None => Ok(()),
+        match self.kind.default() {
+            Some(def) => write!(f, " = {def}"),
+            None => Ok(()),
         }
     }
 }
@@ -1159,8 +1293,8 @@ impl fmt::Display for LambdaExpr {
         write!(f, "|")?;
         self.write_returns(f)?;
         match &self.body {
-            Either::Right(builtin) => write!(f, " '{builtin}"),
-            Either::Left(body) => write!(f, " {body}"),
+            LambdaBody::Builtin(builtin) => write!(f, " '{builtin}"),
+            LambdaBody::Expr(body) => write!(f, " {body}"),
         }
     }
 }
@@ -1202,8 +1336,8 @@ impl PrettyDisplay for LambdaExpr {
         write!(buf, "|")?;
         self.write_returns(buf)?;
         let opener = match &self.body {
-            Either::Right(builtin) => builtin.chars().count() + 3,
-            Either::Left(_) => 2,
+            LambdaBody::Builtin(builtin) => builtin.chars().count() + 3,
+            LambdaBody::Expr(_) => 2,
         };
         let has_args = !self.args.is_empty() || self.vargs.is_some();
         if buf.col() + opener > buf.limit && has_args {
@@ -1221,12 +1355,12 @@ impl PrettyDisplay for LambdaExpr {
             }
         }
         match &self.body {
-            Either::Right(builtin) if buf.col() + opener > buf.limit => {
+            LambdaBody::Builtin(builtin) if buf.col() + opener > buf.limit => {
                 writeln!(buf)?;
                 buf.nested(|buf| writeln!(buf, "'{builtin}"))
             }
-            Either::Right(builtin) => writeln!(buf, " '{builtin}"),
-            Either::Left(body) => pretty_tail(buf, body),
+            LambdaBody::Builtin(builtin) => writeln!(buf, " '{builtin}"),
+            LambdaBody::Expr(body) => pretty_tail(buf, body),
         }
     }
 }
@@ -1266,7 +1400,8 @@ impl PrettyDisplay for SelectExpr {
                 if let Some(tp) = &pat.type_predicate {
                     write!(buf, "{tp} as ")?;
                 }
-                write!(buf, "{} ", pat.structure_predicate)?;
+                pretty_pattern_then(buf, &pat.structure_predicate, " =>")?;
+                write!(buf, " ")?;
                 if let Some(guard) = &pat.guard {
                     write!(buf, "if ")?;
                     buf.nested(|buf| guard.fmt_pretty(buf))?;

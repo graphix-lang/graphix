@@ -391,7 +391,8 @@ node graph IS the IR — there is no parallel typed IR
 - **Sleep is pause, not reset.** Value-channel state survives an arm's
   sleep (`Held` residents at the select scrutinee, pattern guard and
   `~`'s arg; `CachedVals` staging; collection slots; a `<-` target's
-  value). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
+  value, which a wake's constants never overwrite and a fired input of
+  its initializer does). **Wake catch-up** (`design/wake_catchup.md`): a reselected arm
   recomputes from the world as it stands, reading standing values STALE;
   the only events it re-raises are the fires no selected reader saw,
   once, at their current value (one fire bit per arm-body input per
@@ -536,7 +537,8 @@ not a gap count.
   that holds both (`node/mod.rs::write_mismatch`).
 - **Sets and coverage**: select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member;
-  bool literals and variant heads (payload irrefutable) pool per position
+  a `null` literal covers `null`; bool literals and variant heads
+  (payload irrefutable) pool per position
   inside composite patterns; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over
   a scrutinee its shape covers; set coverage distributes over product

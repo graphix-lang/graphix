@@ -147,10 +147,6 @@ impl ImageBuf {
     }
 }
 
-// XCR claude for eric: a lifetime on the encoder cannot reach the node borrow:
-// a call site finds the encoder through the thread-local, which erases it. The
-// session now drops what it deferred when it ends (`EncodeImage::drop`), so a
-// closure lives no longer than the borrows the session contract requires.
 /// An instance body the eager part of the image skipped: written
 /// after it, in the heap, at an offset the instance table records.
 type Deferred = Box<dyn FnOnce(&mut ImageBuf) -> Result<(), PackError>>;
@@ -336,9 +332,6 @@ impl Pack for ObjectCounts {
     }
 }
 
-// XCR claude for eric: the encoder derives Default; the decoder keeps its
-// explicit `new`, since a defaulted decoder would decode ids unrelocated onto
-// ids this process minted.
 /// The objects an image session has built, each by the offset of its
 /// definition in the image, and the image itself, so a reference to
 /// an object not built yet decodes it from there.

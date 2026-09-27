@@ -1,11 +1,7 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PendingImport, PrintFlag,
-    Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
-    env::{self, Env, ImportEntry, UseAnchor},
-    expr::{
-        At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody,
-        UseItem,
-    },
+    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Restore,
+    Rt, Scope, Tag, TagValue, Update, UserEvent, env,
+    expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody},
     format_with_flags,
     fusion::{
         self,
@@ -15,7 +11,7 @@ use crate::{
         },
         fuse,
     },
-    ide::{ModuleRefSite, ReferenceSite},
+    ide::ReferenceSite,
     image::{
         self, ImageBuf,
         nodes::{
@@ -29,14 +25,11 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
-use netidx_core::{
-    pack::{Pack, PackError},
-    path::Path,
-};
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{mem, sync::LazyLock};
+use std::{cell::Cell, mem, sync::LazyLock};
 use triomphe::Arc;
 
 pub(crate) mod array;
@@ -184,6 +177,23 @@ impl WakeBit {
     pub(crate) fn take(&mut self) -> bool {
         std::mem::take(&mut self.0)
     }
+}
+
+thread_local! {
+    static DESELECTING_ARM: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f` inside (`true`) or outside (`false`) the sleep of an arm a
+/// select or a seq machine is deselecting: under it a recursive-edge
+/// `CallSite::sleep` deletes its callee (shrink = delete). A callee body
+/// is outside, so a whole-recursion pause retains.
+pub(crate) fn deselecting_arm<T>(inside: bool, f: impl FnOnce() -> T) -> T {
+    let _restore = Restore::replace(&DESELECTING_ARM, inside);
+    f()
+}
+
+pub(crate) fn in_deselected_arm() -> bool {
+    DESELECTING_ARM.get()
 }
 
 #[derive(Debug)]
@@ -341,10 +351,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
 /// the readers that must read history a production cannot carry: the
 /// select scrutinee, a pattern guard's truth, and `~`'s held arg.
 /// Everything else reads its children's productions directly.
-// XCR claude for eric: the four (value, bottom) pairs are all live states:
-// never produced, present, bottom before any value, bottom over a held value
-// (what `~` banking and the wake read), so no invalid state to remove; an
-// accessor would only shorten select.rs/pattern.rs.
 #[derive(Debug)]
 pub struct Held<R: Rt, E: UserEvent> {
     /// The last value-bearing production (`Some` = there was once a
@@ -435,134 +441,6 @@ macro_rules! dense_gate {
     }};
 }
 pub(crate) use dense_gate;
-
-// XCR claude for eric: agreed it belongs with the module system (module.rs calls
-// it too); not moved this round because modules-image is rewriting module.rs's
-// `bind_sig` loop around it. The body cleanup is done.
-/// Compile one `use` item into the scope's namespace table
-/// ([`crate::env::Env::names`]): resolve its module prefix, then
-/// install a glob source or an explicit [`ImportEntry`].
-pub(crate) fn compile_use_item(
-    env: &mut Env,
-    pending: &mut Vec<PendingImport>,
-    pos: combine::stream::position::SourcePosition,
-    ori: &Arc<Origin>,
-    scope: &Scope,
-    replace: bool,
-    item: &UseItem,
-) -> Result<()> {
-    let modpath = |p: &str| ModPath(Path::from(ArcStr::from(p)));
-    let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
-    let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
-    let anchor = env.use_anchor(&scope.lexical, prefix)?;
-    if item.is_glob() {
-        let scope_l = &scope.lexical;
-        match anchor {
-            None => bail!("a glob needs a path prefix"),
-            Some(UseAnchor::Chain(a)) => {
-                // a `super::*` anchor may span block levels: capture
-                // each level as its own glob source
-                let levels: LPooled<Vec<ModPath>> =
-                    env::chain_levels(a).map(modpath).collect();
-                for l in levels.iter() {
-                    env.import_glob(scope_l, l.clone());
-                }
-            }
-            Some(UseAnchor::Module(m)) => env.import_glob(scope_l, m),
-        }
-        return Ok(());
-    }
-    let key: &str = item.rename.as_ref().map_or(base, |n| n.as_str());
-    let (target, keyword_anchored) = match anchor {
-        Some(UseAnchor::Chain(a)) => (modpath(a), true),
-        Some(UseAnchor::Module(m)) => (m, false),
-        None => {
-            // `use m;` — a single segment names a module; importing
-            // it means importing the name from its parent
-            let p = ModPath(Path::from_iter([base]));
-            match env.canonical_modpath(&scope.lexical, &p)? {
-                Some(m) => (modpath(Path::dirname(&*m).unwrap_or("/")), false),
-                None => bail!("use: no module `{base}` in scope"),
-            }
-        }
-    };
-    let entry = ImportEntry {
-        scope: target,
-        name: base.into(),
-        keyword_anchored,
-        pos,
-        ori: ori.clone(),
-    };
-    // the prelude already provides every package name as a path root
-    if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {
-        return Ok(());
-    }
-    if env.lsp_mode {
-        let canonical = ModPath(entry.scope.append(&entry.name));
-        env.push_module_reference(ModuleRefSite {
-            pos,
-            ori: ori.clone(),
-            name: item.path.clone(),
-            canonical,
-            def_ori: None,
-            segments: Some(item.at.clone()),
-        });
-    }
-    if !env.import_target_exists(&entry) {
-        pending.push(PendingImport {
-            scope: scope.lexical.clone(),
-            key: key.into(),
-            pos,
-            ori: ori.clone(),
-        });
-    }
-    env.import(&scope.lexical, key, entry, replace)
-}
-
-/// Compile the items of a `use` statement, or of a signature's `use`,
-/// into the namespace table.
-pub(crate) fn compile_use_items(
-    env: &mut Env,
-    pending: &mut Vec<PendingImport>,
-    pos: combine::stream::position::SourcePosition,
-    ori: &Arc<Origin>,
-    scope: &Scope,
-    replace: bool,
-    reexport: bool,
-    items: &[UseItem],
-) -> Result<()> {
-    if reexport {
-        bail!("re-exports (`pub use`) are not yet supported")
-    }
-    for item in items {
-        compile_use_item(env, pending, pos, ori, scope, replace, item)?;
-    }
-    Ok(())
-}
-
-/// Compile a `use` statement: every item registers in the namespace
-/// table; the graph gets a [`Nop`].
-pub(crate) fn compile_use<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    flags: BitFlags<CFlag>,
-    spec: Expr,
-    scope: &Scope,
-    reexport: bool,
-    items: &Arc<[UseItem]>,
-) -> Result<Node<R, E>> {
-    compile_use_items(
-        &mut ctx.env,
-        &mut ctx.pending_imports,
-        spec.pos,
-        &spec.ori,
-        scope,
-        flags.contains(CFlag::ReplaceImports),
-        reexport,
-        items,
-    )
-    .at(&spec)?;
-    Ok(Nop::new(Type::Bottom))
-}
 
 #[derive(Debug)]
 pub struct TypeDef {
@@ -870,7 +748,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
             compile(ctx, flags, e.clone(), scope, top_id)
         }
         ExprKind::Use { reexport, names } => {
-            compile_use(ctx, flags, e.clone(), scope, *reexport, names)
+            module::compile_use(ctx, flags, e.clone(), scope, *reexport, names)
         }
         ExprKind::Module { name, value } => {
             compile_module(ctx, flags, e.clone(), scope, top_id, name, value, predeclared)
@@ -1278,7 +1156,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
             };
         // a `<-` target is never a static call target
         ctx.mark_connect_target(id);
-        if ctx.env.lsp_mode {
+        if ctx.env.ide.is_lsp() {
             ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),
@@ -1442,7 +1320,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 None => bailat!(spec, "{name} is undefined"),
                 Some((_, b)) => (b.id, b.pos, b.ori.clone()),
             };
-        if ctx.env.lsp_mode {
+        if ctx.env.ide.is_lsp() {
             ctx.env.push_reference(ReferenceSite {
                 pos: spec.pos,
                 ori: spec.ori.clone(),

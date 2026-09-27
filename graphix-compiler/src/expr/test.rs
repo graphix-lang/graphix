@@ -920,7 +920,11 @@ macro_rules! lambda {
                                 pattern
                             };
                             Arg {
-                                labeled: labeled.then_some(default),
+                                kind: match (labeled, default) {
+                                    (false, _) => ArgKind::Positional,
+                                    (true, None) => ArgKind::Labeled,
+                                    (true, Some(e)) => ArgKind::Defaulted(e),
+                                },
                                 pattern,
                                 constraint,
                                 pos: Default::default(),
@@ -937,8 +941,8 @@ macro_rules! lambda {
                         constraints,
                         throws,
                         body: match builtin {
-                            None => Either::Left(body),
-                            Some(name) => Either::Right(name),
+                            None => LambdaBody::Expr(body),
+                            Some(name) => LambdaBody::Builtin(name),
                         },
                     }))
                     .to_expr_nopos()
@@ -1625,9 +1629,10 @@ fn check_args(args0: &[Arg], args1: &[Arg]) -> bool {
         && args0.iter().zip(args1.iter()).fold(true, |r, (a0, a1)| {
             r && (check_structure_pattern(&a0.pattern, &a1.pattern))
                 && (check_type_opt(&a0.constraint, &a1.constraint))
-                && (match (&a0.labeled, &a1.labeled) {
-                    (None, None) | (Some(None), Some(None)) => true,
-                    (Some(Some(d0)), Some(Some(d1))) => check(d0, d1),
+                && (match (&a0.kind, &a1.kind) {
+                    (ArgKind::Positional, ArgKind::Positional)
+                    | (ArgKind::Labeled, ArgKind::Labeled) => true,
+                    (ArgKind::Defaulted(d0), ArgKind::Defaulted(d1)) => check(d0, d1),
                     (_, _) => false,
                 })
         })
@@ -1985,7 +1990,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     rtype: rtype0,
                     constraints: constraints0,
                     throws: throws0,
-                    body: Either::Left(body0),
+                    body: LambdaBody::Expr(body0),
                 },
                 LambdaExpr {
                     args: args1,
@@ -1993,7 +1998,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     rtype: rtype1,
                     constraints: constraints1,
                     throws: throws1,
-                    body: Either::Left(body1),
+                    body: LambdaBody::Expr(body1),
                 },
             ) => {
                 (check_args(args0, args1))
@@ -2019,7 +2024,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     rtype: rtype0,
                     constraints: constraints0,
                     throws: throws0,
-                    body: Either::Right(b0),
+                    body: LambdaBody::Builtin(b0),
                 },
                 LambdaExpr {
                     args: args1,
@@ -2027,7 +2032,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                     rtype: rtype1,
                     constraints: constraints1,
                     throws: throws1,
-                    body: Either::Right(b1),
+                    body: LambdaBody::Builtin(b1),
                 },
             ) => {
                 (check_args(args0, args1))

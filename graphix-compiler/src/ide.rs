@@ -1,8 +1,8 @@
 //! IDE/LSP side-channels: write-only sinks the compiler fills while
-//! `Env.ide` is installed (an LSP-style check), drained at the compile
-//! boundary into the check result; a few recorders also require
-//! [`crate::env::Env::lsp_mode`]. Nothing here is read by the compiler
-//! itself. [`Ide`] owns all of them, shared via `Env.ide`.
+//! `Env.ide` holds one (an LSP-style check), drained at the compile
+//! boundary into the check result; a few recorders run under any
+//! [`IdeMode::Lsp`]. Nothing here is read by the compiler itself.
+//! [`Ide`] owns all of them, shared via `Env.ide`.
 
 use crate::{
     BindId, Scope, SourcePosition,
@@ -10,8 +10,10 @@ use crate::{
     expr::{ModPath, Origin, WrittenPath},
     typ::Type,
 };
+use ahash::AHashSet;
 use arcstr::ArcStr;
 use compact_str::CompactString;
+use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
 use std::sync::LazyLock;
 use triomphe::Arc;
@@ -124,6 +126,30 @@ pub struct ExprTypeSite {
     pub cell: bool,
 }
 
+/// Whether a compile serves an editor, and the sink it records into.
+#[derive(Debug, Clone, Default)]
+pub enum IdeMode {
+    #[default]
+    Off,
+    /// An editor's runtime: fusion off, unknown builtins warn. The sink
+    /// is `Some` during a check, and every compile within it drains into
+    /// the one buffer the clones share.
+    Lsp(Option<Arc<Mutex<Ide>>>),
+}
+
+impl IdeMode {
+    pub fn is_lsp(&self) -> bool {
+        matches!(self, Self::Lsp(_))
+    }
+
+    pub fn sink(&self) -> Option<&Arc<Mutex<Ide>>> {
+        match self {
+            Self::Lsp(sink) => sink.as_ref(),
+            Self::Off => None,
+        }
+    }
+}
+
 /// Every IDE/LSP side-channel accumulated during a compile. Installed
 /// into `Env.ide` only under an LSP-style check.
 #[derive(Debug)]
@@ -139,8 +165,11 @@ pub struct Ide {
     pub module_references: GPooled<Vec<ModuleRefSite>>,
     /// Per-compile scope map answering `cursor → scope` queries.
     pub scope_map: GPooled<Vec<ScopeMapEntry>>,
-    /// Type-name references in type positions.
+    /// Type-name references in type positions, one per site.
     pub type_refs: GPooled<Vec<TypeRefSite>>,
+    /// The sites in `type_refs`, by origin identity and position: a
+    /// site is expanded at every check of its type.
+    type_ref_sites: GPooled<AHashSet<(usize, i32, i32)>>,
     /// Struct field selections.
     pub field_refs: GPooled<Vec<FieldRefSite>>,
     /// Warnings, in place of the stderr lines a run prints.
@@ -167,6 +196,8 @@ impl Ide {
             LazyLock::new(|| Pool::new(64, 65536));
         static TYPE_REF_SITE_POOL: LazyLock<Pool<Vec<TypeRefSite>>> =
             LazyLock::new(|| Pool::new(64, 65536));
+        static TYPE_REF_SEEN_POOL: LazyLock<Pool<AHashSet<(usize, i32, i32)>>> =
+            LazyLock::new(|| Pool::new(64, 65536));
         static FIELD_REF_SITE_POOL: LazyLock<Pool<Vec<FieldRefSite>>> =
             LazyLock::new(|| Pool::new(64, 65536));
         static WARNING_POOL: LazyLock<Pool<Vec<Warning>>> =
@@ -183,11 +214,19 @@ impl Ide {
             module_references: MODULE_REF_SITE_POOL.take(),
             scope_map: SCOPE_MAP_ENTRY_POOL.take(),
             type_refs: TYPE_REF_SITE_POOL.take(),
+            type_ref_sites: TYPE_REF_SEEN_POOL.take(),
             field_refs: FIELD_REF_SITE_POOL.take(),
             warnings: WARNING_POOL.take(),
             sig_links: SIG_LINK_POOL.take(),
             module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
             expr_types: EXPR_TYPE_SITE_POOL.take(),
+        }
+    }
+
+    pub(crate) fn push_type_ref(&mut self, site: TypeRefSite) {
+        let key = (Arc::as_ptr(&site.ori) as usize, site.pos.line, site.pos.column);
+        if self.type_ref_sites.insert(key) {
+            self.type_refs.push(site)
         }
     }
 }

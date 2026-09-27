@@ -2,12 +2,12 @@ use crate::{
     BindId, CFlag, Event, ExecCtx, Node, PendingImport, Refs, Rt, Scope, Tag, TagValue,
     Update, UserEvent,
     compiler::compile,
-    env::{Env, ImplDef, Map, scope_params},
+    env::{self, Env, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
     expr::{
-        BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext, Sandbox,
-        Sig, SigItem, SigKind, Source, TypeDefBody, TypeDefExpr, WrittenAt,
-        add_interface_modules, parser,
+        At, BindSig, Doc, Expr, ExprId, ExprKind, ModPath, Origin, ParserContext,
+        Sandbox, Sig, SigItem, SigKind, Source, TypeDefBody, TypeDefExpr, UseItem,
+        WrittenAt, add_interface_modules, parser,
     },
     ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
     image::{
@@ -16,7 +16,7 @@ use crate::{
             NodeTag, decode_node, decode_nodes, encode_nodes, nodes_len, put_tag, tag_len,
         },
     },
-    node::{bind::Bind, traits},
+    node::{Nop, bind::Bind, traits},
     profile::{self, Phase},
     typ::{AbstractId, Type},
     wrap,
@@ -26,11 +26,139 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::{
+    pack::{Pack, PackError},
+    path::Path,
+};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use std::{any::Any, collections::hash_map::Entry, fmt::Write, mem, sync::LazyLock};
 use triomphe::Arc;
+
+/// Compile one `use` item into the scope's namespace table
+/// ([`crate::env::Env::names`]): resolve its module prefix, then
+/// install a glob source or an explicit [`ImportEntry`].
+pub(crate) fn compile_use_item(
+    env: &mut Env,
+    pending: &mut Vec<PendingImport>,
+    pos: combine::stream::position::SourcePosition,
+    ori: &Arc<Origin>,
+    scope: &Scope,
+    replace: bool,
+    item: &UseItem,
+) -> Result<()> {
+    let modpath = |p: &str| ModPath(Path::from(ArcStr::from(p)));
+    let parts: LPooled<Vec<&str>> = Path::parts(&*item.path.0).collect();
+    let Some((&base, prefix)) = parts.split_last() else { bail!("use: empty path") };
+    let anchor = env.use_anchor(&scope.lexical, prefix)?;
+    if item.is_glob() {
+        let scope_l = &scope.lexical;
+        match anchor {
+            None => bail!("a glob needs a path prefix"),
+            Some(UseAnchor::Chain(a)) => {
+                // a `super::*` anchor may span block levels: capture
+                // each level as its own glob source
+                let levels: LPooled<Vec<ModPath>> =
+                    env::chain_levels(a).map(modpath).collect();
+                for l in levels.iter() {
+                    env.import_glob(scope_l, l.clone());
+                }
+            }
+            Some(UseAnchor::Module(m)) => env.import_glob(scope_l, m),
+        }
+        return Ok(());
+    }
+    let key: &str = item.rename.as_ref().map_or(base, |n| n.as_str());
+    let (target, keyword_anchored) = match anchor {
+        Some(UseAnchor::Chain(a)) => (modpath(a), true),
+        Some(UseAnchor::Module(m)) => (m, false),
+        None => {
+            // `use m;` — a single segment names a module; importing
+            // it means importing the name from its parent
+            let p = ModPath(Path::from_iter([base]));
+            match env.canonical_modpath(&scope.lexical, &p)? {
+                Some(m) => (modpath(Path::dirname(&*m).unwrap_or("/")), false),
+                None => bail!("use: no module `{base}` in scope"),
+            }
+        }
+    };
+    let entry = ImportEntry {
+        scope: target,
+        name: base.into(),
+        keyword_anchored,
+        pos,
+        ori: ori.clone(),
+    };
+    // the prelude already provides every package name as a path root
+    if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {
+        return Ok(());
+    }
+    if env.ide.is_lsp() {
+        let canonical = ModPath(entry.scope.append(&entry.name));
+        env.push_module_reference(ModuleRefSite {
+            pos,
+            ori: ori.clone(),
+            name: item.path.clone(),
+            canonical,
+            def_ori: None,
+            segments: Some(item.at.clone()),
+        });
+    }
+    if !env.import_target_exists(&entry) {
+        pending.push(PendingImport {
+            scope: scope.lexical.clone(),
+            key: key.into(),
+            pos,
+            ori: ori.clone(),
+        });
+    }
+    env.import(&scope.lexical, key, entry, replace)
+}
+
+/// Compile the items of a `use` statement, or of a signature's `use`,
+/// into the namespace table.
+pub(crate) fn compile_use_items(
+    env: &mut Env,
+    pending: &mut Vec<PendingImport>,
+    pos: combine::stream::position::SourcePosition,
+    ori: &Arc<Origin>,
+    scope: &Scope,
+    replace: bool,
+    reexport: bool,
+    items: &[UseItem],
+) -> Result<()> {
+    if reexport {
+        bail!("re-exports (`pub use`) are not yet supported")
+    }
+    for item in items {
+        compile_use_item(env, pending, pos, ori, scope, replace, item)?;
+    }
+    Ok(())
+}
+
+/// Compile a `use` statement: every item registers in the namespace
+/// table; the graph gets a [`Nop`].
+pub(crate) fn compile_use<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: Expr,
+    scope: &Scope,
+    reexport: bool,
+    items: &Arc<[UseItem]>,
+) -> Result<Node<R, E>> {
+    compile_use_items(
+        &mut ctx.env,
+        &mut ctx.pending_imports,
+        spec.pos,
+        &spec.ori,
+        scope,
+        flags.contains(CFlag::ReplaceImports),
+        reexport,
+        items,
+    )
+    .at(&spec)?;
+    Ok(Nop::new(Type::Bottom))
+}
 
 fn bind_sig(
     env: &mut Env,
@@ -64,7 +192,7 @@ fn bind_sig_item(
         SigKind::Module(name) => {
             let scope = scope.append(name);
             env.modules.insert_cow(scope.lexical.clone());
-            if env.lsp_mode {
+            if env.ide.is_lsp() {
                 env.push_module_reference(ModuleRefSite {
                     pos: name.pos_or(si.pos),
                     ori: si_ori.clone(),
@@ -82,15 +210,13 @@ fn bind_sig_item(
             // `names` is a global registry keyed by scope path, so
             // registering in the outer env covers the impl compile too
             for item in names.iter() {
-                super::compile_use_item(
-                    env, pending, si.pos, si_ori, scope, false, item,
-                )?;
+                compile_use_item(env, pending, si.pos, si_ori, scope, false, item)?;
             }
         }
         SigKind::Bind(BindSig { name, typ }) => {
             let typ = typ.scope_refs(&scope.lexical).rewrite_trait_args(env)?;
             typ.alias_tvars(&mut LPooled::take());
-            if env.lsp_mode {
+            if env.ide.is_lsp() {
                 typ.record_ide_refs(env, &scope.lexical);
             }
             let poly = matches!(typ, Type::Fn(_));
@@ -272,7 +398,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                 proxy.push(Proxy { inner: id, outer: *proxy_id, private_inner: true });
                 ctx.rt.ref_var(id, top_id);
                 ctx.rt.ref_var(*proxy_id, top_id);
-                if ctx.env.lsp_mode {
+                if ctx.env.ide.is_lsp() {
                     ctx.env.push_sig_link(SigImplLink {
                         scope: scope.lexical.clone(),
                         name: name.clone(),
@@ -630,7 +756,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         };
         t.compile_inner(ctx, &exprs)
             .with_context(|| format_compact!("compiling module {}", scope.lexical))?;
-        if ctx.env.lsp_mode {
+        if ctx.env.ide.is_lsp() {
             ctx.env.push_module_internal_view(ModuleInternalView {
                 scope: t.scope.lexical.clone(),
                 env: t.env.clone(),

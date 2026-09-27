@@ -5,7 +5,7 @@ use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, Effect, Event, ExecCtx, InitFn, LambdaId, Node,
     Refs, Rt, Scope, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
-    expr::{Arg, ExprId, StructurePattern, WrittenAt},
+    expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
     image::{self, ImageBuf},
     node::{genn, lambda::LambdaDef},
     typ::{FnType, Type},
@@ -257,7 +257,10 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
                     None => format_compact!("a{i}").as_str().into(),
                 };
                 Arg {
-                    labeled: a.is_labeled().then_some(None),
+                    kind: match a.is_labeled() {
+                        true => ArgKind::Labeled,
+                        false => ArgKind::Positional,
+                    },
                     pattern: StructurePattern::Bind(name.into()),
                     constraint: Some(a.typ.clone()),
                     pos: WrittenAt::NOWHERE,

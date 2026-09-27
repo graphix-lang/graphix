@@ -8,7 +8,7 @@ pub use binop::BinOp;
 use combine::stream::position::SourcePosition;
 pub use context::{At, ErrorContext, ErrorSite, ParserContext};
 pub use modpath::ModPath;
-use netidx_core::{pack::PackError, path::Path, utils::Either};
+use netidx_core::{pack::PackError, path::Path};
 use netidx_derive::Pack;
 use netidx_value::Value;
 pub(crate) use pattern::union_members;
@@ -88,14 +88,34 @@ impl fmt::Display for CouldNotResolve {
     }
 }
 
-// XCR claude for eric: [readability] `labeled: Option<Option<Expr>>`, LambdaExpr's
-// `vargs` and `body: Either<Expr, ArcStr>` as named enums would touch lambda.rs,
-// callsite.rs, traits.rs, fusion/lowering.rs, seq.rs and stdlib core (calls, fusion-b,
-// seq-ops): worth one mechanical pass after the merge, not nine parallel ones.
+/// How a lambda parameter is passed.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub enum ArgKind {
+    Positional,
+    /// `#name`: by name, required.
+    Labeled,
+    /// `#name = e`: by name, `e` where a call omits it.
+    Defaulted(Expr),
+}
+
+impl ArgKind {
+    pub fn is_labeled(&self) -> bool {
+        !matches!(self, Self::Positional)
+    }
+
+    pub fn default(&self) -> Option<&Expr> {
+        match self {
+            Self::Defaulted(e) => Some(e),
+            Self::Positional | Self::Labeled => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct Arg {
-    pub labeled: Option<Option<Expr>>,
+    pub kind: ArgKind,
     pub pattern: StructurePattern,
     pub constraint: Option<Type>,
     pub pos: WrittenAt,
@@ -219,10 +239,6 @@ pub struct ImplExpr {
     pub params: Arc<[TVar]>,
     pub constraints: Arc<[(TVar, Type)]>,
     pub target: Type,
-    // XCR claude for eric: a method is an Expr in all but name: Impl::compile needs
-    // its id, pos and decorations (a core trait's gets `#[sync]`) and the bind's
-    // rec and type, so a method struct would copy Expr's fields. The parser refuses
-    // every other shape; traits.rs's two `unreachable!`s are the whole cost.
     pub methods: Arc<[Expr]>,
 }
 
@@ -425,7 +441,15 @@ pub struct LambdaExpr {
     pub rtype: Option<Type>,
     pub constraints: Arc<[(TVar, Type)]>,
     pub throws: Option<Type>,
-    pub body: Either<Expr, ArcStr>,
+    pub body: LambdaBody,
+}
+
+/// A lambda's body: an expression, or `'name`, a builtin.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
+#[pack(unwrapped)]
+pub enum LambdaBody {
+    Expr(Expr),
+    Builtin(ArcStr),
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
@@ -838,11 +862,11 @@ impl ExprKind {
             }
             Lambda(l) => {
                 for a in l.args.iter() {
-                    if let Some(Some(d)) = &a.labeled {
+                    if let Some(d) = a.kind.default() {
                         f(d);
                     }
                 }
-                if let Either::Left(b) = &l.body {
+                if let LambdaBody::Expr(b) = &l.body {
                     f(b);
                 }
             }
@@ -1473,8 +1497,8 @@ impl Expr {
             }),
             Lambda(l) => Lambda(Arc::new(LambdaExpr {
                 args: Arc::from_iter(l.args.iter().map(|arg| Arg {
-                    labeled: match &arg.labeled {
-                        Some(Some(d)) => Some(Some(f(d))),
+                    kind: match &arg.kind {
+                        ArgKind::Defaulted(d) => ArgKind::Defaulted(f(d)),
                         other => other.clone(),
                     },
                     pattern: arg.pattern.clone(),
@@ -1486,8 +1510,8 @@ impl Expr {
                 constraints: l.constraints.clone(),
                 throws: l.throws.clone(),
                 body: match &l.body {
-                    Either::Left(b) => Either::Left(f(b)),
-                    Either::Right(s) => Either::Right(s.clone()),
+                    LambdaBody::Expr(b) => LambdaBody::Expr(f(b)),
+                    LambdaBody::Builtin(s) => LambdaBody::Builtin(s.clone()),
                 },
             })),
             Trait(t) => Trait(Arc::new(TraitExpr {

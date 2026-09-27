@@ -158,10 +158,6 @@ pub struct FusionCtx {
     /// `by_kernel` cache keys on its pointer identity. It lives as long
     /// as the context's compiled code (a later compile may call an
     /// earlier one's lambda); [`Self::reset_jit_for_check`] clears it.
-    // XCR claude for eric: cleared per check (the LSP's growth), not per compile:
-    // a REPL or dynamic-module compile calls an earlier compile's lambdas, whose
-    // cached sig is also the key of their compiled bodies in `by_kernel`, and
-    // FusionStats is documented to accumulate across compiles.
     pub kernels: parking_lot::Mutex<
         BTreeMap<
             (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions),

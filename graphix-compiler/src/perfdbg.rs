@@ -9,10 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-// XCR claude for eric: kept apart from profile.rs on purpose: profile reports
-// per root span at its close, so a runtime bind (no enclosing compile) would
-// print a full PROFILE block per bind, while this sums binds across cycles.
-// Folding needs a runtime-cumulative mode in profile first; your call.
 pub(crate) static BIND_CALLS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static BIND_NS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static SETUP_NS: AtomicU64 = AtomicU64::new(0);

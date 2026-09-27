@@ -10,6 +10,7 @@ use graphix_compiler::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
         Resolvers, RootFile, Source, parse_modpath,
     },
+    ide::{Ide, IdeMode},
     image::ProgramRoot,
     node::{
         coretraits, genn,
@@ -267,7 +268,9 @@ impl<X: GXExt> GX<X> {
         };
         let event = Event::new(cfg.ctx.rt.ext.empty_event());
         let mut ctx = cfg.ctx;
-        ctx.env.lsp_mode = cfg.lsp_mode;
+        if cfg.lsp_mode {
+            ctx.env.ide = IdeMode::Lsp(None);
+        }
         let mut t = Self {
             ctx,
             event,
@@ -781,17 +784,11 @@ impl<X: GXExt> GX<X> {
         // The LSP shares one runtime across every checked file and never
         // executes a kernel; without a reset each file's kernels accumulate
         // in the persistent JIT module until finalize fails.
-        if self.ctx.env.lsp_mode {
-            self.ctx.fusion.reset_jit_for_check()?;
-        }
         let env = self.ctx.env.clone();
-        let prev_ide = if self.ctx.env.lsp_mode {
-            self.ctx.env.ide.replace(Arc::new(parking_lot::Mutex::new(
-                graphix_compiler::ide::Ide::new(),
-            )))
-        } else {
-            None
-        };
+        if let IdeMode::Lsp(sink) = &mut self.ctx.env.ide {
+            self.ctx.fusion.reset_jit_for_check()?;
+            *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
+        }
         let resolvers_for_call: Resolvers = match resolver_override {
             Some(v) => std::sync::Arc::from(v),
             None => self.resolvers.clone(),
@@ -861,11 +858,9 @@ impl<X: GXExt> GX<X> {
                 return Err(e);
             }
             let env = self.ctx.env.clone();
-            let mut ide = match self.ctx.env.ide.as_ref() {
-                None => graphix_compiler::ide::Ide::new(),
-                Some(ide) => {
-                    std::mem::replace(&mut *ide.lock(), graphix_compiler::ide::Ide::new())
-                }
+            let mut ide = match self.ctx.env.ide.sink() {
+                None => Ide::new(),
+                Some(ide) => mem::replace(&mut *ide.lock(), Ide::new()),
             };
             if expr_types {
                 graphix_compiler::record_expr_types(&nodes, &mut ide.expr_types);
@@ -877,7 +872,6 @@ impl<X: GXExt> GX<X> {
         };
         let res = go.await;
         self.ctx.env = env;
-        self.ctx.env.ide = prev_ide;
         res
     }
 

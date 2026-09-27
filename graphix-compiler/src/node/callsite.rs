@@ -171,10 +171,6 @@ fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
     }
 }
 
-// XCR claude for eric: renamed, "restored" made explicit, and the lock is not
-// held across typecheck1. `&mut []` stays: no builtin's typecheck1 reads its
-// args (they check `resolved`), and keeping the gate's faux args alive beside
-// the check only to hand them back buys nothing.
 /// Re-run a builtin definition's check `Apply` at this site's resolved
 /// type; a user definition has no check. The check is shared by every
 /// site, the last one's type wins. A definition restored from an image
@@ -731,7 +727,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if !farg.kind.has_default() {
                 bail!("BUG: in bind missing required argument {name}")
             }
-            let Some(Some(expr)) = &argspec.labeled else {
+            let Some(expr) = argspec.kind.default() else {
                 bail!("expected default value")
             };
             let mut default_node = ctx.with_restored(f.env.clone(), |ctx| {
@@ -918,10 +914,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // boundary will drain.
         let restored_def = super::with_runtime_settles(ctx, |ctx| {
             let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
-            // XCR claude for eric: not dead. A bind can run under an arm's wake view
-            // (`event.wake_init`), where standing_view reads a standing entry stale;
-            // these FIRED entries give a fresh default's subtree its birth there
-            // (design/wake_catchup.md, the birth rule). The body sees them too.
             let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
                 refs.with_external_refs(|id| {
                     if let Some(v) = ctx.rt.store_value(&id) {
@@ -1340,10 +1332,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let mut set: LPooled<Vec<BindId>> = LPooled::take();
         let mut arg_fired = false;
-        // XCR claude for eric: a bind seeds from the quiet productions only, so only
-        // those are captured, and a static callee's fnode value is no longer cloned.
-        // A dynamic site still clones its quiet args each cycle: whether it rebinds
-        // is known only after `fnode`, which updates after the args.
         let may_bind = match &self.callee {
             Callee::Static { first_update, .. } => *first_update,
             _ => true,
@@ -1785,7 +1773,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
         // A recursive edge deselected by a shrink is deleted, so
         // re-reaching this depth binds a fresh activation.
-        if ctx.deselecting_arm && self.is_recursive_edge() {
+        if super::in_deselected_arm() && self.is_recursive_edge() {
             if let Some(mut f) = self.callee.take_apply() {
                 f.delete(ctx)
             }

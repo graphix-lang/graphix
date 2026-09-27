@@ -16,10 +16,6 @@ use std::fmt::{self, Write};
 
 /// A set's members in print order: canonical, or under `AsWritten` the
 /// members nobody wrote first and then the written ones as written.
-// XCR claude for eric: only variants and refs carry a written position, so the rest
-// of a union's non-primitive members move to the front. Carrying one for every
-// member kind reshapes `Type` (134 match sites across the review's packages);
-// recommend a positions list on `Type::Set` itself, beside the members, post-merge.
 fn set_members(s: &[Type]) -> SmallVec<[&Type; 16]> {
     let mut members: SmallVec<[&Type; 16]> = s.iter().collect();
     if print_as_written() {
@@ -147,10 +143,6 @@ impl Type {
     fn fmt_inner(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Abstract { id, params } => {
-                // XCR claude for eric: not reproduced: cold and warm runs of type errors
-                // and casts over program and stdlib abstract types print the ref's name
-                // (`sys::fs::watch::Watcher`) or the value's tag (`Counter(3)`), never an
-                // id. If one surfaces, register the name where the image decodes the id.
                 match id.name() {
                     Some(name) => write!(f, "{name}")?,
                     None if params.is_empty() => return write!(f, "abstract"),

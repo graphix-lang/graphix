@@ -82,7 +82,7 @@ impl StructurePattern {
     }
 
     /// The `name@` capture of this pattern.
-    fn all(&self) -> Option<&Name> {
+    pub(crate) fn all(&self) -> Option<&Name> {
         match self {
             Self::Slice { all, .. }
             | Self::SlicePrefix { all, .. }
@@ -439,10 +439,6 @@ pub(crate) fn union_members(
     walk(env, t, 0, out)
 }
 
-// XCR claude for eric: a pattern PrettyDisplay is a printer feature (expr/print.rs,
-// parse-print's), with layout rules to rule on: where a struct pattern breaks,
-// whether a type predicate breaks with it. Recommend: struct/tuple/slice patterns
-// break one field per line like their literals; left to the printer's owner.
 impl fmt::Display for StructurePattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         crate::stack::ensure_sufficient(|| self.fmt_inner(f))

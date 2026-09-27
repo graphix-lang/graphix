@@ -5,7 +5,10 @@ use super::{
     typexp::{flatten_bounds, tvar_bound, typ},
 };
 use crate::{
-    expr::{Arg, Expr, ExprKind, LambdaExpr, Name, StructurePattern, WrittenAt},
+    expr::{
+        Arg, ArgKind, Expr, ExprKind, LambdaBody, LambdaExpr, Name, StructurePattern,
+        WrittenAt,
+    },
     typ::{TVar, Type},
 };
 use arcstr::{ArcStr, literal};
@@ -16,7 +19,6 @@ use combine::{
     stream::{Range, position::SourcePosition},
     token,
 };
-use netidx_core::utils::Either;
 use netidx_value::parser::not_prefix;
 use poolshark::local::LPooled;
 use triomphe::Arc;
@@ -131,14 +133,18 @@ where
                         vargs = Some(constraint)
                     }
                     _ => args.push(Arg {
-                        labeled: labeled.then_some(default),
+                        kind: match (labeled, default) {
+                            (false, _) => ArgKind::Positional,
+                            (true, None) => ArgKind::Labeled,
+                            (true, Some(e)) => ArgKind::Defaulted(e),
+                        },
                         pattern,
                         constraint,
                         pos: WrittenAt(pos),
                     }),
                 }
             }
-            match labeled_first(args.iter().map(|a| a.labeled.is_some())) {
+            match labeled_first(args.iter().map(|a| a.kind.is_labeled())) {
                 true => Ok((args, vargs)),
                 false => Err(refusal::<I>(end, LABELED_FIRST)),
             }
@@ -165,8 +171,8 @@ where
         optional(attempt(spaces1().with(string("throws")).with(spaces1()).with(typ()))),
         spaces1().with(choice((
             attempt(token('\'').with(fname()).skip(not_followed_by(sptoken(':'))))
-                .map(Either::Right),
-            expr().map(|e| Either::Left(e)),
+                .map(LambdaBody::Builtin),
+            expr().map(LambdaBody::Expr),
         ))),
     )
         .map(|(pos, constraints, (mut args, vargs), rtype, throws, body)| {

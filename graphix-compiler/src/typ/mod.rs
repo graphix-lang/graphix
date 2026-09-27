@@ -1691,15 +1691,7 @@ impl Type {
                 if def_params.len() != params.len() {
                     bail!("{} expects {} type parameters", name, def_params.len());
                 }
-                // XCR claude for eric: every expansion pushes a site, and
-                // this is the only recorder of annotation refs (record_ide_refs
-                // covers typedef bodies and interface sigs), so moving it means a
-                // record_ide_refs at every annotation compile site in node/*.
-                // Queries dedup their output, so the cost is sink memory and lock
-                // traffic under lsp_mode only; the cheap fix is an (origin, pos)
-                // seen-set beside `Ide::type_refs` checked in `Env::push_type_ref`
-                // (ide.rs / env.rs, other packages).
-                if env.lsp_mode {
+                if env.ide.is_lsp() {
                     if let (Some(pos), Some(ori)) = (pos, ori) {
                         env.push_type_ref(crate::ide::TypeRefSite {
                             pos: *pos,
@@ -1745,7 +1737,7 @@ impl Type {
     }
 
     /// Push a `TypeRefSite` for every `Type::Ref` beneath that carries
-    /// a source position. The caller gates on `env.lsp_mode`.
+    /// a source position. The caller gates on `env.ide.is_lsp()`.
     pub fn record_ide_refs(&self, env: &Env, fallback_scope: &ModPath) {
         ensure_sufficient(|| match self {
             Type::Ref(tr) => {

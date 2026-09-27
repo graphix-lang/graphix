@@ -12,7 +12,7 @@ use crate::{
     dbgenv,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
-    expr::{self, Arg, At, Expr, ExprId, Origin},
+    expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
     fusion::{
         self,
         emit::{
@@ -34,10 +34,7 @@ use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::{
-    pack::{Pack, PackError},
-    utils::Either,
-};
+use netidx_core::pack::{Pack, PackError};
 use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
@@ -59,9 +56,6 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub argspec: Arc<[Arg]>,
     pub typ: Arc<FnType>,
     pub init: InitFn<R, E>,
-    // XCR claude for eric: the body kind is decided once (`DefBody`); the check
-    // stays a def field: `DefBody` is Clone data make_init and the image carry,
-    // a Mutex'd Apply is neither, and `builtin_check` answers it for a builtin only.
     /// A builtin definition's check `Apply`, built by the definition gate
     /// ([`Self::builtin_check`]).
     pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
@@ -101,10 +95,10 @@ pub enum DefBody {
 }
 
 impl DefBody {
-    pub(crate) fn of(body: &Either<Expr, ArcStr>) -> Self {
+    pub(crate) fn of(body: &LambdaBody) -> Self {
         match body {
-            Either::Left(e) => DefBody::Expr(e.clone()),
-            Either::Right(name) => match CollectionIntrinsic::from_name(name) {
+            LambdaBody::Expr(e) => DefBody::Expr(e.clone()),
+            LambdaBody::Builtin(name) => match CollectionIntrinsic::from_name(name) {
                 Some(intrinsic) => DefBody::Collection(intrinsic),
                 None => DefBody::BuiltIn(name.clone()),
             },
@@ -413,12 +407,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.slept.set();
-        // a callee body is outside the shrink scope: a recursion shrinking
-        // one level does not shrink the external calls it made
-        let saved = ctx.deselecting_arm;
-        ctx.deselecting_arm = false;
-        self.body.sleep(ctx);
-        ctx.deselecting_arm = saved;
+        // a recursion shrinking one level does not shrink the external
+        // calls it made
+        super::deselecting_arm(false, || self.body.sleep(ctx));
     }
 }
 
@@ -792,7 +783,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
             DefBody::BuiltIn(name) => {
                 let init = match ctx.builtins.get(&**name).map(|b| b.init) {
                     Some(init) => init,
-                    None if ctx.env.lsp_mode => UnknownBuiltIn::init as _,
+                    None if ctx.env.ide.is_lsp() => UnknownBuiltIn::init as _,
                     None => bail!("unknown builtin function {name}"),
                 };
                 let resolved = mode.resolved();
@@ -886,7 +877,7 @@ impl Lambda {
                 }
             };
             argspec.push(Arg {
-                labeled: a.labeled.clone(),
+                kind: a.kind.clone(),
                 pattern: a.pattern.clone(),
                 constraint,
                 pos: a.pos,
@@ -910,13 +901,13 @@ impl Lambda {
         constraints.extend(trait_quantifiers.drain(..));
         let body = DefBody::of(&l.body);
         let builtin = match &l.body {
-            Either::Left(_) => None,
-            Either::Right(name) => Some(name),
+            LambdaBody::Expr(_) => None,
+            LambdaBody::Builtin(name) => Some(name),
         };
         if let DefBody::BuiltIn(builtin) = &body
             && ctx.builtins.get(builtin.as_str()).is_none()
         {
-            if !ctx.env.lsp_mode {
+            if !ctx.env.ide.is_lsp() {
                 bail!("unknown builtin function {builtin}")
             }
             // the `'name` that ends the lambda's text
@@ -947,13 +938,15 @@ impl Lambda {
         }
         let typ = {
             let args = Arc::from_iter(argspec.iter().map(|a| {
-                let kind = match (a.labeled.as_ref(), a.pattern.single_bind()) {
-                    (Some(default), Some(name)) => FnArgKind::Labeled {
+                let kind = match (&a.kind, a.pattern.single_bind()) {
+                    (ArgKind::Positional, name) => {
+                        FnArgKind::Positional { name: name.cloned() }
+                    }
+                    (_, None) => FnArgKind::Positional { name: None },
+                    (kind, Some(name)) => FnArgKind::Labeled {
                         name: name.clone(),
-                        has_default: default.is_some(),
+                        has_default: kind.default().is_some(),
                     },
-                    (Some(_), None) => FnArgKind::Positional { name: None },
-                    (None, name) => FnArgKind::Positional { name: name.cloned() },
                 };
                 let typ = match a.constraint.as_ref() {
                     Some(t) => t.clone(),
@@ -1058,9 +1051,6 @@ impl Lambda {
 /// declared tvars are rigid (the body must be well-typed for any 'a;
 /// anonymous '_N inference cells stay bindable) and a self-call knots to
 /// its own cells (`ExecCtx::rec_defs`). Every path leaves by `close`.
-// XCR claude for eric: shared by the def gate and a restored builtin's check;
-// it leaves by an explicit `close(ctx)`, not on drop: a Drop cannot reach the
-// context, and a guard holding `&mut ExecCtx` would lock it for the body check.
 struct DefGate<R: Rt, E: UserEvent> {
     def: LambdaId,
     faux_id: BindId,
@@ -1143,7 +1133,7 @@ fn check_defaults<R: Rt, E: UserEvent>(
         DefOrigin::Runtime => return Ok(()),
     };
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
-        let Some(Some(expr)) = arg.labeled.as_ref() else { continue };
+        let Some(expr) = arg.kind.default() else { continue };
         let mut node = ctx.with_restored(def.env.clone(), |ctx| {
             compile(ctx, flags, expr.clone(), scope, ExprId::new())
         })?;

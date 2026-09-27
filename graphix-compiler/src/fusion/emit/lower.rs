@@ -36,10 +36,6 @@ use super::{
     record::{EmitConst, SymbolTable},
 };
 
-// XCR claude for eric: returns a named struct now; the params are distinct inputs.
-// The words stay published here: `publish_site_block_words` is write-once and
-// refuses a second layout, so a discarded build leaves only the value every build
-// of the body computes, and nothing reads the cell before a define succeeds.
 pub(super) fn compile_into_function<'a>(
     b: &mut FunctionBuilder,
     kernel: &'a KernelSig,
@@ -351,10 +347,6 @@ pub(crate) struct SlotTableFrame {
     pub(super) pending: Vec<TruncRec>,
 }
 
-// XCR claude for eric: one `claims: Channel` now says which channel a body
-// claims from, and the loop depth lives on JitEnv alone. The emission state stays
-// in RefCells behind `&LowerCtx`: moving it to the `&mut` side rewrites every
-// emitter's access (select.rs, flow.rs, body.rs), a follow-up once those settle.
 /// Which state channel a body claims its words from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Channel {

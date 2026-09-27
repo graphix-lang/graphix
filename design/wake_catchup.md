@@ -189,7 +189,14 @@ downstream of a publish seam still ride: `Bind::update` re-publishes a
 quiet wake production (`<-` targets holding a value are still held
 back — sleep is pause — and so is a target born `never()`, whose
 initializer's standing bottom is no write: pins
-`findings/wake-connect-target-sep2026/`), `CallSite` refreshes its arg ids' standing
+`findings/wake-connect-target-sep2026/`). A target is held back from the
+wake's own fire only: the arm's constants fire at the wake, and the
+initializer's production is that fire unless one of its triggering inputs
+was delivered fired this cycle, live or as a catch-up. Then it republishes,
+as the never-slept arm would. A `let` the wake republished from constants
+alone joins `Event::wake_phantoms`, so its fire does not count as an input
+of a target reading it. Pins: `lang::select::wake_input_fire_reaches_target`,
+`wake_constant_keeps_target`. `CallSite` refreshes its arg ids' standing
 entries, `GXLambda` re-seeds its formals, MapQ rebuilds its collection
 from the refreshed slots. A quiet BOTTOM is republished the same way: an
 input that went bottom during the sleep delivers STALE bottom at the

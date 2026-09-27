@@ -267,9 +267,9 @@ pub(crate) fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
     })
 }
 
-/// The lexical part, then the global registries. The IDE side-channel
-/// and `lsp_mode` are runtime configuration, not session state: a
-/// restored environment has neither, and its runtime supplies its own.
+/// The lexical part, then the global registries. The IDE mode is runtime
+/// configuration, not session state: a restored environment has none,
+/// and its runtime supplies its own.
 impl Pack for Env {
     fn encoded_len(&self) -> usize {
         let Env {
@@ -286,7 +286,6 @@ impl Pack for Env {
             impls,
             poly_binds,
             package_roots,
-            lsp_mode: _,
             ide: _,
         } = self;
         lexical_len(self)
@@ -316,7 +315,6 @@ impl Pack for Env {
             impls,
             poly_binds,
             package_roots,
-            lsp_mode: _,
             ide: _,
         } = self;
         lexical_encode(self, buf)?;
