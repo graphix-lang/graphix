@@ -175,6 +175,12 @@ fn collect_fn_arms(t: &Type, out: &mut LPooled<Vec<TArc<FnType>>>) {
 /// type; a user definition has no check. The check is shared by every
 /// site, the last one's type wins. A definition restored from an image
 /// has none until its first site rebuilds it.
+/// `t` printed through its cells as they stand: a snapshot that a later
+/// bind does not reach.
+fn printed_deref(t: &Type) -> String {
+    crate::format_with_flags(crate::PrintFlag::DerefTVars, || t.to_string())
+}
+
 fn recheck_builtin<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     id: LambdaId,
@@ -918,7 +924,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // must be unified back into the site's live rtype cell.
         if let Some(site_ft) = self.ftype.as_ref() {
             let before =
-                dbgenv::graphix_elab_audit().then(|| site_ft.rtype.resolve_tvars());
+                dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
             if let Err(e) = site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
             {
                 if ctx.def_gate_depth == 0 {
@@ -934,7 +940,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             if let Some(before) = before
                 && ctx.def_gate_depth == 0
             {
-                let after = site_ft.rtype.resolve_tvars();
+                let after = printed_deref(&site_ft.rtype);
                 if before != after {
                     super::lambda::elab_audit::report(
                         "unify-back",
