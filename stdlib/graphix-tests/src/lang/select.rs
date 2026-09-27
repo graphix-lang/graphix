@@ -1978,7 +1978,7 @@ const VARIANT_BOOL_LADDER: &str = r#"
 run!(variant_bool_ladder_covers, VARIANT_BOOL_LADDER, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(99))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 // A wildcard behind a complete bool ladder is dead.
 const BOOL_PAIR_LADDER_DEAD_TAIL: &str = r#"

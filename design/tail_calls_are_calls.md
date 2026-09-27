@@ -134,6 +134,18 @@ embedder, and the fuzzer's interp engine are the whole cost.
      varint_values, result_union_binds}`; leak witnesses
      `select-nullable-bind`, `select-slice-binds`.
 
+   - Follow-ups from the re-survey, built: a capture of a function
+     through a type variable (a `let rec` binding) takes no kernel slot,
+     as a direct one never did (`capture_slots`); a scalar literal over
+     an option, a result or a primitive union tests the tag, then the
+     payload; variant payload patterns nest (a variant in a payload, a
+     payload literal, binds under both), reading a nested payload
+     through borrowed words (`graphix_variant_payload_borrowed`), and a
+     wildcard payload's `Any` predicate takes its member of the
+     scrutinee's type. Pins: `lang::fusion::{captured_recursion_calls_statically,
+     literal_over_a_value_scrutinee, nested_variant_patterns}`; leak
+     witness `select-nested-variant-binds`.
+
 What stays out of native code, beside the rule row: a union of null
 and variants (`[null, `A(i64), `B]` has no kernel form), a varint or
 union operand of arithmetic, and a length ladder nested in a tuple

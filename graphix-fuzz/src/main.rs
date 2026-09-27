@@ -1205,6 +1205,17 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          g([\"a[x]\", \"bc[x]\", \"d\"], i64:0)\n",
     ),
     (
+        // owned binds read through a nested variant's borrowed payload,
+        // taken and masked by a guard every tick
+        "select-nested-variant-binds",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         type T = [`A(`B(i64, string)), `C];\n\
+         let t: T = select x % i64:3 { i64:0 => `C, _ => `A(`B(x, \"s[x]\")) };\n\
+         select t { `A(`B(n, s)) if n % i64:2 == i64:0 => str::len(s), `A(`B(n, _)) => n, `C => i64:0 }\n",
+    ),
+    (
         // a recursion that shrinks and regrows every tick: each fresh
         // activation's lazy bind settles its own types
         "regrown-recursion",

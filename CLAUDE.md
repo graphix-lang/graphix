@@ -464,7 +464,9 @@ accessors, `?`/`$`, the eight array HOFs as native loops (nesting
 included), structural select destructuring with scalar and variant
 payload binds, owned binds of a nullable's payload, of a slice's rest,
 head or whole (`[x, tail..]`, `all@ [..]`) and of non-scalar elements,
-tag tests and binds over a primitive union, `never()` arms as bottom
+tag tests and binds over a primitive union, nested variant payload
+patterns and payload literals, scalar literals over an option, a result
+or a union, `never()` arms as bottom
 productions of the merge shape, or-patterns, list patterns, tail loops
 over any kernel param
 kind, every fast-fn builtin and non-inline cast, cross-kernel lambda

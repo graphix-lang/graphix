@@ -269,7 +269,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	quiet-frame-init-view-aug2026/00_dyncall_first_in_frame.gx
 1	quiet-frame-init-view-aug2026/01_dyncall_scrutinee_in_frame_group.gx
 3	quiet-frame-init-view-aug2026/02_dyncall_rec_shadow_count.gx
-3	quiet-frame-init-view-aug2026/03_dyncall_error_scrutinee.gx
+2	quiet-frame-init-view-aug2026/03_dyncall_error_scrutinee.gx
 2	quiet-frame-init-view-aug2026/04_dyncall_nested_string_select.gx
 1	quiet-frame-init-view-aug2026/05_fused_select_native_tail_loop.gx
 1	quiet-frame-init-view-aug2026/06_callee_select_in_tail_loop.gx
@@ -439,7 +439,7 @@ abort	tail-quiet-poll-rederivation-aug2026/01_depth_trip_then_refwrite.gx
 2	tailloop-firing-jul2026/01_live_input_tail_loop.gx
 2	tailloop-firing-jul2026/02_const_chain_capture.gx
 1	tailloop-overfire-jul2026/01_rec_select_passive_repoll.gx
-3	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
+2	tailloop-overfire-jul2026/02_leaf_variant_in_framed_pass.gx
 1	taint-cache-callee-jul2026/00_callee_interior_bottom.gx
 8	taint-cache-callee-jul2026/01_float_cache_block_param.gx
 2	transient-prime-park-jul2026/01_refired_deep_rec_superlinear.gx

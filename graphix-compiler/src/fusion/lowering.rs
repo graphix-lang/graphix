@@ -1127,12 +1127,12 @@ fn capture_slots<R: Rt, E: UserEvent>(
     let mut out: LPooled<Vec<(CaptureSlot, ParamKind)>> = LPooled::take();
     for bind_id in external.drain(..) {
         let b = ec.env.by_id.get(&bind_id).ok_or("a capture has no binding")?;
-        if matches!(&b.typ, Type::Fn(_)) {
+        let typ = expand_refs(&b.typ, &ec.env);
+        if is_fn_shaped(&typ, &ec.env) {
             continue;
         }
         let no_slot = || format_compact!("capture `{}` has no kernel encoding", b.name);
-        let kt = kernel_abi::freeze_for_abi_normalized(&expand_refs(&b.typ, &ec.env))
-            .ok_or_else(no_slot)?;
+        let kt = kernel_abi::freeze_for_abi_normalized(&typ).ok_or_else(no_slot)?;
         let kind = param_kind(&kt).ok_or_else(no_slot)?;
         let name = ArcStr::from(b.name.as_str());
         out.push((CaptureSlot { bind_id, name, typ: kt }, kind));

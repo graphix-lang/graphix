@@ -874,6 +874,23 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
     unsafe { std::mem::transmute::<arcstr::ArcStr, u64>(r) }
 }
 
+/// A variant payload slot's words, borrowed: valid while the parent
+/// variant is alive, never passed to a consuming or dropping helper. A
+/// shape mismatch yields `Value::Null`.
+safe fn graphix_variant_payload_borrowed(v: TagValue, payload_idx: usize) -> TagValue {
+    let r = v.with_value(|v| match v {
+        Value::Array(a) => match a.get(payload_idx + 1) {
+            // SAFETY: a bitwise alias of the slot; the kernel never drops
+            // it, so the parent keeps the only ownership.
+            Some(p) => TagValue::fired(unsafe { std::ptr::read(p) }),
+            None => TagValue::fired(Value::Null),
+        },
+        _ => TagValue::fired(Value::Null),
+    });
+    std::mem::forget(v);
+    r
+}
+
 /// Owned `ArcStr` clone of a nullable's string payload; null yields the
 /// static empty string.
 safe fn graphix_nullable_string(v: TagValue) -> u64 {

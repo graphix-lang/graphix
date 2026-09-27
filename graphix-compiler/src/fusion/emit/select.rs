@@ -160,13 +160,19 @@ enum SelectArmBind {
     /// under a mask, where null yields a drop-safe default.
     NullableValue { id: BindId, kind: LocalKind },
     /// `` `Tag(n) `` — bind one scalar variant payload; a wrong-tag read
-    /// yields 0.
-    Payload { id: BindId, idx: usize, prim: PrimType },
+    /// yields 0. `on` is the variant read when it is not the scrutinee
+    /// (a payload of an enclosing variant, borrowed).
+    Payload { id: BindId, idx: usize, prim: PrimType, on: Option<(ClifValue, ClifValue)> },
     /// `` `Tag(xs) `` — bind one non-scalar variant payload, cloned out
     /// as an owned local of `kind` and dropped at the arm's scope exit.
     /// Legal under a mask: a wrong-tag read yields a drop-safe default
     /// behind a tainted disc.
-    PayloadValue { id: BindId, idx: usize, kind: LocalKind },
+    PayloadValue {
+        id: BindId,
+        idx: usize,
+        kind: LocalKind,
+        on: Option<(ClifValue, ClifValue)>,
+    },
     /// `[<a, b>]` / `[<h, rest..>]` — bind the j-th head of a list
     /// scrutinee, cloned out as an owned local of `kind` (legal under a mask).
     ListHead { id: BindId, idx: usize, kind: LocalKind },
@@ -1227,18 +1233,24 @@ fn install_arm_binds(
                 };
                 (*id, d, p, *kind)
             }
-            SelectArmBind::Payload { id, idx, prim } => {
+            SelectArmBind::Payload { id, idx, prim, on } => {
+                let (vd, vp) = match on {
+                    Some(on) => *on,
+                    None => (sdisc, value_payload()?),
+                };
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let call = cx.call_helper(
-                    variant_payload_helper(*prim),
-                    &[sdisc, value_payload()?, idx_c],
-                )?;
+                let call =
+                    cx.call_helper(variant_payload_helper(*prim), &[vd, vp, idx_c])?;
                 let v = cx.b.inst_results(call)[0];
                 (*id, scalar_disc(cx.b, *prim), v, LocalKind::Scalar(*prim))
             }
-            SelectArmBind::PayloadValue { id, idx, kind } => {
+            SelectArmBind::PayloadValue { id, idx, kind, on } => {
+                let (vd, vp) = match on {
+                    Some(on) => *on,
+                    None => (sdisc, value_payload()?),
+                };
                 let idx_c = cx.b.ins().iconst(types::I64, *idx as i64);
-                let args = [sdisc, value_payload()?, idx_c];
+                let args = [vd, vp, idx_c];
                 let (d, p) = match kind {
                     LocalKind::Composite => {
                         let call =
@@ -1555,6 +1567,19 @@ fn emit_structure_cond(
                     let lit = compile_const(cx.b, v, lit_prim)?;
                     Some(compile_cmp(cx.b, CmpOp::Eq, lit_prim, value, lit))
                 }
+                // Over an option, a result or a primitive union: the
+                // literal's tag, then its payload.
+                SelectScrut::Value { disc, payload }
+                    if matches!(scrut_kind, AbiKind::Nullable | AbiKind::Value) =>
+                {
+                    let cd = clean_disc(cx.b, disc);
+                    let td = scalar_disc(cx.b, lit_prim);
+                    let is_prim = cx.b.ins().icmp(IntCC::Equal, cd, td);
+                    let value = cast_u64_to_prim(cx.b, payload, lit_prim);
+                    let lit = compile_const(cx.b, v, lit_prim)?;
+                    let eq = compile_cmp(cx.b, CmpOp::Eq, lit_prim, value, lit);
+                    Some(cx.b.ins().band(is_prim, eq))
+                }
                 _ => {
                     return Err(anyhow!(
                         "emit_clif: literal pattern prim {lit_prim:?} \
@@ -1580,69 +1605,18 @@ fn emit_structure_cond(
                     ));
                 }
             };
-            let pred = kernel_abi::freeze_for_abi(pred_typ).ok_or_else(|| {
-                anyhow!(
-                    "emit_clif: variant pattern predicate {:?} \
-                             doesn't freeze concrete",
-                    pred_typ
-                )
-            })?;
-            let elts = match &pred {
-                Type::Variant(ptag, elts, _)
-                    if ptag == tag && elts.len() == pbinds.len() =>
-                {
-                    elts
-                }
-                _ => {
-                    return Err(anyhow!(
-                        "emit_clif: variant pattern `{tag}` doesn't \
-                             match its predicate {pred:?}"
-                    ));
-                }
-            };
-            for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
-                match sub {
-                    StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(elt) {
-                        Some(prim) => {
-                            binds.push(SelectArmBind::Payload { id: *id, idx, prim })
-                        }
-                        None => {
-                            let kind = payload_local_kind(elt).ok_or_else(|| {
-                                anyhow!(
-                                    "emit_clif: variant payload shape \
-                                             {elt:?} not lowerable"
-                                )
-                            })?;
-                            binds.push(SelectArmBind::PayloadValue {
-                                id: *id,
-                                idx,
-                                kind,
-                            });
-                        }
-                    },
-                    StructPatternNode::Ignore => {}
-                    StructPatternNode::Literal(_)
-                    | StructPatternNode::Slice { .. }
-                    | StructPatternNode::SlicePrefix { .. }
-                    | StructPatternNode::SliceSuffix { .. }
-                    | StructPatternNode::Struct { .. }
-                    | StructPatternNode::Variant { .. }
-                    | StructPatternNode::Abstract { .. }
-                    | StructPatternNode::Or { .. } => {
-                        return Err(anyhow!(
-                            "emit_clif: nested variant payload \
-                                 pattern not lowerable"
-                        ));
-                    }
-                }
-            }
-            let tag_ptr = cx.interned_str(tag)?;
-            let helper = cx.helper("graphix_variant_tag_eq")?;
-            // The helper checks arity as well as tag: same-tag arms at
-            // different arities are distinct cases.
-            let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
-            let call = cx.b.ins().call(helper, &[disc, payload, tag_ptr, arity]);
-            Some(cx.b.inst_results(call)[0])
+            // A wildcard payload types as `Any` in an inferred predicate;
+            // the scrutinee's member for the tag has the payload types.
+            let pred = kernel_abi::freeze_for_abi(pred_typ)
+                .or_else(|| kernel_abi::freeze_for_abi_normalized(scrut_typ))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "emit_clif: variant pattern predicate {:?} \
+                                 doesn't freeze concrete",
+                        pred_typ
+                    )
+                })?;
+            Some(emit_variant_cond(cx, (disc, payload), None, tag, pbinds, &pred, binds)?)
         }
         p @ (StructPatternNode::Slice { kind: SliceKind::List, .. }
         | StructPatternNode::SlicePrefix { list: true, .. }) => {
@@ -1676,6 +1650,91 @@ fn emit_structure_cond(
         },
     };
     Ok(scond)
+}
+
+/// A variant pattern's condition over the variant `v` (the scrutinee
+/// when `on` is `None`, else a payload of an enclosing variant, borrowed,
+/// whose words `on` also holds): its tag and arity, then each payload's
+/// own pattern against its member of `pred`, the frozen predicate.
+fn emit_variant_cond(
+    cx: &mut BodyCx,
+    v: (ClifValue, ClifValue),
+    on: Option<(ClifValue, ClifValue)>,
+    tag: &ArcStr,
+    pbinds: &[StructPatternNode],
+    pred: &Type,
+    binds: &mut SmallVec<[SelectArmBind; 8]>,
+) -> Result<ClifValue> {
+    let elts = kernel_abi::variant_cases(pred)
+        .and_then(|cases| {
+            cases.into_iter().find(|(t, e)| t == tag && e.len() == pbinds.len())
+        })
+        .map(|(_, e)| e)
+        .ok_or_else(|| {
+            anyhow!(
+                "emit_clif: variant pattern `{tag}` doesn't match its predicate {pred:?}"
+            )
+        })?;
+    let tag_ptr = cx.interned_str(tag)?;
+    let helper = cx.helper("graphix_variant_tag_eq")?;
+    // The helper checks arity as well as tag: same-tag arms at different
+    // arities are distinct cases.
+    let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
+    let call = cx.b.ins().call(helper, &[v.0, v.1, tag_ptr, arity]);
+    let mut cond = cx.b.inst_results(call)[0];
+    for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
+        match sub {
+            StructPatternNode::Bind(id) => match kernel_abi::scalar_prim(elt) {
+                Some(prim) => {
+                    binds.push(SelectArmBind::Payload { id: *id, idx, prim, on })
+                }
+                None => {
+                    let kind = payload_local_kind(elt).ok_or_else(|| {
+                        anyhow!("emit_clif: variant payload shape {elt:?} not lowerable")
+                    })?;
+                    binds.push(SelectArmBind::PayloadValue { id: *id, idx, kind, on })
+                }
+            },
+            StructPatternNode::Ignore => {}
+            StructPatternNode::Literal(lit) => {
+                // The typed payload read is total: only the static type
+                // proves it faithful.
+                let prim = kernel_abi::scalar_prim_of_value(lit)
+                    .filter(|p| kernel_abi::scalar_prim(elt) == Some(*p))
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "emit_clif: variant payload literal {lit:?} over {elt:?} \
+                             not lowerable"
+                        )
+                    })?;
+                let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
+                let call =
+                    cx.call_helper(variant_payload_helper(prim), &[v.0, v.1, idx_c])?;
+                let value = cx.b.inst_results(call)[0];
+                let lit = compile_const(cx.b, lit, prim)?;
+                let eq = compile_cmp(cx.b, CmpOp::Eq, prim, value, lit);
+                cond = cx.b.ins().band(cond, eq);
+            }
+            StructPatternNode::Variant { tag, all: None, binds: nbinds } => {
+                let idx_c = cx.b.ins().iconst(types::I64, idx as i64);
+                let call = cx.call_helper(
+                    "graphix_variant_payload_borrowed",
+                    &[v.0, v.1, idx_c],
+                )?;
+                let rs = cx.b.inst_results(call);
+                let nested = (rs[0], rs[1]);
+                let inner =
+                    emit_variant_cond(cx, nested, Some(nested), tag, nbinds, elt, binds)?;
+                cond = cx.b.ins().band(cond, inner);
+            }
+            _ => {
+                return Err(anyhow!(
+                    "emit_clif: nested variant payload pattern not lowerable"
+                ));
+            }
+        }
+    }
+    Ok(cond)
 }
 
 /// The name every pattern bind installs under; binds resolve by

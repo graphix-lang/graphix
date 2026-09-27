@@ -2033,3 +2033,62 @@ run!(result_union_binds, RESULT_UNION_BINDS, |v: Result<&Value>| match v {
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(3), Value::I64(10)]),
     _ => false,
 }; FuseExpect::Jit);
+
+// A lambda that captures a recursive lambda calls it statically: the
+// capture takes no slot, so the caller fuses.
+const CAPTURED_RECURSION_CALLS_STATICALLY: &str = r#"
+{
+  let rec build = |n: i64| -> i64 select n { 0 => 1, _ => 2 * build(n - 1) };
+  let run = |i: i64| -> i64 build(i) + 1;
+  let r = #[native] run(3);
+  r
+}
+"#;
+
+run!(captured_recursion_calls_statically, CAPTURED_RECURSION_CALLS_STATICALLY, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(9)))
+}; FuseExpect::Jit);
+
+// A scalar literal matches over an option or a result by tag, then by
+// payload.
+const LITERAL_OVER_A_VALUE_SCRUTINEE: &str = r#"
+{
+  let f = |n: i64| select n { 0 => 100, _ => error(`E) };
+  let o: [null, i64] = 5;
+  let a = #[native] select f(0) { 100 => 1, _ => 2 };
+  let b = #[native] select f(1) { 100 => 1, _ => 2 };
+  let c = #[native] select o { 5 => 1, _ => 2 };
+  (a, b, c)
+}
+"#;
+
+run!(literal_over_a_value_scrutinee, LITERAL_OVER_A_VALUE_SCRUTINEE, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(1), Value::I64(2), Value::I64(1)]),
+    _ => false,
+}; FuseExpect::Jit);
+
+// Variant payload patterns nest natively: a variant in a payload, a
+// literal in a payload, binds under both, a guard over a nested bind.
+const NESTED_VARIANT_PATTERNS: &str = r#"
+{
+  type S = [`Connect, `Panel([`D, `Q])];
+  type T = [`A(`B(i64, string)), `C];
+  type L = [`K(i64, L), `N];
+  let rec g = |l: L, acc: i64| -> i64 select l {
+    `N => acc,
+    `K(0, rest) => g(rest, acc + 100),
+    `K(x, rest) => g(rest, acc + x)
+  };
+  let s: S = `Panel(`Q);
+  let t: T = `A(`B(7, "xy"));
+  let a = #[native] select s { `Connect => 0, `Panel(`Q) => 1, `Panel(`D) => 2 };
+  let b = #[native] select t { `A(`B(n, y)) if n > 3 => n + str::len(y), `A(_) => 1, `C => 0 };
+  let c = #[native] g(`K(1, `K(0, `K(3, `N))), 0);
+  (a, b, c)
+}
+"#;
+
+run!(nested_variant_patterns, NESTED_VARIANT_PATTERNS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(1), Value::I64(9), Value::I64(104)]),
+    _ => false,
+}; FuseExpect::Jit);
