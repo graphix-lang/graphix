@@ -19,6 +19,7 @@ use crate::{
             free_self_block_tree, free_slot_chain, reclaim_self_block_tree,
         },
         kernel_abi::{KernelSig, ParamKind},
+        share::Redirects,
     },
     image::{
         self, ImageBuf,
@@ -67,6 +68,9 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     /// runs only when the reach count falls below `tree_size`.
     self_gen: u64,
     tree_size: u64,
+    /// A slot's kernel shared with its prototype delivers these raises
+    /// to the slot's handlers (`fusion::share`).
+    redirects: Redirects,
 }
 
 impl<R: Rt, E: UserEvent> Drop for FusedKernel<R, E> {
@@ -129,6 +133,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
             resident: TagValue::phantom(),
             self_gen: 0,
             tree_size: 0,
+            redirects: Box::default(),
         })
     }
 
@@ -137,20 +142,30 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         &self.kernel
     }
 
-    /// Whether an input is bound to `id`.
-    pub(crate) fn has_input(&self, id: BindId) -> bool {
-        self.kernel.params.iter().any(|p| p.bind_id == Some(id))
+    pub(crate) fn jit(&self) -> &WrappedKernel {
+        &self.jit
     }
 
-    /// Feed the input bound to `id` ([`Self::has_input`]) from `node` in
-    /// place of its variable read.
-    pub(crate) fn feed(&mut self, ctx: &mut ExecCtx<R, E>, id: BindId, node: Node<R, E>) {
-        let i = self
-            .kernel
-            .params
+    pub(crate) fn redirect(&mut self, redirects: Redirects) {
+        self.redirects = redirects
+    }
+
+    /// The input a read of `id` feeds.
+    fn input(&self, id: BindId) -> Option<usize> {
+        self.feeders
             .iter()
-            .position(|p| p.bind_id == Some(id))
-            .expect("an input bound to the id");
+            .position(|f| matches!(f.view(), NodeView::Ref(r) if r.id == id))
+    }
+
+    /// Whether a read of `id` feeds an input.
+    pub(crate) fn has_input(&self, id: BindId) -> bool {
+        self.input(id).is_some()
+    }
+
+    /// Feed the input a read of `id` feeds ([`Self::has_input`]) from
+    /// `node` instead.
+    pub(crate) fn feed(&mut self, ctx: &mut ExecCtx<R, E>, id: BindId, node: Node<R, E>) {
+        let i = self.input(id).expect("an input read from the id");
         std::mem::replace(&mut self.feeders[i], node).delete(ctx);
     }
 
@@ -281,7 +296,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if !self.quiescent() {
+        if !self.quiescent() || !self.redirects.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         let w = &self.jit;
@@ -387,12 +402,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             // SAFETY: `site` is a `QopSite` constant of the kernel's
             // record, which outlives its code.
             let site = unsafe { &*site };
+            let (handler, top) = self
+                .redirects
+                .iter()
+                .find(|((h, t), _)| h.same(&site.handler) && *t == site.own_top)
+                .map_or((&site.handler, site.own_top), |(_, (h, t))| (h, *t));
             if let Value::Error(e) = v {
                 crate::node::error::deliver_error(
                     ctx,
                     event,
-                    &site.handler,
-                    site.own_top,
+                    handler,
+                    top,
                     &site.spec,
                     (*e).clone(),
                 );

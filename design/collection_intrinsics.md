@@ -79,7 +79,11 @@ Collection Nodes participate in the normal distributed JIT contract:
 native loop at the call site (`emit/scaffold.rs`), or refuses and
 leaves the per-slot Node intact — the same Node then runs its canonical
 interpreted semantics. Async callbacks always take that path, keeping
-their subscriptions and independent state. The emitter binds callback
+their subscriptions and independent state. Left intact, the node still
+fuses its prototype's instance of a statically resolved callback, and
+each slot's instance, right after its run-time bind, takes the kernels
+that fusion built for the regions it shares with the prototype
+(`fusion/share.rs`, `tail_calls_are_calls.md`). The emitter binds callback
 parameters by `BindId` (tuple-destructure leaves included) and emits
 the body through the normal Node emitter; scalar, String, composite,
 variant, nullable and Value-shaped elements are supported where the

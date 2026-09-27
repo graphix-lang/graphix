@@ -389,6 +389,7 @@ fn maybe_dump_clif(func: &cranelift_codegen::ir::Function, label: &str) {
 /// `args` points at the context words then a `(disc, payload)` pair
 /// per parameter, `out` receives the result's `(disc, payload)` pair.
 /// [`pack_value_to_u64`] does the Rust-side packing.
+#[derive(Clone)]
 pub struct WrappedKernel {
     /// Cast through [`Self::fn_ptr`].
     wrapper_fn_ptr: *const u8,

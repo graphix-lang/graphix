@@ -648,7 +648,7 @@ pub struct KernelParam {
 /// The shape of one kernel parameter with the static metadata the body
 /// emitter and packer need. The wire shape is a two-word Value pair
 /// for every kind.
-#[derive(Debug, Clone, Pack)]
+#[derive(Debug, Clone, PartialEq, Pack)]
 #[pack(unwrapped)]
 pub enum ParamKind {
     Scalar(PrimType),

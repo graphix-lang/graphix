@@ -14,6 +14,7 @@ pub mod emit_helpers;
 pub mod kernel;
 pub mod kernel_abi;
 pub mod lowering;
+pub(crate) mod share;
 
 pub use kernel::FusedKernel;
 
@@ -177,6 +178,8 @@ pub struct FusionCtx {
     /// register under it: `Rt::ref_var` is keyed `(BindId, top_id)`, and
     /// a region's interior id would strand the top expression at count 0.
     pub(crate) top_id: Option<ExprId>,
+    /// The collection prototype or slot walk in progress, if any.
+    pub(crate) share: Option<share::Share>,
 }
 
 impl FusionCtx {
@@ -189,6 +192,11 @@ impl FusionCtx {
         Ok(MutexGuard::map(jit, |jit| jit.as_mut().expect("built above")))
     }
 
+    /// A slot walk: its source was checked when the prototype fused.
+    pub(crate) fn reusing(&self) -> bool {
+        matches!(self.share, Some(share::Share::Reuse { .. }))
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             jit: parking_lot::Mutex::new(None),
@@ -196,6 +204,7 @@ impl FusionCtx {
             enabled: true,
             stats: FusionStats::default(),
             top_id: None,
+            share: None,
         })
     }
 
@@ -857,6 +866,9 @@ fn check_node_attributes<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
     ctx: &ExecCtx<R, E>,
 ) -> anyhow::Result<()> {
+    if ctx.fusion.reusing() {
+        return Ok(());
+    }
     if let Some(dec) = &node.spec().dec {
         let mut any = false;
         for attr in dec.attrs.iter() {
@@ -888,39 +900,6 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-/// Attribute sweep over collection-intrinsic callback bodies, which the
-/// fuse driver never descends (their fusion is the inline emission at
-/// the enclosing call). Descends through resolved lambda call sites.
-pub(crate) fn check_attributes_subtree<R: Rt, E: UserEvent>(
-    root: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
-) -> anyhow::Result<()> {
-    let mut err: Option<anyhow::Error> = None;
-    let mut stack: LPooled<Vec<&Node<R, E>>> = LPooled::take();
-    stack.push(root);
-    while let Some(node) = stack.pop() {
-        let mut descend: LPooled<Vec<&Node<R, E>>> = LPooled::take();
-        for_each_node(node, &mut |n| {
-            if err.is_none() {
-                if let Err(e) = check_node_attributes(n, ctx) {
-                    err = Some(e);
-                    return;
-                }
-            }
-            if let NodeView::CallSite(cs) = n.view() {
-                if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
-                    descend.push(g.body());
-                }
-            }
-        });
-        if let Some(e) = err {
-            return Err(e);
-        }
-        stack.extend(descend.drain(..));
-    }
-    Ok(())
-}
-
 /// Try to fuse the whole subtree rooted at `node` into one JIT kernel.
 /// Mechanics only; policy lives in each node's [`Update::fuse`].
 ///
@@ -947,6 +926,19 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
         return Ok(None);
     };
     drop(phase);
+    if ctx.fusion.reusing() {
+        return Ok(share::reuse(ctx, node, &return_type));
+    }
+    let mut fused = build_region(node, ctx, return_type)?;
+    share::record(ctx, node, fused.as_mut());
+    Ok(fused)
+}
+
+fn build_region<R: Rt, E: UserEvent>(
+    node: &Node<R, E>,
+    ctx: &mut ExecCtx<R, E>,
+    return_type: Type,
+) -> anyhow::Result<Option<Node<R, E>>> {
     ctx.fusion.stats.attempted += 1;
     let phase = profile::phase(Phase::Builtins);
     // `apply_sites` lets `CallSite::emit_clif` lower a registered site

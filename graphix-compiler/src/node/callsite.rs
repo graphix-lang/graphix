@@ -18,6 +18,7 @@ use crate::{
         self,
         emit::{BodyCx, CompiledExpr, emit_builtin_call_node, emit_lambda_call_node},
         lowering::MarshalArg,
+        share::{self, SlotShare},
     },
     image::{
         self, ImageBuf,
@@ -505,7 +506,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
         }
     }
 
-    fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R, E> + 'static)> {
+    pub(crate) fn apply_mut(&mut self) -> Option<&mut (dyn Apply<R, E> + 'static)> {
         match self {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
                 None
@@ -552,6 +553,9 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) scope: Scope,
     pub(super) top_id: ExprId,
     pub(super) resident: TagValue,
+    /// A collection slot's share of its prototype's kernels, taken by
+    /// the instance it binds.
+    pub(crate) share: Option<SlotShare>,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
@@ -583,6 +587,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             scope,
             top_id,
             resident: TagValue::phantom(),
+            share: None,
         }
     }
 
@@ -978,6 +983,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             Ok(restored_def)
         })?;
+        if let Some(share) = &self.share
+            && let Some(apply) = self.callee.apply_mut()
+        {
+            share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx));
+        }
         // Defaults update for the first time under the init view.
         let prev_init = mem::replace(&mut event.init, true);
         for arg in self.args.values_mut() {

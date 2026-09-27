@@ -544,7 +544,7 @@ run!(
         }
         _ => false,
     };
-    graphix_package_core::testing::FuseExpect::None
+    graphix_package_core::testing::FuseExpect::Jit
 );
 
 // A rec fn that returns itself has an infinite type: "cannot infer a

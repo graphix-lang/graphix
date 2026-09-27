@@ -1673,6 +1673,10 @@ impl ErrorHandler {
         self.0.catch
     }
 
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub(crate) fn raise(&self) {
         self.0.raised.fetch_add(1, Ordering::Relaxed);
         let mut parent = self.0.parent.0.as_ref();

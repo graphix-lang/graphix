@@ -288,7 +288,7 @@ async fn native_blocker_list_is_filtered() {
     // detail is a CAUSE, not the top-level context).
     let err = format!("{e:#}");
     assert!(
-        err.contains("builtin call site") && err.contains("not discovered"),
+        err.contains("builtin `throttle` has no fast-call entry"),
         "should report the real call blocker, got: {err}"
     );
     assert!(

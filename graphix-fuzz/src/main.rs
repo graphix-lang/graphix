@@ -1269,4 +1269,16 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
          let src = select x % i64:2 { i64:0 => array::init(i64:50, |i| i), _ => [i64:1] };\n\
          array::len(array::map(src, |y| f(y % i64:20)))\n",
     ),
+    (
+        // slots taking the prototype's kernels, grown and shrunk
+        "shared-slot-kernels",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let src = select x % i64:2 { i64:0 => array::init(i64:50, |i| i), _ => [i64:1] };\n\
+         array::len(array::map(src, |y| {\n\
+           let rec f = |k: i64, a: i64| -> i64 select k { i64:0 => a, _ => f(k - i64:1, a + k) };\n\
+           f(y % i64:20, i64:0) + count(y)\n\
+         }))\n",
+    ),
 ];

@@ -1,7 +1,7 @@
 # Tail calls are calls
 
 Status: ruled 2026-09-26 (Eric). Built 2026-09-26/27: steps 1–3,
-G1–G4.
+G1–G4, and the collection-slot follow-up.
 Pins: `findings/tail-calls-are-calls-sep2026/` (the sep25b over-fire),
 `lang::functions::{tail_depth_catches_up_an_outer_write, tail_loop_deep}`
 (the deep loop is JIT-only: the node-walk recurses past the stack
@@ -145,6 +145,29 @@ embedder, and the fuzzer's interp engine are the whole cost.
      scrutinee's type. Pins: `lang::fusion::{captured_recursion_calls_statically,
      literal_over_a_value_scrutinee, nested_variant_patterns}`; leak
      witness `select-nested-variant-binds`.
+
+   - A collection callback that does not fuse whole, built: its slots
+     bind the callback at run time, after fusion, so their instances
+     used to node-walk everything, a loop in the callback included. The
+     prototype (the call the typecheck resolves, never run) is an
+     instance of the same definition at the same type; its fusion now
+     runs, and the collection keeps the kernels it built by the ordinal
+     of the attempt that built each (`fusion/share.rs`). A slot's
+     instance, right after its bind, repeats the walk in reuse mode:
+     each attempt takes the kernel at its ordinal, with fresh state and
+     feeders over the slot's own inputs, and compiles nothing. A kernel
+     is taken only where the region is the prototype's: the same root,
+     inputs of the same names and kinds in the same order, the same
+     return, the same static callees and the same raises; a raise whose
+     handler is the prototype's own (a `catch` inside the callback) is
+     delivered to the slot's (`FusedKernel`'s redirects). A collection
+     in a slot's callback takes its part of the same table. The table
+     travels in the image with the collection. Pins:
+     `lang::fusion::{callback_regions_fuse_in_slots,
+     fold_callback_regions_fuse_in_slots,
+     nested_callback_regions_fuse_in_slots,
+     shared_region_raises_to_its_slot}`; leak witness
+     `shared-slot-kernels`.
 
 What stays out of native code, beside the rule row: a union of null
 and variants (`[null, `A(i64), `B]` has no kernel form), a varint or

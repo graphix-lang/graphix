@@ -1644,7 +1644,7 @@ const LABELED_CALLBACK_DEFAULT: &str =
 run!(labeled_callback_default, LABELED_CALLBACK_DEFAULT, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) if &a[..] == [Value::I64(49)] => true,
     _ => false,
-}; graphix_package_core::testing::FuseExpect::None);
+}; graphix_package_core::testing::FuseExpect::Jit);
 
 // A callback with only labeled parameters has no slot for the element:
 // a type error.

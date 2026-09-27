@@ -2092,3 +2092,86 @@ run!(nested_variant_patterns, NESTED_VARIANT_PATTERNS, |v: Result<&Value>| match
     Ok(Value::Array(t)) => matches!(&t[..], [Value::I64(1), Value::I64(9), Value::I64(104)]),
     _ => false,
 }; FuseExpect::Jit);
+
+// A collection callback that does not fuse whole (a stateful builtin
+// beside the loop) runs its fusing regions natively in every slot: the
+// slots' instances take the kernels the prototype's fusion built. The
+// slots are the only place a kernel can run.
+const CALLBACK_REGIONS_FUSE_IN_SLOTS: &str = r#"
+array::map([1, 2, 3], |x| {
+  let rec lp = |n: i64, a: i64| -> i64 select n { 0 => a, _ => lp(n - 1, a + n) };
+  let l = #[native] lp(100, x);
+  l + count(x)
+})
+"#;
+
+run!(callback_regions_fuse_in_slots, CALLBACK_REGIONS_FUSE_IN_SLOTS, |v: Result<&Value>| match v {
+    Ok(Value::Array(m)) => {
+        matches!(&m[..], [Value::I64(5052), Value::I64(5053), Value::I64(5054)])
+    }
+    _ => false,
+}; FuseExpect::Jit);
+
+const FOLD_CALLBACK_REGIONS_FUSE_IN_SLOTS: &str = r#"
+array::fold([1, 2], 0, |acc, x| {
+  let rec lp = |n: i64, a: i64| -> i64 select n { 0 => a, _ => lp(n - 1, a + n) };
+  let l = #[native] lp(10, x);
+  acc + l + count(x)
+})
+"#;
+
+run!(fold_callback_regions_fuse_in_slots, FOLD_CALLBACK_REGIONS_FUSE_IN_SLOTS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(115))
+); FuseExpect::Jit);
+
+// A slot's call fed by a node-walked argument takes the prototype's
+// kernel with the slot's own feeder.
+const FED_CALLBACK_REGIONS_FUSE_IN_SLOTS: &str = r#"
+array::map([1, 2, 3], |x| {
+  let rec lp = |n: i64, a: i64| -> i64 select n { 0 => a, _ => lp(n - 1, a + n) };
+  #[native] lp(10, count(x) + x)
+})
+"#;
+
+run!(fed_callback_regions_fuse_in_slots, FED_CALLBACK_REGIONS_FUSE_IN_SLOTS, |v: Result<&Value>| match v {
+    Ok(Value::Array(m)) => matches!(&m[..], [Value::I64(57), Value::I64(58), Value::I64(59)]),
+    _ => false,
+}; FuseExpect::Jit);
+
+// A collection nested in a slot's callback shares its own prototype's
+// kernels with its slots.
+const NESTED_CALLBACK_REGIONS_FUSE_IN_SLOTS: &str = r#"
+{
+  let rec lp = |n: i64, a: i64| -> i64 select n { 0 => a, _ => lp(n - 1, a + n) };
+  array::map([1, 2], |x| array::map([x, 10], |y| { let l = #[native] lp(10, y); l + count(y) }))
+}
+"#;
+
+run!(nested_callback_regions_fuse_in_slots, NESTED_CALLBACK_REGIONS_FUSE_IN_SLOTS, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => match &t[..] {
+        [Value::Array(a), Value::Array(b)] => {
+            matches!(&a[..], [Value::I64(57), Value::I64(66)])
+                && matches!(&b[..], [Value::I64(58), Value::I64(66)])
+        }
+        _ => false,
+    },
+    _ => false,
+}; FuseExpect::Jit);
+
+// A shared kernel's `?` raises to the handler of the slot that runs it:
+// only the third element overflows, and only its slot's `r` moves.
+const SHARED_REGION_RAISES_TO_ITS_SLOT: &str = r#"
+skip(#n: 1, array::map([1, 2, 3], |x| {
+  let r = 0;
+  catch(e) r <- e ~ 1;
+  let rec lp = |n: i64, a: i64| -> i64 select n { 0 => a, _ => lp(n - 1, a + n) };
+  let v = #[native] (lp(200, x) +? (9223372036854775807 - 20100 - 2))?;
+  r
+}))
+"#;
+
+run!(shared_region_raises_to_its_slot, SHARED_REGION_RAISES_TO_ITS_SLOT, |v: Result<&Value>| match v {
+    Ok(Value::Array(m)) => matches!(&m[..], [Value::I64(0), Value::I64(0), Value::I64(1)]),
+    _ => false,
+}; FuseExpect::Jit);

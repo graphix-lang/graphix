@@ -283,7 +283,7 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         None => {
             return Some(FusionBlocker {
                 spec: apply_expr.clone(),
-                reason: "builtin has no fast-call entry".into(),
+                reason: format_compact!("builtin `{path}` has no fast-call entry"),
             });
         }
     };

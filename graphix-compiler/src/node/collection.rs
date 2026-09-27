@@ -8,9 +8,9 @@ use crate::{
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
-        check_attributes_subtree,
         emit::{self, BodyCx, CompiledExpr, CompositeSource, scaffold},
         kernel_abi::{self, AbiKind, PrimType},
+        share::{self, SlotShare},
     },
     image::{
         self, ImageBuf,
@@ -22,6 +22,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
+use bytes::BufMut;
 use cranelift_codegen::ir::{InstBuilder, Value as ClifValue};
 use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError};
@@ -353,6 +354,8 @@ struct Callback {
     id: BindId,
     typ: Arc<FnType>,
     top_id: ExprId,
+    /// The kernels a slot takes from the fused prototype.
+    share: Option<SlotShare>,
 }
 
 impl Callback {
@@ -361,22 +364,37 @@ impl Callback {
             + self.id.encoded_len()
             + self.typ.encoded_len()
             + self.top_id.encoded_len()
+            + 1
+            + self.share.as_ref().map_or(0, SlotShare::image_len)
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         scope_encode(&self.scope, buf)?;
         self.id.encode(buf)?;
         self.typ.encode(buf)?;
-        self.top_id.encode(buf)
+        self.top_id.encode(buf)?;
+        match &self.share {
+            None => Ok(buf.put_u8(0)),
+            Some(share) => {
+                buf.put_u8(1);
+                share.image_encode(buf)
+            }
+        }
     }
 
-    fn image_decode(buf: &mut &[u8]) -> Result<Self, PackError> {
-        Ok(Self {
-            scope: scope_decode(buf)?,
-            id: BindId::decode(buf)?,
-            typ: Pack::decode(buf)?,
-            top_id: ExprId::decode(buf)?,
-        })
+    fn image_decode<R: Rt, E: UserEvent>(
+        ctx: &mut ExecCtx<R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
+        let scope = scope_decode(buf)?;
+        let id = BindId::decode(buf)?;
+        let typ = Pack::decode(buf)?;
+        let top_id = ExprId::decode(buf)?;
+        let share = match u8::decode(buf)? {
+            0 => None,
+            _ => Some(SlotShare::image_decode(ctx, buf)?),
+        };
+        Ok(Self { scope, id, typ, top_id, share })
     }
 
     /// A fresh bind for one callback argument.
@@ -398,7 +416,8 @@ impl Callback {
         args: SmallVec<[Node<R, E>; 2]>,
         kind: CallKind,
     ) -> Node<R, E> {
-        let (Self { scope, id, typ, top_id }, fty) = (self, Type::Fn(self.typ.clone()));
+        let (Self { scope, id, typ, top_id, share }, fty) =
+            (self, Type::Fn(self.typ.clone()));
         match kind {
             CallKind::Prototype => {
                 let function = genn::reference(ctx, *id, fty, *top_id);
@@ -406,7 +425,11 @@ impl Callback {
             }
             CallKind::Slot(Some(def)) => {
                 let function = super::Constant::new(def, fty, Expr::clone(&NOP));
-                genn::apply(function, scope.clone(), args, typ, *top_id)
+                let mut call = genn::apply(function, scope.clone(), args, typ, *top_id);
+                if let Some(cs) = call.downcast_mut::<CallSite<R, E>>() {
+                    cs.share = share.clone();
+                }
+                call
             }
             CallKind::Slot(None) => {
                 let function = genn::reference(ctx, *id, fty, *top_id);
@@ -769,7 +792,13 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
             Type::Fn(ft) => ft.clone(),
             t => bail!("collection callback must be a function, got {t}"),
         };
-        let callback = Callback { scope: scope.clone(), id, typ: callback_type, top_id };
+        let callback = Callback {
+            scope: scope.clone(),
+            id,
+            typ: callback_type,
+            top_id,
+            share: None,
+        };
         let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
         let prototype = Slot::new(ctx, &callback, &element_type, CallKind::Prototype);
@@ -804,7 +833,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
             spec: Expr::decode(buf)?,
             typ: Type::decode(buf)?,
         };
-        Ok(Self::with(base, Callback::image_decode(buf)?))
+        Ok(Self::with(base, Callback::image_decode(ctx, buf)?))
     }
 
     fn finish(&self, ctx: &mut ExecCtx<R, E>, event: &Event<E>) -> Value {
@@ -852,7 +881,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        fuse_callback(ctx, &self.base.prototype)
+        fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -1175,7 +1204,13 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
             Type::Fn(ft) => ft.clone(),
             t => bail!("collection callback must be a function, got {t}"),
         };
-        let callback = Callback { scope: scope.clone(), id, typ: callback_type, top_id };
+        let callback = Callback {
+            scope: scope.clone(),
+            id,
+            typ: callback_type,
+            top_id,
+            share: None,
+        };
         let acc_type = typ.args[1].typ.clone();
         let element_type = C::element_type(typ)?;
         let source = genn::reference(ctx, source_id, typ.args[0].typ.clone(), top_id);
@@ -1213,7 +1248,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
             spec: Expr::decode(buf)?,
             typ: Type::decode(buf)?,
         };
-        let callback = Callback::image_decode(buf)?;
+        let callback = Callback::image_decode(ctx, buf)?;
         let acc_type = Type::decode(buf)?;
         Ok(Self::with(base, callback, acc_type))
     }
@@ -1272,7 +1307,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
     }
 
     fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
-        fuse_callback(ctx, &self.base.prototype)
+        fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
@@ -1451,16 +1486,20 @@ fn callback<R: Rt, E: UserEvent>(prototype: &Node<R, E>) -> Option<&GXLambda<R, 
     Some(callback)
 }
 
-/// The fuse driver never descends a collection callback, so the
-/// prototype body's attributes dispatch here.
+/// Fuse the prototype's instance of a statically resolved callback,
+/// whose kernels the slots' instances share.
 fn fuse_callback<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
-    prototype: &Node<R, E>,
+    prototype: &mut Node<R, E>,
+    callback: &mut Callback,
 ) -> Result<Option<Node<R, E>>> {
-    if !ctx.attr_census.lock().is_empty()
-        && let Some(callback) = callback(prototype)
-    {
-        check_attributes_subtree(callback.body(), ctx)?;
+    let Some(site) = prototype.downcast_mut::<CallSite<R, E>>() else { return Ok(None) };
+    if site.static_target.is_none() {
+        return Ok(None);
+    }
+    let Some(apply) = site.callee.apply_mut() else { return Ok(None) };
+    if matches!(apply.view(), ApplyView::Lambda(_)) {
+        callback.share = share::fuse_prototype(ctx, |ctx| apply.fuse(ctx))?;
     }
     Ok(None)
 }
