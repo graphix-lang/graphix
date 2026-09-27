@@ -214,7 +214,7 @@ fn operand_type<'t>(env: &Env, lt: &'t Type, rt: &'t Type) -> Result<Option<&'t 
 
 /// An operand whose type is known must be in `bound` now; an open cell
 /// carries `bound` as a constraint for later.
-fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
+pub(super) fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
     if t.with_deref(|t| t.is_some()) {
         bound.check_contains(env, t)
     } else {

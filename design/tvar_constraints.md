@@ -71,6 +71,11 @@ u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
   result cell, and the result-type (`ut`) table re-runs in typecheck1
   after the operand cells settle (`typecheck_tail`), erroring "type
   must be known" only if they are still open then.
+- An array index or slice bound constrains the same way: an unbound
+  index cell gets a `Primitive(Typ::integer())` conjunct
+  (`node/array.rs::check_index`), so `|x| a[-x]` keeps `[Real, Sint] &
+  Int` on `x` and each call's argument meets both; a known index type
+  is checked against the integers directly.
 
 Rejected for the distinct-operand case: unifying the operand cells
 (a semantic tightening — mixed-type calls that passed would reject),

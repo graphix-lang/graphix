@@ -33,9 +33,10 @@ use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 
-/// An array index or slice bound: any integer.
+/// An array index or slice bound: any integer. An open cell is narrowed
+/// to the integers, as an arithmetic operand is to the numbers.
 pub(super) fn check_index<R: Rt, E: UserEvent>(env: &Env, i: &Node<R, E>) -> Result<()> {
-    wrap!(i, Type::Primitive(Typ::integer()).check_contains(env, i.typ()))
+    wrap!(i, super::op::constrain_operand(env, &Type::Primitive(Typ::integer()), i.typ()))
 }
 
 #[derive(Debug)]

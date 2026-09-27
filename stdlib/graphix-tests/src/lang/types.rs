@@ -1212,6 +1212,26 @@ const BOTTOM_OPERAND: &str = r#"{
 
 run!(bottom_operand, BOTTOM_OPERAND, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))));
 
+// An index narrows an open operand to the integers, as arithmetic
+// narrows one to the numbers: a function's parameter keeps the
+// conjunction and each call's argument meets all of it.
+const INDEX_NARROWS_AN_OPEN_OPERAND: &str = r#"{
+  let f = |x| ([10, 20])[-x]$;
+  let g = |x, y| ([10, 20])[x - y]$;
+  let h = |x| -x;
+  let k = |y| ([10, 20])[h(y)]$;
+  [f(1), g(1, 0), k(2)]
+}"#;
+
+run!(index_narrows_an_open_operand, INDEX_NARROWS_AN_OPEN_OPERAND, |v: Result<
+    &Value,
+>| {
+    match v {
+        Ok(Value::Array(a)) => &**a == &[Value::I64(20), Value::I64(20), Value::I64(10)],
+        _ => false,
+    }
+});
+
 // An operand only ⊥ was produced into is ⊥, whatever the operator bounds
 // it by: a let over ⊥, a call whose body is ⊥, in any arrangement. A
 // writer still gives the let its type.
