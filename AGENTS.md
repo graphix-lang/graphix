@@ -499,7 +499,12 @@ def with the same `FnArgIdentity` (per argument, the SOURCE lambda it
 resolves to) is a self-call and reuses the instance; a different
 identity is a fresh instance even mid-resolution (a HOF nested under its
 own callback is not recursion). An instantiation snapshots its def's
-`LambdaIds`. Never special-case collection intrinsics here.
+`LambdaIds`. Never special-case collection intrinsics here. A bind at
+run time (a fresh activation, a collection slot, a dynamic call)
+typechecks its instance in a settle frame of its own and settles it
+when the typecheck ends (`node::with_runtime_settles`): no statement
+boundary follows it, and an undrained frame pins every cell it
+reaches.
 
 **Builtins** implement `BuiltIn<R, E>` (`NAME`, `init()`, `EFFECT`) and
 register with `ExecCtx::register_builtin::<T>()`; the Graphix signature

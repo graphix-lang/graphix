@@ -125,6 +125,17 @@ The non-tail dispatch path (`node/lambda.rs`, the body update under
   identically (slot i's acc is slot i−1's output).
 - **Stack** is heap-segmented under `ensure_sufficient`.
 
+**A fresh activation settles its own types.** A depth reached at run
+time is a lazy bind: `CallSite::bind` typechecks the new instance and
+its call sites defer their terminal settles, which a compile drains at
+the statement boundary. A run-time bind has none, so it runs in a
+settle frame of its own and settles it when the typecheck ends
+(`node::with_runtime_settles`); an undrained frame kept every fresh
+activation's signature cells alive, so a recursion that shrank and
+regrew grew without bound. Leak witnesses: `regrown-recursion`,
+`regrown-tail-recursion`; `leakcheck` also bounds the node-walk's own
+slope.
+
 **Shrink = delete.** A depth not reached this cycle is deleted
 immediately; re-reaching it is a fresh activation. This is MapQ's rule
 for excess slots, adopted because a recursion activation IS a

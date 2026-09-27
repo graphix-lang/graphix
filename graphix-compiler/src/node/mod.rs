@@ -922,6 +922,29 @@ pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// Run a runtime bind `f` in a settle frame of its own and settle what
+/// it deferred when it returns: no statement boundary follows a bind
+/// at run time. A refused settle is a lazy body's swallowed typecheck
+/// error, logged like the others.
+pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
+    ctx: &mut ExecCtx<R, E>,
+    f: impl FnOnce(&mut ExecCtx<R, E>) -> Result<T>,
+) -> Result<T> {
+    ctx.pending_settles.push(Vec::new());
+    let res = f(ctx);
+    let pending = ctx.pending_settles.pop().expect("runtime settle frame");
+    for s in pending.iter() {
+        if let Err(e) = s.ftype.settle_terminal(&ctx.env, s.rtype.as_ref(), &s.defaulted)
+        {
+            if crate::dbgenv::gxdbg_swallow() {
+                eprintln!("SWALLOWED-LAZY-SETTLE at {}: {e:#}", s.spec);
+            }
+            log::trace!("bind: lazy-bound callee settle failed: {e:#}");
+        }
+    }
+    res
+}
+
 /// A statement's `typecheck1`, then the settles it deferred: a later
 /// statement's resolution reads settled facts.
 pub(crate) fn typecheck1_settled<R: Rt, E: UserEvent>(

@@ -909,68 +909,75 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if perfdbg::enabled() {
             perfdbg::BIND_CALLS.fetch_add(1, Relaxed);
         }
-        let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
-        // XCR claude for eric: not dead. A bind can run under an arm's wake view
-        // (`event.wake_init`), where standing_view reads a standing entry stale;
-        // these FIRED entries give a fresh default's subtree its birth there
-        // (design/wake_catchup.md, the birth rule). The body sees them too.
-        let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
-            refs.with_external_refs(|id| {
-                if let Some(v) = ctx.rt.store_value(&id) {
-                    if let Entry::Vacant(e) = event.variables.entry(id) {
-                        e.insert(TagValue::fired(v));
-                        set.push(id);
+        // The lazy-bound body's typecheck defers settles no statement
+        // boundary will drain.
+        let restored_def = super::with_runtime_settles(ctx, |ctx| {
+            let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
+            // XCR claude for eric: not dead. A bind can run under an arm's wake view
+            // (`event.wake_init`), where standing_view reads a standing entry stale;
+            // these FIRED entries give a fresh default's subtree its birth there
+            // (design/wake_catchup.md, the birth rule). The body sees them too.
+            let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
+                refs.with_external_refs(|id| {
+                    if let Some(v) = ctx.rt.store_value(&id) {
+                        if let Entry::Vacant(e) = event.variables.entry(id) {
+                            e.insert(TagValue::fired(v));
+                            set.push(id);
+                        }
+                    }
+                });
+            })?;
+            drop(setup_span);
+            // A def whose defining Lambda node was deleted has no
+            // `lambda_defs` entry; restore it for this elaboration only.
+            let restored_def = if ctx.lambda_defs.contains_key(&f.id) {
+                false
+            } else {
+                ctx.lambda_defs.insert(f.id, fv.clone());
+                true
+            };
+            self.callee = Callee::DynamicBound { def: fv, apply };
+            // The lazy-bound body postdates the program-wide typecheck1 and
+            // analysis passes: resolve its call sites and analyze it here.
+            let identity = self.fn_arg_identity(ctx);
+            if let Some(apply) = self.callee.apply_mut()
+                && let ApplyView::Lambda(g) = apply.view()
+            {
+                let instance = g.instance_id();
+                let instance_ftype = apply.typ();
+                // A recursive lazy bind: its body stays lazy.
+                let already_active = ctx.resolving(f.id, &identity).is_some();
+                ctx.push_resolving(
+                    f.id,
+                    ResolvingLambda {
+                        instance,
+                        ftype: instance_ftype.as_ref().clone(),
+                        identity,
+                    },
+                );
+                if !already_active {
+                    let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
+                    if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
+                        if dbgenv::gxdbg_swallow() {
+                            eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
+                        }
+                        log::trace!(
+                            "bind: lazy-bound callee body typecheck1 failed: {e:#}"
+                        );
                     }
                 }
-            });
+                ctx.pop_resolving(f.id, instance);
+                if let ApplyView::Lambda(g) = apply.view() {
+                    let _an_span = perfdbg::span(&perfdbg::ANALYZE_NS);
+                    let self_bind = match self.fnode.view() {
+                        NodeView::Ref(r) => Some(r.id),
+                        _ => None,
+                    };
+                    analysis::analyze_bound_callee(g, self_bind, ctx);
+                }
+            }
+            Ok(restored_def)
         })?;
-        drop(setup_span);
-        // A def whose defining Lambda node was deleted has no
-        // `lambda_defs` entry; restore it for this elaboration only.
-        let restored_def = if ctx.lambda_defs.contains_key(&f.id) {
-            false
-        } else {
-            ctx.lambda_defs.insert(f.id, fv.clone());
-            true
-        };
-        self.callee = Callee::DynamicBound { def: fv, apply };
-        // The lazy-bound body postdates the program-wide typecheck1 and
-        // analysis passes: resolve its call sites and analyze it here.
-        let identity = self.fn_arg_identity(ctx);
-        if let Some(apply) = self.callee.apply_mut()
-            && let ApplyView::Lambda(g) = apply.view()
-        {
-            let instance = g.instance_id();
-            let instance_ftype = apply.typ();
-            // A recursive lazy bind: its body stays lazy.
-            let already_active = ctx.resolving(f.id, &identity).is_some();
-            ctx.push_resolving(
-                f.id,
-                ResolvingLambda {
-                    instance,
-                    ftype: instance_ftype.as_ref().clone(),
-                    identity,
-                },
-            );
-            if !already_active {
-                let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
-                if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
-                    if dbgenv::gxdbg_swallow() {
-                        eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
-                    }
-                    log::trace!("bind: lazy-bound callee body typecheck1 failed: {e:#}");
-                }
-            }
-            ctx.pop_resolving(f.id, instance);
-            if let ApplyView::Lambda(g) = apply.view() {
-                let _an_span = perfdbg::span(&perfdbg::ANALYZE_NS);
-                let self_bind = match self.fnode.view() {
-                    NodeView::Ref(r) => Some(r.id),
-                    _ => None,
-                };
-                analysis::analyze_bound_callee(g, self_bind, ctx);
-            }
-        }
         // Defaults update for the first time under the init view.
         let prev_init = mem::replace(&mut event.init, true);
         for arg in self.args.values_mut() {

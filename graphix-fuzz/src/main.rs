@@ -513,8 +513,9 @@ async fn main() -> Result<()> {
                 }
                 let [interp, jit] = slopes;
                 // 50 kB/s of slack rides load noise without hiding a
-                // real leak at 60s
-                let ok = jit <= interp + 50.0;
+                // real leak at 60s; the node-walk's own bound leaves room
+                // for its allocator warming over the first minute
+                let ok = jit <= interp + 50.0 && interp <= 1024.0;
                 if !ok {
                     bad += 1;
                 }
@@ -1175,6 +1176,25 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
              }\n\
          };\n\
          f(`C([x, i64:1, i64:2], `C([x, i64:3], `N)), x % i64:2, i64:0)\n",
+    ),
+    (
+        // a recursion that shrinks and regrows every tick: each fresh
+        // activation's lazy bind settles its own types
+        "regrown-recursion",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let rec f = |k: i64| -> i64 select k { i64:0 => i64:0, _ => i64:1 + f(k - i64:1) };\n\
+         f(select x % i64:2 { i64:0 => i64:50, _ => i64:1 })\n",
+    ),
+    (
+        // the same as a tail recursion: activations in the node-walk
+        "regrown-tail-recursion",
+        "let clk = sys::time::timer(duration:0.001s, true);\n\
+         let x = i64:0;\n\
+         x <- clk ~ (x + i64:1);\n\
+         let rec f = |k: i64, a: i64| -> i64 select k { i64:0 => a, _ => f(k - i64:1, a + i64:1) };\n\
+         f(select x % i64:2 { i64:0 => i64:50, _ => i64:1 }, i64:0)\n",
     ),
     (
         // a string read into a value-shaped formal, owned by the call
