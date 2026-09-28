@@ -15,6 +15,7 @@
 2	arm-local-bind-aug2026/03_wake_const_call.gx
 2	arm-raise-unseen-fire-sep2026/00_standing_input.gx
 2	arm-rewake-ref-fired-aug2026/00_lifted_selfconnect.gx
+1	arm-scope-sep2026/00_arm_typedef_in_the_signature.gx
 2	arm-wake-body-fire-jul2026/01_refwrite_filter_refire.gx
 2	arm-wake-body-fire-jul2026/02_const_scrutinee_own_binds.gx
 2	arm-wake-body-fire-jul2026/03_capture_only_callback.gx
@@ -139,6 +140,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 0	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 1	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
+1	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
 1	filtermap-push-confusion-jul2026/00_slice_elem_sigsegv.gx
 2	firing-jul2026/01_guarded_select_selection_memory.gx
 2	firing-jul2026/02_hof_const_body_prev_len.gx
@@ -255,6 +257,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 2	never-args-elided-sep2026/01_raise_in_never_arm.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx
+0	param-call-expr-sep2026/00_param_called_through_parens.gx
+0	param-call-expr-sep2026/01_rank2_param_called_through_parens.gx
 0	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 0	parse-bottom-member-jul2026/01_nested_bottom_member.gx
 2	prevlen-word-jul2026/00_callee_loop_source_refresh.gx

@@ -28,7 +28,7 @@ use crate::{
     typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds, tvar::RigidGate},
     wrap,
 };
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
@@ -319,7 +319,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 )
             })
         })();
-        elab_audit::leave(ctx.def_gate_depth, "typecheck0", self.body.spec(), &res);
+        elab_audit::leave(ctx.def_gates.len(), "typecheck0", self.body.spec(), &res);
         res?;
         profile::instance_signature(self.instance_id, &self.typ, None);
         Ok(())
@@ -337,7 +337,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         let env = self.env.clone();
         let res =
             ctx.with_restored(env, |ctx| wrap!(self.body, self.body.typecheck1(ctx)));
-        elab_audit::leave(ctx.def_gate_depth, "typecheck1", self.body.spec(), &res);
+        elab_audit::leave(ctx.def_gates.len(), "typecheck1", self.body.spec(), &res);
         res
     }
 
@@ -1075,7 +1075,9 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         named.retain(|name, _| !name.starts_with('_'));
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
         ctx.rec_defs.insert(def.id);
-        ctx.def_gate_depth += 1;
+        let mut cells = AHashMap::default();
+        def.typ.reached_cells(&mut cells);
+        ctx.def_gates.push(cells);
         ctx.pending_settles.push(Vec::new());
         Self { def: def.id, sig: def.typ.clone(), faux_id, args, scope, rigid }
     }
@@ -1089,15 +1091,15 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
     /// cells this signature reaches: those stay open, generalized.
     fn close(mut self, ctx: &mut ExecCtx<R, E>) {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
-        let mut sig: LPooled<AHashSet<usize>> = LPooled::take();
+        ctx.def_gates.pop().expect("gate cells");
+        let mut sig: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.sig.reached_cells(&mut sig);
         for s in frame.iter_mut() {
             if let crate::PendingSettle::Site { exempt, .. } = s {
-                exempt.extend(sig.iter().copied());
+                exempt.extend(sig.keys().copied());
             }
         }
         ctx.pending_settles.last_mut().expect("root settle frame").extend(frame);
-        ctx.def_gate_depth -= 1;
         ctx.rec_defs.remove(&self.def);
         ctx.env.by_id.remove_cow(&self.faux_id);
         self.rigid.clear();

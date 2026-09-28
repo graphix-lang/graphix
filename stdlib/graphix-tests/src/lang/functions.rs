@@ -2265,3 +2265,24 @@ run!(same_named_tvar_in_callback_arg, SAME_NAMED_TVAR_IN_CALLBACK_ARG, |v: Resul
 >| {
     format!("{}", v.unwrap()) == "[i64:3, i64:3]"
 }; graphix_package_core::testing::FuseExpect::None);
+
+// A call through any expression that reaches a parameter (parens, an
+// alias) types against the definition's own cells: an open gate's
+// signature is not generalized yet.
+const PARAM_CALLED_THROUGH_AN_EXPRESSION: &str = r#"
+{
+  let m = |a, f: fn(x: 'a) -> 'b| -> Array<'b> array::map(a, |v| ((f))(v));
+  let n = |a, f: fn(x: 'a) -> 'b| -> Array<'b> { let g = f; array::map(a, |v| g(v)) };
+  let apply = |f: fn<'b: Number>(x: 'b) -> 'b| ((f))(1);
+  (m([1, 2], |x| x * 2), n(["a"], |s| "[s]!"), apply(|x| x))
+}
+"#;
+
+run!(
+    param_called_through_an_expression,
+    PARAM_CALLED_THROUGH_AN_EXPRESSION,
+    |v: Result<&Value>| {
+        format!("{}", v.unwrap()) == r#"[[i64:2, i64:4], ["a!"], i64:1]"#
+    };
+    graphix_package_core::testing::FuseExpect::None
+);

@@ -46,6 +46,10 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     typ: Type,
     /// One feeder Node per kernel input slot.
     feeders: Box<[Node<R, E>]>,
+    /// The slots fed by a node-walked argument, in slot order. They
+    /// update before the reads: a `let` inside one binds what a read
+    /// feeds.
+    fed: Box<[usize]>,
     /// Set by `sleep()`, taken by the next update; feeds wire slot 0 bit 1.
     slept: WakeBit,
     /// The ABI contract; the `Arc` pointer is also the kernel's identity
@@ -121,10 +125,12 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         let state = vec![0u64; jit.state_words].into_boxed_slice();
         let site = vec![0u64; jit.own_site.as_ref().map_or(0, |l| l.words as usize)]
             .into_boxed_slice();
+        let fed = Self::fed_slots(&feeders);
         Node::new(Self {
             spec,
             typ,
             feeders,
+            fed,
             slept: WakeBit::default(),
             kernel,
             jit,
@@ -150,6 +156,15 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
         self.redirects = redirects
     }
 
+    fn fed_slots(feeders: &[Node<R, E>]) -> Box<[usize]> {
+        feeders
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !matches!(f.view(), NodeView::Ref(_)))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     /// The input a read of `id` feeds.
     fn input(&self, id: BindId) -> Option<usize> {
         self.feeders
@@ -167,6 +182,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     pub(crate) fn feed(&mut self, ctx: &mut ExecCtx<R, E>, id: BindId, node: Node<R, E>) {
         let i = self.input(id).expect("an input read from the id");
         std::mem::replace(&mut self.feeders[i], node).delete(ctx);
+        self.fed = Self::fed_slots(&self.feeders);
     }
 
     /// The feeder nodes, one per kernel input slot.
@@ -302,14 +318,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         let woke = self.slept.take();
         let mut any_updated = false;
         let mut any_bottom = false;
-        let mut polled: SmallVec<[&TagValue; 8]> = SmallVec::new();
-        for src in self.feeders.iter_mut() {
+        let mut srcs: SmallVec<[Option<&mut Node<R, E>>; 8]> =
+            self.feeders.iter_mut().map(Some).collect();
+        let mut polled: SmallVec<[Option<&TagValue>; 8]> =
+            srcs.iter().map(|_| None).collect();
+        let order = self.fed.iter().copied().chain(0..srcs.len());
+        for i in order {
+            let Some(src) = srcs[i].take() else { continue };
             let tv = src.update(ctx, event);
             let tag = tv.tag();
             any_updated |= tag.triggers();
             any_bottom |= tag.is_bottom();
-            polled.push(tv);
+            polled[i] = Some(tv);
         }
+        let mut polled: SmallVec<[&TagValue; 8]> =
+            polled.into_iter().map(|tv| tv.expect("every slot polled")).collect();
         if crate::dbgenv::gxdbg_kpoll() {
             eprintln!(
                 "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?}",

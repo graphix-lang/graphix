@@ -890,6 +890,22 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
+// A select arm's scope is the same in every instance of its definition,
+// so a type the arm defines names the same definition in the signature
+// and in the instance.
+const ARM_TYPEDEF_IN_THE_SIGNATURE: &str = r#"
+{
+  let f = |n: i64| select n { 0 => 0, _ => { type L = i64; let g = |l: L| -> L l; g } };
+  let h = f(1);
+  42
+}
+"#;
+
+run!(arm_typedef_in_the_signature, ARM_TYPEDEF_IN_THE_SIGNATURE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(42))
+); graphix_package_core::testing::FuseExpect::Jit);
+
 // A typedef's parameter constraint names types where the typedef is.
 run!(
     typedef_constraint_resolves_in_its_module,

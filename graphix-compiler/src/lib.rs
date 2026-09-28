@@ -4,8 +4,6 @@
 )]
 #![recursion_limit = "256"]
 #[macro_use]
-extern crate netidx_core;
-#[macro_use]
 extern crate combine;
 #[macro_use]
 extern crate serde_derive;
@@ -49,7 +47,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{FnType, Type},
+    typ::{FnType, TVar, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -1374,9 +1372,10 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// call through one unifies against the param's own declared cells,
     /// so `f(v)` types as the def's rigid 'b.
     pub(crate) def_gate_params: nohash::IntSet<BindId>,
-    /// Def-gate nesting depth; a nested gate's cells are still
-    /// entangled with the enclosing inference.
-    pub(crate) def_gate_depth: usize,
+    /// The cells each open definition gate's signature reaches, by
+    /// address, innermost last: not generalized yet, so a call in the
+    /// body never instantiates them.
+    pub(crate) def_gates: Vec<AHashMap<usize, TVar>>,
     pub(crate) resolving_lambdas: Mutex<IntMap<LambdaId, ResolvingStack>>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
@@ -1437,7 +1436,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             builtin_bindings: ahash::AHashMap::default(),
             rec_defs: nohash::IntSet::default(),
             def_gate_params: nohash::IntSet::default(),
-            def_gate_depth: 0,
+            def_gates: Vec::new(),
             resolving_lambdas: Mutex::new(IntMap::default()),
             fn_forward_resolutions: IntMap::default(),
             pending_settles: vec![Vec::new()],

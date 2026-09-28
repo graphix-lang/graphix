@@ -1887,6 +1887,20 @@ run!(call_fed_by_node_walked_args, CALL_FED_BY_NODE_WALKED_ARGS, |v: Result<&Val
     _ => false,
 }; FuseExpect::Jit);
 
+// A fed argument that binds a name the kernel reads runs before the
+// read: the kernel sees each of `x`'s fires.
+const FED_ARG_BINDS_WHAT_THE_KERNEL_READS: &str = r#"
+{
+  let r = array::fold([0, 0, 0], let x = array::iter([0, 0, 0, 1]), |acc, s| x);
+  select count(r) { 4 => r, _ => never() }
+}
+"#;
+
+run!(fed_arg_binds_what_the_kernel_reads, FED_ARG_BINDS_WHAT_THE_KERNEL_READS, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::I64(1))
+); FuseExpect::Jit);
+
 // A select nested in tail position reads its outer arm's binds on every
 // path: a tail jump in one inner arm drops them at run time only, and
 // the sibling arm still reads them (the `filter_map` shape).

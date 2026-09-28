@@ -1,0 +1,4 @@
+// Refused where `f(v)` passes (sep27f ryouko typeflip_000002): the
+// site's fresh copy of `((f))`'s type cut it off from the definition's
+// own cells.
+{ let m = |a, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, ((f))(v))); (m([1, 2, 3], |x| x * 2), m(["a", "b"], |s| "[s]!")) }

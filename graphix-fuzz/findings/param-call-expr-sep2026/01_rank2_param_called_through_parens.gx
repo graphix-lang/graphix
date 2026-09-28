@@ -1,0 +1,2 @@
+// The same through a rank-2 formal (sep27f aieka typeflip_000001).
+{ let apply = |f: fn<'b: Number>(x: 'b) -> 'b| ((f))(1); apply(|x| x) }

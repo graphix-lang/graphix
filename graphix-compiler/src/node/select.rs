@@ -29,8 +29,6 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use triomphe::Arc;
 
-atomic_id!(SelectId);
-
 #[derive(Debug)]
 pub struct Select<R: Rt, E: UserEvent> {
     /// The selected arm. Semantic state: survives sleep.
@@ -220,7 +218,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
         let arms = arms
             .iter()
             .map(|(pat, body)| {
-                let scope = scope.append_block("sel", SelectId::new().0);
+                let scope = scope.append_block("sel", body.id.inner());
                 let pat = PatternNode::compile(
                     ctx,
                     flags,

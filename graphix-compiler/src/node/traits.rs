@@ -728,7 +728,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         }
         if self_t.has_unbound() {
-            if ctx.def_gate_depth > 0 {
+            if !ctx.def_gates.is_empty() {
                 return Ok(());
             }
             bailat!(

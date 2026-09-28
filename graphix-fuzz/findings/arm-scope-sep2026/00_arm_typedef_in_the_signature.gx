@@ -1,0 +1,4 @@
+// The check accepted, the instance refused "undefined type L" (sep27f
+// aieka divergence_000000): a select arm's scope was fresh per compile,
+// so the instance's arm defined L apart from the signature's L.
+{ let f = |n| select n { 0 => 0, _ => { type L = i64; let g = |l: L| -> L l; g } }; let h = f(1); 42 }

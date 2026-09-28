@@ -65,8 +65,7 @@ pub fn apply<R: Rt, E: UserEvent>(
     typ: &FnType,
     top_id: ExprId,
 ) -> Node<R, E> {
-    let ftype = typ.reset_tvars();
-    ftype.freeze_shared_tvars();
+    let ftype = typ.instantiate(&[]);
     apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
 }
 

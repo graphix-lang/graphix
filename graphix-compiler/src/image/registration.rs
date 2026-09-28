@@ -187,7 +187,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
     ) -> Result<Bytes, PackError> {
         let busy = [
             ("pending settles", !self.pending_settles.iter().all(|s| s.is_empty())),
-            ("an open definition gate", self.def_gate_depth != 0),
+            ("an open definition gate", !self.def_gates.is_empty()),
             ("lambdas resolving", !self.resolving_lambdas.lock().is_empty()),
             ("core hook sites", !self.core_hook_sites.is_empty()),
         ];

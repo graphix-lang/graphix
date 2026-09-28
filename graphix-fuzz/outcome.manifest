@@ -15,6 +15,7 @@ trace	arm-local-bind-aug2026/02_wake_reseeds_connect.gx
 trace	arm-local-bind-aug2026/03_wake_const_call.gx
 trace	arm-raise-unseen-fire-sep2026/00_standing_input.gx
 trace	arm-rewake-ref-fired-aug2026/00_lifted_selfconnect.gx
+trace	arm-scope-sep2026/00_arm_typedef_in_the_signature.gx
 trace	arm-wake-body-fire-jul2026/01_refwrite_filter_refire.gx
 trace	arm-wake-body-fire-jul2026/02_const_scrutinee_own_binds.gx
 trace	arm-wake-body-fire-jul2026/03_capture_only_callback.gx
@@ -139,6 +140,7 @@ trace	empty-scaffold-depth-charge-aug2026/02_empty_literal_source_fold.gx
 reject	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 reject	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 trace	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
+trace	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
 trace	filtermap-push-confusion-jul2026/00_slice_elem_sigsegv.gx
 trace	firing-jul2026/01_guarded_select_selection_memory.gx
 trace	firing-jul2026/02_hof_const_body_prev_len.gx
@@ -255,6 +257,8 @@ trace	never-args-elided-sep2026/00_dbg_in_never_arm.gx
 trace	never-args-elided-sep2026/01_raise_in_never_arm.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
 trace	organic-firing-aug2026/01_multilevel_face.gx
+trace	param-call-expr-sep2026/00_param_called_through_parens.gx
+trace	param-call-expr-sep2026/01_rank2_param_called_through_parens.gx
 reject	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 reject	parse-bottom-member-jul2026/01_nested_bottom_member.gx
 trace	prevlen-word-jul2026/00_callee_loop_source_refresh.gx

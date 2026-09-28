@@ -276,16 +276,17 @@ impl FnType {
 }
 
 impl FnType {
-    /// Every cell the signature reaches, through bindings and conjuncts.
-    pub(crate) fn reached_cells(&self, out: &mut AHashSet<usize>) {
+    /// Every cell the signature reaches, through bindings and conjuncts,
+    /// by address.
+    pub(crate) fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         self.for_each_part(&mut |t, _| reached_cells(t, out))
     }
 }
 
-fn reached_cells(t: &Type, out: &mut AHashSet<usize>) {
+fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {
-            if out.insert(tv.cell_addr()) {
+            if out.insert(tv.cell_addr(), tv.clone()).is_none() {
                 let (bound, cons) = {
                     let cell = tv.cell();
                     let cell = cell.read();

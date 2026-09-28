@@ -658,21 +658,29 @@ impl FnType {
         self.for_each_part(&mut |t, _| t.alias_tvars(known))
     }
 
-    /// Freeze each type variable whose cell the signature holds more than
-    /// once: a frozen variable keeps its cell when it unifies with an
-    /// unfrozen one.
-    pub fn freeze_shared_tvars(&self) {
+    /// A call's copy of the signature: every cell fresh but those in
+    /// `keep` (by address; cells not generalized yet), and each fresh
+    /// cell the copy holds more than once frozen, so it keeps its cell
+    /// when it unifies with an unfrozen one.
+    pub fn instantiate(&self, keep: &[AHashMap<usize, TVar>]) -> Self {
+        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        for cells in keep {
+            known.extend(cells.iter().map(|(addr, tv)| (*addr, tv.clone())));
+        }
+        let fresh = self.reset_tvars_int(&mut known);
         let mut occurrences: LPooled<Vec<TVar>> = LPooled::take();
-        self.for_each_part(&mut |t, _| t.tvar_occurrences(&mut occurrences));
+        fresh.for_each_part(&mut |t, _| t.tvar_occurrences(&mut occurrences));
         let mut count: LPooled<AHashMap<usize, usize>> = LPooled::take();
         for tv in occurrences.iter() {
             *count.entry(tv.cell_addr()).or_default() += 1;
         }
         for tv in occurrences.iter() {
-            if count[&tv.cell_addr()] > 1 {
+            let addr = tv.cell_addr();
+            if count[&addr] > 1 && !keep.iter().any(|cells| cells.contains_key(&addr)) {
                 tv.freeze()
             }
         }
+        fresh
     }
 
     /// Conjuncts are visited in their canonical form: a tvar in a

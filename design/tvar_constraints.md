@@ -96,6 +96,16 @@ cells. Bound cells stay bound: a def-time unification is a settled
 fact, and erasing it made the static type lie about the runtime value
 (the JIT marshal-panic class).
 
+A call copies its callee's type (`FnType::instantiate`) except the cells
+an open definition gate's signature reaches (`ExecCtx::def_gates`):
+those are not generalized until the gate closes, so a call in the body
+through any expression that reaches a parameter (`((f))(v)`, `let g = f;
+g(v)`) types against the definition's own cells. Open: a closed
+definition still generalizes a cell it shares with its environment
+(`let t = |x| x + y` unifies `x` with the outer `y`), so each call of
+`t` copies `y`'s cell and never fixes it; HM leaves such a cell
+ungeneralized.
+
 ### Settling
 
 - At `CallSite::typecheck0`-end, constrained cells reachable from the
