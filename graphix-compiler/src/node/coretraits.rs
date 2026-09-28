@@ -343,7 +343,7 @@ fn take_site<R: Rt, E: UserEvent>(
         version: version.clone(),
         by_type: SmallVec::new(),
     });
-    let slot = entry.slot(&ctx.env, t, &typ);
+    let slot = entry.slot(&ctx.cx.env, t, &typ);
     let c = entry.candidate(slot, &typ)?;
     let site = match c.pool.pop() {
         Some(s) => s,

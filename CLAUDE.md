@@ -116,7 +116,7 @@ Key types: `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration — `fold`, the seq rewrite and
 the fuzzer's preorder all ride them, so a new `ExprKind` child is added
 there and nowhere else), `Node<R, E>` (a newtype over `Box<dyn Update>`;
-construct with `Node::new`), `ExecCtx<R, E>` (builtins, env, runtime),
+construct with `Node::new`), `ExecCtx<R, E>` (a `CompileCtx`: the registry, the program's state and the compile's scratch, which it derefs to; plus the runtime: `rt`, `libstate`, `control`, `fusion`),
 `Scope` (lexical `ModPath` + `DynScope`, the chain of error handlers a
 `?` sees, following the CALL chain).
 

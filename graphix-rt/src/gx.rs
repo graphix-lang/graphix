@@ -243,8 +243,8 @@ impl<X: GXExt> GX<X> {
     /// index; stable cross-batch entries survive so resolution does not
     /// fall to the `store_value` fallback.
     fn prune_static_resolution(&mut self) {
-        for id in self.ctx.batch_connect_targets.iter() {
-            self.ctx.bind_to_lambda.remove(id);
+        for id in self.ctx.cx.batch_connect_targets.iter() {
+            self.ctx.cx.bind_to_lambda.remove(id);
         }
     }
 
@@ -785,7 +785,7 @@ impl<X: GXExt> GX<X> {
         // executes a kernel; without a reset each file's kernels accumulate
         // in the persistent JIT module until finalize fails.
         let env = self.ctx.env.clone();
-        if let IdeMode::Lsp(sink) = &mut self.ctx.env.ide {
+        if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
             self.ctx.fusion.reset_jit_for_check()?;
             *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
         }

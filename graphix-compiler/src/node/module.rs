@@ -145,8 +145,8 @@ pub(crate) fn compile_use<R: Rt, E: UserEvent>(
     items: &Arc<[UseItem]>,
 ) -> Result<Node<R, E>> {
     compile_use_items(
-        &mut ctx.env,
-        &mut ctx.pending_imports,
+        &mut ctx.cx.env,
+        &mut ctx.cx.pending_imports,
         spec.pos,
         &spec.ori,
         scope,
@@ -372,7 +372,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
         if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
-            && let Some(binds) = ctx.env.binds.get(&scope.lexical)
+            && let Some(binds) = ctx.cx.env.binds.get(&scope.lexical)
         {
             // every name the `let` binds, each with its own binding; a
             // single name's type is the whole pattern's
@@ -707,7 +707,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
         env.modules.insert_cow(scope.lexical.clone());
-        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
+        bind_sig(&mut ctx.cx.env, &mut ctx.cx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
         Ok(Node::new(Self {
             spec,
@@ -736,9 +736,10 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let mut env = ctx.env.clone();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
-        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig).with_context(
-            || format_compact!("binding signature for module {}", scope.lexical),
-        )?;
+        bind_sig(&mut ctx.cx.env, &mut ctx.cx.pending_imports, &scope, &sig)
+            .with_context(|| {
+                format_compact!("binding signature for module {}", scope.lexical)
+            })?;
         let mut t = Self {
             spec,
             flags,

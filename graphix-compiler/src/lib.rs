@@ -1279,7 +1279,7 @@ pub(crate) struct ResolvingLambda {
 /// site inside `h(k)` may reach a still-resolving `h(g)`.
 pub(crate) type ResolvingStack = smallvec::SmallVec<[ResolvingLambda; 2]>;
 
-impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
+impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// The active instantiation of `def` with exactly this identity.
     pub(crate) fn resolving(
         &self,
@@ -1328,24 +1328,20 @@ struct BuiltinEntry<R: Rt, E: UserEvent> {
     effect: Effect,
 }
 
-pub struct ExecCtx<R: Rt, E: UserEvent> {
+/// Everything compiling and typechecking read and write: the builtin
+/// and attribute registry, the program's state, and the scratch of the
+/// compile in progress. The runtime half is [`ExecCtx`].
+pub struct CompileCtx<R: Rt, E: UserEvent> {
     lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
     builtins: AHashMap<&'static str, BuiltinEntry<R, E>>,
     attributes: AHashMap<&'static str, (AttributeCheckFn<R, E>, AttributeTargetFn<R, E>)>,
     // Sandboxing.
     builtins_allowed: bool,
     tags: AHashSet<ArcStr>,
-    /// Library state for builtins.
-    pub libstate: LibState,
     /// The language environment: typedefs, binds, lambdas.
     pub env: Env,
-    /// The runtime.
-    pub rt: R,
     /// LambdaDefs by LambdaId.
     pub lambda_defs: IntMap<LambdaId, Value>,
-    /// The call sites through which `Value` comparison and printing
-    /// reach core-trait implementations, built on first use.
-    pub(crate) core_hook_sites: node::coretraits::CoreHookSites<R, E>,
     /// `BindId → LambdaDef Value` for every lambda binding, filled in
     /// `typecheck0` so `typecheck1`'s static resolution sees it
     /// complete. Persistent across batches (`Bind::delete` removes
@@ -1386,8 +1382,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// writer in its scope. A re-drive's leftovers merge up to the
     /// parent frame.
     pub(crate) pending_settles: Vec<Vec<PendingSettle>>,
-    /// The fusion subsystem's state; see [`fusion::FusionCtx`].
-    pub fusion: fusion::FusionCtx,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// at the end of [`compile_stmt`].
@@ -1397,9 +1391,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// each must name something once the check ends
     /// ([`check_pending_names`]).
     pub(crate) pending_names: Vec<(typ::TypeRef, Expr)>,
-    /// Interrupt/abort control, shared with the runtime handle. See
-    /// [`Control`].
-    pub control: Arc<Control>,
     /// Pending definition assertions; see [`DefAssertion`].
     pub(crate) def_assertions: Mutex<Vec<DefAssertion>>,
     /// Registry attributes recorded this `compile_stmt`; each must be
@@ -1412,64 +1403,42 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub(crate) image_decoder: Option<image::ImageDecoder>,
 }
 
-impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
+/// The compile context and the runtime: what a node's update reads.
+pub struct ExecCtx<R: Rt, E: UserEvent> {
+    pub cx: CompileCtx<R, E>,
+    /// Library state for builtins.
+    pub libstate: LibState,
+    /// The runtime.
+    pub rt: R,
+    /// The call sites through which `Value` comparison and printing
+    /// reach core-trait implementations, built on first use.
+    pub(crate) core_hook_sites: node::coretraits::CoreHookSites<R, E>,
+    /// The fusion subsystem's state; see [`fusion::FusionCtx`].
+    pub fusion: fusion::FusionCtx,
+    /// Interrupt/abort control, shared with the runtime handle. See
+    /// [`Control`].
+    pub control: Arc<Control>,
+}
+
+impl<R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<R, E> {
+    type Target = CompileCtx<R, E>;
+
+    fn deref(&self) -> &CompileCtx<R, E> {
+        &self.cx
+    }
+}
+
+impl<R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<R, E> {
+    fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
+        &mut self.cx
+    }
+}
+
+impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
-    }
-
-    /// Build a new execution context. A low-level interface for custom
-    /// runtimes; most embedders want `graphix-rt`.
-    pub fn new(user: R) -> Result<Self> {
-        let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
-        let mut this = Self {
-            lambdawrap: Abstract::register(id)?,
-            env: Env::default(),
-            builtins: AHashMap::default(),
-            attributes: AHashMap::default(),
-            builtins_allowed: true,
-            libstate: LibState::default(),
-            tags: AHashSet::default(),
-            rt: user,
-            lambda_defs: IntMap::default(),
-            core_hook_sites: node::coretraits::CoreHookSites::default(),
-            bind_to_lambda: IntMap::default(),
-            batch_connect_targets: nohash::IntSet::default(),
-            connect_targets: nohash::IntSet::default(),
-            builtin_bindings: ahash::AHashMap::default(),
-            rec_defs: nohash::IntSet::default(),
-            def_gate_params: nohash::IntSet::default(),
-            def_gate_depth: 0,
-            resolving_lambdas: Mutex::new(IntMap::default()),
-            fn_forward_resolutions: IntMap::default(),
-            pending_settles: vec![Vec::new()],
-            fusion: fusion::FusionCtx::new()?,
-            pending_imports: Vec::new(),
-            pending_names: Vec::new(),
-            control: Arc::new(Control::new()),
-            def_assertions: Mutex::new(Vec::new()),
-            attr_census: Mutex::new(Vec::new()),
-            attr_dispatched: Mutex::new(IntSet::default()),
-            attr_absorbed: Mutex::new(IntSet::default()),
-            image_decoder: None,
-        };
-        this.register_attribute::<Native>()?;
-        Ok(this)
-    }
-
-    /// True if an `interrupt()` or `abort()` is pending; loops poll this
-    /// at their head.
-    pub fn interrupted(&self) -> bool {
-        self.control.interrupted()
-    }
-
-    /// Open a compile frame for a node built at runtime outside any
-    /// statement, as `compile_stmt` does before [`check_and_fuse`].
-    pub fn begin_runtime_node(&mut self, top_id: ExprId) {
-        self.fusion.top_id = Some(top_id);
-        self.pending_settles.clear();
-        self.pending_settles.push(Vec::new());
     }
 
     pub fn register_builtin<T: BuiltIn<R, E>>(&mut self) -> Result<()> {
@@ -1538,6 +1507,63 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 s.clone()
             }
         }
+    }
+}
+
+impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
+    /// Build a new execution context. A low-level interface for custom
+    /// runtimes; most embedders want `graphix-rt`.
+    pub fn new(user: R) -> Result<Self> {
+        let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
+        let mut this = Self {
+            cx: CompileCtx {
+                lambdawrap: Abstract::register(id)?,
+                builtins: AHashMap::default(),
+                attributes: AHashMap::default(),
+                builtins_allowed: true,
+                tags: AHashSet::default(),
+                env: Env::default(),
+                lambda_defs: IntMap::default(),
+                bind_to_lambda: IntMap::default(),
+                batch_connect_targets: nohash::IntSet::default(),
+                connect_targets: nohash::IntSet::default(),
+                builtin_bindings: ahash::AHashMap::default(),
+                rec_defs: nohash::IntSet::default(),
+                def_gate_params: nohash::IntSet::default(),
+                def_gate_depth: 0,
+                resolving_lambdas: Mutex::new(IntMap::default()),
+                fn_forward_resolutions: IntMap::default(),
+                pending_settles: vec![Vec::new()],
+                pending_imports: Vec::new(),
+                pending_names: Vec::new(),
+                def_assertions: Mutex::new(Vec::new()),
+                attr_census: Mutex::new(Vec::new()),
+                attr_dispatched: Mutex::new(IntSet::default()),
+                attr_absorbed: Mutex::new(IntSet::default()),
+                image_decoder: None,
+            },
+            libstate: LibState::default(),
+            rt: user,
+            core_hook_sites: node::coretraits::CoreHookSites::default(),
+            fusion: fusion::FusionCtx::new()?,
+            control: Arc::new(Control::new()),
+        };
+        this.register_attribute::<Native>()?;
+        Ok(this)
+    }
+
+    /// True if an `interrupt()` or `abort()` is pending; loops poll this
+    /// at their head.
+    pub fn interrupted(&self) -> bool {
+        self.control.interrupted()
+    }
+
+    /// Open a compile frame for a node built at runtime outside any
+    /// statement, as `compile_stmt` does before [`check_and_fuse`].
+    pub fn begin_runtime_node(&mut self, top_id: ExprId) {
+        self.fusion.top_id = Some(top_id);
+        self.pending_settles.clear();
+        self.pending_settles.push(Vec::new());
     }
 
     /// Run `f` with the lexical environment restored to `env`, then put
