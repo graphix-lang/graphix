@@ -781,7 +781,10 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     f: impl FnOnce(&mut ExecCtx<R, E>) -> Result<T>,
 ) -> Result<T> {
     ctx.pending_settles.push(Vec::new());
+    let names = ctx.pending_names.len();
     let res = f(ctx);
+    // a runtime bind elaborates: what it defers is no check's
+    ctx.pending_names.truncate(names);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
     let _ = crate::PendingSettle::drain(&pending, &ctx.env, |spec, e| {
         if crate::dbgenv::gxdbg_swallow() {

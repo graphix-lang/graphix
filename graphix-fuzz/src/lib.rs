@@ -103,8 +103,9 @@ pub enum Containment {
     StackBudget,
 }
 
-/// Strip tvar numbers (`'_6070` -> `'_N`) and abstract-type ids
-/// (`<abstract#12>` -> `<abstract#N>`) so fresh-counter drift between
+/// Strip tvar numbers (`'_6070` -> `'_N`), abstract-type ids
+/// (`<abstract#12>` -> `<abstract#N>`) and generated scope ids
+/// (`#do123` -> `#doN`) so fresh-counter drift between
 /// two independent compiles neither hides nor fakes a diagnostic difference.
 fn normalize_diag(s: &str) -> String {
     let s = {
@@ -125,6 +126,20 @@ fn normalize_diag(s: &str) -> String {
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         out.push(c);
+        // a generated block scope component (`#do123`, `#fn45`): its id
+        // is a counter
+        if c == '#' {
+            while chars.peek().is_some_and(|c| c.is_ascii_lowercase()) {
+                out.push(chars.next().unwrap());
+            }
+            if chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    chars.next();
+                }
+                out.push('N');
+            }
+            continue;
+        }
         if c == '\'' && chars.peek() == Some(&'_') {
             out.push(chars.next().unwrap());
             while chars.peek().is_some_and(|c| c.is_ascii_digit()) {

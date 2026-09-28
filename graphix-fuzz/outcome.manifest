@@ -2,6 +2,7 @@ reject	abort-seam-jul2026/01_depth_trip_settled_taint.gx
 reject	abstract-opaque-overtag-jul2026/00_het_list_fn_fold.gx
 reject	abstract-opaque-overtag-jul2026/01_het_list_nested_list.gx
 trace	abstract-ord-mixed-types-sep2026/00_map_key_union.gx
+reject	annotation-names-sep2026/00_undefined_name_in_a_callback_let.gx
 trace	any-return-narrowing-aug2026/01_any_arm_scalar_marshal.gx
 trace	arg-order-scope-chain-aug2026/00_let_in_labeled_arg.gx
 reject	arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx

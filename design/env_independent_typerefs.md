@@ -89,6 +89,19 @@ What remains:
    modes, so a pass the fusion gate owns never changes what the
    typechecker sees.
 
+## Every written name names something
+
+A definition's check (its gate, and each annotated `let` in its body)
+asks of every name its written types hold, parameters and bounds
+included, whether it names something (`TypeRef::names_something`: the
+filled cell, a visible typedef, or a trait), without filling a cell. A
+name that does not is deferred to the end of the check
+(`ExecCtx::pending_names`, `check_pending_names`), where every name is
+registered: a `use` an interface defers (a module that imports from a
+later sibling) names it by then. Still nothing there is an undefined
+type, refused at its annotation, whether or not any relation ever
+expands it.
+
 ## Same definition
 
 Name equality no longer implies same meaning (REPL redefinition,

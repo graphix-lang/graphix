@@ -1221,6 +1221,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             .downcast_ref::<LambdaDef<R, E>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         let spec = &self.spec;
+        crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec);
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after
         // the body (`check_defaults`), and again per omitting call site

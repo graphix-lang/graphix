@@ -1392,6 +1392,11 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// at the end of [`compile_stmt`].
     pub(crate) pending_imports: Vec<PendingImport>,
+    /// Type names a definition's written types hold that did not resolve
+    /// at its check (a `use` the interface defers may name them later);
+    /// each must name something once the check ends
+    /// ([`check_pending_names`]).
+    pub(crate) pending_names: Vec<(typ::TypeRef, Expr)>,
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
@@ -1441,6 +1446,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             pending_settles: vec![Vec::new()],
             fusion: fusion::FusionCtx::new()?,
             pending_imports: Vec::new(),
+            pending_names: Vec::new(),
             control: Arc::new(Control::new()),
             def_assertions: Mutex::new(Vec::new()),
             attr_census: Mutex::new(Vec::new()),
@@ -1867,9 +1873,14 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     let st = Instant::now();
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
     let p = profile::phase(Phase::Typecheck0);
-    if let Err(e) = node.typecheck0(ctx).and_then(|()| drain_pending_settles(ctx)) {
+    if let Err(e) = node
+        .typecheck0(ctx)
+        .and_then(|()| drain_pending_settles(ctx))
+        .and_then(|()| check_pending_names(ctx))
+    {
         ctx.pending_settles.clear();
         ctx.pending_settles.push(Vec::new());
+        ctx.pending_names.clear();
         return Err(e);
     }
     drop(p);
@@ -1908,6 +1919,36 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
     use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
     PendingSettle::drain(&pending, &ctx.env, |spec, e| Err(e.at(&**spec)))
+}
+
+/// A written type name that did not resolve at its definition's check
+/// must name something once the check ends.
+pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+) -> Result<()> {
+    use expr::At;
+    for (tr, spec) in mem::take(&mut ctx.pending_names) {
+        if !tr.names_something(&ctx.env) {
+            let e = anyhow::Error::new(typ::UnresolvableRef {
+                name: tr.name,
+                scope: tr.scope,
+            });
+            return Err(e.at(&spec));
+        }
+    }
+    Ok(())
+}
+
+/// Record the names `t`, written at `spec`, holds that do not resolve
+/// yet ([`ExecCtx::pending_names`]).
+pub(crate) fn defer_unresolved_names<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    t: &Type,
+    spec: &Expr,
+) {
+    let mut names = Vec::new();
+    t.unresolved_names(&ctx.env, &mut names);
+    ctx.pending_names.extend(names.into_iter().map(|tr| (tr, spec.clone())));
 }
 
 /// A `use` whose name did not exist at its compile position must name
@@ -2010,6 +2051,7 @@ fn compile_top<R: Rt, E: UserEvent>(
     ctx.attr_dispatched.lock().clear();
     ctx.attr_absorbed.lock().clear();
     ctx.pending_imports.clear();
+    ctx.pending_names.clear();
     ctx.pending_settles.clear();
     ctx.pending_settles.push(Vec::new());
     let top_id = spec.id;

@@ -509,6 +509,15 @@ impl TypeRef {
         }
     }
 
+    /// Does the name mean something: its filled cell, a typedef visible
+    /// in `env`, or a trait (a bound)? Never writes the cell: a fill
+    /// before every name is registered can capture a shadowed target.
+    pub(crate) fn names_something(&self, env: &Env) -> bool {
+        self.resolved().is_some()
+            || self.resolve_pure(env).is_some()
+            || env.trait_of_ref(self).is_some()
+    }
+
     /// What this ref's name means in `env`; never reads or writes the
     /// cell.
     pub(crate) fn resolve_pure(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
@@ -1578,6 +1587,30 @@ impl Type {
     /// (they fill at their first in-context lookup) and make the
     /// result false. Recurses through filled snapshot bodies and
     /// through cells' bindings and conjuncts.
+    /// Every name this written type holds that names nothing in `env`
+    /// now ([`TypeRef::names_something`]), into `out`: a name's
+    /// parameters and a variable's bounds included, a variable's binding
+    /// (inferred, not written) not.
+    pub(crate) fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) {
+        fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>, out: &mut Vec<TypeRef>) {
+            ensure_sufficient(|| match t {
+                Type::Ref(tr) => {
+                    if !tr.names_something(env) {
+                        out.push(tr.clone())
+                    }
+                    tr.params.iter().for_each(|p| go(p, env, seen, out))
+                }
+                Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
+                    tv.cell_constraints().iter().for_each(|c| go(c, env, seen, out))
+                }
+                Type::TVar(_) => (),
+                Type::Fn(ft) => ft.for_each_type(&mut |t| go(t, env, seen, out)),
+                t => t.for_each_child(&mut |c| go(c, env, seen, out)),
+            })
+        }
+        go(self, env, &mut LPooled::take(), out)
+    }
+
     pub fn seed_refs(&self, env: &Env) -> bool {
         fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>) -> bool {
             ensure_sufficient(|| {

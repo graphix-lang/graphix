@@ -890,6 +890,39 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
+// Every type name a definition writes names something once the check
+// ends, however deep it sits and whether or not anything expands it; a
+// name the interface imports from a later module is one.
+run!(
+    annotation_names_are_defined,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("undefined type S")
+        && !format!("{e:#}").contains("in the instance of")),
+    "/test.gx" => r#"
+        let f = |b: Array<i64>| array::map(b, |x| { let v: [S, i64] = never(); x });
+        let result = f([1])
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    annotation_names_from_a_later_module,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => r#"
+mod s;
+mod u;
+let result = s::f([`A])
+"#,
+    "/test/s.gxi" => r#"
+use super::u::Op;
+val f: fn(o: Array<Op>) -> i64;
+"#,
+    "/test/s.gx" => r#"
+let f = |o: Array<Op>| -> i64 0;
+"#,
+    "/test/u.gx" => r#"
+type Op = [`A, `B];
+"#
+; graphix_package_core::testing::FuseExpect::Jit);
+
 // A select arm's scope is the same in every instance of its definition,
 // so a type the arm defines names the same definition in the signature
 // and in the instance.

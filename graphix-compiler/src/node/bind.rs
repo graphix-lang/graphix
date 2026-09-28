@@ -404,6 +404,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        if let ExprKind::Bind(b) = &self.spec.kind
+            && b.typ.is_some()
+        {
+            crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
+        }
         wrap!(self.node, self.node.typecheck0(ctx))?;
         let forwards = match &self.spec.kind {
             ExprKind::Bind(b) => forwards(&ctx.env, b, &self.node),

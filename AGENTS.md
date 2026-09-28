@@ -302,7 +302,9 @@ of every call site it recorded, drained before typecheck1 elaborates:
 a definition's gate keeps what its body bound as its signature (only a
 vacuous ⊥ reopens), so a call's types follow from the signature, and
 elaboration refusing what the check accepted is a type-system bug
-(`GRAPHIX_ELAB_AUDIT` reports it).
+(`GRAPHIX_ELAB_AUDIT` reports it). Every type name a definition
+writes must name something by the check's end, expanded or not
+(`design/env_independent_typerefs.md`).
 
 Key types: `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration — `fold`, the seq rewrite and
