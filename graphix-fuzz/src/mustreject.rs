@@ -568,6 +568,9 @@ fn widen_consumer(
                 });
                 is_struct.then(|| (i + 1, &**source, None))
             }
+            // a callee whose type its uses decided (a monomorphic value's
+            // cell) has the parameter this very call gave it
+            ExprKind::Apply(ap) if types.cell(&ap.function) => None,
             ExprKind::Apply(ap) => {
                 // the first argument whose parameter is a concrete primitive
                 let ft = types.of(&ap.function).first().and_then(|t| {
