@@ -121,7 +121,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(Self { id, top_id, out: TagValue::phantom() }))
     }
 
@@ -132,7 +132,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(Self { id, top_id, out: TagValue::phantom() }))
     }
 }
@@ -167,11 +167,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id)
+        ctx.unref_var(self.id, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
@@ -199,7 +199,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(IterQ {
             triggered: 0,
             queue: VecDeque::new(),
@@ -228,7 +228,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
         }
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(IterQ { triggered, queue, id, top_id, out: TagValue::phantom() }))
     }
 }
@@ -287,11 +287,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id)
+        ctx.unref_var(self.id, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.queue.clear();

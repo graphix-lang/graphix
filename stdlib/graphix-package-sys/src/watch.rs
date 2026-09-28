@@ -598,7 +598,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
     ) -> &TagValue {
         if self.cached.update(ctx, from, event) {
             for bid in self.bind_ids.drain() {
-                ctx.rt.unref_var(bid, self.top_id);
+                ctx.unref_var(bid, self.top_id);
             }
             for v in self.cached.0.iter() {
                 if let Some(v) = v {
@@ -617,7 +617,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in self.bind_ids.drain() {
-            ctx.rt.unref_var(bid, self.top_id);
+            ctx.unref_var(bid, self.top_id);
         }
         self.cached.clear();
         self.out = TagValue::phantom();
@@ -625,7 +625,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in &self.bind_ids {
-            ctx.rt.unref_var(*bid, self.top_id);
+            ctx.unref_var(*bid, self.top_id);
         }
     }
 }
@@ -692,7 +692,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
     ) -> &TagValue {
         if self.cached.update(ctx, from, event) {
             for bid in self.bind_ids.drain() {
-                ctx.rt.unref_var(bid, self.top_id);
+                ctx.unref_var(bid, self.top_id);
             }
             for v in self.cached.0.iter() {
                 if let Some(v) = v {
@@ -711,7 +711,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in self.bind_ids.drain() {
-            ctx.rt.unref_var(bid, self.top_id);
+            ctx.unref_var(bid, self.top_id);
         }
         self.cached.clear();
         self.out = TagValue::phantom();
@@ -719,7 +719,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         for bid in &self.bind_ids {
-            ctx.rt.unref_var(*bid, self.top_id);
+            ctx.unref_var(*bid, self.top_id);
         }
     }
 }

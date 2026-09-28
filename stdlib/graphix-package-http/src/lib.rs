@@ -669,7 +669,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
                 let typ = resolved.unwrap_or(typ);
                 let scope = scope.append_block("fn", LambdaId::new().inner());
                 let id = BindId::new();
-                ctx.rt.ref_var(id, top_id);
+                ctx.record_ref(id, top_id);
                 let pid = BindId::new();
                 let mftyp = match &typ.args[4].typ {
                     Type::Fn(ft) => ft.clone(),
@@ -712,7 +712,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
         let pid = BindId::decode(buf)?;
         let x = BindId::decode(buf)?;
         let ready = bool::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(HttpServe {
             id,
             top_id,
@@ -894,7 +894,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
@@ -905,7 +905,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         if let Some(abort) = self.abort.take() {

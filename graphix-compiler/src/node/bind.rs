@@ -524,7 +524,7 @@ impl Ref {
         top_id: ExprId,
         spec: impl Into<Arc<Expr>>,
     ) -> Node<R, E> {
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Node::new(Self {
             spec: spec.into(),
             typ,
@@ -678,7 +678,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id)
+        ctx.unref_var(self.id, self.top_id)
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
@@ -1329,7 +1329,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         let top_id = ExprId::decode(buf)?;
         let addr = Option::<(BindId, Path)>::decode(buf)?;
         if let Some((id, _)) = &addr {
-            ctx.rt.ref_var(*id, top_id);
+            ctx.record_ref(*id, top_id);
         }
         Ok(Node::new(Self {
             spec,
@@ -1390,7 +1390,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
 
     fn release(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some((id, _)) = self.addr.take() {
-            ctx.rt.unref_var(id, self.top_id);
+            ctx.unref_var(id, self.top_id);
         }
     }
 }

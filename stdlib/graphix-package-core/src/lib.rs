@@ -830,7 +830,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         let t = CachedArgsAsync::<T> {
             id,
             top_id,
@@ -853,7 +853,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
         let top_id = ExprId::decode(buf)?;
         let running = bool::decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(Self {
             cached,
             id,
@@ -932,7 +932,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.queued.clear();
         self.cached.clear();
     }
@@ -1784,7 +1784,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         let queue = Vec::<Value>::decode(buf)?.into();
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(Self { triggered, queue, id, top_id, out: TagValue::phantom() }))
     }
 
@@ -1801,7 +1801,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
         match from {
             [_, _, _] => {
                 let id = BindId::new();
-                ctx.rt.ref_var(id, top_id);
+                ctx.record_ref(id, top_id);
                 Ok(Box::new(Self {
                     triggered: 0,
                     queue: VecDeque::new(),
@@ -1852,11 +1852,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.triggered = 0;
@@ -1959,7 +1959,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let args = CachedVals::image_decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(Self { id, top_id, args, out: TagValue::phantom() }))
     }
 
@@ -1974,7 +1974,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         let args = CachedVals::new(from);
         Ok(Box::new(Self { id, top_id, args, out: TagValue::phantom() }))
     }
@@ -2032,11 +2032,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
@@ -2156,7 +2156,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             if let Some(id) = self.tid.take()
                 && let Some(last) = &mut self.last
             {
-                ctx.rt.unref_var(id, self.top_id);
+                ctx.unref_var(id, self.top_id);
                 maybe_schedule!(last)
             }
         }
@@ -2172,7 +2172,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         if let Some(id) = self.tid
             && let Some(_) = event.variables.get(&id)
         {
-            ctx.rt.unref_var(id, self.top_id);
+            ctx.unref_var(id, self.top_id);
             self.tid = None;
             self.last = Some(Instant::now());
             emit_cached!()
@@ -2182,7 +2182,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some(id) = self.tid.take() {
-            ctx.rt.unref_var(id, self.top_id);
+            ctx.unref_var(id, self.top_id);
         }
     }
 

@@ -226,7 +226,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     ) -> Result<Box<dyn Apply<R, E>>> {
         let _ = from;
         let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(Subscribe {
             slept: false,
             cur: None,
@@ -246,7 +246,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
         let id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
         let cast_typ = Pack::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(Subscribe {
             slept,
             cur: None,
@@ -349,7 +349,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id)
         }
@@ -361,7 +361,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id);
         }
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
     }
@@ -388,7 +388,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
         let id = BindId::new();
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         let _ = from;
         Ok(Box::new(RpcCall {
             top_id,
@@ -406,7 +406,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
         let top_id = ExprId::decode(buf)?;
         let id = BindId::decode(buf)?;
         let cast_typ = Pack::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(RpcCall { top_id, id, cast_typ, out: TagValue::phantom() }))
     }
 }
@@ -500,11 +500,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id)
+        ctx.unref_var(self.id, self.top_id)
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.out = TagValue::phantom();
@@ -535,7 +535,7 @@ macro_rules! list {
             ) -> Result<Box<dyn Apply<R, E>>> {
                 let _ = from;
                 let id = BindId::new();
-                ctx.rt.ref_var(id, top_id);
+                ctx.record_ref(id, top_id);
                 Ok(Box::new($name {
                     current: None,
                     top_id,
@@ -551,7 +551,7 @@ macro_rules! list {
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
                 let id = BindId::decode(buf)?;
                 let top_id = ExprId::decode(buf)?;
-                ctx.rt.ref_var(id, top_id);
+                ctx.record_ref(id, top_id);
                 Ok(Box::new($name {
                     current: None,
                     top_id,
@@ -610,12 +610,12 @@ macro_rules! list {
             }
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-                ctx.rt.unref_var(self.id, self.top_id);
+                ctx.unref_var(self.id, self.top_id);
                 NetState::get(ctx).stop_list(self.id);
             }
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-                ctx.rt.unref_var(self.id, self.top_id);
+                ctx.unref_var(self.id, self.top_id);
                 NetState::get(ctx).stop_list(self.id);
                 self.id = BindId::new();
                 ctx.rt.ref_var(self.id, self.top_id);
@@ -700,7 +700,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
                 let on_write =
                     genn::apply(fnode, scope, smallvec::smallvec![xn], &mftyp, top_id);
                 let wid = BindId::new();
-                ctx.rt.ref_var(wid, top_id);
+                ctx.record_ref(wid, top_id);
                 Ok(Box::new(Publish {
                     slept: false,
                     current: None,
@@ -729,7 +729,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
         let wid = BindId::decode(buf)?;
         let on_write = image::decode_node(ctx, buf)?;
         let cast_typ = Pack::decode(buf)?;
-        ctx.rt.ref_var(wid, top_id);
+        ctx.record_ref(wid, top_id);
         Ok(Box::new(Publish {
             slept,
             current: None,
@@ -856,7 +856,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
-        ctx.rt.unref_var(self.wid, self.top_id);
+        ctx.unref_var(self.wid, self.top_id);
         ctx.rt.store_remove(&self.pid);
         ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
@@ -1013,7 +1013,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
                 let typ = resolved.unwrap_or(typ);
                 let scope = scope.append_block("fn", LambdaId::new().inner());
                 let id = BindId::new();
-                ctx.rt.ref_var(id, top_id);
+                ctx.record_ref(id, top_id);
                 let pid = BindId::new();
                 let mftyp = match &typ.args[3].typ {
                     Type::Fn(ft) => ft.clone(),
@@ -1065,7 +1065,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
         let x = BindId::decode(buf)?;
         let ready = bool::decode(buf)?;
         let cast_typ = Pack::decode(buf)?;
-        ctx.rt.ref_var(id, top_id);
+        ctx.record_ref(id, top_id);
         Ok(Box::new(PublishRpc {
             slept,
             id,
@@ -1271,7 +1271,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.current = None;
         ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
@@ -1285,7 +1285,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         if crate::netstate::rpc_dbg() {
             eprintln!("RPCDBG publish_rpc {:?}: sleep (id re-minted)", self.id);
         }
-        ctx.rt.unref_var(self.id, self.top_id);
+        ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
         self.current = None;

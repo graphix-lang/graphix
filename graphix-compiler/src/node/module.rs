@@ -368,6 +368,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     nodes: &[Node<R, E>],
 ) -> Result<()> {
     let _profile = profile::phase(Phase::ModuleSignature);
+    let first_proxy = proxy.len();
     let mut has_bind: LPooled<AHashSet<CompactString>> = LPooled::take();
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
@@ -394,8 +395,6 @@ fn check_sig<R: Rt, E: UserEvent>(
                     )
                 })?;
                 proxy.push(Proxy { inner: id, outer: *proxy_id, private_inner: true });
-                ctx.rt.ref_var(id, top_id);
-                ctx.rt.ref_var(*proxy_id, top_id);
                 if ctx.env.ide.is_lsp() {
                     ctx.env.push_sig_link(SigImplLink {
                         scope: scope.lexical.clone(),
@@ -531,8 +530,6 @@ fn check_sig<R: Rt, E: UserEvent>(
                                 }
                             };
                             proxy.push(Proxy { inner, outer: *outer, private_inner });
-                            ctx.rt.ref_var(inner, top_id);
-                            ctx.rt.ref_var(*outer, top_id);
                         }
                         false
                     }
@@ -586,6 +583,10 @@ fn check_sig<R: Rt, E: UserEvent>(
         if missing {
             bail!("sig item {si} is missing an implementation")
         }
+    }
+    for Proxy { inner, outer, .. } in proxy[first_proxy..].iter() {
+        ctx.record_ref(*inner, top_id);
+        ctx.record_ref(*outer, top_id);
     }
     Ok(())
 }
@@ -673,8 +674,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let top_id = ExprId::decode(buf)?;
         // the registrations check_sig made
         for Proxy { inner, outer, .. } in proxy.iter() {
-            ctx.rt.ref_var(*inner, top_id);
-            ctx.rt.ref_var(*outer, top_id);
+            ctx.record_ref(*inner, top_id);
+            ctx.record_ref(*outer, top_id);
         }
         Ok(Node::new(Self {
             spec,
@@ -870,8 +871,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     fn clear_compiled(&mut self, ctx: &mut ExecCtx<R, E>) {
         for Proxy { inner, outer, .. } in self.proxy.drain(..) {
-            ctx.rt.unref_var(inner, self.top_id);
-            ctx.rt.unref_var(outer, self.top_id);
+            ctx.unref_var(inner, self.top_id);
+            ctx.unref_var(outer, self.top_id);
         }
         ctx.with_restored_mut(&mut self.env, |ctx| {
             for mut n in mem::take(&mut self.nodes) {
@@ -936,7 +937,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             self.clear_compiled(ctx);
             match v {
                 Value::String(s) => {
-                    if let Err(e) = self.compile_source(ctx, s) {
+                    let compiled = self.compile_source(ctx, s);
+                    ctx.replay_refs();
+                    if let Err(e) = compiled {
                         return self.resident.set(TagValue::tagged(
                             errf!(ERR_TAG, "compile error {e:?}"),
                             tag,

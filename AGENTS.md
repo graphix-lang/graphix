@@ -322,6 +322,19 @@ applications called by `CallSite`). `Update` requires `update`,
 `ctx.set_var()` for variable writes. `wrap!(node, result)` adds
 expression context to errors; `err!`/`errf!` build error values.
 
+**Compiling never reaches the runtime.** A reference compiled (a
+`Ref`, a builtin's private variable at `init`, anything decoded) is
+recorded with `CompileCtx::record_ref` and registered by
+`ExecCtx::replay_refs`: at the end of `check_and_fuse`, a registration
+read, a runtime bind, a lazily decoded body, a dynamic module's
+recompile and a core-trait hook site's build; every cycle asserts
+(debug) that none is left. `ExecCtx::unref_var` cancels a reference not
+replayed yet, so a delete balances whether or not the replay ran.
+Registration covers every node a statement holds, selected or not: a
+write to a variable only a sleeping arm reads still schedules the
+statement, which wake catch-up relies on. The runtime side (`sleep`,
+`update`, `Deref`'s addressing) registers directly.
+
 **Runtime.** `graphix-rt` implements `Rt`: variables, timers, spawned
 tasks and watch channels (`spawn`, `spawn_var`, `watch`, `watch_var`)
 that packages use to feed external events in. Event processing is

@@ -299,7 +299,7 @@ macro_rules! db_event_accessor {
                 let cached = CachedVals::image_decode(buf)?;
                 let bind_id = <Option<BindId>>::decode(buf)?;
                 if let Some(bid) = bind_id {
-                    ctx.rt.ref_var(bid, top_id);
+                    ctx.record_ref(bid, top_id);
                 }
                 Ok(Box::new($name { top_id, cached, bind_id, out: TagValue::phantom() }))
             }
@@ -320,7 +320,7 @@ macro_rules! db_event_accessor {
             ) -> &TagValue {
                 if self.cached.update(ctx, from, event) {
                     if let Some(bid) = self.bind_id.take() {
-                        ctx.rt.unref_var(bid, self.top_id);
+                        ctx.unref_var(bid, self.top_id);
                     }
                     let first = match self.cached.0.first() {
                         Some(Some(v)) => v,
@@ -340,7 +340,7 @@ macro_rules! db_event_accessor {
 
             fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
                 if let Some(bid) = self.bind_id.take() {
-                    ctx.rt.unref_var(bid, self.top_id);
+                    ctx.unref_var(bid, self.top_id);
                 }
                 self.cached.clear();
                 self.out = TagValue::phantom();
@@ -348,7 +348,7 @@ macro_rules! db_event_accessor {
 
             fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
                 if let Some(bid) = self.bind_id {
-                    ctx.rt.unref_var(bid, self.top_id);
+                    ctx.unref_var(bid, self.top_id);
                 }
             }
         }

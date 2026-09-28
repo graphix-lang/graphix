@@ -1033,7 +1033,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 }
             }
             Ok(restored_def)
-        })?;
+        });
+        ctx.replay_refs();
+        let restored_def = restored_def?;
         if let Some(share) = &self.share
             && let Some(apply) = self.callee.apply_mut()
         {
@@ -1627,6 +1629,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         };
         ctx.image_decoder = Some(dec);
+        ctx.replay_refs();
         let apply: Box<dyn Apply<R, E>> = Box::new(decoded?);
         let Callee::Imaged { first_update, .. } =
             mem::replace(&mut self.callee, Callee::DynamicUnbound)

@@ -21,7 +21,7 @@ use std::{ops::SubAssign, time::Duration};
 /// Drop a timer's private fire id: its reference and the value the
 /// runtime stored for it, which no one else can read.
 fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, id: BindId, eid: ExprId) {
-    ctx.rt.unref_var(id, eid);
+    ctx.unref_var(id, eid);
     ctx.rt.store_remove(&id);
 }
 

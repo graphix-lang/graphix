@@ -187,7 +187,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
         let top_id = ExprId::decode(buf)?;
         let ftyp = Option::<FnType>::decode(buf)?.map(Arc::new);
         let scope = image::scope_decode(buf)?;
-        ctx.rt.ref_var(fid, top_id);
+        ctx.record_ref(fid, top_id);
         let state = Arc::new(Mutex::new(QueueState {
             queue: VecDeque::new(),
             pop_count,
@@ -221,7 +221,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
             bail!("queuefn: expected three arguments (#count, #trigger, f)")
         }
         let fid = BindId::new();
-        ctx.rt.ref_var(fid, top_id);
+        ctx.record_ref(fid, top_id);
         let ftyp = resolved.and_then(|r| extract_fn_arg_type(r, 2));
         Ok(Box::new(Self {
             state: Arc::new(Mutex::new(QueueState::new())),
@@ -434,7 +434,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
     fn refs(&self, _refs: &mut Refs) {}
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.fid, self.top_id);
+        ctx.unref_var(self.fid, self.top_id);
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {

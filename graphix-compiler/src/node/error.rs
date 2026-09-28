@@ -172,7 +172,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         let thrown = Option::<Type>::decode(buf)?;
         let bind_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.rt.ref_var(bind_id, top_id);
+        ctx.record_ref(bind_id, top_id);
         Ok(Node::new(Self {
             spec,
             handler,
@@ -245,7 +245,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
                 pending: false,
             }),
         };
-        ctx.rt.ref_var(bind_id, top_id);
+        ctx.record_ref(bind_id, top_id);
         let node = Node::new(Self {
             spec,
             handler,
@@ -345,7 +345,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         self.give_up_in_flight();
-        ctx.rt.unref_var(self.bind_id, self.top_id);
+        ctx.unref_var(self.bind_id, self.top_id);
         ctx.rt.store_remove(&self.bind_id);
         self.handler.delete(ctx);
         if let Some(abort) = &mut self.seq_abort {

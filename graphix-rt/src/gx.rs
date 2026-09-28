@@ -375,6 +375,8 @@ impl<X: GXExt> GX<X> {
         input: &mut Vec<ToGX<X>>,
         mut batch: GPooled<Vec<GXEvent>>,
     ) {
+        debug_assert!(!self.ctx.refs_pending(), "compiled references left unreplayed");
+        self.ctx.replay_refs();
         macro_rules! push_event {
             ($id:expr, $v:expr, $event:ident, $refed:ident, $overflow:ident) => {
                 match self.event.$event.entry($id) {
@@ -962,6 +964,7 @@ impl<X: GXExt> GX<X> {
             .map(|b| b.typ.clone())
             .unwrap_or_else(|| Type::Any);
         let n = genn::reference(&mut self.ctx, id, typ.clone(), eid);
+        self.ctx.replay_refs();
         self.nodes.insert(eid, n);
         let target_bid = self.ctx.env.byref_chain.get(&id).copied();
         Ok(Ref {

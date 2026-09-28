@@ -1401,6 +1401,10 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// The tables of the image this session was restored from, for
     /// anything decoded later.
     pub(crate) image_decoder: Option<image::ImageDecoder>,
+    /// References compiled but not yet registered with the runtime, by
+    /// variable and top expression: compiling reaches no runtime, and
+    /// [`ExecCtx::replay_refs`] registers them.
+    pub(crate) pending_refs: AHashMap<(BindId, ExprId), usize>,
 }
 
 /// The compile context and the runtime: what a node's update reads.
@@ -1435,6 +1439,12 @@ impl<R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
+    /// Record that `top_id` reads `id`: the runtime is told at the next
+    /// [`ExecCtx::replay_refs`].
+    pub fn record_ref(&mut self, id: BindId, top_id: ExprId) {
+        *self.pending_refs.entry((id, top_id)).or_default() += 1;
+    }
+
     /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
         self.batch_connect_targets.insert(id);
@@ -1541,6 +1551,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 attr_dispatched: Mutex::new(IntSet::default()),
                 attr_absorbed: Mutex::new(IntSet::default()),
                 image_decoder: None,
+                pending_refs: AHashMap::default(),
             },
             libstate: LibState::default(),
             rt: user,
@@ -1550,6 +1561,34 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         };
         this.register_attribute::<Native>()?;
         Ok(this)
+    }
+
+    /// Drop a reference `top_id` holds to `id`: one not replayed yet is
+    /// cancelled, any other unregistered.
+    pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
+        match self.cx.pending_refs.get_mut(&(id, top_id)) {
+            Some(n) => {
+                *n -= 1;
+                if *n == 0 {
+                    self.cx.pending_refs.remove(&(id, top_id));
+                }
+            }
+            None => self.rt.unref_var(id, top_id),
+        }
+    }
+
+    /// Register every reference compiling recorded with the runtime.
+    pub fn replay_refs(&mut self) {
+        for ((id, top_id), n) in self.cx.pending_refs.drain() {
+            for _ in 0..n {
+                self.rt.ref_var(id, top_id);
+            }
+        }
+    }
+
+    /// Whether a compile recorded references no replay registered.
+    pub fn refs_pending(&self) -> bool {
+        !self.cx.pending_refs.is_empty()
     }
 
     /// True if an `interrupt()` or `abort()` is pending; loops poll this
@@ -1892,6 +1931,19 @@ pub fn compile<R: Rt, E: UserEvent>(
 /// seeding (in both modes) and fusion; only the check under
 /// [`CFlag::CheckOnly`]. The caller restores its env on `Err`.
 pub fn check_and_fuse<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    node: &mut Node<R, E>,
+) -> Result<()> {
+    let r = check_and_fuse_inner(ctx, flags, node);
+    match &r {
+        Ok(()) => ctx.replay_refs(),
+        Err(_) => ctx.cx.pending_refs.clear(),
+    }
+    r
+}
+
+fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,

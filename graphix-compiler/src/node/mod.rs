@@ -1252,7 +1252,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         let rhs = decode_node(ctx, buf)?;
         let src_id = BindId::decode(buf)?;
         let top_id = ExprId::decode(buf)?;
-        ctx.rt.ref_var(src_id, top_id);
+        ctx.record_ref(src_id, top_id);
         Ok(Node::new(Self { spec, rhs, src_id, target: None, top_id }))
     }
 
@@ -1280,7 +1280,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
                 def_ori,
             });
         }
-        ctx.rt.ref_var(src_id, top_id);
+        ctx.record_ref(src_id, top_id);
         let rhs = compile(ctx, flags, value.clone(), scope, top_id)?;
         Ok(Node::new(Self { spec, rhs, src_id, target: None, top_id }))
     }
@@ -1370,7 +1370,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.rt.unref_var(self.src_id, self.top_id);
+        ctx.unref_var(self.src_id, self.top_id);
         self.rhs.delete(ctx)
     }
 
@@ -1768,7 +1768,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
         let banking = match Option::<BindId>::decode(buf)? {
             None => Banking::Strict,
             Some(id) => {
-                ctx.rt.ref_var(id, top_id);
+                ctx.record_ref(id, top_id);
                 Banking::Debt { triggered: 0, id }
             }
         };
@@ -1799,7 +1799,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
             Banking::Strict
         } else {
             let id = BindId::new();
-            ctx.rt.ref_var(id, top_id);
+            ctx.record_ref(id, top_id);
             Banking::Debt { triggered: 0, id }
         };
         let trigger = compile(ctx, flags, (**lhs).clone(), scope, top_id)?;
@@ -1883,7 +1883,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
         if let Some(id) = self.debt_id() {
-            ctx.rt.unref_var(id, self.top_id);
+            ctx.unref_var(id, self.top_id);
             ctx.rt.store_remove(&id);
         }
         self.arg.node.delete(ctx);

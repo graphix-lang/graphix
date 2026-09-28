@@ -269,8 +269,9 @@ fn build_site<R: Rt, E: UserEvent>(
     let prefix = format_compact!("#seam{}", top_id.inner());
     let types = (0..t.arity()).map(|_| h.typ.clone());
     let call =
-        SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id)?;
-    Ok(HookSite { call, first: true })
+        SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id);
+    ctx.replay_refs();
+    Ok(HookSite { call: call?, first: true })
 }
 
 /// Run the implementation of `t` on `args`, values of one abstract
