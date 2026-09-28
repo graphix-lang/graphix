@@ -340,6 +340,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
     ) -> Result<()> {
+        let _elaboration = profile::elaboration(self.instance_id);
         elab_audit::enter();
         let env = self.env.clone();
         let res =

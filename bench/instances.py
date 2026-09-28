@@ -83,6 +83,36 @@ def summarize(rows, level):
     )
 
 
+def tree(rows):
+    """The elaboration tree: an instance's own serial work is its
+    inclusive time less its children's, and the critical path is the
+    longest chain of own work from a tree root down."""
+    by_id = {r["id"]: r for r in rows}
+    children = defaultdict(list)
+    for r in rows:
+        children[r.get("parent", 0) if r.get("parent", 0) in by_id else 0].append(r["id"])
+    incl = {i: r["graph_ns"] + r["check_ns"] + r.get("elaboration_ns", 0) for i, r in by_id.items()}
+    own = {i: max(0, incl[i] - sum(incl[c] for c in children[i])) for i in by_id}
+    path, depth = {}, {}
+    order = []
+    stack = list(children[0])
+    while stack:
+        i = stack.pop()
+        order.append(i)
+        stack.extend(children[i])
+    for i in reversed(order):
+        best = max(children[i], key=lambda c: path[c], default=None)
+        path[i] = own[i] + (path[best] if best is not None else 0)
+        depth[i] = 1 + (depth[best] if best is not None else 0)
+    tops = children[0]
+    work = sum(own.values())
+    critical = max((path[i] for i in tops), default=0)
+    chain_depth = max((depth[i] for i in tops if path[i] == critical), default=0)
+    widest = max((len(v) for k, v in children.items() if k), default=0)
+    return dict(work_ns=work, critical_ns=critical, tree_roots=len(tops),
+                chain_depth=chain_depth, widest=widest)
+
+
 def report(roots):
     levels = ("definition", "closed_signature", "callback_sources")
     result = {}
@@ -111,6 +141,7 @@ def report(roots):
     result["with_callbacks"] = sum(
         bool(i["callbacks"]) for r in roots for i in r["instances"]
     )
+    result["tree"] = [tree(r["instances"]) for r in roots]
     return result
 
 
@@ -150,6 +181,13 @@ def main():
                       f"{s['repeated']} repeated; "
                       f"graph {s['graph_ns'] / 1e6:.3f} ms, "
                       f"check {s['check_ns'] / 1e6:.3f} ms")
+            for t in summary["tree"]:
+                if t["work_ns"] < 1e6:
+                    continue
+                print(f"    tree: work {t['work_ns'] / 1e6:.3f} ms, critical path "
+                      f"{t['critical_ns'] / 1e6:.3f} ms ({t['work_ns'] / max(t['critical_ns'], 1):.1f}x), "
+                      f"{t['tree_roots']} roots, chain depth {t['chain_depth']}, "
+                      f"widest {t['widest']} children")
             for row in summary["callback_sources"]["top"][:10]:
                 cost = (row["graph_ns"] + row["check_ns"]) / 1e6
                 print(f"      {cost:8.3f} ms {row['instances']:5} {row['label']}")

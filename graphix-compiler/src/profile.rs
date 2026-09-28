@@ -55,6 +55,11 @@ struct Instance {
     check_calls: u64,
     signature: usize,
     callbacks: usize,
+    /// The instance whose elaboration built this one.
+    parent: Option<LambdaInstanceId>,
+    /// Wall time of this instance's elaboration, the instances it built
+    /// included.
+    elaboration_ns: u64,
 }
 
 #[derive(Default)]
@@ -62,6 +67,8 @@ struct Census {
     instances: LPooled<IntMap<LambdaInstanceId, Instance>>,
     signatures: LPooled<AHashMap<Arc<FnType>, usize>>,
     callbacks: LPooled<AHashMap<FnArgIdentity, usize>>,
+    /// The instances whose elaboration is running, innermost last.
+    elaborating: Vec<LambdaInstanceId>,
 }
 
 struct Profile {
@@ -202,12 +209,45 @@ pub(crate) fn instance(
     let _p = phase(Phase::InstanceCensus);
     span.instance = Some((id, cost));
     PROFILE.with_borrow_mut(|p| {
-        let row = p.census.as_mut().unwrap().instances.entry(id).or_default();
+        let c = p.census.as_mut().unwrap();
+        let parent = c.elaborating.last().copied();
+        let row = c.instances.entry(id).or_default();
         if row.definition.is_none() {
             row.definition = Some(definition);
             row.label = format_compact!("{:?}:{}", body.ori.source, body.pos);
+            row.parent = parent;
         }
     });
+}
+
+/// An instance's elaboration (its `typecheck1`, which builds the
+/// instances its call sites reach), open while the guard lives.
+pub(crate) struct Elaboration(Option<(LambdaInstanceId, Instant)>);
+
+pub(crate) fn elaboration(id: LambdaInstanceId) -> Elaboration {
+    if !graphix_profile_instances() {
+        return Elaboration(None);
+    }
+    PROFILE.with_borrow_mut(|p| match p.census.as_mut() {
+        Some(c) => {
+            c.elaborating.push(id);
+            Elaboration(Some((id, Instant::now())))
+        }
+        None => Elaboration(None),
+    })
+}
+
+impl Drop for Elaboration {
+    fn drop(&mut self) {
+        let Some((id, start)) = self.0 else { return };
+        let elapsed = start.elapsed().as_nanos() as u64;
+        PROFILE.with_borrow_mut(|p| {
+            if let Some(c) = p.census.as_mut() {
+                c.elaborating.pop();
+                c.instances.entry(id).or_default().elaboration_ns += elapsed;
+            }
+        });
+    }
 }
 
 pub(crate) fn instance_signature(
@@ -308,10 +348,11 @@ impl Drop for Span {
                 if let Some(c) = &p.census {
                     for (id, i) in c.instances.iter() {
                         eprintln!(
-                            "INSTANCE thread={thread:?} root_ns={} id={} definition={} signature={} callbacks={} graph_calls={} check_calls={} graph_ns={} check_ns={} label={:?}",
+                            "INSTANCE thread={thread:?} root_ns={} id={} definition={} signature={} callbacks={} graph_calls={} check_calls={} graph_ns={} check_ns={} parent={} elaboration_ns={} label={:?}",
                             p.epoch_ns, id.inner(), i.definition.map_or(0, |d| d.inner()),
                             i.signature, i.callbacks, i.graph_calls, i.check_calls,
-                            i.graph_ns, i.check_ns, i.label,
+                            i.graph_ns, i.check_ns, i.parent.map_or(0, |d| d.inner()),
+                            i.elaboration_ns, i.label,
                         );
                     }
                 }

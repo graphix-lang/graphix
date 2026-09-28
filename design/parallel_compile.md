@@ -89,6 +89,24 @@ On one core the gain is the trap stubs and per-region finalizes that
 are gone. On four the link is 85 ms where the backend was 297 ms. What
 remains serial in fusion is discovery and emission, about 100 ms.
 
+## Elaboration's parallelism (measured)
+
+The instance census (`GRAPHIX_PROFILE_INSTANCES=1`, `bench/instances.py
+--admin`) records each instance's parent (the instance whose
+`typecheck1` built it) and its elaboration's inclusive time. An
+instance's own work is that less its children's; the critical path is
+the longest chain of own work from a tree root. Admin app, one P-core:
+
+| | fusion on | fusion off |
+|---|---|---|
+| elaboration work | 246 ms | 238 ms |
+| critical path | 36 ms | 33 ms |
+| bound on the speedup | 6.9x | 7.2x |
+
+The deepest chain is 9 instances; the widest instance builds 332. Of the
+3343 instances, 1627 are distinct by definition, closed signature and
+callback sources; the repeats are about a quarter of build and check.
+
 ## The rule that makes it possible
 
 BUILT on the branch: the gate keeps what the body bound, and the check's
