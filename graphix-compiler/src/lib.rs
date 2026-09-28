@@ -1904,10 +1904,9 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
         let fused = fusion::fuse(node, ctx);
-        let linked = ctx.fusion.link();
+        ctx.fusion.link();
         drop(p);
         fused?;
-        linked?;
         info!("fusion time {:?}", st.elapsed());
     }
     Ok(())
@@ -2040,7 +2039,7 @@ fn compile_top<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
-    build: impl Fn(&mut ExecCtx<R, E>, &Expr, ExprId) -> Result<(Node<R, E>, Scope)>,
+    build: impl FnOnce(&mut ExecCtx<R, E>, &Expr, ExprId) -> Result<(Node<R, E>, Scope)>,
 ) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
@@ -2075,12 +2074,7 @@ fn compile_top<R: Rt, E: UserEvent>(
         return Err(abandon_stmt(ctx, node, env, err));
     }
     if let Err(e) = check_and_fuse(ctx, flags, &mut node) {
-        let e = abandon_stmt(ctx, node, env, e);
-        if e.downcast_ref::<fusion::LinkFailed>().is_some() {
-            log::warn!("{e:#}: the statement is rebuilt without fusion");
-            return compile_top(ctx, flags | CFlag::FusionDisabled, spec, build);
-        }
-        return Err(e);
+        return Err(abandon_stmt(ctx, node, env, e));
     }
     // An attribute the fusion walk neither dispatched nor absorbed
     // would silently assert nothing.

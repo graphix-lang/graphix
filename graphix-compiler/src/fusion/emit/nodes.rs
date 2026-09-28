@@ -120,11 +120,12 @@ pub(crate) fn emit_map_new_node<R: Rt, E: UserEvent>(
 }
 
 /// A binding read: the local's disc (with any `TAINT`/`STALE`) and its
-/// payload.
+/// payload, in the representation the read's type `typ` declares.
 pub(crate) fn emit_ref_node(
     cx: &mut BodyCx,
     spec: &Expr,
     id: BindId,
+    typ: &Type,
 ) -> Result<CompiledExpr> {
     // BindId first (exact under shadowing); a synthetic Ref has no name
     // and resolves by id alone.
@@ -164,9 +165,13 @@ pub(crate) fn emit_ref_node(
             let call = cx.b.ins().call(clone, &[s]);
             Ok(CompiledExpr::new(disc, cx.b.inst_results(call)[0]))
         }
+        LocalKind::Scalar(p) => {
+            let cv = CompiledExpr::new(disc, cx.b.use_var(vv.payload));
+            Ok(widen_to_declared_repr(cx, typ, p, cv))
+        }
         // Non-scalar kinds are borrowed reads: the env owns the slot and
         // consumers clone when they need ownership.
-        LocalKind::Scalar(_) | LocalKind::Composite | LocalKind::Value => {
+        LocalKind::Composite | LocalKind::Value => {
             Ok(CompiledExpr::new(disc, cx.b.use_var(vv.payload)))
         }
     }

@@ -757,29 +757,17 @@ impl Jit {
     }
 
     /// Compile everything emitted since the last link, build its records
-    /// and install its regions, giving each its entry. On an error no
-    /// region of this link has one, and the cache forgets every body it
-    /// compiled nothing for.
-    pub(crate) fn link(&mut self) -> Result<()> {
+    /// and install its regions, giving each its entry. Its regions are
+    /// spliced and emission accepted them, so a failure is a JIT bug that
+    /// no graph could run past: it panics.
+    pub(crate) fn link(&mut self) {
         if self.pending.is_empty() {
-            return Ok(());
+            return;
         }
         let _profile = profile::phase(Phase::Link);
-        #[cfg(debug_assertions)]
-        let r = match crate::dbgenv::graphix_fail_link() {
-            true => {
-                self.pending.clear();
-                Err(anyhow!("GRAPHIX_FAIL_LINK"))
-            }
-            false => self.link_pending(),
-        };
-        #[cfg(not(debug_assertions))]
-        let r = self.link_pending();
-        if r.is_err() {
-            let records = &self.records;
-            self.by_kernel.retain(|_, e| records.contains_key(&e.func_id));
+        if let Err(e) = self.link_pending() {
+            panic!("the JIT could not link emitted code: {e:#}")
         }
-        r
     }
 
     fn link_pending(&mut self) -> Result<()> {

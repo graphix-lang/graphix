@@ -1,0 +1,21 @@
+// bisect: image bug: the restored program differs from the cold one (jit)
+// jit/cold: Trace(Trace { epochs: [Epoch { events: [(0, Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 1 }, slice: [Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(true), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(true), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 2 }, slice: [Bool(true), Array(ValArray(Base(ValArrayBase(ManuallyDrop { value: MaybeDangling(HeaderSlice { header: HeaderWithLength { header: <weak pool>, length: 0 }, slice: [] }) }))))] }) }))))] }) }))))] }) }))))] }) })))))], capped: false }], stdout: [] })
+// jit/warm: CompileErr("no program")
+// mutant: { let v0: Map<string, i64> = {"k2" => i64:42, "k0" => i64:1}; let v1 = m0::mk(map::len({"k0" => u8:1, "k1" => u8:1})); let v2 = (v1, i64:-1); use m0::f1 as v3; let v12: f64 = { let v5 = |v1: string, v4: u32| -> bool (!(true && true)); let v6: [f64, null] = f64:2.5; let v1: f64 = (f64:0.0 % select v6 { null as _ => f64:0.1, f64 as n => n }); let v10 = |v7: bool, v8: f64, v9: string| -> bool false; let v11 = &f32:3.5; select v6 { v12 if false => (-((f64:2.5 + v1))), _ if v5("hello", u32:0) => v1, v12 => array::fold([i64:-100], v1, |v11, v4| v11) } }; list::to_array(list::map(list::from_array([u8:1]), |v13| [<true, true, true>])) }\n// file-v1: m0.gxi\nval f0: fn(a0: string) -> string;\nval f1: fn(a0: &f64, a1: bool) -> (Array<f64>, bool, i64);\n/// generated\nval f2: fn(a0: v64, a1: ((bool, bool, u8), f64)) -> string;\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\n// file-v1: m0.gx\nlet h0 = |v1: u8| -> u8 ((u8:100 - u8:100) % select (u8:255 *? u8:100) { error as _ => v1, u8 as n => n });\nlet f0 = |v2: string| -> string "a";\nlet f1 = |v3: &f64, v4: bool| -> (Array<f64>, bool, i64) ([f64:0.1, f64:3.14], true, i64:2);\nlet f2 = |v5: v64, v6: ((bool, bool, u8), f64)| -> string f0("graphix");\ntype T = Abstract<i64>;\nlet mk = |x: i64| -> T T(x);\nlet un = |t: T| -> i64 t.0;\nstr::trim("graphix")
+// minimized:
+{ let v1 = m0::mk; let v12: f64 = { let v5 = |v1: string, v4: u32| -> bool (!(true && true)); let v6: [f64, null] = 2.5; let v1: f64 = (0.0 % select v6 { null as _ => 0.1, f64 as n => n }); select v6 { v12 if false => (-((2.5 + v1))), _ if v5("hello", u32:0) => v1, v12 => array::fold([-100], v1, |v11, v4| v11) } } }
+// file-v1: m0.gxi
+val f0: fn(a0: string) -> string;
+val f1: fn(a0: &f64, a1: bool) -> (Array<f64>, bool, i64);
+/// generated
+val f2: fn(a0: v64, a1: ((bool, bool, u8), f64)) -> string;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+// file-v1: m0.gx
+let f0 = |v2: string| -> string "a";
+let f1 = |v3: &f64, v4: bool| -> (Array<f64>, bool, i64) ([0.1, 3.14], true, 2);
+let f2 = |v5: v64, v6: ((bool, bool, u8), f64)| -> string f0("graphix");
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let un = |t: T| -> i64 t.0

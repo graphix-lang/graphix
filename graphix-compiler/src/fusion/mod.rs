@@ -149,20 +149,6 @@ impl FusionStats {
 /// functions held uncompiled.
 const LINK_BATCH: usize = 256;
 
-/// A fusion pass could not compile or install the code of regions it
-/// had spliced. Only a JIT bug does this, and the statement rebuilds
-/// without fusion.
-#[derive(Debug)]
-pub struct LinkFailed;
-
-impl std::fmt::Display for LinkFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the JIT could not link the fused regions")
-    }
-}
-
-impl std::error::Error for LinkFailed {}
-
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, reached as
 /// `ctx.fusion.<x>`.
 pub struct FusionCtx {
@@ -207,16 +193,13 @@ impl FusionCtx {
     }
 
     /// Compile and install every region fused since the last link; a
-    /// region's kernel has its entry from here on. An error is
-    /// [`LinkFailed`]: the regions are spliced and none can run, so the
-    /// statement rebuilds without fusion.
-    pub(crate) fn link(&mut self) -> anyhow::Result<()> {
+    /// region's kernel has its entry from here on.
+    pub(crate) fn link(&mut self) {
         let mut jit = self.jit.lock();
-        let Some(jit) = jit.as_mut() else { return Ok(()) };
+        let Some(jit) = jit.as_mut() else { return };
         let retired = jit.retired();
-        let r = jit.link();
+        jit.link();
         self.stats.jit_generations += jit.retired() - retired;
-        r.map_err(|e| e.context(LinkFailed))
     }
 
     /// A slot walk: its source was checked when the prototype fused.
@@ -1062,7 +1045,7 @@ fn build_region<R: Rt, E: UserEvent>(
     }
     ctx.fusion.stats.record_fused(node.spec());
     if ctx.fusion.jit()?.unlinked() >= LINK_BATCH {
-        ctx.fusion.link()?;
+        ctx.fusion.link();
     }
     for n in lambdas.decorated.iter() {
         check_attribute_targets(n, ctx)?;

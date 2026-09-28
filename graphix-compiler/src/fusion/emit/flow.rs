@@ -33,7 +33,7 @@ use super::{
         node_composite_source,
     },
     call::{CompositeSource, emit_drop_local},
-    nodes::{emit_bottom_of_kind, emit_bottom_placeholder},
+    nodes::{emit_bottom_of_kind, emit_bottom_placeholder, widen_result_to_value},
     scalar::cast_u64_to_prim,
     select::{classify_select_scrutinee, emit_select_arms},
 };
@@ -153,7 +153,7 @@ fn emit_block_stmt<R: Rt, E: UserEvent>(
                 anyhow!("emit_clif: non-single-bind let pattern not supported")
             })?;
             let bind_id = bind.pattern.single_bind_id();
-            emit_let_node(cx, name, bind_id, &bind.node)?;
+            emit_let_node(cx, name, bind_id, &bind.typ, &bind.node)?;
         }
         // Compile-time-only declarations — nothing to emit.
         NodeView::Nop(_) | NodeView::TypeDef(_) => {}
@@ -325,15 +325,18 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
 /// Bind one `let` into the env by the value's runtime shape.
 /// Composite/value lets clone borrowed sources so this scope owns
 /// them.
+/// Bind `value` as a local of the binding's type `typ`, in that type's
+/// representation: every read of the local sees the binding's type.
 fn emit_let_node<R: Rt, E: UserEvent>(
     cx: &mut BodyCx,
     name: &ArcStr,
     bind_id: Option<BindId>,
+    typ: &Type,
     value: &Node<R, E>,
 ) -> Result<()> {
     // `freeze_for_abi_normalized` so a select-valued let (whose type is the
     // un-normalized arm union) still classifies.
-    let frozen = kernel_abi::freeze_for_abi_normalized(value.typ());
+    let frozen = kernel_abi::freeze_for_abi_normalized(typ);
     let ak = frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t));
     match ak {
         Some(AbiKind::Scalar(p)) => {
@@ -357,6 +360,9 @@ fn emit_let_node<R: Rt, E: UserEvent>(
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
             let cv = value.emit_clif(cx)?;
+            let produced = kernel_abi::freeze_for_abi_normalized(value.typ())
+                .unwrap_or_else(|| value.typ().clone());
+            let cv = widen_result_to_value(cx, &produced, cv)?;
             let (disc, payload) = ensure_owned_value_src(
                 cx,
                 node_composite_source(value),

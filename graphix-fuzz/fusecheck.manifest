@@ -305,6 +305,8 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
 0	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
 0	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
+2	scalar-read-widen-sep2026/00_nullable_f64_let.gx
+1	scalar-read-widen-sep2026/01_nullable_bool_capture.gx
 1	scc-caller-relabel-aug2026/00_tail_recursive_flap.gx
 2	script-package-root-sep2026/00_package_from_sibling.gx
 1	select-bottom-out-hold-aug2026/00_hold_recovers_bottom_scrutinee.gx
@@ -513,4 +515,4 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 4	wake-stale-bottom-sep2026/03_call.gx
 5	wake-stale-bottom-sep2026/04_map_source.gx
 5	wake-stale-bottom-sep2026/05_fold_init.gx
-4	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx
+1	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx

@@ -1,0 +1,14 @@
+// The warm image lost the program (sep28f, 21 finds): a scalar local
+// read at its nullable type fed the float register where the value
+// word goes, cranelift's verifier refused it at link, and the rebuild
+// without fusion left an image that did not read back.
+{ let v0: [f64, null] = 1.0; v0 }
+// file-v1: m0.gxi
+val k0: v32;
+val f0: fn(a0: i64) -> bool;
+/// generated
+val f1: fn(a0: [`C, `Nil(i64), `Some], a1: [`Nil({n: i64}, [v32, null]), `Some]) -> u8;
+// file-v1: m0.gx
+let k0: v32 = v32:7;
+let f0 = |v1: i64| true;
+let f1 = |v2: [`C, `Nil(i64), `Some], v3: [`Nil({ n: i64 }, [v32, null]), `Some]| -> u8 u8:0

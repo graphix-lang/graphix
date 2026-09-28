@@ -670,15 +670,15 @@ node graph IS the IR — there is no parallel typed IR
   regions) that compiles every emitted function on worker threads,
   builds the records in emission order and installs the regions'
   wrappers with one finalize; a kernel has its entry only after its
-  pass links. A link that fails is `LinkFailed`: the statement (or a
-  Rust callable) is rebuilt with fusion off. One JITModule + 256MB
+  pass links. Emission accepted everything a link compiles, so a
+  link that fails (a verifier error included) is a JIT bug and panics.
+  One JITModule + 256MB
   arena per generation, built on the first fusion (a fusion-off context
   never builds one); an install that fails retires the generation, and
   on exhaustion the link reinstalls its records in a fresh one; a
   generation's code is freed when it and every kernel installed into it
-  have dropped (each `WrappedKernel` holds its code). Pins:
-  `graphix-shell/tests/jit_arena_rotation.rs`, `jit_link_failure.rs`
-  (`GRAPHIX_FAIL_LINK`, debug builds). Kernel ABI: kind-grouped params from
+  have dropped (each `WrappedKernel` holds its code). Pin:
+  `graphix-shell/tests/jit_arena_rotation.rs`. Kernel ABI: kind-grouped params from
   `KernelSig::abi_params`; recursive types, abstract types, primitive
   unions and the primitives with no register form (varints, decimal,
   error) are opaque 2-word values (`design/unified_value_abi.md`).

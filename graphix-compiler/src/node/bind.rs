@@ -732,7 +732,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_ref_node(cx, self.spec.as_ref(), self.id)
+        emit_ref_node(cx, self.spec.as_ref(), self.id, &self.typ)
     }
 }
 

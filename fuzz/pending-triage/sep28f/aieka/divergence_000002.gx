@@ -1,0 +1,15 @@
+// bisect: image bug: the restored program differs from the cold one (jit)
+// jit/cold: Trace(Trace { epochs: [Epoch { events: [(0, F64(0.1))], capped: false }], stdout: [] })
+// jit/warm: CompileErr("no program")
+// mutant: { let v0: [f64, null] = select ((i64:2 * i64:0) / i64:7) { i64:100 if (true || false) => f64:1.0, i64:-1 => (-(f64:2.5)), v0 => f64:1.0 }; use m0::*; select v0 { null as _ => v0, f64 as k0 => (f64:0.1 * k0) } }\n// file-v1: m0.gxi\nval k0: v32;\nval f0: fn(a0: i64) -> bool;\n/// generated\nval f1: fn(a0: [`C, `Nil(i64), `Some], a1: [`Nil({n: i64}, [v32, null]), `Some]) -> u8;\n// file-v1: m0.gx\nlet k0: v32 = v32:7;\nlet f0 = |v1: i64| false;\nlet f1 = |v2: [`C, `Nil(i64), `Some], v3: [`Nil({n: i64}, [v32, null]), `Some]| -> u8 u8:0;
+// minimized:
+{ let v0: [f64, null] = 1.0; v0 }
+// file-v1: m0.gxi
+val k0: v32;
+val f0: fn(a0: i64) -> bool;
+/// generated
+val f1: fn(a0: [`C, `Nil(i64), `Some], a1: [`Nil({n: i64}, [v32, null]), `Some]) -> u8;
+// file-v1: m0.gx
+let k0: v32 = v32:7;
+let f0 = |v1: i64| true;
+let f1 = |v2: [`C, `Nil(i64), `Some], v3: [`Nil({ n: i64 }, [v32, null]), `Some]| -> u8 u8:0

@@ -70,10 +70,11 @@ in parallel (`fusion/emit/jit.rs`):
    Each kernel's entry is set then; before its pass links a kernel has
    no entry, and nothing runs it.
 4. A full arena retires the generation and the link reinstalls its
-   records in a fresh one without recompiling. Any other failure is
-   `LinkFailed` (a JIT bug, since emission succeeded): the statement is
-   rebuilt with fusion off, so a bug still costs fusion and never an
-   answer.
+   records in a fresh one without recompiling. Any other failure is a
+   JIT bug past the point where a region could be refused, and it
+   panics: a verifier error is our emission's bug, and a loud one is
+   what the fuzzer can find (the alternative, a region that silently
+   stops fusing, hid `let v: [f64, null] = 1.0`'s unwidened read).
 
 Admin app build with fusion, quick build, `milestone_timing` medians
 against b0f86a98:

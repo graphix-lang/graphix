@@ -2207,3 +2207,37 @@ run!(shared_region_raises_to_its_slot, SHARED_REGION_RAISES_TO_ITS_SLOT, |v: Res
     Ok(Value::Array(m)) => matches!(&m[..], [Value::I64(0), Value::I64(0), Value::I64(1)]),
     _ => false,
 }; FuseExpect::Jit);
+
+// A scalar binding read where its declared type is wider emits that
+// type's two-word value: the float's bits, not the float register.
+const SCALAR_READ_AT_A_NULLABLE: &str = r#"
+{
+  let a: [f64, null] = 1.5;
+  let b: [i64, null] = 2;
+  let c: [bool, null] = true;
+  (a, b, c)
+}
+"#;
+
+run!(scalar_read_at_a_nullable, SCALAR_READ_AT_A_NULLABLE, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => matches!(
+        &a[..],
+        [Value::F64(x), Value::I64(2), Value::Bool(true)] if *x == 1.5
+    ),
+    _ => false,
+}; FuseExpect::Jit);
+
+// A capture of that binding passes its declared type's value word to the
+// callee kernel, not the scalar register.
+const SCALAR_LET_CAPTURED_AT_A_NULLABLE: &str = r#"
+{
+  let v0: [bool, null] = !false;
+  let f = |x: i64| -> bool select v0 { null as _ => false, bool as n => n && (x > 0) };
+  f(3)
+}
+"#;
+
+run!(scalar_let_captured_at_a_nullable, SCALAR_LET_CAPTURED_AT_A_NULLABLE, |v: Result<&Value>| matches!(
+    v,
+    Ok(Value::Bool(true))
+); FuseExpect::Jit);

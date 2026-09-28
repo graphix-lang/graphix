@@ -305,6 +305,8 @@ trace	result-union-nullable-abi-aug2026/01_string_predicate_wrong_arm.gx
 reject	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
 reject	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
 reject	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
+trace	scalar-read-widen-sep2026/00_nullable_f64_let.gx
+trace	scalar-read-widen-sep2026/01_nullable_bool_capture.gx
 trace	scc-caller-relabel-aug2026/00_tail_recursive_flap.gx
 trace	script-package-root-sep2026/00_package_from_sibling.gx
 trace	select-bottom-out-hold-aug2026/00_hold_recovers_bottom_scrutinee.gx

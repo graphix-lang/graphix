@@ -32,11 +32,6 @@ dbg_flag!(
     gxdbg_callret,
     "GXDBG_CALLRET"
 );
-dbg_flag!(
-    #[cfg(debug_assertions)]
-    graphix_fail_link,
-    "GRAPHIX_FAIL_LINK"
-);
 dbg_flag!(gxdbg_cs, "GXDBG_CS");
 dbg_flag!(gxdbg_dync, "GXDBG_DYNC");
 dbg_flag!(gxdbg_ref, "GXDBG_REF");

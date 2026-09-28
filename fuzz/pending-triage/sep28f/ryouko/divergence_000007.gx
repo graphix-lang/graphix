@@ -1,0 +1,21 @@
+// bisect: image bug: the restored program differs from the cold one (jit)
+// jit/cold: Trace(Trace { epochs: [Epoch { events: [(0, Bool(true))], capped: false }], stdout: [] })
+// jit/warm: CompileErr("no program")
+// mutant: { let v0: [bool, null] = (!(i64:-100 == i64:-1)); let v1: List<Map<string, f64>> = [<{"b" => f64:3.14, "a" => f64:0.1}>]; let v2 = m0::mk((i64:0 % i64:2)); let v3 = (m0::mk(i64:7), (i64:-1 + i64:-100)); let v1 = |#v4: z64 = z64:42, #v5: v32, #v1: i64, v2: i64| -> bool { let v6 = ((u32:0 >= u32:100000) || select v0 { null as _ => true, bool as n => n }); str::contains(#part: "hello", "a") }; let v7: bool = v1(#v5: v32:1000, #v1: i64:0, #v4: z64:-1, (i64:42 * i64:-100)); let v9 = 'a: Number |v6: 'a, v8: 'a| -> 'a ((v6 - v6) - v6); let v10: u8 = v9(cast<u8>(i8:1)$, (u8:2 - u8:2)); let v11: i16 = v9((i16:1 / i16:-1), (i16:-32768 + i16:-1)); true }\n// file-v1: m0.gxi\n/// generated\nval f0: fn(a0: &bool, a1: string) -> i64;\nval f1: fn(a0: [`A, `B({c: u16, n: string, x: z32}), `C]) -> [i64, null];\ntype T;\nval mk: fn(x: i64) -> T;\nval un: fn(t: T) -> i64;\nval csize: fn(c: Collection) -> i64;\n// file-v1: m0.gx\nlet f0 = |v2: &bool, v3: string| -> i64 i64:0;\nlet f1 = |v4: [`A, `B({c: u16, n: string, x: z32}), `C]| -> [i64, null] i64:7;\ntype T = Abstract<(i64, i64)>;\nlet mk = |x: i64| -> T T((x, x + i64:1));\nlet un = |t: T| -> i64 { let T((a, _)) = t; a };\nlet csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1);\n"hello"
+// minimized:
+{ let v0: [bool, null] = (!(-100 == -1)); let v1 = |#v4: z64 = z64:42, #v5: v32, #v1: i64, v2: i64| -> bool { ((u32:0 >= u32:100000) || select v0 { null as _ => true, bool as n => n }); str::contains(#part: "hello", "a") }; v1(#v5: v32:1000, #v1: 0, #v4: z64:-1, (42 * -100)); let v9 = 'a: Number |v6: 'a, v8: 'a| -> 'a ((v6 - v6) - v6); true }
+// file-v1: m0.gxi
+/// generated
+val f0: fn(a0: &bool, a1: string) -> i64;
+val f1: fn(a0: [`A, `B({c: u16, n: string, x: z32}), `C]) -> [i64, null];
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+val csize: fn(c: Collection) -> i64;
+// file-v1: m0.gx
+let f0 = |v2: &bool, v3: string| -> i64 0;
+let f1 = |v4: [`A, `B({ c: u16, n: string, x: z32 }), `C]| -> [i64, null] 7;
+type T = Abstract<(i64, i64)>;
+let mk = |x: i64| -> T T((x, x + 1));
+let un = |t: T| -> i64 { let T((a, _)) = t; a };
+let csize = |c: Collection| 0
