@@ -244,8 +244,11 @@ file outside every project. A root at `<crate>/src/graphix/mod.gx` of a
 `mod <x>` over the copy registered at startup: `Env::
 unbind_scope_subtree` must drop everything a package registers, so a new
 global registry is cleared there. `--check` and the server share one
-path (`GXRt::check`), which checks a script's file as one block, as
-it runs, with its names at the root (`compile_script`); a root loads through `RootFile::load`, open
+path (`GXRt::check`), which runs the check alone (`CFlag::CheckOnly`:
+no elaboration, no fusion, so `#[native]` and the def assertions
+are verified by a build; `--expand` builds) and checks a script's file as one block, as it
+runs, with its names at the root (`compile_script`); a root loads
+through `RootFile::load`, open
 buffers first, paired with its `.gxi`, and under buffer overrides a path
 is never canonicalized (the editor's names rule). Checks are lazy and
 coalesced: a change marks its roots dirty and `ServerState::flush`

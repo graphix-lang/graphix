@@ -339,7 +339,7 @@ pub async fn check_only(code: &str, timeout: Duration) -> Result<(), String> {
     let (tx, _rx) = mpsc::channel(64);
     let resolver = VfsResolver::new(subj.table.clone());
     let registration = registration_image_source().await;
-    let flags = Mode::Interp.flags() | CFlag::CheckOnly;
+    let flags = Mode::Interp.flags();
     let ctx = init_session_with_setup(
         tx,
         REGISTER,

@@ -63,6 +63,13 @@ This is useful for:
 - Integrating with editors and build tools
 - Quick validation during development
 
+The check is every definition's check and every call site's, the same
+check the language server runs. It does not build the program: it
+compiles no native code and analyzes no instance, so `#[native]`,
+`#[tail_recursive]`, `#[sync]` and `#[async]` are verified by a run
+(`--expand` builds, to show each instance's steps). Files parse in
+parallel, so a large module split into several files checks faster.
+
 
 ## Package Management
 

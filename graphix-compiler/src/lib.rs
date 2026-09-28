@@ -2041,9 +2041,8 @@ fn compile_top<R: Rt, E: UserEvent>(
 ) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
-    // Fusion also runs in check/lsp runtimes: `#[native]` needs it to
-    // verify its contract, and a malformed input only de-fuses. The JIT
-    // helpers' wire ABI is System V (a 16-byte `TagValue` is two
+    // A malformed input only de-fuses. The JIT helpers' wire ABI is
+    // System V (a 16-byte `TagValue` is two
     // registers); Win64 passes it by hidden pointer, so on Windows the
     // graph is interpreted.
     ctx.fusion.enabled = !flags.contains(CFlag::FusionDisabled) && cfg!(not(windows));

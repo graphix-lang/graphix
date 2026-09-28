@@ -825,12 +825,19 @@ impl<X: GXExt> GX<X> {
                 .await?;
             info!("resolve time: {:?}", st.elapsed());
             self.prune_static_resolution();
+            // the check alone: definitions and call sites, no elaboration;
+            // `--expand` prints each instance's step boundaries, so it builds
+            let flags = if self.flags.contains(CFlag::ExpandSeq) {
+                self.flags
+            } else {
+                self.flags | CFlag::CheckOnly
+            };
             let mut nodes: LPooled<Vec<_>> = LPooled::take();
             let res = match &initial_scope {
                 Some(_) => exprs.iter().try_for_each(|e| {
                     let (n, _) = graphix_compiler::compile_stmt(
                         &mut self.ctx,
-                        self.flags,
+                        flags,
                         &Scope::root(),
                         e.clone(),
                     )?;
@@ -843,7 +850,7 @@ impl<X: GXExt> GX<X> {
                     let spec = wrap_file_in_do(stmts.clone(), Arc::new(ori.clone()));
                     graphix_compiler::compile_script(
                         &mut self.ctx,
-                        self.flags,
+                        flags,
                         &Scope::root(),
                         spec,
                         &stmts,

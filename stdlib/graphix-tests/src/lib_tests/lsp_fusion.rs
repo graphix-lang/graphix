@@ -1,5 +1,5 @@
-//! Fusion runs in the lsp_mode check path, and an ill-typed program
-//! checked in lsp_mode never panics or bricks the shared runtime.
+//! The lsp_mode check path runs the check alone, and an ill-typed
+//! program checked in lsp_mode never panics or bricks the shared runtime.
 
 use anyhow::Result;
 use arcstr::literal;
@@ -20,38 +20,20 @@ async fn init(sub: mpsc::Sender<GPooled<Vec<GXEvent>>>) -> Result<TestCtx> {
     init_lsp_mode(sub, crate::TEST_REGISTER, vec![], BitFlags::empty(), |_| {}).await
 }
 
-/// Fusion runs during an lsp_mode check, and an ill-typed check in
-/// between leaves the persistent runtime alive.
+/// An lsp_mode check is the check alone: it builds no kernel. An
+/// ill-typed check in between leaves the persistent runtime alive.
 #[tokio::test(flavor = "multi_thread")]
-async fn lsp_mode_fuses_and_survives_ill_typed() -> Result<()> {
+async fn lsp_mode_checks_without_fusion_and_survives_ill_typed() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1000);
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let ctx = init(tx).await?;
-
-    // The `fused` counter is a compile-time statistic; a check never
-    // executes a kernel.
-    let before = ctx.fusion_stats().await?.fused;
+    let before = ctx.fusion_stats().await?.attempted;
     ctx.rt.check(Source::Internal(literal!(FUSABLE)), None).await?;
-    let after = ctx.fusion_stats().await?.fused;
-    assert!(
-        after > before,
-        "fusion must run during an lsp_mode check, but `fused` did not \
-         advance ({before} -> {after}) — the lsp gate still disables fusion",
-    );
-
     // May return Err; the process must survive.
     let _ = ctx.rt.check(Source::Internal(literal!(ILL_TYPED)), None).await;
-
-    // A subsequent well-typed check still succeeds and still fuses.
-    let before2 = ctx.fusion_stats().await?.fused;
     ctx.rt.check(Source::Internal(literal!(FUSABLE)), None).await?;
-    let after2 = ctx.fusion_stats().await?.fused;
-    assert!(
-        after2 > before2,
-        "the runtime was bricked by an ill-typed lsp_mode check: fusion \
-         stopped advancing afterward ({before2} -> {after2})",
-    );
-
+    let after = ctx.fusion_stats().await?.attempted;
+    assert_eq!(before, after, "a check attempted fusion ({before} -> {after})");
     ctx.shutdown().await;
     drain.abort();
     Ok(())

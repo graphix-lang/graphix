@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8512fca7.js";
+            window.path_to_searchindex_js = "searchindex-768b3a21.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -229,6 +229,12 @@ mode.</p>
 <li>Integrating with editors and build tools</li>
 <li>Quick validation during development</li>
 </ul>
+<p>The check is every definition’s check and every call site’s, the same
+check the language server runs. It does not build the program: it
+compiles no native code and analyzes no instance, so <code>#[native]</code>,
+<code>#[tail_recursive]</code>, <code>#[sync]</code> and <code>#[async]</code> are verified by a run
+(<code>--expand</code> builds, to show each instance’s steps). Files parse in
+parallel, so a large module split into several files checks faster.</p>
 <h2 id="package-management"><a class="header" href="#package-management">Package Management</a></h2>
 <p>The shell includes a built-in package manager for extending Graphix with
 additional functionality. Use <code>graphix package</code> to search for, install, and

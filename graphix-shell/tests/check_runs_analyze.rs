@@ -1,8 +1,10 @@
-//! `--check` must run `analysis::analyze`: the def assertions
-//! (`#[tail_recursive]`/`#[sync]`/`#[async]`) are verified there.
+//! `--check` runs the check alone: the def assertions
+//! (`#[tail_recursive]`/`#[sync]`/`#[async]`) are facts of the build's
+//! `analysis::analyze`, which `--expand` runs.
 
 use anyhow::Result;
-use graphix_compiler::expr::Source;
+use enumflags2::BitFlags;
+use graphix_compiler::{CFlag, expr::Source};
 use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 
@@ -12,20 +14,25 @@ let f = |n: i64| -> i64 n;
 f(i64:1)
 "#;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn check_rejects_false_def_assertion() -> Result<()> {
-    let r = ShellBuilder::<NoExt>::default()
+async fn check(flags: BitFlags<CFlag>) -> Result<()> {
+    ShellBuilder::<NoExt>::default()
         .mode(Mode::Check(Source::Internal(FALSE_ASSERTION.into())))
+        .enable_flags(flags)
         .build()?
         .check()
-        .await;
-    let e = match r {
-        Ok(()) => panic!("--check accepted a false #[tail_recursive]"),
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_leaves_def_assertions_to_the_build() -> Result<()> {
+    check(BitFlags::empty()).await?;
+    let e = match check(CFlag::ExpandSeq.into()).await {
+        Ok(()) => panic!("--expand accepted a false #[tail_recursive]"),
         Err(e) => format!("{e:#}"),
     };
     assert!(
         e.contains("not recursive"),
-        "--check rejected the witness for the wrong reason: {e}"
+        "--expand rejected it for the wrong reason: {e}"
     );
     Ok(())
 }
