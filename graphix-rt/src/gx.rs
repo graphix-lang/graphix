@@ -927,14 +927,34 @@ impl<X: GXExt> GX<X> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let eid = ExprId::new();
-        let argn = lb.typ.args.iter().zip(args.iter());
-        let argn = argn
-            .map(|(arg, id)| genn::reference(&mut self.ctx, *id, arg.typ.clone(), eid))
-            .collect::<smallvec::SmallVec<[_; 2]>>();
-        let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
-        let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
+        let build = |ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>| {
+            let argn = lb.typ.args.iter().zip(args.iter());
+            let argn = argn
+                .map(|(arg, id)| genn::reference(ctx, *id, arg.typ.clone(), eid))
+                .collect::<smallvec::SmallVec<[_; 2]>>();
+            let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
+            genn::apply(fnode, Scope::root(), argn, &lb.typ, eid)
+        };
+        let mut n = build(&mut self.ctx);
         self.ctx.begin_runtime_node(eid);
-        graphix_compiler::check_and_fuse(&mut self.ctx, self.flags, &mut n)?;
+        if let Err(e) =
+            graphix_compiler::check_and_fuse(&mut self.ctx, self.flags, &mut n)
+        {
+            n.delete(&mut self.ctx);
+            if e.downcast_ref::<graphix_compiler::fusion::LinkFailed>().is_none() {
+                return Err(e);
+            }
+            warn!("{e:#}: the callable is rebuilt without fusion");
+            n = build(&mut self.ctx);
+            self.ctx.begin_runtime_node(eid);
+            let enabled = std::mem::replace(&mut self.ctx.fusion.enabled, false);
+            let r = graphix_compiler::check_and_fuse(&mut self.ctx, self.flags, &mut n);
+            self.ctx.fusion.enabled = enabled;
+            if let Err(e) = r {
+                n.delete(&mut self.ctx);
+                return Err(e);
+            }
+        }
         self.event.init = true;
         n.update(&mut self.ctx, &mut self.event);
         self.event.clear();

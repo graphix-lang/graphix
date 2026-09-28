@@ -470,11 +470,21 @@ node graph IS the IR — there is no parallel typed IR
   (`nodes::emit_bottom_placeholder` takes the governing discs); kernel
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
-- **JIT memory**: one JITModule + 256MB arena per ExecCtx, built on its
-  first fusion (a fusion-off context never builds one); on exhaustion
-  the module retires whole and the region rebuilds in a fresh one; a
-  module's code is freed when the module and every kernel compiled into
-  it have dropped (each `WrappedKernel` holds its code). Kernel ABI: kind-grouped params from
+- **JIT pipeline and memory** (`fusion/emit/jit.rs`): emission names
+  everything by ids of its own (`jit::Names`) and defines nothing; a
+  pass ends in a link (`FusionCtx::link`, also every `LINK_BATCH`
+  regions) that compiles every emitted function on worker threads,
+  builds the records in emission order and installs the regions'
+  wrappers with one finalize; a kernel has its entry only after its
+  pass links. A link that fails is `LinkFailed`: the statement (or a
+  Rust callable) is rebuilt with fusion off. One JITModule + 256MB
+  arena per generation, built on the first fusion (a fusion-off context
+  never builds one); an install that fails retires the generation, and
+  on exhaustion the link reinstalls its records in a fresh one; a
+  generation's code is freed when it and every kernel installed into it
+  have dropped (each `WrappedKernel` holds its code). Pins:
+  `graphix-shell/tests/jit_arena_rotation.rs`, `jit_link_failure.rs`
+  (`GRAPHIX_FAIL_LINK`, debug builds). Kernel ABI: kind-grouped params from
   `KernelSig::abi_params`; recursive types, abstract types, primitive
   unions and the primitives with no register form (varints, decimal,
   error) are opaque 2-word values (`design/unified_value_abi.md`).

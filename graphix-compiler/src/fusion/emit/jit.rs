@@ -40,7 +40,12 @@ use netidx_value::Value;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cell::RefCell, collections::BTreeMap, mem::ManuallyDrop, sync::LazyLock};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    mem::ManuallyDrop,
+    sync::{LazyLock, OnceLock},
+};
 use triomphe::Arc;
 
 use super::{
@@ -198,7 +203,6 @@ struct Emitter {
     /// The helpers by their ids, for naming a relocation's target.
     helper_names: BTreeMap<FuncId, &'static str>,
     builder_ctx: FunctionBuilderContext,
-    func_ctx: Context,
 }
 
 impl Emitter {
@@ -215,34 +219,31 @@ impl Emitter {
             helpers,
             helper_names,
             builder_ctx: FunctionBuilderContext::new(),
-            func_ctx: Context::new(),
         })
     }
 
-    /// Empty the function contexts for the next function; a failed
-    /// build may have left them mid-function.
-    fn reset_func(&mut self) {
-        self.func_ctx.clear();
-        self.func_ctx.func.signature.call_conv = self.isa.default_call_conv();
-        self.builder_ctx = FunctionBuilderContext::new();
-    }
-
-    /// Compile the function in `func_ctx`, which is named `id`, to bytes
-    /// and relocations.
-    fn compile(&mut self, id: FuncId) -> Result<Compiled> {
-        self.func_ctx
-            .compile(&*self.isa, &mut ControlPlane::default())
-            .map_err(|e| anyhow!("compile: {}", e.inner))?;
-        let code = self.func_ctx.compiled_code().expect("compiled above");
-        let bytes: Box<[u8]> = code.code_buffer().into();
-        let align = code.buffer.alignment as u64;
-        let relocs = code
-            .buffer
-            .relocs()
-            .iter()
-            .map(|r| ModuleReloc::from_mach_reloc(r, &self.func_ctx.func, id))
-            .collect();
-        Ok(Compiled { bytes, align, relocs })
+    /// Build the function `id` with `sig` through `emit`. A failed build
+    /// leaves the builder mid-function, so it starts over.
+    fn build(
+        &mut self,
+        id: FuncId,
+        sig: Signature,
+        emit: impl FnOnce(&mut Names, &HelperFuncIds, &mut FunctionBuilder) -> Result<()>,
+    ) -> Result<Function> {
+        let mut func =
+            Function::with_name_signature(UserFuncName::user(0, id.as_u32()), sig);
+        let mut b = FunctionBuilder::new(&mut func, &mut self.builder_ctx);
+        match emit(&mut self.names, &self.helpers, &mut b) {
+            Ok(()) => {
+                b.finalize();
+                Ok(func)
+            }
+            Err(e) => {
+                drop(b);
+                self.builder_ctx = FunctionBuilderContext::new();
+                Err(e)
+            }
+        }
     }
 
     /// Name every relocation target symbolically: a helper, a recorded
@@ -306,6 +307,81 @@ impl Emitter {
             })
             .collect()
     }
+}
+
+/// Compile `func`, named `id`, to bytes and relocations.
+fn backend(
+    isa: &dyn TargetIsa,
+    ctx: &mut Context,
+    id: FuncId,
+    func: &mut Function,
+) -> Result<Compiled> {
+    ctx.clear();
+    ctx.func = std::mem::replace(func, Function::new());
+    ctx.compile(isa, &mut ControlPlane::default())
+        .map_err(|e| anyhow!("compile: {}", e.inner))?;
+    let code = ctx.compiled_code().expect("compiled above");
+    let bytes: Box<[u8]> = code.code_buffer().into();
+    let align = code.buffer.alignment as u64;
+    let relocs = code
+        .buffer
+        .relocs()
+        .iter()
+        .map(|r| ModuleReloc::from_mach_reloc(r, &ctx.func, id))
+        .collect();
+    Ok(Compiled { bytes, align, relocs })
+}
+
+/// Compile every function in `work` on as many threads as there is work
+/// for; the results are in `work`'s order whatever the threads did.
+fn backend_all(
+    isa: &dyn TargetIsa,
+    work: Vec<(FuncId, &mut Function)>,
+) -> Vec<Result<Compiled>> {
+    const PER_THREAD: usize = 8;
+    const STACK: usize = 8 << 20;
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(work.len().div_ceil(PER_THREAD));
+    if threads <= 1 {
+        let mut ctx = Context::new();
+        return work.into_iter().map(|(id, f)| backend(isa, &mut ctx, id, f)).collect();
+    }
+    let n = work.len();
+    let queue = Mutex::new(work.into_iter().enumerate());
+    let drain = || {
+        let mut ctx = Context::new();
+        let mut done = Vec::new();
+        loop {
+            let next = queue.lock().next();
+            let Some((i, (id, f))) = next else { break };
+            done.push((i, backend(isa, &mut ctx, id, f)));
+        }
+        done
+    };
+    let mut out: Vec<Option<Result<Compiled>>> = (0..n).map(|_| None).collect();
+    std::thread::scope(|s| {
+        // The calling thread drains too, so a worker that fails to spawn
+        // leaves nothing behind.
+        let workers: SmallVec<[_; 32]> = (1..threads)
+            .filter_map(|_| {
+                std::thread::Builder::new().stack_size(STACK).spawn_scoped(s, drain).ok()
+            })
+            .collect();
+        let mut place = |done: Vec<(usize, Result<Compiled>)>| {
+            for (i, r) in done {
+                out[i] = Some(r);
+            }
+        };
+        place(drain());
+        for w in workers {
+            match w.join() {
+                Ok(done) => place(done),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+    });
+    out.into_iter().map(|r| r.expect("every item compiled")).collect()
 }
 
 /// One JIT module, where records install. A generation an install
@@ -383,12 +459,14 @@ impl Generation {
         format_compact!("{fn_name}__kir_{}", self.symbol_counter)
     }
 
-    /// Install `wrapper`'s record tree, finalize, and return its entry.
-    fn install(&mut self, wrapper: &Arc<BodyRecord>) -> Result<*const u8> {
-        let id = self.load(wrapper)?;
+    /// Install each wrapper's record tree, finalize once, and return the
+    /// wrappers' entries in order.
+    fn install(&mut self, wrappers: &[Arc<BodyRecord>]) -> Result<Vec<*const u8>> {
+        let ids: LPooled<Vec<FuncId>> =
+            wrappers.iter().map(|w| self.load(w)).collect::<Result<_>>()?;
         let _finalize = profile::phase(Phase::Finalize);
         self.module.finalize_definitions().context("finalize_definitions")?;
-        Ok(self.module.get_finalized_function(id))
+        Ok(ids.iter().map(|id| self.module.get_finalized_function(*id)).collect())
     }
 
     /// Install a record's function, its thunk and its callees (once per
@@ -539,19 +617,14 @@ fn maybe_dump_clif(func: &Function, label: &str) {
     }
 }
 
-/// A compiled kernel behind the uniform [`WrapperFn`] convention:
-/// `args` points at the context words then a `(disc, payload)` pair
-/// per parameter, `out` receives the result's `(disc, payload)` pair.
-/// [`pack_value_to_u64`] does the Rust-side packing.
+/// A kernel behind the uniform [`WrapperFn`] convention: `args` points
+/// at the context words then a `(disc, payload)` pair per parameter,
+/// `out` receives the result's `(disc, payload)` pair.
+/// [`pack_value_to_u64`] does the Rust-side packing. The layout is known
+/// when the region is emitted, the entry once its pass links.
 #[derive(Clone)]
 pub struct WrappedKernel {
-    /// Cast through [`Self::fn_ptr`].
-    wrapper_fn_ptr: *const u8,
-    /// The code `wrapper_fn_ptr` and everything it calls live in.
-    _code: Arc<CodeOwner>,
-    /// The wrapper's record, and through it the region's bodies: what
-    /// an image writes for this kernel.
-    pub(crate) wrapper: Arc<BodyRecord>,
+    entry: Arc<OnceLock<Entry>>,
     /// Per-instance state words the root body claimed. The runtime
     /// `FusedKernel` passes a zeroed buffer of this size in wire slot 1.
     pub(crate) state_words: usize,
@@ -568,21 +641,40 @@ pub struct WrappedKernel {
     pub(crate) state_self_blocks: Vec<kernel_abi::SelfBlock>,
 }
 
-// SAFETY: `wrapper_fn_ptr` points into `code`, which it keeps alive; the
-// code is immutable once finalized.
-unsafe impl Send for WrappedKernel {}
-unsafe impl Sync for WrappedKernel {}
+/// A linked region's wrapper.
+struct Entry {
+    fn_ptr: *const u8,
+    /// The code `fn_ptr` and everything it calls live in.
+    _code: Arc<CodeOwner>,
+    /// The wrapper's record, and through it the region's bodies: what
+    /// an image writes for this kernel.
+    wrapper: Arc<BodyRecord>,
+}
+
+// SAFETY: `fn_ptr` points into `code`, which it keeps alive; the code is
+// immutable once finalized.
+unsafe impl Send for Entry {}
+unsafe impl Sync for Entry {}
 
 /// The uniform Rust-side signature the wrapper presents.
 pub(crate) type WrapperFn = unsafe extern "C" fn(args: *const u64, out: *mut u64);
 
 impl WrappedKernel {
+    fn entry(&self) -> &Entry {
+        self.entry.get().expect("a kernel runs after its fusion pass links")
+    }
+
     /// The wrapper entry point.
     ///
     /// # Safety
     /// Callers pass the `(args, out)` layout of the kernel's ABI.
     pub(crate) unsafe fn fn_ptr(&self) -> WrapperFn {
-        unsafe { std::mem::transmute(self.wrapper_fn_ptr) }
+        unsafe { std::mem::transmute(self.entry().fn_ptr) }
+    }
+
+    /// The wrapper's record.
+    pub(crate) fn wrapper(&self) -> &Arc<BodyRecord> {
+        &self.entry().wrapper
     }
 }
 
@@ -596,12 +688,27 @@ struct CacheKey {
     layout: u32,
 }
 
+/// A function emitted and not yet compiled.
+struct Pending {
+    id: FuncId,
+    func: Function,
+    kernel: Arc<KernelSig>,
+    of: PendingOf,
+}
+
+enum PendingOf {
+    /// A kernel body: the constants its code names and its spill thunk.
+    Body { consts: Vec<EmitConst>, thunk: Option<(FuncId, Function)> },
+    /// A region's wrapper, and where its entry goes.
+    Wrapper { entry: Arc<OnceLock<Entry>> },
+}
+
 /// The per-`ExecCtx` JIT. Kernels call each other with direct CLIF
-/// calls, so a region's records install into one module generation,
+/// calls, so a pass's records install into one module generation,
 /// which lives as long as the `ExecCtx` or its longest-lived kernel.
 pub struct Jit {
-    /// Boxed: cranelift's `Context` is ~5KB and this rides every
-    /// `async fn` that moves a `GXConfig`.
+    /// Boxed: the emitter's builder context is large and this rides
+    /// every `async fn` that moves a `GXConfig`.
     emitter: Box<Emitter>,
     generation: Generation,
     /// Generations retired so far.
@@ -614,6 +721,9 @@ pub struct Jit {
     /// Every compiled kernel body's record, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
     records: BTreeMap<FuncId, Arc<BodyRecord>>,
+    /// What the regions emitted since the last link, in emission order:
+    /// a body after its callees, a wrapper after its region's bodies.
+    pending: Vec<Pending>,
 }
 
 // SAFETY: the module is used only through `&mut Jit`, and its raw
@@ -632,6 +742,7 @@ impl Jit {
             by_kernel: BTreeMap::new(),
             layout_ids: BTreeMap::new(),
             records: BTreeMap::new(),
+            pending: Vec::new(),
         })
     }
 
@@ -640,14 +751,147 @@ impl Jit {
         self.retired
     }
 
-    /// Install `wrapper`'s record tree and return its entry and the code
-    /// it lives in. A failed install retires the generation; a full
-    /// arena reinstalls once in a fresh one.
+    /// How many regions wait for the next link.
+    pub(crate) fn unlinked(&self) -> usize {
+        self.pending.iter().filter(|p| matches!(p.of, PendingOf::Wrapper { .. })).count()
+    }
+
+    /// Compile everything emitted since the last link, build its records
+    /// and install its regions, giving each its entry. On an error no
+    /// region of this link has one, and the cache forgets every body it
+    /// compiled nothing for.
+    pub(crate) fn link(&mut self) -> Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let _profile = profile::phase(Phase::Link);
+        #[cfg(debug_assertions)]
+        let r = match crate::dbgenv::graphix_fail_link() {
+            true => {
+                self.pending.clear();
+                Err(anyhow!("GRAPHIX_FAIL_LINK"))
+            }
+            false => self.link_pending(),
+        };
+        #[cfg(not(debug_assertions))]
+        let r = self.link_pending();
+        if r.is_err() {
+            let records = &self.records;
+            self.by_kernel.retain(|_, e| records.contains_key(&e.func_id));
+        }
+        r
+    }
+
+    fn link_pending(&mut self) -> Result<()> {
+        let mut pending = std::mem::take(&mut self.pending);
+        let mut work: Vec<(FuncId, &mut Function)> = Vec::with_capacity(pending.len());
+        for p in pending.iter_mut() {
+            work.push((p.id, &mut p.func));
+            if let PendingOf::Body { thunk: Some((tid, t)), .. } = &mut p.of {
+                work.push((*tid, t));
+            }
+        }
+        let mut compiled = backend_all(&*self.emitter.isa, work).into_iter();
+        let mut next = || compiled.next().expect("one result per function");
+        let mut regions: Vec<(Arc<BodyRecord>, Arc<OnceLock<Entry>>)> = Vec::new();
+        for p in pending {
+            let c = next()?;
+            let mut callees = Vec::new();
+            match p.of {
+                PendingOf::Body { consts, thunk } => {
+                    let thunk = match thunk {
+                        None => None,
+                        Some((tid, _)) => Some((tid, next()?)),
+                    };
+                    let relocs = self.emitter.record_relocs(
+                        &c.relocs,
+                        p.id,
+                        thunk.as_ref().map(|(tid, _)| *tid),
+                        &consts,
+                        &self.records,
+                        &mut callees,
+                    )?;
+                    let thunk = match thunk {
+                        None => None,
+                        Some((_, t)) => {
+                            let relocs = self.emitter.record_relocs(
+                                &t.relocs,
+                                p.id,
+                                None,
+                                &[],
+                                &BTreeMap::new(),
+                                &mut Vec::new(),
+                            )?;
+                            Some(Arc::new(BodyRecord {
+                                kind: RecordKind::Thunk,
+                                label: format_compact!("{}__spill", p.kernel.fn_name)
+                                    .as_str()
+                                    .into(),
+                                bytes: t.bytes,
+                                align: t.align,
+                                relocs,
+                                callees: Vec::new(),
+                                kernel: p.kernel.clone(),
+                            }))
+                        }
+                    };
+                    let record = Arc::new(BodyRecord {
+                        kind: RecordKind::Kernel {
+                            consts: consts.into_iter().map(|c| c.recipe).collect(),
+                            thunk,
+                        },
+                        label: p.kernel.fn_name.clone(),
+                        bytes: c.bytes,
+                        align: c.align,
+                        relocs,
+                        callees,
+                        kernel: p.kernel,
+                    });
+                    self.records.insert(p.id, record);
+                }
+                PendingOf::Wrapper { entry } => {
+                    let relocs = self.emitter.record_relocs(
+                        &c.relocs,
+                        p.id,
+                        None,
+                        &[],
+                        &self.records,
+                        &mut callees,
+                    )?;
+                    let record = Arc::new(BodyRecord {
+                        kind: RecordKind::Wrapper,
+                        label: format_compact!("{}_wrap", p.kernel.fn_name)
+                            .as_str()
+                            .into(),
+                        bytes: c.bytes,
+                        align: c.align,
+                        relocs,
+                        callees,
+                        kernel: p.kernel,
+                    });
+                    regions.push((record, entry));
+                }
+            }
+        }
+        let wrappers: LPooled<Vec<Arc<BodyRecord>>> =
+            regions.iter().map(|(w, _)| w.clone()).collect();
+        let (ptrs, code) = self.install(&wrappers)?;
+        for ((wrapper, entry), fn_ptr) in regions.into_iter().zip(ptrs) {
+            let linked =
+                entry.set(Entry { fn_ptr, _code: code.clone(), wrapper }).is_ok();
+            debug_assert!(linked, "a region links once");
+        }
+        Ok(())
+    }
+
+    /// Install the wrappers' record trees and return their entries and
+    /// the code they live in. A failed install retires the generation; a
+    /// full arena reinstalls once in a fresh one.
     fn install(
         &mut self,
-        wrapper: &Arc<BodyRecord>,
-    ) -> Result<(*const u8, Arc<CodeOwner>)> {
-        let e = match self.generation.install(wrapper) {
+        wrappers: &[Arc<BodyRecord>],
+    ) -> Result<(Vec<*const u8>, Arc<CodeOwner>)> {
+        let e = match self.generation.install(wrappers) {
             Ok(p) => return Ok((p, self.generation.code.clone())),
             Err(e) => e,
         };
@@ -661,7 +905,7 @@ impl Jit {
              kernel drops) and reinstalling in a fresh module",
             self.retired
         );
-        let p = self.generation.install(wrapper)?;
+        let p = self.generation.install(wrappers)?;
         Ok((p, self.generation.code.clone()))
     }
 
@@ -676,11 +920,10 @@ impl Jit {
         own_site: Option<SiteLayout>,
         state_self_blocks: Vec<kernel_abi::SelfBlock>,
     ) -> Result<WrappedKernel> {
-        let (wrapper_fn_ptr, code) = self.install(wrapper)?;
+        let (ptrs, code) = self.install(std::slice::from_ref(wrapper))?;
+        let entry = Entry { fn_ptr: ptrs[0], _code: code, wrapper: wrapper.clone() };
         Ok(WrappedKernel {
-            wrapper_fn_ptr,
-            _code: code,
-            wrapper: wrapper.clone(),
+            entry: Arc::new(OnceLock::from(entry)),
             state_words,
             slot_table_words,
             state_self_blocks,
@@ -702,7 +945,7 @@ struct CachedKernel {
     slot_table_words: Vec<kernel_abi::SiteAnchor>,
     /// See [`WrappedKernel::state_self_blocks`]; filled in phase 2.
     state_self_blocks: Vec<kernel_abi::SelfBlock>,
-    /// Filled when the body is compiled. `None` at a caller's emission
+    /// Filled when the body is emitted. `None` at a caller's emission
     /// is a self-call, which roots a per-activation block tree.
     site_layout: Option<SiteLayout>,
     /// Holds the Arc so its pointer cannot be reused by a later allocation.
@@ -711,10 +954,11 @@ struct CachedKernel {
     state_words: usize,
 }
 
-/// Compile `kernel` and its callees by walking their Nodes' `emit_clif`.
-/// The parent emits from `root`; each callee emits from its
-/// `callee_bodies` entry with its own lambda and builtin sites. A callee
-/// without a recorded body fails the whole region.
+/// Emit `kernel` and its callees by walking their Nodes' `emit_clif`,
+/// for the next link to compile. The parent emits from `root`; each
+/// callee emits from its `callee_bodies` entry with its own lambda and
+/// builtin sites. A callee without a recorded body fails the whole
+/// region.
 pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
     jit: &mut Jit,
     kernel: &Arc<KernelSig>,
@@ -768,11 +1012,13 @@ fn compile_region(
 ) -> Result<WrappedKernel> {
     let mut build_profile = profile::phase(Phase::JitBuild);
     let mut fresh: SmallVec<[(CacheKey, Arc<KernelSig>); 8]> = SmallVec::new();
+    let mark = jit.pending.len();
     let r = compile_region_inner(jit, kernel, parent, callees, emitters, &mut fresh);
     if r.is_err() {
         profile::failed(&mut build_profile);
         // A fresh entry of a failed region would hand out an id that no
         // record answers.
+        jit.pending.truncate(mark);
         for (key, _) in fresh.iter() {
             jit.by_kernel.remove(key);
         }
@@ -844,7 +1090,7 @@ fn compile_region_inner(
         };
         funcids.push((key.kernel, entry));
     }
-    // Phase 2: compile the fresh callee bodies in topological order over
+    // Phase 2: emit the fresh callee bodies in topological order over
     // the static call edges, callees first, so a caller can read its
     // callees' `SiteLayout`s (the only one missing at emission is a
     // self-call's), then the parent.
@@ -857,44 +1103,35 @@ fn compile_region_inner(
                 k.fn_name
             )
         })?;
-        let db = define_kernel_body(
-            &mut jit.emitter,
-            k,
-            &funcids,
-            body,
-            &callee_layouts,
-            &jit.records,
-        )?;
-        let fid = funcids.iter().find(|(p, _)| *p == key.kernel).expect("declared").1.0;
-        jit.records.insert(fid, db.record);
-        callee_layouts.insert(key.kernel, db.site_layout.clone());
+        let (emitted, pending) =
+            emit_kernel_body(&mut jit.emitter, k, &funcids, body, &callee_layouts)?;
+        jit.pending.push(pending);
+        callee_layouts.insert(key.kernel, emitted.site_layout.clone());
         if let Some(cached) = jit.by_kernel.get_mut(key) {
-            cached.state_words = db.state_words;
-            cached.slot_table_words = db.slot_table_words;
-            cached.state_self_blocks = db.state_self_blocks;
-            cached.site_layout = Some(db.site_layout);
+            cached.state_words = emitted.state_words;
+            cached.slot_table_words = emitted.slot_table_words;
+            cached.state_self_blocks = emitted.state_self_blocks;
+            cached.site_layout = Some(emitted.site_layout);
         }
     }
-    let db = define_kernel_body(
-        &mut jit.emitter,
-        kernel,
-        &funcids,
-        parent,
-        &callee_layouts,
-        &jit.records,
-    )?;
-    jit.records.insert(parent_fid, db.record);
-    // Phase 3: the parent's wrapper, then install.
-    let wrapper = define_wrapper(&mut jit.emitter, kernel, parent_fid, &jit.records)?;
-    let (wrapper_fn_ptr, code) = jit.install(&wrapper)?;
+    let (emitted, pending) =
+        emit_kernel_body(&mut jit.emitter, kernel, &funcids, parent, &callee_layouts)?;
+    jit.pending.push(pending);
+    // Phase 3: the parent's wrapper.
+    let (wrapper_id, func) = emit_wrapper(&mut jit.emitter, kernel, parent_fid)?;
+    let entry = Arc::new(OnceLock::new());
+    jit.pending.push(Pending {
+        id: wrapper_id,
+        func,
+        kernel: kernel.clone(),
+        of: PendingOf::Wrapper { entry: entry.clone() },
+    });
     Ok(WrappedKernel {
-        wrapper_fn_ptr,
-        _code: code,
-        wrapper,
-        state_words: db.state_words,
-        slot_table_words: db.slot_table_words,
-        state_self_blocks: db.state_self_blocks,
-        own_site: Some(db.site_layout),
+        entry,
+        state_words: emitted.state_words,
+        slot_table_words: emitted.slot_table_words,
+        state_self_blocks: emitted.state_self_blocks,
+        own_site: Some(emitted.site_layout),
     })
 }
 
@@ -945,199 +1182,137 @@ fn def_order(
     order
 }
 
-/// What compiling one kernel body produced — stored onto the kernel's
-/// `by_kernel` cache entry (the fields mirror the entry's).
-struct DefinedBody {
-    record: Arc<BodyRecord>,
-    state_words: usize,
-    slot_table_words: Vec<kernel_abi::SiteAnchor>,
-    state_self_blocks: Vec<kernel_abi::SelfBlock>,
-    site_layout: SiteLayout,
-}
-
-/// Emit and compile `kernel`'s body, named by its pre-declared id, to
-/// its record. `funcids` must hold the kernel itself and every callee
-/// its lambda call sites reference.
-fn define_kernel_body(
+/// Emit `kernel`'s body, named by its pre-declared id, for the next
+/// link. `funcids` must hold the kernel itself and every callee its
+/// lambda call sites reference.
+fn emit_kernel_body(
     em: &mut Emitter,
     kernel: &Arc<KernelSig>,
     funcids: &[(KernelKey, (FuncId, Signature))],
     body_emitter: &BodySource,
     callee_layouts: &AHashMap<KernelKey, SiteLayout>,
-    records: &BTreeMap<FuncId, Arc<BodyRecord>>,
-) -> Result<DefinedBody> {
+) -> Result<(EmittedBody, Pending)> {
     let mut clif_profile = profile::phase(Phase::Clif);
     let self_key = kernel_abi::kernel_key(kernel);
     let (func_id, sig) =
         funcids.iter().find(|(p, _)| *p == self_key).map(|(_, e)| e.clone()).ok_or_else(
             || {
                 anyhow!(
-                    "define_kernel_body: missing FuncId for kernel `{}` (phase-1 declare \
+                    "emit_kernel_body: missing FuncId for kernel `{}` (phase-1 declare \
                      must have populated `funcids` first)",
                     kernel.fn_name
                 )
             },
         )?;
-    let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
-    let thunk_label = format_compact!("{}__spill", kernel.fn_name);
+    // The set of callees is the body's lambda sites plus its self-call,
+    // keyed by kernel identity.
+    let mut callee_keys: LPooled<AHashSet<KernelKey>> = body_emitter
+        .spec
+        .lambda_call_sites
+        .values()
+        .map(|info| kernel_abi::kernel_key(&info.kernel))
+        .filter(|key| *key != self_key)
+        .collect();
+    if let Some((_, info)) = body_emitter.spec.self_call() {
+        callee_keys.insert(kernel_abi::kernel_key(&info.kernel));
+    }
     let self_thunk_id = body_emitter.spec.self_call().map(|_| {
         let tsig = trampoline_signature(&*em.isa);
         em.names.local(&tsig)
     });
-    em.reset_func();
-    em.func_ctx.func.signature = sig.clone();
-    em.func_ctx.func.name = UserFuncName::user(0, func_id.as_u32());
-    let EmittedBody { state_words, slot_table_words, state_self_blocks, site_layout } = {
-        // Callee FuncRefs are declared before the FunctionBuilder borrows
-        // `func_ctx.func`. The set is the body's lambda sites plus its
-        // self-call, keyed by kernel identity.
-        let mut callee_keys: LPooled<AHashSet<KernelKey>> = body_emitter
-            .spec
-            .lambda_call_sites
-            .values()
-            .map(|info| kernel_abi::kernel_key(&info.kernel))
-            .filter(|key| *key != self_key)
-            .collect();
-        if let Some((_, info)) = body_emitter.spec.self_call() {
-            callee_keys.insert(kernel_abi::kernel_key(&info.kernel));
-        }
+    let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
+    let mut emitted = None;
+    let func = em.build(func_id, sig.clone(), |names, helpers, b| {
         // Import in `funcids` order so the funcref numbering is deterministic.
         let mut callee_refs: BTreeMap<KernelKey, FuncRef> = BTreeMap::new();
         for (key, (fid, _)) in funcids {
             if callee_keys.contains(key) {
-                let fref = em.names.import_func(*fid, &mut em.func_ctx.func);
-                callee_refs.insert(*key, fref);
+                callee_refs.insert(*key, names.import_func(*fid, b.func));
             }
         }
         if callee_refs.len() != callee_keys.len() {
             bail!(
-                "define_kernel_body: kernel `{}` calls a kernel with no entry in funcids",
+                "emit_kernel_body: kernel `{}` calls a kernel with no entry in funcids",
                 kernel.fn_name
             );
         }
-        let self_thunk =
-            self_thunk_id.map(|tid| em.names.import_func(tid, &mut em.func_ctx.func));
-        let names = RefCell::new(&mut em.names);
-        let mut builder =
-            FunctionBuilder::new(&mut em.func_ctx.func, &mut em.builder_ctx);
-        let emitted = compile_into_function(
-            &mut builder,
+        let self_thunk = self_thunk_id.map(|tid| names.import_func(tid, b.func));
+        let names = RefCell::new(names);
+        emitted = Some(compile_into_function(
+            b,
             kernel,
             &callee_refs,
             self_thunk,
-            &em.helpers,
+            helpers,
             &consts,
             &names,
             body_emitter,
             callee_layouts,
-        );
-        if emitted.is_err() {
-            profile::failed(&mut clif_profile);
-        }
-        let emitted = emitted?;
-        builder.finalize();
-        maybe_dump_clif(&em.func_ctx.func, &kernel.fn_name);
-        emitted
-    };
-    drop(clif_profile);
-    let backend_profile = profile::phase(Phase::BackendBody);
-    let compiled = em.compile(func_id).context("shared body")?;
-    drop(backend_profile);
-    let mut callees = Vec::new();
-    let relocs = em.record_relocs(
-        &compiled.relocs,
-        func_id,
-        self_thunk_id,
-        &consts.borrow(),
-        records,
-        &mut callees,
-    )?;
-    let thunk = match self_thunk_id {
-        Some(tid) => {
-            let _backend_profile = profile::phase(Phase::BackendSpill);
-            let t =
-                build_trampoline(em, tid, func_id, &sig, false).context("spill thunk")?;
-            let mut none = Vec::new();
-            let relocs = em.record_relocs(
-                &t.relocs,
-                func_id,
-                None,
-                &[],
-                &BTreeMap::new(),
-                &mut none,
-            )?;
-            Some(Arc::new(BodyRecord {
-                kind: RecordKind::Thunk,
-                label: thunk_label.as_str().into(),
-                bytes: t.bytes,
-                align: t.align,
-                relocs,
-                callees: Vec::new(),
-                kernel: kernel.clone(),
-            }))
-        }
-        None => None,
-    };
-    let record = Arc::new(BodyRecord {
-        kind: RecordKind::Kernel {
-            consts: consts.take().into_iter().map(|c| c.recipe).collect(),
-            thunk,
-        },
-        label: kernel.fn_name.clone(),
-        bytes: compiled.bytes,
-        align: compiled.align,
-        relocs,
-        callees,
-        kernel: kernel.clone(),
+        )?);
+        Ok(())
     });
+    let func = match func {
+        Ok(func) => func,
+        Err(e) => {
+            profile::failed(&mut clif_profile);
+            return Err(e);
+        }
+    };
+    let emitted: EmittedBody = emitted.expect("emitted on success");
+    maybe_dump_clif(&func, &kernel.fn_name);
+    let thunk = match self_thunk_id {
+        None => None,
+        Some(tid) => Some((tid, emit_trampoline(em, tid, func_id, &sig, false)?)),
+    };
     if crate::dbgenv::graphix_dbg_kernels() {
         eprintln!(
             "KERNEL DEFINED {}: state_words={} site_words={} self_blocks={}",
             kernel.fn_name,
-            state_words,
-            site_layout.words,
-            site_layout.self_blocks.len()
+            emitted.state_words,
+            emitted.site_layout.words,
+            emitted.site_layout.self_blocks.len()
         );
     }
-    em.reset_func();
-    Ok(DefinedBody {
-        record,
-        state_words,
-        slot_table_words,
-        state_self_blocks,
-        site_layout,
-    })
+    let pending = Pending {
+        id: func_id,
+        func,
+        kernel: kernel.clone(),
+        of: PendingOf::Body { consts: consts.into_inner(), thunk },
+    };
+    Ok((emitted, pending))
 }
 
-/// Compile the `(args, out)` trampoline `id` into `target`: load each
-/// of `target_sig`'s params from `args` at an 8-byte stride (the wire
+/// Emit the `(args, out)` trampoline `id` into `target`: load each of
+/// `target_sig`'s params from `args` at an 8-byte stride (the wire
 /// layout of [`KernelSig::abi_params`]), call it, and store its two
-/// result words to `out`. A wrapper also bumps the harness's
-/// invocation counter in debug builds.
-fn build_trampoline(
+/// result words to `out`. A wrapper also bumps the harness's invocation
+/// counter in debug builds.
+fn emit_trampoline(
     em: &mut Emitter,
     id: FuncId,
     target: FuncId,
     target_sig: &Signature,
     wrapper: bool,
-) -> Result<Compiled> {
-    em.reset_func();
-    em.func_ctx.func.signature = trampoline_signature(&*em.isa);
-    em.func_ctx.func.name = UserFuncName::user(0, id.as_u32());
-    let target_ref = em.names.import_func(target, &mut em.func_ctx.func);
-    #[cfg(debug_assertions)]
-    let record_ref = match wrapper {
-        true => {
-            let fid =
-                em.helpers.ids.get("graphix_record_jit_invocation").copied().ok_or_else(
-                    || anyhow!("missing graphix_record_jit_invocation FuncId"),
-                )?;
-            Some(em.names.import_func(fid, &mut em.func_ctx.func))
-        }
-        false => None,
-    };
-    {
-        let mut b = FunctionBuilder::new(&mut em.func_ctx.func, &mut em.builder_ctx);
+) -> Result<Function> {
+    let sig = trampoline_signature(&*em.isa);
+    let func = em.build(id, sig, |names, helpers, b| {
+        let target_ref = names.import_func(target, b.func);
+        #[cfg(debug_assertions)]
+        let record_ref = match wrapper {
+            true => {
+                let fid = helpers
+                    .ids
+                    .get("graphix_record_jit_invocation")
+                    .copied()
+                    .ok_or_else(|| {
+                        anyhow!("missing graphix_record_jit_invocation FuncId")
+                    })?;
+                Some(names.import_func(fid, b.func))
+            }
+            false => None,
+        };
+        #[cfg(not(debug_assertions))]
+        let _ = helpers;
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
@@ -1167,41 +1342,24 @@ fn build_trampoline(
             b.ins().store(MemFlags::trusted(), *r, out, (8 * i) as i32);
         }
         b.ins().return_(&[]);
-        b.finalize();
-    }
-    maybe_dump_clif(&em.func_ctx.func, if wrapper { "wrapper" } else { "spill thunk" });
-    let compiled = em.compile(id);
-    em.reset_func();
-    compiled
+        Ok(())
+    })?;
+    maybe_dump_clif(&func, if wrapper { "wrapper" } else { "spill thunk" });
+    Ok(func)
 }
 
 /// The region's `(args, out)` wrapper around its parent body
-/// `typed_func_id`, as a record.
-fn define_wrapper(
+/// `typed_func_id`.
+fn emit_wrapper(
     em: &mut Emitter,
     kernel: &Arc<KernelSig>,
     typed_func_id: FuncId,
-    records: &BTreeMap<FuncId, Arc<BodyRecord>>,
-) -> Result<Arc<BodyRecord>> {
-    let label = format_compact!("{}_wrap", kernel.fn_name);
-    let sig = trampoline_signature(&*em.isa);
-    let wrapper_id = em.names.local(&sig);
-    let _backend_profile = profile::phase(Phase::BackendWrapper);
+) -> Result<(FuncId, Function)> {
+    let wrapper_id = em.names.local(&trampoline_signature(&*em.isa));
     let kernel_sig = kernel_signature(&*em.isa, kernel)?;
-    let t = build_trampoline(em, wrapper_id, typed_func_id, &kernel_sig, true)
+    let func = emit_trampoline(em, wrapper_id, typed_func_id, &kernel_sig, true)
         .context("wrapper")?;
-    let mut callees = Vec::new();
-    let relocs =
-        em.record_relocs(&t.relocs, wrapper_id, None, &[], records, &mut callees)?;
-    Ok(Arc::new(BodyRecord {
-        kind: RecordKind::Wrapper,
-        label: label.as_str().into(),
-        bytes: t.bytes,
-        align: t.align,
-        relocs,
-        callees,
-        kernel: kernel.clone(),
-    }))
+    Ok((wrapper_id, func))
 }
 
 /// Pack a scalar [`Value`] into a u64 slot as `prim`: signed ints

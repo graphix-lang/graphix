@@ -1,21 +1,25 @@
-//! A full JIT arena retires its module and the region's build retries
-//! in a fresh one: with a tiny arena the program still fuses and runs
-//! to its value, and the rotation says so.
+//! A full JIT arena retires its module and the link reinstalls in a
+//! fresh one: with an arena that holds one link's regions but not two,
+//! the program still fuses and runs to its value, and the rotation says
+//! so.
 
 use std::{
     fs,
     process::{Command, Stdio},
 };
 
-/// Many small regions, so a tiny arena fills while fusing them.
+/// Regions for two links.
+const REGIONS: usize = 512;
+
 fn program() -> String {
     let mut s = String::from("let x = sys::time::after_idle(duration:1.ms, 3);\n");
-    for i in 0..40 {
+    for i in 0..REGIONS {
         s.push_str(&format!("let r{i} = #[native] (x * {i} + 1);\n"));
     }
-    let sum = (0..40).map(|i| format!("r{i}")).collect::<Vec<_>>().join(" + ");
+    let sum = (0..REGIONS).map(|i| format!("r{i}")).collect::<Vec<_>>().join(" + ");
+    let expect: usize = (0..REGIONS).map(|i| 3 * i + 1).sum();
     s.push_str(&format!("let total = {sum};\n"));
-    s.push_str("sys::exit(select total { 2380 => 0, _ => 1 })\n");
+    s.push_str(&format!("sys::exit(select total {{ {expect} => 0, _ => 1 }})\n"));
     s
 }
 
@@ -33,7 +37,7 @@ fn exhausted_arena_rotates() {
         .arg(&dir)
         .arg(&path)
         .env("RUST_LOG", "warn")
-        .env("GRAPHIX_JIT_ARENA", "65536")
+        .env("GRAPHIX_JIT_ARENA", "196608")
         .stdin(Stdio::null())
         .output()
         .expect("run graphix");
@@ -51,6 +55,10 @@ fn exhausted_arena_rotates() {
     );
     assert!(
         log.contains("JIT code arena exhausted: retired generation"),
-        "a 64KB arena never rotated:\n{log}"
+        "a 192KB arena never rotated:\n{log}"
+    );
+    assert!(
+        !log.contains("rebuilt without fusion"),
+        "a link outgrew a fresh arena:\n{log}"
     );
 }

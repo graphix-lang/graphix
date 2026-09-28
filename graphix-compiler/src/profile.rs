@@ -28,7 +28,7 @@ phases! {
     Parse, Decode, Compile, BuildGraph, Typecheck0, Typecheck1, Settle,
     Analysis, CallGraph, ResolvedSites, Effects, Recursion, SeqPlan, SeedTypes,
     Fusion, ReturnType, Inputs, Builtins, Callees, Emit, JitInit,
-    JitBuild, Clif, BackendBody, BackendWrapper, BackendSpill,
+    JitBuild, Clif, Link,
     Finalize, Freeze, Normalize, ExpandRefs, StaticBind, InstanceGraph,
     InstanceCheck, ModuleCheck, ModuleSignature, LambdaFinalize, EffectRefs, EffectRound,
     InstanceCensus, ImageEnv, ImageDefs, ImageNodes,

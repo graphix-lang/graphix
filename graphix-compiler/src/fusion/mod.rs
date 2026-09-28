@@ -145,6 +145,24 @@ impl FusionStats {
     }
 }
 
+/// Regions linked together: enough work for every core, few enough
+/// functions held uncompiled.
+const LINK_BATCH: usize = 256;
+
+/// A fusion pass could not compile or install the code of regions it
+/// had spliced. Only a JIT bug does this, and the statement rebuilds
+/// without fusion.
+#[derive(Debug)]
+pub struct LinkFailed;
+
+impl std::fmt::Display for LinkFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the JIT could not link the fused regions")
+    }
+}
+
+impl std::error::Error for LinkFailed {}
+
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, reached as
 /// `ctx.fusion.<x>`.
 pub struct FusionCtx {
@@ -186,6 +204,19 @@ impl FusionCtx {
             *jit = Some(emit::Jit::new()?);
         }
         Ok(MutexGuard::map(jit, |jit| jit.as_mut().expect("built above")))
+    }
+
+    /// Compile and install every region fused since the last link; a
+    /// region's kernel has its entry from here on. An error is
+    /// [`LinkFailed`]: the regions are spliced and none can run, so the
+    /// statement rebuilds without fusion.
+    pub(crate) fn link(&mut self) -> anyhow::Result<()> {
+        let mut jit = self.jit.lock();
+        let Some(jit) = jit.as_mut() else { return Ok(()) };
+        let retired = jit.retired();
+        let r = jit.link();
+        self.stats.jit_generations += jit.retired() - retired;
+        r.map_err(|e| e.context(LinkFailed))
     }
 
     /// A slot walk: its source was checked when the prototype fused.
@@ -963,24 +994,18 @@ fn build_region<R: Rt, E: UserEvent>(
         return_type,
     ));
     let phase = profile::phase(Phase::Emit);
-    let (result, retired) = match ctx.fusion.jit() {
-        Ok(mut jit) => {
-            let retired = jit.retired();
-            let r = emit::compile_kernel_with_callees_direct(
-                &mut jit,
-                &kernel,
-                &lambdas.callees,
-                node,
-                &discovery.apply_sites,
-                &lambdas.sites,
-                &lambdas.bodies,
-                &ctx.env,
-            );
-            (r, jit.retired() - retired)
-        }
-        Err(e) => (Err(e), 0),
-    };
-    ctx.fusion.stats.jit_generations += retired;
+    let result = ctx.fusion.jit().and_then(|mut jit| {
+        emit::compile_kernel_with_callees_direct(
+            &mut jit,
+            &kernel,
+            &lambdas.callees,
+            node,
+            &discovery.apply_sites,
+            &lambdas.sites,
+            &lambdas.bodies,
+            &ctx.env,
+        )
+    });
     drop(phase);
     let wrapped = match result {
         Ok(w) => w,
@@ -1036,6 +1061,9 @@ fn build_region<R: Rt, E: UserEvent>(
         }
     }
     ctx.fusion.stats.record_fused(node.spec());
+    if ctx.fusion.jit()?.unlinked() >= LINK_BATCH {
+        ctx.fusion.link()?;
+    }
     for n in lambdas.decorated.iter() {
         check_attribute_targets(n, ctx)?;
     }

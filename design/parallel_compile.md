@@ -51,6 +51,43 @@ build: about 100 ms wall parsing 5.4k lines (0.8 MB/s, the two
 shell's `--check` and the language server do not set `CFlag::CheckOnly`
 yet: they still elaborate.
 
+## Code generation (BUILT)
+
+Fusion's decisions are all made at CLIF emission: a region that emits is
+spliced, one that does not keeps node-walking. Cranelift's backend only
+turns emitted functions into machine code, so it runs after the pass,
+in parallel (`fusion/emit/jit.rs`):
+
+1. Emission names bodies, thunks, wrappers, helpers and constants by ids
+   of its own table (`jit::Names`) and defines nothing. Each function
+   waits in the `Jit`'s queue, a body after its callees.
+2. The pass ends with a link (and links every `LINK_BATCH` regions):
+   the queue compiles on scoped worker threads, the calling thread
+   among them, and the results are placed by queue index, so the output
+   does not depend on the threads.
+3. The records are built in queue order and the regions' wrappers
+   install with one finalize, through the load the image path uses.
+   Each kernel's entry is set then; before its pass links a kernel has
+   no entry, and nothing runs it.
+4. A full arena retires the generation and the link reinstalls its
+   records in a fresh one without recompiling. Any other failure is
+   `LinkFailed` (a JIT bug, since emission succeeded): the statement is
+   rebuilt with fusion off, so a bug still costs fusion and never an
+   answer.
+
+Admin app build with fusion, quick build, `milestone_timing` medians
+against b0f86a98:
+
+| | before | after |
+|---|---|---|
+| one P-core | 729 ms | 650 ms |
+| four P-cores | 733 ms | 459 ms |
+| fusion's share on four P-cores | ~456 ms | ~187 ms |
+
+On one core the gain is the trap stubs and per-region finalizes that
+are gone. On four the link is 85 ms where the backend was 297 ms. What
+remains serial in fusion is discovery and emission, about 100 ms.
+
 ## The rule that makes it possible
 
 BUILT on the branch: the gate keeps what the body bound, and the check's
@@ -159,5 +196,6 @@ audit is clean it becomes a finding that every fuzz lane records.
 3. Split ExecCtx into the compile context and the runtime, still on one
    thread, with the gate green.
 4. The phases, still on one thread, with `detcheck`.
-5. Threads: bodies, then elaboration, then code generation.
+5. Threads: bodies, then elaboration. Code generation is BUILT
+   (above).
 6. Per-unit and per-instance caches in the image.

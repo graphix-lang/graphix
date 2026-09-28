@@ -1,8 +1,8 @@
 //! [`FusedKernel`]: the `Update` node over a JIT-compiled region. It
 //! drives the region's input feeders, packs their values across the
-//! JIT ABI boundary, and unpacks the result. It exists only over a
-//! compiled wrapper: a region whose JIT fails is never spliced and its
-//! nodes keep node-walking.
+//! JIT ABI boundary, and unpacks the result. It is spliced when its
+//! region emits and gets its entry when the pass links; a region that
+//! fails to emit is never spliced and its nodes keep node-walking.
 
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
@@ -311,7 +311,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         w.slot_table_words.encode(buf)?;
         w.own_site.encode(buf)?;
         w.state_self_blocks.encode(buf)?;
-        record_encode(&w.wrapper, buf)
+        record_encode(w.wrapper(), buf)
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {

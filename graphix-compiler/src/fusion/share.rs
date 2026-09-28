@@ -265,7 +265,7 @@ impl SlotShare {
             w.slot_table_words.encode(buf)?;
             w.own_site.encode(buf)?;
             w.state_self_blocks.encode(buf)?;
-            record_encode(&w.wrapper, buf)?;
+            record_encode(w.wrapper(), buf)?;
             e.print.callees.encode(buf)?;
             encode_varint(e.print.raises.len() as u64, buf);
             for (h, t, s) in e.print.raises.iter() {
