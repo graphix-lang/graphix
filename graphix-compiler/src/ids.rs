@@ -1,13 +1,20 @@
 //! The compiler's id types: `netidx-core`'s `atomic_id!` plus what an
 //! image needs, kept local so netidx's own ids and wire format are
-//! untouched. An image writes ids as minted and records each domain's
-//! span; a reader reserves a block that size on the counter, above
-//! every id the image wrote, and offsets every id into it, so the same
-//! image loads into several runtimes in one process without touching
-//! anything already minted.
+//! untouched. Each domain has two regions: ids are minted from
+//! [`MINT_BASE`] up, and the blocks image readers reserve come from
+//! below it. An image records the span of its ids in each region; a
+//! reader reserves one block the size of both, above every reserved id
+//! the image wrote, and maps its reserved ids then its minted ids into
+//! it, so the same image loads into several runtimes in one process
+//! without touching anything already minted. A runtime's image never
+//! spans another runtime's reservation, so a chain of restores keeps
+//! its size.
 
-/// The ids of one domain an image holds: `floor` is the smallest,
-/// `extent` one past the largest; the reader reserves the difference.
+/// The first minted id; every reserved block lies below it.
+pub(crate) const MINT_BASE: u64 = 1 << 62;
+
+/// The ids of one region an image holds: `floor` is the smallest,
+/// `extent` one past the largest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdSpan {
     pub floor: u64,
@@ -28,41 +35,96 @@ impl IdSpan {
     pub(crate) fn contains(&self, raw: u64) -> bool {
         self.floor <= raw && raw < self.extent
     }
+
+    fn count(&mut self, raw: u64) {
+        self.floor = self.floor.min(raw);
+        self.extent = self.extent.max(raw + 1);
+    }
 }
 
-/// No reservation takes a counter past this, so no counter wraps.
-const COUNTER_LIMIT: u64 = 1 << 62;
+/// The ids of one domain an image holds, by region.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IdSpans {
+    pub reserved: IdSpan,
+    pub minted: IdSpan,
+}
 
-/// Reserve on `counter` a block for the ids of `span`, starting at or
-/// above `span.extent`, and return what a written id is offset by.
-/// `None` when the block would take the counter past its limit.
+impl IdSpans {
+    /// The size of the block a reader reserves.
+    pub fn len(&self) -> u64 {
+        self.reserved.len() + self.minted.len()
+    }
+
+    pub(crate) fn count(&mut self, raw: u64) {
+        match raw < MINT_BASE {
+            true => self.reserved.count(raw),
+            false => self.minted.count(raw),
+        }
+    }
+
+    /// Where the written id `raw` goes in the block at `start`: the
+    /// reserved span first, then the minted one, each in order.
+    pub(crate) fn relocate(&self, start: u64, raw: u64) -> Option<u64> {
+        if self.reserved.contains(raw) {
+            Some(start + (raw - self.reserved.floor))
+        } else if self.minted.contains(raw) {
+            Some(start + self.reserved.len() + (raw - self.minted.floor))
+        } else {
+            None
+        }
+    }
+}
+
+/// Reserve below [`MINT_BASE`] a block for the ids of `spans`, above
+/// every reserved id they hold, and lift `minted` past every minted id
+/// they hold, so neither a relocated id nor a new one spells an id the
+/// image's text holds. `None` when the reserved region is full.
 pub(crate) fn reserve_above(
-    counter: &std::sync::atomic::AtomicU64,
-    span: IdSpan,
+    reserved: &std::sync::atomic::AtomicU64,
+    minted: &std::sync::atomic::AtomicU64,
+    spans: IdSpans,
 ) -> Option<IdRelocation> {
     use std::sync::atomic::Ordering::Relaxed;
-    let len = span.len();
+    minted.fetch_max(spans.minted.extent, Relaxed);
+    let len = spans.len();
     if len == 0 {
-        return Some(IdRelocation::Decode { base: 0, span });
+        return Some(IdRelocation::Decode { start: 0, spans });
     }
-    let start = |c: u64| c.max(span.extent);
-    let prev = counter
+    let start = |c: u64| c.max(spans.reserved.extent);
+    let prev = reserved
         .fetch_update(Relaxed, Relaxed, |c| {
-            start(c).checked_add(len).filter(|end| *end <= COUNTER_LIMIT)
+            start(c).checked_add(len).filter(|end| *end <= MINT_BASE)
         })
         .ok()?;
-    Some(IdRelocation::Decode { base: start(prev) - span.floor, span })
+    Some(IdRelocation::Decode { start: start(prev), spans })
+}
+
+/// An id as written: its region in the low bit, then its offset in the
+/// region, so a minted id costs a varint of its offset from
+/// [`MINT_BASE`].
+pub(crate) fn to_wire(raw: u64) -> u64 {
+    match raw.checked_sub(MINT_BASE) {
+        Some(offset) => (offset << 1) | 1,
+        None => raw << 1,
+    }
+}
+
+pub(crate) fn from_wire(wire: u64) -> Option<u64> {
+    match wire & 1 {
+        1 => MINT_BASE.checked_add(wire >> 1),
+        _ => Some(wire >> 1),
+    }
 }
 
 /// How an [`image_id!`] type is written while an image is encoded or
-/// decoded on this thread; `None` (the default) writes the raw id.
+/// decoded on this thread; `None` (the default) writes the id as is.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum IdRelocation {
-    /// The span of the ids written so far.
-    Encode(IdSpan),
-    /// A written id in `span` is offset by `base` into the reserved
-    /// block; any other is refused.
-    Decode { base: u64, span: IdSpan },
+    /// The spans of the ids written so far.
+    Encode(IdSpans),
+    /// A written id in `spans` goes into the block at `start`
+    /// ([`IdSpans::relocate`]); any other is refused.
+    Decode { start: u64, spans: IdSpans },
 }
 
 macro_rules! image_id {
@@ -75,6 +137,12 @@ macro_rules! image_id {
         impl $name {
             fn counter() -> &'static std::sync::atomic::AtomicU64 {
                 static NEXT: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new($crate::ids::MINT_BASE);
+                &NEXT
+            }
+
+            fn reserved() -> &'static std::sync::atomic::AtomicU64 {
+                static NEXT: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
                 &NEXT
             }
@@ -83,12 +151,12 @@ macro_rules! image_id {
                 $name(Self::counter().fetch_add(1, std::sync::atomic::Ordering::Relaxed))
             }
 
-            /// Reserve a block for the ids of `span`; see
+            /// Reserve a block for the ids of `spans`; see
             /// [`crate::ids::reserve_above`].
             pub(crate) fn reserve(
-                span: $crate::ids::IdSpan,
+                spans: $crate::ids::IdSpans,
             ) -> Option<$crate::ids::IdRelocation> {
-                $crate::ids::reserve_above(Self::counter(), span)
+                $crate::ids::reserve_above(Self::reserved(), Self::counter(), spans)
             }
 
             pub fn inner(&self) -> u64 {
@@ -126,16 +194,15 @@ macro_rules! image_id {
                 Self::relocation_slot().replace(r)
             }
 
-            /// The id as written, which is the id; an encode relocation
-            /// counts it toward the span.
+            /// The id as written; an encode relocation counts it toward
+            /// its region's span.
             fn wire(&self) -> u64 {
                 let slot = Self::relocation_slot();
-                if let Some($crate::ids::IdRelocation::Encode(mut span)) = slot.get() {
-                    span.floor = span.floor.min(self.0);
-                    span.extent = span.extent.max(self.0 + 1);
-                    slot.set(Some($crate::ids::IdRelocation::Encode(span)));
+                if let Some($crate::ids::IdRelocation::Encode(mut spans)) = slot.get() {
+                    spans.count(self.0);
+                    slot.set(Some($crate::ids::IdRelocation::Encode(spans)));
                 }
-                self.0
+                $crate::ids::to_wire(self.0)
             }
         }
 
@@ -154,15 +221,13 @@ macro_rules! image_id {
             fn decode(
                 buf: &mut impl bytes::Buf,
             ) -> std::result::Result<Self, netidx_core::pack::PackError> {
-                let raw = netidx_core::pack::decode_varint(buf)?;
+                let raw = $crate::ids::from_wire(netidx_core::pack::decode_varint(buf)?)
+                    .ok_or(netidx_core::pack::PackError::InvalidFormat)?;
                 match Self::relocation_slot().get() {
-                    Some($crate::ids::IdRelocation::Decode { base, span }) => {
-                        if span.contains(raw) {
-                            Ok(Self(base + raw))
-                        } else {
-                            Err(netidx_core::pack::PackError::InvalidFormat)
-                        }
-                    }
+                    Some($crate::ids::IdRelocation::Decode { start, spans }) => spans
+                        .relocate(start, raw)
+                        .map(Self)
+                        .ok_or(netidx_core::pack::PackError::InvalidFormat),
                     _ => Ok(Self(raw)),
                 }
             }

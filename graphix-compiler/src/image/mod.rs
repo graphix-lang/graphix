@@ -27,7 +27,7 @@ use crate::{
         emit::BodyRecord,
         kernel_abi::{KernelSig, SiteLeaf},
     },
-    ids::{IdRelocation, IdSpan},
+    ids::{IdRelocation, IdSpan, IdSpans},
     shared_map,
     typ::{
         FnType, ResolvedRef, TVar, Type,
@@ -80,17 +80,21 @@ impl<T: Copy> PerDomain<T> {
     }
 }
 
-/// The span of each relocated id domain an image holds; the decoder
-/// reserves a block of each.
-pub type IdCounts = PerDomain<IdSpan>;
+/// The spans of each relocated id domain an image holds; the decoder
+/// reserves a block for each domain.
+pub type IdCounts = PerDomain<IdSpans>;
 
 impl Pack for IdCounts {
     fn encoded_len(&self) -> usize {
-        self.each().iter().map(|s| varint_len(s.floor) + varint_len(s.extent)).sum()
+        self.each()
+            .iter()
+            .flat_map(|s| [s.reserved, s.minted])
+            .map(|s| varint_len(s.floor) + varint_len(s.extent))
+            .sum()
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        for s in self.each() {
+        for s in self.each().iter().flat_map(|s| [s.reserved, s.minted]) {
             encode_varint(s.floor, buf);
             encode_varint(s.extent, buf);
         }
@@ -98,9 +102,12 @@ impl Pack for IdCounts {
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let mut each = [IdSpan::default(); 5];
+        let mut span = || -> Result<IdSpan, PackError> {
+            Ok(IdSpan { floor: decode_varint(buf)?, extent: decode_varint(buf)? })
+        };
+        let mut each = [IdSpans::default(); 5];
         for s in each.iter_mut() {
-            *s = IdSpan { floor: decode_varint(buf)?, extent: decode_varint(buf)? };
+            *s = IdSpans { reserved: span()?, minted: span()? };
         }
         Ok(IdCounts::from_each(each))
     }
@@ -480,10 +487,10 @@ thread_local! {
     static DECODER: Cell<Option<NonNull<ImageDecoder>>> = const { Cell::new(None) };
 }
 
-fn span(r: Option<IdRelocation>) -> IdSpan {
+fn span(r: Option<IdRelocation>) -> IdSpans {
     match r {
-        Some(IdRelocation::Encode(span)) => span,
-        _ => IdSpan::default(),
+        Some(IdRelocation::Encode(spans)) => spans,
+        _ => IdSpans::default(),
     }
 }
 
@@ -1563,9 +1570,9 @@ mod tests {
     use arcstr::literal;
     use netidx_value::Value;
 
-    fn expr_base(dec: &ImageDecoder) -> u64 {
+    fn expr_start(dec: &ImageDecoder) -> u64 {
         match dec.relocations.expr {
-            Some(IdRelocation::Decode { base, .. }) => base,
+            Some(IdRelocation::Decode { start, .. }) => start,
             r => panic!("{r:?}"),
         }
     }
@@ -1688,20 +1695,23 @@ mod tests {
         let b = ExprId::new();
         let mut enc = ImageEncoder::new();
         let packed = pack_all(&[a, b, a], &mut enc);
-        // as minted; the span runs from the smallest to one past the largest
+        // minted; the span runs from the smallest to one past the largest
         let span = IdSpan {
             floor: a.inner().min(b.inner()),
             extent: a.inner().max(b.inner()) + 1,
         };
-        assert_eq!(enc.counts(), IdCounts { expr: span, ..IdCounts::default() });
+        let spans = IdSpans { minted: span, ..IdSpans::default() };
+        assert_eq!(enc.counts(), IdCounts { expr: spans, ..IdCounts::default() });
+        // each written as its offset from the first minted id
         let mut raw = ImageBuf::with_capacity(0);
         for id in [a, b, a] {
-            encode_varint(id.inner(), &mut raw);
+            encode_varint(((id.inner() - crate::ids::MINT_BASE) << 1) | 1, &mut raw);
         }
         assert_eq!(&packed.image[..], &raw.freeze()[..]);
         let mut dec = packed.decoder(&enc);
-        let base = expr_base(&dec);
+        let start = expr_start(&dec);
         let after = ExprId::new();
+        let a_first = a.inner() < b.inner();
         DecodeImage::with(&mut dec, || {
             let mut b = packed.body();
             let (x, y, z) = (
@@ -1713,15 +1723,37 @@ mod tests {
             assert_ne!(x, y);
             assert_ne!(x, a);
             assert!(x.inner() < after.inner() && y.inner() < after.inner());
-            // the block holds the span, floor first
-            assert_eq!(x.inner().min(y.inner()), base.wrapping_add(span.floor));
-            // above every id the image wrote, so a scope component minted
-            // from a relocated id never spells one the image's text holds
-            assert!(x.inner().min(y.inner()) >= span.extent);
+            // the block holds the span, floor first, in order
+            assert_eq!(x.inner().min(y.inner()), start);
+            assert_eq!(x.inner() < y.inner(), a_first);
+            // in the reserved region, so a scope component minted from a
+            // relocated id never spells one the image's text holds
+            assert!(x.inner().max(y.inner()) < crate::ids::MINT_BASE);
             // a second decoder of the same image gets its own block
             let dec2 = ImageDecoder::new(enc.counts()).unwrap();
-            assert!(expr_base(&dec2) > base);
+            assert!(expr_start(&dec2) >= start + spans.len());
         });
+    }
+
+    /// A runtime restored from an image mints after other runtimes
+    /// restored theirs, and writes an image of its own: the span it
+    /// records holds its own ids, never the blocks the others reserved,
+    /// so a chain of such images stays small and reservable.
+    #[test]
+    fn a_chain_of_restores_keeps_its_span() {
+        let mut carried = ExprId::new();
+        for round in 0..100 {
+            let fresh = ExprId::new();
+            let mut enc = ImageEncoder::new();
+            let packed = pack_all(&[carried, fresh], &mut enc);
+            let len = enc.counts().expr.len();
+            assert!(len < 1 << 20, "round {round}: the image spans {len} ids");
+            let mut dec = packed.decoder(&enc);
+            let _concurrent = ImageDecoder::new(enc.counts()).expect("a reservable span");
+            carried = DecodeImage::with(&mut dec, || {
+                ExprId::decode(&mut packed.body()).unwrap()
+            });
+        }
     }
 
     /// An id outside the span the image recorded fails the read rather
@@ -1733,7 +1765,7 @@ mod tests {
         let packed = pack_all(&[a], &mut enc);
         let mut dec = packed.decoder(&enc);
         let mut bad = ImageBuf::with_capacity(0);
-        encode_varint(a.inner() + 1, &mut bad);
+        encode_varint(crate::ids::to_wire(a.inner() + 1), &mut bad);
         let bad = bad.freeze();
         DecodeImage::with(&mut dec, || {
             assert!(ExprId::decode(&mut packed.body()).is_ok());
@@ -1744,7 +1776,10 @@ mod tests {
     /// A span no block can hold is refused before anything reserves.
     #[test]
     fn an_unreservable_span_is_refused() {
-        let huge = IdSpan { floor: 0, extent: u64::MAX };
+        let huge = IdSpans {
+            reserved: IdSpan { floor: 0, extent: crate::ids::MINT_BASE },
+            ..IdSpans::default()
+        };
         assert!(
             ImageDecoder::new(IdCounts { bind: huge, ..IdCounts::default() }).is_err()
         );
@@ -1838,7 +1873,7 @@ mod tests {
         let packed = pack_all(&[typ.clone()], &mut enc);
         // an alias takes the other's id, so a and b share one
         let id = |tv: &TVar| tv.parts().0.inner();
-        assert_eq!(enc.counts().tvar.extent, id(&a).max(id(&c)) + 1);
+        assert_eq!(enc.counts().tvar.minted.extent, id(&a).max(id(&c)) + 1);
         let mut dec = packed.decoder(&enc);
         DecodeImage::with(&mut dec, || {
             let decoded = Type::decode(&mut packed.body()).unwrap();
@@ -2054,11 +2089,11 @@ mod tests {
         let mut enc = ImageEncoder::new();
         let packed = pack_all(&[e1.clone(), e2.clone()], &mut enc);
         assert_eq!(
-            enc.counts().expr,
+            enc.counts().expr.minted,
             IdSpan { floor: e1.id.inner(), extent: e2.id.inner() + 1 }
         );
         let mut dec = packed.decoder(&enc);
-        let base = expr_base(&dec);
+        let start = expr_start(&dec);
         DecodeImage::with(&mut dec, || {
             let mut b = packed.body();
             let d1 = Expr::decode(&mut b).unwrap();
@@ -2068,8 +2103,8 @@ mod tests {
             assert!(!Arc::ptr_eq(&d1.ori, &ori));
             assert_eq!(d1.ori.text, ori.text);
             assert_ne!(d1.id, d2.id);
-            assert_eq!(d1.id.inner().wrapping_sub(base), e1.id.inner());
-            assert_eq!(d2.id.inner().wrapping_sub(base), e2.id.inner());
+            assert_eq!(d1.id.inner() - start, 0);
+            assert_eq!(d2.id.inner() - start, e2.id.inner() - e1.id.inner());
             assert_eq!(d1.kind, ExprKind::Constant(Value::I64(1)));
         });
     }

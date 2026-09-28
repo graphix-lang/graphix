@@ -472,28 +472,42 @@ The syntax codec (`expr/serialize.rs`) deliberately does less: fresh
 suit syntax that will be compiled. The image codec never recovers
 correctness by recompiling.
 
-### IDs: written as minted, block relocation
+### IDs: two regions, block relocation
 
-Encode writes every ID as minted and records each domain's span, the
-smallest and one past the largest; the spans are known only once the
-session ends, so they follow the trailer, at an offset the header
-carries, and the reader takes them before anything decodes. Decode reserves, per domain, one
-block the span's length at or above the span's extent, with a single
-update of that domain's allocator, and offsets every ID into it: an
-allocator never moves backwards and never overlaps anything already
-handed out, the same image loads into several runtimes in one process
-(the test suite, the GUI harness, the LSP), each with its own block,
-and no ID this process mints or relocates equals one the image wrote,
-so a scope component minted after a restore (`#fn7`, `#do12`) never
-spells one the image's scope text holds. An ID outside its span, or a
-span that would take the allocator past its limit, fails the read. This is one add per ID
-during a pass that touches every ID anyway. (The first version
-renumbered IDs densely in first-seen order and then sorted them so
-maps keyed by IDs kept their order, which cost a second measure pass
-over the whole image so every ID was measured at its final width: 40%
-of the write. A process that writes an image minted its IDs from zero,
-so they are dense already; a process that loaded one first writes
-them above its block, wider by a byte at most.)
+Each domain has two regions (`ids.rs`): IDs are minted from
+`MINT_BASE` (2^62) up, and the blocks readers reserve come from below
+it. An ID is written as its region bit and its offset in the region, so
+a minted ID costs the varint of its distance from `MINT_BASE`. Encode
+records each domain's span per region, the smallest and one past the
+largest; the spans are known only once the session ends, so they follow
+the trailer, at an offset the header carries, and the reader takes them
+before anything decodes. Decode reserves, per domain, one block the size
+of both spans, at or above the image's reserved extent, with a single
+update of the reserved allocator, and maps the reserved span then the
+minted one into it, each in order; it also lifts the minted allocator
+past the image's minted extent. So an allocator never moves backwards
+and never overlaps anything already handed out, the same image loads
+into several runtimes in one process (the test suite, the GUI harness,
+the LSP, the fuzzer's session pairs), each with its own block, and no ID
+this process mints or relocates equals one the image wrote: a scope
+component minted after a restore (`#fn7`, `#do12`) never spells one the
+image's scope text holds. Restored IDs stay below the IDs minted after
+the restore, as in the runtime that wrote them.
+
+The regions are what keep a chain of restores small. With one region, a
+restored runtime's IDs sit in its block while the ones it mints later
+sit above every block other runtimes reserved in between, so its image's
+span held their reservations, and the next reader's reservation held
+that span: under concurrency the size multiplied per generation until
+the allocator ran out (`image::tests::a_chain_of_restores_keeps_its_span`).
+With two, a runtime's reserved span is its one block and its minted span
+holds only IDs minted meanwhile. An ID outside its spans, or a block
+that would take the reserved allocator into the minted region, fails
+the read. This is one add per ID during a pass that touches every ID
+anyway. (The first version renumbered IDs densely in first-seen order
+and then sorted them so maps keyed by IDs kept their order, which cost
+a second measure pass over the whole image so every ID was measured at
+its final width: 40% of the write.)
 
 `atomic_id!` (`../netidx/netidx-core/src/utils.rs:173`) needs a
 reserve-block API; `from_inner` does not reserve. Every persisted
