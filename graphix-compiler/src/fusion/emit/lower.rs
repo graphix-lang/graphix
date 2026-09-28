@@ -15,13 +15,16 @@ use crate::{
     },
     typ::Type,
 };
-use anyhow::{Context as AnyContext, Result, anyhow, bail};
-use cranelift_codegen::ir::{
-    AbiParam, Block, FuncRef, Function, InstBuilder, Signature, Value as ClifValue, types,
+use anyhow::{Result, anyhow, bail};
+use cranelift_codegen::{
+    ir::{
+        AbiParam, Block, FuncRef, Function, InstBuilder, Signature, Value as ClifValue,
+        types,
+    },
+    isa::CallConv,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
-use cranelift_jit::JITModule;
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::FuncId;
 use poolshark::local::LPooled;
 use std::{
     cell::{Cell, RefCell},
@@ -33,7 +36,8 @@ use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
     body::{BodyRole, BodySource, emit_interrupt_check},
     call::BufKind,
-    record::{EmitConst, SymbolTable},
+    jit::Names,
+    record::EmitConst,
 };
 
 pub(super) fn compile_into_function<'a>(
@@ -43,9 +47,7 @@ pub(super) fn compile_into_function<'a>(
     self_thunk: Option<FuncRef>,
     helper_ids: &'a HelperFuncIds,
     consts: &'a RefCell<Vec<EmitConst>>,
-    module: &'a RefCell<&'a mut JITModule>,
-    symbols: &'a SymbolTable,
-    symbol: &'a str,
+    names: &'a RefCell<&'a mut Names>,
     body: &'a BodySource<'a>,
     callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
 ) -> Result<EmittedBody> {
@@ -65,7 +67,7 @@ pub(super) fn compile_into_function<'a>(
         let w = b.ins().band_imm(ctx_word, 2);
         b.ins().ushr_imm(w, 1)
     };
-    let helper_refs = HelperRefs::new(helper_ids, module);
+    let helper_refs = HelperRefs::new(helper_ids, names);
     let helper = |b: &mut FunctionBuilder, name: &str| {
         helper_refs.get(b.func, name).ok_or_else(|| anyhow!("missing helper {name}"))
     };
@@ -159,9 +161,7 @@ pub(super) fn compile_into_function<'a>(
         self_call_roots: RefCell::new(Vec::new()),
         pending_exit: RefCell::new(None),
         consts,
-        module,
-        symbols,
-        symbol,
+        names,
         kernel,
         builtin_apply_sites: spec.builtin_apply_sites,
         lambda_call_sites: spec.lambda_call_sites,
@@ -454,12 +454,8 @@ pub(crate) struct LowerCtx<'a> {
     /// The constants this body refers to by address, in symbol order;
     /// harvested into the body's record.
     pub(super) consts: &'a RefCell<Vec<EmitConst>>,
-    /// The module, for declaring a constant's data symbol.
-    pub(super) module: &'a RefCell<&'a mut JITModule>,
-    /// Where a constant symbol's address is entered for the loader.
-    pub(super) symbols: &'a SymbolTable,
-    /// This body's symbol; constant symbols are named under it.
-    pub(super) symbol: &'a str,
+    /// The ids the body names, for declaring a constant.
+    pub(super) names: &'a RefCell<&'a mut Names>,
     /// This body's kernel, whose cells a constant may name.
     pub(super) kernel: &'a KernelSig,
     /// The single abort block; its body is emitted at the end of
@@ -508,13 +504,13 @@ pub(super) fn freeze_node_typ(ctx: &LowerCtx, t: &Type) -> Option<Type> {
 /// function on its first use.
 pub(super) struct HelperRefs<'a> {
     ids: &'a HelperFuncIds,
-    module: &'a RefCell<&'a mut JITModule>,
+    names: &'a RefCell<&'a mut Names>,
     refs: RefCell<BTreeMap<&'static str, FuncRef>>,
 }
 
 impl<'a> HelperRefs<'a> {
-    fn new(ids: &'a HelperFuncIds, module: &'a RefCell<&'a mut JITModule>) -> Self {
-        Self { ids, module, refs: RefCell::new(BTreeMap::new()) }
+    fn new(ids: &'a HelperFuncIds, names: &'a RefCell<&'a mut Names>) -> Self {
+        Self { ids, names, refs: RefCell::new(BTreeMap::new()) }
     }
 
     /// The helper's `FuncRef` in `func`, the body being built.
@@ -523,7 +519,7 @@ impl<'a> HelperRefs<'a> {
             return Some(*f);
         }
         let (name, id) = self.ids.ids.get_key_value(name)?;
-        let f = self.module.borrow_mut().declare_func_in_func(*id, func);
+        let f = self.names.borrow().import_func(*id, func);
         self.refs.borrow_mut().insert(name, f);
         Some(f)
     }
@@ -536,7 +532,7 @@ impl<'a> HelperRefs<'a> {
     }
 }
 
-/// Runtime-helper `FuncId`s, declared once per JIT module;
+/// Runtime-helper `FuncId`s, declared once per id table by `declare`;
 /// [`HelperRefs`] imports them into a function as it uses them.
 pub(super) struct HelperFuncIds {
     pub(super) ids: BTreeMap<&'static str, FuncId>,
@@ -545,15 +541,15 @@ pub(super) struct HelperFuncIds {
 }
 
 impl HelperFuncIds {
-    pub(super) fn new(module: &mut JITModule) -> Result<Self> {
+    pub(super) fn new(
+        call_conv: CallConv,
+        mut declare: impl FnMut(&'static str, &Signature) -> Result<FuncId>,
+    ) -> Result<Self> {
         let mut ids = BTreeMap::new();
         let mut arity = BTreeMap::new();
         for h in all_helpers() {
-            let sig = helper_signature(module, &h);
-            let fid = module
-                .declare_function(h.name, Linkage::Import, &sig)
-                .with_context(|| format!("declare_function for helper `{}`", h.name))?;
-            ids.insert(h.name, fid);
+            let sig = helper_signature(call_conv, &h);
+            ids.insert(h.name, declare(h.name, &sig)?);
             arity.insert(h.name, h.params.iter().map(|p| p.len()).sum());
         }
         Ok(Self { ids, arity })
@@ -589,8 +585,8 @@ fn helper_abi_param(t: AbiTy, is_param: bool) -> AbiParam {
 }
 
 /// A helper's cranelift `Signature` from its registered [`HelperSpec`].
-fn helper_signature(module: &JITModule, spec: &HelperSpec) -> Signature {
-    let mut sig = Signature::new(module.isa().default_call_conv());
+fn helper_signature(call_conv: CallConv, spec: &HelperSpec) -> Signature {
+    let mut sig = Signature::new(call_conv);
     for slots in spec.params {
         for t in *slots {
             sig.params.push(helper_abi_param(*t, true));

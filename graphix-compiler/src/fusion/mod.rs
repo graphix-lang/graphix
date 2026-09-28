@@ -962,46 +962,25 @@ fn build_region<R: Rt, E: UserEvent>(
         }),
         return_type,
     ));
-    let build = |ctx: &mut ExecCtx<R, E>| {
-        emit::compile_kernel_with_callees_direct(
-            &mut *ctx.fusion.jit()?,
-            &kernel,
-            &lambdas.callees,
-            node,
-            &discovery.apply_sites,
-            &lambdas.sites,
-            &lambdas.bodies,
-            &ctx.env,
-        )
-    };
     let phase = profile::phase(Phase::Emit);
-    let mut result = build(ctx);
-    // An exhausted arena retires the whole active `Jit` (its kernels
-    // keep its code alive) and the build retries once in a fresh module;
-    // the retry recompiles the whole callee set, so generations never link.
-    if let Err(e) = &result
-        && e.chain().any(|c| c.is::<emit::ArenaExhausted>())
-    {
-        match emit::Jit::new() {
-            Ok(fresh) => {
-                *ctx.fusion.jit.lock() = Some(fresh);
-                ctx.fusion.stats.jit_generations += 1;
-                log::warn!(
-                    "JIT code arena exhausted: retired generation {} (freed when its \
-                     last kernel drops) and retrying this region in a fresh module",
-                    ctx.fusion.stats.jit_generations
-                );
-                result = build(ctx);
-            }
-            Err(e2) => {
-                log::warn!(
-                    "JIT code arena exhausted and a fresh module could \
-                     not be created ({e2:#}) — the region will run \
-                     interpreted"
-                );
-            }
+    let (result, retired) = match ctx.fusion.jit() {
+        Ok(mut jit) => {
+            let retired = jit.retired();
+            let r = emit::compile_kernel_with_callees_direct(
+                &mut jit,
+                &kernel,
+                &lambdas.callees,
+                node,
+                &discovery.apply_sites,
+                &lambdas.sites,
+                &lambdas.bodies,
+                &ctx.env,
+            );
+            (r, jit.retired() - retired)
         }
-    }
+        Err(e) => (Err(e), 0),
+    };
+    ctx.fusion.stats.jit_generations += retired;
     drop(phase);
     let wrapped = match result {
         Ok(w) => w,

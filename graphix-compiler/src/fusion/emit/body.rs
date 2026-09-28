@@ -14,14 +14,13 @@ use crate::{
     },
     typ::Type,
 };
-use anyhow::{Context as AnyContext, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, FuncRef, Inst, InstBuilder, Value as ClifValue, condcodes::IntCC,
     types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
-use cranelift_module::{Linkage, Module};
 use netidx_value::Value;
 use smallvec::SmallVec;
 
@@ -713,14 +712,9 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         let gv = match consts.iter().find(|c| c.recipe.same_as(&recipe)) {
             Some(c) => c.gv,
             None => {
-                let name =
-                    compact_str::format_compact!("{}.c{}", self.ctx.symbol, consts.len());
-                let mut module = self.ctx.module.borrow_mut();
-                let data = module
-                    .declare_data(&name, Linkage::Import, false, false)
-                    .with_context(|| format!("declare_data {name}"))?;
-                self.ctx.symbols.lock().insert(name, recipe.pointer(self.ctx.kernel));
-                let gv = module.declare_data_in_func(data, self.b.func);
+                let mut names = self.ctx.names.borrow_mut();
+                let data = names.data();
+                let gv = names.import_data(data, self.b.func);
                 consts.push(EmitConst { recipe, data, gv });
                 gv
             }

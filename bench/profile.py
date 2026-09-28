@@ -69,7 +69,7 @@ def main():
 
 FUSION = {
     "Fusion", "ReturnType", "Inputs", "Builtins", "Callees", "Emit", "JitInit",
-    "JitBuild", "Clif", "BackendBody", "BackendWrapper", "BackendStub",
+    "JitBuild", "Clif", "BackendBody", "BackendWrapper",
     "BackendSpill", "Finalize", "Freeze", "Normalize", "ExpandRefs",
 }
 LINK = {"StaticBind", "InstanceGraph", "InstanceCheck", "InstanceCensus"}
