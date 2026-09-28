@@ -31,6 +31,26 @@ per-core bound on module bodies is ~15 ms. Developers who split their
 program for speed move that bound. They do not move the instance work,
 which follows the call graph. So the plan covers all three parts.
 
+## Check vs build
+
+Admin, quick build, pinned, `check_vs_build_timing` (netidx-admin
+`test.rs`), medians, against 978f05bc (before the check split, when
+`--check` was the full build):
+
+| | before | now |
+|---|---|---|
+| app, the check alone | 250 ms (full build) | 0.2 ms |
+| app, build without fusion | 251 ms | 255 ms |
+| app, build with fusion | 680 ms | 700 ms |
+| package root, check or build | 137 ms | 141 ms |
+
+The app's check is one call site over checked definitions. The
+package root has no elaboration of its own, so its check is its
+build: about 100 ms wall parsing 5.4k lines (0.8 MB/s, the two
+1.3k-line files ~60 ms each) and 53 ms of definition checks. The
+shell's `--check` and the language server do not set `CFlag::CheckOnly`
+yet: they still elaborate.
+
 ## The rule that makes it possible
 
 BUILT on the branch: the gate keeps what the body bound, and the check's
