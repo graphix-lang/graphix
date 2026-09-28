@@ -927,7 +927,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
             if let Err(e) = site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
             {
-                if ctx.def_gates.is_empty() {
+                if ctx.def_gate_depth == 0 {
                     super::lambda::elab_audit::report(
                         "unify-back",
                         &self.spec,
@@ -938,7 +938,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 return Err(e.at(self.fnode.spec()));
             }
             if let Some(before) = before
-                && ctx.def_gates.is_empty()
+                && ctx.def_gate_depth == 0
             {
                 let after = printed_deref(&site_ft.rtype);
                 if before != after {
@@ -1849,7 +1849,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     (*ftype).clone()
                 } else {
                     fresh = true;
-                    ftype.instantiate(&ctx.def_gates)
+                    ftype.instantiate(&ctx.rec_defs)
                 };
                 self.ftype = Some(ftype.clone());
                 let ftype = self.ftype.as_ref().unwrap();

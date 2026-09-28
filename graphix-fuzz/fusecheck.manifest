@@ -137,6 +137,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	empty-literal-firing-jul2026/01_empty_array_fires_every_invocation.gx
 1	empty-scaffold-depth-charge-aug2026/01_empty_inner_fold_at_limit.gx
 1	empty-scaffold-depth-charge-aug2026/02_empty_literal_source_fold.gx
+1	env-cell-generalized-sep2026/00_extracted_callback_shares_outer.gx
 0	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 0	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 1	evict-stub-order-jul2026/00_evicted_callee_symbol.gx

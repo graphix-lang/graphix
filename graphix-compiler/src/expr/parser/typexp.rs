@@ -171,7 +171,7 @@ where
 /// The receiver type of a trait method signature: the type variable
 /// spelled `self`.
 pub(crate) fn self_tvar() -> Type {
-    Type::TVar(TVar::empty_named(literal!("self")))
+    Type::TVar(TVar::empty_generic(literal!("self")))
 }
 
 fn fnargs<I>() -> impl Parser<I, Output = LPooled<Vec<Either<FnArgType, Type>>>>
@@ -283,7 +283,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    token('\'').with(fname()).map(TVar::empty_named)
+    token('\'').with(fname()).map(TVar::empty_generic)
 }
 
 fn varianttyp<I>() -> impl Parser<I, Output = Type>

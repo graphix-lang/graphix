@@ -137,6 +137,7 @@ trace	dynmod-ref-priming-jul2026/01_module_level_builtin_call.gx
 trace	empty-literal-firing-jul2026/01_empty_array_fires_every_invocation.gx
 trace	empty-scaffold-depth-charge-aug2026/01_empty_inner_fold_at_limit.gx
 trace	empty-scaffold-depth-charge-aug2026/02_empty_literal_source_fold.gx
+trace	env-cell-generalized-sep2026/00_extracted_callback_shares_outer.gx
 reject	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 reject	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 trace	evict-stub-order-jul2026/00_evicted_callee_symbol.gx

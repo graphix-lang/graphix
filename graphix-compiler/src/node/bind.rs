@@ -24,7 +24,10 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{FnType, Type},
+    typ::{
+        FnType, Type,
+        tvar::{AtLevel, Level},
+    },
     wrap,
 };
 use anyhow::{Result, bail};
@@ -167,7 +170,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             if !matches!(unparen(value).kind, ExprKind::Lambda(_)) {
                 bailat!(spec, "let rec may only be used for lambdas")
             }
-            let typ = annotation.unwrap_or_else(Type::empty_tvar);
+            // a name for the definition's scheme: it lowers nothing it binds
+            let typ = annotation.unwrap_or_else(|| {
+                let _generic = AtLevel::enter(Level::GENERIC);
+                Type::empty_tvar()
+            });
             // bound before the value compiles, so the body's
             // self-references see the annotation
             let pattern = compile_pattern(ctx, &typ)?;
@@ -192,7 +199,11 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         } else {
                             node.typ().clone()
                         };
-                    let ptyp = pat.infer_type_predicate(&ctx.env, &scope.lexical)?;
+                    // a shape check: its cells lower nothing they bind
+                    let ptyp = {
+                        let _generic = AtLevel::enter(Level::GENERIC);
+                        pat.infer_type_predicate(&ctx.env, &scope.lexical)?
+                    };
                     if !ptyp.contains(&ctx.env, &typ)? {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bailat!(spec, "match error {typ} can't be matched by {ptyp}")
@@ -457,9 +468,9 @@ pub(crate) enum Signature {
     Decided,
 }
 
-/// A fresh instance of a generalized signature.
-fn instance(ft: &FnType) -> FnType {
-    let fresh = ft.reset_tvars();
+/// A fresh instance of a generalized signature under the open gates.
+fn instance(ft: &FnType, open: &nohash::IntSet<crate::LambdaId>) -> FnType {
+    let fresh = ft.scheme(open);
     fresh.alias_tvars(&mut LPooled::take());
     fresh
 }
@@ -584,7 +595,7 @@ impl Ref {
         }
         match ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id)) {
             Some(active) => Arc::new(active.ftype),
-            None => Arc::new(instance(&ft)),
+            None => Arc::new(instance(&ft, &ctx.rec_defs)),
         }
     }
 

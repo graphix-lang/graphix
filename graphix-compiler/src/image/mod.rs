@@ -1437,13 +1437,14 @@ fn cell_encode(
                 (
                     c.binding.clone(),
                     c.constraints.to_vec(),
-                    (c.cycle_refused, c.bottom_fed),
+                    (c.cycle_refused, c.bottom_fed, c.level),
                 )
             };
             typ.encode(buf)?;
             slice_encode(&constraints, buf)?;
             flags.0.encode(buf)?;
-            flags.1.encode(buf)
+            flags.1.encode(buf)?;
+            flags.2.encode(buf)
         },
     )
 }
@@ -1503,7 +1504,9 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<RwLock<TCell>>, PackError> {
                 let constraints: Vec<_> = Pack::decode(sub)?;
                 let refused = bool::decode(sub)?;
                 let bottom_fed = bool::decode(sub)?;
+                let level = Pack::decode(sub)?;
                 let mut c = cell.write();
+                c.level = level;
                 c.binding = typ;
                 c.constraints = constraints.into_iter().collect();
                 c.cycle_refused = refused;

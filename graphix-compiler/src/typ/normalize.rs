@@ -233,7 +233,7 @@ impl Type {
                     return Some(Type::TVar(fresh.clone()));
                 }
                 if !cx.in_progress.insert(addr) {
-                    return Some(Type::TVar(TVar::empty_named(tv.name.clone())));
+                    return Some(Type::TVar(tv.fresh_copy()));
                 }
                 let r = match tv.binding() {
                     Some(t) => {
@@ -245,7 +245,7 @@ impl Type {
                         r
                     }
                     None => {
-                        let fresh = TVar::empty_named(tv.name.clone());
+                        let fresh = tv.fresh_copy();
                         cx.fresh.insert(addr, fresh.clone());
                         Type::TVar(fresh)
                     }

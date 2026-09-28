@@ -437,8 +437,12 @@ node graph IS the IR — there is no parallel typed IR
 - **`let rec` is monomorphic-recursive**; a def's declared tvars are
   rigid in its body check: none binds to a concrete type and no two
   unify (`contains.rs` Distinct), while a call instantiates them
-  freely; a labeled default is checked at the definition against its
-  parameter's type, or a declared tvar's constraints (`check_defaults`),
+  freely; a call copies only what the callee's definition owns once
+  its gate is closed (or not yet open): a cell shared with the
+  environment, or an open gate's, is shared (`let t = |x| x + y` is
+  monomorphic in `y`'s cell; design/tvar_constraints.md,
+  Generalization); a labeled default is checked at the definition
+  against its parameter's type, or a declared tvar's constraints (`check_defaults`),
   and again at each omitting site, where it may narrow that site's
   cells; a call's type variable that only data positions hold (never a
   function or a reference) settles to the widest argument whatever

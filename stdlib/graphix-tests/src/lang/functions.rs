@@ -2286,3 +2286,71 @@ run!(
     };
     graphix_package_core::testing::FuseExpect::None
 );
+
+// A definition does not generalize a cell it shares with its environment:
+// `x + y` gives `x` the outer `y`'s cell, so each call types `y` too, as
+// the inline callback does.
+const ENVIRONMENT_CELL_IS_NOT_GENERALIZED: &str = r#"
+{
+  let y = array::iter(never());
+  let t = |x| x + y;
+  let m = array::map([1], t);
+  42
+}
+"#;
+
+run!(environment_cell_is_not_generalized, ENVIRONMENT_CELL_IS_NOT_GENERALIZED, |v: Result<
+    &Value,
+>| matches!(v, Ok(Value::I64(42))); graphix_package_core::testing::FuseExpect::Jit);
+
+// So that definition is monomorphic: a second call at another type is
+// refused where it is made.
+run!(
+    environment_cell_makes_the_definition_monomorphic,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain f64")
+        && !format!("{e:#}").contains("in the instance of")),
+    "/test.gx" => r#"
+        let y = array::iter(never());
+        let t = |x| x + y;
+        let result = (t(1), t(2.0))
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+// A cell only the definition's body reaches is generalized when its
+// gate closes, nested definitions included.
+const CLOSED_DEFINITIONS_ARE_POLYMORPHIC: &str = r#"
+{
+  let f = |a| { let g = |x| (x, a); (g(1), g("s")) };
+  let rec h = |x| x;
+  let k: fn(x: 'a) -> 'a = |x| x;
+  (f(1.0), f(true), h(1), h("s"), k(2), k("t"))
+}
+"#;
+
+run!(closed_definitions_are_polymorphic, CLOSED_DEFINITIONS_ARE_POLYMORPHIC, |v: Result<
+    &Value,
+>| format!("{}", v.unwrap())
+        == r#"[[[i64:1, f64:1.], ["s", f64:1.]], [[i64:1, true], ["s", true]], i64:1, "s", i64:2, "t"]"#; graphix_package_core::testing::FuseExpect::Jit);
+
+// A definition whose gate has not run yet (a submodule the interface
+// declares first calls into its parent) is called at its declared
+// scheme: each call copies its cells.
+run!(
+    call_before_the_definition_is_checked,
+    |v: Result<&Value>| format!("{}", v.unwrap()) == r#"[i64:1, "s"]"#,
+    "/test.gx" => r#"
+mod m;
+let result = m::sub::both
+"#,
+    "/test/m.gxi" => r#"
+val first: fn(a: Array<'r>) -> 'r;
+mod sub;
+"#,
+    "/test/m.gx" => r#"
+let first = |a: Array<'r>| -> 'r a[0]$;
+"#,
+    "/test/m/sub.gx" => r#"
+use super::first;
+let both = (first([1]), first(["s"]));
+"#
+; graphix_package_core::testing::FuseExpect::Jit);

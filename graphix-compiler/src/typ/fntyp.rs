@@ -11,6 +11,7 @@ use crate::{
         contains::{ContainsFlags, ContainsHist},
         key_text,
         matches::MatchHist,
+        tvar::{Fresh, Level},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -594,15 +595,20 @@ impl FnType {
     }
 
     pub fn reset_tvars(&self) -> Self {
-        self.reset_tvars_int(&mut LPooled::take())
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::Copy)
     }
 
     /// One cell-identity freshening map across the whole signature
     /// (see [`Type::reset_tvars_int`]). Always a fresh signature: an
     /// instantiation's `lambda_ids` is its own.
-    pub(super) fn reset_tvars_int(&self, known: &mut AHashMap<usize, TVar>) -> Self {
-        let mut fresh =
-            self.cow_walk(|t| t.reset_tvars_int(known)).unwrap_or_else(|| self.clone());
+    pub(super) fn reset_tvars_int(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        how: Fresh<'_>,
+    ) -> Self {
+        let mut fresh = self
+            .cow_walk(|t| t.reset_tvars_int(known, how))
+            .unwrap_or_else(|| self.clone());
         fresh.lambda_ids = self.lambda_ids.instantiate();
         fresh
     }
@@ -658,16 +664,21 @@ impl FnType {
         self.for_each_part(&mut |t, _| t.alias_tvars(known))
     }
 
-    /// A call's copy of the signature: every cell fresh but those in
-    /// `keep` (by address; cells not generalized yet), and each fresh
-    /// cell the copy holds more than once frozen, so it keeps its cell
-    /// when it unifies with an unfrozen one.
-    pub fn instantiate(&self, keep: &[AHashMap<usize, TVar>]) -> Self {
+    /// A reference's copy of the scheme (`Fresh::Scheme`) under the open
+    /// gates `open`.
+    pub(crate) fn scheme(&self, open: &IntSet<LambdaId>) -> Self {
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
+    }
+
+    /// A call's copy of the signature under the open gates `open`
+    /// (`Fresh::Instantiate`), each fresh cell the copy holds more than
+    /// once frozen, so it keeps its cell when it unifies with an
+    /// unfrozen one.
+    pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        for cells in keep {
-            known.extend(cells.iter().map(|(addr, tv)| (*addr, tv.clone())));
-        }
-        let fresh = self.reset_tvars_int(&mut known);
+        let fresh = self.reset_tvars_int(&mut known, Fresh::Instantiate(open));
+        let copies: LPooled<AHashSet<usize>> =
+            known.values().map(|tv| tv.cell_addr()).collect();
         let mut occurrences: LPooled<Vec<TVar>> = LPooled::take();
         fresh.for_each_part(&mut |t, _| t.tvar_occurrences(&mut occurrences));
         let mut count: LPooled<AHashMap<usize, usize>> = LPooled::take();
@@ -676,11 +687,34 @@ impl FnType {
         }
         for tv in occurrences.iter() {
             let addr = tv.cell_addr();
-            if count[&addr] > 1 && !keep.iter().any(|cells| cells.contains_key(&addr)) {
+            if count[&addr] > 1 && copies.contains(&addr) {
                 tv.freeze()
             }
         }
         fresh
+    }
+
+    /// Mark generic every cell the signature reaches at `depth` or
+    /// deeper: the definition at `depth` closed over them. A cell a
+    /// binding lowered above it is its environment's.
+    pub(crate) fn generalize(&self, depth: u32) {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.reached_cells(&mut cells);
+        for tv in cells.values() {
+            if tv.level().depth >= depth {
+                tv.generalize()
+            }
+        }
+    }
+
+    /// Claim every cell the signature reaches for `level`
+    /// ([`TVar::claim`]).
+    pub(crate) fn claim(&self, level: Level) {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.reached_cells(&mut cells);
+        for tv in cells.values() {
+            tv.claim(level)
+        }
     }
 
     /// Conjuncts are visited in their canonical form: a tvar in a

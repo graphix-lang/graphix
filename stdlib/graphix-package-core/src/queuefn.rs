@@ -298,6 +298,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: self.top_id,
             origin: graphix_compiler::node::lambda::DefOrigin::Runtime,
+            level: 1,
         };
         Ok(ctx.wrap_lambda(def))
     }

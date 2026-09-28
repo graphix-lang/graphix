@@ -1,4 +1,5 @@
 use crate::{
+    LambdaId,
     dbgenv::graphix_dbg_bind,
     env::Env,
     expr::ModPath,
@@ -79,11 +80,117 @@ fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bo
     }
 }
 
+/// Where a cell belongs: the depth of the definition that owns it and
+/// which definition that is (`None` at the top level), or
+/// [`Level::GENERIC`], a scheme's variable no definition owns
+/// (`design/tvar_constraints.md`, Generalization).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Level {
+    pub(crate) depth: u32,
+    pub(crate) owner: Option<LambdaId>,
+}
+
+impl Level {
+    pub(crate) const GENERIC: Self = Self { depth: u32::MAX, owner: None };
+    pub(crate) const TOP: Self = Self { depth: 0, owner: None };
+
+    fn is_generic(&self) -> bool {
+        self.depth == u32::MAX
+    }
+
+    /// The level of the definition `id` compiled now: one below the
+    /// enclosing definition's.
+    pub(crate) fn definition(id: LambdaId) -> Self {
+        let depth = match current_level() {
+            l if l.is_generic() => 1,
+            l => l.depth + 1,
+        };
+        Self { depth, owner: Some(id) }
+    }
+
+    /// Does a call copy a cell at this level? A generic cell, and one a
+    /// definition owns whose gate is not open: the definition's scheme.
+    /// A top-level cell, and an open gate's, is shared.
+    fn copied_by(&self, open: &IntSet<LambdaId>) -> bool {
+        self.is_generic() || self.owner.is_some_and(|id| !open.contains(&id))
+    }
+}
+
+impl Pack for Level {
+    fn encoded_len(&self) -> usize {
+        self.depth.encoded_len() + self.owner.encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        self.depth.encode(buf)?;
+        self.owner.encode(buf)
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        Ok(Self { depth: u32::decode(buf)?, owner: Pack::decode(buf)? })
+    }
+}
+
+thread_local! {
+    static LEVEL: std::cell::Cell<Level> = const { std::cell::Cell::new(Level::GENERIC) };
+}
+
+/// The level a cell created now takes.
+pub(crate) fn current_level() -> Level {
+    LEVEL.get()
+}
+
+/// Cells created while this lives take `level`; dropping it restores
+/// the enclosing level.
+#[must_use]
+pub(crate) struct AtLevel(Level);
+
+impl AtLevel {
+    pub(crate) fn enter(level: Level) -> Self {
+        Self(LEVEL.replace(level))
+    }
+}
+
+impl Drop for AtLevel {
+    fn drop(&mut self) {
+        LEVEL.set(self.0)
+    }
+}
+
+/// Lower every cell `t` reaches to at most `level`: what a cell at
+/// `level` is bound to, or constrained by, belongs where the cell does.
+/// A generic cell stays generic (a scheme bound into a cell is still a
+/// scheme), and a cell already at or above `level`'s depth reaches
+/// nothing deeper.
+pub(super) fn lower(t: &Type, level: Level) {
+    if level.is_generic() {
+        return;
+    }
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) if !tv.level().is_generic() => tv.claim(level),
+        Type::TVar(_) => (),
+        t => t.for_each_child(&mut |c| lower(c, level)),
+    })
+}
+
+/// How a copy of a type treats its cells: `Copy` makes a fresh cell per
+/// cell at the source's level; `Instantiate` is a call's copy, a fresh
+/// cell at the current level per cell a call copies
+/// ([`Level::copied_by`] the open gates), every other cell shared;
+/// `Scheme` is `Instantiate` whose fresh cells are generic, a
+/// reference's copy of the scheme it names.
+#[derive(Clone, Copy)]
+pub(crate) enum Fresh<'a> {
+    Copy,
+    Instantiate(&'a IntSet<LambdaId>),
+    Scheme(&'a IntSet<LambdaId>),
+}
+
 /// The shared binding cell: aliased `TVar`s hold one `Arc` of this.
 /// `constraints` is a conjunction — everything the cell is ever bound
 /// to must be contained by every member (empty = unconstrained); each
 /// bind site checks it where an `Env` exists.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TCell {
     pub(crate) binding: Option<Type>,
     pub(crate) constraints: SmallVec<[Type; 1]>,
@@ -99,6 +206,22 @@ pub struct TCell {
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
     pub(crate) rigid_gates: u32,
+    /// Where the cell belongs ([`Level`]); everything it reaches is at
+    /// its depth or shallower.
+    pub(crate) level: Level,
+}
+
+impl Default for TCell {
+    fn default() -> Self {
+        TCell {
+            binding: None,
+            constraints: SmallVec::new(),
+            cycle_refused: false,
+            bottom_fed: false,
+            rigid_gates: 0,
+            level: current_level(),
+        }
+    }
 }
 
 /// An open rigid gate, holding the cell it counted on; dropping it
@@ -323,7 +446,54 @@ impl TVar {
         )
     }
 
+    /// A fresh variable no definition owns yet, as written in source.
+    pub fn empty_generic(name: ArcStr) -> Self {
+        let tv = Self::empty_named(name);
+        tv.set_level(Level::GENERIC);
+        tv
+    }
+
+    /// The cell's level ([`TCell::level`]).
+    pub(crate) fn level(&self) -> Level {
+        self.cell().read().level
+    }
+
+    /// An empty cell of the same name and level.
+    pub(crate) fn fresh_copy(&self) -> Self {
+        let f = Self::empty_named(self.name.clone());
+        f.set_level(self.level());
+        f
+    }
+
+    /// Mark the cell generic: its definition closed over it.
+    pub(crate) fn generalize(&self) {
+        self.set_level(Level::GENERIC)
+    }
+
+    pub(crate) fn set_level(&self, level: Level) {
+        self.cell().write().level = level
+    }
+
+    /// Claim the cell, generic or not, for `level` unless it already
+    /// belongs at that depth or shallower.
+    pub(crate) fn claim(&self, level: Level) {
+        let lowered = {
+            let cell = self.cell();
+            let mut c = cell.write();
+            (c.level.depth > level.depth).then(|| {
+                c.level = level;
+                (c.binding.clone(), c.constraints.clone())
+            })
+        };
+        if let Some((binding, cons)) = lowered {
+            for t in binding.iter().chain(cons.iter()) {
+                lower(t, level)
+            }
+        }
+    }
+
     pub fn named(name: ArcStr, typ: Type) -> Self {
+        lower(&typ, current_level());
         Self::from_parts(
             name,
             TVarId::new(),
@@ -375,6 +545,7 @@ impl TVar {
         if self.requires_concrete() {
             t.require_concrete();
         }
+        lower(&t, self.level());
         self.cell().write().binding = Some(t)
     }
 
@@ -383,6 +554,10 @@ impl TVar {
         let cell = self.cell();
         let existing = cell.read().constraints.clone();
         let mut new = new_conjuncts(&existing, [c]);
+        let level = cell.read().level;
+        for c in new.iter() {
+            lower(c, level)
+        }
         cell.write().constraints.extend(new.drain(..));
     }
 
@@ -492,6 +667,7 @@ impl TVar {
                 Arc::as_ptr(&o_cell).addr()
             );
         }
+        let level = s_cell.read().level;
         {
             let mut oc = o_cell.write();
             oc.constraints.extend(to_add.drain(..));
@@ -503,6 +679,8 @@ impl TVar {
         // link closes no cycle.
         s_cell.write().binding = Some(Type::TVar(other.clone()));
         s.cell = o_cell;
+        drop(s);
+        lower(&Type::TVar(other.clone()), level);
     }
 
     pub fn freeze(&self) {
@@ -548,6 +726,11 @@ impl TVar {
         }
         let existing = s_cell.read().constraints.clone();
         let mut to_add = new_conjuncts(&existing, ocons);
+        let level = s_cell.read().level;
+        lower(&binding, level);
+        for c in to_add.iter() {
+            lower(c, level)
+        }
         let concrete = {
             let mut sc = s_cell.write();
             sc.binding = Some(binding.clone());
@@ -637,13 +820,23 @@ impl TVar {
         &self,
         fresh: &mut AHashMap<usize, TVar>,
         memo: &mut M,
+        how: Fresh<'_>,
         walk: impl Fn(&Type, &mut AHashMap<usize, TVar>, &mut M) -> Option<Type>,
     ) -> TVar {
         let addr = self.cell_addr();
         if let Some(f) = fresh.get(&addr) {
             return f.clone();
         }
-        let f = TVar::empty_named(self.name.clone());
+        let f = match how {
+            Fresh::Copy => self.fresh_copy(),
+            Fresh::Instantiate(open) if self.level().copied_by(open) => {
+                TVar::empty_named(self.name.clone())
+            }
+            Fresh::Scheme(open) if self.level().copied_by(open) => {
+                TVar::empty_generic(self.name.clone())
+            }
+            Fresh::Instantiate(_) | Fresh::Scheme(_) => return self.clone(),
+        };
         fresh.insert(addr, f.clone());
         for c in self.cell_constraints() {
             let c = walk(&c, fresh, memo).unwrap_or(c);
@@ -794,7 +987,8 @@ impl Type {
     /// freshen unbound, a bound cell freshens to a fresh cell bound to
     /// the reset of its binding. self is not modified.
     pub fn reset_tvars(&self) -> Type {
-        self.reset_tvars_int(&mut LPooled::take()).unwrap_or_else(|| self.clone())
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::Copy)
+            .unwrap_or_else(|| self.clone())
     }
 
     /// The freshening map is keyed by cell identity, not name, so an
@@ -803,17 +997,20 @@ impl Type {
     pub(super) fn reset_tvars_int(
         &self,
         known: &mut AHashMap<usize, TVar>,
+        how: Fresh<'_>,
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => Some(Type::TVar(
-                tv.freshen(known, &mut (), |t, k, ()| t.reset_tvars_int(k)),
-            )),
+            Type::TVar(tv) => {
+                Some(Type::TVar(
+                    tv.freshen(known, &mut (), how, |t, k, ()| t.reset_tvars_int(k, how)),
+                ))
+            }
             // `cow_children` rebuilds a Ref through `with_params`, which
             // shares the resolution cell; commit copies rely on that.
             // A nested fn type is always fresh: its `lambda_ids` cell
             // must be the instance's own.
-            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.reset_tvars_int(known)))),
-            t => t.cow_children(&mut |c| c.reset_tvars_int(known)),
+            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.reset_tvars_int(known, how)))),
+            t => t.cow_children(&mut |c| c.reset_tvars_int(known, how)),
         })
     }
 
@@ -833,14 +1030,14 @@ impl Type {
         fresh: &mut AHashMap<usize, TVar>,
     ) -> Option<Type> {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) => {
-                Some(match known.get(&tv.name) {
-                    Some(t) => t.clone(),
-                    None => Type::TVar(tv.freshen(fresh, &mut (), |t, f, ()| {
+            Type::TVar(tv) => Some(match known.get(&tv.name) {
+                Some(t) => t.clone(),
+                None => {
+                    Type::TVar(tv.freshen(fresh, &mut (), Fresh::Copy, |t, f, ()| {
                         t.replace_tvars_int(known, f)
-                    })),
-                })
-            }
+                    }))
+                }
+            }),
             t => t.cow_children(&mut |c| c.replace_tvars_int(known, fresh)),
         })
     }
@@ -959,10 +1156,10 @@ impl Pack for TVar {
         let constraints = <Vec<Type> as Pack>::decode(buf)?;
         // A fresh id is sound: the typechecker re-aliases same-named tvars
         // within a scope.
-        let tv = match bound {
-            Some(t) => TVar::named(name, t),
-            None => TVar::empty_named(name),
-        };
+        let tv = TVar::empty_generic(name);
+        if let Some(t) = bound {
+            tv.bind(t)
+        }
         {
             let cell = tv.cell();
             let mut cell = cell.write();

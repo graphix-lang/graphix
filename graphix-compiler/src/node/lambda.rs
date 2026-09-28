@@ -25,7 +25,11 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     profile::{self, Phase},
-    typ::{FnArgKind, FnArgType, FnType, TVar, Type, fntyp::LambdaIds, tvar::RigidGate},
+    typ::{
+        FnArgKind, FnArgType, FnType, TVar, Type,
+        fntyp::LambdaIds,
+        tvar::{AtLevel, Level, RigidGate},
+    },
     wrap,
 };
 use ahash::AHashMap;
@@ -74,6 +78,9 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// instance re-compiles, which is what [`crate::FnArgIdentity`] keys on.
     pub source: ExprId,
     pub origin: DefOrigin,
+    /// The definition's depth: the cells it owns (`tvar::Level`) are
+    /// its signature's and its body's.
+    pub level: u32,
 }
 
 /// Where a definition came from: a lambda expression, whose `init` is
@@ -319,7 +326,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
                 )
             })
         })();
-        elab_audit::leave(ctx.def_gates.len(), "typecheck0", self.body.spec(), &res);
+        elab_audit::leave(ctx.def_gate_depth, "typecheck0", self.body.spec(), &res);
         res?;
         profile::instance_signature(self.instance_id, &self.typ, None);
         Ok(())
@@ -337,7 +344,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         let env = self.env.clone();
         let res =
             ctx.with_restored(env, |ctx| wrap!(self.body, self.body.typecheck1(ctx)));
-        elab_audit::leave(ctx.def_gates.len(), "typecheck1", self.body.spec(), &res);
+        elab_audit::leave(ctx.def_gate_depth, "typecheck1", self.body.spec(), &res);
         res
     }
 
@@ -830,6 +837,8 @@ impl Lambda {
             bail!("arguments must have unique names");
         }
         let id = LambdaId::new();
+        let level = Level::definition(id);
+        let _level = AtLevel::enter(level);
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),
@@ -979,6 +988,7 @@ impl Lambda {
             }
         }
         typ.lambda_ids.set_id(id);
+        typ.claim(level);
         let init = make_init(
             id,
             flags,
@@ -1012,6 +1022,7 @@ impl Lambda {
             recursion: Mutex::new(RecursionKind::NotRecursive),
             source: spec.id,
             origin: DefOrigin::Source { body, flags, spec: spec.clone() },
+            level: level.depth,
         });
         ctx.lambda_defs.insert(id, def.clone());
         Ok(Node::new(Self {
@@ -1044,6 +1055,8 @@ impl Lambda {
 /// its own cells (`ExecCtx::rec_defs`). Every path leaves by `close`.
 struct DefGate<R: Rt, E: UserEvent> {
     def: LambdaId,
+    depth: u32,
+    _at: AtLevel,
     sig: Arc<FnType>,
     faux_id: BindId,
     args: LPooled<Vec<Node<R, E>>>,
@@ -1053,6 +1066,7 @@ struct DefGate<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> DefGate<R, E> {
     fn open(ctx: &mut ExecCtx<R, E>, def: &LambdaDef<R, E>) -> Self {
+        let at = AtLevel::enter(Level { depth: def.level, owner: Some(def.id) });
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
         let faux_id = BindId::new();
         ctx.env.by_id.insert_cow(
@@ -1075,11 +1089,18 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         named.retain(|name, _| !name.starts_with('_'));
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
         ctx.rec_defs.insert(def.id);
-        let mut cells = AHashMap::default();
-        def.typ.reached_cells(&mut cells);
-        ctx.def_gates.push(cells);
+        ctx.def_gate_depth += 1;
         ctx.pending_settles.push(Vec::new());
-        Self { def: def.id, sig: def.typ.clone(), faux_id, args, scope, rigid }
+        Self {
+            def: def.id,
+            depth: def.level,
+            _at: at,
+            sig: def.typ.clone(),
+            faux_id,
+            args,
+            scope,
+            rigid,
+        }
     }
 
     /// The error type the body raised to the gate's catch.
@@ -1091,7 +1112,8 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
     /// cells this signature reaches: those stay open, generalized.
     fn close(mut self, ctx: &mut ExecCtx<R, E>) {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
-        ctx.def_gates.pop().expect("gate cells");
+        ctx.def_gate_depth -= 1;
+        self.sig.generalize(self.depth);
         let mut sig: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.sig.reached_cells(&mut sig);
         for s in frame.iter_mut() {

@@ -96,15 +96,44 @@ cells. Bound cells stay bound: a def-time unification is a settled
 fact, and erasing it made the static type lie about the runtime value
 (the JIT marshal-panic class).
 
-A call copies its callee's type (`FnType::instantiate`) except the cells
-an open definition gate's signature reaches (`ExecCtx::def_gates`):
-those are not generalized until the gate closes, so a call in the body
-through any expression that reaches a parameter (`((f))(v)`, `let g = f;
-g(v)`) types against the definition's own cells. Open: a closed
-definition still generalizes a cell it shares with its environment
-(`let t = |x| x + y` unifies `x` with the outer `y`), so each call of
-`t` copies `y`'s cell and never fixes it; HM leaves such a cell
-ungeneralized.
+### Generalization
+
+Every cell has a level (`tvar::Level`): the depth of the definition
+that owns it and which definition that is (none at the top level), or
+`GENERIC`, a scheme's variable no definition owns. Rémy's levels over
+the definition gates:
+
+- A cell is born at the current level (`tvar::AtLevel`): the top level
+  in a statement's compile and check (`compile_top`, `check_and_fuse`);
+  a definition compiles its signature and its gate checks its body one
+  deeper, as its owner (`Level::definition`, `LambdaDef::level`; the
+  signature's cells are claimed for it, `FnType::claim`). A cell written
+  in source (the parser, the syntax codec), a quantifier minted for a
+  trait argument or an impl head, and a let's compile-time scratch (the
+  pattern predicate, the `let rec` placeholder) is born generic; a copy
+  (`scope_refs`, `resolve_tvars`, `Fresh::Copy`) keeps the source
+  cell's level.
+- Binding a cell, merging two, or adding a conjunct lowers every cell
+  the new contents reach to the cell's level (`tvar::lower`): what an
+  outer cell is bound to is the environment's. A generic cell is never
+  lowered: a scheme bound into a cell (a let's name, a reference's
+  placeholder) is still a scheme.
+- A gate's close marks generic every cell its signature reaches at its
+  depth or deeper (`FnType::generalize`). A cell a binding lowered
+  above it (`let t = |x| x + y` gives `x` the top-level `y`'s cell)
+  stays its environment's: `t` is monomorphic in it and each call types
+  `y`.
+- A call copies a cell that is generic or owned by a definition whose
+  gate is not open (`Level::copied_by` the open gates
+  `ExecCtx::rec_defs`; `FnType::instantiate`), at the current level,
+  and shares every other: a top-level cell, and an open gate's (a
+  parameter called through `((f))(v)` or `let g = f; g(v)`). A
+  definition whose gate has not run (a submodule the interface declares
+  first calls into its parent) is called at its declared scheme. A
+  reference to a generalized binding copies the same cells, generic
+  (`Fresh::Scheme`), so the call instantiates them.
+
+An image carries each cell's level and each definition's depth.
 
 ### Settling
 

@@ -66,6 +66,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         recursion,
         source,
         origin,
+        level,
     } = def;
     // a runtime-built definition exists only once a cycle ran
     let DefOrigin::Source { body, flags, spec } = origin else {
@@ -80,6 +81,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
     stateless.load(Ordering::Relaxed).encode(buf)?;
     recursion.lock().encode(buf)?;
     source.encode(buf)?;
+    level.encode(buf)?;
     body_encode(body, buf)?;
     flags_encode(*flags, buf)?;
     spec.encode(buf)
@@ -99,6 +101,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let stateless = bool::decode(buf)?;
     let recursion = Pack::decode(buf)?;
     let source = Pack::decode(buf)?;
+    let level = u32::decode(buf)?;
     let body = body_decode(buf)?;
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;
@@ -125,6 +128,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         recursion: Mutex::new(recursion),
         source,
         origin: DefOrigin::Source { body, flags, spec },
+        level,
     });
     Ok(id)
 }

@@ -138,12 +138,11 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    let cell = tv.cell();
-    let mut cell = cell.write();
-    cell.binding = match &cell.binding {
-        None => Some(etyp.clone()),
-        Some(t) => Some(Type::union(env, &[t, etyp])?),
+    let joined = match tv.binding() {
+        None => etyp.clone(),
+        Some(t) => Type::union(env, &[&t, etyp])?,
     };
+    tv.bind(joined);
     Ok(())
 }
 

@@ -47,7 +47,7 @@ use crate::{
         callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{FnType, TVar, Type},
+    typ::{FnType, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -1372,10 +1372,9 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// call through one unifies against the param's own declared cells,
     /// so `f(v)` types as the def's rigid 'b.
     pub(crate) def_gate_params: nohash::IntSet<BindId>,
-    /// The cells each open definition gate's signature reaches, by
-    /// address, innermost last: not generalized yet, so a call in the
-    /// body never instantiates them.
-    pub(crate) def_gates: Vec<AHashMap<usize, TVar>>,
+    /// Def-gate nesting depth; a nested gate's cells are still
+    /// entangled with the enclosing inference.
+    pub(crate) def_gate_depth: usize,
     pub(crate) resolving_lambdas: Mutex<IntMap<LambdaId, ResolvingStack>>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
@@ -1436,7 +1435,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             builtin_bindings: ahash::AHashMap::default(),
             rec_defs: nohash::IntSet::default(),
             def_gate_params: nohash::IntSet::default(),
-            def_gates: Vec::new(),
+            def_gate_depth: 0,
             resolving_lambdas: Mutex::new(IntMap::default()),
             fn_forward_resolutions: IntMap::default(),
             pending_settles: vec![Vec::new()],
@@ -1866,6 +1865,7 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
     node: &mut Node<R, E>,
 ) -> Result<()> {
     let st = Instant::now();
+    let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
     let p = profile::phase(Phase::Typecheck0);
     if let Err(e) = node.typecheck0(ctx).and_then(|()| drain_pending_settles(ctx)) {
         ctx.pending_settles.clear();
@@ -1999,6 +1999,7 @@ fn compile_top<R: Rt, E: UserEvent>(
     build: impl FnOnce(&mut ExecCtx<R, E>, &Expr, ExprId) -> Result<(Node<R, E>, Scope)>,
 ) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
+    let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
     // Fusion also runs in check/lsp runtimes: `#[native]` needs it to
     // verify its contract, and a malformed input only de-fuses. The JIT
     // helpers' wire ABI is System V (a 16-byte `TagValue` is two

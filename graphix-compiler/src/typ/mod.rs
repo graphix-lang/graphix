@@ -1897,7 +1897,7 @@ impl Type {
                                 Some(n) => format_compact!("#{n}").as_str().into(),
                                 None => format_compact!("#arg{i}").as_str().into(),
                             };
-                            let tv = TVar::empty_named(name.clone());
+                            let tv = TVar::empty_generic(name.clone());
                             tv.add_cell_constraint(a.typ.clone());
                             if !quantifiers.contains(&name) {
                                 quantifiers.push(name);
@@ -1983,10 +1983,10 @@ impl Type {
                     let cell = cell.read();
                     (cell.binding.clone(), cell.constraints.clone())
                 };
-                let fresh = match bound {
-                    None => TVar::empty_named(tv.name.clone()),
-                    Some(typ) => TVar::named(tv.name.clone(), typ.scope_refs(scope)),
-                };
+                let fresh = tv.fresh_copy();
+                if let Some(typ) = bound {
+                    fresh.bind(typ.scope_refs(scope))
+                }
                 // The re-minted cell keeps the conjunction (an annotated
                 // bound lives only there). A conjunct reaching this very
                 // cell is copied unscoped, or re-minting never ends.

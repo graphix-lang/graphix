@@ -1,0 +1,4 @@
+// Refused where the inline callback passes (sep27f katana typeflip_000001,
+// let-extract): `x + y` gives `x` the outer `y`'s cell, and the definition
+// generalized it anyway, so each call copied `y`'s cell and never typed it.
+{ let y = array::iter(never()); let tm__0 = |x| x + y; let m = array::map([1], tm__0); let c = count(m); select count(y) { 4 => c, _ => never() } }

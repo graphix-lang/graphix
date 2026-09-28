@@ -397,7 +397,7 @@ pub(crate) fn impl_head(
     let target = im.target.scope_refs(scope);
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     let params: Arc<[TVar]> = Arc::from_iter(im.params.iter().map(|tv| {
-        let tv = TVar::empty_named(tv.name.clone());
+        let tv = TVar::empty_generic(tv.name.clone());
         known.insert(tv.name.clone(), tv.clone());
         tv
     }));
@@ -728,7 +728,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         }
         if self_t.has_unbound() {
-            if !ctx.def_gates.is_empty() {
+            if ctx.def_gate_depth > 0 {
                 return Ok(());
             }
             bailat!(

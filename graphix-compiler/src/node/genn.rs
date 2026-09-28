@@ -65,7 +65,7 @@ pub fn apply<R: Rt, E: UserEvent>(
     typ: &FnType,
     top_id: ExprId,
 ) -> Node<R, E> {
-    let ftype = typ.instantiate(&[]);
+    let ftype = typ.instantiate(&nohash::IntSet::default());
     apply_inner(fnode, scope, args, typ, Some(ftype.clone()), ftype.rtype, top_id)
 }
 
