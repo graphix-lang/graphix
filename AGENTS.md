@@ -661,8 +661,8 @@ node graph IS the IR — there is no parallel typed IR
   monomorphic in `y`'s cell; design/tvar_constraints.md,
   Generalization); a labeled default is checked at the definition
   against its parameter's type, or a declared tvar's constraints (`check_defaults`),
-  and again at each omitting site, where it may narrow that site's
-  cells; a call's type variable that only data positions hold (never a
+  and again at each omitting site by the check, where it may narrow
+  that site's cells; a call's type variable that only data positions hold (never a
   function or a reference) settles to the widest argument whatever
   the order, one a callback or a reference holds to the first
   (`callsite.rs::Widening`); a formal with its own quantifiers (`f: fn<'b: C>(..)`) is
@@ -902,6 +902,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_PROFILE_INSTANCES=1` | with `GRAPHIX_PROFILE`, per-instance construction/check costs (`bench/instances.py`) |
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
+| `GRAPHIX_TASK_AUDIT=1` | a backtrace at every write by a compile task to a cell or var an earlier task created (statement elaboration must write none) |
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |
 | `GXDBG_CS=1` / `GXDBG_DYNC=1` | every CallSite dispatch and result tag / every fastcall trampoline dispatch |

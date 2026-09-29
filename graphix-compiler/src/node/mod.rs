@@ -26,6 +26,7 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
+use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{cell::Cell, mem, sync::LazyLock};
 use triomphe::Arc;
@@ -796,14 +797,69 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     res
 }
 
-/// A statement's `typecheck1`, then the settles it deferred: a later
-/// statement's resolution reads settled facts.
-pub(crate) fn typecheck1_settled<R: Rt, E: UserEvent>(
+/// Defer `settle` to the check's settle of the current frame. A
+/// definition's body defers nothing: its cells are its signature's,
+/// settled by each call.
+pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    settle: impl FnOnce() -> crate::PendingSettle,
+) {
+    if ctx.def_gate_depth == 0 {
+        ctx.pending_settles.last_mut().expect("settle frame").push(settle())
+    }
+}
+
+/// A statement's `typecheck1`, then the settles it deferred.
+fn typecheck1_settled<R: Rt, E: UserEvent>(
     n: &mut Node<R, E>,
     ctx: &mut CompileCtx<R, E>,
 ) -> Result<()> {
     n.typecheck1(ctx)?;
     crate::drain_pending_settles(ctx)
+}
+
+/// Elaborate a body's statements (`typecheck1`, then each one's
+/// settles) in [`evaluation_order`], each in a compile task forked from
+/// the body's state before any runs: no statement's elaboration reads
+/// another's. The tasks join in order; the first error in order is the
+/// body's.
+pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    nodes: &mut [Node<R, E>],
+    catches: &[usize],
+    module: bool,
+) -> Result<()> {
+    let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
+    if order.len() < 2 {
+        return typecheck_in_order(ctx, nodes, catches, module, typecheck1_settled);
+    }
+    let mut slots: LPooled<Vec<Option<&mut Node<R, E>>>> =
+        nodes.iter_mut().map(Some).collect();
+    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> = order
+        .iter()
+        .map(|i| {
+            let mut task = ctx.fork();
+            task.task = crate::typ::tvar::new_task();
+            (slots[*i].take().expect("an order visits each once"), task)
+        })
+        .collect();
+    let level = crate::typ::tvar::current_level();
+    let mut results: Vec<Result<()>> = work
+        .par_iter_mut()
+        .map(|(n, task)| {
+            let _level = crate::typ::tvar::AtLevel::enter(level);
+            let _task = crate::typ::tvar::InTask::enter(task.task);
+            let r = wrap!(n, typecheck1_settled(n, task));
+            match module {
+                true => r.with_context(|| n.spec().ori.clone()),
+                false => r,
+            }
+        })
+        .collect();
+    for (_, task) in work.drain(..) {
+        ctx.join(task);
+    }
+    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
@@ -896,13 +952,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        typecheck_in_order(
-            ctx,
-            &mut self.children,
-            &self.catches,
-            self.module,
-            typecheck1_settled,
-        )
+        typecheck1_statements(ctx, &mut self.children, &self.catches, self.module)
     }
 
     fn spec(&self) -> &Expr {

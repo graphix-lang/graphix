@@ -70,9 +70,9 @@ u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
   Same-cell operands (`a + a`) alias the result to the operand cell, so
   `|a| a + a` infers `fn(a: 'a) -> 'a, 'a: Number`, identical to the
   explicit form. Distinct-cell operands get a fresh number-constrained
-  result cell, and the result-type (`ut`) table re-runs in typecheck1
-  after the operand cells settle (`typecheck_tail`), erroring "type
-  must be known" only if they are still open then.
+  result cell, and the rule (`op.rs::arith_rule`) is judged again in
+  the check's settle after the operand cells settle
+  (`PendingSettle::Operand`, then `PendingSettle::Arith`).
 - An array index or slice bound constrains the same way: an unbound
   index cell gets a `Primitive(Typ::integer())` conjunct
   (`node/array.rs::check_index`), so `|x| a[-x]` keeps `[Real, Sint] &
@@ -146,14 +146,24 @@ An image carries each cell's level and each definition's depth.
   fact was `i64` settles to `i64`, not wide. Arg-reachable cells stay
   open through typecheck0: annotations narrow them and the actual
   arguments enforce the narrowing.
-- Cells reachable from an OMITTED labeled default are exempt: their
-  type belongs to the default expression, and the labeled-default
-  check runs after static resolution has installed the per-site
-  compiled default nodes, so that unification binds the cell.
-- The terminal settle (`FnType::settle_terminal`, typecheck1) walks the
-  LIVE ftype in dependency order and settles whatever remains. A cell
-  still unbound and unconstrained after the whole tc0 phase binds ⊥
+- An OMITTED labeled default is checked at its site by the check
+  (`CallSite::check_omitted_defaults`): the default of every definition
+  the callee's `lambda_ids` names is compiled as the site sees it,
+  checked against the site's argument type, and discarded; elaboration
+  compiles it again for the bind and finds the cells decided. When a
+  definition is not known at the check (a fn-typed parameter, a
+  runtime definition), the cells the omitted defaults reach are exempt
+  from the site's settle and the default binds them at the bind.
+- The terminal settle (`FnType::settle_terminal`, the check's drain)
+  walks the LIVE ftype in dependency order, the cells its bindings hold
+  as positions included, and settles whatever remains. A cell still
+  unbound and unconstrained after the whole tc0 phase binds ⊥
   (`TVar::settle_or_bottom`): nothing ever produced or constrained it.
+- The check decides every cell it creates: the drain runs the site
+  settles, then the operator operand and `let`-over-⊥ settles, then the
+  rules judged over them (`PendingSettle`). Elaboration never settles
+  a cell an earlier compile task created (`tvar::earlier_task`): what
+  the check left open, it decided open.
 - ⊥ never binds a cell: the `(TVar-unbound, ⊥)` arm of `contains` is
   no-bind (⊥ is contained by whatever the cell may become, so binding
   gains nothing and forecloses the cell's writers), and `flatten_set`
@@ -162,14 +172,14 @@ An image carries each cell's level and each definition's depth.
   idiom. `never()` is syntax typed the literal ⊥ at compile time; the
   connect-seed idiom (`let res = never(); res <- v`) lives in the
   binding: an unannotated `let` over a ⊥ initializer seeds a fresh
-  cell, writers refine it at their tc0, and `Bind::typecheck1` settles
-  a cell nobody refined to ⊥.
+  cell, writers refine it at their tc0, and the check's settle
+  (`PendingSettle::LetOverBottom`) binds a cell nobody refined to ⊥.
 - A cell remembers that ⊥ reached it while open (`TCell::bottom_fed`,
   set by that `contains` arm, merged by aliasing, copied at
   instantiation like the conjuncts). Every other production binds a
   cell, so a ⊥-fed cell still open at a settle after its writers binds
   ⊥ whatever conjuncts its readers gave it (`TVar::settle`: an
-  operator's operand settle, `Bind::typecheck1`, the terminal walk):
+  operator's operand settle, the `let`-over-⊥ settle, the terminal walk):
   `let t = never(); let u = never(); t + u` and `g(true) + { let t =
   g(false); t }` with `g = |b| never()` are accepted as
   `g(true) + g(false)` is. The `CallSite::typecheck0` eager settle takes

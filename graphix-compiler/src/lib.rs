@@ -1445,6 +1445,9 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     pub(crate) pending_refs: AHashMap<(BindId, ExprId), usize>,
     /// What compiling abandoned, for the runtime to delete.
     discarded: Vec<Discarded<R, E>>,
+    /// The id of the concurrent compile task this one runs in
+    /// ([`typ::tvar::InTask`]); 0 at the root.
+    pub(crate) task: u32,
 }
 
 enum Discarded<R: Rt, E: UserEvent> {
@@ -1516,6 +1519,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             attr_absorbed: Mutex::new(IntSet::default()),
             pending_refs: AHashMap::default(),
             discarded: Vec::new(),
+            task: self.task,
         }
     }
 
@@ -1547,6 +1551,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             attr_absorbed,
             pending_refs,
             discarded,
+            task: _,
         } = fork;
         self.tags.join(tags);
         self.env.join(env);
@@ -1708,6 +1713,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 attr_absorbed: Mutex::new(IntSet::default()),
                 pending_refs: AHashMap::default(),
                 discarded: Vec::new(),
+                task: 0,
             },
             image_decoder: None,
             libstate: LibState::default(),
@@ -1800,12 +1806,28 @@ pub(crate) enum PendingSettle {
         exempt: AHashSet<usize>,
         spec: Arc<Expr>,
     },
-    /// `outer ⊇ inner`, judged once the frame's sites have settled.
+    /// An operator's operand cell, settled once the frame's sites have.
+    Operand { tv: typ::TVar, spec: Arc<Expr> },
+    /// A `let`'s cell over the initializer type `init`: ⊥ when `init` is
+    /// ⊥ and no writer or reader decided the cell.
+    LetOverBottom { tv: typ::TVar, init: Type, spec: Arc<Expr> },
+    /// `outer ⊇ inner`, judged once the frame's cells have settled.
     Contains { outer: Type, inner: Type, spec: Arc<Expr> },
+    /// An arithmetic operator's rule, judged again once its operands
+    /// settled ([`node::op::arith_rule`]).
+    Arith {
+        op: node::op::BinOp,
+        checked: bool,
+        lhs: Type,
+        rhs: Type,
+        out: Type,
+        spec: Arc<Expr>,
+    },
 }
 
 impl PendingSettle {
-    /// Run every site settle of `frame`, then every containment.
+    /// Run every site settle of `frame`, then every cell settle, then
+    /// every rule judged over the settled cells.
     pub(crate) fn drain(
         frame: &[PendingSettle],
         env: &Env,
@@ -1819,9 +1841,29 @@ impl PendingSettle {
             }
         }
         for s in frame.iter() {
-            if let PendingSettle::Contains { outer, inner, spec } = s
-                && let Err(e) = outer.check_contains(env, inner)
-            {
+            let res = match s {
+                PendingSettle::Operand { tv, spec } => (tv.settle(env), spec),
+                PendingSettle::LetOverBottom { tv, init, spec } => {
+                    let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
+                    (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
+                }
+                _ => continue,
+            };
+            if let (Err(e), spec) = res {
+                on_err(spec, e)?
+            }
+        }
+        for s in frame.iter() {
+            let res = match s {
+                PendingSettle::Contains { outer, inner, spec } => {
+                    (outer.check_contains(env, inner), spec)
+                }
+                PendingSettle::Arith { op, checked, lhs, rhs, out, spec } => {
+                    (node::op::arith_rule(env, *op, *checked, lhs, rhs, out), spec)
+                }
+                _ => continue,
+            };
+            if let (Err(e), spec) = res {
                 on_err(spec, e)?
             }
         }
@@ -2297,6 +2339,7 @@ fn compile_top<R: Rt, E: UserEvent>(
     let (mut node, out_scope) = match compiled {
         Ok(n) => n,
         Err(e) => {
+            ctx.drop_deferred();
             ctx.env = env;
             return Err(e);
         }
@@ -2343,6 +2386,7 @@ fn abandon_stmt<R: Rt, E: UserEvent>(
     env: Env,
     e: anyhow::Error,
 ) -> anyhow::Error {
+    ctx.drop_deferred();
     node.delete(ctx);
     ctx.env = env;
     e

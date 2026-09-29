@@ -67,6 +67,7 @@ plotters-backend = "0.3"
 poolshark = { version = "0.2.9" }
 proptest = "1"
 rand = "0.10"
+rayon = "1.12"
 ratatui = { version = "0.30", features = ["widget-calendar"] }
 reedline = "0.47"
 regex = "1"

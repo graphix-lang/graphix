@@ -193,14 +193,22 @@ fn recheck_builtin<R: Rt, E: UserEvent>(
         .downcast_ref::<LambdaDef<R, E>>()
         .expect("failed to unwrap lambda for typecheck1");
     let Some(check) = ldef.builtin_check() else { return Ok(()) };
-    let restored = check.lock().is_none();
-    if restored {
-        let f = build_builtin_check(ldef, ctx)?;
-        *check.lock() = Some(f);
-    }
-    let mut apply = check.lock().take().expect("builtin check");
+    // The definition keeps one check; a site that finds it out (restored
+    // from an image, or held by a concurrent site) builds its own.
+    let taken = check.lock().take();
+    let mut apply = match taken {
+        Some(apply) => apply,
+        None => build_builtin_check(ldef, ctx)?,
+    };
     let res = apply.typecheck1(ctx, &mut [], resolved).at(&(**spec));
-    *check.lock() = Some(apply);
+    let mut slot = check.lock();
+    match slot.as_ref() {
+        None => *slot = Some(apply),
+        Some(_) => {
+            drop(slot);
+            ctx.discard_apply(apply)
+        }
+    }
     res
 }
 
@@ -558,6 +566,9 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// A collection slot's share of its prototype's kernels, taken by
     /// the instance it binds.
     pub(crate) share: Option<SlotShare>,
+    /// The check did not see every default this site omits: the cells
+    /// they reach stay open for the bind.
+    defaults_open: bool,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
@@ -590,6 +601,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             top_id,
             resident: TagValue::phantom(),
             share: None,
+            defaults_open: true,
         }
     }
 
@@ -735,26 +747,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let Some(expr) = argspec.kind.default() else {
                 bail!("expected default value")
             };
-            let mut default_node = ctx.with_restored(f.env.clone(), |ctx| {
-                let local_scope = Scope {
-                    dynamic: scope.dynamic.clone(),
-                    lexical: f.scope.lexical.clone(),
-                };
-                let n = compile(ctx, flags, expr.clone(), &local_scope, self.top_id)?;
-                n.refs(defaults);
-                Ok::<_, anyhow::Error>(n)
-            })?;
-            // A default typechecks against this site's instantiated
-            // signature, so an omitting site infers from it.
-            wrap!(default_node, default_node.typecheck0(ctx))?;
+            let default_node =
+                self.checked_default(ctx, flags, scope, f, name, expr, defaults)?;
             let typ = default_node.typ().clone();
-            let site_arg = self
-                .ftype
-                .as_ref()
-                .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)));
-            if let Some(sarg) = site_arg {
-                wrap!(default_node, sarg.typ.check_contains(&ctx.env, &typ))?;
-            }
             let id = BindId::new();
             let spec = TArc::new(default_node.spec().clone());
             self.arg_refs.push(Ref::new(ctx, id, typ, self.top_id, spec));
@@ -769,6 +764,92 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         }
         Ok(())
+    }
+
+    /// `f`'s default for the labeled argument `name` as this site sees
+    /// it: compiled in `f`'s environment under the site's handlers, and
+    /// checked against the site's instantiated argument type.
+    fn checked_default(
+        &self,
+        ctx: &mut CompileCtx<R, E>,
+        flags: BitFlags<CFlag>,
+        scope: &Scope,
+        f: &LambdaDef<R, E>,
+        name: &ArcStr,
+        expr: &Expr,
+        defaults: &mut Refs,
+    ) -> Result<Node<R, E>> {
+        let mut node = ctx.with_restored(f.env.clone(), |ctx| {
+            let local_scope = Scope {
+                dynamic: scope.dynamic.clone(),
+                lexical: f.scope.lexical.clone(),
+            };
+            compile(ctx, flags, expr.clone(), &local_scope, self.top_id)
+        })?;
+        node.refs(defaults);
+        let res = node.typecheck0(ctx).and_then(|()| {
+            let site_arg = self
+                .ftype
+                .as_ref()
+                .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)));
+            match site_arg {
+                Some(sarg) => sarg.typ.check_contains(&ctx.env, node.typ()),
+                None => Ok(()),
+            }
+        });
+        match wrap!(node, res) {
+            Ok(()) => Ok(node),
+            Err(e) => {
+                ctx.discard(node);
+                Err(e)
+            }
+        }
+    }
+
+    /// Check every default this site omits, for each definition the
+    /// callee may be. False when one is not known here: its default
+    /// narrows the site's cells at its bind.
+    fn check_omitted_defaults(
+        &self,
+        ctx: &mut CompileCtx<R, E>,
+        ftype: &FnType,
+    ) -> Result<bool> {
+        let omitted = |name: &ArcStr| {
+            self.args.get(&ArgKey::Named(name.clone())).is_some_and(|a| a.is_default)
+        };
+        if !ftype.args.iter().any(|a| a.label().is_some_and(omitted)) {
+            return Ok(true);
+        }
+        let mut flags = self.flags;
+        flags.remove(CFlag::WarnUnhandled);
+        let ids = ftype.lambda_ids.ids();
+        let mut known = !ids.is_empty();
+        for id in ids.iter() {
+            let def = ctx.lambda_defs.get(id).cloned();
+            let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
+            else {
+                known = false;
+                continue;
+            };
+            for (farg, argspec) in f.typ.args.iter().zip(f.argspec.iter()) {
+                let Some(name) = farg.label().filter(|n| omitted(n)) else { continue };
+                let Some(expr) = argspec.kind.default() else {
+                    known = false;
+                    continue;
+                };
+                let node = self.checked_default(
+                    ctx,
+                    flags,
+                    &self.scope,
+                    f,
+                    name,
+                    expr,
+                    &mut Refs::default(),
+                )?;
+                ctx.discard(node);
+            }
+        }
+        Ok(known)
     }
 
     fn init_prepared_bind(
@@ -823,19 +904,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// This site's terminal settle of still-unbound constrained cells,
     /// deferred to the statement boundary. Cells reachable from an
-    /// omitted defaulted arg are exempt: the default expression binds
-    /// them at static resolution.
+    /// omitted default the check did not see are exempt: the default
+    /// binds them at the bind.
     fn pending_settle(&self, ftype: &FnType) -> crate::PendingSettle {
-        let mut dtv: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        for farg in ftype.args.iter() {
+        let mut dtv: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        for farg in ftype.args.iter().filter(|_| self.defaults_open) {
             if let FnArgKind::Labeled { name, .. } = &farg.kind
                 && let Some(a) = self.args.get(&ArgKey::Named(name.clone()))
                 && a.is_default
             {
-                farg.typ.collect_tvars(&mut dtv);
+                crate::typ::settle::position_cells(&farg.typ, &mut dtv);
             }
         }
-        let exempt: AHashSet<usize> = dtv.drain().map(|(_, tv)| tv.cell_addr()).collect();
+        let exempt: AHashSet<usize> = dtv.drain().map(|(addr, _)| addr).collect();
         // The call's own result cell joins the settle set: a literal ⊥
         // rtype unifies without binding it.
         let rtype = match &self.rtype {
@@ -1949,6 +2030,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             if let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) {
                 wrap!(n, formal.check_contains(&ctx.env, n.typ()))?;
             }
+        }
+        if fresh {
+            self.defaults_open = !self.check_omitted_defaults(ctx, ftype)?;
         }
         // A constrained cell reachable from the rtype/throws but no arg is
         // produced by the callee's body: settle it to its witness before an

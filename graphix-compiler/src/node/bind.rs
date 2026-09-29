@@ -417,6 +417,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         if !forwards {
             wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
         }
+        if let Type::TVar(tv) = &self.typ {
+            super::defer_settle(ctx, || crate::PendingSettle::LetOverBottom {
+                tv: tv.clone(),
+                init: self.node.typ().clone(),
+                spec: Arc::new(self.spec.clone()),
+            });
+        }
         if let Some(fv) = self.lambda_def_value() {
             self.pattern.ids(&mut |id| {
                 if crate::dbgenv::gxdbg_resolve() {
@@ -429,13 +436,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.node, self.node.typecheck1(ctx))?;
-        if let Type::TVar(tv) = &self.typ
-            && self.node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
-        {
-            tv.settle_or_bottom(&ctx.env)?;
-        }
-        Ok(())
+        wrap!(self.node, self.node.typecheck1(ctx))
     }
 
     fn view(&self) -> NodeView<'_, R, E> {

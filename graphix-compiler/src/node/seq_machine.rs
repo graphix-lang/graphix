@@ -8,7 +8,7 @@
 
 use super::{
     compile_block_children, compiler::compile, evaluation_order, typecheck_in_order,
-    typecheck1_settled, wake::TrackedFires,
+    typecheck1_statements, wake::TrackedFires,
 };
 use crate::{
     BindId, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue,
@@ -386,7 +386,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.pc.typecheck1(ctx)?;
         for s in self.steps.iter_mut() {
-            typecheck_in_order(ctx, &mut s.nodes, &s.catches, false, typecheck1_settled)?;
+            typecheck1_statements(ctx, &mut s.nodes, &s.catches, false)?;
         }
         Ok(())
     }

@@ -133,6 +133,63 @@ impl Pack for Level {
 
 thread_local! {
     static LEVEL: std::cell::Cell<Level> = const { std::cell::Cell::new(Level::GENERIC) };
+    static TASK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+static TASKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// A fresh concurrent compile task's id: a task started later has a
+/// larger one; 0 is outside every task.
+pub(crate) fn new_task() -> u32 {
+    TASKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Cells created while this lives belong to compile task `id`; dropping
+/// it restores the enclosing task.
+#[must_use]
+pub(crate) struct InTask(u32);
+
+impl InTask {
+    pub(crate) fn enter(id: u32) -> Self {
+        Self(TASK.replace(id))
+    }
+}
+
+impl Drop for InTask {
+    fn drop(&mut self) {
+        TASK.set(self.0)
+    }
+}
+
+/// Whether an earlier compile task created `cell`: what such a task left
+/// open, it decided open, and no settle of this one binds it.
+pub(super) fn earlier_task(cell: &TCell) -> bool {
+    cell.task < TASK.get()
+}
+
+/// A change to `cell` by the running compile task. A task changes only
+/// cells it or a later task created: what an earlier one created (the
+/// enclosing body's, a sibling's) the check settled, and a concurrent
+/// sibling may be reading it.
+pub(super) fn written(cell: &TCell) {
+    written_of(cell.task, "cell")
+}
+
+fn written_of(owner: u32, what: &str) {
+    if owner < TASK.get() {
+        foreign_write(owner, what)
+    }
+}
+
+#[cold]
+fn foreign_write(owner: u32, what: &str) {
+    if crate::dbgenv::graphix_task_audit() {
+        eprintln!(
+            "FOREIGN-WRITE by task {} to a {what} of task {owner}\n{}",
+            TASK.get(),
+            std::backtrace::Backtrace::force_capture()
+        );
+    }
 }
 
 /// The level a cell created now takes.
@@ -209,6 +266,8 @@ pub struct TCell {
     /// Where the cell belongs ([`Level`]); everything it reaches is at
     /// its depth or shallower.
     pub(crate) level: Level,
+    /// The compile task that created the cell ([`written`]).
+    task: u32,
 }
 
 impl Default for TCell {
@@ -220,6 +279,7 @@ impl Default for TCell {
             bottom_fed: false,
             rigid_gates: 0,
             level: current_level(),
+            task: TASK.get(),
         }
     }
 }
@@ -234,6 +294,7 @@ pub struct RigidGate(Arc<RwLock<TCell>>);
 impl Drop for RigidGate {
     fn drop(&mut self) {
         let mut cell = self.0.write();
+        written(&cell);
         cell.rigid_gates = cell.rigid_gates.saturating_sub(1);
     }
 }
@@ -275,6 +336,8 @@ pub struct TVarLink {
     pub(crate) id: TVarId,
     pub(crate) frozen: bool,
     pub(crate) cell: Arc<RwLock<TCell>>,
+    /// The compile task that created the var ([`written`]).
+    task: u32,
 }
 
 #[derive(Debug)]
@@ -471,7 +534,12 @@ impl TVar {
     }
 
     pub(crate) fn set_level(&self, level: Level) {
-        self.cell().write().level = level
+        let cell = self.cell();
+        let mut c = cell.write();
+        if c.level != level {
+            written(&c);
+        }
+        c.level = level
     }
 
     /// Claim the cell, generic or not, for `level` unless it already
@@ -481,6 +549,7 @@ impl TVar {
             let cell = self.cell();
             let mut c = cell.write();
             (c.level.depth > level.depth).then(|| {
+                written(&c);
                 c.level = level;
                 (c.binding.clone(), c.constraints.clone())
             })
@@ -511,7 +580,7 @@ impl TVar {
     ) -> Self {
         Self(ManuallyDrop::new(Arc::new(TVarInner {
             name,
-            link: RwLock::new(TVarLink { id, frozen, cell }),
+            link: RwLock::new(TVarLink { id, frozen, cell, task: TASK.get() }),
         })))
     }
 
@@ -546,7 +615,10 @@ impl TVar {
             t.require_concrete();
         }
         lower(&t, self.level());
-        self.cell().write().binding = Some(t)
+        let cell = self.cell();
+        let mut c = cell.write();
+        written(&c);
+        c.binding = Some(t)
     }
 
     /// Add a conjunct to this var's cell constraints (deduped).
@@ -558,7 +630,11 @@ impl TVar {
         for c in new.iter() {
             lower(c, level)
         }
-        cell.write().constraints.extend(new.drain(..));
+        if !new.is_empty() {
+            let mut c = cell.write();
+            written(&c);
+            c.constraints.extend(new.drain(..));
+        }
     }
 
     /// Narrow the cell by `c` unless a conjunct already is at least
@@ -587,7 +663,8 @@ impl TVar {
     }
 
     /// Make self an alias for other; self's constraints merge into the
-    /// shared cell.
+    /// shared cell. A var of an earlier compile task keeps its name: the
+    /// other takes it, or, named already, the two merge as cells.
     pub fn alias(&self, other: &Self) {
         self.merge_into(other, Merge::Name)
     }
@@ -598,15 +675,32 @@ impl TVar {
     /// A rigid cell is the survivor whichever side it is on: its gate
     /// counts on that cell, and a var re-pointed away from it would
     /// read as free for the rest of the def's check and take a binding.
+    /// Otherwise the older compile task's cell survives, and two cells of
+    /// earlier tasks stay apart ([`written`]).
     pub(super) fn alias_cells(&self, other: &Self) {
         self.merge_into(other, Merge::Cells)
     }
 
     fn merge_into(&self, other: &Self, how: Merge) {
-        if how == Merge::Cells && self.is_rigid() && !other.is_rigid() {
+        if how == Merge::Cells
+            && !other.is_rigid()
+            && (self.is_rigid() || self.cell().read().task < other.cell().read().task)
+        {
             return other.merge_into(self, how);
         }
         let (s_cell, o_cell) = (self.cell(), other.cell());
+        let earlier = (earlier_task(&s_cell.read()), earlier_task(&o_cell.read()));
+        match earlier {
+            (true, true) => return,
+            (true, false) if how == Merge::Name => {
+                let frozen = other.read().frozen;
+                return match frozen {
+                    false => other.merge_into(self, Merge::Name),
+                    true => self.merge_into(other, Merge::Cells),
+                };
+            }
+            _ => (),
+        }
         let same = Arc::ptr_eq(&s_cell, &o_cell);
         if how == Merge::Name && self.read().frozen {
             return;
@@ -651,6 +745,9 @@ impl TVar {
         };
         let oid = other.read().id;
         let mut s = self.write();
+        if !same || (how == Merge::Name && (!s.frozen || s.id != oid)) {
+            written_of(s.task, "var");
+        }
         if how == Merge::Name {
             s.frozen = true;
             s.id = oid;
@@ -670,21 +767,34 @@ impl TVar {
         let level = s_cell.read().level;
         {
             let mut oc = o_cell.write();
+            if !to_add.is_empty() {
+                written(&oc);
+            }
             oc.constraints.extend(to_add.drain(..));
-            oc.cycle_refused |= refused;
-            oc.bottom_fed |= bottom_fed;
+            if !earlier_task(&oc) {
+                oc.cycle_refused |= refused;
+                oc.bottom_fed |= bottom_fed;
+            }
         }
         // Forward-link the abandoned cell: other TVars may share it and
         // must follow the merge. The occurs check above guarantees the
         // link closes no cycle.
-        s_cell.write().binding = Some(Type::TVar(other.clone()));
+        {
+            let mut sc = s_cell.write();
+            written(&sc);
+            sc.binding = Some(Type::TVar(other.clone()));
+        }
         s.cell = o_cell;
         drop(s);
         lower(&Type::TVar(other.clone()), level);
     }
 
     pub fn freeze(&self) {
-        self.write().frozen = true;
+        let mut l = self.write();
+        if !l.frozen {
+            written_of(l.task, "var");
+        }
+        l.frozen = true;
     }
 
     /// Whether the cell holds the `Concrete` conjunct.
@@ -733,6 +843,7 @@ impl TVar {
         }
         let concrete = {
             let mut sc = s_cell.write();
+            written(&sc);
             sc.binding = Some(binding.clone());
             sc.constraints.extend(to_add.drain(..));
             sc.constraints.iter().any(|c| matches!(c, Type::Concrete))
@@ -760,15 +871,28 @@ impl TVar {
 
     /// Clear the binding; the constraints stay.
     pub fn unbind(&self) {
-        self.read().cell.write().binding = None
+        let cell = self.cell();
+        let mut c = cell.write();
+        if c.binding.is_some() {
+            written(&c);
+        }
+        c.binding = None
     }
 
     /// Open a rigid gate on the cell this var reads now; see
     /// [`TCell::rigid_gates`].
     pub fn open_rigid(&self) -> RigidGate {
         let cell = self.cell();
-        cell.write().rigid_gates += 1;
+        {
+            let mut c = cell.write();
+            written(&c);
+            c.rigid_gates += 1;
+        }
         RigidGate(cell)
+    }
+
+    pub(crate) fn earlier_task(&self) -> bool {
+        earlier_task(&self.cell().read())
     }
 
     pub(crate) fn is_rigid(&self) -> bool {
@@ -780,7 +904,12 @@ impl TVar {
         if graphix_dbg_bind() {
             eprintln!("BOTTOM-FED '{}({:x})", self.name, self.cell_addr());
         }
-        self.cell().write().bottom_fed = true;
+        let cell = self.cell();
+        let mut c = cell.write();
+        if !c.bottom_fed {
+            written(&c);
+        }
+        c.bottom_fed = true;
     }
 
     /// Record an occurs-check refusal; see [`TCell::cycle_refused`].
@@ -796,7 +925,12 @@ impl TVar {
                 std::backtrace::Backtrace::force_capture()
             );
         }
-        self.read().cell.write().cycle_refused = true;
+        let cell = self.cell();
+        let mut c = cell.write();
+        if !c.cycle_refused {
+            written(&c);
+        }
+        c.cycle_refused = true;
     }
 
     pub(super) fn would_cycle(&self, t: &Type) -> bool {

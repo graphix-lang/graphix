@@ -1,0 +1,7 @@
+// expect: reject
+// An omitted default types its site at the check: `d` is f64 here, so
+// the `+` mixes numeric types. The build refused it and the check did not.
+{
+  let f = |#d = 0.0, x: i64| d;
+  f(i64:1) + 1
+}

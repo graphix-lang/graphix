@@ -1,0 +1,5 @@
+// The default and the positional argument meet in one cell at the site.
+{
+  let f = |#d = 0.0, x| d + x;
+  f(2.5)
+}

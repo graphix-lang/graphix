@@ -27,6 +27,7 @@ dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
 dbg_flag!(graphix_profile, "GRAPHIX_PROFILE");
 dbg_flag!(graphix_profile_instances, "GRAPHIX_PROFILE_INSTANCES");
 dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
+dbg_flag!(graphix_task_audit, "GRAPHIX_TASK_AUDIT");
 dbg_flag!(
     #[cfg(debug_assertions)]
     gxdbg_callret,

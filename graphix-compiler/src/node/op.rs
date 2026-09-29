@@ -559,18 +559,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
+    /// The operand is negatable once the check settles its cell.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         wrap!(self.n, constrain_operand(&ctx.env, &Self::negatable(), self.n.typ()))?;
-        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
+        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
+        defer_operand(ctx, &self.n);
+        super::defer_settle(ctx, || crate::PendingSettle::Contains {
+            outer: Self::negatable(),
+            inner: self.n.typ().clone(),
+            spec: Arc::new(self.n.spec().clone()),
+        });
+        Ok(())
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck1(ctx))?;
-        if let Type::TVar(tv) = self.n.typ() {
-            wrap!(self.n, tv.settle(&ctx.env))?;
-        }
-        wrap!(self.n, Self::negatable().check_contains(&ctx.env, self.n.typ()))
+        wrap!(self.n, self.n.typecheck1(ctx))
     }
 
     fn view(&self) -> NodeView<'_, R, E> {
@@ -675,45 +679,54 @@ macro_rules! arith_emit_clif {
     };
 }
 
+/// `fn('a: Number, 'a) -> 'a`: both operands `lt` and `rt` and the
+/// result `out` are one numeric type. Idempotent.
+pub(crate) fn arith_rule(
+    env: &Env,
+    op: BinOp,
+    checked: bool,
+    lt: &Type,
+    rt: &Type,
+    out: &Type,
+) -> Result<()> {
+    // A declared `'a: Number` formal is rigid while its def gate is
+    // open: `x + f64:0.` must reject, not bind 'a.
+    let Some(t) = operand_type(env, lt, rt)? else {
+        return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            bail!(
+                "cannot compute {lt} {}{} {rt}: arithmetic is fn('a: Number, 'a) -> 'a — \
+                 both operands must be one numeric type (cast one side explicitly)",
+                op.symbol(),
+                if checked { "?" } else { "" }
+            )
+        });
+    };
+    // The operands are one type now, so one bound covers both. A known
+    // operand must be numeric at typecheck0; the def-time acceptance gate
+    // for a lambda body runs only there.
+    constrain_operand(env, &Type::Primitive(Typ::number()), t)?;
+    refuse_mixed_numeric(env, t, "compute with")?;
+    match checked {
+        true => out.check_contains(
+            env,
+            &Type::Set(Arc::from_iter([t.clone(), ARITH_ERR.clone()])),
+        ),
+        false => out.check_contains(env, t),
+    }
+}
+
+/// Defer an operator's settle of the operand `n` to the check's settle.
+fn defer_operand<R: Rt, E: UserEvent>(ctx: &mut CompileCtx<R, E>, n: &Node<R, E>) {
+    if let Type::TVar(tv) = n.typ() {
+        super::defer_settle(ctx, || crate::PendingSettle::Operand {
+            tv: tv.clone(),
+            spec: Arc::new(n.spec().clone()),
+        })
+    }
+}
+
 macro_rules! arith_op {
     ($name:ident, $checked:tt, $base:ident) => {
-        impl<R: Rt, E: UserEvent> $name<R, E> {
-            /// `fn('a: Number, 'a) -> 'a`: both operands and the result
-            /// are one numeric type. Idempotent; runs at typecheck0 and
-            /// again at typecheck1 after the operand cells settle.
-            fn typecheck_tail(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                let num = Type::Primitive(Typ::number());
-                let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
-                // A declared `'a: Number` formal is rigid while its def
-                // gate is open: `x + f64:0.` must reject, not bind 'a.
-                let Some(t) = wrap!(self, operand_type(&ctx.env, lt, rt))? else {
-                    return wrap!(
-                        self,
-                        $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
-                            bail!(
-                                "cannot compute {lt} {}{} {rt}: arithmetic is \
-                                 fn('a: Number, 'a) -> 'a — both operands must be \
-                                 one numeric type (cast one side explicitly)",
-                                BinOp::$base.symbol(),
-                                if $checked { "?" } else { "" }
-                            )
-                        })
-                    );
-                };
-                // The operands are one type now, so one bound covers both. A
-                // known operand must be numeric at typecheck0; the def-time
-                // acceptance gate for a lambda body runs only there.
-                wrap!(self, constrain_operand(&ctx.env, &num, t))?;
-                wrap!(self, refuse_mixed_numeric(&ctx.env, t, "compute with"))?;
-                let ut = if $checked {
-                    Type::Set(Arc::from_iter([t.clone(), ARITH_ERR.clone()]))
-                } else {
-                    t.clone()
-                };
-                wrap!(self, self.typ.check_contains(&ctx.env, &ut))
-            }
-        }
-
         binary_node!($name, Type::empty_tvar(), {
             arith_emit_clif!($checked, $base);
 
@@ -724,7 +737,9 @@ macro_rules! arith_op {
             ) -> &TagValue {
                 let (l, r, trig, tag) = gated_operands!(self, ctx, event);
                 let v = l.with_value(|lv| {
-                    r.with_value(|rv| arith(BinOp::$base, $checked, lv.clone(), rv.clone()))
+                    r.with_value(|rv| {
+                        arith(BinOp::$base, $checked, lv.clone(), rv.clone())
+                    })
                 });
                 match v {
                     Value::Error(e) if !$checked => {
@@ -738,22 +753,32 @@ macro_rules! arith_op {
                 }
             }
 
+            /// The rule holds now, and again once the check settles the
+            /// operand cells.
             fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                self.typecheck_tail(ctx)
+                let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
+                wrap!(
+                    self,
+                    arith_rule(&ctx.env, BinOp::$base, $checked, lt, rt, &self.typ)
+                )?;
+                defer_operand(ctx, &self.lhs);
+                defer_operand(ctx, &self.rhs);
+                super::defer_settle(ctx, || crate::PendingSettle::Arith {
+                    op: BinOp::$base,
+                    checked: $checked,
+                    lhs: self.lhs.typ().clone(),
+                    rhs: self.rhs.typ().clone(),
+                    out: self.typ.clone(),
+                    spec: Arc::new(self.spec.clone()),
+                });
+                Ok(())
             }
 
             fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
-                if let Type::TVar(tv) = self.lhs.typ() {
-                    wrap!(self.lhs, tv.settle(&ctx.env))?;
-                }
-                if let Type::TVar(tv) = self.rhs.typ() {
-                    wrap!(self.rhs, tv.settle(&ctx.env))?;
-                }
-                self.typecheck_tail(ctx)
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
             }
         });
     };

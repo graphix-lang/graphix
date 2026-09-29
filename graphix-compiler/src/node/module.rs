@@ -862,13 +862,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let Self { env, nodes, catches, scope, .. } = self;
         let _module = profile::module(&scope.lexical);
         ctx.with_restored_mut(env, |ctx| {
-            super::typecheck_in_order(
-                ctx,
-                nodes,
-                catches,
-                false,
-                super::typecheck1_settled,
-            )
+            super::typecheck1_statements(ctx, nodes, catches, false)
         })
     }
 

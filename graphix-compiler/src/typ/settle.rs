@@ -79,6 +79,9 @@ impl TVar {
     ///
     /// [witness]: Self::witness
     pub fn settle_witness(&self, env: &Env) -> Result<()> {
+        if self.earlier_task() {
+            return Ok(());
+        }
         match self.witness(env)? {
             Ok(w) => {
                 if graphix_dbg_bind() {
@@ -132,7 +135,7 @@ impl TVar {
     fn settle_bottom(&self) -> Result<()> {
         let cell = self.cell();
         let mut cell = cell.write();
-        if cell.binding.is_some() {
+        if cell.binding.is_some() || super::tvar::earlier_task(&cell) {
             return Ok(());
         }
         if cell.constraints.iter().any(|c| matches!(c, Type::Concrete)) {
@@ -201,10 +204,20 @@ impl FnType {
     ) -> Result<()> {
         let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut tvs);
-        let rtype_cell = rtype_cell
-            .filter(|tv| !tvs.values().any(|n| n.cell_addr() == tv.cell_addr()))
-            .map(|tv| (tv.name.clone(), tv.clone()));
-        let nodes = super::fntyp::sorted_tvars(tvs.drain().chain(rtype_cell));
+        // the cells a binding holds are positions this site reads too
+        let mut positional: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.for_each_part(&mut |t, constraint| {
+            if !constraint {
+                position_cells(t, &mut positional)
+            }
+        });
+        let mut seen: LPooled<AHashSet<usize>> =
+            tvs.values().map(|tv| tv.cell_addr()).collect();
+        let rtype_cell = rtype_cell.filter(|tv| seen.insert(tv.cell_addr()));
+        let under = positional.values().filter(|tv| seen.insert(tv.cell_addr()));
+        let named =
+            rtype_cell.into_iter().chain(under).map(|tv| (tv.name.clone(), tv.clone()));
+        let nodes = super::fntyp::sorted_tvars(tvs.drain().chain(named));
         let mut index: LPooled<AHashMap<usize, usize>> = LPooled::take();
         for (i, (_, tv)) in nodes.iter().enumerate() {
             index.insert(tv.cell_addr(), i);
@@ -248,12 +261,6 @@ impl FnType {
         }
         // a `Concrete` cell met only inside a conjunct is no position of
         // the signature: nothing reads it, so it is left as it stands
-        let mut positional: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.for_each_part(&mut |t, constraint| {
-            if !constraint {
-                position_cells(t, &mut positional)
-            }
-        });
         for i in order.drain(..) {
             let tv = &nodes[i].1;
             let addr = tv.cell_addr();
@@ -263,13 +270,6 @@ impl FnType {
                 continue;
             }
             tv.settle_or_bottom(env)?;
-        }
-        // a position under a binding is read too: nothing settles it, so
-        // an open `Concrete` one is refused here
-        for (addr, tv) in positional.iter() {
-            if !exempt.contains(addr) && !tv.is_bound() && tv.requires_concrete() {
-                return Err(tv.not_concrete());
-            }
         }
         Ok(())
     }
@@ -304,7 +304,7 @@ fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
 
 /// The cells `t` holds as positions, through bindings, never through
 /// conjuncts.
-fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
+pub(crate) fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {
             if out.insert(tv.cell_addr(), tv.clone()).is_none()

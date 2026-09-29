@@ -257,6 +257,8 @@ reject	nested-bind-stmt-dead-elim-aug2026/05_outer_literal_bind.gx
 excluded	nested-value-jul2026/01_selfref_connect_growth.gx
 trace	never-args-elided-sep2026/00_dbg_in_never_arm.gx
 trace	never-args-elided-sep2026/01_raise_in_never_arm.gx
+reject	omitted-default-check-sep2026/01_default_types_the_site.gx
+trace	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
 trace	organic-firing-aug2026/01_multilevel_face.gx
 trace	param-call-expr-sep2026/00_param_called_through_parens.gx

@@ -1129,25 +1129,26 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
     }
 }
 
-/// A builtin's check `Apply`, as the definition gate builds it: the
-/// builtin over the gate's arguments, checked once.
+/// A builtin's check `Apply` for a site whose definition holds none
+/// (restored from an image, or taken by a concurrent site): the builtin
+/// over a private copy of its checked signature, so no site writes the
+/// definition's cells.
 pub(crate) fn build_builtin_check<R: Rt, E: UserEvent>(
     def: &LambdaDef<R, E>,
     ctx: &mut CompileCtx<R, E>,
 ) -> Result<Box<dyn Apply<R, E>>> {
-    let mut gate = DefGate::open(ctx, def);
-    let res =
-        (def.init)(&gate.scope, ctx, &mut gate.args, BindMode::Definition, ExprId::new())
-            .and_then(|mut f| f.typecheck0(ctx, &mut gate.args).map(|()| f));
-    gate.close(ctx);
-    res
+    let sig = def.typ.reset_tvars();
+    let mut args: LPooled<Vec<Node<R, E>>> =
+        sig.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
+    (def.init)(&def.scope, ctx, &mut args, BindMode::Dynamic(&sig), ExprId::new())
+        .and_then(|mut f| f.typecheck0(ctx, &mut args).map(|()| f))
 }
 
 /// The definition's check of its labeled defaults, under the gate:
 /// each default compiles in the def's scope and must fit its parameter.
 /// Against a declared tvar it must fit the tvar's constraints, not the
 /// variable, since a default is allowed to instantiate the variable at
-/// a site that omits the argument (`CallSite::prepare_bind`).
+/// a site that omits the argument (`CallSite::check_omitted_defaults`).
 fn check_defaults<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     def: &LambdaDef<R, E>,
@@ -1226,7 +1227,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after
         // the body (`check_defaults`), and again per omitting call site
-        // (`CallSite::prepare_bind`), where one may narrow that site's cells.
+        // (`CallSite::check_omitted_defaults`), where one may narrow that
+        // site's cells.
         let mut gate = DefGate::open(ctx, def);
         let res = (def.init)(
             &gate.scope,

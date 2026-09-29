@@ -43,7 +43,7 @@ mod normalize;
 pub(crate) use normalize::{NormKey, norm_key};
 mod print;
 mod setops;
-mod settle;
+pub(crate) mod settle;
 pub(crate) mod tval;
 pub(crate) mod tvar;
 

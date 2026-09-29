@@ -140,6 +140,12 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
     };
     let joined = match tv.binding() {
         None => etyp.clone(),
+        Some(t)
+            if !etyp.has_unbound()
+                && t.contains_with_flags(BitFlags::empty(), env, etyp)? =>
+        {
+            return Ok(());
+        }
         Some(t) => Type::union(env, &[&t, etyp])?,
     };
     tv.bind(joined);

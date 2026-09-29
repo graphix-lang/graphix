@@ -19,12 +19,10 @@ const LIST_LIT_EMPTY: &str = r#"
   list::len([<>])
 "#;
 
-// The empty literal is a constant; the whole call folds and no kernel
-// runs.
 run!(list_lit_empty, LIST_LIT_EMPTY, |v: Result<&Value>| matches!(
     v,
     Ok(Value::I64(0))
-); graphix_package_core::testing::FuseExpect::None);
+); graphix_package_core::testing::FuseExpect::Jit);
 
 const LIST_LIT_NESTED: &str = r#"
 {

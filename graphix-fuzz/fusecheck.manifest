@@ -257,6 +257,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	nested-value-jul2026/01_selfref_connect_growth.gx
 0	never-args-elided-sep2026/00_dbg_in_never_arm.gx
 2	never-args-elided-sep2026/01_raise_in_never_arm.gx
+0	omitted-default-check-sep2026/01_default_types_the_site.gx
+1	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx
 0	param-call-expr-sep2026/00_param_called_through_parens.gx
