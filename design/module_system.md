@@ -146,7 +146,9 @@ at the module root instead of continuing into ancestor modules.
 position (a `let` RHS, a call argument, a block's value slot, a select
 arm body). They are ⊥-typed with a phantom value channel, and a
 value-position one let a connect route runtime values through a ⊥
-binding. A dynamic `mod` stays an expression with a real
+binding. A `let` refuses in value position too, a block's value slot
+excepted: it has no value, and its name would bind in the enclosing
+block, past the expression that holds it. A dynamic `mod` stays an expression with a real
 `[error, null]` value.
 
 ### Interfaces

@@ -80,12 +80,13 @@ f_workers() { echo "$1" | cut -d: -f3; }
 f_scale()   { echo "$1" | cut -d: -f4; }
 f_os()      { echo "$1" | cut -d: -f5; }
 
-# FLEET_ONLY=<name> restricts every step to one host; FLEET_EXCLUDE=<name>
-# holds one host OUT. Both leave the seed math unchanged (each host keeps
-# its position-derived seed). FLEET_ONLY adds or restarts a single box
+# FLEET_ONLY=<name> restricts every step to one host;
+# FLEET_EXCLUDE=<name>[,<name>...] holds those hosts OUT. Both leave the
+# seed math unchanged (each host keeps its position-derived seed).
+# FLEET_ONLY adds or restarts a single box
 # without touching the rest — bring washu-chan into a running campaign:
 # FLEET_ONLY=washu-chan fleet.sh launch <camp> <base>. FLEET_EXCLUDE runs a
-# FULL deploy that must skip one box — hold the session box out of a launch
+# FULL deploy that must skip a box — hold the session box out of a launch
 # while a session is live, then add it later with FLEET_ONLY:
 # FLEET_EXCLUDE=washu-chan fleet.sh deploy <new> <base> <old>.
 #
@@ -103,7 +104,7 @@ asan_host() {
 
 skip_host() {
     [[ -n ${FLEET_ONLY:-} && $FLEET_ONLY != "$1" ]] && return 0
-    [[ -n ${FLEET_EXCLUDE:-} && $FLEET_EXCLUDE == "$1" ]] && return 0
+    [[ -n ${FLEET_EXCLUDE:-} && ",${FLEET_EXCLUDE}," == *",$1,"* ]] && return 0
     return 1
 }
 

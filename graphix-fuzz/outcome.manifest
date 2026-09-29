@@ -3,8 +3,8 @@ reject	abstract-opaque-overtag-jul2026/00_het_list_fn_fold.gx
 reject	abstract-opaque-overtag-jul2026/01_het_list_nested_list.gx
 trace	abstract-ord-mixed-types-sep2026/00_map_key_union.gx
 reject	annotation-names-sep2026/00_undefined_name_in_a_callback_let.gx
-trace	any-return-narrowing-aug2026/01_any_arm_scalar_marshal.gx
-trace	arg-order-scope-chain-aug2026/00_let_in_labeled_arg.gx
+reject	any-return-narrowing-aug2026/01_any_arm_scalar_marshal.gx
+reject	arg-order-scope-chain-aug2026/00_let_in_labeled_arg.gx
 reject	arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx
 trace	arith-widened-cell-aug2026/00_filter_err_let.gx
 trace	arith-widened-cell-aug2026/01_filter_err_let_i32.gx
@@ -67,6 +67,7 @@ trace	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
 trace	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
 trace	composite-qop-jun2026/01_composite_success_qop_segv.gx
 trace	composite-qop-jun2026/02_borrowed_inner_qop.gx
+reject	concrete-refusal-order-sep2026/00_open_parse_target.gx
 trace	connect-instance-identity-aug2026/01_write_only_let_in_slot_callback.gx
 contained	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 trace	connect-instance-identity-aug2026/03_self_connect_in_rec_arm.gx
@@ -142,7 +143,7 @@ trace	env-cell-generalized-sep2026/00_extracted_callback_shares_outer.gx
 reject	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 reject	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 trace	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
-trace	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
+reject	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
 trace	filtermap-push-confusion-jul2026/00_slice_elem_sigsegv.gx
 trace	firing-jul2026/01_guarded_select_selection_memory.gx
 trace	firing-jul2026/02_hof_const_body_prev_len.gx
@@ -151,6 +152,7 @@ trace	firing-jul2026/06_guarded_select_null_arm_refire.gx
 trace	flip-jun2026/01_dead_bottom_stmt.gx
 trace	flip-jun2026/02_dead_bottom_stmt.gx
 trace	flip-jun2026/03_dead_bottom_stmt.gx
+trace	fn-print-image-sep2026/00_interpolated_lambda.gx
 trace	fold-acc-taint-jul2026/01_fold_select_acc_taint_launder.gx
 trace	fold-bottom-body-acc-aug2026/01_connect_body_tuple_acc.gx
 trace	fold-bottom-body-acc-aug2026/02_connect_body_string_acc.gx
@@ -248,11 +250,11 @@ trace	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
 trace	narrow-int-abi-jul2026/03_bool_in_string_interp.gx
 trace	neg-standing-bottom-aug2026/00_byref_write_stomped.gx
 trace	neg-standing-bottom-aug2026/01_dynmod_dispatch_repoisoned.gx
-trace	nested-bind-stmt-dead-elim-aug2026/00_array_literal_selfconnect.gx
-trace	nested-bind-stmt-dead-elim-aug2026/01_array_literal_multi_ref.gx
-trace	nested-bind-stmt-dead-elim-aug2026/02_struct_literal_field.gx
-trace	nested-bind-stmt-dead-elim-aug2026/03_variant_payload.gx
-trace	nested-bind-stmt-dead-elim-aug2026/04_select_scrutinee_bind.gx
+reject	nested-bind-stmt-dead-elim-aug2026/00_array_literal_selfconnect.gx
+reject	nested-bind-stmt-dead-elim-aug2026/01_array_literal_multi_ref.gx
+reject	nested-bind-stmt-dead-elim-aug2026/02_struct_literal_field.gx
+reject	nested-bind-stmt-dead-elim-aug2026/03_variant_payload.gx
+reject	nested-bind-stmt-dead-elim-aug2026/04_select_scrutinee_bind.gx
 reject	nested-bind-stmt-dead-elim-aug2026/05_outer_literal_bind.gx
 excluded	nested-value-jul2026/01_selfref_connect_growth.gx
 trace	never-args-elided-sep2026/00_dbg_in_never_arm.gx
@@ -370,7 +372,7 @@ trace	soak-jul2026/02_slice_taint_placeholder_error.gx
 trace	soak-jul2026/03_dead_dollar_stmt_kernel_abort.gx
 reject	soak-jul2026/04_duration_div0_error_value.gx
 trace	soak-jul2026/05_list_init_max_wedge.gx
-trace	soak-jul2026/06_tainted_qop_unbox_ub.gx
+reject	soak-jul2026/06_tainted_qop_unbox_ub.gx
 trace	soak-jul2026/07_stmt_call_pending_abort.gx
 trace	soak-jul2026/08_interior_bottom_mod_cached.gx
 trace	soak-jul2026/09_interior_bottom_injected.gx
@@ -488,6 +490,7 @@ reject	typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx
 reject	typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx
 reject	typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx
 trace	union-struct-field-jul2026/01_dyncall_union_field_leak.gx
+reject	value-position-let-sep2026/00_tuple_let_shadows.gx
 trace	value-shape-seam-jul2026/00_fold_slice_init.gx
 trace	value-shape-seam-jul2026/01_fold_slice_init_literal_body.gx
 trace	value-shape-seam-jul2026/02_fold_index_union_init.gx

@@ -45,7 +45,19 @@ pub(crate) fn compile<R: Rt, E: UserEvent>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R, E>> {
-    ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id))
+    ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, false))
+}
+
+/// [`compile`] a statement: a `let` compiles here, and nowhere a value
+/// is expected.
+pub(crate) fn compile_statement_expr<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    flags: BitFlags<CFlag>,
+    spec: Expr,
+    scope: &Scope,
+    top_id: ExprId,
+) -> Result<Node<R, E>> {
+    ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, true))
 }
 
 /// The lambda a definition-asserting attribute annotates: the node's
@@ -68,6 +80,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
     spec: Expr,
     scope: &Scope,
     top_id: ExprId,
+    statement: bool,
 ) -> Result<Node<R, E>> {
     if ctx.env.ide.is_lsp() {
         ctx.env.push_scope_map_entry(ScopeMapEntry {
@@ -99,7 +112,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
         }
     }
     if !def_asserts.is_empty() {
-        let node = compile_kind(ctx, flags, &spec, scope, top_id)?;
+        let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;
         let Some(id) = annotated_lambda(&node) else {
             bailat!(spec, "#[{}] annotates a function definition", def_asserts[0].name());
         };
@@ -111,7 +124,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
         }
         return Ok(node);
     }
-    compile_kind(ctx, flags, &spec, scope, top_id)
+    compile_kind(ctx, flags, &spec, scope, top_id, statement)
 }
 
 /// Compile a `mod` declaration, from statement position (a block or
@@ -215,6 +228,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
     spec: &Expr,
     scope: &Scope,
     top_id: ExprId,
+    statement: bool,
 ) -> Result<Node<R, E>> {
     macro_rules! binop {
         ($op:ident, $lhs:expr, $rhs:expr) => {
@@ -274,9 +288,9 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Struct(StructExpr { args }) => {
             Struct::compile(ctx, flags, spec.clone(), scope, top_id, args)
         }
-        // Declarations (`use`, static `mod`, `type`, `trait`, `impl`) carry
-        // no value and are compiled in statement position only; a dynamic
-        // module produces a real `[error, null]` value, so it is an expression.
+        // Declarations (`let`, `use`, static `mod`, `type`, `trait`, `impl`)
+        // are compiled in statement position only; a dynamic module
+        // produces a real `[error, null]` value, so it is an expression.
         ExprKind::Module { name, value } => match value {
             ModuleKind::Dynamic { .. } => compile_module(
                 ctx,
@@ -306,7 +320,10 @@ fn compile_kind<R: Rt, E: UserEvent>(
         ExprKind::Apply(ApplyExpr { args, function: f }) => {
             CallSite::compile(ctx, flags, spec.clone(), scope, top_id, args, f)
         }
-        ExprKind::Bind(b) => Bind::compile(ctx, flags, spec.clone(), scope, top_id, b),
+        ExprKind::Bind(b) if statement => {
+            Bind::compile(ctx, flags, spec.clone(), scope, top_id, b)
+        }
+        ExprKind::Bind(_) => not_an_expression(spec, "a let binding"),
         ExprKind::Qop(e) | ExprKind::Rethrow(e) => {
             Qop::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }

@@ -2415,3 +2415,28 @@ run!(
         let result = 0
     "#
 ; graphix_package_core::testing::FuseExpect::None);
+
+// A function value prints as its source, the same cold and warm.
+const FN_PRINTS_ITS_SOURCE: &str = r#"
+{
+  let f = |acc, x| str::len(x) + acc;
+  "[f]"
+}
+"#;
+
+run!(fn_prints_its_source, FN_PRINTS_ITS_SOURCE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s.as_str() == "Abstract(|acc, x| str::len(x) + acc)")
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A `let` holds no value: it is a statement, never an element.
+const LET_IN_VALUE_POSITION: &str = r#"
+{
+  let a = "s";
+  let t = (let a = 3, 1);
+  a
+}
+"#;
+
+run!(let_in_value_position, LET_IN_VALUE_POSITION, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("a let binding is not an expression"))
+}; graphix_package_core::testing::FuseExpect::None);

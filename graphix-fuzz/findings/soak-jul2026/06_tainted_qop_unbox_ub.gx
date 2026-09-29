@@ -1,3 +1,5 @@
+// expect: reject
+// A `let` in value position is refused now (sep28k).
 // bisect: JIT UB — tainted qop inner unboxed Value::Null as Array
 // (graphix_value_into_array_borrowed unreachable_unchecked; SIGABRT
 // under debug_assertions, true UB in release). The let-in-element makes

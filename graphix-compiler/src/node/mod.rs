@@ -697,10 +697,11 @@ pub(crate) enum StmtAt {
 }
 
 /// Compile one statement of a block or a top level: a declaration
-/// (`catch`, `use`, `mod`, `type`, `trait`, `impl`) or an expression.
-/// Returns the scope the statements after it compile in, which a
-/// `catch` covers. In a block's value slot a declaration compiles as an
-/// expression, which refuses it; a dynamic module is an expression.
+/// (`let`, `catch`, `use`, `mod`, `type`, `trait`, `impl`) or an
+/// expression. Returns the scope the statements after it compile in,
+/// which a `catch` covers. In a block's value slot a declaration other
+/// than a `let` compiles as an expression, which refuses it; a dynamic
+/// module is an expression.
 pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -716,6 +717,9 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         }
         ExprKind::Module { name, value: value @ ModuleKind::Dynamic { .. } } => {
             compile_module(ctx, flags, e.clone(), scope, top_id, name, value, predeclared)
+        }
+        ExprKind::Bind(_) => {
+            compiler::compile_statement_expr(ctx, flags, e.clone(), scope, top_id)
         }
         _ if matches!(at, StmtAt::Block { value: true }) => {
             compile(ctx, flags, e.clone(), scope, top_id)

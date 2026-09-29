@@ -26,7 +26,7 @@ use enumflags2::BitFlags;
 use graphix_compiler::{
     CFlag, FusionStats, Scope,
     env::Env,
-    expr::{Expr, VfsEntry, VfsResolver},
+    expr::{Expr, Origin, VfsEntry, VfsResolver, parser},
 };
 use graphix_package::Package;
 use graphix_package_core::testing::{
@@ -275,9 +275,13 @@ impl Subject {
             spec.as_ref().map(|c| c.decls()).unwrap_or_default()
         );
         let inputs = if decls.is_empty() { "" } else { "use super::inputs::*; " };
-        let prefix = format!("use super::*; {inputs}let result = ");
+        // a body of several statements is one block, its last the result
+        let statements =
+            parser::parse(Origin::unspecified(body)).map_or(1, |items| items.len());
+        let (open, close) = if statements > 1 { ("{", "\n}") } else { ("", "") };
+        let prefix = format!("use super::*; {inputs}let result = {open}");
         let body_col = prefix.chars().count();
-        let wrapped = ArcStr::from(format!("{prefix}{body}"));
+        let wrapped = ArcStr::from(format!("{prefix}{body}{close}"));
         let mut table = AHashMap::from_iter([(
             Path::from(format!("/{modname}.gx")),
             VfsEntry::from(wrapped),

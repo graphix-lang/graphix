@@ -2,4 +2,4 @@
 // The check accepted what the build refused (sep28h ryouko): a commit
 // against a rigid 'r neither bound it nor refused, so [i64, 'r] passed
 // for 'a: Number; the instance at 'r = string failed.
-{ let f = |x: [i64, 'r]| -> [i64, 'r] { let f = 'a: Number |x: 'a, y: 'a| 3; f(0, let y = seq { { x }; x }) }; f("a") }
+{ let f = |x: [i64, 'r]| -> [i64, 'r] { let f = 'a: Number |x: 'a, y: 'a| 3; let y = seq { { x }; x }; f(0, y) }; f("a") }

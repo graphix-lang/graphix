@@ -622,7 +622,7 @@ not a gap count.
   `use`; every name arrives by declaration, `use`, or prelude;
   `self`/`super`/`package` roots (`package::` is the registered
   package, else a loaded script's own top level, else `/`);
-  declarations are statement-position only.
+  declarations, `let` included, are statement-position only.
 - **Place references** (`design/place_references.md`): `&a[i]`,
   `&s.f`, `&t.0`, `&m{k}` are root + path; writes patch the root at
   delivery; a dynamic key is a moving reference. References de-fuse.

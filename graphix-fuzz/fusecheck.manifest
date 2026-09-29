@@ -3,8 +3,8 @@
 0	abstract-opaque-overtag-jul2026/01_het_list_nested_list.gx
 2	abstract-ord-mixed-types-sep2026/00_map_key_union.gx
 0	annotation-names-sep2026/00_undefined_name_in_a_callback_let.gx
-3	any-return-narrowing-aug2026/01_any_arm_scalar_marshal.gx
-1	arg-order-scope-chain-aug2026/00_let_in_labeled_arg.gx
+0	any-return-narrowing-aug2026/01_any_arm_scalar_marshal.gx
+0	arg-order-scope-chain-aug2026/00_let_in_labeled_arg.gx
 0	arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx
 1	arith-widened-cell-aug2026/00_filter_err_let.gx
 1	arith-widened-cell-aug2026/01_filter_err_let_i32.gx
@@ -67,6 +67,7 @@
 6	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
 1	composite-qop-jun2026/01_composite_success_qop_segv.gx
 1	composite-qop-jun2026/02_borrowed_inner_qop.gx
+0	concrete-refusal-order-sep2026/00_open_parse_target.gx
 2	connect-instance-identity-aug2026/01_write_only_let_in_slot_callback.gx
 abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 8	connect-instance-identity-aug2026/03_self_connect_in_rec_arm.gx
@@ -142,7 +143,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 0	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 1	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
-1	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
+0	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
 1	filtermap-push-confusion-jul2026/00_slice_elem_sigsegv.gx
 2	firing-jul2026/01_guarded_select_selection_memory.gx
 2	firing-jul2026/02_hof_const_body_prev_len.gx
@@ -151,6 +152,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	flip-jun2026/01_dead_bottom_stmt.gx
 1	flip-jun2026/02_dead_bottom_stmt.gx
 1	flip-jun2026/03_dead_bottom_stmt.gx
+2	fn-print-image-sep2026/00_interpolated_lambda.gx
 1	fold-acc-taint-jul2026/01_fold_select_acc_taint_launder.gx
 0	fold-bottom-body-acc-aug2026/01_connect_body_tuple_acc.gx
 1	fold-bottom-body-acc-aug2026/02_connect_body_string_acc.gx
@@ -244,15 +246,15 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 0	mu-type-opaque-launder-jul2026/01_rec_fn_as_list.gx
 1	narrow-index-operand-verifier-aug2026/00_u8_slice_bound_verifier_error.gx
 1	narrow-int-abi-jul2026/01_float_cmp_false_in_struct.gx
-2	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
+1	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
 1	narrow-int-abi-jul2026/03_bool_in_string_interp.gx
 2	neg-standing-bottom-aug2026/00_byref_write_stomped.gx
 6	neg-standing-bottom-aug2026/01_dynmod_dispatch_repoisoned.gx
-2	nested-bind-stmt-dead-elim-aug2026/00_array_literal_selfconnect.gx
-2	nested-bind-stmt-dead-elim-aug2026/01_array_literal_multi_ref.gx
-2	nested-bind-stmt-dead-elim-aug2026/02_struct_literal_field.gx
-2	nested-bind-stmt-dead-elim-aug2026/03_variant_payload.gx
-4	nested-bind-stmt-dead-elim-aug2026/04_select_scrutinee_bind.gx
+0	nested-bind-stmt-dead-elim-aug2026/00_array_literal_selfconnect.gx
+0	nested-bind-stmt-dead-elim-aug2026/01_array_literal_multi_ref.gx
+0	nested-bind-stmt-dead-elim-aug2026/02_struct_literal_field.gx
+0	nested-bind-stmt-dead-elim-aug2026/03_variant_payload.gx
+0	nested-bind-stmt-dead-elim-aug2026/04_select_scrutinee_bind.gx
 0	nested-bind-stmt-dead-elim-aug2026/05_outer_literal_bind.gx
 1	nested-value-jul2026/01_selfref_connect_growth.gx
 0	never-args-elided-sep2026/00_dbg_in_never_arm.gx
@@ -370,7 +372,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	soak-jul2026/03_dead_dollar_stmt_kernel_abort.gx
 0	soak-jul2026/04_duration_div0_error_value.gx
 1	soak-jul2026/05_list_init_max_wedge.gx
-3	soak-jul2026/06_tainted_qop_unbox_ub.gx
+0	soak-jul2026/06_tainted_qop_unbox_ub.gx
 1	soak-jul2026/07_stmt_call_pending_abort.gx
 2	soak-jul2026/08_interior_bottom_mod_cached.gx
 5	soak-jul2026/09_interior_bottom_injected.gx
@@ -488,6 +490,7 @@ abort	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
 0	typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx
 0	typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx
 1	union-struct-field-jul2026/01_dyncall_union_field_leak.gx
+0	value-position-let-sep2026/00_tuple_let_shadows.gx
 1	value-shape-seam-jul2026/00_fold_slice_init.gx
 1	value-shape-seam-jul2026/01_fold_slice_init_literal_body.gx
 1	value-shape-seam-jul2026/02_fold_index_union_init.gx

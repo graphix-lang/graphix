@@ -1,0 +1,5 @@
+// expect: reject
+// A `let` in a tuple element bound its name into the enclosing block,
+// shadowing `a` for the element after it. A `let` is a statement only.
+// Found by sep28k typemorph (aieka, ryouko).
+{ let a = "tm"; select (let a = 3, a % 9223372036854775807) { (0, y) => y, (x, y) => x + y } }

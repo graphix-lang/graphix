@@ -128,7 +128,10 @@ impl<R: Rt, E: UserEvent> LambdaDef<R, E> {
 
 impl<R: Rt, E: UserEvent> fmt::Debug for LambdaDef<R, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "lambda#{}", self.id.inner())
+        match &self.origin {
+            DefOrigin::Source { spec, .. } => write!(f, "{spec}"),
+            DefOrigin::Runtime => write!(f, "{}", self.typ),
+        }
     }
 }
 

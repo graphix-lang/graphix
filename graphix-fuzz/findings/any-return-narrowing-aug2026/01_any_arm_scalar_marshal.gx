@@ -1,3 +1,5 @@
+// expect: reject
+// A `let` in value position is refused now (sep28k).
 // Any-return per-site narrowing (aug05c ryouko divergence_000000,
 // hand-minimized): a select with an Any-annotated let-bodied arm
 // returns [Any, Array<i64>], which normalize correctly collapses to

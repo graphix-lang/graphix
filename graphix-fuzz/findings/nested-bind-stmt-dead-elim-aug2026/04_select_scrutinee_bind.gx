@@ -1,3 +1,5 @@
+// expect: reject
+// A `let` in value position is refused now (sep28k).
 // aug22c class B (campaign-minimized): the same elimination one step on —
 // the tail READS the connect target, and with the binding statement
 // eliminated the JIT published nothing at all, not even the seed. Here

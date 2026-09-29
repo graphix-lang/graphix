@@ -28,4 +28,4 @@
 // the runtime observable rather than a compile error.
 // minimized:
 // Exact-type comparison (2026-09-24): the Any element is type-tested.
-{let a: Array<Any> = [i64:100, null, i64:3, i64:4]; a <- [i64:5, i64:6, a, sys::fs::tempdir::create]; let clock: Any = let tm = sys::time::timer(duration:0.05s, false); let v = array::iterq(#clock, a); clock <- v; filter(v, |x| select x {i64 as n => n == i64:8, _ => false})}
+{let a: Array<Any> = [i64:100, null, i64:3, i64:4]; a <- [i64:5, i64:6, a, sys::fs::tempdir::create]; let tm = sys::time::timer(duration:0.05s, false); let clock: Any = tm; let v = array::iterq(#clock, a); clock <- v; filter(v, |x| select x {i64 as n => n == i64:8, _ => false})}

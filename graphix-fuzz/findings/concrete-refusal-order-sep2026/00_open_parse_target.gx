@@ -1,0 +1,5 @@
+// expect: reject
+// Both engines refuse the open `str::parse` target, but named different
+// cells: the settle refused the first open position of an address-keyed
+// map. Found by sep28k (ryouko).
+{ let x = array::iter([1, 2, 3, 4, 5]); let d = uniq(0); let v0 = 0 / d; let r = select x { 1 | 4 => [], _ => -1 }; array::group(r, { let v = str::parse("42")?; v }) }

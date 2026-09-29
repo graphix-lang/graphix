@@ -1,0 +1,4 @@
+// A function value interpolated into a string printed its id, which an
+// image restores as a region offset: the length differed cold vs warm.
+// It prints its source now. Found by sep28k (aieka, katana, ryouko).
+{ let acc = ""; acc <- "[acc][|acc, x| str::len(x) + acc]"; let s = acc; let l = str::len(s); l }

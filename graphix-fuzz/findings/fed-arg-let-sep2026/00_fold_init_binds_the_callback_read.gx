@@ -1,3 +1,5 @@
+// expect: reject
+// A `let` in value position is refused now (sep28k).
 // JIT dropped every fire (sep27f ryouko divergence_000003): the init
 // node-walks as a fed argument, and the kernel's read of `x` updated
 // before the fed `let` that binds it.

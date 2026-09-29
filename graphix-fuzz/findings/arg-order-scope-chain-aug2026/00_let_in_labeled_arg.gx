@@ -1,3 +1,5 @@
+// expect: reject
+// A `let` in value position is refused now (sep28k).
 // CallSite args are a sequential SCOPE CHAIN and must evaluate in
 // SOURCE ORDER (fixed 2026-08-06): the args map was an AHashMap
 // iterated by update(), so whether the #n subtree's `let x` bind ran

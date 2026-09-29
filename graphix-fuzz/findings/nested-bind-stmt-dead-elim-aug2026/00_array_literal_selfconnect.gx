@@ -1,3 +1,5 @@
+// expect: reject
+// A `let` in value position is refused now (sep28k).
 // aug22c class A (campaign-minimized): a `let` bound INSIDE a container
 // literal that stands as a statement, then a self-connect `x <- x`. The
 // interp spins forever (x fires, the RHS reads it, the connect schedules
