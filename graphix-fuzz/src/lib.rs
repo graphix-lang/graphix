@@ -5189,15 +5189,6 @@ mod tests {
                 rep.rejects
             );
         }
-        // a labeled argument that binds a name the rest reads is kept
-        let binds = "{ let f = |#a: i64, x: i64| -> i64 a + x; \
-                     let r = f(#a: let n = 1, 3); n + r }";
-        let rep = typemorph_subject(binds, per, TM_CAP).await.unwrap();
-        assert!(
-            !rep.rejects.iter().any(|p| p.id.starts_with("label-missing#")),
-            "{:?}",
-            rep.rejects
-        );
         // a call instantiates its callee whatever the binding: no site
         let calls = "{ let f = |x| x + x; let a = f(1); let b = f(1.5); (a, b) }";
         let rep = typemorph_subject(calls, per, TM_CAP).await.unwrap();
@@ -5216,11 +5207,10 @@ mod tests {
         );
         // no family's mutant was accepted or refused elsewhere
         assert!(rep.rejects.iter().all(|p| p.verdict.is_none()), "{:?}", rep.rejects);
-        // a parameter wider than its argument, a binding that a nested
-        // `let` or a seq step shadows: every mutant is refused in place
+        // a parameter wider than its argument, a binding that a seq step
+        // shadows: every mutant is refused in place
         for prog in [
             "{ let f = |a: [string, null]| -> i64 1; f(null) }",
-            "{ let x = 8; let a = let x = 1; let c = x * 3; c }",
             "{ let a = 0; let s = 0; seq true { let a = 7; s <- a + 1 }; (a, s) }",
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();

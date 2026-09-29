@@ -192,20 +192,6 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
 
 /// `e` widened by `u`: `select (i64:1 == i64:1) { true => e, false => u }`,
 /// typed the union of the two whatever the scrutinee's value.
-/// Does `e` bind a name its surroundings see: a `let` outside any block
-/// or lambda of its own? Under a select arm the name would be scoped.
-fn binds_outward(e: &Expr) -> bool {
-    match &e.kind {
-        ExprKind::Bind(_) => true,
-        ExprKind::Block { .. } | ExprKind::Lambda(_) => false,
-        _ => {
-            let mut any = false;
-            e.for_each_child(&mut |c| any = any || binds_outward(c));
-            any
-        }
-    }
-}
-
 fn widen(e: &Expr, u: Expr) -> Expr {
     let one =
         || Arc::new(ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos());
@@ -431,12 +417,10 @@ fn labels(
             }));
             unknown += 1;
         }
-        // an argument that binds outward takes a name the rest reads
-        let required = ap.args.iter().position(|(l, e)| {
-            !binds_outward(e)
-                && l.as_ref().is_some_and(|l| {
-                    ft.args.iter().any(|a| a.label() == Some(l) && !a.has_default())
-                })
+        let required = ap.args.iter().position(|(l, _)| {
+            l.as_ref().is_some_and(|l| {
+                ft.args.iter().any(|a| a.label() == Some(l) && !a.has_default())
+            })
         });
         if dropped < cap
             && let Some(j) = required
@@ -481,7 +465,7 @@ fn labels_default(
         let mut idx = offset;
         for later in &stmts[si + 1..] {
             uses_reached(later, f, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds_after(later, f) {
+            if typemorph::binds(later, f) {
                 break;
             }
         }
@@ -604,9 +588,6 @@ fn widen_consumer(
             _ => None,
         };
         let Some((at, value, consumer)) = target else { continue };
-        if binds_outward(value) {
-            continue;
-        }
         let Some(t) = types.of(value).first() else { continue };
         if !concrete(t) {
             continue;
@@ -675,7 +656,7 @@ fn retype(
         let mut idx = offset;
         for later in &stmts[si + 1..] {
             uses_reached(later, v, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds_after(later, v) {
+            if typemorph::binds(later, v) {
                 break;
             }
         }
@@ -720,7 +701,7 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
                 affected.push(w.name.as_str());
             }
         }
-        if typemorph::binds_after(later, v) {
+        if typemorph::binds(later, v) {
             break;
         }
     }
@@ -767,7 +748,7 @@ fn widen_through_let(
         let mut idx = offset;
         for later in &stmts[si + 1..] {
             uses_reached(later, w, true, &mut idx, &mut calls, &mut refs);
-            if typemorph::binds_after(later, w) {
+            if typemorph::binds(later, w) {
                 break;
             }
         }
@@ -787,9 +768,6 @@ fn widen_through_let(
             _ => false,
         });
         if !consumed {
-            continue;
-        }
-        if binds_outward(&b.value) {
             continue;
         }
         let cand = mutate::replace(root, at + 1, &widen(&b.value, u));
@@ -837,7 +815,7 @@ fn mono_reuse(
             let before = refs.len();
             uses_reached(later, f, true, &mut idx, &mut calls, &mut refs);
             stmt_of.extend(std::iter::repeat_n(j, refs.len() - before));
-            if typemorph::binds_after(later, f) {
+            if typemorph::binds(later, f) {
                 break;
             }
         }
@@ -929,7 +907,7 @@ fn variant_widen(
             continue;
         }
         let Some(t) = types.of(arg).first() else { continue };
-        if !only_variants(t) || binds_outward(arg) {
+        if !only_variants(t) {
             continue;
         }
         let fresh =

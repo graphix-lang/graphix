@@ -180,8 +180,7 @@ expected type has and the value lacks, or a required label where the
 expected type says optional. Skip: a parameter typed `Any`, a
 polymorphic labeled parameter whose other uses are not concrete. Built,
 as three families so their ids stay distinct: `label-unknown` (a label
-the callee lacks) and `label-missing` (a required label dropped, never
-one whose argument binds a name the rest reads), right site the call; `label-default` (a labeled lambda passed as a value
+the callee lacks) and `label-missing` (a required label dropped), right site the call; `label-default` (a labeled lambda passed as a value
 loses a default the expected type lets a caller omit), right site the
 definition and every statement using the lambda. Open: a label passed
 twice, the disjoint labeled argument, the explicit disjoint default.
