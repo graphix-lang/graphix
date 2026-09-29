@@ -257,15 +257,52 @@ elaboration refuses programs that the checks accepted. The split:
 - the hook still extracts its type during elaboration, and failing to
   extract becomes an assert.
 
-**Printer and builtins record types at the definition.** A type-directed
-site (a print, a `parse` target) records its type in terms of the
-definition's own type variables. After the definition check has settled
-every other cell, each type in the body is a function of the signature's
-variables. A bind, static or dynamic, then substitutes the instance
-signature's bindings instead of checking again. This removes the runtime
-bind's typecheck (`callsite.rs::setup_dynamic_bind`, the lazy
-`typecheck1`), and with it the bugs where that recheck fails silently
-(`findings/parse-bottom-member-jul2026/`).
+## Instances by substitution (PROPOSED)
+
+An instance's check re-derives what the definition check settled. Admin
+app, one thread, perf build: the instance check is 24% of the compile
+threads' samples, of which containment and unification are 31%, type
+allocation and drop 27%, `Env` operations 13%, instantiating and
+resetting cells 9%, select and pattern typing 7%, nested compiles 2%.
+It also runs before an instance's statements can fork, so it is the
+serial part of every instance (above). By the rule, it never refuses:
+a refusal there is a type-system bug.
+
+**The table.** After the check's settle, every type in a definition's
+body is a function of its signature's cells: the signature's own
+(generalized), the environment's (shared) and cells the body owns. The
+definition records, per expression id of its body, what the instance
+needs: each node's type, each call site's instantiated signature and
+omitted defaults, each `let`'s pattern types, each select arm's
+predicate, each nested lambda's signature. Recording is a walk of the
+checked body at the gate's close, after its settle.
+
+**An instance** compiles the body as now and replaces `typecheck0` with
+a setup pass: every type is the table's, instantiated by the instance
+signature the way `FnType::instantiate` copies a signature (a cell the
+definition owns copied once per instance, an environment cell shared),
+and every node does the part of its `typecheck0` that is state, not
+checking: a call site installs its signature and default placeholders,
+a `let` registers its lambda, a select builds its arm predicates, a `?`
+joins its raise. Each node kind's `typecheck0` splits into that setup and
+the check; the definition check runs both, an instance only the setup.
+A nested lambda literal's gate is the enclosing definition's work: its
+body's types are rows of the same table.
+
+**What it needs first.**
+- Stable expression ids: seq lowering (`expr/seq.rs`) and trait impl
+  bodies (`traits.rs`) mint fresh ids per compile. They must derive
+  ids from their source, or lower once per definition.
+- The type-directed builtins' refusals in the check (step 1, below):
+  the hooks run on the instance's types, which the table supplies.
+- A dynamic bind substitutes the same way, so the runtime recheck
+  (`callsite.rs::setup_dynamic_bind`, the lazy `typecheck1`) goes, and
+  with it the rechecks that fail silently
+  (`findings/parse-bottom-member-jul2026/`).
+
+**How it is checked.** Under `GRAPHIX_ELAB_AUDIT`, an instance also runs
+its old check against the substituted types and reports any difference;
+the gate, `regress` and a soak run with it before the check is dropped.
 
 ## The audit
 
@@ -285,8 +322,8 @@ audit is clean it becomes a finding that every fuzz lane records.
 
 ## Steps
 
-1. Make the audit clean: the builtin constraint; record and substitute
-   for the printer and builtins. OPEN (`Concrete` is built).
+1. Make the audit clean: the builtin constraint; instances by
+   substitution (above). OPEN (`Concrete` is built).
 2. The audits as fuzz findings, soaked. OPEN.
 3. Split ExecCtx into the compile context and the runtime. BUILT.
 4. Threads. Code generation and statement elaboration are BUILT
