@@ -363,10 +363,23 @@ fn compile_kind<R: Rt, E: UserEvent>(
             StructWith::compile(ctx, flags, spec.clone(), scope, top_id, source, replace)
         }
         ExprKind::Seq { .. } => {
-            let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
-            if flags.contains(CFlag::ExpandSeq) {
-                println!("// seq at {}\n{}\n", spec.pos, lowered.to_string_pretty(80));
-            }
+            let key = (spec.id, scope.lexical.clone());
+            let lowered = match ctx.lowered_seqs.get(&key) {
+                Some(lowered) => lowered.clone(),
+                None => {
+                    let lowered =
+                        crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
+                    if flags.contains(CFlag::ExpandSeq) {
+                        println!(
+                            "// seq at {}\n{}\n",
+                            spec.pos,
+                            lowered.to_string_pretty(80)
+                        );
+                    }
+                    ctx.lowered_seqs.insert(key, lowered.clone());
+                    lowered
+                }
+            };
             compile(ctx, flags, lowered, scope, top_id)
         }
         ExprKind::Until(_) => {

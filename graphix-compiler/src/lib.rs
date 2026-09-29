@@ -1417,6 +1417,10 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
     pub fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
+    /// Each seq block's lowering, by its expression and lexical scope: a
+    /// definition's body lowers once, so every compile of it has the same
+    /// expression ids.
+    pub(crate) lowered_seqs: TrackedMap<(ExprId, ModPath), Expr>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
     /// statement boundaries drain it, so a settle runs only after every
@@ -1510,6 +1514,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_depth: self.def_gate_depth,
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
+            lowered_seqs: self.lowered_seqs.fork(),
             pending_settles: vec![Vec::new()],
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
@@ -1542,6 +1547,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             def_gate_depth: _,
             resolving_lambdas: _,
             fn_forward_resolutions,
+            lowered_seqs,
             pending_settles,
             pending_imports,
             pending_names,
@@ -1561,6 +1567,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         self.connect_targets.join(connect_targets);
         self.builtin_bindings.join(builtin_bindings);
         self.fn_forward_resolutions.join(fn_forward_resolutions);
+        self.lowered_seqs.join(lowered_seqs);
         let frame = self.pending_settles.last_mut().expect("root settle frame");
         frame.extend(pending_settles.into_iter().flatten());
         self.pending_imports.extend(pending_imports);
@@ -1704,6 +1711,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(IntMap::default()),
                 fn_forward_resolutions: TrackedMap::default(),
+                lowered_seqs: TrackedMap::default(),
                 pending_settles: vec![Vec::new()],
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
