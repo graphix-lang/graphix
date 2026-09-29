@@ -6,8 +6,8 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, FastFn, Node, Refs, Rt, Scope, Tag,
-    TagValue, TagView, TypedFastFn, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, FastFn, Node, Refs, Rt,
+    Scope, Tag, TagValue, TagView, TypedFastFn, UserEvent,
     effects::Effect,
     err, errf,
     expr::{Expr, ExprId},
@@ -592,7 +592,7 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     const EFFECT: Effect = Effect::Async;
 
     fn init(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         _resolved: Option<&FnType>,
         _scope: &Scope,
@@ -606,7 +606,7 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -614,7 +614,7 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
     ) -> Result<()> {
@@ -638,7 +638,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const NAME: &str = T::NAME;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -689,7 +689,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.t.typecheck0(ctx, from)
@@ -697,7 +697,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
@@ -715,7 +715,7 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     type Args: Debug + Any + Send + Sync;
 
     fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         _resolved: Option<&FnType>,
         _scope: &Scope,
@@ -724,6 +724,10 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
     ) -> Self {
         Self::default()
     }
+
+    /// Take runtime state `init` could not reach (it compiles, the
+    /// runtime is not there); runs at each update, before `prepare_args`.
+    fn attach<R: Rt, E: UserEvent>(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
     /// map the final value with access to self and ctx
     fn map_value<R: Rt, E: UserEvent>(
@@ -736,7 +740,7 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
 
     fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -744,7 +748,7 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
 
     fn typecheck1<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
     ) -> Result<()> {
@@ -822,7 +826,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     const NAME: &str = T::NAME;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -887,6 +891,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         event: &mut Event<E>,
     ) -> &TagValue {
         let mut bottomed = false;
+        self.t.attach(ctx);
         if self.cached.update(ctx, from, event) {
             if self.cached.any_bottom() {
                 // A completed reply from a prior invocation still
@@ -916,7 +921,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.t.typecheck0(ctx, from)
@@ -924,7 +929,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
     fn typecheck1(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
@@ -988,7 +993,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     const NAME: &str = "core_filter_err";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -1064,7 +1069,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -1129,7 +1134,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     const NAME: &str = "core_take";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -1199,7 +1204,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     const NAME: &str = "core_skip";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -1650,7 +1655,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     const NAME: &str = "core_filter";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -1741,7 +1746,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> anyhow::Result<()> {
         self.pred.typecheck0(ctx)?;
@@ -1791,7 +1796,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     const NAME: &str = "core_queue";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -1888,7 +1893,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     const NAME: &str = "core_hold";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -1966,7 +1971,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     const NAME: &str = "core_seq";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -2078,7 +2083,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     const NAME: &str = "core_throttle";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -2215,7 +2220,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     const NAME: &str = "core_count";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -2306,7 +2311,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     const NAME: &str = "core_uniq";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -2435,7 +2440,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     const NAME: &str = "core_dbg";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -2490,7 +2495,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.typ = from[1].typ().clone();
@@ -2551,7 +2556,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     const NAME: &str = "core_log";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a graphix_compiler::typ::FnType,
         _resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -2628,7 +2633,7 @@ macro_rules! printfn {
             }
 
             fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut ExecCtx<R, E>,
+                _ctx: &'a mut CompileCtx<R, E>,
                 _typ: &'a graphix_compiler::typ::FnType,
                 _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,

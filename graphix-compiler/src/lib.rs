@@ -506,11 +506,11 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.delete(ctx))
     }
 
-    pub fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         stack::ensure_sufficient(|| self.0.typecheck0(ctx))
     }
 
-    pub fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    pub fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         stack::ensure_sufficient(|| self.0.typecheck1(ctx))
     }
 
@@ -582,7 +582,7 @@ impl<'a> BindMode<'a> {
 pub type InitFn<R, E> = sync::Arc<
     dyn for<'a, 'b, 'c, 'd> Fn(
             &'a Scope,
-            &'b mut ExecCtx<R, E>,
+            &'b mut CompileCtx<R, E>,
             &'c mut [Node<R, E>],
             BindMode<'d>,
             ExprId,
@@ -618,7 +618,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// lambda's own FnType.
     fn typecheck0(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -627,7 +627,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// Second typecheck pass.
     fn typecheck1(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
     ) -> Result<()> {
@@ -775,12 +775,12 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 
     /// First typecheck pass: structural checking. Each node checks
     /// itself and recurses into its children.
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()>;
 
     /// Second typecheck pass, after `typecheck0` finished the whole
     /// tree: `lambda_ids` are final, so call sites can resolve
     /// statically. No default: every node must recurse into its children.
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()>;
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()>;
 
     /// The node's type.
     fn typ(&self) -> &Type;
@@ -842,7 +842,7 @@ pub type BuiltInDecodeFn<R, E> =
     ) -> std::result::Result<Box<dyn Apply<R, E>>, netidx_core::pack::PackError>;
 
 pub type BuiltInInitFn<R, E> = for<'a, 'b, 'c, 'd> fn(
-    &'a mut ExecCtx<R, E>,
+    &'a mut CompileCtx<R, E>,
     &'a FnType,
     Option<&'d FnType>,
     &'b Scope,
@@ -878,7 +878,7 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     const EFFECT: Effect = Effect::Async;
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved_type: Option<&'d FnType>,
         scope: &'b Scope,
@@ -1328,6 +1328,39 @@ struct BuiltinEntry<R: Rt, E: UserEvent> {
     effect: Effect,
 }
 
+macro_rules! env_restore_methods {
+    () => {
+        /// Run `f` with the lexical environment restored to `env`, then put
+        /// the current one back. Bindings `f` creates are retained.
+        pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(
+            &mut self,
+            env: Env,
+            f: F,
+        ) -> T {
+            let snap = self.env.restore_lexical_env(env);
+            let orig = mem::replace(&mut self.env, snap);
+            let r = f(self);
+            self.env = self.env.restore_lexical_env(orig);
+            r
+        }
+
+        /// [`Self::with_restored`] mutating `env` in place, so two envs
+        /// keep continuity across invocations.
+        pub fn with_restored_mut<T, F: FnOnce(&mut Self) -> T>(
+            &mut self,
+            env: &mut Env,
+            f: F,
+        ) -> T {
+            let snap = self.env.restore_lexical_env_mut(env);
+            let orig = mem::replace(&mut self.env, snap);
+            let r = f(self);
+            *env = self.env.clone();
+            self.env = self.env.restore_lexical_env(orig);
+            r
+        }
+    };
+}
+
 /// Everything compiling and typechecking read and write: the builtin
 /// and attribute registry, the program's state, and the scratch of the
 /// compile in progress. The runtime half is [`ExecCtx`].
@@ -1403,8 +1436,16 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     pub(crate) image_decoder: Option<image::ImageDecoder>,
     /// References compiled but not yet registered with the runtime, by
     /// variable and top expression: compiling reaches no runtime, and
-    /// [`ExecCtx::replay_refs`] registers them.
+    /// [`ExecCtx::apply_deferred`] registers them.
     pub(crate) pending_refs: AHashMap<(BindId, ExprId), usize>,
+    /// What compiling abandoned, for the runtime to delete.
+    discarded: Vec<Discarded<R, E>>,
+}
+
+enum Discarded<R: Rt, E: UserEvent> {
+    Node(Node<R, E>),
+    Apply(Box<dyn Apply<R, E>>),
+    Stored(BindId),
 }
 
 /// The compile context and the runtime: what a node's update reads.
@@ -1440,10 +1481,29 @@ impl<R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<R, E> {
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// Record that `top_id` reads `id`: the runtime is told at the next
-    /// [`ExecCtx::replay_refs`].
+    /// [`ExecCtx::apply_deferred`].
     pub fn record_ref(&mut self, id: BindId, top_id: ExprId) {
         *self.pending_refs.entry((id, top_id)).or_default() += 1;
     }
+
+    /// Abandon a node compiling built: it is deleted, with the runtime,
+    /// at the next [`ExecCtx::apply_deferred`].
+    pub fn discard(&mut self, node: Node<R, E>) {
+        self.discarded.push(Discarded::Node(node));
+    }
+
+    /// [`Self::discard`] for an application.
+    pub fn discard_apply(&mut self, apply: Box<dyn Apply<R, E>>) {
+        self.discarded.push(Discarded::Apply(apply));
+    }
+
+    /// Forget the value the runtime stores for `id`, at the next
+    /// [`ExecCtx::apply_deferred`].
+    pub fn discard_stored(&mut self, id: BindId) {
+        self.discarded.push(Discarded::Stored(id));
+    }
+
+    env_restore_methods!();
 
     /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
@@ -1552,6 +1612,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 attr_absorbed: Mutex::new(IntSet::default()),
                 image_decoder: None,
                 pending_refs: AHashMap::default(),
+                discarded: Vec::new(),
             },
             libstate: LibState::default(),
             rt: user,
@@ -1577,8 +1638,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
     }
 
-    /// Register every reference compiling recorded with the runtime.
-    pub fn replay_refs(&mut self) {
+    /// Apply to the runtime what compiling deferred: delete what it
+    /// discarded, whose unreplayed references cancel, then register
+    /// every reference it recorded.
+    pub fn apply_deferred(&mut self) {
+        self.delete_discarded();
         for ((id, top_id), n) in self.cx.pending_refs.drain() {
             for _ in 0..n {
                 self.rt.ref_var(id, top_id);
@@ -1586,9 +1650,27 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
     }
 
-    /// Whether a compile recorded references no replay registered.
-    pub fn refs_pending(&self) -> bool {
-        !self.cx.pending_refs.is_empty()
+    /// Undo what a failed compile deferred: delete what it discarded and
+    /// forget the references it recorded.
+    pub fn drop_deferred(&mut self) {
+        self.delete_discarded();
+        self.cx.pending_refs.clear();
+    }
+
+    fn delete_discarded(&mut self) {
+        for d in mem::take(&mut self.cx.discarded) {
+            match d {
+                Discarded::Node(mut n) => n.delete(self),
+                Discarded::Apply(mut a) => a.delete(self),
+                Discarded::Stored(id) => self.rt.store_remove(&id),
+            }
+        }
+    }
+
+    /// Whether a compile deferred something no
+    /// [`Self::apply_deferred`] applied.
+    pub fn deferred_pending(&self) -> bool {
+        !self.cx.pending_refs.is_empty() || !self.cx.discarded.is_empty()
     }
 
     /// True if an `interrupt()` or `abort()` is pending; loops poll this
@@ -1604,31 +1686,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.pending_settles.clear();
         self.pending_settles.push(Vec::new());
     }
-
-    /// Run `f` with the lexical environment restored to `env`, then put
-    /// the current one back. Bindings `f` creates are retained.
-    pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(&mut self, env: Env, f: F) -> T {
-        let snap = self.env.restore_lexical_env(env);
-        let orig = mem::replace(&mut self.env, snap);
-        let r = f(self);
-        self.env = self.env.restore_lexical_env(orig);
-        r
-    }
-
-    /// [`Self::with_restored`] mutating `env` in place, so two envs
-    /// keep continuity across invocations.
-    pub fn with_restored_mut<T, F: FnOnce(&mut Self) -> T>(
-        &mut self,
-        env: &mut Env,
-        f: F,
-    ) -> T {
-        let snap = self.env.restore_lexical_env_mut(env);
-        let orig = mem::replace(&mut self.env, snap);
-        let r = f(self);
-        *env = self.env.clone();
-        self.env = self.env.restore_lexical_env(orig);
-        r
-    }
+    env_restore_methods!();
 }
 
 /// What the check defers to its statement's settle; see
@@ -1937,8 +1995,8 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
 ) -> Result<()> {
     let r = check_and_fuse_inner(ctx, flags, node);
     match &r {
-        Ok(()) => ctx.replay_refs(),
-        Err(_) => ctx.cx.pending_refs.clear(),
+        Ok(()) => ctx.apply_deferred(),
+        Err(_) => ctx.drop_deferred(),
     }
     r
 }
@@ -1994,7 +2052,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
 /// after a top-level statement, once every writer for the drained
 /// sites has run.
 pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> Result<()> {
     use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
@@ -2022,7 +2080,7 @@ pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
 /// Record the names `t`, written at `spec`, holds that do not resolve
 /// yet ([`ExecCtx::pending_names`]).
 pub(crate) fn defer_unresolved_names<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     t: &Type,
     spec: &Expr,
 ) {

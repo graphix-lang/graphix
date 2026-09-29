@@ -7,8 +7,8 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, LambdaId,
-    Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
+    LambdaId, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -657,7 +657,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     const NAME: &str = "http_serve";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -882,7 +882,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.handler.typecheck0(ctx)?;

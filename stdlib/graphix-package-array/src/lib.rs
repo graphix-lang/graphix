@@ -5,8 +5,8 @@
 use ahash::AHashSet;
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, LambdaId, Node, Refs, Rt, Scope,
-    TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, LambdaId, Node, Refs,
+    Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -329,7 +329,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     const NAME: &str = "array_group";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -465,7 +465,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> anyhow::Result<()> {
         self.pred.typecheck0(ctx)?;
@@ -495,7 +495,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "array_iter";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -575,7 +575,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "array_iterq";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

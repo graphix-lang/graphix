@@ -4,8 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Rt, Scope,
+    TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
     image::ImageBuf,
@@ -526,7 +526,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterBI {
     const NAME: &str = "list_iter";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -601,7 +601,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ListIterQ {
     const NAME: &str = "list_iterq";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

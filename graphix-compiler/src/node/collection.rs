@@ -3,8 +3,8 @@ use super::{
     list, pattern::StructPatternNode,
 };
 use crate::{
-    ApplyView, BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent,
+    ApplyView, BindId, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
+    TagValue, Update, UserEvent,
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
     fusion::{
@@ -120,7 +120,7 @@ impl CollectionIntrinsic {
 
     pub(crate) fn build<R: Rt, E: UserEvent>(
         self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
@@ -391,7 +391,7 @@ impl Callback {
     /// A fresh bind for one callback argument.
     fn arg<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         name: &str,
         typ: &Type,
     ) -> (BindId, Node<R, E>) {
@@ -403,7 +403,7 @@ impl Callback {
     /// prototype resolved to when it resolved one.
     fn call<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         args: SmallVec<[Node<R, E>; 2]>,
         kind: CallKind,
     ) -> Node<R, E> {
@@ -481,7 +481,7 @@ struct Slot<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Slot<R, E> {
     fn new(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         callback: &Callback,
         element_type: &Type,
         kind: CallKind,
@@ -760,7 +760,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
 
     fn new(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
@@ -988,12 +988,12 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
     }
@@ -1042,7 +1042,7 @@ struct FoldSlot<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
     fn new(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         callback: &Callback,
         acc_type: &Type,
         element_type: &Type,
@@ -1156,7 +1156,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
     fn new(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
@@ -1395,13 +1395,13 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
         wrap!(self.base.init, self.base.init.typecheck0(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
         wrap!(self.base.init, self.base.init.typecheck1(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))

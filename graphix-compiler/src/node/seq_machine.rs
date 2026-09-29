@@ -11,8 +11,8 @@ use super::{
     typecheck1_settled, wake::TrackedFires,
 };
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
-    UserEvent,
+    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue,
+    Update, UserEvent,
     expr::{Expr, ExprId, SeqCaptureExpr, SeqMachineExpr},
     fusion::{
         self,
@@ -114,7 +114,7 @@ fn pc_id<R: Rt, E: UserEvent>(pc: &Node<R, E>) -> Result<BindId> {
 
 impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -373,7 +373,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         Type::BOTTOM
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.pc.typecheck0(ctx)?;
         for s in self.steps.iter_mut() {
             typecheck_in_order(ctx, &mut s.nodes, &s.catches, false, |n, ctx| {
@@ -383,7 +383,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.pc.typecheck1(ctx)?;
         for s in self.steps.iter_mut() {
             typecheck_in_order(ctx, &mut s.nodes, &s.catches, false, typecheck1_settled)?;
@@ -428,7 +428,7 @@ pub struct SeqCapture<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -494,12 +494,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
         self.snapshot.typ()
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.snapshot.typecheck0(ctx)?;
         self.live.typecheck0(ctx)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.snapshot.typecheck1(ctx)?;
         self.live.typecheck1(ctx)
     }

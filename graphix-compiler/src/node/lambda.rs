@@ -7,9 +7,9 @@ use super::{
     produce_constant,
 };
 use crate::{
-    Apply, ApplyView, BindId, BindMode, CFlag, Event, ExecCtx, InitFn, LambdaId,
-    LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
-    dbgenv,
+    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, Event, ExecCtx, InitFn,
+    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    UserEvent, dbgenv,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
@@ -305,7 +305,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         args: &mut [Node<R, E>],
     ) -> Result<()> {
         let mut p = profile::phase(Phase::InstanceCheck);
@@ -336,7 +336,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     /// already walked the args.
     fn typecheck1(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         _resolved: &FnType,
     ) -> Result<()> {
@@ -422,7 +422,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     pub(super) fn new(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         id: LambdaId,
         typ: Arc<FnType>,
@@ -439,7 +439,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 
     pub(super) fn new_collection(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         id: LambdaId,
         typ: Arc<FnType>,
         argspec: Arc<[Arg]>,
@@ -463,7 +463,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 
     fn new_with_body(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         id: LambdaId,
         typ: Arc<FnType>,
         argspec: Arc<[Arg]>,
@@ -471,7 +471,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         scope: &Scope,
         origin: Arc<Origin>,
         build_body: impl FnOnce(
-            &mut ExecCtx<R, E>,
+            &mut CompileCtx<R, E>,
             &[StructPatternNode],
         ) -> Result<Node<R, E>>,
     ) -> Result<Self> {
@@ -589,7 +589,7 @@ struct UnknownBuiltIn(TagValue);
 
 impl UnknownBuiltIn {
     fn init<R: Rt, E: UserEvent>(
-        _: &mut ExecCtx<R, E>,
+        _: &mut CompileCtx<R, E>,
         _: &FnType,
         _: Option<&FnType>,
         _: &Scope,
@@ -653,7 +653,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         args: &mut [Node<R, E>],
     ) -> Result<()> {
         if args.len() < self.typ.args.len()
@@ -681,7 +681,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         args: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
@@ -805,10 +805,10 @@ pub(crate) fn same_parameters(a: &FnType, b: &FnType) -> bool {
 /// dynamic bind's runtime callee has another parameter list than the
 /// site's view, which takes the definition's own.
 fn instantiate<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     mode: BindMode<'_>,
     def_typ: &Arc<FnType>,
-    build: impl FnOnce(&mut ExecCtx<R, E>, Arc<FnType>) -> Result<GXLambda<R, E>>,
+    build: impl FnOnce(&mut CompileCtx<R, E>, Arc<FnType>) -> Result<GXLambda<R, E>>,
 ) -> Result<Box<dyn Apply<R, E>>> {
     let typ = match mode {
         BindMode::Static { instance, .. } => Arc::new(instance.clone()),
@@ -820,7 +820,7 @@ fn instantiate<R: Rt, E: UserEvent>(
 
 impl Lambda {
     pub(crate) fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1066,7 +1066,7 @@ struct DefGate<R: Rt, E: UserEvent> {
 }
 
 impl<R: Rt, E: UserEvent> DefGate<R, E> {
-    fn open(ctx: &mut ExecCtx<R, E>, def: &LambdaDef<R, E>) -> Self {
+    fn open(ctx: &mut CompileCtx<R, E>, def: &LambdaDef<R, E>) -> Self {
         let at = AtLevel::enter(Level { depth: def.level, owner: Some(def.id) });
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
         let faux_id = BindId::new();
@@ -1105,13 +1105,13 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
     }
 
     /// The error type the body raised to the gate's catch.
-    fn thrown(&self, ctx: &ExecCtx<R, E>) -> Type {
+    fn thrown(&self, ctx: &CompileCtx<R, E>) -> Type {
         ctx.env.by_id[&self.faux_id].typ.deref_cloned().unwrap_or(Type::Bottom)
     }
 
     /// The body's sites settle with the enclosing statement, all but the
     /// cells this signature reaches: those stay open, generalized.
-    fn close(mut self, ctx: &mut ExecCtx<R, E>) {
+    fn close(mut self, ctx: &mut CompileCtx<R, E>) {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
         self.sig.generalize(self.depth);
@@ -1133,7 +1133,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
 /// builtin over the gate's arguments, checked once.
 pub(crate) fn build_builtin_check<R: Rt, E: UserEvent>(
     def: &LambdaDef<R, E>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> Result<Box<dyn Apply<R, E>>> {
     let mut gate = DefGate::open(ctx, def);
     let res =
@@ -1149,7 +1149,7 @@ pub(crate) fn build_builtin_check<R: Rt, E: UserEvent>(
 /// variable, since a default is allowed to instantiate the variable at
 /// a site that omits the argument (`CallSite::prepare_bind`).
 fn check_defaults<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     def: &LambdaDef<R, E>,
     scope: &Scope,
 ) -> Result<()> {
@@ -1177,7 +1177,7 @@ fn check_defaults<R: Rt, E: UserEvent>(
             }
         });
         let res = res.at(&node.spec());
-        node.delete(ctx);
+        ctx.discard(node);
         res?;
     }
     Ok(())
@@ -1216,7 +1216,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         &self.typ
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let def = self
             .def
             .downcast_ref::<LambdaDef<R, E>>()
@@ -1258,7 +1258,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             // a builtin's check `Apply` is retained for `CallSite::typecheck1`;
             // a user body is not re-checked per call site
             match def.builtin_check() {
-                None => f.delete(ctx),
+                None => ctx.discard_apply(f),
                 Some(check) => *check.lock() = Some(f),
             }
             res?;
@@ -1286,7 +1286,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
 
     /// A definition has no children here; the body is checked per call
     /// site through `GXLambda::typecheck1`.
-    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 

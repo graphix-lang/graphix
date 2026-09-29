@@ -3,7 +3,7 @@ use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    ExecCtx, Node, Rt, Scope, UserEvent, errf,
+    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent, errf,
     expr::ExprId,
     image::ImageBuf,
     typ::{FnType, Type, TypeRef},
@@ -447,7 +447,7 @@ impl EvalCachedAsync for DbTreeEv {
     const NAME: &str = "db_tree";
 
     fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
@@ -461,7 +461,7 @@ impl EvalCachedAsync for DbTreeEv {
 
     fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -469,7 +469,7 @@ impl EvalCachedAsync for DbTreeEv {
 
     fn typecheck1<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {

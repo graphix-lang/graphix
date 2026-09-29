@@ -1,8 +1,8 @@
 use anyhow::Result;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
+    Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -127,7 +127,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
     const NAME: &str = "db_subscription_new";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -275,7 +275,7 @@ macro_rules! db_event_accessor {
             const NAME: &str = $builtin_name;
 
             fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut ExecCtx<R, E>,
+                _ctx: &'a mut CompileCtx<R, E>,
                 _typ: &'a FnType,
                 _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,

@@ -20,8 +20,8 @@ use crossterm::{
 use futures::{SinkExt, StreamExt, channel::mpsc, stream::Fuse};
 use gauge::GaugeW;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event as GxEvent, ExecCtx, Node, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, Event as GxEvent, ExecCtx, Node, Rt, Scope,
+    TagValue, UserEvent,
     effects::Effect,
     env::Env,
     errf,
@@ -516,17 +516,9 @@ impl EvalCachedAsync for SuspendEv {
 
     const NAME: &str = "tui_suspend";
 
-    fn init<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
-        _typ: &FnType,
-        _resolved: Option<&FnType>,
-        _scope: &Scope,
-        _from: &[Node<R, E>],
-        _top_id: ExprId,
-    ) -> Self {
-        Self {
-            control: Some(ctx.libstate.get_or_default::<TuiControl>().clone()),
-            held: Arc::new(Mutex::new(None)),
+    fn attach<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<R, E>) {
+        if self.control.is_none() {
+            self.control = Some(ctx.libstate.get_or_default::<TuiControl>().clone());
         }
     }
 
@@ -598,7 +590,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     const NAME: &str = "tui_exit";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

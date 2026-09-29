@@ -8,8 +8,8 @@ use super::{
     read_var, standing_view,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Tag, TagValue, Update, UserEvent, bailat,
+    BindId, BuiltinBindInfo, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
+    PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     dbgenv,
     env::Env,
@@ -57,7 +57,7 @@ pub struct Bind<R: Rt, E: UserEvent> {
 /// an expression over those names compiled under a block scope of its
 /// own below `scope`, is the value.
 pub(crate) fn lower_over_operands<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     spec: &Expr,
@@ -147,7 +147,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -159,7 +159,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
             Some(t) => Some(t.rewrite_trait_args(&ctx.env)?.scope_refs(&scope.lexical)),
             None => None,
         };
-        let compile_pattern = |ctx: &mut ExecCtx<R, E>, typ: &Type| {
+        let compile_pattern = |ctx: &mut CompileCtx<R, E>, typ: &Type| {
             StructPatternNode::compile(ctx, typ, pat, scope, spec.pos, spec.ori.clone())
                 .at(&spec)
         };
@@ -403,7 +403,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         &self.spec
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if let ExprKind::Bind(b) = &self.spec.kind
             && b.typ.is_some()
         {
@@ -428,7 +428,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck1(ctx))?;
         if let Type::TVar(tv) = &self.typ
             && self.node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
@@ -507,7 +507,7 @@ impl Ref {
     /// A reference to `id`, registered with the runtime; `delete`
     /// unregisters it.
     pub(crate) fn new<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         id: BindId,
         typ: Type,
         top_id: ExprId,
@@ -517,7 +517,7 @@ impl Ref {
     }
 
     fn with_signature<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         id: BindId,
         typ: Type,
         signature: Signature,
@@ -536,7 +536,7 @@ impl Ref {
     }
 
     pub(crate) fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         spec: Expr,
         scope: &Scope,
         top_id: ExprId,
@@ -590,7 +590,7 @@ impl Ref {
     /// arguments to key an instance identity on), else fresh cells.
     fn decide<R: Rt, E: UserEvent>(
         &self,
-        ctx: &ExecCtx<R, E>,
+        ctx: &CompileCtx<R, E>,
         ft: Arc<FnType>,
     ) -> Arc<FnType> {
         let rec_knot = !ctx.rec_defs.is_empty()
@@ -696,7 +696,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
     /// self-reference inside the definition's gate, a fn-typed
     /// parameter during its gate, and a reference to the instance
     /// being elaborated, which must share the definition's cells.
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let poly = ctx.env.poly_binds.contains(&self.id);
         let def = match self.signature {
             Signature::Decided => return Ok(()),
@@ -723,7 +723,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         Ok(())
     }
 
-    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -914,7 +914,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
     }
 
     fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         scope: &Scope,
         top_id: ExprId,
@@ -1011,7 +1011,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
 
     /// The element type: each step's accessor rule over the root's type,
     /// without the access's failure (a place handles that at runtime).
-    fn elem_type(&self, ctx: &mut ExecCtx<R, E>, spec: &Expr) -> Result<Type> {
+    fn elem_type(&self, ctx: &mut CompileCtx<R, E>, spec: &Expr) -> Result<Type> {
         let mut cur = self.root.typ().clone();
         for step in &self.steps {
             cur = match step {
@@ -1106,7 +1106,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1275,7 +1275,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.referent.each_ref(&mut |n| n.refs(refs));
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let mut res = Ok(());
         self.referent.each(&mut |n| {
             if res.is_ok() {
@@ -1290,7 +1290,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         wrap!(self, self.typ.check_contains(&ctx.env, &Type::ByRef(Arc::new(t))))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let mut res = Ok(());
         self.referent.each(&mut |n| {
             if res.is_ok() {
@@ -1342,7 +1342,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1480,7 +1480,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.child, self.child.typecheck0(ctx))?;
         // A container read's type is a TVar bound to `&T`, not a bare
         // `Type::ByRef`.
@@ -1496,7 +1496,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.child, self.child.typecheck1(ctx))?;
         Ok(())
     }

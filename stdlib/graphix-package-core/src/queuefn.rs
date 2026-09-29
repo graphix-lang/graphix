@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BindMode, BuiltIn, Effect, Event, ExecCtx, InitFn, LambdaId, Node,
-    Refs, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, Event, ExecCtx, InitFn,
+    LambdaId, Node, Refs, Rt, Scope, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
     image::{self, ImageBuf},
@@ -129,7 +129,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.pred.typecheck0(ctx)
@@ -210,7 +210,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
     const NAME: &str = "core_queuefn";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -269,7 +269,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
         let fid = self.fid;
         let init: InitFn<R, E> = SArc::new(
             move |scope: &Scope,
-                  ctx: &mut ExecCtx<R, E>,
+                  ctx: &mut CompileCtx<R, E>,
                   args: &mut [Node<R, E>],
                   _mode: BindMode<'_>,
                   tid: ExprId| {
@@ -419,7 +419,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
@@ -447,7 +447,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
 fn build_wrapper_apply<R: Rt, E: UserEvent>(
     scope: &Scope,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     _args: &mut [Node<R, E>],
     state: StateRef,
     fid: BindId,

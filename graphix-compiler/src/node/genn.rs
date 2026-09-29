@@ -4,7 +4,7 @@ use super::{
     callsite::{Arg, ArgKey, ArgMap, CallSite},
 };
 use crate::{
-    BindId, ExecCtx, Node, Rt, Scope, UserEvent,
+    BindId, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
     expr::{ApplyExpr, ExprId, ExprKind, ModPath, Origin},
     typ::{FnType, Type},
 };
@@ -23,7 +23,7 @@ static SYNTHETIC: LazyLock<Arc<Origin>> = LazyLock::new(|| Arc::new(Origin::defa
 
 /// bind a variable and return a node referencing it
 pub fn bind<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     scope: &ModPath,
     name: &str,
     typ: Type,
@@ -44,7 +44,7 @@ pub fn bind<R: Rt, E: UserEvent>(
 
 /// generate a reference to a bind id
 pub fn reference<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     id: BindId,
     typ: Type,
     top_id: ExprId,
@@ -127,7 +127,7 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
     /// Bind one argument per type in `arg_types`, named `{prefix}_{k}`
     /// in `scope`, and typecheck the call through both passes.
     pub(crate) fn build(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         scope: &Scope,
         prefix: &str,
         bind: BindId,
@@ -149,7 +149,12 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
         match call.site.typecheck0(ctx).and_then(|()| call.site.typecheck1(ctx)) {
             Ok(()) => Ok(call),
             Err(e) => {
-                call.delete(ctx);
+                let Self { site, args } = call;
+                ctx.discard(site);
+                for id in args {
+                    ctx.env.unbind_variable(id);
+                    ctx.discard_stored(id);
+                }
                 Err(e)
             }
         }

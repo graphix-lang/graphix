@@ -4,7 +4,7 @@
 )]
 use arcstr::ArcStr;
 use graphix_compiler::{
-    ExecCtx, Node, Rt, Scope, UserEvent, errf,
+    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent, errf,
     typ::{FnType, Type},
 };
 use graphix_package_core::{
@@ -189,7 +189,7 @@ impl EvalCachedAsync for SqliteQueryEv {
     const NAME: &str = "sqlite_query";
 
     fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
@@ -201,7 +201,7 @@ impl EvalCachedAsync for SqliteQueryEv {
 
     fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> anyhow::Result<()> {
         Ok(())
@@ -209,7 +209,7 @@ impl EvalCachedAsync for SqliteQueryEv {
 
     fn typecheck1<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> anyhow::Result<()> {

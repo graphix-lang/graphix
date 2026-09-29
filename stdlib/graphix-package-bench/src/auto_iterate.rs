@@ -46,7 +46,7 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     const NAME: &'static str = "bench_iterate_auto";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ::graphix_compiler::ExecCtx<R, E>,
+        _ctx: &'a mut ::graphix_compiler::CompileCtx<R, E>,
         _typ: &'a ::graphix_compiler::typ::FnType,
         _resolved: ::std::option::Option<&'d ::graphix_compiler::typ::FnType>,
         _scope: &'b ::graphix_compiler::Scope,

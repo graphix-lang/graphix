@@ -13,8 +13,8 @@ use super::{
     seq_machine::{SeqCapture, SeqMachine},
 };
 use crate::{
-    CFlag, DefAssertion, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope, UserEvent,
-    bailat,
+    CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope,
+    UserEvent, bailat,
     expr::{
         ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, Name, SelectExpr, StructExpr,
         StructWithExpr, print::PrettyDisplay,
@@ -39,7 +39,7 @@ use smallvec::SmallVec;
 /// descends the program tree, and where it takes stack headroom for
 /// however deeply the program nests.
 pub(crate) fn compile<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
@@ -63,7 +63,7 @@ fn annotated_lambda<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<crate::Lam
 }
 
 fn compile_inner<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
@@ -119,7 +119,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
 /// position. `predeclared`: the enclosing block registered the module's
 /// path already, so it is not a duplicate.
 pub(crate) fn compile_module<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
@@ -134,7 +134,7 @@ pub(crate) fn compile_module<R: Rt, E: UserEvent>(
 }
 
 fn compile_module_inner<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
@@ -210,7 +210,7 @@ fn not_an_expression<R: Rt, E: UserEvent>(spec: &Expr, what: &str) -> Result<Nod
 }
 
 fn compile_kind<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: &Expr,
     scope: &Scope,

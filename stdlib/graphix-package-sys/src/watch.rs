@@ -8,8 +8,8 @@ use extended_notify::{
 };
 use futures::{SinkExt, TryFutureExt, channel::mpsc};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CBATCH_POOL, CustomBuiltinType, Event, ExecCtx, Node, Rt,
-    Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
+    Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -253,7 +253,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     const NAME: &str = "sys_watch_create";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _fntyp: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -368,7 +368,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     const NAME: &str = "sys_watch_watch";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -549,7 +549,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
     const NAME: &str = "sys_watch_path";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -643,7 +643,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
     const NAME: &str = "sys_watch_events";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

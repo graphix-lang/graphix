@@ -1,7 +1,7 @@
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::{
-    Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
-    defetyp,
+    CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    UserEvent, defetyp,
     env::Env,
     expr::{Expr, ExprId},
     fusion::{
@@ -84,7 +84,7 @@ macro_rules! binary_node {
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
             pub(crate) fn compile(
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut CompileCtx<R, E>,
                 flags: BitFlags<CFlag>,
                 spec: Expr,
                 scope: &Scope,
@@ -264,7 +264,7 @@ macro_rules! compare_op {
                 self.resident.set(TagValue::tagged(v, tag))
             }
 
-            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
@@ -282,7 +282,7 @@ macro_rules! compare_op {
                 }
             }
 
-            fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
                 wrap!(self, refuse_mixed_numeric(&ctx.env, self.lhs.typ(), "compare"))
@@ -324,7 +324,7 @@ macro_rules! bool_op {
                 }
             }
 
-            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 let bt = Type::boolean();
@@ -332,7 +332,7 @@ macro_rules! bool_op {
                 wrap!(self.rhs, bt.check_contains(&ctx.env, self.rhs.typ()))
             }
 
-            fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck1(ctx))
             }
@@ -359,7 +359,7 @@ pub struct Not<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Not<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -437,12 +437,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))
     }
 
@@ -467,7 +467,7 @@ pub struct Neg<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Neg<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -559,13 +559,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         wrap!(self.n, constrain_operand(&ctx.env, &Self::negatable(), self.n.typ()))?;
         wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         if let Type::TVar(tv) = self.n.typ() {
             wrap!(self.n, tv.settle(&ctx.env))?;
@@ -681,7 +681,7 @@ macro_rules! arith_op {
             /// `fn('a: Number, 'a) -> 'a`: both operands and the result
             /// are one numeric type. Idempotent; runs at typecheck0 and
             /// again at typecheck1 after the operand cells settle.
-            fn typecheck_tail(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck_tail(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let num = Type::Primitive(Typ::number());
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 // A declared `'a: Number` formal is rigid while its def
@@ -738,13 +738,13 @@ macro_rules! arith_op {
                 }
             }
 
-            fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
                 self.typecheck_tail(ctx)
             }
 
-            fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
                 if let Type::TVar(tv) = self.lhs.typ() {

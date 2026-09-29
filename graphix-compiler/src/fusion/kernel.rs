@@ -7,7 +7,7 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    BindId, Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    BindId, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
     expr::Expr,
     fusion::{
         emit::{
@@ -502,11 +502,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 

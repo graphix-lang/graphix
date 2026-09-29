@@ -1,6 +1,7 @@
 use crate::image::ImageBuf;
 use crate::{
-    BindId, CFlag, Event, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue, UserEvent,
+    BindId, CFlag, CompileCtx, Event, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue,
+    UserEvent,
     env::Env,
     expr::{ExprId, Name, Origin, Pattern, StructurePattern, WrittenAt},
     format_with_flags,
@@ -111,7 +112,7 @@ struct PatCx<'a> {
 }
 
 fn leaf_bind<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     cx: PatCx,
     name: &Name,
     typ: &Type,
@@ -120,7 +121,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
 ) -> Result<BindId> {
     let pos = name.pos_or(cx.pos);
     let name = &name.name;
-    let fresh = |ctx: &mut ExecCtx<R, E>| {
+    let fresh = |ctx: &mut CompileCtx<R, E>| {
         ctx.env
             .bind_variable(&cx.scope.lexical, name, typ.clone(), pos, cx.ori.clone())
             .id
@@ -160,7 +161,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
 
 /// Bind a `name@` capture: the whole value at this position.
 fn bind_all<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     cx: PatCx,
     all: &Option<Name>,
     typ: &Type,
@@ -349,7 +350,7 @@ impl StructPatternNode {
     /// Compile `spec` against the explicit type `type_predicate` (a
     /// `let` or lambda parameter's type).
     pub fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         type_predicate: &Type,
         spec: &StructurePattern,
         scope: &Scope,
@@ -361,7 +362,7 @@ impl StructPatternNode {
     }
 
     fn compile_with<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
@@ -373,7 +374,7 @@ impl StructPatternNode {
     }
 
     fn compile_int<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
@@ -387,7 +388,7 @@ impl StructPatternNode {
     /// A slice pattern's parts against an `Array`/`List` type: the
     /// `all@` capture, the `rest..` bind (array-typed) and the elements.
     fn compile_slice<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         cx: PatCx,
         typ: &Type,
         list: bool,
@@ -423,7 +424,7 @@ impl StructPatternNode {
     }
 
     fn compile_int_inner<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         cx: PatCx,
         type_predicate: &Type,
         spec: &StructurePattern,
@@ -1175,7 +1176,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     pub(super) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: &Pattern,
         scope: &Scope,

@@ -3,7 +3,8 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue,
+    UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -136,7 +137,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED
     const NAME: &str = if BATCHED { "sys_io_lines_batched" } else { "sys_io_lines" };
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

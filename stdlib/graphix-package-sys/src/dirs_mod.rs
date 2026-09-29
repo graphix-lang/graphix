@@ -1,5 +1,5 @@
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::FireOnce;
@@ -20,7 +20,7 @@ macro_rules! dirs_builtin {
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(
-                _ctx: &'a mut ExecCtx<R, E>,
+                _ctx: &'a mut CompileCtx<R, E>,
                 _typ: &'a FnType,
                 _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,

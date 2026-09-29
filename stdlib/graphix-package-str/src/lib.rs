@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use escaping::Escape;
 use graphix_compiler::{
-    ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
+    CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
     effects::Effect,
     env::Env,
     err, errf,
@@ -836,7 +836,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
     const NAME: &str = "str_parse";
 
     fn init(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
@@ -848,7 +848,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -856,7 +856,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {

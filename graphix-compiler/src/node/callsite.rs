@@ -9,9 +9,9 @@ use super::{
     pattern::StructPatternNode,
 };
 use crate::{
-    Apply, ApplyView, BindId, BindMode, CFlag, Event, ExecCtx, FnArgIdentity, LambdaId,
-    LambdaInstanceId, Node, NodeView, Refs, ResolvingLambda, Rt, Scope, Tag, TagValue,
-    Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
+    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, Event, ExecCtx, FnArgIdentity,
+    LambdaId, LambdaInstanceId, Node, NodeView, Refs, ResolvingLambda, Rt, Scope, Tag,
+    TagValue, Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
     env::Env,
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind},
     fusion::{
@@ -57,7 +57,7 @@ use triomphe::Arc as TArc;
 /// arguments (`str::concat()`, `sum()`): the node has no data inputs and
 /// can never fire. Only a direct `Ref` to the builtin is checkable.
 fn reject_dead_variadic_call<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
     scope: &Scope,
     f: &Expr,
     args: &TArc<[(Option<ArcStr>, Expr)]>,
@@ -182,7 +182,7 @@ fn printed_deref(t: &Type) -> String {
 }
 
 fn recheck_builtin<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     id: LambdaId,
     resolved: &FnType,
     spec: &TArc<Expr>,
@@ -205,7 +205,7 @@ fn recheck_builtin<R: Rt, E: UserEvent>(
 }
 
 fn compile_apply_args<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
@@ -256,7 +256,7 @@ fn quantified_formal(
 /// Check a call's argument node against its formal's type `typ`: false
 /// when the argument's type does not fit the formal as it stands.
 fn typecheck_arg<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     typ: &Type,
     hint: Option<&Type>,
     n: &mut Node<R, E>,
@@ -438,7 +438,7 @@ impl Widening {
 
 /// A `Ref` to `arg`'s id, typed and placed by its node, else by `typ`.
 fn arg_ref<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     top_id: ExprId,
     arg: &Arg<R, E>,
     typ: &Type,
@@ -664,7 +664,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -688,18 +688,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(Node::new(site))
     }
 
-    fn clear_prepared_bind(&mut self, ctx: &mut ExecCtx<R, E>) {
-        if let Some(mut apply) = self.callee.take_apply() {
-            apply.delete(ctx);
+    fn clear_prepared_bind(&mut self, ctx: &mut CompileCtx<R, E>) {
+        if let Some(apply) = self.callee.take_apply() {
+            ctx.discard_apply(apply);
         }
-        for mut n in self.arg_refs.drain(..) {
-            n.delete(ctx);
+        for n in self.arg_refs.drain(..) {
+            ctx.discard(n);
         }
         self.args.retain(|_, arg| {
             if arg.is_default {
-                ctx.rt.store_remove(&arg.id);
-                if let Some(mut n) = arg.node.take() {
-                    n.delete(ctx);
+                ctx.discard_stored(arg.id);
+                if let Some(n) = arg.node.take() {
+                    ctx.discard(n);
                 }
                 false
             } else {
@@ -708,17 +708,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         });
     }
 
-    fn prepare_bind<F>(
+    /// Build the site's argument references for `f`, compiling the
+    /// defaults it omits; `defaults` collects what those read.
+    fn prepare_bind(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
         f: &LambdaDef<R, E>,
-        mut prime_default_refs: F,
-    ) -> Result<()>
-    where
-        F: FnMut(&mut ExecCtx<R, E>, &Refs),
-    {
+        defaults: &mut Refs,
+    ) -> Result<()> {
         let mut flags = flags;
         flags.remove(CFlag::WarnUnhandled);
         self.clear_prepared_bind(ctx);
@@ -742,9 +741,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     lexical: f.scope.lexical.clone(),
                 };
                 let n = compile(ctx, flags, expr.clone(), &local_scope, self.top_id)?;
-                let mut refs = Refs::default();
-                n.refs(&mut refs);
-                prime_default_refs(ctx, &refs);
+                n.refs(defaults);
                 Ok::<_, anyhow::Error>(n)
             })?;
             // A default typechecks against this site's instantiated
@@ -776,7 +773,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn init_prepared_bind(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         scope: &Scope,
         f: &LambdaDef<R, E>,
         mode: BindMode<'_>,
@@ -795,7 +792,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     where
         F: FnMut(&mut ExecCtx<R, E>, &Refs),
     {
-        self.prepare_bind(ctx, scope, flags, f, prime_default_refs)?;
+        let mut defaults = Refs::default();
+        let mut prime_default_refs = prime_default_refs;
+        self.prepare_bind(ctx, scope, flags, f, &mut defaults)?;
+        prime_default_refs(ctx, &defaults);
         let resolved_ftype = self.ftype.as_ref().map(FnType::resolve_tvars);
         let mode = resolved_ftype
             .as_ref()
@@ -810,7 +810,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         Ok(apply)
     }
 
-    fn typecheck_static_defaults(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck_static_defaults(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for arg in self.args.values_mut() {
             if arg.is_default
                 && let Some(node) = arg.node.as_mut()
@@ -868,7 +868,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// protection so it unwinds on every error path.
     fn typecheck1_resolve(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         ftype: &FnType,
     ) -> Result<()> {
         self.try_static_resolve(ctx)?;
@@ -894,13 +894,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn setup_static_bind(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
         f: &LambdaDef<R, E>,
     ) -> Result<(Box<dyn Apply<R, E>>, FnType)> {
         let _profile = profile::phase(Phase::StaticBind);
-        self.prepare_bind(ctx, scope, flags, f, |_, _| {})?;
+        self.prepare_bind(ctx, scope, flags, f, &mut Refs::default())?;
         if self.ftype.is_none() {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
@@ -913,7 +913,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             site_ftype.check_contains(&ctx.env, &definition_ftype)?;
             definition_ftype.resolve_tvars()
         };
-        let mut apply = self.init_prepared_bind(
+        let apply = self.init_prepared_bind(
             ctx,
             scope,
             f,
@@ -934,7 +934,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         format_args!("{e:#}"),
                     );
                 }
-                apply.delete(ctx);
+                ctx.discard_apply(apply);
                 return Err(e.at(self.fnode.spec()));
             }
             if let Some(before) = before
@@ -1034,7 +1034,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             Ok(restored_def)
         });
-        ctx.replay_refs();
+        ctx.apply_deferred();
         let restored_def = restored_def?;
         if let Some(share) = &self.share
             && let Some(apply) = self.callee.apply_mut()
@@ -1066,7 +1066,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// time, replacing the lazy bind `update()` would run. Idempotent.
     pub fn resolve_static(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         def: &LambdaDef<R, E>,
     ) -> Result<()> {
         if matches!(self.callee, Callee::Static { .. }) || self.static_target.is_some() {
@@ -1079,7 +1079,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let active = ctx.resolving(def.id, &identity);
         if let Some(active) = active {
             let scope = self.scope.clone();
-            self.prepare_bind(ctx, &scope, self.flags, def, |_, _| {})?;
+            self.prepare_bind(ctx, &scope, self.flags, def, &mut Refs::default())?;
             self.typecheck_static_defaults(ctx)?;
             if self.ftype.is_none() {
                 bail!("statically resolving an untyped call site: {}", self.spec)
@@ -1164,7 +1164,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// known `LambdaDef` (a `Ref` to a non-`<-`-target lambda binding, or a
     /// lambda literal), or dispatch a trait method by its self type.
     /// No-op for dynamic call sites.
-    fn try_static_resolve(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn try_static_resolve(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if matches!(self.callee, Callee::Static { .. }) {
             return Ok(());
         }
@@ -1172,21 +1172,17 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             NodeView::Ref(r) => {
                 if dbgenv::gxdbg_resolve() {
                     eprintln!(
-                        "RESOLVE {} id={:?} unstable={} b2l={} cached={}",
+                        "RESOLVE {} id={:?} unstable={} b2l={}",
                         self.spec,
                         r.id,
                         ctx.batch_connect_targets.contains(&r.id),
                         ctx.bind_to_lambda.contains_key(&r.id),
-                        ctx.rt.store_value(&r.id).is_some(),
                     );
                 }
                 if ctx.batch_connect_targets.contains(&r.id) {
                     None
                 } else {
-                    ctx.bind_to_lambda
-                        .get(&r.id)
-                        .cloned()
-                        .or_else(|| ctx.rt.store_value(&r.id))
+                    ctx.bind_to_lambda.get(&r.id).cloned()
                 }
             }
             NodeView::Lambda(l) => Some(l.def_value().clone()),
@@ -1213,7 +1209,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// argument, the source lambda it resolves to (a literal is its own
     /// source; a `Ref` goes through `bind_to_lambda`; a `<-` target is
     /// dynamic).
-    fn fn_arg_identity(&self, ctx: &ExecCtx<R, E>) -> FnArgIdentity {
+    fn fn_arg_identity(&self, ctx: &CompileCtx<R, E>) -> FnArgIdentity {
         let mut identity: FnArgIdentity = self
             .args
             .iter()
@@ -1239,7 +1235,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// to and captures of a fn parameter resolve in one pass.
     fn register_fn_params(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         ftype: &FnType,
     ) -> (LPooled<Vec<BindId>>, LPooled<Vec<BindId>>) {
         let mut param_binds: LPooled<Vec<BindId>> = LPooled::take();
@@ -1292,7 +1288,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// Undo [`Self::register_fn_params`]; the `fn_forward_resolutions`
     /// snapshot stays for the kernel cache fingerprint.
     fn unregister_fn_params(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         mut param_binds: LPooled<Vec<BindId>>,
         mut trait_param_binds: LPooled<Vec<BindId>>,
     ) {
@@ -1342,26 +1338,26 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// delegates to it from now on.
     pub(super) fn install_lowered(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         node: Node<R, E>,
     ) -> Result<()> {
         wrap!(node, self.rtype.check_contains(&ctx.env, node.typ()))?;
         for arg in self.args.values_mut() {
-            if let Some(mut n) = arg.node.take() {
-                n.delete(ctx);
+            if let Some(n) = arg.node.take() {
+                ctx.discard(n);
             }
         }
-        for mut n in self.arg_refs.drain(..) {
-            n.delete(ctx);
+        for n in self.arg_refs.drain(..) {
+            ctx.discard(n);
         }
-        let mut old = mem::replace(&mut self.fnode, Node::new(Nop { typ: Type::Bottom }));
-        old.delete(ctx);
+        let old = mem::replace(&mut self.fnode, Node::new(Nop { typ: Type::Bottom }));
+        ctx.discard(old);
         self.lowered = Some(node);
         Ok(())
     }
 
     /// Re-point this call's function node at binding `bind`.
-    pub(super) fn retarget(&mut self, ctx: &mut ExecCtx<R, E>, bind: BindId) {
+    pub(super) fn retarget(&mut self, ctx: &mut CompileCtx<R, E>, bind: BindId) {
         let typ = ctx
             .env
             .by_id
@@ -1373,8 +1369,8 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             _ => (*self.spec).clone(),
         };
         let fnode = Ref::new(ctx, bind, typ, self.top_id, fspec);
-        let mut old = mem::replace(&mut self.fnode, fnode);
-        old.delete(ctx);
+        let old = mem::replace(&mut self.fnode, fnode);
+        ctx.discard(old);
     }
 }
 
@@ -1629,7 +1625,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         };
         ctx.image_decoder = Some(dec);
-        ctx.replay_refs();
+        ctx.apply_deferred();
         let apply: Box<dyn Apply<R, E>> = Box::new(decoded?);
         let Callee::Imaged { first_update, .. } =
             mem::replace(&mut self.callee, Callee::DynamicUnbound)
@@ -1817,7 +1813,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         &self.spec
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if let Some(n) = &mut self.lowered {
             return n.typecheck0(ctx);
         }
@@ -1987,7 +1983,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
 
     /// Second pass: after the subtrees, drive `Apply::typecheck1` for every
     /// lambda dispatchable here (the callee and each fn-typed callback).
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if let Some(n) = &mut self.lowered {
             return n.typecheck1(ctx);
         }

@@ -6,7 +6,8 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
+    UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -501,7 +502,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
     const NAME: &str = "sys_args";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -557,7 +558,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     const NAME: &str = "sys_exit";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

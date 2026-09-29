@@ -4,7 +4,7 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{CachedVals, seam_tick};
@@ -25,7 +25,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
     const NAME: &str = "rand";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -100,7 +100,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
     const NAME: &str = "rand_pick";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -157,7 +157,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
     const NAME: &str = "rand_shuffle";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

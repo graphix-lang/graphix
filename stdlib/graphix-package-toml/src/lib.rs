@@ -7,7 +7,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use chrono::Utc;
 use graphix_compiler::{
-    ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
+    CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, UserEvent,
     effects::Effect,
     errf,
     typ::{FnType, Type},
@@ -130,7 +130,7 @@ impl EvalCachedAsync for TomlReadEv {
     const NAME: &str = "toml_read";
 
     fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
@@ -142,7 +142,7 @@ impl EvalCachedAsync for TomlReadEv {
 
     fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -150,7 +150,7 @@ impl EvalCachedAsync for TomlReadEv {
 
     fn typecheck1<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {

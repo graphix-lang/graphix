@@ -240,8 +240,7 @@ pub(super) struct GX<X: GXExt> {
 
 impl<X: GXExt> GX<X> {
     /// Drop the outgoing batch's `<-` targets from the static-resolution
-    /// index; stable cross-batch entries survive so resolution does not
-    /// fall to the `store_value` fallback.
+    /// index: a later batch's call through one dispatches dynamically.
     fn prune_static_resolution(&mut self) {
         for id in self.ctx.cx.batch_connect_targets.iter() {
             self.ctx.cx.bind_to_lambda.remove(id);
@@ -375,8 +374,11 @@ impl<X: GXExt> GX<X> {
         input: &mut Vec<ToGX<X>>,
         mut batch: GPooled<Vec<GXEvent>>,
     ) {
-        debug_assert!(!self.ctx.refs_pending(), "compiled references left unreplayed");
-        self.ctx.replay_refs();
+        debug_assert!(
+            !self.ctx.deferred_pending(),
+            "compiled references left unreplayed"
+        );
+        self.ctx.apply_deferred();
         macro_rules! push_event {
             ($id:expr, $v:expr, $event:ident, $refed:ident, $overflow:ident) => {
                 match self.event.$event.entry($id) {
@@ -964,7 +966,7 @@ impl<X: GXExt> GX<X> {
             .map(|b| b.typ.clone())
             .unwrap_or_else(|| Type::Any);
         let n = genn::reference(&mut self.ctx, id, typ.clone(), eid);
-        self.ctx.replay_refs();
+        self.ctx.apply_deferred();
         self.nodes.insert(eid, n);
         let target_bid = self.ctx.env.byref_chain.get(&id).copied();
         Ok(Ref {

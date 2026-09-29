@@ -1,7 +1,7 @@
 use super::{WakeBit, compiler::compile, coretraits::with_hooks, dense_gate};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
-    UserEvent, defetyp, err, errf,
+    CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
+    Update, UserEvent, defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::{
         self,
@@ -69,7 +69,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -165,7 +165,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.entries.iter().for_each(|(_, v)| v.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.each(|n| wrap!(n, n.typecheck0(ctx)))?;
         let bottom = Type::Bottom;
         let mut kts: LPooled<Vec<&Type>> = LPooled::take();
@@ -182,7 +182,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.each(|n| wrap!(n, n.typecheck1(ctx)))
     }
 
@@ -242,7 +242,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -289,7 +289,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         wrap!(self.key, self.key.typecheck0(ctx))?;
         let mt = Type::Map {
@@ -300,7 +300,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
         wrap!(self.key, self.key.typecheck1(ctx))?;
         Ok(())

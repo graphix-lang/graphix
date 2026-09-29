@@ -270,7 +270,7 @@ fn build_site<R: Rt, E: UserEvent>(
     let types = (0..t.arity()).map(|_| h.typ.clone());
     let call =
         SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id);
-    ctx.replay_refs();
+    ctx.apply_deferred();
     Ok(HookSite { call: call?, first: true })
 }
 

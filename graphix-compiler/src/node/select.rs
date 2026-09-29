@@ -5,8 +5,8 @@ use super::{
     wake::TrackedFires,
 };
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent, bailat,
+    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
+    Scope, Tag, TagValue, Update, UserEvent, bailat,
     env::Env,
     expr::{At, Expr, ExprId, ExprKind, Pattern, union_members},
     format_with_flags,
@@ -205,7 +205,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -245,7 +245,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     /// that matches anything or by the union of what the irrefutable
     /// atoms, `null` (its type's one value), bool literals, literal pools
     /// and slice ladders cover.
-    fn check_coverage(&self, ctx: &ExecCtx<R, E>, scrut: &Type) -> Result<()> {
+    fn check_coverage(&self, ctx: &CompileCtx<R, E>, scrut: &Type) -> Result<()> {
         let env = &ctx.env;
         let mut mtypes: LPooled<Vec<Type>> = LPooled::take();
         let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
@@ -377,7 +377,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     /// can match. `atype` is what can still reach each arm; array
     /// members subtract length-precisely, and a slice arm whose every
     /// length is already matched is dead whatever its guard.
-    fn check_dead_arms(&self, ctx: &ExecCtx<R, E>, scrut: &Type) -> Result<()> {
+    fn check_dead_arms(&self, ctx: &CompileCtx<R, E>, scrut: &Type) -> Result<()> {
         let env = &ctx.env;
         let mut atype = scrut.normalize();
         let mut ladders = Ladder::of(env, &atype)?;
@@ -1094,7 +1094,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
         // A partial struct pattern infers only its named fields;
         // complete each inferred predicate against the typed scrutinee
@@ -1147,7 +1147,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         self.check_dead_arms(ctx, &scrut)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.arg.node.typecheck1(ctx)?;
         for (pat, n) in self.arms.iter_mut() {
             if let Some(guard) = &mut pat.guard {

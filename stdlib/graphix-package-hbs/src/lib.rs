@@ -5,7 +5,7 @@
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    ExecCtx, FastCall, Rt, UserEvent, deref_typ,
+    CompileCtx, ExecCtx, FastCall, Rt, UserEvent, deref_typ,
     effects::Effect,
     errf,
     typ::{FnType, Type},
@@ -116,7 +116,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [graphix_compiler::Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -124,7 +124,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [graphix_compiler::Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {

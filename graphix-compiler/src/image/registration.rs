@@ -287,14 +287,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         match self.decode_registration(image, &mut nodes) {
             Ok((dec, scope, program)) => {
                 self.image_decoder = Some(dec);
-                self.replay_refs();
+                self.apply_deferred();
                 Ok(Registration { nodes, scope, program })
             }
             Err(e) => {
                 for (_, mut n) in nodes {
                     n.delete(self);
                 }
-                self.cx.pending_refs.clear();
+                self.drop_deferred();
                 saved.restore(self);
                 Err(e)
             }

@@ -4,7 +4,7 @@
 )]
 use arcstr::ArcStr;
 use graphix_compiler::{
-    Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, errf, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{FireOnce, ProgramArgs};
@@ -146,7 +146,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     const NAME: &str = "args_parse";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

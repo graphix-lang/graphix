@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Restore,
-    Rt, Scope, Tag, TagValue, Update, UserEvent, env,
+    BindId, CAST_ERR, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, PrintFlag, Refs,
+    Restore, Rt, Scope, Tag, TagValue, Update, UserEvent, env,
     expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody},
     format_with_flags,
     fusion::{
@@ -228,11 +228,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
 
-    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -268,7 +268,7 @@ impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         inner: Expr,
@@ -307,11 +307,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))
     }
 
@@ -437,7 +437,7 @@ pub struct TypeDef {
 
 impl TypeDef {
     pub(crate) fn compile<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         spec: Expr,
         scope: &Scope,
         name: &Name,
@@ -485,11 +485,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         TagValue::phantom_ref()
     }
 
-    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -576,11 +576,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         &self.typ
     }
 
-    fn typecheck0(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 
@@ -626,7 +626,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -651,7 +651,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
 /// for all subsequent siblings. Returns the children in syntactic order
 /// plus the catch indices.
 pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     top_id: ExprId,
@@ -701,7 +701,7 @@ pub(crate) enum StmtAt {
 /// `catch` covers. In a block's value slot a declaration compiles as an
 /// expression, which refuses it; a dynamic module is an expression.
 pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     e: &Expr,
     scope: &Scope,
@@ -755,11 +755,11 @@ pub(crate) fn evaluation_order(
 /// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
 /// body's errors also carry each statement's origin, the file it is in.
 pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     nodes: &mut [Node<R, E>],
     catches: &[usize],
     module: bool,
-    mut pass: impl FnMut(&mut Node<R, E>, &mut ExecCtx<R, E>) -> Result<()>,
+    mut pass: impl FnMut(&mut Node<R, E>, &mut CompileCtx<R, E>) -> Result<()>,
 ) -> Result<()> {
     for i in evaluation_order(nodes.len(), catches) {
         let n = &mut nodes[i];
@@ -800,7 +800,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
 /// statement's resolution reads settled facts.
 pub(crate) fn typecheck1_settled<R: Rt, E: UserEvent>(
     n: &mut Node<R, E>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> Result<()> {
     n.typecheck1(ctx)?;
     crate::drain_pending_settles(ctx)
@@ -885,7 +885,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         self.children.last().map(|n| n.typ()).unwrap_or(Type::BOTTOM)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         typecheck_in_order(
             ctx,
             &mut self.children,
@@ -895,7 +895,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         )
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         typecheck_in_order(
             ctx,
             &mut self.children,
@@ -961,7 +961,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1044,7 +1044,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         fusion::fuse_parts(self.args.iter_mut(), ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck0(ctx))?;
             self.typs[i] = part_type(a.typ());
@@ -1052,7 +1052,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for (i, a) in self.args.iter_mut().enumerate() {
             wrap!(a, a.typecheck1(ctx))?;
             // a cell still open at tc0 is bound by now
@@ -1098,7 +1098,7 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1169,7 +1169,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         fusion::fuse_parts([&mut self.node], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck0(ctx))?;
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
@@ -1189,7 +1189,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         )
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.node, self.node.typecheck1(ctx))?;
         Ok(())
     }
@@ -1257,7 +1257,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1378,7 +1378,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.sleep(ctx);
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
         let bind = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
@@ -1388,7 +1388,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         wrap!(self, bind.typ.check_contains(&ctx.env, &typ))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
         Ok(())
     }
@@ -1428,7 +1428,7 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1494,11 +1494,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.refs(refs)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(wrap!(self.n, self.n.typecheck0(ctx))?)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         Ok(())
     }
@@ -1525,7 +1525,7 @@ pub struct Never<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Never<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1596,14 +1596,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         self.n.iter().for_each(|n| n.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck0(ctx))?
         }
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck1(ctx))?
         }
@@ -1635,7 +1635,7 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1710,7 +1710,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         self.n.iter().for_each(|n| n.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck0(ctx))?
         }
@@ -1724,7 +1724,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck1(ctx))?
         }
@@ -1786,7 +1786,7 @@ impl<R: Rt, E: UserEvent> Sample<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1917,7 +1917,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.refs(refs);
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.trigger, self.trigger.typecheck0(ctx))?;
         wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
         // the child may replace its typ during typecheck0
@@ -1925,7 +1925,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.trigger, self.trigger.typecheck1(ctx))?;
         wrap!(self.arg.node, self.arg.node.typecheck1(ctx))?;
         Ok(())

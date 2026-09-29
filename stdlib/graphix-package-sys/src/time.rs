@@ -3,8 +3,8 @@ use arcstr::literal;
 use bytes::{Buf, BufMut};
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Rt, Scope,
+    TagValue, UserEvent,
     effects::Effect,
     err,
     expr::ExprId,
@@ -43,7 +43,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     const NAME: &str = "sys_time_after_idle";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -237,7 +237,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
     const NAME: &str = "sys_time_timer";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -395,7 +395,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     const NAME: &str = "sys_time_now";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,

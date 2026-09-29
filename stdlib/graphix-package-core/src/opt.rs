@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Refs, Rt, Scope, Tag,
-    TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Refs, Rt, Scope,
+    Tag, TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -257,7 +257,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     /// Build the bindings and callsite for `f(x)` where the option's
     /// inner type is `typ.args[1].typ`'s argument type.
     fn unary(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         typ: &FnType,
         scope: &Scope,
         top_id: ExprId,
@@ -345,7 +345,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.inner.refs(refs);
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.inner.typecheck0(ctx)
     }
 }
@@ -370,7 +370,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
     const NAME: &str = "core_opt_map";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -407,7 +407,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.s.typecheck0(ctx)
@@ -446,7 +446,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
     const NAME: &str = "core_opt_flat_map";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -483,7 +483,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.s.typecheck0(ctx)
@@ -524,7 +524,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
     const NAME: &str = "core_opt_filter";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -589,7 +589,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.s.typecheck0(ctx)
@@ -629,7 +629,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
     const NAME: &str = "core_opt_is_some_and";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -666,7 +666,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.s.typecheck0(ctx)
@@ -705,7 +705,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
     const NAME: &str = "core_opt_is_none_or";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -742,7 +742,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.s.typecheck0(ctx)
@@ -791,7 +791,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
     }
 
     fn init(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         typ: &FnType,
         scope: &Scope,
         top_id: ExprId,
@@ -853,7 +853,7 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         self.inner.refs(refs);
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.inner.typecheck0(ctx)
     }
 }
@@ -878,7 +878,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
     const NAME: &str = "core_opt_or_else";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -927,7 +927,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.s.typecheck0(ctx)
@@ -966,7 +966,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
     const NAME: &str = "core_opt_ok_or_else";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -1016,7 +1016,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.s.typecheck0(ctx)

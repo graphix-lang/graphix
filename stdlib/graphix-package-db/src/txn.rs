@@ -10,7 +10,8 @@ use ahash::AHashMap;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::{
-    ExecCtx, Node, Rt, Scope, UserEvent, errf, expr::ExprId, image::ImageBuf, typ::FnType,
+    CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent, errf, expr::ExprId, image::ImageBuf,
+    typ::FnType,
 };
 use graphix_package_core::{CachedArgsAsync, CachedVals, EvalCachedAsync, ImageState};
 use netidx::publisher::Typ;
@@ -477,7 +478,7 @@ impl EvalCachedAsync for DbTxnTreeEv {
     const NAME: &str = "db_txn_tree";
 
     fn init<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _typ: &FnType,
         resolved: Option<&FnType>,
         _scope: &Scope,
@@ -491,7 +492,7 @@ impl EvalCachedAsync for DbTxnTreeEv {
 
     fn typecheck0<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -499,7 +500,7 @@ impl EvalCachedAsync for DbTxnTreeEv {
 
     fn typecheck1<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {

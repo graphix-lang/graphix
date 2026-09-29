@@ -1,7 +1,7 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather, list, produce_constant};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
-    defetyp,
+    CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    UserEvent, defetyp,
     env::Env,
     err,
     expr::{Expr, ExprId},
@@ -73,7 +73,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -201,7 +201,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         wrap!(self.i, self.i.typecheck0(ctx))?;
         let source_typ = self.source.typ();
@@ -215,7 +215,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         check_index(&ctx.env, &self.i)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
         wrap!(self.i, self.i.typecheck1(ctx))?;
         Ok(())
@@ -292,7 +292,7 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -349,7 +349,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let source_typ = self.source.typ();
         if !known_bytes(&ctx.env, source_typ)? {
@@ -371,7 +371,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
         if let Some(start) = self.start.as_mut() {
             wrap!(start, start.typecheck1(ctx))?;
@@ -551,7 +551,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -619,7 +619,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         self.n.iter().for_each(|n| n.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in &mut self.n {
             wrap!(n, n.typecheck0(ctx))?
         }
@@ -634,7 +634,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in &mut self.n {
             wrap!(n, n.typecheck1(ctx))?
         }

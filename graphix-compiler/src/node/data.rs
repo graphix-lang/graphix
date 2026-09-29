@@ -1,7 +1,7 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather};
 use crate::{
-    CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
-    abstract_value, bailat, deref_typ,
+    CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    UserEvent, abstract_value, bailat, deref_typ,
     expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     fusion::{
         self,
@@ -57,7 +57,7 @@ macro_rules! composite_plumbing {
             self.n.iter().for_each(|n| n.refs(refs))
         }
 
-        fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+        fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
             for n in self.n.iter_mut() {
                 wrap!(n, n.typecheck1(ctx))?
             }
@@ -97,7 +97,7 @@ pub struct Struct<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Struct<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -167,7 +167,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck0(ctx))?
         }
@@ -253,7 +253,7 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -355,7 +355,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter().for_each(|r| r.n.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
@@ -387,7 +387,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
         for rep in self.replace.iter_mut() {
             wrap!(rep.n, rep.n.typecheck1(ctx))?
@@ -435,7 +435,7 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -520,7 +520,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         &self.spec
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
         let (idx, typ) = wrap!(self, etyp)?;
@@ -538,7 +538,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
         Ok(())
     }
@@ -567,7 +567,7 @@ pub struct Tuple<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Tuple<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -622,7 +622,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck0(ctx))?
         }
@@ -658,7 +658,7 @@ pub struct Variant<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Variant<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -721,7 +721,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, n.typecheck0(ctx))?
         }
@@ -792,7 +792,7 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -885,12 +885,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         fusion::fuse_parts([&mut self.arg], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.arg, self.arg.typecheck0(ctx))?;
         wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ()))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.arg, self.arg.typecheck1(ctx))
     }
 
@@ -907,7 +907,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
 /// payload, or an abstract type's payload where its definition is
 /// visible from `scope`.
 pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
     scope: &ModPath,
     source: &Type,
     field: usize,
@@ -941,7 +941,7 @@ pub(crate) fn tuple_field_type<R: Rt, E: UserEvent>(
 /// The sorted position and type of the field `name` over `source`, a
 /// struct.
 pub(crate) fn struct_field_type<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
     source: &Type,
     name: &ArcStr,
 ) -> Result<(usize, Type)> {
@@ -986,7 +986,7 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1075,14 +1075,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck0(ctx))?;
         let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
         let etyp = wrap!(self, etyp)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
         Ok(())
     }

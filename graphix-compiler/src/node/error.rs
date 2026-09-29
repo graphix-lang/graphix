@@ -1,7 +1,7 @@
 use super::{VarRead, read_var};
 use crate::{
-    BindId, CFlag, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Tag, TagValue, Update, UserEvent,
+    BindId, CFlag, CompileCtx, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag,
+    Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
     compiler::compile,
     defetyp, deref_typ,
     env::Env,
@@ -188,7 +188,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -219,7 +219,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         let handler = compile(ctx, flags, (*c.handler).clone(), &catch_scope, top_id)?;
         let covered = scope
             .with_catch((bind_id, top_id), matches!(c.role, CatchRole::Machine { .. }));
-        let lookup = |ctx: &ExecCtx<R, E>, name: &ArcStr| {
+        let lookup = |ctx: &CompileCtx<R, E>, name: &ArcStr| {
             let path = ModPath::from([name.as_str()]);
             match ctx.env.lookup_bind(&scope.lexical, &path)? {
                 Some((_, b)) => Ok(b.id),
@@ -367,7 +367,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         // siblings typecheck first, so the region's throws are already
         // unioned into the bind: snapshot them, then ascribe `T`
         if let Some(t) = self.constraint.clone() {
@@ -433,7 +433,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.handler, self.handler.typecheck1(ctx))?;
         if let Some(abort) = &mut self.seq_abort {
             wrap!(abort.node, abort.node.typecheck1(ctx))?;
@@ -490,7 +490,7 @@ pub(crate) enum Strip {
 
 impl Strip {
     fn of<R: Rt, E: UserEvent>(
-        ctx: &ExecCtx<R, E>,
+        ctx: &CompileCtx<R, E>,
         op: char,
         typ: &Type,
     ) -> Result<Self> {
@@ -537,7 +537,7 @@ impl Strip {
 /// never produces: bottom, which a select absorbs, not an empty union
 /// no pattern could match.
 fn strip_typ<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
     op: char,
     operand: &Type,
 ) -> Result<(Strip, Type)> {
@@ -638,7 +638,10 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
 /// The error type a `?` delivers for `etyp`: the payload wrapped in an
 /// `ErrChain`, once. `wrap_error` chains a caught error rather than
 /// nesting it, so a chain arriving from a callee's throws keeps its type.
-fn fix_echain_typ<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, etyp: &Type) -> Result<Type> {
+fn fix_echain_typ<R: Rt, E: UserEvent>(
+    ctx: &CompileCtx<R, E>,
+    etyp: &Type,
+) -> Result<Type> {
     deref_typ!("error", ctx, etyp,
         Some(Type::Primitive(p)) => {
             if !p.contains(Typ::Error) {
@@ -741,7 +744,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -841,7 +844,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
         if rethrow {
@@ -873,7 +876,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         Ok(())
     }
@@ -955,7 +958,7 @@ impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1053,11 +1056,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.n.typecheck0(ctx)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.n.typecheck1(ctx)
     }
 
@@ -1106,7 +1109,7 @@ impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1146,11 +1149,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.n.typecheck0(ctx)
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.n.typecheck1(ctx)
     }
 
@@ -1198,7 +1201,7 @@ impl<R: Rt, E: UserEvent> OrNever<R, E> {
     }
 
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -1255,14 +1258,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck0(ctx))?;
         let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ()))?;
         self.strip = strip;
         wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         Ok(())
     }

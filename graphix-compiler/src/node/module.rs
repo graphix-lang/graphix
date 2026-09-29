@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, PendingImport, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent,
+    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, PendingImport, Refs, Rt, Scope, Tag,
+    TagValue, Update, UserEvent,
     compiler::compile,
     env::{self, Env, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -137,7 +137,7 @@ pub(crate) fn compile_use_items(
 /// Compile a `use` statement: every item registers in the namespace
 /// table; the graph gets a [`Nop`].
 pub(crate) fn compile_use<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
     scope: &Scope,
@@ -145,8 +145,8 @@ pub(crate) fn compile_use<R: Rt, E: UserEvent>(
     items: &Arc<[UseItem]>,
 ) -> Result<Node<R, E>> {
     compile_use_items(
-        &mut ctx.cx.env,
-        &mut ctx.cx.pending_imports,
+        &mut ctx.env,
+        &mut ctx.pending_imports,
         spec.pos,
         &spec.ori,
         scope,
@@ -360,7 +360,7 @@ struct Proxy {
 }
 
 fn check_sig<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     top_id: ExprId,
     proxy: &mut Vec<Proxy>,
     scope: &Scope,
@@ -373,7 +373,7 @@ fn check_sig<R: Rt, E: UserEvent>(
     let mut defined_abstracts: LPooled<AHashSet<ArcStr>> = LPooled::take();
     for n in nodes {
         if let Some(bind) = (&**n as &dyn Any).downcast_ref::<Bind<R, E>>()
-            && let Some(binds) = ctx.cx.env.binds.get(&scope.lexical)
+            && let Some(binds) = ctx.env.binds.get(&scope.lexical)
         {
             // every name the `let` binds, each with its own binding; a
             // single name's type is the whole pattern's
@@ -693,7 +693,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     pub(super) fn compile_dynamic(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         enclosing: &Scope,
@@ -708,7 +708,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
         let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
         env.modules.insert_cow(scope.lexical.clone());
-        bind_sig(&mut ctx.cx.env, &mut ctx.cx.pending_imports, &scope, &sig)
+        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
         Ok(Node::new(Self {
             spec,
@@ -726,7 +726,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     pub(super) fn compile_static(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -737,10 +737,9 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let mut env = ctx.env.clone();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
-        bind_sig(&mut ctx.cx.env, &mut ctx.cx.pending_imports, &scope, &sig)
-            .with_context(|| {
-                format_compact!("binding signature for module {}", scope.lexical)
-            })?;
+        bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig).with_context(
+            || format_compact!("binding signature for module {}", scope.lexical),
+        )?;
         let mut t = Self {
             spec,
             flags,
@@ -789,7 +788,11 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         res
     }
 
-    fn compile_inner(&mut self, ctx: &mut ExecCtx<R, E>, exprs: &[Expr]) -> Result<()> {
+    fn compile_inner(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        exprs: &[Expr],
+    ) -> Result<()> {
         let builtins_allowed =
             mem::replace(&mut ctx.builtins_allowed, matches!(self.body, Body::Static));
         let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
@@ -842,7 +845,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
 
     /// Map each signature `BindId` to its impl binding's `LambdaDef` so
     /// cross-module calls resolve statically.
-    fn proxy_lambda_defs(&self, ctx: &mut ExecCtx<R, E>) {
+    fn proxy_lambda_defs(&self, ctx: &mut CompileCtx<R, E>) {
         for Proxy { inner, outer, .. } in self.proxy.iter() {
             let hit = ctx.bind_to_lambda.contains_key(inner);
             if crate::dbgenv::gxdbg_resolve() {
@@ -855,7 +858,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     /// Run the children's `typecheck1` under the module's private env.
-    fn typecheck1_nodes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1_nodes(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let Self { env, nodes, catches, scope, .. } = self;
         let _module = profile::module(&scope.lexical);
         ctx.with_restored_mut(env, |ctx| {
@@ -938,7 +941,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             match v {
                 Value::String(s) => {
                     let compiled = self.compile_source(ctx, s);
-                    ctx.replay_refs();
+                    ctx.apply_deferred();
                     if let Err(e) = compiled {
                         return self.resident.set(TagValue::tagged(
                             errf!(ERR_TAG, "compile error {e:?}"),
@@ -1042,7 +1045,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if let Body::Dynamic { source, .. } = &mut self.body {
             wrap!(source, source.typecheck0(ctx))?;
             let t = Type::Primitive(Typ::String | Typ::Error);
@@ -1052,7 +1055,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if let Body::Dynamic { source, .. } = &mut self.body {
             wrap!(source, source.typecheck1(ctx))?;
         }

@@ -3,8 +3,8 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
-    UserEvent, deref_typ,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, LambdaId, Node, Rt, Scope,
+    TagValue, UserEvent, deref_typ,
     effects::Effect,
     err, errf,
     expr::ExprId,
@@ -58,7 +58,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     const NAME: &str = "sys_net_write";
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -217,7 +217,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     const NAME: &str = "sys_net_subscribe";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -332,7 +332,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -340,7 +340,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
@@ -380,7 +380,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     const NAME: &str = "sys_net_call";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -473,7 +473,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 
     fn typecheck0(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         Ok(())
@@ -481,7 +481,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
@@ -526,7 +526,7 @@ macro_rules! list {
             const NAME: &str = $builtin;
 
             fn init<'a, 'b, 'c, 'd>(
-                ctx: &'a mut ExecCtx<R, E>,
+                ctx: &'a mut CompileCtx<R, E>,
                 _typ: &'a FnType,
                 _resolved: Option<&'d FnType>,
                 _scope: &'b Scope,
@@ -673,7 +673,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     const NAME: &str = "sys_net_publish";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         resolved: Option<&'d FnType>,
         scope: &'b Scope,
@@ -831,7 +831,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.on_write.typecheck0(ctx)?;
@@ -840,7 +840,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
@@ -894,7 +894,7 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
 impl<R: Rt, E: UserEvent> PublishRpc<R, E> {
     fn validate_spec(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         resolved: &FnType,
     ) -> Result<()> {
         let (spec_is_null, spec_fields) = if let Some(spec_arg) = resolved.args.get(2) {
@@ -1001,7 +1001,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     const NAME: &str = "sys_net_publish_rpc";
 
     fn init<'a, 'b, 'c>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a graphix_compiler::typ::FnType,
         resolved: Option<&FnType>,
         scope: &'b Scope,
@@ -1249,7 +1249,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn typecheck0(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
     ) -> Result<()> {
         self.f.typecheck0(ctx)?;
@@ -1258,7 +1258,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn typecheck1(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {

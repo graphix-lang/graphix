@@ -16,8 +16,8 @@ use super::{
     lambda::LambdaDef,
 };
 use crate::{
-    BindId, CFlag, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, SourcePosition,
-    TagValue, Update, UserEvent, bailat,
+    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope,
+    SourcePosition, TagValue, Update, UserEvent, bailat,
     env::{Env, ImplDef, Map, TraitDef, TraitMethodRef},
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
@@ -138,7 +138,7 @@ pub struct Trait<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Trait<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -226,11 +226,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         TagValue::phantom_ref()
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.defaults, self.defaults.typecheck1(ctx))
     }
 
@@ -453,7 +453,7 @@ pub(crate) fn impl_head(
 
 impl<R: Rt, E: UserEvent> Impl<R, E> {
     pub(crate) fn compile(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
         spec: Expr,
         scope: &Scope,
@@ -560,7 +560,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
     /// The core-trait prototypes: a call site per method over
     /// synthesized argument bindings of the target type, typechecked
     /// and statically resolved like any call, never updated.
-    fn build_prototypes(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn build_prototypes(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if CoreTrait::of_id(self.def.trait_id).is_none() {
             return Ok(());
         }
@@ -622,7 +622,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         TagValue::phantom_ref()
     }
 
-    fn typecheck0(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.body, self.body.typecheck0(ctx))?;
         // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {
@@ -640,7 +640,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         Ok(())
     }
 
-    fn typecheck1(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.body, self.body.typecheck1(ctx))?;
         if self.prototypes.is_empty() {
             wrap!(self.body, self.build_prototypes(ctx))?;
@@ -692,7 +692,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// definition gate; a union self type lowers to a select.
     pub(super) fn resolve_trait_call(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         tm: TraitMethodRef,
     ) -> Result<()> {
         let Some(def) = ctx.env.trait_def(tm.trait_id).cloned() else {
@@ -777,8 +777,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             )
         };
         self.retarget(ctx, bind);
-        let fv =
-            ctx.bind_to_lambda.get(&bind).cloned().or_else(|| ctx.rt.store_value(&bind));
+        let fv = ctx.bind_to_lambda.get(&bind).cloned();
         if let Some(fv) = fv
             && let Some(ldef) = fv.downcast_ref::<LambdaDef<R, E>>()
         {
@@ -792,7 +791,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// `Ord::cmp(a, b)` tests `<` and `>`.
     fn lower_core_call(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         core: CoreTrait,
     ) -> Result<()> {
         let (mut operands, names) = self.take_operands(None)?;
@@ -877,7 +876,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// The implementation bindings are named by id (`#bind::N`).
     fn lower_trait_union(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         def: &TraitDef,
         index: usize,
         members: &[Type],

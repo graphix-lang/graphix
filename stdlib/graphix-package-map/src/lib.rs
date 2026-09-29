@@ -4,8 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent, effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Rt, Scope,
+    TagValue, UserEvent, effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::subscriber::Value;
@@ -113,7 +113,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     const NAME: &str = "map_iter";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -191,7 +191,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     const NAME: &str = "map_iterq";
 
     fn init<'a, 'b, 'c, 'd>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
