@@ -338,7 +338,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let mut dec = ImageDecoder::new(counts)?;
         dec.set_image(image.clone());
         dec.set_fastcalls(
-            self.builtins
+            self.registry
+                .builtins
                 .iter()
                 .filter_map(|(name, b)| b.effect.fastcall().map(|f| (*name, f)))
                 .collect(),

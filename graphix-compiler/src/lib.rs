@@ -1363,13 +1363,19 @@ macro_rules! env_restore_methods {
     };
 }
 
+/// What registration fills and compiling only reads, shared by every
+/// compile task.
+struct Registry<R: Rt, E: UserEvent> {
+    lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
+    builtins: AHashMap<&'static str, BuiltinEntry<R, E>>,
+    attributes: AHashMap<&'static str, (AttributeCheckFn<R, E>, AttributeTargetFn<R, E>)>,
+}
+
 /// Everything compiling and typechecking read and write: the builtin
 /// and attribute registry, the program's state, and the scratch of the
 /// compile in progress. The runtime half is [`ExecCtx`].
 pub struct CompileCtx<R: Rt, E: UserEvent> {
-    lambdawrap: AbstractWrapper<LambdaDef<R, E>>,
-    builtins: AHashMap<&'static str, BuiltinEntry<R, E>>,
-    attributes: AHashMap<&'static str, (AttributeCheckFn<R, E>, AttributeTargetFn<R, E>)>,
+    registry: Arc<Registry<R, E>>,
     // Sandboxing.
     builtins_allowed: bool,
     tags: TrackedSet<ArcStr>,
@@ -1433,9 +1439,6 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     pub(crate) attr_census: Mutex<Vec<Expr>>,
     pub(crate) attr_dispatched: Mutex<IntSet<ExprId>>,
     pub(crate) attr_absorbed: Mutex<IntSet<ExprId>>,
-    /// The tables of the image this session was restored from, for
-    /// anything decoded later.
-    pub(crate) image_decoder: Option<image::ImageDecoder>,
     /// References compiled but not yet registered with the runtime, by
     /// variable and top expression: compiling reaches no runtime, and
     /// [`ExecCtx::apply_deferred`] registers them.
@@ -1453,6 +1456,9 @@ enum Discarded<R: Rt, E: UserEvent> {
 /// The compile context and the runtime: what a node's update reads.
 pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub cx: CompileCtx<R, E>,
+    /// The tables of the image this session was restored from, for
+    /// anything decoded later.
+    pub(crate) image_decoder: Option<image::ImageDecoder>,
     /// Library state for builtins.
     pub libstate: LibState,
     /// The runtime.
@@ -1482,6 +1488,88 @@ impl<R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
+    /// A context for a compile task: it shares the registry, starts from
+    /// this program's state, recording what it writes, and inherits the
+    /// resolution in progress; its scratch outputs start empty.
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            registry: self.registry.clone(),
+            builtins_allowed: self.builtins_allowed,
+            tags: self.tags.fork(),
+            env: self.env.fork(),
+            lambda_defs: self.lambda_defs.fork(),
+            bind_to_lambda: self.bind_to_lambda.fork(),
+            batch_connect_targets: self.batch_connect_targets.fork(),
+            connect_targets: self.connect_targets.fork(),
+            builtin_bindings: self.builtin_bindings.fork(),
+            rec_defs: self.rec_defs.clone(),
+            def_gate_params: self.def_gate_params.clone(),
+            def_gate_depth: self.def_gate_depth,
+            resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
+            fn_forward_resolutions: self.fn_forward_resolutions.fork(),
+            pending_settles: vec![Vec::new()],
+            pending_imports: Vec::new(),
+            pending_names: Vec::new(),
+            def_assertions: Mutex::new(Vec::new()),
+            attr_census: Mutex::new(Vec::new()),
+            attr_dispatched: Mutex::new(IntSet::default()),
+            attr_absorbed: Mutex::new(IntSet::default()),
+            pending_refs: AHashMap::default(),
+            discarded: Vec::new(),
+        }
+    }
+
+    /// Take back what the task `fork` produced: its writes to the
+    /// program's state and everything it deferred. The resolution scratch
+    /// it inherited is balanced by the time it ends and stays this one's.
+    pub(crate) fn join(&mut self, fork: Self) {
+        let Self {
+            registry: _,
+            builtins_allowed: _,
+            tags,
+            env,
+            lambda_defs,
+            bind_to_lambda,
+            batch_connect_targets,
+            connect_targets,
+            builtin_bindings,
+            rec_defs: _,
+            def_gate_params: _,
+            def_gate_depth: _,
+            resolving_lambdas: _,
+            fn_forward_resolutions,
+            pending_settles,
+            pending_imports,
+            pending_names,
+            def_assertions,
+            attr_census,
+            attr_dispatched,
+            attr_absorbed,
+            pending_refs,
+            discarded,
+        } = fork;
+        self.tags.join(tags);
+        self.env.join(env);
+        self.lambda_defs.join(lambda_defs);
+        self.bind_to_lambda.join(bind_to_lambda);
+        self.batch_connect_targets.join(batch_connect_targets);
+        self.connect_targets.join(connect_targets);
+        self.builtin_bindings.join(builtin_bindings);
+        self.fn_forward_resolutions.join(fn_forward_resolutions);
+        let frame = self.pending_settles.last_mut().expect("root settle frame");
+        frame.extend(pending_settles.into_iter().flatten());
+        self.pending_imports.extend(pending_imports);
+        self.pending_names.extend(pending_names);
+        self.def_assertions.lock().extend(def_assertions.into_inner());
+        self.attr_census.lock().extend(attr_census.into_inner());
+        self.attr_dispatched.lock().extend(attr_dispatched.into_inner());
+        self.attr_absorbed.lock().extend(attr_absorbed.into_inner());
+        for (k, n) in pending_refs {
+            *self.pending_refs.entry(k).or_default() += n;
+        }
+        self.discarded.extend(discarded);
+    }
+
     /// Record that `top_id` reads `id`: the runtime is told at the next
     /// [`ExecCtx::apply_deferred`].
     pub fn record_ref(&mut self, id: BindId, top_id: ExprId) {
@@ -1517,7 +1605,9 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         if node::collection::CollectionIntrinsic::from_name(T::NAME).is_some() {
             bail!("{} is a collection intrinsic reserved by the compiler", T::NAME)
         }
-        match self.builtins.entry(T::NAME) {
+        let registry =
+            Arc::get_mut(&mut self.registry).expect("registration precedes every fork");
+        match registry.builtins.entry(T::NAME) {
             Entry::Vacant(e) => {
                 e.insert(BuiltinEntry {
                     init: T::init,
@@ -1532,11 +1622,13 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// The image decoder of a registered builtin.
     pub fn builtin_decoder(&self, name: &str) -> Option<BuiltInDecodeFn<R, E>> {
-        self.builtins.get(name).map(|b| b.decode)
+        self.registry.builtins.get(name).map(|b| b.decode)
     }
 
     pub fn register_attribute<T: Attribute<R, E>>(&mut self) -> Result<()> {
-        match self.attributes.entry(T::NAME) {
+        let registry =
+            Arc::get_mut(&mut self.registry).expect("registration precedes every fork");
+        match registry.attributes.entry(T::NAME) {
             Entry::Vacant(e) => {
                 e.insert((T::check, T::check_target));
             }
@@ -1549,24 +1641,24 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// The check fn for a registered attribute.
     pub fn lookup_attribute(&self, name: &str) -> Option<AttributeCheckFn<R, E>> {
-        self.attributes.get(name).map(|(check, _)| *check)
+        self.registry.attributes.get(name).map(|(check, _)| *check)
     }
 
     /// The target check for a registered attribute.
     pub fn lookup_attribute_target(&self, name: &str) -> Option<AttributeTargetFn<R, E>> {
-        self.attributes.get(name).map(|(_, target)| *target)
+        self.registry.attributes.get(name).map(|(_, target)| *target)
     }
 
     /// A registered builtin's [`Effect`]; `Async` for unknown names.
     pub fn builtin_effect(&self, name: &str) -> Effect {
-        self.builtins.get(name).map(|b| b.effect).unwrap_or_default()
+        self.registry.builtins.get(name).map(|b| b.effect).unwrap_or_default()
     }
 
     /// Wrap a `LambdaDef` into a first-class function `Value` and
     /// register it in `lambda_defs`.
     pub fn wrap_lambda(&mut self, def: LambdaDef<R, E>) -> Value {
         let id = def.id;
-        let v = self.lambdawrap.wrap(def);
+        let v = self.registry.lambdawrap.wrap(def);
         self.lambda_defs.insert(id, v.clone());
         v
     }
@@ -1589,9 +1681,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
             cx: CompileCtx {
-                lambdawrap: Abstract::register(id)?,
-                builtins: AHashMap::default(),
-                attributes: AHashMap::default(),
+                registry: Arc::new(Registry {
+                    lambdawrap: Abstract::register(id)?,
+                    builtins: AHashMap::default(),
+                    attributes: AHashMap::default(),
+                }),
                 builtins_allowed: true,
                 tags: TrackedSet::default(),
                 env: Env::default(),
@@ -1612,10 +1706,10 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 attr_census: Mutex::new(Vec::new()),
                 attr_dispatched: Mutex::new(IntSet::default()),
                 attr_absorbed: Mutex::new(IntSet::default()),
-                image_decoder: None,
                 pending_refs: AHashMap::default(),
                 discarded: Vec::new(),
             },
+            image_decoder: None,
             libstate: LibState::default(),
             rt: user,
             core_hook_sites: node::coretraits::CoreHookSites::default(),

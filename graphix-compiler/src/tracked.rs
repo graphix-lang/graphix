@@ -11,17 +11,21 @@ pub struct TrackedMap<K: Ord + Clone + Debug, V: Clone + Debug> {
     map: Map<K, V>,
     /// The keys written since the fork; `None` outside one.
     touched: Option<Vec<K>>,
+    /// Bumped by every write.
+    generation: u64,
+    /// The generation of the map this one forked from, at the fork.
+    forked_at: u64,
 }
 
 impl<K: Ord + Clone + Debug, V: Clone + Debug> Default for TrackedMap<K, V> {
     fn default() -> Self {
-        Self { map: Map::default(), touched: None }
+        Self::from(Map::default())
     }
 }
 
 impl<K: Ord + Clone + Debug, V: Clone + Debug> From<Map<K, V>> for TrackedMap<K, V> {
     fn from(map: Map<K, V>) -> Self {
-        Self { map, touched: None }
+        Self { map, touched: None, generation: 0, forked_at: 0 }
     }
 }
 
@@ -35,6 +39,7 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> Deref for TrackedMap<K, V> {
 
 impl<K: Ord + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     fn touch(&mut self, k: &K) {
+        self.generation += 1;
         if let Some(t) = &mut self.touched {
             t.push(k.clone())
         }
@@ -105,12 +110,26 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
 
     /// A copy that records what it writes.
     pub fn fork(&self) -> Self {
-        Self { map: self.map.clone(), touched: Some(Vec::new()) }
+        Self {
+            map: self.map.clone(),
+            touched: Some(Vec::new()),
+            generation: self.generation,
+            forked_at: self.generation,
+        }
     }
 
-    /// Write back what `fork` wrote.
+    /// Write back what `fork` wrote. A map written nowhere since the
+    /// fork takes the fork's whole.
     pub fn join(&mut self, fork: Self) {
-        let Self { map, touched } = fork;
+        let Self { map, touched, generation, forked_at } = fork;
+        if self.generation == forked_at {
+            self.map = map;
+            self.generation = generation;
+            if let (Some(mine), Some(theirs)) = (&mut self.touched, touched) {
+                mine.extend(theirs)
+            }
+            return;
+        }
         for k in touched.into_iter().flatten() {
             match map.get(&k) {
                 Some(v) => {
@@ -129,17 +148,20 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
 pub struct TrackedSet<K: Ord + Clone + Debug> {
     set: Set<K>,
     touched: Option<Vec<K>>,
+    /// See [`TrackedMap`].
+    generation: u64,
+    forked_at: u64,
 }
 
 impl<K: Ord + Clone + Debug> Default for TrackedSet<K> {
     fn default() -> Self {
-        Self { set: Set::default(), touched: None }
+        Self::from(Set::default())
     }
 }
 
 impl<K: Ord + Clone + Debug> From<Set<K>> for TrackedSet<K> {
     fn from(set: Set<K>) -> Self {
-        Self { set, touched: None }
+        Self { set, touched: None, generation: 0, forked_at: 0 }
     }
 }
 
@@ -153,6 +175,7 @@ impl<K: Ord + Clone + Debug> Deref for TrackedSet<K> {
 
 impl<K: Ord + Clone + Debug> TrackedSet<K> {
     fn touch(&mut self, k: &K) {
+        self.generation += 1;
         if let Some(t) = &mut self.touched {
             t.push(k.clone())
         }
@@ -200,11 +223,24 @@ impl<K: Ord + Clone + Debug> TrackedSet<K> {
     }
 
     pub fn fork(&self) -> Self {
-        Self { set: self.set.clone(), touched: Some(Vec::new()) }
+        Self {
+            set: self.set.clone(),
+            touched: Some(Vec::new()),
+            generation: self.generation,
+            forked_at: self.generation,
+        }
     }
 
     pub fn join(&mut self, fork: Self) {
-        let Self { set, touched } = fork;
+        let Self { set, touched, generation, forked_at } = fork;
+        if self.generation == forked_at {
+            self.set = set;
+            self.generation = generation;
+            if let (Some(mine), Some(theirs)) = (&mut self.touched, touched) {
+                mine.extend(theirs)
+            }
+            return;
+        }
         for k in touched.into_iter().flatten() {
             if set.contains(&k) {
                 self.insert(k);

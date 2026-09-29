@@ -71,7 +71,7 @@ FUSION = {
     "Fusion", "ReturnType", "Inputs", "Builtins", "Callees", "Emit", "JitInit",
     "JitBuild", "Clif", "Link", "Finalize", "Freeze", "Normalize", "ExpandRefs",
 }
-LINK = {"StaticBind", "InstanceGraph", "InstanceCheck", "InstanceCensus"}
+LINK = {"StaticBind", "InstanceGraph", "InstanceCheck", "InstanceCensus", "TaskFork", "TaskJoin"}
 
 
 def bucket(phase):

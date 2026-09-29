@@ -780,7 +780,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
                 })
             }
             DefBody::BuiltIn(name) => {
-                let init = match ctx.builtins.get(&**name).map(|b| b.init) {
+                let init = match ctx.registry.builtins.get(&**name).map(|b| b.init) {
                     Some(init) => init,
                     None if ctx.env.ide.is_lsp() => UnknownBuiltIn::init as _,
                     None => bail!("unknown builtin function {name}"),
@@ -906,7 +906,7 @@ impl Lambda {
             LambdaBody::Builtin(name) => Some(name),
         };
         if let DefBody::BuiltIn(builtin) = &body
-            && ctx.builtins.get(builtin.as_str()).is_none()
+            && ctx.registry.builtins.get(builtin.as_str()).is_none()
         {
             if !ctx.env.ide.is_lsp() {
                 bail!("unknown builtin function {builtin}")
@@ -1010,7 +1010,7 @@ impl Lambda {
         // No signature ref seeding here: the module tree is mid-registration
         // and a name's final target may not be registered yet. Cells fill
         // at typecheck.
-        let def = ctx.lambdawrap.wrap(LambdaDef {
+        let def = ctx.registry.lambdawrap.wrap(LambdaDef {
             id,
             typ: typ.clone(),
             env: ctx.env.clone(),

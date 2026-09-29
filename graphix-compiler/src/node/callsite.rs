@@ -1091,6 +1091,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             });
             return Ok(());
         }
+        let p = profile::phase(Phase::TaskFork);
+        let mut task = ctx.fork();
+        drop(p);
+        let res = self.bind_instance(&mut task, def, identity);
+        let _p = profile::phase(Phase::TaskJoin);
+        ctx.join(task);
+        res
+    }
+
+    /// Build and check this site's instance of `def`, whose fn-arg
+    /// identity is `identity`, in the compile task `ctx`.
+    fn bind_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        def: &LambdaDef<R, E>,
+        identity: FnArgIdentity,
+    ) -> Result<()> {
         let scope = self.scope.clone();
         let (apply, instance_ftype) =
             self.setup_static_bind(ctx, &scope, self.flags, def)?;

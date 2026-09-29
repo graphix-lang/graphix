@@ -31,7 +31,7 @@ phases! {
     JitBuild, Clif, Link,
     Finalize, Freeze, Normalize, ExpandRefs, StaticBind, InstanceGraph,
     InstanceCheck, ModuleCheck, ModuleSignature, LambdaFinalize, EffectRefs, EffectRound,
-    InstanceCensus, ImageEnv, ImageDefs, ImageNodes,
+    InstanceCensus, TaskFork, TaskJoin, ImageEnv, ImageDefs, ImageNodes,
     ImageEncode, ImageHeap, ImageTrailer,
 }
 
