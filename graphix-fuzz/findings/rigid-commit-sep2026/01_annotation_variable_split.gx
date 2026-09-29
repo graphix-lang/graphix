@@ -1,0 +1,5 @@
+// expect: reject
+// A let annotation's two 'a were two cells (sep28h katana typeflip):
+// scoping re-minted each occurrence, so fn(string) -> bytes passed
+// for fn(x: 'a) -> 'a written inline and not through an alias.
+{ `Start(u64:0); -9223372036854775808; let f: fn(x: 'a) -> 'a = buffer::from_string; 100 }

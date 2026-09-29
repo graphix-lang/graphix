@@ -755,8 +755,15 @@ impl Type {
                     return t0.contains_int(flags, env, hist, &t1);
                 }
                 // t0 contains an arbitrary 'a only when it contains one
-                // of the cell's conjuncts ('a ⊆ C ⊆ t0).
-                if rigid && t1.is_rigid() {
+                // of the cell's conjuncts ('a ⊆ C ⊆ t0) or, a union, one
+                // member holds it; a commit cannot bind the cell, so it
+                // takes this verdict too.
+                if (rigid || commit) && t1.is_rigid() {
+                    if let Self::Set(s) = t0
+                        && Self::set_commit(s, flags, env, hist, t)?.unwrap_or(false)
+                    {
+                        return Ok(true);
+                    }
                     for c in t1.cell_constraints().iter() {
                         // A probe: a flagged check would alias live
                         // cells into the constraint store.

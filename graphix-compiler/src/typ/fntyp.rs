@@ -984,14 +984,14 @@ impl FnType {
     }
 
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
-        let vargs = self.vargs.as_ref().map(|t| t.scope_refs(scope));
-        let rtype = self.rtype.scope_refs(scope);
-        let args =
-            Arc::from_iter(self.args.iter().map(|a| FnArgType {
-                kind: a.kind.clone(),
-                typ: a.typ.scope_refs(scope),
-            }));
-        let throws = self.throws.scope_refs(scope);
+        let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let vargs = self.vargs.as_ref().map(|t| t.scope_refs_with(scope, &mut copies));
+        let rtype = self.rtype.scope_refs_with(scope, &mut copies);
+        let args = Arc::from_iter(self.args.iter().map(|a| FnArgType {
+            kind: a.kind.clone(),
+            typ: a.typ.scope_refs_with(scope, &mut copies),
+        }));
+        let throws = self.throws.scope_refs_with(scope, &mut copies);
         FnType {
             args,
             rtype,

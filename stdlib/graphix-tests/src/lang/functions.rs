@@ -2354,3 +2354,64 @@ use super::first;
 let both = (first([1]), first(["s"]));
 "#
 ; graphix_package_core::testing::FuseExpect::Jit);
+
+// A declared type variable is rigid in its definition's body: passing
+// it where a concrete type is wanted is refused at the definition, for
+// every 'r a caller could pick, not at the instance that picks one.
+run!(
+    rigid_argument_to_a_concrete_parameter,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain 'r")
+        && !format!("{e:#}").contains("in the instance of")),
+    "/test.gx" => r#"
+        let g = |a: i64| 3;
+        let f = |x: 'r| g(x);
+        let result = f("a")
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+// So is an annotation that would narrow it, and a concrete container.
+run!(
+    rigid_under_a_concrete_annotation,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("i64 does not contain 'r")),
+    "/test.gx" => r#"
+        let f = |x: 'r| { let y: i64 = x; y };
+        let result = 0
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    rigid_element_to_a_concrete_container,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("Array<i64> does not contain Array<'r")),
+    "/test.gx" => r#"
+        let g = |a: Array<i64>| 3;
+        let f = |x: Array<'r>| g(x);
+        let result = 0
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+// What holds 'r for every 'r still does: a union naming it, Any, or a
+// constraint the parameter accepts.
+run!(
+    rigid_where_every_choice_fits,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(3))),
+    "/test.gx" => r#"
+        let anything = |a: Any| 1;
+        let num = |a: Number| 1;
+        let f = |x: 'r| -> ['r, null] { let o: ['r, null] = x; o };
+        let g = |x: 'r| anything(x);
+        let h = 'r: Number |x: 'r| num(x);
+        let o = f("a");
+        let result = g("a") + h(2) + h(1.5)
+    "#
+);
+
+// A let annotation's same-named variables are one variable: the
+// annotation claims `fn(x: 'a) -> 'a`, which `fn(string) -> bytes` is not.
+run!(
+    annotation_variable_is_one_variable,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("does not contain fn(s: string) -> bytes")),
+    "/test.gx" => r#"
+        let f: fn(x: 'a) -> 'a = buffer::from_string;
+        let result = 0
+    "#
+; graphix_package_core::testing::FuseExpect::None);

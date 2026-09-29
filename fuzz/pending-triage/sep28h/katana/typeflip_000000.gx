@@ -1,0 +1,4 @@
+// typeflip alias-swap#2: N: type mismatch Tm__N does not contain fn(s: string) -> bytes
+// class: TYPEFLIP:alias-swap: N: type mismatch Tm__N does not contain fn(s: string) -> bytes
+// mutant: { `Start(u64:0); -9223372036854775808; type Tm__0 = fn(x: 'a) -> 'a; let f: Tm__0 = buffer::from_string; 100 }
+{ `Start(u64:0); -9223372036854775808; let f: fn(x: 'a) -> 'a = buffer::from_string; 100 }

@@ -2000,46 +2000,67 @@ impl Type {
     }
 
     pub fn scope_refs(&self, scope: &ModPath) -> Type {
-        self.scope_refs_int(scope).unwrap_or_else(|| self.clone())
+        let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.scope_refs_with(scope, &mut copies)
     }
 
-    /// `None` when no `Ref` or `TVar` is beneath.
-    fn scope_refs_int(&self, scope: &ModPath) -> Option<Type> {
-        ensure_sufficient(|| self.scope_refs_int_inner(scope))
+    /// [`Self::scope_refs`] over `copies`, shared with the other parts of
+    /// one type.
+    pub(crate) fn scope_refs_with(
+        &self,
+        scope: &ModPath,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> Type {
+        self.scope_refs_int(scope, copies).unwrap_or_else(|| self.clone())
     }
 
-    fn scope_refs_int_inner(&self, scope: &ModPath) -> Option<Type> {
+    /// `None` when no `Ref` or `TVar` is beneath. `copies` maps each
+    /// cell re-minted so far to its copy: every occurrence of one cell
+    /// is one copy, so what was one variable stays one.
+    fn scope_refs_int(
+        &self,
+        scope: &ModPath,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> Option<Type> {
+        ensure_sufficient(|| self.scope_refs_int_inner(scope, copies))
+    }
+
+    fn scope_refs_int_inner(
+        &self,
+        scope: &ModPath,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> Option<Type> {
         match self {
             Type::TVar(tv) => {
+                let addr = tv.cell_addr();
+                if let Some(copy) = copies.get(&addr) {
+                    return Some(Type::TVar(copy.clone()));
+                }
                 let (bound, cons) = {
                     let cell = tv.cell();
                     let cell = cell.read();
                     (cell.binding.clone(), cell.constraints.clone())
                 };
                 let fresh = tv.fresh_copy();
+                copies.insert(addr, fresh.clone());
                 if let Some(typ) = bound {
-                    fresh.bind(typ.scope_refs(scope))
+                    fresh.bind(typ.scope_refs_int(scope, copies).unwrap_or(typ))
                 }
                 // The re-minted cell keeps the conjunction (an annotated
-                // bound lives only there). A conjunct reaching this very
-                // cell is copied unscoped, or re-minting never ends.
-                let addr = tv.cell_addr();
+                // bound lives only there).
                 for c in cons.iter() {
-                    let c = if tvar::would_cycle_inner(addr, c) {
-                        c.clone()
-                    } else {
-                        c.scope_refs(scope)
-                    };
+                    let c = c.scope_refs_int(scope, copies).unwrap_or_else(|| c.clone());
                     fresh.add_cell_constraint(c);
                 }
                 Some(Type::TVar(fresh))
             }
             Type::Ref(tr) => {
-                let params =
-                    Arc::from_iter(tr.params.iter().map(|t| t.scope_refs(scope)));
+                let params = Arc::from_iter(tr.params.iter().map(|t| {
+                    t.scope_refs_int(scope, copies).unwrap_or_else(|| t.clone())
+                }));
                 Some(Type::Ref(tr.with_scope(scope.clone(), params)))
             }
-            t => t.cow_children(&mut |c| c.scope_refs_int(scope)),
+            t => t.cow_children(&mut |c| c.scope_refs_int(scope, copies)),
         }
     }
 
