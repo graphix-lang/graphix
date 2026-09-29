@@ -431,10 +431,12 @@ fn labels(
             }));
             unknown += 1;
         }
-        let required = ap.args.iter().position(|(l, _)| {
-            l.as_ref().is_some_and(|l| {
-                ft.args.iter().any(|a| a.label() == Some(l) && !a.has_default())
-            })
+        // an argument that binds outward takes a name the rest reads
+        let required = ap.args.iter().position(|(l, e)| {
+            !binds_outward(e)
+                && l.as_ref().is_some_and(|l| {
+                    ft.args.iter().any(|a| a.label() == Some(l) && !a.has_default())
+                })
         });
         if dropped < cap
             && let Some(j) = required

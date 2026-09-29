@@ -5185,6 +5185,15 @@ mod tests {
                 rep.rejects
             );
         }
+        // a labeled argument that binds a name the rest reads is kept
+        let binds = "{ let f = |#a: i64, x: i64| -> i64 a + x; \
+                     let r = f(#a: let n = 1, 3); n + r }";
+        let rep = typemorph_subject(binds, per, TM_CAP).await.unwrap();
+        assert!(
+            !rep.rejects.iter().any(|p| p.id.starts_with("label-missing#")),
+            "{:?}",
+            rep.rejects
+        );
         // a call instantiates its callee whatever the binding: no site
         let calls = "{ let f = |x| x + x; let a = f(1); let b = f(1.5); (a, b) }";
         let rep = typemorph_subject(calls, per, TM_CAP).await.unwrap();
