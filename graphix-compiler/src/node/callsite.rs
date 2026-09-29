@@ -1275,7 +1275,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                         ctx.bind_to_lambda.insert(id, fv);
                         param_binds.push(id);
                     } else if let Some(tm) = ctx.env.trait_methods.get(&r.id).copied() {
-                        ctx.env.trait_methods.insert_cow(id, tm);
+                        ctx.env.trait_methods.insert(id, tm);
                         trait_param_binds.push(id);
                     }
                 }
@@ -1296,7 +1296,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ctx.bind_to_lambda.remove(&id);
         }
         for id in trait_param_binds.drain(..) {
-            ctx.env.trait_methods.remove_cow(&id);
+            ctx.env.trait_methods.remove(&id);
         }
     }
 

@@ -809,7 +809,7 @@ impl<X: GXExt> GX<X> {
                     self.ctx.env.unbind_scope_subtree(&path);
                     // a package this binary was not built with is still
                     // the root `package::` names
-                    self.ctx.env.package_roots.insert_cow(name.clone());
+                    self.ctx.env.package_roots.insert(name.clone());
                     let overrides = resolvers_for_call.iter().find_map(|r| r.overrides());
                     let root = RootFile::load(file, overrides.as_ref()).await?;
                     let ori = root.ori.clone();

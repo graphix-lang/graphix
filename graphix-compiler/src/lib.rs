@@ -27,6 +27,7 @@ pub(crate) mod profile;
 pub mod shared_map;
 pub(crate) mod stack;
 pub use stack::set_stack_budget;
+pub mod tracked;
 pub mod tval;
 pub mod typ;
 
@@ -79,6 +80,7 @@ use std::{
     time::Duration,
 };
 use tokio::{task, time::Instant};
+use tracked::{TrackedMap, TrackedSet};
 use triomphe::Arc;
 use uuid::Uuid;
 
@@ -1370,29 +1372,29 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     attributes: AHashMap<&'static str, (AttributeCheckFn<R, E>, AttributeTargetFn<R, E>)>,
     // Sandboxing.
     builtins_allowed: bool,
-    tags: AHashSet<ArcStr>,
+    tags: TrackedSet<ArcStr>,
     /// The language environment: typedefs, binds, lambdas.
     pub env: Env,
     /// LambdaDefs by LambdaId.
-    pub lambda_defs: IntMap<LambdaId, Value>,
+    pub lambda_defs: TrackedMap<LambdaId, Value>,
     /// `BindId → LambdaDef Value` for every lambda binding, filled in
     /// `typecheck0` so `typecheck1`'s static resolution sees it
     /// complete. Persistent across batches (`Bind::delete` removes
     /// its ids); the `batch_connect_targets` guard excludes `<-` targets
     /// at read time.
-    pub bind_to_lambda: IntMap<BindId, Value>,
+    pub bind_to_lambda: TrackedMap<BindId, Value>,
     /// The `<-` targets of the current compile batch, recorded by
     /// [`node::Connect::compile`]; a `<-` target rebinds at runtime and
     /// must not be statically resolved.
-    pub batch_connect_targets: IntSet<BindId>,
+    pub batch_connect_targets: TrackedSet<BindId>,
     /// Every `<-` target for the program's lifetime (`batch_connect_targets`
     /// is per batch): `Bind::update` must not reseed a woken target that
     /// holds a value. `Bind::delete` removes its ids.
-    pub connect_targets: IntSet<BindId>,
+    pub connect_targets: TrackedSet<BindId>,
     /// Builtin metadata for `let foo = |...| 'builtin_name` bindings.
     /// Keyed by `(scope, name)` because a sig and its impl share the
     /// name but have distinct `BindId`s.
-    pub builtin_bindings: AHashMap<(ModPath, CompactString), BuiltinBindInfo>,
+    pub builtin_bindings: TrackedMap<(ModPath, CompactString), BuiltinBindInfo>,
     /// `LambdaId`s whose def-time body typecheck is in progress: a
     /// self-call inside such a body unifies against the def's own
     /// ftype cells (monomorphic recursion), not a freshening.
@@ -1408,7 +1410,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
-    pub fn_forward_resolutions: IntMap<BindId, LambdaId>,
+    pub fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
     /// Deferred terminal settles, one frame per resolution scope. A
     /// call site pushes its resolved signature into the current frame;
     /// statement boundaries drain it, so a settle runs only after every
@@ -1591,18 +1593,18 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 builtins: AHashMap::default(),
                 attributes: AHashMap::default(),
                 builtins_allowed: true,
-                tags: AHashSet::default(),
+                tags: TrackedSet::default(),
                 env: Env::default(),
-                lambda_defs: IntMap::default(),
-                bind_to_lambda: IntMap::default(),
-                batch_connect_targets: nohash::IntSet::default(),
-                connect_targets: nohash::IntSet::default(),
-                builtin_bindings: ahash::AHashMap::default(),
+                lambda_defs: TrackedMap::default(),
+                bind_to_lambda: TrackedMap::default(),
+                batch_connect_targets: TrackedSet::default(),
+                connect_targets: TrackedSet::default(),
+                builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
                 def_gate_params: nohash::IntSet::default(),
                 def_gate_depth: 0,
                 resolving_lambdas: Mutex::new(IntMap::default()),
-                fn_forward_resolutions: IntMap::default(),
+                fn_forward_resolutions: TrackedMap::default(),
                 pending_settles: vec![Vec::new()],
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),

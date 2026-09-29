@@ -8,6 +8,7 @@ use crate::{
     },
     is_do_block, mod_root,
     profile::{self, Phase},
+    tracked::{TrackedMap, TrackedSet},
     typ::{AbstractId, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef},
 };
 use ahash::{AHashMap, AHashSet};
@@ -356,8 +357,8 @@ fn retain_set<K: Ord + Clone>(s: &Set<K>, mut keep: impl FnMut(&K) -> bool) -> S
 
 #[derive(Clone, Debug, Default)]
 pub struct Env {
-    pub by_id: Map<BindId, Bind>,
-    pub byref_chain: Map<BindId, BindId>,
+    pub by_id: TrackedMap<BindId, Bind>,
+    pub byref_chain: TrackedMap<BindId, BindId>,
     pub binds: Map<ModPath, Map<CompactString, BindId>>,
     pub modules: Set<ModPath>,
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
@@ -365,32 +366,79 @@ pub struct Env {
     /// scope path. A global registry, not lexical state: it survives
     /// `restore_lexical_env`, so deferred resolution can consult the
     /// defining module's table.
-    pub names: Map<ModPath, ScopeNames>,
+    pub names: TrackedMap<ModPath, ScopeNames>,
     /// Every Graphix-minted abstract type's representation, global;
     /// visibility is decided at lookup.
-    pub abstract_reps: Map<AbstractId, Arc<AbstractRep>>,
+    pub abstract_reps: TrackedMap<AbstractId, Arc<AbstractRep>>,
     /// Trait names by declaring scope; lexical, like `typedefs`.
     pub traits: Map<ModPath, Map<CompactString, TraitId>>,
     /// Every trait's definition by identity; global.
-    pub trait_defs: Map<TraitId, Arc<TraitDef>>,
+    pub trait_defs: TrackedMap<TraitId, Arc<TraitDef>>,
     /// Dispatcher binding → the trait method it names; global.
-    pub trait_methods: Map<BindId, TraitMethodRef>,
+    pub trait_methods: TrackedMap<BindId, TraitMethodRef>,
     /// Every trait's implementations; global (scope governs only the
     /// trait's name).
-    pub impls: Map<TraitId, Arc<Vec<Arc<ImplDef>>>>,
+    pub impls: TrackedMap<TraitId, Arc<Vec<Arc<ImplDef>>>>,
     /// Generalized bindings (let-bound lambdas, interface `val`s, trait
     /// dispatchers) whose signature a value occurrence instantiates
     /// afresh. A lambda parameter is never here. Global.
-    pub poly_binds: Set<BindId>,
+    pub poly_binds: TrackedSet<BindId>,
     /// Registered package names, usable as module path roots from
     /// anywhere. Global.
-    pub package_roots: Set<ArcStr>,
+    pub package_roots: TrackedSet<ArcStr>,
     /// Whether compiles serve an editor, and the IDE side-channels
     /// ([`Ide`]) a check records into.
     pub ide: IdeMode,
 }
 
 impl Env {
+    /// A copy for a compile task: the global registries record what the
+    /// task writes, for [`Self::join`]; the lexical maps are the task's
+    /// own, as `with_restored` leaves them.
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            by_id: self.by_id.fork(),
+            byref_chain: self.byref_chain.fork(),
+            names: self.names.fork(),
+            abstract_reps: self.abstract_reps.fork(),
+            trait_defs: self.trait_defs.fork(),
+            trait_methods: self.trait_methods.fork(),
+            impls: self.impls.fork(),
+            poly_binds: self.poly_binds.fork(),
+            package_roots: self.package_roots.fork(),
+            ..self.clone()
+        }
+    }
+
+    /// Write back what the task `fork` wrote to the global registries.
+    pub(crate) fn join(&mut self, fork: Self) {
+        let Self {
+            by_id,
+            byref_chain,
+            binds: _,
+            modules: _,
+            typedefs: _,
+            names,
+            abstract_reps,
+            traits: _,
+            trait_defs,
+            trait_methods,
+            impls,
+            poly_binds,
+            package_roots,
+            ide: _,
+        } = fork;
+        self.by_id.join(by_id);
+        self.byref_chain.join(byref_chain);
+        self.names.join(names);
+        self.abstract_reps.join(abstract_reps);
+        self.trait_defs.join(trait_defs);
+        self.trait_methods.join(trait_methods);
+        self.impls.join(impls);
+        self.poly_binds.join(poly_binds);
+        self.package_roots.join(package_roots);
+    }
+
     /// Restore the lexical environment to the snapshot `other`; the
     /// global registries and IDE sinks stay as they are on `self`.
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
@@ -862,9 +910,8 @@ impl Env {
             );
             let dispatcher = bind.id;
             let index = defs.len();
-            self.trait_methods
-                .insert_cow(dispatcher, TraitMethodRef { trait_id: id, index });
-            self.poly_binds.insert_cow(dispatcher);
+            self.trait_methods.insert(dispatcher, TraitMethodRef { trait_id: id, index });
+            self.poly_binds.insert(dispatcher);
             defs.push(TraitMethodDef {
                 name: mname,
                 typ,
@@ -890,7 +937,7 @@ impl Env {
             .insert_cow(name.as_str().into(), id);
         // A re-declaration contributes only its default bodies.
         if self.trait_defs.get(&id).is_none() {
-            self.trait_defs.insert_cow(id, def.clone());
+            self.trait_defs.insert(id, def.clone());
         }
         Ok(def)
     }
@@ -914,7 +961,7 @@ impl Env {
                 TraitMethodDef { default, ..m.clone() }
             }));
         let def = Arc::new(TraitDef { methods, ..(**cur).clone() });
-        self.trait_defs.insert_cow(id, def.clone());
+        self.trait_defs.insert(id, def.clone());
         def
     }
 
@@ -926,13 +973,13 @@ impl Env {
             }
         }
         for m in def.methods.iter() {
-            self.trait_methods.remove_cow(&m.dispatcher);
-            self.poly_binds.remove_cow(&m.dispatcher);
+            self.trait_methods.remove(&m.dispatcher);
+            self.poly_binds.remove(&m.dispatcher);
             self.unbind_variable(m.dispatcher);
         }
         self.modules.remove_cow(&def.path);
         if self.trait_defs.get(&def.id).is_some_and(|d| d.same_definition(def)) {
-            self.trait_defs.remove_cow(&def.id);
+            self.trait_defs.remove(&def.id);
         }
     }
 
@@ -969,7 +1016,7 @@ impl Env {
         }
         let trait_id = im.trait_id;
         list.push(im);
-        self.impls.insert_cow(trait_id, Arc::new(list));
+        self.impls.insert(trait_id, Arc::new(list));
         Ok(None)
     }
 
@@ -978,9 +1025,9 @@ impl Env {
         let list: Vec<Arc<ImplDef>> =
             list.iter().filter(|o| !o.same_definition(im)).cloned().collect();
         if list.is_empty() {
-            self.impls.remove_cow(&im.trait_id);
+            self.impls.remove(&im.trait_id);
         } else {
-            self.impls.insert_cow(im.trait_id, Arc::new(list));
+            self.impls.insert(im.trait_id, Arc::new(list));
         }
     }
 
@@ -1227,7 +1274,7 @@ impl Env {
                 bail!("`{key}` is already defined in this scope; use `as` to rename")
             }
         }
-        let sn = self.names.get_or_default_cow(scope.clone());
+        let sn = self.names.get_or_default(scope.clone());
         sn.imports.insert_cow(key.into(), entry);
         Ok(())
     }
@@ -1235,7 +1282,7 @@ impl Env {
     /// Register a glob (`use m::*`) source module at `scope`.
     /// Idempotent.
     pub fn import_glob(&mut self, scope: &ModPath, src: ModPath) {
-        let sn = self.names.get_or_default_cow(scope.clone());
+        let sn = self.names.get_or_default(scope.clone());
         let globs = Arc::make_mut(&mut sn.globs);
         if !globs.contains(&src) {
             globs.push(src)
@@ -1265,7 +1312,7 @@ impl Env {
 
     /// Drop every import table at `scope` or any descendant.
     pub fn clear_names_under(&mut self, scope: &ModPath) {
-        self.names = retain(&self.names, |s, _| !scope_is_under(s, scope));
+        self.names.retain(|s, _| !scope_is_under(s, scope));
     }
 
     pub fn deftype(
@@ -1351,7 +1398,7 @@ impl Env {
                 rep: rep.clone(),
                 public,
             };
-            self.abstract_reps.insert_cow(*id, Arc::new(r));
+            self.abstract_reps.insert(*id, Arc::new(r));
         }
         let defs = self.typedefs.get_or_default_cow(scope.clone());
         defs.insert_cow(
@@ -1418,7 +1465,7 @@ impl Env {
             && !r.public
         {
             let r = AbstractRep { public: true, ..(**r).clone() };
-            self.abstract_reps.insert_cow(id, Arc::new(r));
+            self.abstract_reps.insert(id, Arc::new(r));
         }
     }
 
@@ -1428,7 +1475,7 @@ impl Env {
     }
 
     pub fn undeftype(&mut self, scope: &ModPath, name: &str) {
-        self.abstract_reps.remove_cow(&AbstractId::of(scope, name));
+        self.abstract_reps.remove(&AbstractId::of(scope, name));
         if let Some(defs) = self.typedefs.get_mut_cow(scope) {
             defs.remove_cow(&CompactString::from(name));
             if defs.len() == 0 {
@@ -1474,18 +1521,18 @@ impl Env {
             .filter(|(_, b)| under(&b.scope))
             .map(|(id, _)| *id)
             .collect();
-        self.by_id = self.by_id.remove_many(binds.iter().copied());
-        self.trait_methods = self.trait_methods.remove_many(binds.iter().copied());
-        self.poly_binds = self.poly_binds.remove_many(binds.iter().copied());
-        self.byref_chain = self.byref_chain.remove_many(binds.iter().copied());
-        self.abstract_reps = retain(&self.abstract_reps, |_, r| !under(&r.scope));
+        self.by_id.remove_many(binds.iter().copied());
+        self.trait_methods.remove_many(binds.iter().copied());
+        self.poly_binds.remove_many(binds.iter().copied());
+        self.byref_chain.remove_many(binds.iter().copied());
+        self.abstract_reps.retain(|_, r| !under(&r.scope));
         let traits: LPooled<Vec<TraitId>> = (&self.trait_defs)
             .into_iter()
             .filter(|(_, d)| under(&d.scope))
             .map(|(id, _)| *id)
             .collect();
-        self.trait_defs = self.trait_defs.remove_many(traits.iter().copied());
-        self.impls = self.impls.remove_many(traits.iter().copied());
+        self.trait_defs.remove_many(traits.iter().copied());
+        self.impls.remove_many(traits.iter().copied());
         let impls: LPooled<Vec<Arc<ImplDef>>> = (&self.impls)
             .into_iter()
             .flat_map(|(_, l)| l.iter())
@@ -1523,15 +1570,15 @@ impl Env {
             facet: None,
         };
         self.with_ide(|ide| ide.binds.push(bind.clone()));
-        self.by_id.insert_cow(id, bind);
-        self.by_id.get_mut_cow(&id).expect("just inserted")
+        self.by_id.insert(id, bind);
+        self.by_id.get_mut(&id).expect("just inserted")
     }
 
     /// Give the binding `id` the type `typ`. Every reference compiled
     /// afterwards reads it; the IDE mirror gets the binding again, and
     /// its latest entry wins.
     pub fn retype(&mut self, id: BindId, typ: Type) {
-        if let Some(b) = self.by_id.get_mut_cow(&id) {
+        if let Some(b) = self.by_id.get_mut(&id) {
             b.typ = typ;
             let b = b.clone();
             self.with_ide(|ide| ide.binds.push(b));
@@ -1541,7 +1588,7 @@ impl Env {
     /// Record that `id` is bound by a select arm's pattern, over a
     /// scrutinee whose fires come from `inputs`.
     pub fn mark_pattern_bind(&mut self, id: BindId, inputs: Arc<[BindId]>) {
-        if let Some(b) = self.by_id.get_mut_cow(&id) {
+        if let Some(b) = self.by_id.get_mut(&id) {
             b.facet = Some(Facet::Pattern(inputs));
         }
     }
@@ -1563,7 +1610,7 @@ impl Env {
     /// Record that `id` is one of a destructuring `let`'s siblings,
     /// represented by `rep` for wake catch-up.
     pub fn mark_facet(&mut self, id: BindId, rep: BindId) {
-        if let Some(b) = self.by_id.get_mut_cow(&id) {
+        if let Some(b) = self.by_id.get_mut(&id) {
             b.facet = Some(Facet::Let(rep));
         }
     }
@@ -1578,7 +1625,7 @@ impl Env {
     }
 
     pub fn unbind_variable(&mut self, id: BindId) {
-        if let Some(b) = self.by_id.remove_cow(&id) {
+        if let Some(b) = self.by_id.remove(&id) {
             if let Some(binds) = self.binds.get_mut_cow(&b.scope) {
                 if binds.get(&b.name) == Some(&id) {
                     binds.remove_cow(&b.name);
@@ -1625,7 +1672,7 @@ mod test {
         assert_eq!(env.package_root("/#do1"), "/#do1");
         assert_eq!(env.package_root("/#do1/#block3/test"), "/#do1");
         assert_eq!(env.package_root("/#fn7/m"), "/");
-        env.package_roots.insert_cow(ArcStr::from("pkg"));
+        env.package_roots.insert(ArcStr::from("pkg"));
         assert_eq!(env.package_root("/pkg/#do1/sub"), "/pkg");
     }
 
@@ -1733,7 +1780,7 @@ mod test {
         let body = ModPath::from(["pkg", "#fn7"]);
         let local = at(&mut env, &body, "y");
         env.binds.remove_cow(&body);
-        env.poly_binds.insert_cow(local);
+        env.poly_binds.insert(local);
         let other = at(&mut env, &ModPath::from(["other"]), "z");
         env.unbind_scope_subtree(&pkg);
         for id in [shadowed, live, local] {
@@ -1789,7 +1836,7 @@ mod test {
         assert!(env.super_anchor("/a", 2).is_err());
         assert_eq!(env.super_anchor("/#do1/foo", 1).unwrap(), "/#do1");
         assert!(env.super_anchor("/#do1", 1).is_err());
-        env.package_roots.insert_cow(ArcStr::from("pkg"));
+        env.package_roots.insert(ArcStr::from("pkg"));
         assert!(env.super_anchor("/pkg", 1).is_err());
         assert_eq!(env.super_anchor("/pkg/sub", 1).unwrap(), "/pkg");
     }

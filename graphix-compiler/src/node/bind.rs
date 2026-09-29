@@ -231,7 +231,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // self-references keep the definition's cells.
         if lambda_value(&node).is_some() || forwards(&ctx.env, b, &node) {
             pattern.ids(&mut |id| {
-                ctx.env.poly_binds.insert_cow(id);
+                ctx.env.poly_binds.insert(id);
             });
         }
         // Keyed by (scope, name), not BindId: sig and impl get different
@@ -1124,7 +1124,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             None => {
                 let child = compile(ctx, flags, unparen(expr).clone(), scope, top_id)?;
                 if let Some(c) = (&*child as &dyn Any).downcast_ref::<Ref>() {
-                    ctx.env.byref_chain.insert_cow(id, c.id);
+                    ctx.env.byref_chain.insert(id, c.id);
                 }
                 let typ = Type::ByRef(Arc::new(child.typ().clone()));
                 (Referent::Channel(child), typ)
@@ -1254,7 +1254,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        ctx.env.byref_chain.remove_cow(&self.id);
+        ctx.env.byref_chain.remove(&self.id);
         self.unregister(ctx);
         self.referent.each(&mut |n| n.delete(ctx));
     }

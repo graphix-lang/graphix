@@ -22,16 +22,16 @@ use crate::{
     image,
     node::lambda::LambdaDef,
     profile::{self, Phase},
+    tracked::{TrackedMap, TrackedSet},
     typ::Type,
 };
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut, Bytes};
 use compact_str::CompactString;
 use log::{info, warn};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
-use nohash::{IntMap, IntSet};
 
 const MAGIC: &[u8; 4] = b"GXIM";
 
@@ -95,8 +95,10 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
     fn collect(ctx: &'a ExecCtx<R, E>) -> Result<Self, PackError> {
         let mut defs: Vec<&LambdaDef<R, E>> = ctx
             .lambda_defs
-            .values()
-            .map(|v| v.downcast_ref::<LambdaDef<R, E>>().ok_or(PackError::InvalidFormat))
+            .iter()
+            .map(|(_, v)| {
+                v.downcast_ref::<LambdaDef<R, E>>().ok_or(PackError::InvalidFormat)
+            })
             .collect::<Result<_, _>>()?;
         defs.sort_by_key(|d| d.id);
         let mut bind_to_lambda: Vec<(BindId, LambdaId)> = ctx
@@ -399,13 +401,13 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
 /// so a failed read puts it back.
 struct Saved {
     env: Env,
-    lambda_defs: IntMap<LambdaId, Value>,
-    bind_to_lambda: IntMap<BindId, Value>,
-    builtin_bindings: AHashMap<(ModPath, CompactString), BuiltinBindInfo>,
-    fn_forward_resolutions: IntMap<BindId, LambdaId>,
-    connect_targets: IntSet<BindId>,
-    batch_connect_targets: IntSet<BindId>,
-    tags: AHashSet<ArcStr>,
+    lambda_defs: TrackedMap<LambdaId, Value>,
+    bind_to_lambda: TrackedMap<BindId, Value>,
+    builtin_bindings: TrackedMap<(ModPath, CompactString), BuiltinBindInfo>,
+    fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
+    connect_targets: TrackedSet<BindId>,
+    batch_connect_targets: TrackedSet<BindId>,
+    tags: TrackedSet<ArcStr>,
 }
 
 impl Saved {

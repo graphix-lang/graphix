@@ -1070,7 +1070,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         let at = AtLevel::enter(Level { depth: def.level, owner: Some(def.id) });
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
         let faux_id = BindId::new();
-        ctx.env.by_id.insert_cow(
+        ctx.env.by_id.insert(
             faux_id,
             Bind {
                 doc: None,
@@ -1124,7 +1124,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         }
         ctx.pending_settles.last_mut().expect("root settle frame").extend(frame);
         ctx.rec_defs.remove(&self.def);
-        ctx.env.by_id.remove_cow(&self.faux_id);
+        ctx.env.by_id.remove(&self.faux_id);
         self.rigid.clear();
     }
 }

@@ -428,7 +428,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 root_mods.insert(::arcstr::literal!(#package_name));
                 ctx.env
                     .package_roots
-                    .insert_cow(::arcstr::literal!(#package_name));
+                    .insert(::arcstr::literal!(#package_name));
                 Ok(())
             }
 

@@ -230,7 +230,7 @@ fn bind_sig_item(
             }
             if poly {
                 let id = bind.id;
-                env.poly_binds.insert_cow(id);
+                env.poly_binds.insert(id);
             }
         }
         SigKind::TypeDef(td) => {
