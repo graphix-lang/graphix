@@ -1,0 +1,4 @@
+// typeflip alias-swap#2: N: type mismatch Tm__N does not contain fn(x: '_N: iN) -> '_N: List<'a: [iN, fn(a: Array<'a: unbound>, f: fn(x: 'a: unbound) -> 'b: unbound throws 'e: unbound) -> Array<'b: unbound> throws 'e: unbound]>
+// class: TYPEFLIP:alias-swap: N: type mismatch Tm__N does not contain fn(x: '_N: iN) -> '_N: List<'a: [iN, fn(a: Array<'a: unbound>, f: fn(x: 'a: unbound) -> 'b: unbound throws 'e: unbound) -> Array<'b: unbound> throws 'e: unbound]>
+// mutant: { let f = |a| { let g = -1; array::map }; 2; type Tm__0 = fn(x: 'a) -> 'a; let f: Tm__0 = |x| list::from_array([let temp = let u = select x { 0 => 0, _ => f(x - 1) }, x + 1]); -9223372036854775808 }
+{ let f = |a| { let g = -1; array::map }; 2; let f: fn(x: 'a) -> 'a = |x| list::from_array([let temp = let u = select x { 0 => 0, _ => f(x - 1) }, x + 1]); -9223372036854775808 }
