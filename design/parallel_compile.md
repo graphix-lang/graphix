@@ -1,9 +1,13 @@
 # Parallel and incremental compilation
 
-Status: PROPOSAL on branch `parallel-compile` (2026-09-27), not built.
-It enters the index when a part of it is built.
-Pins: `lang::functions::same_named_tvar_in_callback_arg`; the
-`GRAPHIX_ELAB_AUDIT` probe (`node/lambda.rs::elab_audit`).
+Status: partly BUILT on branch `parallel-compile` (2026-09-29): parallel
+code generation, the compile context split from the runtime, and
+statement elaboration in parallel compile tasks. The phases, per-instance
+tasks and the caches are the plan.
+Pins: `lang::functions::same_named_tvar_in_callback_arg`,
+`lang::functions::monomorphic_flat_map_twice`; the `GRAPHIX_ELAB_AUDIT`
+probe (`node/lambda.rs::elab_audit`) and `GRAPHIX_TASK_AUDIT`
+(`typ/tvar.rs::written`); `findings/omitted-default-check-sep2026/`.
 
 ## Goal
 
@@ -48,8 +52,8 @@ The app's check is one call site over checked definitions. The
 package root has no elaboration of its own, so its check is its
 build: about 100 ms wall parsing 5.4k lines (0.8 MB/s, the two
 1.3k-line files ~60 ms each) and 53 ms of definition checks. The
-shell's `--check` and the language server do not set `CFlag::CheckOnly`
-yet: they still elaborate.
+shell's `--check` and the language server run the check alone
+(`CFlag::CheckOnly`).
 
 ## Code generation (BUILT)
 
@@ -88,6 +92,71 @@ against b0f86a98:
 On one core the gain is the trap stubs and per-region finalizes that
 are gone. On four the link is 85 ms where the backend was 297 ms. What
 remains serial in fusion is discovery and emission, about 100 ms.
+
+## Compile tasks (BUILT)
+
+Compiling and type checking take a `CompileCtx`: the registry, the
+program's state (the `Env` and the registries, tracked persistent maps)
+and the compile's scratch. The runtime (`rt`, `libstate`, `control`,
+`fusion`) is the rest of `ExecCtx`, which derefs to the `CompileCtx`.
+What compiling would ask of the runtime it records and the runtime
+replays at install (CLAUDE.md, "Compiling never reaches the runtime").
+
+A `CompileCtx` forks and joins (`CompileCtx::fork`/`join`): a fork shares
+every tracked map and records what it touches, and a join takes the
+fork's writes. Every static bind elaborates its instance in a fork
+(`CallSite::resolve_static`). A body's statements elaborate in forks of
+the body's state before any runs, one per statement, on rayon
+(`node::typecheck1_statements`); they join in evaluation order, and the
+first error in order is the body's.
+
+**Ownership.** Each parallel statement is a compile task with a fresh id
+(`tvar::new_task`, entered by `InTask`); a nested fork runs in its
+parent's task. A type cell and a type variable record the task that
+created them, and no task writes a cell an earlier task created: the
+check's cells, or a sibling's, which a concurrent task may be reading.
+What keeps it so:
+
+- a merge keeps the older task's cell and links the newer one to it (a
+  rigid cell survives before age), never welds two earlier-task cells,
+  and ORs no flags into an earlier cell (`TVar::merge_into`);
+- a name alias never renames an earlier task's variable: the newer one
+  takes the name, or, already named, the two merge as cells;
+- a settle skips an earlier task's cell (`TVar::settle_witness`,
+  `settle_bottom`): what the check left open, it decided open;
+- a raise already covered by the catch's type rebinds nothing
+  (`error::join_raised`);
+- a builtin's per-site check rebuilds over a private copy of its
+  signature (`lambda::build_builtin_check`), never reopening the
+  definition's gate on shared cells.
+
+`GRAPHIX_TASK_AUDIT=1` prints a backtrace at every write that breaks the
+rule (`tvar::written`); the gate runs with none.
+
+**The check decides every cell.** Elaboration may not settle what the
+check created, so every settle that decides a type runs in the check's
+drain (`PendingSettle`): a call site's terminal settle, over its
+signature's cells and the cells their bindings hold; an operator's
+operand settle and the arithmetic rule judged after it; a `let` over ⊥;
+an omitted labeled default, compiled and checked at its site for every
+definition the callee's `lambda_ids` names
+(`CallSite::check_omitted_defaults`; exempt only where a definition is
+not known at the check). `rand::rand(#clock: null) + 1` passed `--check`
+and failed the build before the last.
+
+Admin app, quick build, `milestone_timing` medians, against 02bf95a1:
+
+| | before | after |
+|---|---|---|
+| four P-cores, fusion off | 312 ms | 196 ms |
+| four P-cores, fusion on | 505 ms | 381 ms |
+| one P-core, fusion on | 697 ms | 750 ms |
+| GUI suite | 2.77 s | 2.82 s |
+
+One statement holds admin's elaboration (the `app(..)` call), so the gain
+is the other statements' and fusion's; the cost on one core is the
+forks and the omitted defaults compiled at the check as well as at the
+bind.
 
 ## Elaboration's parallelism (measured)
 
@@ -149,19 +218,15 @@ registries (impls, trait definitions) are filled in phase 1, before any
 body runs. Ids come from global counters, so anything that iterates by id
 must not change output. `detcheck` is the test for that.
 
-## What the compiler needs instead of ExecCtx
+## Units of work
 
-- `Env`: persistent, cloned per unit, merged by union.
-- A frozen registry of builtins, attributes and tags, shared behind an
-  `Arc`.
-- Per-unit scratch: `bind_to_lambda`, `rec_defs`, `def_gate_*`,
-  `resolving_lambdas`, `pending_settles`, `pending_imports`, `attr_*`,
-  `def_assertions`, `batch_connect_targets`. `resolving_lambdas` must be
-  per unit. If shared, a thread reaching a definition that another thread
-  is resolving would read it as recursion.
-- Runtime registrations made at compile time (`rt.ref_var` in about 15
-  builtin inits and in the bind, module and error compiles; the TUI's
-  `libstate` read) are recorded and replayed at install.
+A unit (a module body, a statement, an instance) compiles in a fork of
+the `CompileCtx`: the `Env` and the registries are tracked maps a join
+merges, and the scratch (`bind_to_lambda`, `rec_defs`, `def_gate_*`,
+`resolving_lambdas`, `pending_settles`, `pending_imports`, `attr_*`,
+`def_assertions`, `batch_connect_targets`) is the fork's own.
+`resolving_lambdas` must stay per unit: shared, a thread reaching a
+definition another thread is resolving would read it as recursion.
 
 ## Open design items
 
@@ -210,11 +275,13 @@ audit is clean it becomes a finding that every fuzz lane records.
 ## Steps
 
 1. Make the audit clean: the builtin constraint; record and substitute
-   for the printer and builtins.
-2. The audit as a fuzz finding, soaked.
-3. Split ExecCtx into the compile context and the runtime, still on one
-   thread, with the gate green.
-4. The phases, still on one thread, with `detcheck`.
-5. Threads: bodies, then elaboration. Code generation is BUILT
-   (above).
+   for the printer and builtins. OPEN (`Concrete` is built).
+2. The audits as fuzz findings, soaked. OPEN.
+3. Split ExecCtx into the compile context and the runtime. BUILT.
+4. Threads. Code generation and statement elaboration are BUILT
+   (above). Next: an instance's static binds as tasks of their own, the
+   same ownership rule one level down; then module bodies as units.
+5. The instance cache: an instance with a closed signature and known
+   callbacks is a function of (definition, signature, callbacks); about a
+   quarter of admin's instances repeat.
 6. Per-unit and per-instance caches in the image.

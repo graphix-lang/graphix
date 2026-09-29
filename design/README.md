@@ -70,4 +70,5 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
 | `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, routes, twins, HDD, typemorph |
 | `must_reject.md` | Must-reject mutation from the base's types (rigid consumers, seven families, verdicts); labeled/optional argument generation for every lane |
+| `parallel_compile.md` | the compile context and its forks; compile tasks own the cells they create and the check decides every cell; parallel code generation and statement elaboration; the plan for instances and module bodies |
 | `program_image.md` | proposal: cached compilation in three steps (gate facts, kernels, the program image); block-relocated IDs, the lexical edit log, first-dispatch materialization |
