@@ -176,6 +176,17 @@ The deepest chain is 9 instances; the widest instance builds 332. Of the
 3343 instances, 1627 are distinct by definition, closed signature and
 callback sources; the repeats are about a quarter of build and check.
 
+With statements in compile tasks (one rayon thread vs four, admin app,
+fusion off: ~400 ms vs ~195 ms), the chain that bounds it is
+`local::local(..)` (177 ms, one statement of the app) over
+`panels::panels(..)` (90 ms, one statement of `local`). Inside the
+panels instance its 143 statements elaborate as tasks, 68 ms of work
+with the longest 6.6 ms; the ~22 ms before them is the instance's own
+graph build and check, which run statement by statement. Instance build
+and check are 142 of elaboration's 212 ms, so they bound it, not the
+lack of tasks: forking an expression's sibling calls into tasks as well
+(`f(g(..), h(..))`, literals, select arms) measured no change.
+
 ## The rule that makes it possible
 
 BUILT on the branch: the gate keeps what the body bound, and the check's
@@ -279,8 +290,8 @@ audit is clean it becomes a finding that every fuzz lane records.
 2. The audits as fuzz findings, soaked. OPEN.
 3. Split ExecCtx into the compile context and the runtime. BUILT.
 4. Threads. Code generation and statement elaboration are BUILT
-   (above). Next: an instance's static binds as tasks of their own, the
-   same ownership rule one level down; then module bodies as units.
+   (above). Sibling calls as tasks measured no gain (above). What
+   bounds elaboration is each instance's serial build and check.
 5. The instance cache: an instance with a closed signature and known
    callbacks is a function of (definition, signature, callbacks); about a
    quarter of admin's instances repeat.
