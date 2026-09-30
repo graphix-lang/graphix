@@ -35,11 +35,12 @@ use crate::{
     profile::{self, Phase},
     typ::{FnType, Type},
 };
+use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
-use std::{collections::BTreeMap, sync::LazyLock};
+use std::{cell::RefCell, collections::BTreeMap, sync::LazyLock};
 use triomphe::Arc;
 
 #[derive(Debug, Clone)]
@@ -142,6 +143,155 @@ impl FusionStats {
 
     pub(crate) fn source_fused(&self, spec: &Expr) -> bool {
         self.fused_sources.iter().any(|source| source.matches(spec))
+    }
+}
+
+/// A fusion pass's memo of the env-dependent type work its regions
+/// repeat: expansions and freezes. Installed for one pass by
+/// [`TypeMemo::scope`]; outside a pass the work is done every time.
+#[derive(Default)]
+pub(crate) struct TypeMemo {
+    expanded: Table<Type>,
+    frozen: Table<Result<Type, kernel_abi::FreezeError>>,
+}
+
+/// Results by the allocations a type is made of (see [`identity`]),
+/// and, for types with no open cell, by content: equal content is the
+/// same type once the definitions its named types resolve to agree,
+/// which its equality leaves out. Resolution cells fill during a pass,
+/// so only a result computed with every named type already resolved
+/// is kept.
+struct Table<V> {
+    by_id: AHashMap<Identity, (Type, V)>,
+    by_content: AHashMap<(Type, u64), V>,
+}
+
+impl<V> Default for Table<V> {
+    fn default() -> Self {
+        Self { by_id: AHashMap::default(), by_content: AHashMap::default() }
+    }
+}
+
+type Identity = (std::mem::Discriminant<Type>, usize, usize);
+
+/// A key naming `t`'s content by its allocations, and the type that
+/// owns them. Within a pass no type cell is bound and the env is fixed,
+/// so one allocation expands and freezes the same way.
+fn identity(t: &Type) -> Option<(Identity, Type)> {
+    fn a<T: ?Sized>(p: &triomphe::Arc<T>) -> usize {
+        triomphe::Arc::as_ptr(p) as *const () as usize
+    }
+    let (x, y) = match t {
+        Type::TVar(tv) => match tv.binding() {
+            Some(b) => return identity(&b),
+            None => (tv.cell_addr(), 0),
+        },
+        Type::Ref(tr) => (tr.cell_addr(), a(&tr.params)),
+        Type::Fn(f) => (a(f), 0),
+        Type::Set(ts) | Type::Tuple(ts) => (a(ts), 0),
+        Type::Struct(fs) => (a(fs), 0),
+        Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(t) => (a(t), 0),
+        Type::Variant(tag, ts, _) => (tag.as_ptr() as usize, a(ts)),
+        Type::Map { key, value } => (a(key), a(value)),
+        Type::App(f, x) => (a(f), a(x)),
+        Type::Bottom
+        | Type::Any
+        | Type::Primitive(_)
+        | Type::Abstract { .. }
+        | Type::Hole
+        | Type::Concrete => return None,
+    };
+    Some(((std::mem::discriminant(t), x, y), t.clone()))
+}
+
+/// The definitions the named types in `t` resolve to; `None` when one
+/// is not resolved yet, so its expansion reads the env it is given.
+fn resolutions(t: &Type) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    fn walk(t: &Type, h: &mut ahash::AHasher) -> bool {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::Ref(tr) => match tr.def_key() {
+                None => false,
+                Some(k) => {
+                    k.hash(h);
+                    tr.params.iter().all(|p| walk(p, h))
+                }
+            },
+            Type::TVar(tv) => tv.binding().is_none_or(|b| walk(&b, h)),
+            Type::Fn(ft) => {
+                let mut ok = true;
+                ft.for_each_part(&mut |t, _| ok = ok && walk(t, h));
+                ok
+            }
+            t => {
+                let mut ok = true;
+                t.for_each_child(&mut |c| ok = ok && walk(c, h));
+                ok
+            }
+        })
+    }
+    let mut h = ahash::AHasher::default();
+    walk(t, &mut h).then(|| h.finish())
+}
+
+thread_local! {
+    static TYPE_MEMO: RefCell<Option<TypeMemo>> = const { RefCell::new(None) };
+}
+
+impl TypeMemo {
+    /// Run `f` with a fresh memo for its fusion pass.
+    pub(crate) fn scope<T>(f: impl FnOnce() -> T) -> T {
+        let prev = TYPE_MEMO.with(|m| m.borrow_mut().replace(TypeMemo::default()));
+        let r = f();
+        TYPE_MEMO.with(|m| *m.borrow_mut() = prev);
+        r
+    }
+
+    fn with_table<V, T>(
+        table: fn(&mut TypeMemo) -> &mut Table<V>,
+        f: impl FnOnce(&mut Table<V>) -> T,
+    ) -> Option<T> {
+        TYPE_MEMO.with(|m| m.borrow_mut().as_mut().map(|m| f(table(m))))
+    }
+
+    fn cached<V: Clone>(
+        t: &Type,
+        table: fn(&mut TypeMemo) -> &mut Table<V>,
+        compute: impl FnOnce() -> V,
+    ) -> V {
+        let Some((id, owner)) = identity(t) else { return compute() };
+        let Some(hit) =
+            Self::with_table(table, |tb| tb.by_id.get(&id).map(|(_, v)| v.clone()))
+        else {
+            return compute();
+        };
+        if let Some(v) = hit {
+            return v;
+        }
+        let Some(resolved) = resolutions(t) else { return compute() };
+        let key = (!t.has_unbound()).then(|| (t.clone(), resolved));
+        let hit = key.as_ref().and_then(|k| {
+            Self::with_table(table, |tb| tb.by_content.get(k).cloned()).flatten()
+        });
+        let v = hit.unwrap_or_else(compute);
+        Self::with_table(table, |tb| {
+            if let Some(k) = key {
+                tb.by_content.insert(k, v.clone());
+            }
+            tb.by_id.insert(id, (owner, v.clone()));
+        });
+        v
+    }
+
+    pub(crate) fn expanded(t: &Type, compute: impl FnOnce() -> Type) -> Type {
+        Self::cached(t, |m| &mut m.expanded, compute)
+    }
+
+    pub(crate) fn frozen(
+        t: &Type,
+        compute: impl FnOnce() -> Result<Type, kernel_abi::FreezeError>,
+    ) -> Result<Type, kernel_abi::FreezeError> {
+        Self::cached(t, |m| &mut m.frozen, compute)
     }
 }
 

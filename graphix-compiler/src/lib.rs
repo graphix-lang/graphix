@@ -2208,7 +2208,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     if ctx.fusion.enabled {
         let st = Instant::now();
         let p = profile::phase(Phase::Fusion);
-        let fused = fusion::fuse(node, ctx);
+        let fused = fusion::TypeMemo::scope(|| fusion::fuse(node, ctx));
         ctx.fusion.link();
         drop(p);
         fused?;

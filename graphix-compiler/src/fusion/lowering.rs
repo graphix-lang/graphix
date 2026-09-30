@@ -461,10 +461,15 @@ pub(crate) fn const_map<R: Rt, E: UserEvent>(
 /// backstop on the expansion chain. Truncation only ever de-fuses, so
 /// the work budget is small.
 pub(crate) fn expand_refs(typ: &Type, env: &Env) -> Type {
-    let _profile = profile::phase(Phase::ExpandRefs);
-    let cx =
-        ResolveCx { budget: 2_048, size_cap: FUSION_SIZE_CAP, ..ResolveCx::default() };
-    expand_ref_d(typ, env, None, &cx).unwrap_or_else(|| typ.clone())
+    super::TypeMemo::expanded(typ, || {
+        let _profile = profile::phase(Phase::ExpandRefs);
+        let cx = ResolveCx {
+            budget: 2_048,
+            size_cap: FUSION_SIZE_CAP,
+            ..ResolveCx::default()
+        };
+        expand_ref_d(typ, env, None, &cx).unwrap_or_else(|| typ.clone())
+    })
 }
 
 /// No kernel encodes a type that unfolds past this; resolving further

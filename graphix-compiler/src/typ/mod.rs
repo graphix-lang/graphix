@@ -506,6 +506,11 @@ impl TypeRef {
         self.resolved.lock().as_ref().and_then(Weak::upgrade)
     }
 
+    /// Identity of the resolution cell: shared by the rebuilds of one ref.
+    pub(crate) fn cell_addr(&self) -> usize {
+        Arc::as_ptr(&self.resolved) as *const () as usize
+    }
+
     /// [`ResolvedRef::def_key`] of the filled cell.
     pub(crate) fn def_key(&self) -> Option<usize> {
         self.resolved().map(|r| r.def_key())

@@ -26,7 +26,7 @@ use anyhow::{Result, anyhow};
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{collections::hash_map::Entry, ptr, sync::atomic::Ordering};
+use std::{cell::OnceCell, collections::hash_map::Entry, ptr, sync::atomic::Ordering};
 
 struct StaticEdge<'a, R: Rt, E: UserEvent> {
     caller: Option<LambdaInstanceId>,
@@ -418,20 +418,25 @@ fn body_facts<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
 ) -> BodyFacts {
     let body = g.body();
-    let local: LPooled<IntSet<BindId>> = {
-        let _profile = profile::phase(Phase::EffectRefs);
-        let mut refs = Refs::default();
-        body.refs(&mut refs);
-        let mut local: LPooled<IntSet<BindId>> = LPooled::take();
-        refs.with_bound(|id| {
-            local.insert(id);
-        });
+    let local: OnceCell<LPooled<IntSet<BindId>>> = OnceCell::new();
+    let is_local = |id: BindId| {
         local
+            .get_or_init(|| {
+                let _profile = profile::phase(Phase::EffectRefs);
+                let mut refs = Refs::default();
+                body.refs(&mut refs);
+                let mut local: LPooled<IntSet<BindId>> = LPooled::take();
+                refs.with_bound(|id| {
+                    local.insert(id);
+                });
+                local
+            })
+            .contains(&id)
     };
     let mut res =
         BodyFacts { lambda: g.id(), known: LambdaFacts::PURE, callees: SmallVec::new() };
     fusion::for_each_node(body, &mut |n| {
-        let e = node_facts(n, OwnTargets::Bound(&local), &mut |cs| {
+        let e = node_facts(n, OwnTargets::Bound(&is_local), &mut |cs| {
             callee_facts(cs, Some(graph), ctx, &mut |iid| res.callees.push(iid))
         });
         if gxdbg_effect() {
@@ -457,7 +462,7 @@ fn is_dynamic_module<R: Rt, E: UserEvent>(m: &Module<R, E>) -> bool {
 #[derive(Clone, Copy)]
 enum OwnTargets<'a> {
     /// A lambda body's own bindings.
-    Bound(&'a IntSet<BindId>),
+    Bound(&'a dyn Fn(BindId) -> bool),
     /// Every target: a select arm's writes are its own state.
     All,
 }
@@ -483,7 +488,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::Never(_)
         | NodeView::FusedKernel(_) => LambdaFacts::ASYNC,
         NodeView::Connect(c) => match own {
-            OwnTargets::Bound(local) if !local.contains(&c.id) => LambdaFacts::PURE,
+            OwnTargets::Bound(local) if !local(c.id) => LambdaFacts::PURE,
             OwnTargets::Bound(_) | OwnTargets::All => LambdaFacts::STATEFUL,
         },
         NodeView::ConnectDeref(_) => LambdaFacts::STATEFUL,

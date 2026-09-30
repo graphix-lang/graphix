@@ -566,7 +566,7 @@ pub fn freeze_for_abi_normalized(t: &Type) -> Option<Type> {
 }
 
 pub(crate) fn try_freeze_for_abi_normalized(t: &Type) -> Result<Type, FreezeError> {
-    match try_freeze_for_abi(t) {
+    super::TypeMemo::frozen(t, || match try_freeze_for_abi(t) {
         Err(FreezeError::NonCanonical) => {
             let p = profile::phase(Phase::Normalize);
             let normalized = t.resolve_tvars().normalize();
@@ -574,7 +574,7 @@ pub(crate) fn try_freeze_for_abi_normalized(t: &Type) -> Result<Type, FreezeErro
             try_freeze_for_abi(&normalized)
         }
         result => result,
-    }
+    })
 }
 
 /// The frozen success type `T` of a [`AbiKind::Nullable`] shape

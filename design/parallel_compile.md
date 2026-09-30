@@ -187,6 +187,30 @@ and check are 142 of elaboration's 212 ms, so they bound it, not the
 lack of tasks: forking an expression's sibling calls into tasks as well
 (`f(g(..), h(..))`, literals, select arms) measured no change.
 
+## What stays serial (measured)
+
+A perf profile of the admin app on four P-cores (10 kHz, samples binned
+by millisecond, a millisecond with one busy thread counted as serial)
+gives, for the fused build, 216 of 390 ms serial: fusion discovery
+104 ms, analysis 29, the link's tails 27, fork and join 12, emission 9,
+the check 8, the rest 20. Elaboration runs at 3.8x. The unfused build
+is 66 of 135 ms serial, analysis 30 and fork and join 13 of it.
+
+- Discovery repeats its type work: within one pass `expand_refs` ran
+  6902 times over 2085 distinct types, the ABI freeze 16777 times over
+  4338. `fusion::TypeMemo` holds both for the pass, keyed first by the
+  allocations a type is made of (no walk, and valid for types with open
+  cells, since a pass binds none), then by content for types with no
+  open cell. A result is kept only when every named type in it was
+  resolved before it was computed: resolution cells fill during the
+  pass, and a freeze over an empty cell is `Unresolved`.
+- Analysis took each instance body's `refs` to learn its own bindings,
+  which only a `<-` in the body asks about; it is taken on the first.
+
+Fused build, four P-cores: ~350 → ~315 ms; unfused: ~153 → ~146 ms.
+Fusion decisions are unchanged (a check of every memo hit against a
+fresh computation passed the workspace and the admin package).
+
 ## The rule that makes it possible
 
 BUILT on the branch: the gate keeps what the body bound, and the check's
