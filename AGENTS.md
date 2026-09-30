@@ -302,7 +302,11 @@ of every call site it recorded, drained before typecheck1 elaborates:
 a definition's gate keeps what its body bound as its signature (only a
 vacuous ⊥ reopens), so a call's types follow from the signature, and
 elaboration refusing what the check accepted is a type-system bug
-(`GRAPHIX_ELAB_AUDIT` reports it). Every type name a definition
+(`GRAPHIX_ELAB_AUDIT` reports it). An instance does not check again: its
+types are its definition's check's (`node::lambda::DefTable`),
+substituted by its signature, and each node's `typecheck0_instance`
+does only the state part of its check (the default is the check;
+`design/parallel_compile.md`). Every type name a definition
 writes must name something by the check's end, expanded or not
 (`design/env_independent_typerefs.md`).
 
@@ -902,6 +906,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_PROFILE_INSTANCES=1` | with `GRAPHIX_PROFILE`, per-instance construction/check costs (`bench/instances.py`) |
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
+| `GRAPHIX_NO_SUBST=1` | every instance checks its body again instead of taking its definition's types (A/B for instances by substitution) |
 | `GRAPHIX_TASK_AUDIT=1` | a backtrace at every write by a compile task to a cell or var an earlier task created (statement elaboration must write none) |
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |

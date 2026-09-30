@@ -383,6 +383,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         Ok(())
     }
 
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.pc.typecheck0_instance(ctx, types)?;
+        for s in self.steps.iter_mut() {
+            typecheck_in_order(ctx, &mut s.nodes, &s.catches, false, |n, ctx| {
+                n.typecheck0_instance(ctx, types)
+            })?;
+        }
+        Ok(())
+    }
+
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.pc.typecheck1(ctx)?;
         for s in self.steps.iter_mut() {
@@ -497,6 +511,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.snapshot.typecheck0(ctx)?;
         self.live.typecheck0(ctx)
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.snapshot.typecheck0_instance(ctx, types)?;
+        self.live.typecheck0_instance(ctx, types)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {

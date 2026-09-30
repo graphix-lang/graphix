@@ -374,69 +374,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        // siblings typecheck first, so the region's throws are already
-        // unioned into the bind: snapshot them, then ascribe `T`
-        if let Some(t) = self.constraint.clone() {
-            let tv = {
-                let bind = ctx
-                    .env
-                    .by_id
-                    .get(&self.bind_id)
-                    .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
-                match &bind.typ {
-                    Type::TVar(tv) => tv.clone(),
-                    _ => unreachable!(),
-                }
-            };
-            if self.thrown.is_none() {
-                let contents = tv.binding().unwrap_or(Type::Bottom);
-                self.thrown = Some(contents);
-            }
-            tv.bind(t.clone());
-            // `T` must cover every error the region throws, judged with
-            // the check's settle
-            let inner = self.thrown.clone().unwrap_or(Type::Bottom);
-            let spec = Arc::new(self.spec.clone());
-            ctx.pending_settles
-                .last_mut()
-                .expect("settle frame")
-                .push(crate::PendingSettle::Contains { outer: t, inner, spec });
-        }
-        wrap!(self.handler, self.handler.typecheck0(ctx))?;
-        let Some(abort) = &mut self.seq_abort else { return Ok(()) };
-        wrap!(abort.node, abort.node.typecheck0(ctx))?;
-        if let Some(manual) = abort.manual_mut() {
-            wrap!(manual, manual.typecheck0(ctx))?;
-        }
-        // the capture cell's type is the union of every covering
-        // handler's throws
-        if let Some(cap) = abort.capture() {
-            let etyp = ctx
-                .env
-                .by_id
-                .get(&self.bind_id)
-                .map(|b| b.typ.clone())
-                .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
-            let bind = ctx
-                .env
-                .by_id
-                .get(&cap)
-                .ok_or_else(|| anyhow!("BUG: seq capture cell vanished"))?;
-            let Type::TVar(tv) = &bind.typ else {
-                bail!("BUG: seq capture cell is not a cell")
-            };
-            // union the cell's content, not the cell
-            let etyp = match &etyp {
-                Type::TVar(b) => b.binding().unwrap_or(Type::Bottom),
-                t => t.clone(),
-            };
-            let joined = match tv.binding() {
-                None => etyp.clone(),
-                Some(t) => Type::union(&ctx.env, &[&t, &etyp])?,
-            };
-            tv.bind(joined);
-        }
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -851,35 +797,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0(ctx))?;
-        let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
-        if rethrow {
-            if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
-                return self.typ.check_contains(&ctx.env, &Type::Bottom);
-            }
-            if self.handler.is_none() {
-                Self::check_unhandled(
-                    &ctx.env,
-                    self.flags,
-                    &self.spec,
-                    "error raised by ?",
-                )?;
-            }
-        }
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ()))?;
-        self.strip = strip;
-        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
-        if let Some(handler) = &self.handler {
-            let (id, _) = handler.id();
-            let etyp = match self.strip {
-                Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
-                Strip::Null => NULL_ERR.clone(),
-            };
-            let etyp =
-                if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
-            join_raised(&ctx.env, id, &etyp)?;
-        }
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1063,7 +989,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.n.typecheck0(ctx)
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1156,7 +1090,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.n.typecheck0(ctx)
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1265,10 +1207,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0(ctx))?;
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ()))?;
-        self.strip = strip;
-        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1289,5 +1236,148 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
             Strip::Null => QopSink::DropNull,
         };
         emit_qop_node(cx, &self.n, &self.typ, sink)
+    }
+}
+
+impl<R: Rt, E: UserEvent> Catch<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        // siblings typecheck first, so the region's throws are already
+        // unioned into the bind: snapshot them, then ascribe `T`
+        if let Some(t) = self.constraint.clone() {
+            let tv = {
+                let bind = ctx
+                    .env
+                    .by_id
+                    .get(&self.bind_id)
+                    .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
+                match &bind.typ {
+                    Type::TVar(tv) => tv.clone(),
+                    _ => unreachable!(),
+                }
+            };
+            if self.thrown.is_none() {
+                let contents = tv.binding().unwrap_or(Type::Bottom);
+                self.thrown = Some(contents);
+            }
+            tv.bind(t.clone());
+            // `T` must cover every error the region throws, judged with
+            // the check's settle
+            let inner = self.thrown.clone().unwrap_or(Type::Bottom);
+            let spec = Arc::new(self.spec.clone());
+            ctx.pending_settles
+                .last_mut()
+                .expect("settle frame")
+                .push(crate::PendingSettle::Contains { outer: t, inner, spec });
+        }
+        wrap!(self.handler, child(&mut self.handler, ctx))?;
+        let Some(abort) = &mut self.seq_abort else { return Ok(()) };
+        wrap!(abort.node, child(&mut abort.node, ctx))?;
+        if let Some(manual) = abort.manual_mut() {
+            wrap!(manual, child(manual, ctx))?;
+        }
+        // the capture cell's type is the union of every covering
+        // handler's throws
+        if let Some(cap) = abort.capture() {
+            let etyp = ctx
+                .env
+                .by_id
+                .get(&self.bind_id)
+                .map(|b| b.typ.clone())
+                .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
+            let bind = ctx
+                .env
+                .by_id
+                .get(&cap)
+                .ok_or_else(|| anyhow!("BUG: seq capture cell vanished"))?;
+            let Type::TVar(tv) = &bind.typ else {
+                bail!("BUG: seq capture cell is not a cell")
+            };
+            // union the cell's content, not the cell
+            let etyp = match &etyp {
+                Type::TVar(b) => b.binding().unwrap_or(Type::Bottom),
+                t => t.clone(),
+            };
+            let joined = match tv.binding() {
+                None => etyp.clone(),
+                Some(t) => Type::union(&ctx.env, &[&t, &etyp])?,
+            };
+            tv.bind(joined);
+        }
+        Ok(())
+    }
+}
+
+impl<R: Rt, E: UserEvent> Qop<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.n, child(&mut self.n, ctx))?;
+        let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
+        if rethrow {
+            if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
+                return self.typ.check_contains(&ctx.env, &Type::Bottom);
+            }
+            if self.handler.is_none() {
+                Self::check_unhandled(
+                    &ctx.env,
+                    self.flags,
+                    &self.spec,
+                    "error raised by ?",
+                )?;
+            }
+        }
+        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ()))?;
+        self.strip = strip;
+        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
+        if let Some(handler) = &self.handler {
+            let (id, _) = handler.id();
+            let etyp = match self.strip {
+                Strip::Error => self.n.typ().diff(&ctx.env, &rtyp)?,
+                Strip::Null => NULL_ERR.clone(),
+            };
+            let etyp =
+                if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
+            join_raised(&ctx.env, id, &etyp)?;
+        }
+        Ok(())
+    }
+}
+
+impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        child(&mut self.n, ctx)
+    }
+}
+
+impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        child(&mut self.n, ctx)
+    }
+}
+
+impl<R: Rt, E: UserEvent> OrNever<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.n, child(&mut self.n, ctx))?;
+        let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ()))?;
+        self.strip = strip;
+        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))
     }
 }

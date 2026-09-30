@@ -779,6 +779,18 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// itself and recurses into its children.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()>;
 
+    /// `typecheck0` for a node of an instance, whose definition's check
+    /// settled its types ([`node::lambda::InstanceTypes`]): an impl takes
+    /// its types from there and does only the part of `typecheck0` that
+    /// is state. The default checks.
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        _types: &mut node::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0(ctx)
+    }
+
     /// Second typecheck pass, after `typecheck0` finished the whole
     /// tree: `lambda_ids` are final, so call sites can resolve
     /// statically. No default: every node must recurse into its children.
@@ -1819,6 +1831,14 @@ pub(crate) enum PendingSettle {
     /// A `let`'s cell over the initializer type `init`: ⊥ when `init` is
     /// ⊥ and no writer or reader decided the cell.
     LetOverBottom { tv: typ::TVar, init: Type, spec: Arc<Expr> },
+    /// A definition's body, settled once its sites have: a cell its gate
+    /// created that nothing bounded binds ⊥, the signature's `exempt`.
+    Body {
+        table: std::sync::Arc<node::lambda::DefTable>,
+        owner: LambdaId,
+        exempt: AHashSet<usize>,
+        spec: Arc<Expr>,
+    },
     /// `outer ⊇ inner`, judged once the frame's cells have settled.
     Contains { outer: Type, inner: Type, spec: Arc<Expr> },
     /// An arithmetic operator's rule, judged again once its operands
@@ -1854,6 +1874,9 @@ impl PendingSettle {
                 PendingSettle::LetOverBottom { tv, init, spec } => {
                     let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
                     (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
+                }
+                PendingSettle::Body { table, owner, exempt, spec } => {
+                    (table.settle_open(env, *owner, exempt), spec)
                 }
                 _ => continue,
             };

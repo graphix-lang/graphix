@@ -1148,6 +1148,64 @@ impl Type {
         })
     }
 
+    /// An instance's copy of a type its definition's check settled: the
+    /// bindings resolved, and each open cell a closed gate owns copied
+    /// once through `known` (the signature's, mapped already).
+    pub(crate) fn instantiate_with(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        open: &IntSet<LambdaId>,
+    ) -> Type {
+        self.instantiate_int(known, open).unwrap_or_else(|| self.clone())
+    }
+
+    /// Self with every open cell `known` maps replaced by its image and
+    /// every bound cell by its binding; any other cell is kept.
+    pub(crate) fn rename_with(&self, known: &AHashMap<usize, TVar>) -> Type {
+        self.rename_int(known).unwrap_or_else(|| self.clone())
+    }
+
+    fn rename_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => match tv.binding() {
+                Some(t) => Some(t.rename_int(known).unwrap_or(t)),
+                None => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.clone())),
+            },
+            Type::Fn(ft) => {
+                ft.cow_walk(|t| t.rename_int(known)).map(|f| Type::Fn(Arc::new(f)))
+            }
+            t => t.cow_children(&mut |c| c.rename_int(known)),
+        })
+    }
+
+    /// `None` when no TVar is beneath.
+    pub(super) fn instantiate_int(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        open: &IntSet<LambdaId>,
+    ) -> Option<Type> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => Some(match tv.binding() {
+                Some(t) => t.instantiate_int(known, open).unwrap_or(t),
+                None => Type::TVar(tv.freshen(
+                    known,
+                    &mut (),
+                    Fresh::Instantiate(open),
+                    |t, k, ()| t.instantiate_int(k, open),
+                )),
+            }),
+            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate_with(known, open)))),
+            // the definition's check read a typedef of its own body: the
+            // instance's own resolves the name
+            Type::Ref(tr) if tr.dead() => {
+                let params =
+                    tr.params.iter().map(|p| p.instantiate_with(known, open)).collect();
+                Some(Type::Ref(tr.unresolved(params)))
+            }
+            t => t.cow_children(&mut |c| c.instantiate_int(known, open)),
+        })
+    }
+
     /// A copy of self with every TVar named in `known` replaced by the
     /// corresponding type; any other TVar is freshened as
     /// [`Self::reset_tvars`] does, its conjuncts and binding rewritten

@@ -1095,56 +1095,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
-        // A partial struct pattern infers only its named fields;
-        // complete each inferred predicate against the typed scrutinee
-        // before coverage or dispatch reads it.
-        if let ExprKind::Select(se) = &self.spec.kind {
-            let scrut = self.arg.node.typ().clone();
-            for ((pat, body), (spec_pat, _)) in self.arms.iter_mut().zip(se.arms.iter()) {
-                if !pat.explicit_type_predicate {
-                    let t = spec_pat
-                        .structure_predicate
-                        .complete_type_predicate(&ctx.env, &pat.type_predicate, &scrut)
-                        .at(body.spec())?;
-                    if let Some(t) = t {
-                        pat.structure_predicate.realign(&ctx.env, &t)?;
-                        pat.type_predicate = t;
-                    }
-                }
-            }
-        }
-        let scrut = self.arg.node.typ().clone();
-        self.check_coverage(ctx, &scrut)?;
-        let mut rtypes: LPooled<Vec<&Type>> = LPooled::take();
-        let mut ntype = scrut.normalize();
-        for (pat, n) in self.arms.iter_mut() {
-            // Alias the arm's binds against the scrutinee minus every
-            // earlier unguarded irrefutable atom. The `any_as_tvar` view
-            // keeps a `_` slot from short-circuiting the walk.
-            let narrowed = pat.type_predicate.any_as_tvar();
-            ntype.contains(&ctx.env, &narrowed)?;
-            pat.bind_captures(&ctx.env, &narrowed)?;
-            // The guard typechecks after the narrowing so it sees the
-            // arm's binds at their settled type; it must be bool.
-            if let Some(guard) = &mut pat.guard {
-                wrap!(guard.node, guard.node.typecheck0(ctx))?;
-                let bt = Type::Primitive(Typ::Bool.into());
-                wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
-            }
-            wrap!(n, n.typecheck0(ctx))?;
-            rtypes.push(n.typ());
-            if pat.guard.is_none() {
-                for (sp, at) in pat.atoms() {
-                    if !sp.is_refutable() {
-                        ntype = ntype.diff(&ctx.env, &at)?;
-                    }
-                }
-            }
-        }
-        self.typ = Type::union(&ctx.env, &rtypes)?;
-        drop(rtypes);
-        self.check_dead_arms(ctx, &scrut)
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1190,5 +1149,74 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             }
         }
         Ok(None)
+    }
+}
+
+impl<R: Rt, E: UserEvent> Select<R, E> {
+    /// `checking`: the definition's check, which also judges coverage,
+    /// dead arms and guards; an instance does only what they decide.
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+        checking: bool,
+    ) -> Result<()> {
+        wrap!(self.arg.node, child(&mut self.arg.node, ctx))?;
+        // A partial struct pattern infers only its named fields;
+        // complete each inferred predicate against the typed scrutinee
+        // before coverage or dispatch reads it.
+        if let ExprKind::Select(se) = &self.spec.kind {
+            let scrut = self.arg.node.typ().clone();
+            for ((pat, body), (spec_pat, _)) in self.arms.iter_mut().zip(se.arms.iter()) {
+                if !pat.explicit_type_predicate {
+                    let t = spec_pat
+                        .structure_predicate
+                        .complete_type_predicate(&ctx.env, &pat.type_predicate, &scrut)
+                        .at(body.spec())?;
+                    if let Some(t) = t {
+                        pat.structure_predicate.realign(&ctx.env, &t)?;
+                        pat.type_predicate = t;
+                    }
+                }
+            }
+        }
+        let scrut = self.arg.node.typ().clone();
+        if checking {
+            self.check_coverage(ctx, &scrut)?;
+        }
+        let mut rtypes: LPooled<Vec<&Type>> = LPooled::take();
+        let mut ntype = scrut.normalize();
+        for (pat, n) in self.arms.iter_mut() {
+            // Alias the arm's binds against the scrutinee minus every
+            // earlier unguarded irrefutable atom. The `any_as_tvar` view
+            // keeps a `_` slot from short-circuiting the walk.
+            let narrowed = pat.type_predicate.any_as_tvar();
+            ntype.contains(&ctx.env, &narrowed)?;
+            pat.bind_captures(&ctx.env, &narrowed)?;
+            // The guard typechecks after the narrowing so it sees the
+            // arm's binds at their settled type; it must be bool.
+            if let Some(guard) = &mut pat.guard {
+                wrap!(guard.node, child(&mut guard.node, ctx))?;
+                if checking {
+                    let bt = Type::Primitive(Typ::Bool.into());
+                    wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
+                }
+            }
+            wrap!(n, child(n, ctx))?;
+            rtypes.push(n.typ());
+            if pat.guard.is_none() {
+                for (sp, at) in pat.atoms() {
+                    if !sp.is_refutable() {
+                        ntype = ntype.diff(&ctx.env, &at)?;
+                    }
+                }
+            }
+        }
+        self.typ = Type::union(&ctx.env, &rtypes)?;
+        drop(rtypes);
+        match checking {
+            true => self.check_dead_arms(ctx, &scrut),
+            false => Ok(()),
+        }
     }
 }

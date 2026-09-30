@@ -598,6 +598,19 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Copy)
     }
 
+    /// [`Type::instantiate_with`] over the signature.
+    pub(crate) fn instantiate_with(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        open: &IntSet<LambdaId>,
+    ) -> Self {
+        let mut fresh = self
+            .cow_walk(|t| t.instantiate_int(known, open))
+            .unwrap_or_else(|| self.clone());
+        fresh.lambda_ids = self.lambda_ids.instantiate();
+        fresh
+    }
+
     /// One cell-identity freshening map across the whole signature
     /// (see [`Type::reset_tvars_int`]). Always a fresh signature: an
     /// instantiation's `lambda_ids` is its own.

@@ -257,6 +257,38 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }))
     }
 
+    /// The binding holds its value's type, unless it forwards it.
+    fn check_value(&self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        let forwards = match &self.spec.kind {
+            ExprKind::Bind(b) => forwards(&ctx.env, b, &self.node),
+            _ => false,
+        };
+        if !forwards {
+            wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        }
+        Ok(())
+    }
+
+    /// What the binding tells the rest of the check: the settle of a
+    /// `let` over ⊥, and the lambda a name binds.
+    fn publish(&self, ctx: &mut CompileCtx<R, E>) {
+        if let Type::TVar(tv) = &self.typ {
+            super::defer_settle(ctx, || crate::PendingSettle::LetOverBottom {
+                tv: tv.clone(),
+                init: self.node.typ().clone(),
+                spec: Arc::new(self.spec.clone()),
+            });
+        }
+        if let Some(fv) = self.lambda_def_value() {
+            self.pattern.ids(&mut |id| {
+                if crate::dbgenv::gxdbg_resolve() {
+                    eprintln!("B2L-INS {id:?} {}", self.spec);
+                }
+                ctx.bind_to_lambda.insert(id, fv.clone());
+            });
+        }
+    }
+
     /// The LambdaDef `Value` this binding holds when its value node is
     /// a lambda; `None` otherwise.
     pub(crate) fn lambda_def_value(&self) -> Option<Value> {
@@ -410,28 +442,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
         }
         wrap!(self.node, self.node.typecheck0(ctx))?;
-        let forwards = match &self.spec.kind {
-            ExprKind::Bind(b) => forwards(&ctx.env, b, &self.node),
-            _ => false,
-        };
-        if !forwards {
-            wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))?;
+        self.check_value(ctx)?;
+        self.publish(ctx);
+        Ok(())
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        wrap!(self.node, self.node.typecheck0_instance(ctx, types))?;
+        if !wrap!(self, types.settle(&ctx.env, self.spec.id, &self.typ))? {
+            self.check_value(ctx)?;
         }
-        if let Type::TVar(tv) = &self.typ {
-            super::defer_settle(ctx, || crate::PendingSettle::LetOverBottom {
-                tv: tv.clone(),
-                init: self.node.typ().clone(),
-                spec: Arc::new(self.spec.clone()),
-            });
-        }
-        if let Some(fv) = self.lambda_def_value() {
-            self.pattern.ids(&mut |id| {
-                if crate::dbgenv::gxdbg_resolve() {
-                    eprintln!("B2L-INS {id:?} {}", self.spec);
-                }
-                ctx.bind_to_lambda.insert(id, fv.clone());
-            });
-        }
+        self.publish(ctx);
         Ok(())
     }
 
@@ -1277,18 +1302,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        let mut res = Ok(());
-        self.referent.each(&mut |n| {
-            if res.is_ok() {
-                res = n.typecheck0(ctx).map_err(|e| e.at(n.spec()));
-            }
-        });
-        res?;
-        let t = match &self.referent {
-            Referent::Channel(n) => n.typ().clone(),
-            Referent::Place(p) => wrap!(self, p.elem_type(ctx, &self.spec))?,
-        };
-        wrap!(self, self.typ.check_contains(&ctx.env, &Type::ByRef(Arc::new(t))))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1482,7 +1504,55 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck0(ctx))?;
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        wrap!(self.child, self.child.typecheck1(ctx))?;
+        Ok(())
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Deref(self)
+    }
+}
+
+impl<R: Rt, E: UserEvent> ByRef<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        let mut res = Ok(());
+        self.referent.each(&mut |n| {
+            if res.is_ok() {
+                res = child(n, ctx).map_err(|e| e.at(n.spec()));
+            }
+        });
+        res?;
+        let t = match &self.referent {
+            Referent::Channel(n) => n.typ().clone(),
+            Referent::Place(p) => wrap!(self, p.elem_type(ctx, &self.spec))?,
+        };
+        wrap!(self, self.typ.check_contains(&ctx.env, &Type::ByRef(Arc::new(t))))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Deref<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.child, child(&mut self.child, ctx))?;
         // A container read's type is a TVar bound to `&T`, not a bare
         // `Type::ByRef`.
         let typ = self.child.typ().with_deref(|t| match t {
@@ -1495,14 +1565,5 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         };
         wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
         Ok(())
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.child, self.child.typecheck1(ctx))?;
-        Ok(())
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Deref(self)
     }
 }

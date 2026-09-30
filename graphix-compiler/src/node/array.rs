@@ -202,17 +202,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck0(ctx))?;
-        wrap!(self.i, self.i.typecheck0(ctx))?;
-        let source_typ = self.source.typ();
-        if known_bytes(&ctx.env, source_typ)? {
-            let byte = Type::Primitive(Typ::U8.into());
-            wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
-        } else {
-            let at = Type::Array(Arc::new(self.etyp.clone()));
-            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
-        }
-        check_index(&ctx.env, &self.i)
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -350,25 +348,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck0(ctx))?;
-        let source_typ = self.source.typ();
-        if !known_bytes(&ctx.env, source_typ)? {
-            let at = Type::Array(Arc::new(Type::empty_tvar()));
-            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
-        }
-        // `typ` copied the source's type at compile; a source whose type
-        // is decided in its typecheck0 (a select) is related here
-        let Type::Set(members) = &self.typ else { unreachable!() };
-        wrap!(self, members[0].check_contains(&ctx.env, source_typ))?;
-        if let Some(start) = self.start.as_mut() {
-            wrap!(start, start.typecheck0(ctx))?;
-            check_index(&ctx.env, start)?;
-        }
-        if let Some(end) = self.end.as_mut() {
-            wrap!(end, end.typecheck0(ctx))?;
-            check_index(&ctx.env, end)?;
-        }
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -620,18 +608,15 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        for n in &mut self.n {
-            wrap!(n, n.typecheck0(ctx))?
-        }
-        let bottom = Type::Bottom;
-        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
-        ts.push(&bottom);
-        ts.extend(self.n.iter().map(|n| n.typ()));
-        let rtype = match wrap!(self, Type::union(&ctx.env, &ts))? {
-            Type::Bottom => K::typ(Type::empty_tvar()),
-            t => K::typ(t),
-        };
-        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -647,5 +632,74 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         K::emit(cx, &self.n)
+    }
+}
+
+impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.source, child(&mut self.source, ctx))?;
+        wrap!(self.i, child(&mut self.i, ctx))?;
+        let source_typ = self.source.typ();
+        if known_bytes(&ctx.env, source_typ)? {
+            let byte = Type::Primitive(Typ::U8.into());
+            wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
+        } else {
+            let at = Type::Array(Arc::new(self.etyp.clone()));
+            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
+        }
+        check_index(&ctx.env, &self.i)
+    }
+}
+
+impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.source, child(&mut self.source, ctx))?;
+        let source_typ = self.source.typ();
+        if !known_bytes(&ctx.env, source_typ)? {
+            let at = Type::Array(Arc::new(Type::empty_tvar()));
+            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
+        }
+        // `typ` copied the source's type at compile; a source whose type
+        // is decided in its typecheck0 (a select) is related here
+        let Type::Set(members) = &self.typ else { unreachable!() };
+        wrap!(self, members[0].check_contains(&ctx.env, source_typ))?;
+        if let Some(start) = self.start.as_mut() {
+            wrap!(start, child(start, ctx))?;
+            check_index(&ctx.env, start)?;
+        }
+        if let Some(end) = self.end.as_mut() {
+            wrap!(end, child(end, ctx))?;
+            check_index(&ctx.env, end)?;
+        }
+        Ok(())
+    }
+}
+
+impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        for n in &mut self.n {
+            wrap!(n, child(n, ctx))?
+        }
+        let bottom = Type::Bottom;
+        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
+        ts.push(&bottom);
+        ts.extend(self.n.iter().map(|n| n.typ()));
+        let rtype = match wrap!(self, Type::union(&ctx.env, &ts))? {
+            Type::Bottom => K::typ(Type::empty_tvar()),
+            t => K::typ(t),
+        };
+        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
     }
 }

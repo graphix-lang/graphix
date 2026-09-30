@@ -267,6 +267,32 @@ macro_rules! compare_op {
             fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
+                self.typecheck_own(ctx)
+            }
+
+            fn typecheck0_instance(
+                &mut self,
+                ctx: &mut CompileCtx<R, E>,
+                types: &mut super::lambda::InstanceTypes,
+            ) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
+                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
+                self.typecheck_own(ctx)
+            }
+
+            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
+                wrap!(self, refuse_mixed_numeric(&ctx.env, self.lhs.typ(), "compare"))
+            }
+
+            fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+                emit_cmp_node(cx, CmpOp::$name, &self.lhs, &self.rhs)
+            }
+        });
+
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
                     Some(t) => wrap!(self, refuse_mixed_numeric(&ctx.env, t, "compare")),
@@ -281,17 +307,7 @@ macro_rules! compare_op {
                     ),
                 }
             }
-
-            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
-                wrap!(self, refuse_mixed_numeric(&ctx.env, self.lhs.typ(), "compare"))
-            }
-
-            fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-                emit_cmp_node(cx, CmpOp::$name, &self.lhs, &self.rhs)
-            }
-        });
+        }
     };
 }
 
@@ -327,9 +343,17 @@ macro_rules! bool_op {
             fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
-                let bt = Type::boolean();
-                wrap!(self.lhs, bt.check_contains(&ctx.env, self.lhs.typ()))?;
-                wrap!(self.rhs, bt.check_contains(&ctx.env, self.rhs.typ()))
+                self.typecheck_own(ctx)
+            }
+
+            fn typecheck0_instance(
+                &mut self,
+                ctx: &mut CompileCtx<R, E>,
+                types: &mut super::lambda::InstanceTypes,
+            ) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
+                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
+                self.typecheck_own(ctx)
             }
 
             fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -341,6 +365,14 @@ macro_rules! bool_op {
                 emit_bool_node(cx, BoolOp::$name, &self.lhs, &self.rhs)
             }
         });
+
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+                let bt = Type::boolean();
+                wrap!(self.lhs, bt.check_contains(&ctx.env, self.lhs.typ()))?;
+                wrap!(self.rhs, bt.check_contains(&ctx.env, self.rhs.typ()))
+            }
+        }
     };
 }
 
@@ -438,8 +470,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0(ctx))?;
-        wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -561,16 +600,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
 
     /// The operand is negatable once the check settles its cell.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.n, self.n.typecheck0(ctx))?;
-        wrap!(self.n, constrain_operand(&ctx.env, &Self::negatable(), self.n.typ()))?;
-        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
-        defer_operand(ctx, &self.n);
-        super::defer_settle(ctx, || crate::PendingSettle::Contains {
-            outer: Self::negatable(),
-            inner: self.n.typ().clone(),
-            spec: Arc::new(self.n.spec().clone()),
-        });
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -758,6 +796,27 @@ macro_rules! arith_op {
             fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
+                self.typecheck_own(ctx)
+            }
+
+            fn typecheck0_instance(
+                &mut self,
+                ctx: &mut CompileCtx<R, E>,
+                types: &mut super::lambda::InstanceTypes,
+            ) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
+                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
+                self.typecheck_own(ctx)
+            }
+
+            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
+            }
+        });
+
+        impl<R: Rt, E: UserEvent> $name<R, E> {
+            fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 wrap!(
                     self,
@@ -775,12 +834,7 @@ macro_rules! arith_op {
                 });
                 Ok(())
             }
-
-            fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-                wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))
-            }
-        });
+        }
     };
 }
 
@@ -794,3 +848,33 @@ arith_op!(CheckedSub, true, Sub);
 arith_op!(CheckedMul, true, Mul);
 arith_op!(CheckedDiv, true, Div);
 arith_op!(CheckedMod, true, Mod);
+
+impl<R: Rt, E: UserEvent> Not<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.n, child(&mut self.n, ctx))?;
+        wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Neg<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.n, child(&mut self.n, ctx))?;
+        wrap!(self.n, constrain_operand(&ctx.env, &Self::negatable(), self.n.typ()))?;
+        wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
+        defer_operand(ctx, &self.n);
+        super::defer_settle(ctx, || crate::PendingSettle::Contains {
+            outer: Self::negatable(),
+            inner: self.n.typ().clone(),
+            spec: Arc::new(self.n.spec().clone()),
+        });
+        Ok(())
+    }
+}

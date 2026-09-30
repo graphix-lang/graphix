@@ -32,7 +32,7 @@ use crate::{
     },
     wrap,
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use combine::stream::position::SourcePosition;
@@ -40,6 +40,7 @@ use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::Value;
+use nohash::IntSet;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use std::{
@@ -47,11 +48,166 @@ use std::{
     hash::Hash,
     mem,
     sync::{
-        Arc as SArc,
+        Arc as SArc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
 use triomphe::Arc;
+
+/// What a definition's check settled, by the expression id of each node
+/// of its body: an instance takes its types from here instead of checking
+/// again. An id two nodes share has no row.
+#[derive(Debug, Default)]
+pub struct DefTable {
+    types: AHashMap<ExprId, Type>,
+    ftypes: AHashMap<ExprId, FnType>,
+    /// The table of each lambda literal of the body, by its id.
+    lambdas: AHashMap<ExprId, SArc<DefTable>>,
+}
+
+/// One instance's cell map, shared with the lambdas its body defines:
+/// their own instances read the enclosing body's cells through it.
+type Known = SArc<Mutex<AHashMap<usize, TVar>>>;
+
+/// What a definition's instances substitute: its table and, for a lambda
+/// defined in an instance, the enclosing instance's map, through which
+/// the table's cells of the enclosing definition are renamed first.
+#[derive(Debug, Clone)]
+pub struct Tables {
+    table: SArc<DefTable>,
+    outer: Option<Known>,
+}
+
+impl DefTable {
+    /// Bind to ⊥ every open cell of the table's that `owner`'s gate
+    /// created, but its signature (`exempt`) does not reach: nothing
+    /// bounded it, and an instance reads the table as the check left it.
+    pub(crate) fn settle_open(
+        &self,
+        env: &Env,
+        owner: LambdaId,
+        exempt: &AHashSet<usize>,
+    ) -> Result<()> {
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        for t in self.types.values() {
+            crate::typ::settle::position_cells(t, &mut cells);
+        }
+        for ft in self.ftypes.values() {
+            ft.for_each_part(&mut |t, constraint| {
+                if !constraint {
+                    crate::typ::settle::position_cells(t, &mut cells)
+                }
+            });
+        }
+        for (addr, tv) in cells.iter() {
+            if !exempt.contains(addr)
+                && !tv.is_bound()
+                && !tv.requires_concrete()
+                && tv.level().owner == Some(owner)
+            {
+                tv.settle_or_bottom(env)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn record<R: Rt, E: UserEvent>(body: &Node<R, E>) -> Self {
+        let mut table = Self::default();
+        let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
+        fusion::for_each_node(body, &mut |n| {
+            let id = n.spec().id;
+            if table.types.insert(id, n.typ().clone()).is_some() {
+                shared.insert(id);
+            }
+            match n.view() {
+                NodeView::CallSite(cs) => {
+                    if let Some(ft) = cs.ftype.as_ref() {
+                        table.ftypes.insert(id, ft.clone());
+                    }
+                }
+                NodeView::Lambda(l) => {
+                    let def = l.def_value().downcast_ref::<LambdaDef<R, E>>();
+                    if let Some(t) = def.and_then(|d| d.table.get()) {
+                        table.lambdas.insert(id, t.table.clone());
+                    }
+                }
+                _ => (),
+            }
+        });
+        for id in shared.drain() {
+            table.types.remove(&id);
+            table.ftypes.remove(&id);
+            table.lambdas.remove(&id);
+        }
+        table
+    }
+}
+
+/// An instance's view of its definition's [`DefTable`]: each row
+/// instantiated through one cell map, which starts from the definition's
+/// signature unified with the instance's.
+pub struct InstanceTypes {
+    tables: Tables,
+    known: Known,
+    open: IntSet<LambdaId>,
+}
+
+impl InstanceTypes {
+    /// `None` when the instance's signature does not hold the
+    /// definition's: a type-system bug the instance's own check reports.
+    fn new<R: Rt, E: UserEvent>(
+        ctx: &CompileCtx<R, E>,
+        tables: Tables,
+        def: &FnType,
+        instance: &FnType,
+    ) -> Option<Self> {
+        let open = ctx.rec_defs.clone();
+        let mut known = AHashMap::default();
+        let def = def.instantiate_with(&mut known, &open);
+        instance.check_contains(&ctx.env, &def).ok()?;
+        Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
+    }
+
+    /// A row read from this definition's check, renamed through the
+    /// enclosing instance's map, then instantiated through this one's.
+    fn instance_of(&self, t: &Type) -> Type {
+        let t = match &self.tables.outer {
+            Some(outer) => t.rename_with(&outer.lock()),
+            None => t.clone(),
+        };
+        t.instantiate_with(&mut self.known.lock(), &self.open)
+    }
+
+    /// The type the definition's check settled for the node at `id`.
+    pub(crate) fn typ(&mut self, id: ExprId) -> Option<Type> {
+        let t = self.tables.table.types.get(&id)?;
+        Some(self.instance_of(t))
+    }
+
+    /// Bind `typ`, a node's own type, to the row for `id`; false when
+    /// there is none.
+    pub(crate) fn settle(&mut self, env: &Env, id: ExprId, typ: &Type) -> Result<bool> {
+        match self.typ(id) {
+            None => Ok(false),
+            Some(t) => typ.check_contains(env, &t).map(|()| true),
+        }
+    }
+
+    /// The signature the definition's check settled for the call at `id`.
+    pub(crate) fn ftype(&mut self, id: ExprId) -> Option<FnType> {
+        let ft = self.tables.table.ftypes.get(&id)?;
+        match self.instance_of(&Type::Fn(Arc::new(ft.clone()))) {
+            Type::Fn(ref ft) => Some((**ft).clone()),
+            _ => None,
+        }
+    }
+
+    /// The tables of the lambda literal at `id` of this instance's body.
+    pub(crate) fn lambda(&self, id: ExprId) -> Option<Tables> {
+        let table = self.tables.table.lambdas.get(&id)?.clone();
+        Some(Tables { table, outer: Some(self.known.clone()) })
+    }
+}
 
 pub struct LambdaDef<R: Rt, E: UserEvent> {
     pub id: LambdaId,
@@ -63,6 +219,8 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// A builtin definition's check `Apply`, built by the definition gate
     /// ([`Self::builtin_check`]).
     pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
+    /// What the definition's check settled, for its instances.
+    pub table: OnceLock<Tables>,
     /// Intrinsic sync/async effect, computed by `analysis::infer_effects`
     /// after all lambdas are compiled. Calls through fn-typed parameters
     /// do not contribute; the call site joins the resolved arg's effect.
@@ -266,6 +424,20 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 }
 
+impl<R: Rt, E: UserEvent> GXLambda<R, E> {
+    /// The types an instance takes from its definition's check; `None`
+    /// for the definition's own check, or a definition with no table.
+    fn instance_types(&self, ctx: &CompileCtx<R, E>) -> Option<InstanceTypes> {
+        if dbgenv::graphix_no_subst() {
+            return None;
+        }
+        let def = ctx.lambda_defs.get(&self.id).cloned();
+        let def = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())?;
+        let tables = def.table.get().filter(|_| !Arc::ptr_eq(&self.typ, &def.typ))?;
+        InstanceTypes::new(ctx, tables.clone(), &def.typ, &self.typ)
+    }
+}
+
 impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         self.id.encode(buf)?;
@@ -315,18 +487,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         profile::instance(&mut p, self.instance_id, self.id, self.body.spec());
         elab_audit::enter();
         let res = (|| {
+            // an instance's formals and return are its site's, which the
+            // definition's check covers
+            let types = self.instance_types(ctx);
             for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter())
             {
                 wrap!(arg, arg.typecheck0(ctx))?;
-                wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
+                if types.is_none() {
+                    wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
+                }
             }
             let env = self.env.clone();
-            ctx.with_restored(env, |ctx| {
-                wrap!(self.body, self.body.typecheck0(ctx))?;
-                wrap!(
-                    self.body,
-                    self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
-                )
+            ctx.with_restored(env, |ctx| match types {
+                Some(mut types) => {
+                    wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
+                }
+                None => {
+                    wrap!(self.body, self.body.typecheck0(ctx))?;
+                    wrap!(
+                        self.body,
+                        self.typ.rtype.check_contains_rigid(&ctx.env, &self.body.typ())
+                    )
+                }
             })
         })();
         elab_audit::leave(ctx.def_gate_depth, "typecheck0", self.body.spec(), &res);
@@ -1021,6 +1203,7 @@ impl Lambda {
             init,
             scope: scope.clone(),
             check: Mutex::new(None),
+            table: OnceLock::new(),
             intrinsic_effect: Mutex::new(intrinsic_effect),
             stateless: AtomicBool::new(stateless),
             recursion: Mutex::new(RecursionKind::NotRecursive),
@@ -1114,7 +1297,11 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
 
     /// The body's sites settle with the enclosing statement, all but the
     /// cells this signature reaches: those stay open, generalized.
-    fn close(mut self, ctx: &mut CompileCtx<R, E>) {
+    fn close(
+        mut self,
+        ctx: &mut CompileCtx<R, E>,
+        table: Option<(SArc<DefTable>, &Expr)>,
+    ) {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
         self.sig.generalize(self.depth);
@@ -1124,6 +1311,14 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
             if let crate::PendingSettle::Site { exempt, .. } = s {
                 exempt.extend(sig.keys().copied());
             }
+        }
+        if let Some((table, spec)) = table {
+            frame.push(crate::PendingSettle::Body {
+                table,
+                owner: self.def,
+                exempt: sig.keys().copied().collect(),
+                spec: Arc::new(spec.clone()),
+            });
         }
         ctx.pending_settles.last_mut().expect("root settle frame").extend(frame);
         ctx.rec_defs.remove(&self.def);
@@ -1260,6 +1455,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             for id in param_knot.drain(..) {
                 ctx.def_gate_params.remove(&id);
             }
+            if res.is_ok()
+                && let ApplyView::Lambda(g) = f.view()
+            {
+                let table = SArc::new(DefTable::record(&g.body));
+                let _ = def.table.set(Tables { table, outer: None });
+            }
             // a builtin's check `Apply` is retained for `CallSite::typecheck1`;
             // a user body is not re-checked per call site
             match def.builtin_check() {
@@ -1273,7 +1474,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             Ok(())
         });
         let res = res.and_then(|()| check_defaults(ctx, def, &gate.scope));
-        gate.close(ctx);
+        gate.close(ctx, def.table.get().map(|t| (t.table.clone(), spec)));
         // what the body bound is the signature: a call's types follow from
         // it without elaborating the body
         self.typ.unbind_vacuous_tvars();
@@ -1287,6 +1488,38 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             return Ok(());
         }
         res
+    }
+
+    /// A lambda an instance defines takes its signature from the
+    /// enclosing definition's check, at its own level, and generalizes it
+    /// as its gate would; its instances read its table from there too.
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut InstanceTypes,
+    ) -> Result<()> {
+        let def = self
+            .def
+            .downcast_ref::<LambdaDef<R, E>>()
+            .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
+        let tables = match def.builtin_check() {
+            None => types.lambda(self.spec.id),
+            Some(_) => None,
+        };
+        let Some(tables) = tables else { return self.typecheck0(ctx) };
+        let level = Level { depth: def.level, owner: Some(def.id) };
+        let row = {
+            let _at = AtLevel::enter(level);
+            types.typ(self.spec.id)
+        };
+        let Some(row) = row else { return self.typecheck0(ctx) };
+        {
+            let _at = AtLevel::enter(level);
+            self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
+        }
+        def.typ.generalize(def.level);
+        let _ = def.table.set(tables);
+        Ok(())
     }
 
     /// A definition has no children here; the body is checked per call

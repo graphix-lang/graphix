@@ -168,25 +168,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck0(ctx))?
-        }
-        match &self.typ {
-            Type::Struct(typs) => {
-                if self.n.len() != typs.len() {
-                    bail!(
-                        "struct length mismatch {} fields expected vs {}",
-                        typs.len(),
-                        self.n.len()
-                    )
-                }
-                for ((_, t, _), n) in typs.iter().zip(self.n.iter()) {
-                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
-                }
-            }
-            _ => bail!("BUG: expected a struct rtype"),
-        }
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -356,35 +346,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck0(ctx))?;
-        // Clone the type out of `with_deref` before unifying: the closure
-        // holds TVar read guards that the writes below would deadlock on.
-        let styp = self.source.typ().deref_cloned();
-        let mut check = || -> Result<()> {
-            match &styp {
-                Some(Type::Struct(flds)) => {
-                    for rep in self.replace.iter_mut() {
-                        let r =
-                            flds.iter().enumerate().find_map(|(i, (field, typ, _))| {
-                                if field == &rep.name { Some((i, typ)) } else { None }
-                            });
-                        match r {
-                            None => bail!("struct has no field named {}", rep.name),
-                            Some((i, typ)) => {
-                                wrap!(rep.n, rep.n.typecheck0(ctx))?;
-                                wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
-                                rep.index = Some(i);
-                            }
-                        }
-                    }
-                    Ok(())
-                }
-                None => bail!("type must be known, annotations needed"),
-                _ => bail!("expected a struct"),
-            }
-        };
-        wrap!(self, check())?;
-        wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -521,21 +491,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck0(ctx))?;
-        let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
-        let (idx, typ) = wrap!(self, etyp)?;
-        self.sorted_field_idx = Some(idx);
-        if let ExprKind::StructRef { field, .. } = &self.spec.kind
-            && ctx.env.ide.is_lsp()
-        {
-            ctx.env.push_field_ref(crate::ide::FieldRefSite {
-                pos: field.pos_or(self.spec.pos),
-                ori: self.spec.ori.clone(),
-                name: field.name.clone(),
-                typ: typ.clone(),
-            });
-        }
-        wrap!(self, self.typ.check_contains(&ctx.env, &typ))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -623,21 +587,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck0(ctx))?
-        }
-        match &self.typ {
-            Type::Tuple(typs) => {
-                if self.n.len() != typs.len() {
-                    bail!("tuple arity mismatch {} vs {}", self.n.len(), typs.len())
-                }
-                for (t, n) in typs.iter().zip(self.n.iter()) {
-                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
-                }
-            }
-            _ => bail!("BUG: unexpected tuple rtype"),
-        }
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -722,24 +680,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        for n in self.n.iter_mut() {
-            wrap!(n, n.typecheck0(ctx))?
-        }
-        match &self.typ {
-            Type::Variant(ttag, typs, _) => {
-                if ttag != &self.tag {
-                    bail!("expected {ttag} not {}", self.tag)
-                }
-                if self.n.len() != typs.len() {
-                    bail!("arity mismatch {} vs {}", self.n.len(), typs.len())
-                }
-                for (t, n) in typs.iter().zip(self.n.iter()) {
-                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
-                }
-            }
-            _ => bail!("BUG: unexpected variant rtype"),
-        }
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -886,8 +835,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.arg, self.arg.typecheck0(ctx))?;
-        wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ()))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1076,10 +1032,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck0(ctx))?;
-        let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
-        let etyp = wrap!(self, etyp)?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1099,5 +1060,170 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         } else {
             emit_tuple_ref_node(cx, &self.source, self.field, &self.typ)
         }
+    }
+}
+
+impl<R: Rt, E: UserEvent> Struct<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n, child(n, ctx))?
+        }
+        match &self.typ {
+            Type::Struct(typs) => {
+                if self.n.len() != typs.len() {
+                    bail!(
+                        "struct length mismatch {} fields expected vs {}",
+                        typs.len(),
+                        self.n.len()
+                    )
+                }
+                for ((_, t, _), n) in typs.iter().zip(self.n.iter()) {
+                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
+                }
+            }
+            _ => bail!("BUG: expected a struct rtype"),
+        }
+        Ok(())
+    }
+}
+
+impl<R: Rt, E: UserEvent> StructWith<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.source, child(&mut self.source, ctx))?;
+        // Clone the type out of `with_deref` before unifying: the closure
+        // holds TVar read guards that the writes below would deadlock on.
+        let styp = self.source.typ().deref_cloned();
+        let mut check = || -> Result<()> {
+            match &styp {
+                Some(Type::Struct(flds)) => {
+                    for rep in self.replace.iter_mut() {
+                        let r =
+                            flds.iter().enumerate().find_map(|(i, (field, typ, _))| {
+                                if field == &rep.name { Some((i, typ)) } else { None }
+                            });
+                        match r {
+                            None => bail!("struct has no field named {}", rep.name),
+                            Some((i, typ)) => {
+                                wrap!(rep.n, child(&mut rep.n, ctx))?;
+                                wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
+                                rep.index = Some(i);
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                None => bail!("type must be known, annotations needed"),
+                _ => bail!("expected a struct"),
+            }
+        };
+        wrap!(self, check())?;
+        wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
+    }
+}
+
+impl<R: Rt, E: UserEvent> StructRef<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.source, child(&mut self.source, ctx))?;
+        let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
+        let (idx, typ) = wrap!(self, etyp)?;
+        self.sorted_field_idx = Some(idx);
+        if let ExprKind::StructRef { field, .. } = &self.spec.kind
+            && ctx.env.ide.is_lsp()
+        {
+            ctx.env.push_field_ref(crate::ide::FieldRefSite {
+                pos: field.pos_or(self.spec.pos),
+                ori: self.spec.ori.clone(),
+                name: field.name.clone(),
+                typ: typ.clone(),
+            });
+        }
+        wrap!(self, self.typ.check_contains(&ctx.env, &typ))
+    }
+}
+
+impl<R: Rt, E: UserEvent> Tuple<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n, child(n, ctx))?
+        }
+        match &self.typ {
+            Type::Tuple(typs) => {
+                if self.n.len() != typs.len() {
+                    bail!("tuple arity mismatch {} vs {}", self.n.len(), typs.len())
+                }
+                for (t, n) in typs.iter().zip(self.n.iter()) {
+                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
+                }
+            }
+            _ => bail!("BUG: unexpected tuple rtype"),
+        }
+        Ok(())
+    }
+}
+
+impl<R: Rt, E: UserEvent> Variant<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        for n in self.n.iter_mut() {
+            wrap!(n, child(n, ctx))?
+        }
+        match &self.typ {
+            Type::Variant(ttag, typs, _) => {
+                if ttag != &self.tag {
+                    bail!("expected {ttag} not {}", self.tag)
+                }
+                if self.n.len() != typs.len() {
+                    bail!("arity mismatch {} vs {}", self.n.len(), typs.len())
+                }
+                for (t, n) in typs.iter().zip(self.n.iter()) {
+                    wrap!(n, t.check_contains(&ctx.env, &n.typ()))?
+                }
+            }
+            _ => bail!("BUG: unexpected variant rtype"),
+        }
+        Ok(())
+    }
+}
+
+impl<R: Rt, E: UserEvent> Construct<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.arg, child(&mut self.arg, ctx))?;
+        wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ()))
+    }
+}
+
+impl<R: Rt, E: UserEvent> TupleRef<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.source, child(&mut self.source, ctx))?;
+        let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
+        let etyp = wrap!(self, etyp)?;
+        wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
     }
 }

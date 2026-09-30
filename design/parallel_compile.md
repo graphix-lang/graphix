@@ -1,9 +1,9 @@
 # Parallel and incremental compilation
 
 Status: partly BUILT on branch `parallel-compile` (2026-09-29): parallel
-code generation, the compile context split from the runtime, and
-statement elaboration in parallel compile tasks. The phases, per-instance
-tasks and the caches are the plan.
+code generation, the compile context split from the runtime, statement
+elaboration in parallel compile tasks, and instances typed by
+substitution. The phases and the caches are the plan.
 Pins: `lang::functions::same_named_tvar_in_callback_arg`,
 `lang::functions::monomorphic_flat_map_twice`; the `GRAPHIX_ELAB_AUDIT`
 probe (`node/lambda.rs::elab_audit`) and `GRAPHIX_TASK_AUDIT`
@@ -257,52 +257,63 @@ elaboration refuses programs that the checks accepted. The split:
 - the hook still extracts its type during elaboration, and failing to
   extract becomes an assert.
 
-## Instances by substitution (PROPOSED)
+## Instances by substitution (BUILT)
 
-An instance's check re-derives what the definition check settled. Admin
-app, one thread, perf build: the instance check is 24% of the compile
-threads' samples, of which containment and unification are 31%, type
-allocation and drop 27%, `Env` operations 13%, instantiating and
-resetting cells 9%, select and pattern typing 7%, nested compiles 2%.
-It also runs before an instance's statements can fork, so it is the
-serial part of every instance (above). By the rule, it never refuses:
-a refusal there is a type-system bug.
+An instance's check re-derived what the definition's check settled.
+Admin app, one thread, perf build: the instance check was 24% of the
+compile threads' samples, containment and unification a third of it,
+and it runs before an instance's statements can fork.
 
-**The table.** After the check's settle, every type in a definition's
-body is a function of its signature's cells: the signature's own
-(generalized), the environment's (shared) and cells the body owns. The
-definition records, per expression id of its body, what the instance
-needs: each node's type, each call site's instantiated signature and
-omitted defaults, each `let`'s pattern types, each select arm's
-predicate, each nested lambda's signature. Recording is a walk of the
-checked body at the gate's close, after its settle.
+**The table.** At its gate's close a definition records what its check
+settled, per expression id of its body (`node::lambda::DefTable`): each
+node's type, each call site's signature, each lambda literal's own
+table. An id two nodes share has no row. A cell of the table its gate
+created, that nothing bounded and its signature does not reach, settles
+to ⊥ with the check (`PendingSettle::Body`). A seq block lowers once per
+expression and scope (`CompileCtx::lowered_seqs`), so every compile of a
+body has the same ids.
 
-**An instance** compiles the body as now and replaces `typecheck0` with
-a setup pass: every type is the table's, instantiated by the instance
-signature the way `FnType::instantiate` copies a signature (a cell the
-definition owns copied once per instance, an environment cell shared),
-and every node does the part of its `typecheck0` that is state, not
-checking: a call site installs its signature and default placeholders,
-a `let` registers its lambda, a select builds its arm predicates, a `?`
-joins its raise. Each node kind's `typecheck0` splits into that setup and
-the check; the definition check runs both, an instance only the setup.
-A nested lambda literal's gate is the enclosing definition's work: its
-body's types are rows of the same table.
+**An instance** compiles its body as before and runs
+`Update::typecheck0_instance` instead of `typecheck0`
+(`node::lambda::InstanceTypes`). The definition's signature is copied
+through one cell map and unified with the instance's, and every row goes
+through the same map (`Type::instantiate_with`: a bound cell is
+followed, an open one a closed gate owns is copied once, any other is
+shared; a ref to a typedef of the definition's own discarded body
+resolves again). Each node kind takes its types from its row and does
+only the state part of its check:
+- a call site installs its signature, placeholders for omitted
+  defaults, joins its raise, and pre-unifies each argument with its
+  formal so a callback's parameters infer;
+- a lambda literal takes its signature at its own level and generalizes
+  it with no gate and no second compile of its body; its instances
+  read its table through the enclosing instance's map (`Tables::outer`,
+  `Type::rename_with`);
+- a select completes its predicates, narrows, and types its captures,
+  but judges no coverage, dead arm or guard;
+- a composite keeps its own small check and runs its children through
+  the instance form (`typecheck0_with` over a `node::Child` visitor);
+- the instance itself checks neither its arguments nor its return.
 
-**What it needs first.**
-- Stable expression ids: seq lowering (`expr/seq.rs`) and trait impl
-  bodies (`traits.rs`) mint fresh ids per compile. They must derive
-  ids from their source, or lower once per definition.
-- The type-directed builtins' refusals in the check (step 1, below):
-  the hooks run on the instance's types, which the table supplies.
-- A dynamic bind substitutes the same way, so the runtime recheck
-  (`callsite.rs::setup_dynamic_bind`, the lazy `typecheck1`) goes, and
-  with it the rechecks that fail silently
-  (`findings/parse-bottom-member-jul2026/`).
+The default `typecheck0_instance` is the check, so a node kind nothing
+converted stays correct. `GRAPHIX_NO_SUBST=1` checks every instance.
 
-**How it is checked.** Under `GRAPHIX_ELAB_AUDIT`, an instance also runs
-its old check against the substituted types and reports any difference;
-the gate, `regress` and a soak run with it before the check is dropped.
+Where the old instance check refined an open cell of a generalized
+signature (the element of an empty-array arm beside a typed one), the
+substituted type keeps it open: values are the same, a few fused
+regions' frozen types differ.
+
+Admin app, `milestone_timing`, same binary, substitution off → on:
+
+| | fusion off | fusion on |
+|---|---|---|
+| one thread | 395 → 281 ms | 600 → 495 ms |
+| four threads | 200 → 151 ms | 390 → 355 ms |
+
+Instance setup is now 9% of the samples, the definitions' checks 8%.
+Open: a dynamic bind still checks its instance
+(`callsite.rs::setup_dynamic_bind`, the lazy `typecheck1`); an image
+does not carry tables, so a restored definition's instances check.
 
 ## The audit
 
@@ -322,8 +333,9 @@ audit is clean it becomes a finding that every fuzz lane records.
 
 ## Steps
 
-1. Make the audit clean: the builtin constraint; instances by
-   substitution (above). OPEN (`Concrete` is built).
+1. Make the audit clean: the builtin constraint (`Concrete` is built);
+   dynamic binds by substitution. Static instances by substitution are
+   BUILT (above).
 2. The audits as fuzz findings, soaked. OPEN.
 3. Split ExecCtx into the compile context and the runtime. BUILT.
 4. Threads. Code generation and statement elaboration are BUILT

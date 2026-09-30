@@ -473,6 +473,18 @@ impl TypeRef {
         }
     }
 
+    /// Whether the cell was filled with a definition that is gone: a
+    /// typedef local to a body whose compile was discarded.
+    pub(crate) fn dead(&self) -> bool {
+        self.resolved.lock().as_ref().is_some_and(|w| w.strong_count() == 0)
+    }
+
+    /// This ref with different `params` and an empty cell: the name
+    /// resolves again where the copy is read.
+    pub(crate) fn unresolved(&self, params: Arc<[Type]>) -> Self {
+        Self { params, resolved: Arc::default(), ..self.clone() }
+    }
+
     /// Expand this ref through its filled cell, env-free, substituting
     /// params as `lookup_ref` would. `None` when the cell is empty or
     /// the arity mismatches. No constraint checks.

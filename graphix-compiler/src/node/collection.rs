@@ -993,6 +993,15 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
     }
 
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        wrap!(self.base.source, self.base.source.typecheck0_instance(ctx, types))?;
+        wrap!(self.base.prototype, self.base.prototype.typecheck0_instance(ctx, types))
+    }
+
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.base.source, self.base.source.typecheck1(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck1(ctx))
@@ -1399,6 +1408,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         wrap!(self.base.source, self.base.source.typecheck0(ctx))?;
         wrap!(self.base.init, self.base.init.typecheck0(ctx))?;
         wrap!(self.base.prototype, self.base.prototype.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        wrap!(self.base.source, self.base.source.typecheck0_instance(ctx, types))?;
+        wrap!(self.base.init, self.base.init.typecheck0_instance(ctx, types))?;
+        wrap!(self.base.prototype, self.base.prototype.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {

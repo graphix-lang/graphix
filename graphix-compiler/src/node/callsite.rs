@@ -4,7 +4,8 @@ use super::{
     compiler::compile,
     error::{Qop, join_raised},
     lambda::{
-        BuiltInLambda, GXLambda, Lambda, LambdaDef, build_builtin_check, same_parameters,
+        BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, build_builtin_check,
+        same_parameters,
     },
     pattern::StructPatternNode,
 };
@@ -259,6 +260,45 @@ fn quantified_formal(
         .map(|(_, tv)| tv.open_rigid())
         .collect();
     Ok(Some((formal.clone(), gates)))
+}
+
+/// Fit a site's arguments to its signature: a placeholder for each
+/// defaulted label it omits; a missing or unknown label, or a wrong
+/// positional count, is refused.
+fn fill_omitted<R: Rt, E: UserEvent>(
+    args: &mut ArgMap<R, E>,
+    ftype: &FnType,
+) -> Result<()> {
+    for arg in ftype.args.iter() {
+        if let FnArgKind::Labeled { name, has_default } = &arg.kind {
+            match args.entry(ArgKey::Named(name.clone())) {
+                ArgEntry::Occupied(_) => (),
+                ArgEntry::Vacant(e) if *has_default => {
+                    let nop = Nop::new(arg.typ.clone());
+                    e.insert(Arg::new(BindId::new(), Some(nop), true));
+                }
+                ArgEntry::Vacant(_) => bail!("missing required argument {name}"),
+            }
+        }
+    }
+    for key in args.keys() {
+        if let ArgKey::Named(name) = key
+            && !ftype.args.iter().any(|a| a.label() == Some(name))
+        {
+            bail!("unknown labeled argument {name}")
+        }
+    }
+    let required = ftype.args.iter().filter(|a| a.is_positional()).count();
+    let provided = args.keys().filter(|k| matches!(k, ArgKey::Positional(_))).count();
+    if provided < required {
+        bail!(
+            "missing required argument: expected {required} positional, received {provided}"
+        )
+    }
+    if provided > required && ftype.vargs.is_none() {
+        bail!("too many positional arguments, expected {required}, received {provided}")
+    }
+    Ok(())
 }
 
 /// Check a call's argument node against its formal's type `typ`: false
@@ -803,6 +843,23 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 ctx.discard(node);
                 Err(e)
             }
+        }
+    }
+
+    /// What the call raises joins the enclosing catch's type; with no
+    /// catch, it is an unhandled error.
+    fn raise_throws(&self, ctx: &CompileCtx<R, E>, ftype: &FnType) -> Result<()> {
+        let Some(t) = ftype.throws.deref_cloned() else { return Ok(()) };
+        match self.scope.dynamic.catch() {
+            Some((id, _)) => join_raised(&ctx.env, id, &t),
+            // it doesn't throw any errors
+            None if t == Type::Bottom => Ok(()),
+            None => Qop::<R, E>::check_unhandled(
+                &ctx.env,
+                self.flags,
+                &self.spec,
+                format_args!("error {t} raised from function call {}", self.fnode.spec()),
+            ),
         }
     }
 
@@ -1948,47 +2005,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     fresh = true;
                     ftype.instantiate(&ctx.rec_defs)
                 };
-                self.ftype = Some(ftype.clone());
-                let ftype = self.ftype.as_ref().unwrap();
-                for arg in ftype.args.iter() {
-                    if let FnArgKind::Labeled { name, has_default } = &arg.kind {
-                        match self.args.entry(ArgKey::Named(name.clone())) {
-                            ArgEntry::Occupied(_) => (),
-                            ArgEntry::Vacant(e) if *has_default => {
-                                let nop = Nop::new(arg.typ.clone());
-                                e.insert(Arg::new(BindId::new(), Some(nop), true));
-                            }
-                            ArgEntry::Vacant(_) => {
-                                bail!("missing required argument {name}")
-                            }
-                        }
-                    }
-                }
-                for key in self.args.keys() {
-                    if let ArgKey::Named(name) = key
-                        && !ftype.args.iter().any(|a| a.label() == Some(name))
-                    {
-                        bail!("unknown labeled argument {name}")
-                    }
-                }
-                let required = ftype.args.iter().filter(|a| a.is_positional()).count();
-                let provided = self
-                    .args
-                    .keys()
-                    .filter(|k| matches!(k, ArgKey::Positional(_)))
-                    .count();
-                if provided < required {
-                    bail!(
-                        "missing required argument: expected {required} positional, \
-                         received {provided}"
-                    )
-                }
-                if provided > required && ftype.vargs.is_none() {
-                    bail!(
-                        "too many positional arguments, expected {required}, received {provided}"
-                    )
-                }
-                ftype
+                fill_omitted(&mut self.args, &ftype)?;
+                self.ftype = Some(ftype);
+                self.ftype.as_ref().unwrap()
             }
         };
         let mut widening = Widening::new(fresh);
@@ -2057,28 +2076,50 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        if let Some(t) = ftype.throws.deref_cloned() {
-            match self.scope.dynamic.catch() {
-                Some((id, _)) => join_raised(&ctx.env, id, &t)?,
-                // it doesn't throw any errors
-                None if t == Type::Bottom => (),
-                None => Qop::<R, E>::check_unhandled(
-                    &ctx.env,
-                    self.flags,
-                    &self.spec,
-                    format_args!(
-                        "error {t} raised from function call {}",
-                        self.fnode.spec()
-                    ),
-                )?,
-            }
-        }
+        self.raise_throws(ctx, ftype)?;
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the
         // settle to the enclosing statement
         let settle = self.pending_settle(ftype);
         ctx.pending_settles.last_mut().expect("settle frame").push(settle);
+        Ok(())
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut InstanceTypes,
+    ) -> Result<()> {
+        let ftype = match self.lowered.is_none() && self.ftype.is_none() {
+            true => types.ftype(self.spec.id),
+            false => None,
+        };
+        let Some(ftype) = ftype else { return self.typecheck0(ctx) };
+        wrap!(self.fnode, self.fnode.typecheck0_instance(ctx, types))?;
+        fill_omitted(&mut self.args, &ftype)?;
+        // a lambda argument learns its parameters' types from the formal
+        for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
+            if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
+                Type::pre_unify_arg(&ctx.env, &farg.typ, n.typ())?;
+                wrap!(n, n.typecheck0_instance(ctx, types))?;
+            }
+        }
+        if let Some(typ) = &ftype.vargs {
+            let positional = ftype.args.iter().filter(|a| a.is_positional()).count();
+            for key in ArgKey::variadic(positional) {
+                let Some(arg) = self.args.get_mut(&key) else { break };
+                if let Some(n) = arg.node.as_mut() {
+                    Type::pre_unify_arg(&ctx.env, typ, n.typ())?;
+                    wrap!(n, n.typecheck0_instance(ctx, types))?;
+                }
+            }
+        }
+        self.raise_throws(ctx, &ftype)?;
+        if !wrap!(self, types.settle(&ctx.env, self.spec.id, &self.rtype))? {
+            wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
+        }
+        self.ftype = Some(ftype);
         Ok(())
     }
 
