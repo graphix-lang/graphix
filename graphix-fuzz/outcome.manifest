@@ -234,6 +234,7 @@ trace	leaf-stale-mask-jul2026/02_connect_infinite_refire.gx
 trace	leaf-stale-mask-jul2026/03_nested_findmap_in_callback.gx
 trace	leaf-stale-mask-jul2026/04_reactive_fold_destructure.gx
 trace	leaf-stale-mask-jul2026/05_ref_connect_fold.gx
+trace	local-abstract-recursion-sep2026/00_construct_in_a_runtime_recursion.gx
 trace	local-typedef-recursion-sep2026/00_recursion_under_a_local_typedef.gx
 trace	map-nest-drop-jul2026/01_selfkey_map_teardown_overflow.gx
 trace	map-source-recovers-sep2026/00.gx

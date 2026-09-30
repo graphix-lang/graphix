@@ -1,0 +1,5 @@
+// A recursive call binding at run time constructs its body's own
+// abstract type: the discarded check body's `type` left its
+// representation registered for the live instance (found in the sep29c
+// triage, not by a soak).
+{ let f = |x: i64| { type T = Abstract<i64>; let rec g = |t: T, n: i64| select n { 0 => t, n => g(T(t.0 + 1), n - 1) }; select g(T(x), 3) { T(v) => v } }; f(1) }

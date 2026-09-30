@@ -1420,6 +1420,7 @@ impl Env {
         // [i64, T]` (or `type A = B; type B = A`) names no value, and
         // contains' coinductive memo would accept it against anything.
         if typ.reaches_unguarded(self, scope, name) {
+            self.abstract_reps.remove(&AbstractId::of(scope, name));
             self.undeftype(scope, name);
             bail!(
                 "recursive type {name} refers back to itself through unions and \
@@ -1474,8 +1475,10 @@ impl Env {
         self.abstract_reps.get(&id).is_some()
     }
 
+    /// Drop the name `name` at `scope`. An abstract type's
+    /// representation stays: every compile of one source typedef
+    /// registers the same one, and a live compile still constructs it.
     pub fn undeftype(&mut self, scope: &ModPath, name: &str) {
-        self.abstract_reps.remove(&AbstractId::of(scope, name));
         if let Some(defs) = self.typedefs.get_mut_cow(scope) {
             defs.remove_cow(&CompactString::from(name));
             if defs.len() == 0 {

@@ -888,6 +888,44 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
+// A type definition's body names something once its block is
+// registered: a later sibling does, an undefined name does not.
+run!(
+    typedef_body_names_are_defined,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("undefined type Act")),
+    "/test.gx" => r#"
+        type A = [`X(B), `N];
+        type B = [`Y(Act), `M];
+        let result = 0
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    typedef_body_names_a_later_sibling,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
+    "/test.gx" => r#"
+        let f = |x: i64| { type A = [`X(B), `N]; type B = i64; x };
+        let result = f(0)
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
+// A body-local abstract type constructs in a call bound at run time.
+run!(
+    local_abstract_in_a_runtime_recursion,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    "/test.gx" => r#"
+        let f = |x: i64| {
+            type T = Abstract<i64>;
+            let rec g = |t: T, n: i64| select n {
+                0 => t,
+                n => g(T(t.0 + 1), n - 1)
+            };
+            select g(T(x), 3) { T(v) => v }
+        };
+        let result = f(1)
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
 // A recursive call inside a body that declares a type binds at run time,
 // from the types its definition's check settled.
 run!(

@@ -113,8 +113,8 @@ types are its definition's check's (`node::lambda::DefTable`),
 substituted by its signature, and each node's `typecheck0_instance`
 does only the state part of its check (the default is the check;
 `design/parallel_compile.md`). Every type name a definition
-writes must name something by the check's end, expanded or not
-(`design/env_independent_typerefs.md`).
+writes, a typedef body's included, must name something by the check's
+end, expanded or not (`design/env_independent_typerefs.md`).
 
 Key types: `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration — `fold`, the seq rewrite and

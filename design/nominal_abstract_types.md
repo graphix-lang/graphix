@@ -43,7 +43,10 @@ let bump = |c| { let Counter(x) = c; Counter(x + 1) };   // destructure
 2. `T(v)`, `x.0`, and the pattern `T(x)` (irrefutable in `let`, an arm
    in `select`) compile exactly where the DEFINITION is visible
    (`Env::abstract_reps`, gated by `AbstractRep::public` or the scope
-   prefix). The type test `T as t` is visible wherever `T` is — it is
+   prefix). Every compile of one definition (its check, each instance)
+   registers the same representation, so deleting one compile's `type`
+   leaves it (`Env::undeftype` drops only the name). The type test
+   `T as t` is visible wherever `T` is — it is
    a tag comparison, which is what lets `select` accept abstract
    predicates and what trait dispatch over a union needs
    (`traits.md`).

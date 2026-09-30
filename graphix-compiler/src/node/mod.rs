@@ -20,7 +20,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -28,7 +28,7 @@ use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::{cell::Cell, mem, sync::LazyLock};
+use std::{cell::Cell, iter, mem, sync::LazyLock};
 use triomphe::Arc;
 
 pub(crate) mod array;
@@ -693,7 +693,34 @@ pub(crate) fn compile_block_children<'a, R: Rt, E: UserEvent>(
         scope = next;
         children.push(node);
     }
+    for n in children.iter() {
+        defer_typedef_names(ctx, n);
+    }
     Ok((Box::from_iter(children.drain(..)), Box::from_iter(catches.drain(..))))
+}
+
+/// Defer the names a type definition's body writes (`defer_unresolved_names`),
+/// once every name its statement list declares is registered.
+pub(crate) fn defer_typedef_names<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    n: &Node<R, E>,
+) {
+    let NodeView::TypeDef(td) = n.view() else { return };
+    let Some(def) = ctx
+        .env
+        .typedefs
+        .get(&td.scope)
+        .and_then(|m| m.get(&CompactString::from(td.name.as_str())))
+    else {
+        return;
+    };
+    let written: LPooled<Vec<Type>> = iter::once(def.typ().clone())
+        .chain(def.rep.clone())
+        .chain(def.params().iter().filter_map(|(_, c)| c.clone()))
+        .collect();
+    for t in written.iter() {
+        crate::defer_unresolved_names(ctx, t, &td.spec);
+    }
 }
 
 /// Where a statement stands: a top-level statement, or one of a block's,

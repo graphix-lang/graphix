@@ -2299,7 +2299,16 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
     spec: Expr,
 ) -> Result<(Node<R, E>, Scope)> {
     compile_top(ctx, flags, spec, |ctx, spec, top_id| {
-        node::compile_statement(ctx, flags, spec, scope, top_id, node::StmtAt::TopLevel)
+        let (n, scope) = node::compile_statement(
+            ctx,
+            flags,
+            spec,
+            scope,
+            top_id,
+            node::StmtAt::TopLevel,
+        )?;
+        node::defer_typedef_names(ctx, &n);
+        Ok((n, scope))
     })
 }
 

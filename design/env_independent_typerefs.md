@@ -92,8 +92,11 @@ What remains:
 ## Every written name names something
 
 A definition's check (its gate, and each annotated `let` and each
-`never<T>` in its body) asks of every name its written types hold, parameters and bounds
-included, whether it names something (`TypeRef::names_something`: the
+`never<T>` in its body), and each type definition's body, bounds and
+representation once every name of its statement list is registered
+(`node::defer_typedef_names`, so a later sibling counts), asks of
+every name its written types hold, parameters and bounds included,
+whether it names something (`TypeRef::names_something`: the
 filled cell, a visible typedef, or a trait), without filling a cell. A
 name that does not is deferred to the end of the check
 (`ExecCtx::pending_names`, `check_pending_names`), where every name is
