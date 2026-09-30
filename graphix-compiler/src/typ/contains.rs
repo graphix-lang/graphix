@@ -6,7 +6,7 @@ use crate::{
     node::coretraits::CoreTrait,
     stack::ensure_sufficient,
     typ::{
-        AndAc, NormKey, RefHist, RefPair, TVar, TraitId, Type, TypeRef, node_addr,
+        AndAc, Lazy, NormKey, RefHist, RefPair, TVar, TraitId, Type, TypeRef, node_addr,
         probe_key, setops::union_identical, tvar::would_cycle_inner,
     },
 };
@@ -49,14 +49,14 @@ pub(super) struct ContainsHist {
     /// Per-call ref-expansion cache (ref_id → raw `lookup_ref` result).
     /// Committing consumers take `reset_tvars()` copies; the concrete
     /// mass stays Arc-shared so repeated pairs are pruned by identity.
-    expansions: LPooled<IntMap<usize, Type>>,
+    expansions: Lazy<IntMap<usize, Type>>,
     /// Pure-probe pair memo: `contains_int` verdicts for empty-flag
     /// calls, keyed by both sides' content-Arc identities. Each entry
     /// pins both types so an address cannot be recycled under its key,
     /// and carries the `epoch` at insert: a committing call may bind a
     /// cell a verdict read, so the epoch bumps there.
-    probe_pairs: LPooled<AHashMap<(NormKey, NormKey), (u64, bool)>>,
-    probe_pins: LPooled<Vec<Type>>,
+    probe_pairs: Lazy<AHashMap<(NormKey, NormKey), (u64, bool)>>,
+    probe_pins: Lazy<Vec<Type>>,
     /// A probe that depends on its own verdict claims nothing.
     distribution_probes_in_progress: SmallVec<[usize; 4]>,
     /// The typedefs a trait question is in progress for.
@@ -84,9 +84,9 @@ impl ContainsHist {
     pub(super) fn new() -> Self {
         ContainsHist {
             hist: RefHist::new(),
-            expansions: LPooled::take(),
-            probe_pairs: LPooled::take(),
-            probe_pins: LPooled::take(),
+            expansions: Lazy::new(),
+            probe_pairs: Lazy::new(),
+            probe_pins: Lazy::new(),
             distribution_probes_in_progress: SmallVec::new(),
             traits_in_progress: SmallVec::new(),
             low_water: usize::MAX,
@@ -97,16 +97,17 @@ impl ContainsHist {
     /// Cached pure-probe verdict for `(t0, t1)`, if current.
     fn probe_get(&self, t0: &Type, t1: &Type) -> Option<bool> {
         let k = (probe_key(t0)?, probe_key(t1)?);
-        let (epoch, r) = self.probe_pairs.get(&k).copied()?;
+        let (epoch, r) = self.probe_pairs.get()?.get(&k).copied()?;
         (epoch == self.epoch).then_some(r)
     }
 
     fn probe_put(&mut self, t0: &Type, t1: &Type, r: bool) {
         if let (Some(k0), Some(k1)) = (probe_key(t0), probe_key(t1))
-            && self.probe_pairs.insert((k0, k1), (self.epoch, r)).is_none()
+            && self.probe_pairs.get_mut().insert((k0, k1), (self.epoch, r)).is_none()
         {
-            self.probe_pins.push(t0.clone());
-            self.probe_pins.push(t1.clone());
+            let pins = self.probe_pins.get_mut();
+            pins.push(t0.clone());
+            pins.push(t1.clone());
         }
     }
 
@@ -149,12 +150,12 @@ impl ContainsHist {
             return t.lookup_ref_with(env, commit);
         }
         let fresh = |e: &Type| if commit { e.reset_tvars() } else { e.clone() };
-        if let Some(e) = self.expansions.get(&id) {
+        if let Some(e) = self.expansions.get().and_then(|m| m.get(&id)) {
             return Ok(Some(fresh(e)));
         }
         let Some(e) = t.lookup_ref_with(env, commit)? else { return Ok(None) };
         let r = fresh(&e);
-        self.expansions.insert(id, e);
+        self.expansions.get_mut().insert(id, e);
         Ok(Some(r))
     }
 }

@@ -267,12 +267,8 @@ fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
         ExprKind::Ref { name } => name,
         _ => return None,
     };
-    // The CallSite's own scope, so a call inside a nested lambda body
-    // resolves in its module, not the region root's.
-    let (_, bind) = match ctx.env.lookup_bind(&cs.scope().lexical, path).ok().flatten() {
-        Some(b) => b,
-        None => return None,
-    };
+    let NodeView::Ref(r) = cs.fnode().view() else { return None };
+    let bind = ctx.env.by_id.get(&r.id)?;
     let key = (bind.scope.clone(), bind.name.clone());
     let info = match ctx.builtin_bindings.get(&key) {
         Some(i) => i.clone(),

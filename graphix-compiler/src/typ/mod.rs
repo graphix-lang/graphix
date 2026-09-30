@@ -101,16 +101,34 @@ fn probe_key(t: &Type) -> Option<NormKey> {
 
 /// A relation's cycle memo: ids for the types a walk meets, and
 /// `inner`, the relation's own record of the pairs in progress.
+/// A pooled container taken at its first write: most walks never
+/// write theirs.
+struct Lazy<T: IsoPoolable>(Option<LPooled<T>>);
+
+impl<T: IsoPoolable> Lazy<T> {
+    fn new() -> Self {
+        Self(None)
+    }
+
+    fn get(&self) -> Option<&T> {
+        self.0.as_deref()
+    }
+
+    fn get_mut(&mut self) -> &mut T {
+        self.0.get_or_insert_with(LPooled::take)
+    }
+}
+
 struct RefHist<H: IsoPoolable> {
     inner: LPooled<H>,
     /// Definition key → (the resolution it came from, pinned so the key
     /// is not reused; the param lists seen with their ids).
-    ref_ids: LPooled<
+    ref_ids: Lazy<
         IntMap<usize, (sync::Arc<ResolvedRef>, SmallVec<[(Arc<[Type]>, usize); 2]>)>,
     >,
     /// Content identity → id for non-Ref types, so the cycle memo does
     /// not conflate distinct finite sub-problems.
-    content_ids: LPooled<AHashMap<NormKey, usize>>,
+    content_ids: Lazy<AHashMap<NormKey, usize>>,
     next_id: usize,
 }
 
@@ -132,8 +150,8 @@ impl<H: IsoPoolable> RefHist<H> {
     fn new() -> Self {
         RefHist {
             inner: LPooled::take(),
-            ref_ids: LPooled::take(),
-            content_ids: LPooled::take(),
+            ref_ids: Lazy::new(),
+            content_ids: Lazy::new(),
             next_id: 0,
         }
     }
@@ -155,8 +173,11 @@ impl<H: IsoPoolable> RefHist<H> {
             Type::Ref(tr) => {
                 let r = tr.resolve_in(env)?;
                 let key = r.def_key();
-                let entry =
-                    self.ref_ids.entry(key).or_insert_with(|| (r, SmallVec::new()));
+                let entry = self
+                    .ref_ids
+                    .get_mut()
+                    .entry(key)
+                    .or_insert_with(|| (r, SmallVec::new()));
                 let found = entry.1.iter().find(|(p, _)| {
                     Arc::ptr_eq(p, &tr.params)
                         || p.len() == tr.params.len()
@@ -169,6 +190,7 @@ impl<H: IsoPoolable> RefHist<H> {
                 }
                 let id = self.next();
                 self.ref_ids
+                    .get_mut()
                     .get_mut(&key)
                     .expect("inserted")
                     .1
@@ -186,11 +208,11 @@ impl<H: IsoPoolable> RefHist<H> {
             Type::Any | Type::Bottom => (d, 0, 0),
             t => probe_key(t)?,
         };
-        if let Some(&id) = self.content_ids.get(&k) {
+        if let Some(&id) = self.content_ids.get().and_then(|m| m.get(&k)) {
             return Some(id);
         }
         let id = self.next();
-        self.content_ids.insert(k, id);
+        self.content_ids.get_mut().insert(k, id);
         Some(id)
     }
 }

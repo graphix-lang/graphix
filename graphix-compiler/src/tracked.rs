@@ -5,6 +5,23 @@
 use crate::env::{Map, Set};
 use std::{fmt::Debug, ops::Deref};
 
+/// The keys a joined fork wrote, each once and sorted, recorded as
+/// writes of the container it joins; `None` when it wrote none.
+fn merged_keys<K: Ord + Clone>(
+    generation: &mut u64,
+    mine: &mut Option<Vec<K>>,
+    theirs: Option<Vec<K>>,
+) -> Option<Vec<K>> {
+    let mut keys = theirs.filter(|t| !t.is_empty())?;
+    keys.sort_unstable();
+    keys.dedup();
+    *generation += 1;
+    if let Some(mine) = mine {
+        mine.extend(keys.iter().cloned());
+    }
+    Some(keys)
+}
+
 /// A [`Map`] with fork and join.
 #[derive(Clone, Debug)]
 pub struct TrackedMap<K: Ord + Clone + Debug, V: Clone + Debug> {
@@ -130,16 +147,15 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
             }
             return;
         }
-        for k in touched.into_iter().flatten() {
-            match map.get(&k) {
-                Some(v) => {
-                    self.insert(k, v.clone());
-                }
-                None => {
-                    self.remove(&k);
-                }
-            }
-        }
+        let Some(touched) = merged_keys(&mut self.generation, &mut self.touched, touched)
+        else {
+            return;
+        };
+        self.map =
+            self.map.update_many(touched.into_iter().map(|k| (k, ())), |k, (), _| {
+                let v = map.get(&k)?.clone();
+                Some((k, v))
+            });
     }
 }
 
@@ -241,13 +257,11 @@ impl<K: Ord + Clone + Debug> TrackedSet<K> {
             }
             return;
         }
-        for k in touched.into_iter().flatten() {
-            if set.contains(&k) {
-                self.insert(k);
-            } else {
-                self.remove(&k);
-            }
-        }
+        let Some(touched) = merged_keys(&mut self.generation, &mut self.touched, touched)
+        else {
+            return;
+        };
+        self.set = self.set.update_many(touched, |k, _| set.contains(&k).then_some(k));
     }
 }
 

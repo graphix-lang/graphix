@@ -697,11 +697,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         &self.fnode
     }
 
-    /// The scope this call site was compiled in.
-    pub(crate) fn scope(&self) -> &Scope {
-        &self.scope
-    }
-
     /// View the [`Apply`] this CallSite is bound to; `None` until a
     /// runtime bind or `try_static_resolve` has populated `self.callee`.
     pub fn resolved_apply(&self) -> Option<ApplyView<'_, R, E>> {
@@ -2155,11 +2150,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         if let Some(n) = &self.lowered {
             return n.refs(refs);
         }
-        if let Some(fun) = self.callee.apply() {
-            fun.refs(refs)
-        }
-        if let Callee::Imaged { summary, .. } = &self.callee {
-            summary.add_to(refs);
+        if !refs.skip_callees {
+            if let Some(fun) = self.callee.apply() {
+                fun.refs(refs)
+            }
+            if let Callee::Imaged { summary, .. } = &self.callee {
+                summary.add_to(refs);
+            }
         }
         self.fnode.refs(refs);
         for arg in self.args.values() {

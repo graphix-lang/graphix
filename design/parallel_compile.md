@@ -191,10 +191,13 @@ lack of tasks: forking an expression's sibling calls into tasks as well
 
 A perf profile of the admin app on four P-cores (10 kHz, samples binned
 by millisecond, a millisecond with one busy thread counted as serial)
-gives, for the fused build, 216 of 390 ms serial: fusion discovery
-104 ms, analysis 29, the link's tails 27, fork and join 12, emission 9,
-the check 8, the rest 20. Elaboration runs at 3.8x. The unfused build
-is 66 of 135 ms serial, analysis 30 and fork and join 13 of it.
+gives, for the fused build, 235 of 400 ms serial: the check 77 ms,
+fusion discovery 54, analysis 26, the link's tails 25, fork and join
+14, graph compile 11, emission 7, the rest 19. The unfused build is 151
+of 220 ms serial, the check 81 and analysis 27 of it. Elaboration runs
+at 3.8x. The check is serial by design: a module's statements check in
+order (`typecheck0`), while elaboration forks each into a task
+(`node::typecheck1_statements`).
 
 - Discovery repeats its type work: within one pass `expand_refs` ran
   6902 times over 2085 distinct types, the ABI freeze 16777 times over
@@ -205,11 +208,27 @@ is 66 of 135 ms serial, analysis 30 and fork and join 13 of it.
   resolved before it was computed: resolution cells fill during the
   pass, and a freeze over an empty cell is `Unresolved`.
 - Analysis took each instance body's `refs` to learn its own bindings,
-  which only a `<-` in the body asks about; it is taken on the first.
+  which only a `<-` in the body asks about; it is taken on the first,
+  and without the callees' bodies (`Refs::without_callees`), which no
+  `<-` in the body can name.
+- `contains` took six pooled maps per call; five are taken at their
+  first write (`typ::Lazy`).
+- A builtin call site resolves its function by its `Ref`'s bind id,
+  not by looking its name up (fusion discovery and analysis).
+- A compile task's join wrote back each key it touched, once per
+  write; the keys are deduplicated and written back in one
+  `update_many` (`tracked.rs`).
+- poolshark's pool registry hashed discriminants to their raw bits, so
+  the table's tag bits were all equal and every lookup scanned its
+  group.
 
-Fused build, four P-cores: ~350 → ~315 ms; unfused: ~153 → ~146 ms.
-Fusion decisions are unchanged (a check of every memo hit against a
-fresh computation passed the workspace and the admin package).
+The memo and the lazy `refs`: fused build, four P-cores, ~350 → ~315
+ms; unfused ~153 → ~146 ms. Fusion decisions are unchanged (a check of
+every memo hit against a fresh computation passed the workspace and the
+admin package). The rest, by user instructions over the admin
+milestone run: 9.39 G → 8.01 G (poolshark 4.7%, lazy maps 2%, `refs`
+without callees 3.6%, bind ids 0.7%, the join 4.5%). Resolving by bind
+id also fuses a trait method whose implementation is a fast builtin.
 
 ## The rule that makes it possible
 

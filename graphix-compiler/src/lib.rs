@@ -413,9 +413,16 @@ pub struct Refs {
     triggering: LPooled<IntSet<BindId>>,
     bound: LPooled<IntSet<BindId>>,
     banked: usize,
+    /// Leave callee instance bodies out of the walk.
+    skip_callees: bool,
 }
 
 impl Refs {
+    /// A walk of one body alone: callee instance bodies are left out.
+    pub(crate) fn without_callees() -> Self {
+        Self { skip_callees: true, ..Self::default() }
+    }
+
     /// Record a read of `id`, triggering unless under a sample's right
     /// side.
     pub(crate) fn read(&mut self, id: BindId) {

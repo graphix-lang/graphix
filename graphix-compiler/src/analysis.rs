@@ -423,7 +423,7 @@ fn body_facts<R: Rt, E: UserEvent>(
         local
             .get_or_init(|| {
                 let _profile = profile::phase(Phase::EffectRefs);
-                let mut refs = Refs::default();
+                let mut refs = Refs::without_callees();
                 body.refs(&mut refs);
                 let mut local: LPooled<IntSet<BindId>> = LPooled::take();
                 refs.with_bound(|id| {
@@ -585,15 +585,16 @@ fn callee_facts<R: Rt, E: UserEvent>(
         {
             return of_def(d.id);
         }
-    }
-    if let ExprKind::Ref { name } = &cs.fnode().spec().kind
-        && let Some((_, bind)) =
-            ctx.env.lookup_bind(&cs.scope().lexical, name).ok().flatten()
-        && let Some(info) =
-            ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone()))
-    {
-        let effect = ctx.builtin_effect(info.name.as_str());
-        return LambdaFacts { effect: effect.kind(), stateless: effect.is_stateless() };
+        if let Some(bind) = ctx.env.by_id.get(&r.id)
+            && let Some(info) =
+                ctx.builtin_bindings.get(&(bind.scope.clone(), bind.name.clone()))
+        {
+            let effect = ctx.builtin_effect(info.name.as_str());
+            return LambdaFacts {
+                effect: effect.kind(),
+                stateless: effect.is_stateless(),
+            };
+        }
     }
     if gxdbg_effect() {
         eprintln!("EFFECT-ASYNC-FALLBACK cs={}", cs.fnode().spec());

@@ -629,7 +629,7 @@ run!(
         impl Masked for i64 { let masked = |x, m| 'core_bit_and };
         let result = Masked::masked(6, 3)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // The same, through a bound rather than the dispatcher — the builtin
@@ -643,7 +643,7 @@ run!(
         let f = 'a: Masked |v: 'a| Masked::masked(v, 12);
         let result = f(6) + f(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // An interface's `impl` declaration does not displace the type
