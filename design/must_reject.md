@@ -89,8 +89,9 @@ rigid in its body check: none binds to a concrete type and no two
 unify. Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
 but keep the first cut to unconstrained variables). Built: a first
-statement comparing a parameter `x: 'a` with a literal, right site the
-definition. Open: equating two declared variables.
+statement comparing a parameter `x: 'a` with a literal, or calling a
+parameter `f: fn(x: 'a) -> ..` with one (`'a` not `f`'s own
+quantifier: each call picks that anew), right site the definition. Open: equating two declared variables.
 
 **3. Call conflicts.** Site: a call argument. (a) The callee's resolved
 parameter type is concrete: substitute a literal of a disjoint type.

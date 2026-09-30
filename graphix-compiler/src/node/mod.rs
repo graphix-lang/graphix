@@ -1685,6 +1685,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        crate::defer_unresolved_names(ctx, &self.typ, &self.spec);
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
     }
 

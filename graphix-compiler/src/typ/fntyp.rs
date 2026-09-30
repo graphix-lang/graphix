@@ -683,13 +683,55 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
 
+    /// Map each of the signature's own open quantifiers to a fresh cell
+    /// in `known`, its conjuncts copied through `walk`: every call picks
+    /// them anew, whatever gate owns them.
+    fn fresh_quantifiers(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
+    ) {
+        if self.quantifiers.is_empty() {
+            return;
+        }
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut named);
+        named.retain(|name, tv| self.quantifiers.contains(name) && !tv.is_bound());
+        for tv in named.values() {
+            known
+                .entry(tv.cell_addr())
+                .or_insert_with(|| TVar::empty_named(tv.name.clone()));
+        }
+        for tv in named.values() {
+            let f = known[&tv.cell_addr()].clone();
+            for c in tv.cell_constraints() {
+                f.add_cell_constraint(walk(&c, known));
+            }
+        }
+    }
+
+    /// A call's copy of a signature whose cells it shares (a parameter
+    /// called in its definition's body): only the quantifiers are fresh.
+    pub(crate) fn shared_call(&self) -> Self {
+        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.fresh_quantifiers(&mut known, |c, known| c.swap_cells(known));
+        if known.is_empty() {
+            return self.clone();
+        }
+        self.cow_walk(|t| Some(t.swap_cells(&known))).unwrap_or_else(|| self.clone())
+    }
+
     /// A call's copy of the signature under the open gates `open`
-    /// (`Fresh::Instantiate`), each fresh cell the copy holds more than
-    /// once frozen, so it keeps its cell when it unifies with an
-    /// unfrozen one.
+    /// (`Fresh::Instantiate`), its quantifiers always fresh, each fresh
+    /// cell the copy holds more than once frozen, so it keeps its cell
+    /// when it unifies with an unfrozen one.
     pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let fresh = self.reset_tvars_int(&mut known, Fresh::Instantiate(open));
+        let how = Fresh::Instantiate(open);
+        self.fresh_quantifiers(&mut known, |c, known| {
+            c.reset_tvars_int(known, how).unwrap_or_else(|| c.clone())
+        });
+        let fresh = self.reset_tvars_int(&mut known, how);
         let copies: LPooled<AHashSet<usize>> =
             known.values().map(|tv| tv.cell_addr()).collect();
         let mut occurrences: LPooled<Vec<TVar>> = LPooled::take();

@@ -26,7 +26,7 @@ use crate::{
     },
     profile::{self, Phase},
     typ::{
-        FnArgKind, FnArgType, FnType, TVar, Type,
+        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
         tvar::{AtLevel, Level, RigidGate},
     },
@@ -63,6 +63,9 @@ pub struct DefTable {
     ftypes: AHashMap<ExprId, FnType>,
     /// The table of each lambda literal of the body, by its id.
     lambdas: AHashMap<ExprId, SArc<DefTable>>,
+    /// The typedefs the rows name, owned here: one the body declares
+    /// is in the env only while the body compiles.
+    typedefs: Vec<SArc<ResolvedRef>>,
 }
 
 /// One instance's cell map, shared with the lambdas its body defines:
@@ -139,6 +142,15 @@ impl DefTable {
             table.ftypes.remove(&id);
             table.lambdas.remove(&id);
         }
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut defs: LPooled<AHashMap<usize, SArc<ResolvedRef>>> = LPooled::take();
+        for t in table.types.values() {
+            t.named_defs(&mut cells, &mut defs);
+        }
+        for ft in table.ftypes.values() {
+            ft.for_each_part(&mut |t, _| t.named_defs(&mut cells, &mut defs));
+        }
+        table.typedefs.extend(defs.drain().map(|(_, r)| r));
         table
     }
 }

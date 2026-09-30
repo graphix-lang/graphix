@@ -7,7 +7,7 @@ use crate::{
     image::{self, KeyedNode},
     stack::ensure_sufficient,
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
@@ -493,18 +493,6 @@ impl TypeRef {
             ori: self.ori.clone(),
             resolved: Arc::new(Mutex::new(self.resolved.lock().clone())),
         }
-    }
-
-    /// Whether the cell was filled with a definition that is gone: a
-    /// typedef local to a body whose compile was discarded.
-    pub(crate) fn dead(&self) -> bool {
-        self.resolved.lock().as_ref().is_some_and(|w| w.strong_count() == 0)
-    }
-
-    /// This ref with different `params` and an empty cell: the name
-    /// resolves again where the copy is read.
-    pub(crate) fn unresolved(&self, params: Arc<[Type]>) -> Self {
-        Self { params, resolved: Arc::default(), ..self.clone() }
     }
 
     /// Expand this ref through its filled cell, env-free, substituting
@@ -1342,6 +1330,41 @@ impl Type {
             }
             Type::Fn(ft) => ft.try_for_each_type(f),
         }
+    }
+
+    /// The definitions this type's filled cells name, and theirs, by
+    /// [`ResolvedRef::def_key`]: through bindings and conjuncts.
+    pub(crate) fn named_defs(
+        &self,
+        cells: &mut AHashSet<usize>,
+        out: &mut AHashMap<usize, sync::Arc<ResolvedRef>>,
+    ) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                if cells.insert(tv.cell_addr()) {
+                    if let Some(b) = tv.binding() {
+                        b.named_defs(cells, out)
+                    }
+                    for c in tv.cell_constraints() {
+                        c.named_defs(cells, out)
+                    }
+                }
+            }
+            Type::Ref(tr) => {
+                if let Some(r) = tr.resolved()
+                    && !out.contains_key(&r.def_key())
+                {
+                    out.insert(r.def_key(), r.clone());
+                    r.typ.named_defs(cells, out);
+                    for c in r.params.iter().filter_map(|(_, c)| c.as_ref()) {
+                        c.named_defs(cells, out)
+                    }
+                }
+                self.for_each_child(&mut |c| c.named_defs(cells, out))
+            }
+            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.named_defs(cells, out)),
+            t => t.for_each_child(&mut |c| c.named_defs(cells, out)),
+        })
     }
 
     /// [`Self::try_for_each_child`] without early exit.

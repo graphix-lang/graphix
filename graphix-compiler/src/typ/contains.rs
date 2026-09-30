@@ -30,9 +30,9 @@ pub enum ContainsFlags {
     /// Bind and alias cells to make the containment hold; without it
     /// the walk is a probe that binds nothing.
     Commit,
-    /// Enforce rigid (declared) tvar semantics; see `TCell::rigid_gates`.
-    /// Set only on the def gate's acceptance checks — elsewhere rigid
-    /// cells behave like ordinary unbound cells.
+    /// Enforce rigid (declared) tvar semantics in a probe too; see
+    /// `TCell::rigid_gates`. A committing check always enforces them: a
+    /// rigid cell never binds, so it holds only itself and Bottom.
     RigidCheck,
 }
 
@@ -597,7 +597,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t);
                 }
                 // A rigid cell contains only itself and Bottom.
-                if rigid && t0.is_rigid() {
+                if (rigid || commit) && t0.is_rigid() {
                     return Ok(false);
                 }
                 if !cell_constraints_ok(t0, env, hist, &Self::Any)? {
@@ -731,7 +731,7 @@ impl Type {
                     return t0.contains_int(flags, env, hist, t1);
                 }
                 // A rigid tvar contains only itself and Bottom.
-                if rigid && t0.is_rigid() {
+                if (rigid || commit) && t0.is_rigid() {
                     return Ok(false);
                 }
                 // A constraint violation fails here, at the site that
@@ -1029,7 +1029,7 @@ impl Type {
                 }
                 // A rigid receiver must not bind; re-verdict against
                 // the binding.
-                if rigid && t0.is_rigid() {
+                if (rigid || commit) && t0.is_rigid() {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
                 if commit && !t0.is_rigid() {
@@ -1054,7 +1054,7 @@ impl Type {
                 if cyc0() {
                     return refuse();
                 }
-                if rigid && t1.is_rigid() {
+                if (rigid || commit) && t1.is_rigid() {
                     return b0.contains_int(flags, env, hist, tt1);
                 }
                 if commit && !t1.is_rigid() {

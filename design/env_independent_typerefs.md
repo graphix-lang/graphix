@@ -91,8 +91,8 @@ What remains:
 
 ## Every written name names something
 
-A definition's check (its gate, and each annotated `let` in its body)
-asks of every name its written types hold, parameters and bounds
+A definition's check (its gate, and each annotated `let` and each
+`never<T>` in its body) asks of every name its written types hold, parameters and bounds
 included, whether it names something (`TypeRef::names_something`: the
 filled cell, a visible typedef, or a trait), without filling a cell. A
 name that does not is deferred to the end of the check

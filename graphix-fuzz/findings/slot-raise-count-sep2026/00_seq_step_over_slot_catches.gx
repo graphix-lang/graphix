@@ -1,0 +1,3 @@
+// A slot's kernel counts its raise on the handler it delivers to, so the
+// seq's step sees no error in flight (sep29c aieka divergence_000001).
+{ let go = 1; seq go { array::map([1, 2, 3], |x| { catch(e) e ~ 1; (x +? 9223372036854775806)?; x }) } }

@@ -1,0 +1,4 @@
+// A recursive call binds at run time from its definition's table, which
+// names the body's own `type L` (sep29c aieka divergence_000008: the
+// node-walk refused the bind, the typedef outlived by its types).
+{ let countdown = |n: i64, acc| -> i64 { type L<'a> = [`C('a, L<'a>), `N]; let rec fold_l = |l: L<i64>, acc: i64| -> i64 select l { `N => acc, `C(x, rest) => fold_l(rest, acc + x) }; fold_l(`C(1, `C(2, `C(3, `N))), 0) }; countdown(100, 0) }

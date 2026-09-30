@@ -440,6 +440,29 @@ async fn nested_catch_drains(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
+// Each slot's callback catches its own overflow, and the map's value
+// completes the step.
+async fn slot_catches_complete_the_step(fusion_disabled: bool) -> Result<()> {
+    for form in ["seq", "seqq"] {
+        let code = format!(
+            r#"{{
+                let go = 1;
+                {form} go {{
+                    array::map([1, 2, 3], |x| {{
+                        catch(e) e ~ 1;
+                        (x +? 9223372036854775806)?;
+                        x
+                    }})
+                }}
+            }}"#
+        );
+        let (values, out) = run_delta(&code, fusion_disabled).await?;
+        assert_eq!(values.len(), 1, "{form}\n{out}");
+        assert_eq!(format!("{}", values[0]), "[i64:1, i64:2, i64:3]", "{form}\n{out}");
+    }
+    Ok(())
+}
+
 // An error still in flight when its catch sleeps is given up, so the
 // step waiting on the callee is not held by it.
 async fn slept_catch_in_flight(fusion_disabled: bool) -> Result<()> {
@@ -520,5 +543,6 @@ modes!(
     error_payloads,
     nested_handler_choices,
     nested_catch_drains,
+    slot_catches_complete_the_step,
     slept_catch_in_flight
 );

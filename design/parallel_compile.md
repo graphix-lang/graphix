@@ -322,8 +322,9 @@ body has the same ids.
 through one cell map and unified with the instance's, and every row goes
 through the same map (`Type::instantiate_with`: a bound cell is
 followed, an open one a closed gate owns is copied once, any other is
-shared; a ref to a typedef of the definition's own discarded body
-resolves again). Each node kind takes its types from its row and does
+shared). The table owns the typedefs its rows name (`DefTable::
+typedefs`): a typedef its body declares is in the env only while the
+body compiles, and a row outlives the check. Each node kind takes its types from its row and does
 only the state part of its check:
 - a call site installs its signature, placeholders for omitted
   defaults, joins its raise, and pre-unifies each argument with its

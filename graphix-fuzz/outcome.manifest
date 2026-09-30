@@ -234,6 +234,7 @@ trace	leaf-stale-mask-jul2026/02_connect_infinite_refire.gx
 trace	leaf-stale-mask-jul2026/03_nested_findmap_in_callback.gx
 trace	leaf-stale-mask-jul2026/04_reactive_fold_destructure.gx
 trace	leaf-stale-mask-jul2026/05_ref_connect_fold.gx
+trace	local-typedef-recursion-sep2026/00_recursion_under_a_local_typedef.gx
 trace	map-nest-drop-jul2026/01_selfkey_map_teardown_overflow.gx
 trace	map-source-recovers-sep2026/00.gx
 trace	map-source-recovers-sep2026/01_map_alone.gx
@@ -259,6 +260,7 @@ reject	nested-bind-stmt-dead-elim-aug2026/05_outer_literal_bind.gx
 excluded	nested-value-jul2026/01_selfref_connect_growth.gx
 trace	never-args-elided-sep2026/00_dbg_in_never_arm.gx
 trace	never-args-elided-sep2026/01_raise_in_never_arm.gx
+reject	never-type-names-sep2026/00_never_of_an_undefined_type.gx
 reject	omitted-default-check-sep2026/01_default_types_the_site.gx
 trace	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
@@ -310,6 +312,8 @@ reject	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 reject	rigid-commit-sep2026/01_annotation_variable_split.gx
 reject	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
 reject	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
+reject	rigid-param-call-sep2026/00_param_called_with_a_string.gx
+trace	rigid-param-call-sep2026/01_rank2_quantifier_per_call.gx
 reject	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
 trace	scalar-read-widen-sep2026/00_nullable_f64_let.gx
 trace	scalar-read-widen-sep2026/01_nullable_bool_capture.gx
@@ -364,6 +368,7 @@ trace	sleep-restart-gate-aug2026/03_count_root_gain.gx
 trace	slice-pattern-tuple-type-aug2026/00_union_tuple_member.gx
 trace	slice-pattern-tuple-type-aug2026/01_prefix_pattern_tuple.gx
 trace	slice-pattern-tuple-type-aug2026/02_abstract_in_tuple_still_matches.gx
+trace	slot-raise-count-sep2026/00_seq_step_over_slot_catches.gx
 trace	slot-shrink-truncate-aug2026/00_shrink_to_zero_dyncall_pairs.gx
 trace	slot-shrink-truncate-aug2026/01_outer_shrink_kills_inner.gx
 trace	slot-shrink-truncate-aug2026/02_shrink_callee_site_blocks.gx

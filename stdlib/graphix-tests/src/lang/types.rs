@@ -879,6 +879,33 @@ run!(cast_struct_fields, CAST_STRUCT_FIELDS, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == r#"[["x", i64:1], ["y", i64:2]]"#
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// `never<T>` writes a type name like an annotation does.
+run!(
+    never_type_names_are_defined,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("undefined type Act")),
+    "/test.gx" => r#"
+        let result = { let x = 1; never<Act>() }
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+// A recursive call inside a body that declares a type binds at run time,
+// from the types its definition's check settled.
+run!(
+    local_typedef_in_a_runtime_recursion,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(6))),
+    "/test.gx" => r#"
+        let f = |x: i64| {
+            type L = [`C(i64, L), `N];
+            let rec g = |l: L, acc: i64| -> i64 select l {
+                `N => acc,
+                `C(x, rest) => g(rest, acc + x)
+            };
+            g(`C(2, `C(3, `N)), x)
+        };
+        let result = f(1)
+    "#
+; graphix_package_core::testing::FuseExpect::Jit);
+
 // A type may not take a trait's name in one scope, in either order.
 run!(
     type_after_trait_of_one_name,
@@ -1129,6 +1156,17 @@ const NESTED_QUANTIFIER_CONCRETE_INLINE: &str = r#"{
   let apply = |f: fn<'b: Number>(x: 'b) -> 'b| f(1);
   apply(|x| x + 1)
 }"#;
+// A parameter's declared 'a is rigid in the body: `f` takes whatever
+// the caller's 'a is, never a string.
+const RIGID_PARAM_CALL: &str = r#"{
+  let m = |a: 'a, f: fn(x: 'a) -> 'b| -> 'b f("a");
+  m(1, |x| x * 2)
+}"#;
+// Each call picks the formal's own quantifier anew.
+const NESTED_QUANTIFIER_TWO_CALLS: &str = r#"{
+  let apply = |f: fn<'b: Number>(x: 'b) -> 'b| f(1) + cast<i64>(f(2.5))$;
+  apply(|x| x)
+}"#;
 // `apply` may call `f` at any number type, so an i64 function is not one.
 const NESTED_QUANTIFIER_MONO: &str = r#"{
   type F = fn<'b: Number>(x: 'b) -> 'b;
@@ -1186,6 +1224,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_CONCRETE, "cannot compute"),
         (NESTED_QUANTIFIER_CONCRETE_INLINE, "cannot compute"),
         (NESTED_QUANTIFIER_MONO, "does not contain"),
+        (RIGID_PARAM_CALL, "does not contain"),
         (TRAIT_BESIDE_UNSATISFIABLE, "unsatisfiable constraints"),
     ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
@@ -1208,6 +1247,7 @@ async fn unsound_acceptances_are_refused() -> Result<()> {
         (NESTED_QUANTIFIER_SQUARE, 9),
         (NESTED_QUANTIFIER_COMPARE, 1),
         (NESTED_QUANTIFIER_TWO_TYPES, 15),
+        (NESTED_QUANTIFIER_TWO_CALLS, 3),
         (TRAIT_BESIDE_WITNESS, 0),
     ] {
         let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;

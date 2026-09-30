@@ -1,0 +1,5 @@
+// expect: reject
+// A parameter's declared 'a is rigid in the body, so `f("a")` is
+// refused where the caller's 'a is anything (sep29c aieka
+// divergence_000002: the JIT read the string's pointer as an i64).
+{ let m = |a: Array<'a>, f: fn(x: 'a) -> 'b| -> Array<'b> array::fold(a, [], |acc, v| array::push(acc, f("a"))); (m([1, -9223372036854775808, 3], |x| x * 2), m(["a", "b"], |s| "[s]!")) }

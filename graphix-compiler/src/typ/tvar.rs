@@ -1165,6 +1165,23 @@ impl Type {
         self.rename_int(known).unwrap_or_else(|| self.clone())
     }
 
+    /// Self with each open cell `known` maps replaced by its image;
+    /// every other cell, bound or open, is kept.
+    pub(crate) fn swap_cells(&self, known: &AHashMap<usize, TVar>) -> Type {
+        self.swap_int(known).unwrap_or_else(|| self.clone())
+    }
+
+    fn swap_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) if tv.is_bound() => None,
+            Type::TVar(tv) => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.clone())),
+            Type::Fn(ft) => {
+                ft.cow_walk(|t| t.swap_int(known)).map(|f| Type::Fn(Arc::new(f)))
+            }
+            t => t.cow_children(&mut |c| c.swap_int(known)),
+        })
+    }
+
     fn rename_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => match tv.binding() {
@@ -1195,13 +1212,6 @@ impl Type {
                 )),
             }),
             Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.instantiate_with(known, open)))),
-            // the definition's check read a typedef of its own body: the
-            // instance's own resolves the name
-            Type::Ref(tr) if tr.dead() => {
-                let params =
-                    tr.params.iter().map(|p| p.instantiate_with(known, open)).collect();
-                Some(Type::Ref(tr.unresolved(params)))
-            }
             t => t.cow_children(&mut |c| c.instantiate_int(known, open)),
         })
     }

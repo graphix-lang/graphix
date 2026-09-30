@@ -1,0 +1,4 @@
+// expect: reject
+// `never<T>` writes a type name like an annotation (sep29c aieka
+// typeflip_000003: refused only when a later statement followed it).
+{ array::group(skip(#n: 3, buffer::from_string), |n, _| n == 9223372036854775807); never<Act>() }

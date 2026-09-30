@@ -1993,9 +1993,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     );
                 let ftype = if let Some(active) = active_ftype {
                     active
-                } else if is_rec_self_call || is_param_knot {
+                } else if is_rec_self_call {
                     // A shallow clone shares the def's TVar cells.
                     (*ftype).clone()
+                } else if is_param_knot {
+                    ftype.shared_call()
                 } else {
                     fresh = true;
                     ftype.instantiate(&ctx.rec_defs)

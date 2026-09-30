@@ -296,8 +296,36 @@ fn call(function: Arc<Expr>, args: Vec<(Option<ArcStr>, Expr)>) -> Expr {
     ExprKind::Apply(ApplyExpr { args: Arc::from_iter(args), function }).to_expr_nopos()
 }
 
-/// Family 2. A lambda whose parameter `x` is annotated by a declared
-/// variable `'a` gets a first statement comparing `x` with a literal: a
+/// A first statement that fixes one of a lambda's declared variables
+/// to `i64`: `x == 1` for a parameter `x: 'a`, `f(1)` for a parameter
+/// `f: fn(x: 'a) -> ..` whose `'a` is not its own quantifier.
+fn rigid_probe(l: &LambdaExpr) -> Option<Expr> {
+    let one = || ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos();
+    let name_ref = |x: &Name| {
+        Arc::new(ExprKind::Ref { name: ModPath::from([x.name.as_str()]) }.to_expr_nopos())
+    };
+    l.args.iter().filter(|a| !a.kind.is_labeled()).find_map(|a| {
+        let StructurePattern::Bind(x) = &a.pattern else { return None };
+        match a.constraint.as_ref()? {
+            Type::TVar(_) => Some(
+                ExprKind::Eq { lhs: name_ref(x), rhs: Arc::new(one()) }.to_expr_nopos(),
+            ),
+            Type::Fn(ft)
+                if ft.vargs.is_none()
+                    && ft.args.len() == 1
+                    && ft.args[0].is_positional()
+                    && matches!(&ft.args[0].typ, Type::TVar(tv)
+                        if !ft.quantifiers.contains(&tv.name)) =>
+            {
+                Some(call(name_ref(x), vec![(None, one())]))
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Family 2. A lambda with a parameter over a declared variable `'a`
+/// gets a first statement fixing `'a` to `i64` ([`rigid_probe`]): a
 /// def's declared variables are rigid in its body, so `'a` cannot become
 /// the literal's type. Right site: the definition.
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
@@ -314,19 +342,7 @@ fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
         let ExprKind::Bind(b) = &stmt.kind else { continue };
         let ExprKind::Lambda(l) = &b.value.kind else { continue };
         let LambdaBody::Expr(body) = &l.body else { continue };
-        let Some(x) = l.args.iter().find_map(|a| match (&a.pattern, &a.constraint) {
-            (StructurePattern::Bind(x), Some(Type::TVar(_))) if !a.kind.is_labeled() => {
-                Some(x)
-            }
-            _ => None,
-        }) else {
-            continue;
-        };
-        let one = ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos();
-        let x_ref =
-            ExprKind::Ref { name: ModPath::from([x.name.as_str()]) }.to_expr_nopos();
-        let test =
-            ExprKind::Eq { lhs: Arc::new(x_ref), rhs: Arc::new(one) }.to_expr_nopos();
+        let Some(test) = rigid_probe(l) else { continue };
         let body = ExprKind::Block {
             exprs: Arc::from_iter([
                 ExprKind::Bind(Arc::new(BindExpr {

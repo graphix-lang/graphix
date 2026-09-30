@@ -234,6 +234,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 2	leaf-stale-mask-jul2026/03_nested_findmap_in_callback.gx
 5	leaf-stale-mask-jul2026/04_reactive_fold_destructure.gx
 3	leaf-stale-mask-jul2026/05_ref_connect_fold.gx
+1	local-typedef-recursion-sep2026/00_recursion_under_a_local_typedef.gx
 2	map-nest-drop-jul2026/01_selfkey_map_teardown_overflow.gx
 3	map-source-recovers-sep2026/00.gx
 3	map-source-recovers-sep2026/01_map_alone.gx
@@ -259,6 +260,7 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	nested-value-jul2026/01_selfref_connect_growth.gx
 0	never-args-elided-sep2026/00_dbg_in_never_arm.gx
 2	never-args-elided-sep2026/01_raise_in_never_arm.gx
+0	never-type-names-sep2026/00_never_of_an_undefined_type.gx
 0	omitted-default-check-sep2026/01_default_types_the_site.gx
 1	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 1	organic-firing-aug2026/00_const_terminal.gx
@@ -310,6 +312,8 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	rigid-commit-sep2026/01_annotation_variable_split.gx
 0	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
 0	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
+0	rigid-param-call-sep2026/00_param_called_with_a_string.gx
+1	rigid-param-call-sep2026/01_rank2_quantifier_per_call.gx
 0	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
 2	scalar-read-widen-sep2026/00_nullable_f64_let.gx
 1	scalar-read-widen-sep2026/01_nullable_bool_capture.gx
@@ -364,6 +368,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	slice-pattern-tuple-type-aug2026/00_union_tuple_member.gx
 0	slice-pattern-tuple-type-aug2026/01_prefix_pattern_tuple.gx
 3	slice-pattern-tuple-type-aug2026/02_abstract_in_tuple_still_matches.gx
+5	slot-raise-count-sep2026/00_seq_step_over_slot_catches.gx
 1	slot-shrink-truncate-aug2026/00_shrink_to_zero_dyncall_pairs.gx
 2	slot-shrink-truncate-aug2026/01_outer_shrink_kills_inner.gx
 1	slot-shrink-truncate-aug2026/02_shrink_callee_site_blocks.gx

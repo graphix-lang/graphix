@@ -450,7 +450,6 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
     std::mem::forget(tv);
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const crate::node::error::QopSite) };
-    site.handler.raise();
     QOP_RAISES.with(|q| q.borrow_mut().push((site, v)));
 }
 
@@ -459,7 +458,6 @@ unsafe fn graphix_qop_raise(site: u64, disc: u64, payload: u64) {
 unsafe fn graphix_qop_raise_null(site: u64) {
     // SAFETY: the kernel's interned QopSite outlives this invocation.
     let site = unsafe { &*(site as *const crate::node::error::QopSite) };
-    site.handler.raise();
     let e = Value::Error(crate::node::error::null_error(&site.spec).into());
     QOP_RAISES.with(|q| q.borrow_mut().push((site, e)));
 }

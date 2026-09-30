@@ -219,8 +219,9 @@ signature's cell stays generalized and each call settles its copy.
 
 A formal of function type with its own quantifiers (`|f: F|`, `type F
 = fn<'b: Number>(x: 'b) -> 'b`) is rank-2: every call of `f` in the
-callee instantiates `'b` afresh, so the callee may call it at any
-type the bound admits. Its argument is therefore checked with `'b`
+callee instantiates `'b` afresh (`FnType::instantiate`, and
+`FnType::shared_call` for a call that shares the definition's other
+cells), so the callee may call it at any type the bound admits. Its argument is therefore checked with `'b`
 RIGID (`callsite.rs::quantified_formal`): the formal is expanded once,
 rigid gates open on its quantifier cells, and the pre-unify, the
 argument's typecheck0 and a `check_contains_rigid` all run against

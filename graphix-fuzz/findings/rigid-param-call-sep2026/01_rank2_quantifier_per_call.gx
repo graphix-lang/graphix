@@ -1,0 +1,2 @@
+// Each call of a rank-2 formal picks its quantifier anew.
+{ let apply = |f: fn<'b: Number>(x: 'b) -> 'b| f(1) + cast<i64>(f(2.5))$; apply(|x| x) }
