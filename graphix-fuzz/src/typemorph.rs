@@ -128,6 +128,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                             | ExprKind::Block { .. }
                             | ExprKind::Never { .. }
                     )
+                    && !leaks_binds(&pre[i])
             })
             .collect();
         for i in sample(&sites, cap) {
@@ -186,11 +187,16 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // let-extract: `f(.., |x| body)` -> `let tm__0 = |x| body; f(.., tm__0)`.
     // Only at Apply sites reachable from the statement root through
     // non-scoping nodes, else the lambda's captures would be stranded;
-    // nor in a declaration, whose names the hoisted lambda may read.
+    // nor in a statement that binds names inside itself, which the
+    // hoisted lambda may read.
     {
         let mut found: Vec<(usize, usize)> = Vec::new();
         for (si, stmt) in stmts.iter().enumerate() {
-            if declares(stmt) {
+            let inner_binds = match &stmt.kind {
+                ExprKind::Bind(b) => leaks_binds(&b.value),
+                _ => leaks_binds(stmt),
+            };
+            if inner_binds {
                 continue;
             }
             let mut idx = offsets[si];
@@ -222,8 +228,12 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 break;
             }
             let ExprKind::Bind(b) = &stmts[si].kind else { continue };
-            // a `let` over `never()` is an open cell, the value inlined ⊥
-            if b.rec || b.typ.is_some() || matches!(b.value.kind, ExprKind::Never { .. })
+            // a `let` over `never()` is an open cell, the value inlined ⊥;
+            // a value that binds names binds them for the statements between
+            if b.rec
+                || b.typ.is_some()
+                || matches!(b.value.kind, ExprKind::Never { .. })
+                || leaks_binds(&b.value)
             {
                 continue;
             }
@@ -341,7 +351,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             for (j, st) in stmts.iter().enumerate().skip(si + 1) {
                 let mut idx = offsets[j];
                 calls_reached(st, f, true, &mut idx, &mut calls);
-                if binds(st, f) {
+                if binds_after(st, f) {
                     break;
                 }
             }
@@ -519,11 +529,14 @@ struct StmtNames {
 
 fn stmt_names(e: &Expr) -> StmtNames {
     let bound = match &e.kind {
+        // a bind whose value leaks further names binds more than its
+        // pattern says
+        ExprKind::Bind(b) if leaks_binds(&b.value) => None,
         ExprKind::Bind(b) => match &b.pattern {
             StructurePattern::Bind(n) => Some(vec![n.name.clone()]),
             _ => None,
         },
-        _ if declares(e) => None,
+        _ if leaks_binds(e) => None,
         _ => Some(Vec::new()),
     };
     let mut refs = HashSet::new();
@@ -581,24 +594,31 @@ fn permutable(a: &Expr, b: &Expr, open: &HashSet<String>) -> bool {
         && !na.refs.iter().any(|r| open.contains(r) && nb.refs.contains(r))
 }
 
-/// Is this statement a declaration other than a `let`: one that
-/// introduces names (or, `catch`, a handler) for the statements after it?
-fn declares(e: &Expr) -> bool {
-    matches!(
-        e.kind,
+/// Does this subtree introduce names the enclosing statement list can
+/// read? A declaration does, and a dynamic module wherever it stands; an
+/// interior `Do` or `Lambda` contains its own.
+fn leaks_binds(e: &Expr) -> bool {
+    match &e.kind {
         ExprKind::TypeDef(_)
-            | ExprKind::Use { .. }
-            | ExprKind::Module { .. }
-            | ExprKind::Trait(_)
-            | ExprKind::Impl(_)
-            | ExprKind::Catch(_)
-    )
+        | ExprKind::Use { .. }
+        | ExprKind::Module { .. }
+        | ExprKind::Trait(_)
+        | ExprKind::Impl(_)
+        | ExprKind::Catch(_) => true,
+        ExprKind::Block { .. } | ExprKind::Lambda(_) => false,
+        ExprKind::Select(s) => leaks_binds(&s.arg),
+        _ => {
+            let mut found = false;
+            e.for_each_child(&mut |c| found = found || leaks_binds(c));
+            found
+        }
+    }
 }
 
 /// Visit, with its preorder index (from `idx`), every node under `e`
 /// that the binding of `f` in force at `e` reaches: the statements of a
 /// block, a seq body or a `try` lose it after one rebinds `f`
-/// ([`binds`]), and a form that binds `f` itself (a lambda
+/// ([`binds_after`]), and a form that binds `f` itself (a lambda
 /// parameter, a select arm, a catch) hides all of its children.
 pub(crate) fn for_each_reached(
     e: &Expr,
@@ -620,7 +640,7 @@ pub(crate) fn for_each_reached(
     ) {
         for st in stmts {
             for_each_reached(st, f, reached, idx, visit);
-            reached &= !binds(st, f);
+            reached &= !binds_after(st, f);
         }
     }
     let inner = reached && !binds(e, f);
@@ -694,6 +714,26 @@ pub(crate) fn binds(n: &Expr, name: &str) -> bool {
         ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_) => true,
         _ => false,
     }
+}
+
+/// Whether statement `st` binds `name` for the statements after it: by
+/// its own form, or by a dynamic module nested where it leaks out
+/// (`let a = mod m dynamic { .. }` binds `m` too; see [`leaks_binds`]).
+pub(crate) fn binds_after(st: &Expr, name: &str) -> bool {
+    fn leaks(e: &Expr, name: &str) -> bool {
+        let mut found = false;
+        let mut child = |c: &Expr| {
+            let declares = matches!(c.kind, ExprKind::Module { .. });
+            found = found || (declares && binds(c, name)) || leaks(c, name)
+        };
+        match &e.kind {
+            ExprKind::Block { .. } | ExprKind::Lambda(_) => (),
+            ExprKind::Select(s) => child(&s.arg),
+            _ => e.for_each_child(&mut child),
+        }
+        found
+    }
+    binds(st, name) || leaks(st, name)
 }
 
 /// Does the pattern bind `name` anywhere? Conservative: an
@@ -927,6 +967,21 @@ mod test {
             inlined[0].body.contains("(1) == 0") && !inlined[0].body.contains("let m"),
             "the guard use takes the value: {}",
             inlined[0].body
+        );
+    }
+
+    #[test]
+    fn a_dynamic_module_binds_its_name() {
+        // `let v = mod m dynamic { .. }` binds `m` for the statements after
+        // it (sep29b)
+        let body = "{ let src = \"let f = |x: i64| -> i64 x\"; \
+                    let v = mod m dynamic { sandbox whitelist [core]; \
+                    sig { val f: fn(x: i64) -> i64 }; source src }; \
+                    let r = m::f(i64:1); r }";
+        let (probes, _) = probes(body, 8);
+        assert!(
+            probes.iter().all(|p| p.kind != TmKind::StmtPermute || p.site != 1),
+            "must not move a use of `m` above its module"
         );
     }
 
