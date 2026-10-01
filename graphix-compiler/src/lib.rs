@@ -1786,13 +1786,21 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         self.cx.pending_refs.clear();
     }
 
+    /// Delete what compiling discarded. A large batch is dropped on the
+    /// pool: freeing the trees is two thirds of the cost, and nothing
+    /// after the delete reads them.
     fn delete_discarded(&mut self) {
-        for d in mem::take(&mut self.cx.discarded) {
+        const DROP_ON_POOL: usize = 64;
+        let mut discarded = mem::take(&mut self.cx.discarded);
+        for d in discarded.iter_mut() {
             match d {
-                Discarded::Node(mut n) => n.delete(self),
-                Discarded::Apply(mut a) => a.delete(self),
-                Discarded::Stored(id) => self.rt.store_remove(&id),
+                Discarded::Node(n) => n.delete(self),
+                Discarded::Apply(a) => a.delete(self),
+                Discarded::Stored(id) => self.rt.store_remove(id),
             }
+        }
+        if discarded.len() >= DROP_ON_POOL {
+            rayon::spawn(move || drop(discarded))
         }
     }
 
