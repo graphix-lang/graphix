@@ -3,18 +3,20 @@
 //! values as the fork left them, or their absence, back.
 
 use crate::env::{Map, Set};
-use std::{fmt::Debug, ops::Deref};
+use ahash::AHashSet;
+use poolshark::local::LPooled;
+use std::{fmt::Debug, hash::Hash, ops::Deref};
 
-/// The keys a joined fork wrote, each once and sorted, recorded as
-/// writes of the container it joins; `None` when it wrote none.
-fn merged_keys<K: Ord + Clone>(
+/// The keys a joined fork wrote, each once, recorded as writes of the
+/// container it joins; `None` when it wrote none.
+fn merged_keys<K: Hash + Eq + Clone>(
     generation: &mut u64,
     mine: &mut Option<Vec<K>>,
     theirs: Option<Vec<K>>,
 ) -> Option<Vec<K>> {
     let mut keys = theirs.filter(|t| !t.is_empty())?;
-    keys.sort_unstable();
-    keys.dedup();
+    let mut seen: LPooled<AHashSet<K>> = LPooled::take();
+    keys.retain(|k| seen.insert(k.clone()));
     *generation += 1;
     if let Some(mine) = mine {
         mine.extend(keys.iter().cloned());
@@ -24,7 +26,7 @@ fn merged_keys<K: Ord + Clone>(
 
 /// A [`Map`] with fork and join.
 #[derive(Clone, Debug)]
-pub struct TrackedMap<K: Ord + Clone + Debug, V: Clone + Debug> {
+pub struct TrackedMap<K: Hash + Eq + Clone + Debug, V: Clone + Debug> {
     map: Map<K, V>,
     /// The keys written since the fork; `None` outside one.
     touched: Option<Vec<K>>,
@@ -34,19 +36,21 @@ pub struct TrackedMap<K: Ord + Clone + Debug, V: Clone + Debug> {
     forked_at: u64,
 }
 
-impl<K: Ord + Clone + Debug, V: Clone + Debug> Default for TrackedMap<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> Default for TrackedMap<K, V> {
     fn default() -> Self {
         Self::from(Map::default())
     }
 }
 
-impl<K: Ord + Clone + Debug, V: Clone + Debug> From<Map<K, V>> for TrackedMap<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> From<Map<K, V>>
+    for TrackedMap<K, V>
+{
     fn from(map: Map<K, V>) -> Self {
         Self { map, touched: None, generation: 0, forked_at: 0 }
     }
 }
 
-impl<K: Ord + Clone + Debug, V: Clone + Debug> Deref for TrackedMap<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> Deref for TrackedMap<K, V> {
     type Target = Map<K, V>;
 
     fn deref(&self) -> &Map<K, V> {
@@ -54,7 +58,7 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> Deref for TrackedMap<K, V> {
     }
 }
 
-impl<K: Ord + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
+impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
     fn touch(&mut self, k: &K) {
         self.generation += 1;
         if let Some(t) = &mut self.touched {
@@ -151,17 +155,22 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
         else {
             return;
         };
-        self.map =
-            self.map.update_many(touched.into_iter().map(|k| (k, ())), |k, (), _| {
-                let v = map.get(&k)?.clone();
-                Some((k, v))
-            });
+        for k in touched {
+            match map.get(&k) {
+                Some(v) => {
+                    self.map.insert_cow(k, v.clone());
+                }
+                None => {
+                    self.map.remove_cow(&k);
+                }
+            }
+        }
     }
 }
 
 /// A [`Set`] with fork and join.
 #[derive(Clone, Debug)]
-pub struct TrackedSet<K: Ord + Clone + Debug> {
+pub struct TrackedSet<K: Hash + Eq + Clone + Debug> {
     set: Set<K>,
     touched: Option<Vec<K>>,
     /// See [`TrackedMap`].
@@ -169,19 +178,19 @@ pub struct TrackedSet<K: Ord + Clone + Debug> {
     forked_at: u64,
 }
 
-impl<K: Ord + Clone + Debug> Default for TrackedSet<K> {
+impl<K: Hash + Eq + Clone + Debug> Default for TrackedSet<K> {
     fn default() -> Self {
         Self::from(Set::default())
     }
 }
 
-impl<K: Ord + Clone + Debug> From<Set<K>> for TrackedSet<K> {
+impl<K: Hash + Eq + Clone + Debug> From<Set<K>> for TrackedSet<K> {
     fn from(set: Set<K>) -> Self {
         Self { set, touched: None, generation: 0, forked_at: 0 }
     }
 }
 
-impl<K: Ord + Clone + Debug> Deref for TrackedSet<K> {
+impl<K: Hash + Eq + Clone + Debug> Deref for TrackedSet<K> {
     type Target = Set<K>;
 
     fn deref(&self) -> &Set<K> {
@@ -189,7 +198,7 @@ impl<K: Ord + Clone + Debug> Deref for TrackedSet<K> {
     }
 }
 
-impl<K: Ord + Clone + Debug> TrackedSet<K> {
+impl<K: Hash + Eq + Clone + Debug> TrackedSet<K> {
     fn touch(&mut self, k: &K) {
         self.generation += 1;
         if let Some(t) = &mut self.touched {
@@ -261,11 +270,18 @@ impl<K: Ord + Clone + Debug> TrackedSet<K> {
         else {
             return;
         };
-        self.set = self.set.update_many(touched, |k, _| set.contains(&k).then_some(k));
+        for k in touched {
+            match set.contains(&k) {
+                true => self.set.insert_cow(k),
+                false => self.set.remove_cow(&k),
+            };
+        }
     }
 }
 
-impl<'a, K: Ord + Clone + Debug, V: Clone + Debug> IntoIterator for &'a TrackedMap<K, V> {
+impl<'a, K: Hash + Eq + Clone + Debug, V: Clone + Debug> IntoIterator
+    for &'a TrackedMap<K, V>
+{
     type Item = <&'a Map<K, V> as IntoIterator>::Item;
     type IntoIter = <&'a Map<K, V> as IntoIterator>::IntoIter;
 
@@ -274,7 +290,7 @@ impl<'a, K: Ord + Clone + Debug, V: Clone + Debug> IntoIterator for &'a TrackedM
     }
 }
 
-impl<'a, K: Ord + Clone + Debug> IntoIterator for &'a TrackedSet<K> {
+impl<'a, K: Hash + Eq + Clone + Debug> IntoIterator for &'a TrackedSet<K> {
     type Item = <&'a Set<K> as IntoIterator>::Item;
     type IntoIter = <&'a Set<K> as IntoIterator>::IntoIter;
 

@@ -14,24 +14,30 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut};
 use combine::stream::position::SourcePosition;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
-use netidx_core::path::Path;
+use netidx_core::{
+    pack::{Pack, PackError},
+    path::Path,
+};
 use netidx_derive::Pack;
 use poolshark::local::LPooled;
 use std::{
-    fmt, iter, mem,
-    ops::Bound,
+    fmt,
+    hash::Hash,
+    iter, mem,
     sync::atomic::{AtomicBool, Ordering},
 };
 use triomphe::Arc;
 
-/// The chunk size of the environment's maps: they are write-heavy at
-/// compile time and a COW insert clones the touched chunk.
-pub const CHUNK: usize = 16;
-pub type Map<K, V> = immutable_chunkmap::map::Map<K, V, CHUNK>;
-pub type Set<K> = immutable_chunkmap::set::Set<K, CHUNK>;
+/// The environment's hasher. An image's maps decode only where it
+/// hashes as it did where they were written, so a change of hasher is a
+/// change of image format (`image::REGISTRATION_FORMAT`).
+pub type Hasher = imhm::FxBuildHasher;
+pub type Map<K, V> = imhm::Map<K, V, Hasher>;
+pub type Set<K> = imhm::Set<K, Hasher>;
 
 #[derive(Clone)]
 pub struct Bind {
@@ -160,12 +166,32 @@ pub struct ImportEntry {
 
 /// A scope's explicit namespace: what its `use` declarations
 /// imported. Lives in [`Env::names`], keyed by the scope path.
-#[derive(Debug, Clone, Default, Pack)]
-#[pack(unwrapped)]
+#[derive(Debug, Clone, Default)]
 pub struct ScopeNames {
     pub imports: Map<CompactString, ImportEntry>,
     /// Glob (`use m::*`) source modules, in declaration order.
     pub globs: Arc<Vec<ModPath>>,
+}
+
+impl Pack for ScopeNames {
+    fn encoded_len(&self) -> usize {
+        crate::shared_map::map_len(&self.imports) + self.globs.encoded_len()
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        crate::shared_map::map_encode(&self.imports, buf, &mut |k, v, buf| {
+            k.encode(buf)?;
+            v.encode(buf)
+        })?;
+        self.globs.encode(buf)
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        let imports = crate::shared_map::map_decode(buf, &mut |buf| {
+            Ok((CompactString::decode(buf)?, ImportEntry::decode(buf)?))
+        })?;
+        Ok(Self { imports, globs: Pack::decode(buf)? })
+    }
 }
 
 /// A declared trait: its identity, declaring scope and methods. Lives
@@ -340,7 +366,7 @@ pub(crate) fn scope_params(
 }
 
 /// `m` without the entries `keep` refuses.
-fn retain<K: Ord + Clone, V: Clone>(
+fn retain<K: Hash + Eq + Clone, V: Clone>(
     m: &Map<K, V>,
     mut keep: impl FnMut(&K, &V) -> bool,
 ) -> Map<K, V> {
@@ -350,7 +376,10 @@ fn retain<K: Ord + Clone, V: Clone>(
 }
 
 /// `s` without the members `keep` refuses.
-fn retain_set<K: Ord + Clone>(s: &Set<K>, mut keep: impl FnMut(&K) -> bool) -> Set<K> {
+fn retain_set<K: Hash + Eq + Clone>(
+    s: &Set<K>,
+    mut keep: impl FnMut(&K) -> bool,
+) -> Set<K> {
     let gone: LPooled<Vec<K>> = s.into_iter().filter(|k| !keep(k)).cloned().collect();
     if gone.is_empty() { s.clone() } else { s.remove_many(gone.iter().cloned()) }
 }
@@ -1179,9 +1208,13 @@ impl Env {
         let mut res = vec![];
         let scan = |res: &mut Vec<(CompactString, BindId)>, level: &str, part: &str| {
             if let Some(vars) = self.binds.get(level) {
-                let r = vars.range::<str, _>((Bound::Included(part), Bound::Unbounded));
-                let r = r.take_while(|(name, _)| name.starts_with(part));
-                res.extend(r.map(|(name, bind)| (name.clone(), *bind)));
+                let at = res.len();
+                res.extend(
+                    vars.iter()
+                        .filter(|(name, _)| name.starts_with(part))
+                        .map(|(name, bind)| (name.clone(), *bind)),
+                );
+                res[at..].sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
             }
         };
         match Path::dirname(&**part) {
@@ -1221,8 +1254,10 @@ impl Env {
         let mut res = vec![];
         let scan = |res: &mut Vec<ModPath>, level: &str, part: &str| {
             let p = ModPath(Path::from(ArcStr::from(level)).append(part));
-            let r = self.modules.range((Bound::Included(p.clone()), Bound::Unbounded));
-            for m in r.take_while(|m| m.0.starts_with(&*p.0)) {
+            let mut found: LPooled<Vec<&ModPath>> =
+                self.modules.iter().filter(|m| m.0.starts_with(&*p.0)).collect();
+            found.sort_unstable();
+            for m in found.drain(..) {
                 let rel = m.strip_prefix(level).map(|m| m.trim_start_matches('/'));
                 if let Some(rel) = rel.filter(|m| !m.trim().is_empty()) {
                     res.push(ModPath(Path::from(ArcStr::from(rel))));

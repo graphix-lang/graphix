@@ -1304,7 +1304,11 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
 
     /// The error type the body raised to the gate's catch.
     fn thrown(&self, ctx: &CompileCtx<R, E>) -> Type {
-        ctx.env.by_id[&self.faux_id].typ.deref_cloned().unwrap_or(Type::Bottom)
+        ctx.env
+            .by_id
+            .get(&self.faux_id)
+            .and_then(|b| b.typ.deref_cloned())
+            .unwrap_or(Type::Bottom)
     }
 
     /// The body's sites settle with the enclosing statement, all but the

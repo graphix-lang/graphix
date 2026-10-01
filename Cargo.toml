@@ -49,6 +49,7 @@ ahash = "0.8.12"
 handlebars = "6"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp"] }
 immutable-chunkmap = { version = "2.1.4", features = ["pool", "serde"] }
+imhm = "0.1.0"
 indexmap = "2"
 log = "0.4"
 lsp-server = "0.7"

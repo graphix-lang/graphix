@@ -10,7 +10,7 @@ use crate::{
     BindId,
     env::{Bind, Env, ImplDef, ImportEntry, Map, TraitDef, TypeDef},
     expr::ModPath,
-    shared_map::{self, SharedMap, SharedSet},
+    shared_map::{self, RelocatedMap, RelocatedSet, SharedMap, SharedSet},
 };
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
@@ -277,14 +277,14 @@ impl Pack for Env {
             ide: _,
         } = self;
         lexical_len(self)
-            + SharedMap((**by_id).clone()).encoded_len()
-            + SharedMap((**byref_chain).clone()).encoded_len()
+            + RelocatedMap((**by_id).clone()).encoded_len()
+            + RelocatedMap((**byref_chain).clone()).encoded_len()
             + SharedMap((**names).clone()).encoded_len()
             + SharedMap((**abstract_reps).clone()).encoded_len()
             + SharedMap((**trait_defs).clone()).encoded_len()
-            + SharedMap((**trait_methods).clone()).encoded_len()
+            + RelocatedMap((**trait_methods).clone()).encoded_len()
             + SharedMap((**impls).clone()).encoded_len()
-            + SharedSet((**poly_binds).clone()).encoded_len()
+            + RelocatedSet((**poly_binds).clone()).encoded_len()
             + SharedSet((**package_roots).clone()).encoded_len()
     }
 
@@ -306,28 +306,28 @@ impl Pack for Env {
             ide: _,
         } = self;
         lexical_encode(self, buf)?;
-        SharedMap((**by_id).clone()).encode(buf)?;
-        SharedMap((**byref_chain).clone()).encode(buf)?;
+        RelocatedMap((**by_id).clone()).encode(buf)?;
+        RelocatedMap((**byref_chain).clone()).encode(buf)?;
         SharedMap((**names).clone()).encode(buf)?;
         SharedMap((**abstract_reps).clone()).encode(buf)?;
         SharedMap((**trait_defs).clone()).encode(buf)?;
-        SharedMap((**trait_methods).clone()).encode(buf)?;
+        RelocatedMap((**trait_methods).clone()).encode(buf)?;
         SharedMap((**impls).clone()).encode(buf)?;
-        SharedSet((**poly_binds).clone()).encode(buf)?;
+        RelocatedSet((**poly_binds).clone()).encode(buf)?;
         SharedSet((**package_roots).clone()).encode(buf)
     }
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let lexical = lexical_decode(buf)?;
         Ok(Env {
-            by_id: SharedMap::<BindId, Arc<Bind>>::decode(buf)?.0.into(),
-            byref_chain: SharedMap::decode(buf)?.0.into(),
+            by_id: RelocatedMap::<BindId, Arc<Bind>>::decode(buf)?.0.into(),
+            byref_chain: RelocatedMap::decode(buf)?.0.into(),
             names: SharedMap::decode(buf)?.0.into(),
             abstract_reps: SharedMap::decode(buf)?.0.into(),
             trait_defs: SharedMap::decode(buf)?.0.into(),
-            trait_methods: SharedMap::decode(buf)?.0.into(),
+            trait_methods: RelocatedMap::decode(buf)?.0.into(),
             impls: SharedMap::decode(buf)?.0.into(),
-            poly_binds: SharedSet::decode(buf)?.0.into(),
+            poly_binds: RelocatedSet::decode(buf)?.0.into(),
             package_roots: SharedSet::decode(buf)?.0.into(),
             ..lexical
         })

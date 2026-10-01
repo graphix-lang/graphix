@@ -532,12 +532,14 @@ configuration and never travel.
 A definition's `def_env` is a persistent snapshot sharing all but a
 root path with its neighbours, so the image packs the maps with their
 sharing instead of replaying their construction.
-`immutable-chunkmap` 2.2 exposes the tree's structure (`Map::root`,
-`NodeRef`, the unsafe `NodeHandle::create`, `Map::from_root`), and
-`graphix-compiler/src/shared_map.rs` packs a map through it: each node
-is written once and referenced afterwards, a definition before its
-subtrees and numbered after them, so the decoder is recursive and a
-reference names a node by the rank at which the decoder completed it.
+The env's maps are imhm hash tries (`env::Map`, `env::Set`, hashed by
+`env::Hasher`), which expose their nodes (`Map::root`, `NodeRef`,
+`NodeHandle::inner`/`leaf`, `Map::from_root`), and
+`graphix-compiler/src/shared_map.rs` packs a map through them: each
+node is written once, as its depth, kind and pairs or slots, and
+referenced afterwards. A decoded node is rebuilt through imhm's checked
+constructors, which recompute every hash and refuse a node the map
+could not have built, so an image hashed differently fails the read.
 A snapshot whose maps are unchanged costs one reference per field.
 The node tables belong to the caller — an `EncodeTable` per image
 write, a `DecodeTable` per runtime so an instance decoded later

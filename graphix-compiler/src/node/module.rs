@@ -316,14 +316,13 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             write!(sub, "{}/", at.0).unwrap();
             let under = |path: &ModPath| path == at || path.starts_with(sub.as_str());
             env.modules.insert_cow(at.clone());
-            for m in inner_env.modules.range::<ModPath, _>(at..).take_while(|m| under(m))
-            {
+            for m in inner_env.modules.iter().filter(|m| under(m)) {
                 env.modules.insert_cow(m.clone());
             }
             macro_rules! copy_sig {
                 ($kind:ident) => {
-                    let iter = inner_env.$kind.range::<ModPath, _>(at..);
-                    for (path, inner) in iter.take_while(|(path, _)| under(path)) {
+                    for (path, inner) in inner_env.$kind.iter().filter(|(p, _)| under(p))
+                    {
                         env.$kind.insert_cow(path.clone(), inner.clone());
                     }
                 };
@@ -333,9 +332,9 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(traits);
             let exported: LPooled<Vec<AbstractId>> = inner_env
                 .typedefs
-                .range::<ModPath, _>(at..)
-                .take_while(|(path, _)| under(path))
-                .flat_map(|(_, defs)| defs.into_iter())
+                .iter()
+                .filter(|(path, _)| under(path))
+                .flat_map(|(_, defs)| defs.iter())
                 .filter_map(|(_, td)| match (td.typ(), &td.rep) {
                     (Type::Abstract { id, .. }, Some(_)) => Some(*id),
                     _ => None,

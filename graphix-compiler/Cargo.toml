@@ -38,6 +38,7 @@ futures = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
 immutable-chunkmap = { workspace = true }
+imhm = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }
 netidx-core = { workspace = true }
