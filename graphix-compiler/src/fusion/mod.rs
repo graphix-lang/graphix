@@ -345,10 +345,20 @@ impl FusionCtx {
     /// Compile and install every region fused since the last link; a
     /// region's kernel has its entry from here on.
     pub(crate) fn link(&mut self) {
+        self.with_jit(emit::Jit::link)
+    }
+
+    /// Start compiling every region fused since the last link while
+    /// fusion goes on; they install at the next link or batch.
+    pub(crate) fn link_batch(&mut self) {
+        self.with_jit(emit::Jit::link_batch)
+    }
+
+    fn with_jit(&mut self, f: impl FnOnce(&mut emit::Jit)) {
         let mut jit = self.jit.lock();
         let Some(jit) = jit.as_mut() else { return };
         let retired = jit.retired();
-        jit.link();
+        f(jit);
         self.stats.jit_generations += jit.retired() - retired;
     }
 
@@ -1195,7 +1205,7 @@ fn build_region<R: Rt, E: UserEvent>(
     }
     ctx.fusion.stats.record_fused(node.spec());
     if ctx.fusion.jit()?.unlinked() >= LINK_BATCH {
-        ctx.fusion.link();
+        ctx.fusion.link_batch();
     }
     for n in lambdas.decorated.iter() {
         check_attribute_targets(n, ctx)?;

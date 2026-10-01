@@ -65,10 +65,13 @@ in parallel (`fusion/emit/jit.rs`):
 1. Emission names bodies, thunks, wrappers, helpers and constants by ids
    of its own table (`jit::Names`) and defines nothing. Each function
    waits in the `Jit`'s queue, a body after its callees.
-2. The pass ends with a link (and links every `LINK_BATCH` regions):
-   the queue compiles on scoped worker threads, the calling thread
-   among them, and the results are placed by queue index, so the output
-   does not depend on the threads.
+2. Every `LINK_BATCH` regions the queue so far starts compiling on
+   threads of its own while emission goes on (`Jit::link_batch`); it
+   installs when the next batch starts or at the pass's link, which
+   compiles what is left on worker threads, the calling thread among
+   them. Results are placed by queue index, so the output does not
+   depend on the threads, and a batch installs before any later one, so
+   a body's callees have their records when its relocations name them.
 3. The records are built in queue order and the regions' wrappers
    install with one finalize, through the load the image path uses.
    Each kernel's entry is set then; before its pass links a kernel has
@@ -90,8 +93,15 @@ against b0f86a98:
 | fusion's share on four P-cores | ~456 ms | ~187 ms |
 
 On one core the gain is the trap stubs and per-region finalizes that
-are gone. On four the link is 85 ms where the backend was 297 ms. What
-remains serial in fusion is discovery and emission, about 100 ms.
+are gone. On four the link is 85 ms where the backend was 297 ms.
+
+Discovery and emission are serial, and the batches' codegen used to
+wait for them, and they for it: on four P-cores the app's fused compile
+had 128 of 300 profiled ms with one busy thread, 53 of them discovery and
+emission and 29 a batch's last functions compiling alone. A batch that
+compiles while the next one emits takes the fused compile from 236 to
+216 ms (best of five, quick build, bench mode; median 242 → 220), with
+the same cycles. Batches of 64 regions measured 221 ms.
 
 ## Compile tasks (BUILT)
 

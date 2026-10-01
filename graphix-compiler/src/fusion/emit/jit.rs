@@ -332,14 +332,31 @@ fn backend(
     Ok(Compiled { bytes, align, relocs })
 }
 
+/// Every function of `pending`, its spill thunks included, in order;
+/// `pending` keeps the rest of each.
+fn take_functions(pending: &mut [Pending]) -> Vec<(FuncId, Function)> {
+    let mut work = Vec::with_capacity(pending.len());
+    for p in pending.iter_mut() {
+        work.push((p.id, std::mem::replace(&mut p.func, Function::new())));
+        if let PendingOf::Body { thunk: Some((tid, t)), .. } = &mut p.of {
+            work.push((*tid, std::mem::replace(t, Function::new())));
+        }
+    }
+    work
+}
+
+/// A compiling thread's stack: cranelift recurses over the function.
+const STACK: usize = 8 << 20;
+
 /// Compile every function in `work` on as many threads as there is work
 /// for; the results are in `work`'s order whatever the threads did.
 fn backend_all(
     isa: &dyn TargetIsa,
-    work: Vec<(FuncId, &mut Function)>,
+    mut work: Vec<(FuncId, Function)>,
 ) -> Vec<Result<Compiled>> {
     const PER_THREAD: usize = 8;
-    const STACK: usize = 8 << 20;
+    let work: Vec<(FuncId, &mut Function)> =
+        work.iter_mut().map(|(id, f)| (*id, f)).collect();
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(work.len().div_ceil(PER_THREAD));
@@ -724,6 +741,15 @@ pub struct Jit {
     /// What the regions emitted since the last link, in emission order:
     /// a body after its callees, a wrapper after its region's bodies.
     pending: Vec<Pending>,
+    /// The batch compiling while emission goes on; it installs before
+    /// any later batch.
+    in_flight: Option<InFlight>,
+}
+
+/// A batch whose functions compile on threads of their own.
+struct InFlight {
+    pending: Vec<Pending>,
+    compiled: std::thread::JoinHandle<Vec<Result<Compiled>>>,
 }
 
 // SAFETY: the module is used only through `&mut Jit`, and its raw
@@ -743,6 +769,7 @@ impl Jit {
             layout_ids: BTreeMap::new(),
             records: BTreeMap::new(),
             pending: Vec::new(),
+            in_flight: None,
         })
     }
 
@@ -761,25 +788,66 @@ impl Jit {
     /// spliced and emission accepted them, so a failure is a JIT bug that
     /// no graph could run past: it panics.
     pub(crate) fn link(&mut self) {
+        let _profile = profile::phase(Phase::Link);
+        self.finish_in_flight();
         if self.pending.is_empty() {
             return;
         }
+        let mut pending = std::mem::take(&mut self.pending);
+        let compiled = backend_all(&*self.emitter.isa, take_functions(&mut pending));
+        self.install_or_panic(pending, compiled)
+    }
+
+    /// Start compiling everything emitted since the last link on threads
+    /// of its own, while emission goes on; it installs at the next link
+    /// or batch, so no region of it has its entry before then.
+    pub(crate) fn link_batch(&mut self) {
         let _profile = profile::phase(Phase::Link);
-        if let Err(e) = self.link_pending() {
+        self.finish_in_flight();
+        if self.pending.is_empty() {
+            return;
+        }
+        let mut pending = std::mem::take(&mut self.pending);
+        let work = take_functions(&mut pending);
+        let isa = self.emitter.isa.clone();
+        let compiled = std::thread::Builder::new()
+            .stack_size(STACK)
+            .spawn(move || backend_all(&*isa, work));
+        match compiled {
+            Ok(compiled) => self.in_flight = Some(InFlight { pending, compiled }),
+            Err(_) => {
+                self.pending = pending;
+                self.link()
+            }
+        }
+    }
+
+    fn finish_in_flight(&mut self) {
+        let Some(InFlight { pending, compiled }) = self.in_flight.take() else {
+            return;
+        };
+        match compiled.join() {
+            Ok(compiled) => self.install_or_panic(pending, compiled),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    fn install_or_panic(
+        &mut self,
+        pending: Vec<Pending>,
+        compiled: Vec<Result<Compiled>>,
+    ) {
+        if let Err(e) = self.install_compiled(pending, compiled) {
             panic!("the JIT could not link emitted code: {e:#}")
         }
     }
 
-    fn link_pending(&mut self) -> Result<()> {
-        let mut pending = std::mem::take(&mut self.pending);
-        let mut work: Vec<(FuncId, &mut Function)> = Vec::with_capacity(pending.len());
-        for p in pending.iter_mut() {
-            work.push((p.id, &mut p.func));
-            if let PendingOf::Body { thunk: Some((tid, t)), .. } = &mut p.of {
-                work.push((*tid, t));
-            }
-        }
-        let mut compiled = backend_all(&*self.emitter.isa, work).into_iter();
+    fn install_compiled(
+        &mut self,
+        pending: Vec<Pending>,
+        compiled: Vec<Result<Compiled>>,
+    ) -> Result<()> {
+        let mut compiled = compiled.into_iter();
         let mut next = || compiled.next().expect("one result per function");
         let mut regions: Vec<(Arc<BodyRecord>, Arc<OnceLock<Entry>>)> = Vec::new();
         for p in pending {

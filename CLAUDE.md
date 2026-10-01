@@ -494,12 +494,13 @@ node graph IS the IR — there is no parallel typed IR
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
 - **JIT pipeline and memory** (`fusion/emit/jit.rs`): emission names
-  everything by ids of its own (`jit::Names`) and defines nothing; a
-  pass ends in a link (`FusionCtx::link`, also every `LINK_BATCH`
-  regions) that compiles every emitted function on worker threads,
-  builds the records in emission order and installs the regions'
-  wrappers with one finalize; a kernel has its entry only after its
-  pass links. Emission accepted everything a link compiles, so a
+  everything by ids of its own (`jit::Names`) and defines nothing;
+  every `LINK_BATCH` regions a batch starts compiling on threads of its
+  own while emission goes on (`FusionCtx::link_batch`), and installs at
+  the next batch or at the pass's link (`FusionCtx::link`), which
+  compiles the rest; records are built in emission order and a batch's
+  wrappers install with one finalize; a kernel has its entry only after
+  its pass links. Emission accepted everything a link compiles, so a
   link that fails (a verifier error included) is a JIT bug and panics.
   One JITModule + 256MB
   arena per generation, built on the first fusion (a fusion-off context
