@@ -103,6 +103,39 @@ compiles while the next one emits takes the fused compile from 236 to
 216 ms (best of five, quick build, bench mode; median 242 → 220), with
 the same cycles. Batches of 64 regions measured 221 ms.
 
+## Module checks (BUILT)
+
+A package's registration was its module check, one module at a time:
+admin's 64 of 85 ms, the definition checks of its 18 modules (each
+definition's body is built inside its own check). A module with an
+interface is now a unit of the check:
+
+- its body compiles with its `mod` statement, in order, under a compile
+  task of its own (`Module::task`), so the signature binding, the
+  lexical exports a later sibling sees (`export_sig`) and every cell the
+  body creates belong to it;
+- its body's check and `check_sig` run with the statement
+  (`Module::typecheck0`), after the statements before it: a child may
+  read its parent's private lets;
+- a run of consecutive static modules checks in parallel compile tasks
+  forked before any runs, joined in order, the first error in order the
+  block's (`node::typecheck0_statements`); IDE sinks fork with the task
+  and append in order (`IdeMode::fork`).
+
+Two rules make the result independent of the schedule. A body reaches
+its siblings only through their interfaces: an impl a body registers
+without declaring it is hidden from its siblings' checks
+(`Env::hidden_impls`, read through `Env::impls_of`) and seen by the
+statements after the run. And a module's check writes no cell created
+outside the module: such a write (the task audit's foreign write, now
+recorded for the module's task, `tvar::OwnWrites`) refuses the module, so an
+unannotated `let x = never()` whose first use is in a child module must
+be annotated. Over the gate the only foreign writes in module tasks are
+the interface's own type variables, frozen at compile.
+
+Admin registration, quick build, four P-cores, unpinned smoke runs:
+85-97 -> 61-62 ms.
+
 ## Compile tasks (BUILT)
 
 Compiling and type checking take a `CompileCtx`: the registry, the

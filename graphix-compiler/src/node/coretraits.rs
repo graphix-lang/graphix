@@ -123,7 +123,7 @@ fn impl_for(
     if typ.has_unbound() {
         return None;
     }
-    let list = env.impls.get(&t.id())?;
+    let list = env.impls_of(t.id())?;
     for im in list.iter() {
         let canonical = match &im.target {
             Type::Ref(_) => match im.target.lookup_ref(env) {

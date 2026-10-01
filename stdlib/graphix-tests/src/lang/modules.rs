@@ -280,6 +280,42 @@ run!(dynamic_module8, DYNAMIC_MODULE8, |v: Result<&Value>| match v {
 // Resolution is a pure function of (module, name): a name spelled at
 // the def site resolves the same from any deferred consumer.
 
+// A module's check decides no type the code around it left open: its
+// siblings check concurrently and see each other through interfaces.
+run!(
+    module_check_decides_no_outer_type,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("left open")),
+    "/test.gx" => r#"
+let x = never();
+mod m;
+let result = m::y
+"#,
+    "/test/m.gxi" => r#"
+val y: i64;
+"#,
+    "/test/m.gx" => r#"
+let y = super::x + 1
+"#
+    ; graphix_package_core::testing::FuseExpect::None);
+
+// Annotated, the outer binding's type is the module's to read.
+run!(
+    module_check_reads_an_annotated_outer_type,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+let x: i64 = never();
+x <- 1;
+mod m;
+let result = m::y
+"#,
+    "/test/m.gxi" => r#"
+val y: i64;
+"#,
+    "/test/m.gx" => r#"
+let y = super::x + 1
+"#
+);
+
 // A gxi signature spells a type through a `use … as` alias.
 run!(
     finding1_sig_alias,

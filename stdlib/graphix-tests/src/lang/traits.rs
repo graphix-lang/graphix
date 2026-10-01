@@ -267,6 +267,65 @@ run!(
     "#
 );
 
+// Modules with interfaces reach each other only through them: an impl
+// a body adds without declaring it is unseen by its siblings' checks,
+// and seen by the statements after them.
+run!(
+    trait_undeclared_impl_hidden_from_siblings,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("compiling module")
+        && format!("{e:#}").contains("::test::b")),
+    "/test.gx" => r#"
+        mod t;
+        mod a;
+        mod b;
+        let result = b::shown
+    "#,
+    "/test/t.gxi" => r#"
+        trait Show { val show: fn(self) -> string }
+    "#,
+    "/test/t.gx" => r#"
+        let unused = 0
+    "#,
+    "/test/a.gxi" => r#"
+        val unused: i64
+    "#,
+    "/test/a.gx" => r#"
+        use super::t::Show;
+        impl Show for i64 { let show = |x| "int [x]" };
+        let unused = 0
+    "#,
+    "/test/b.gxi" => r#"
+        val shown: string
+    "#,
+    "/test/b.gx" => r#"
+        let shown = super::t::Show::show(1)
+    "#
+    ; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    trait_undeclared_impl_seen_after_its_siblings,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "int 1"),
+    "/test.gx" => r#"
+        mod t;
+        mod a;
+        let result = t::Show::show(1)
+    "#,
+    "/test/t.gxi" => r#"
+        trait Show { val show: fn(self) -> string }
+    "#,
+    "/test/t.gx" => r#"
+        let unused = 0
+    "#,
+    "/test/a.gxi" => r#"
+        val unused: i64
+    "#,
+    "/test/a.gx" => r#"
+        use super::t::Show;
+        impl Show for i64 { let show = |x| "int [x]" };
+        let unused = 0
+    "#
+);
+
 // An abstract type's implementation may live in the type's package.
 run!(
     trait_abstract_impl_in_type_package,

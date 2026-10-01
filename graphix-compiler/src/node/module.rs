@@ -624,6 +624,9 @@ pub struct Module<R: Rt, E: UserEvent> {
     /// catch-statement indices in `nodes` (see `Block::catches`).
     pub(crate) catches: Box<[usize]>,
     top_id: ExprId,
+    /// The compile task a static body compiles and checks in: the cells
+    /// it creates are its own, and its check writes no others.
+    task: u32,
     resident: TagValue,
 }
 
@@ -687,6 +690,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             nodes,
             catches,
             top_id,
+            task: 0,
             resident: TagValue::phantom(),
         }))
     }
@@ -720,6 +724,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
+            task: 0,
             resident: TagValue::phantom(),
         }))
     }
@@ -733,6 +738,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         exprs: Arc<[Expr]>,
         top_id: ExprId,
     ) -> Result<Node<R, E>> {
+        let task = crate::typ::tvar::new_task();
+        let _task = crate::typ::tvar::InTask::enter(task);
         let mut env = ctx.env.clone();
         // the module's own path must be visible from inside it
         env.modules.insert_cow(scope.lexical.clone());
@@ -750,6 +757,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
             nodes: Box::new([]),
             catches: Box::new([]),
             top_id,
+            task,
             resident: TagValue::phantom(),
         };
         let _module = profile::module(&scope.lexical);
@@ -787,6 +795,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         res
     }
 
+    /// Compile the body. A static body is checked with its module
+    /// statement (`typecheck0`), a loaded one here.
     fn compile_inner(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
@@ -794,8 +804,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<()> {
         let builtins_allowed =
             mem::replace(&mut ctx.builtins_allowed, matches!(self.body, Body::Static));
-        let nodes = ctx.with_restored_mut(&mut self.env, |ctx| -> Result<_> {
-            let (mut nodes, catches) = crate::node::compile_block_children(
+        let compiled = ctx.with_restored_mut(&mut self.env, |ctx| {
+            crate::node::compile_block_children(
                 ctx,
                 self.flags,
                 &self.scope,
@@ -803,43 +813,37 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 true,
                 exprs.iter(),
             )
-            .map(|(n, c)| (Vec::from(n), c))?;
-            let _profile = profile::phase(Phase::ModuleCheck);
-            super::typecheck_in_order(ctx, &mut nodes, &catches, false, |n, ctx| {
-                n.typecheck0(ctx)
-            })?;
-            Ok((nodes, catches))
         });
         ctx.builtins_allowed = builtins_allowed;
-        let (nodes, catches) = nodes?;
-        self.catches = catches;
-        self.nodes = nodes.into_boxed_slice();
-        match &mut self.body {
-            Body::Static => check_sig(
-                ctx,
-                self.top_id,
-                &mut self.proxy,
-                &self.scope,
-                &self.sig,
-                &self.nodes,
-            )?,
-            Body::Dynamic { sig_env, .. } => {
-                ctx.with_restored_mut(sig_env, |ctx| {
-                    check_sig(
-                        ctx,
-                        self.top_id,
-                        &mut self.proxy,
-                        &self.scope,
-                        &self.sig,
-                        &self.nodes,
-                    )
-                })?;
-                self.proxy_lambda_defs(ctx);
-                self.typecheck1_nodes(ctx)?;
-            }
+        (self.nodes, self.catches) = compiled?;
+        if let Body::Dynamic { .. } = &self.body {
+            self.check_body(ctx)?;
+            self.proxy_lambda_defs(ctx);
+            self.typecheck1_nodes(ctx)?;
         }
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
+    }
+
+    /// Check the body's statements under the module's env, then the body
+    /// against the signature.
+    fn check_body(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        let _profile = profile::phase(Phase::ModuleCheck);
+        let Self { env, nodes, catches, body, top_id, proxy, scope, sig, .. } = self;
+        ctx.with_restored_mut(env, |ctx| {
+            super::typecheck0_statements(ctx, nodes, catches, false)
+        })?;
+        match body {
+            Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, nodes),
+            Body::Dynamic { sig_env, .. } => ctx.with_restored_mut(sig_env, |ctx| {
+                check_sig(ctx, *top_id, proxy, scope, sig, nodes)
+            }),
+        }
+    }
+
+    /// The compile task of a static body, which its statement checks in.
+    pub(crate) fn static_task(&self) -> Option<u32> {
+        matches!(self.body, Body::Static).then_some(self.task)
     }
 
     /// Map each signature `BindId` to its impl binding's `LambdaDef` so
@@ -1039,10 +1043,30 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        if let Body::Dynamic { source, .. } = &mut self.body {
-            wrap!(source, source.typecheck0(ctx))?;
-            let t = Type::Primitive(Typ::String | Typ::Error);
-            wrap!(source, t.check_contains(&self.env, source.typ()))?;
+        match &mut self.body {
+            Body::Dynamic { source, .. } => {
+                wrap!(source, source.typecheck0(ctx))?;
+                let t = Type::Primitive(Typ::String | Typ::Error);
+                wrap!(source, t.check_contains(&self.env, source.typ()))?;
+            }
+            Body::Static => {
+                use crate::typ::tvar::{InTask, OwnWrites};
+                let _task = InTask::enter(self.task);
+                let _module = profile::module(&self.scope.lexical);
+                let writes = OwnWrites::enter(self.task);
+                let res = self.check_body(ctx).and_then(|()| {
+                    if writes.foreign() {
+                        bail!(
+                            "the check decides a type the code around the module \
+                             left open: annotate the binding it decides"
+                        )
+                    }
+                    Ok(())
+                });
+                res.with_context(|| {
+                    format_compact!("compiling module {}", self.scope.lexical)
+                })?;
+            }
         }
         self.proxy_lambda_defs(ctx);
         Ok(())

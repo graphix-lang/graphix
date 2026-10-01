@@ -1506,7 +1506,7 @@ impl Type {
         for c in cv.cell_constraints().iter() {
             let Type::Ref(tr) = c else { continue };
             let Some(tid) = env.trait_of_ref(tr) else { continue };
-            let Some(heads) = env.impls.get(&tid) else { continue };
+            let Some(heads) = env.impls_of(tid) else { continue };
             for im in heads.iter() {
                 if !matches!(im.target, Type::Ref(_))
                     || fits(&im.target, &t.reset_tvars())?.is_none()

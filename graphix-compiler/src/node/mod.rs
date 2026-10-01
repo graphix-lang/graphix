@@ -819,6 +819,90 @@ pub(crate) fn typecheck_in_order<R: Rt, E: UserEvent>(
     Ok(())
 }
 
+/// Check a block's statements (`typecheck0`) in [`evaluation_order`]. A
+/// run of static modules checks in compile tasks, after the statements
+/// before it: a body reaches its siblings only through their
+/// interfaces (an impl a sibling's body adds undeclared is hidden from
+/// it, `Env::hidden_impls`), so no module's check reads another's. The
+/// tasks join in order; the first error in order is the block's.
+pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    nodes: &mut [Node<R, E>],
+    catches: &[usize],
+    module: bool,
+) -> Result<()> {
+    let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
+    let mut slots: LPooled<Vec<Option<&mut Node<R, E>>>> =
+        nodes.iter_mut().map(Some).collect();
+    let is_static_module = |n: &Option<&mut Node<R, E>>| {
+        n.as_deref().is_some_and(|n| match n.view() {
+            NodeView::Module(m) => m.static_task().is_some(),
+            _ => false,
+        })
+    };
+    let mut at = 0;
+    while at < order.len() {
+        let run =
+            order[at..].iter().take_while(|i| is_static_module(&slots[**i])).count();
+        if run >= 2 && !RUNTIME_BIND.get() {
+            let run_nodes = order[at..at + run]
+                .iter()
+                .map(|i| slots[*i].take().expect("an order visits each once"));
+            typecheck0_modules(ctx, run_nodes, module)?;
+            at += run;
+        } else {
+            let n = slots[order[at]].take().expect("an order visits each once");
+            let r = wrap!(n, n.typecheck0(ctx));
+            match module {
+                true => r.with_context(|| n.spec().ori.clone())?,
+                false => r?,
+            }
+            at += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Check each module of a run in a compile task forked before any runs.
+fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    run: impl Iterator<Item = &'a mut Node<R, E>>,
+    module: bool,
+) -> Result<()> {
+    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> =
+        run.map(|n| (n, ctx.fork())).collect();
+    let paths: LPooled<Vec<ModPath>> = work
+        .iter()
+        .map(|(n, _)| match n.view() {
+            NodeView::Module(m) => m.scope.lexical.clone(),
+            _ => unreachable!("a run is of modules"),
+        })
+        .collect();
+    for (i, (_, task)) in work.iter_mut().enumerate() {
+        let mut hidden = (*task.env.hidden_impls).clone();
+        hidden.extend(
+            paths.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| p.clone()),
+        );
+        task.env.hidden_impls = Arc::new(hidden);
+    }
+    let level = crate::typ::tvar::current_level();
+    let mut results: Vec<Result<()>> = work
+        .par_iter_mut()
+        .map(|(n, task)| {
+            let _level = crate::typ::tvar::AtLevel::enter(level);
+            let r = wrap!(n, n.typecheck0(task));
+            match module {
+                true => r.with_context(|| n.spec().ori.clone()),
+                false => r,
+            }
+        })
+        .collect();
+    for (_, task) in work.drain(..) {
+        ctx.join(task);
+    }
+    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
+}
+
 /// Run a runtime bind `f` in a settle frame of its own and settle what
 /// it deferred when it returns: no statement boundary follows a bind
 /// at run time. A refused settle is a lazy body's swallowed typecheck
@@ -993,13 +1077,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        typecheck_in_order(
-            ctx,
-            &mut self.children,
-            &self.catches,
-            self.module,
-            |n, ctx| n.typecheck0(ctx),
-        )
+        typecheck0_statements(ctx, &mut self.children, &self.catches, self.module)
     }
 
     fn typecheck0_instance(

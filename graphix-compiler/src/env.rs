@@ -418,6 +418,10 @@ pub struct Env {
     /// Whether compiles serve an editor, and the IDE side-channels
     /// ([`Ide`]) a check records into.
     pub ide: IdeMode,
+    /// The modules whose undeclared impls this compile task does not
+    /// see: its siblings in a run of module checks, which reach each
+    /// other only through their interfaces.
+    pub(crate) hidden_impls: Arc<Vec<ModPath>>,
 }
 
 impl Env {
@@ -435,6 +439,7 @@ impl Env {
             impls: self.impls.fork(),
             poly_binds: self.poly_binds.fork(),
             package_roots: self.package_roots.fork(),
+            ide: self.ide.fork(),
             ..self.clone()
         }
     }
@@ -455,7 +460,8 @@ impl Env {
             impls,
             poly_binds,
             package_roots,
-            ide: _,
+            ide,
+            hidden_impls: _,
         } = fork;
         self.by_id.join(by_id);
         self.byref_chain.join(byref_chain);
@@ -466,6 +472,7 @@ impl Env {
         self.impls.join(impls);
         self.poly_binds.join(poly_binds);
         self.package_roots.join(package_roots);
+        self.ide.join(ide);
     }
 
     /// Restore the lexical environment to the snapshot `other`; the
@@ -500,6 +507,7 @@ impl Env {
             poly_binds: _,
             package_roots: _,
             ide: _,
+            hidden_impls: _,
         } = other;
         Self { binds, modules, typedefs, traits, ..self.clone() }
     }
@@ -1083,6 +1091,24 @@ impl Env {
         Ok(a.contains(self, &b)? || b.contains(self, &a)?)
     }
 
+    /// The implementations of `trait_id` this compile task sees: those
+    /// registered, less a sibling's undeclared ones ([`Self::hidden_impls`]).
+    pub(crate) fn impls_of(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
+        let list = self.impls.get(&trait_id)?;
+        let hidden = |im: &ImplDef| {
+            !im.declared
+                && self.hidden_impls.iter().any(|m| {
+                    let (s, m) = (&*im.scope.0, &*m.0);
+                    s.starts_with(m)
+                        && s.as_bytes().get(m.len()).is_none_or(|b| *b == b'/')
+                })
+        };
+        if !list.iter().any(|im| hidden(im)) {
+            return Some(list.clone());
+        }
+        Some(Arc::new(list.iter().filter(|im| !hidden(im)).cloned().collect()))
+    }
+
     /// The registered impl whose head names the same types as
     /// `target` (an interface's `impl T for X;` pairing with the
     /// implementation's), parameterized heads included.
@@ -1105,7 +1131,7 @@ impl Env {
     /// target matches by identity; any other head by unification
     /// against a fresh instantiation, then equivalence.
     pub fn find_impl(&self, trait_id: TraitId, t: &Type) -> Result<Option<Arc<ImplDef>>> {
-        let Some(list) = self.impls.get(&trait_id) else { return Ok(None) };
+        let Some(list) = self.impls_of(trait_id) else { return Ok(None) };
         // An open cell inside `t` could still become anything.
         if t.has_unbound() {
             return Ok(None);

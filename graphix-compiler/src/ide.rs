@@ -142,6 +142,21 @@ impl IdeMode {
         matches!(self, Self::Lsp(_))
     }
 
+    /// A compile task's mode: a sink of its own, which [`Self::join`]
+    /// appends to this one's in order, whatever order the tasks ran in.
+    pub(crate) fn fork(&self) -> Self {
+        match self {
+            Self::Lsp(Some(_)) => Self::Lsp(Some(Arc::new(Mutex::new(Ide::new())))),
+            mode => mode.clone(),
+        }
+    }
+
+    pub(crate) fn join(&self, fork: Self) {
+        if let (Some(sink), Self::Lsp(Some(task))) = (self.sink(), fork) {
+            sink.lock().append(&mut task.lock())
+        }
+    }
+
     pub fn sink(&self) -> Option<&Arc<Mutex<Ide>>> {
         match self {
             Self::Lsp(sink) => sink.as_ref(),
@@ -221,6 +236,35 @@ impl Ide {
             module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
             expr_types: EXPR_TYPE_SITE_POOL.take(),
         }
+    }
+
+    /// Move every record of `other` after this one's.
+    fn append(&mut self, other: &mut Ide) {
+        let Self {
+            binds,
+            references,
+            module_references,
+            scope_map,
+            type_refs,
+            type_ref_sites: _,
+            field_refs,
+            warnings,
+            sig_links,
+            module_internals,
+            expr_types,
+        } = other;
+        self.binds.append(binds);
+        self.references.append(references);
+        self.module_references.append(module_references);
+        self.scope_map.append(scope_map);
+        for site in type_refs.drain(..) {
+            self.push_type_ref(site)
+        }
+        self.field_refs.append(field_refs);
+        self.warnings.append(warnings);
+        self.sig_links.append(sig_links);
+        self.module_internals.append(module_internals);
+        self.expr_types.append(expr_types);
     }
 
     pub(crate) fn push_type_ref(&mut self, site: TypeRefSite) {

@@ -134,6 +134,10 @@ impl Pack for Level {
 thread_local! {
     static LEVEL: std::cell::Cell<Level> = const { std::cell::Cell::new(Level::GENERIC) };
     static TASK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The compile task whose foreign writes this thread records
+    /// ([`OwnWrites`]), and whether it made one.
+    static OWN_WRITES: std::cell::Cell<Option<(u32, bool)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 static TASKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -181,8 +185,36 @@ fn written_of(owner: u32, what: &str) {
     }
 }
 
+/// While this lives, record whether the running compile task changes a
+/// cell or var an earlier task created. A task runs whole on one
+/// thread, and a task run while it waits keeps its own record.
+#[must_use]
+pub(crate) struct OwnWrites(Option<(u32, bool)>);
+
+impl OwnWrites {
+    pub(crate) fn enter(task: u32) -> Self {
+        Self(OWN_WRITES.replace(Some((task, false))))
+    }
+
+    /// Whether the task wrote outside itself.
+    pub(crate) fn foreign(self) -> bool {
+        OWN_WRITES.get().is_some_and(|(_, w)| w)
+    }
+}
+
+impl Drop for OwnWrites {
+    fn drop(&mut self) {
+        OWN_WRITES.set(self.0)
+    }
+}
+
 #[cold]
 fn foreign_write(owner: u32, what: &str) {
+    if let Some((task, _)) = OWN_WRITES.get()
+        && task == TASK.get()
+    {
+        OWN_WRITES.set(Some((task, true)))
+    }
     if crate::dbgenv::graphix_task_audit() {
         eprintln!(
             "FOREIGN-WRITE by task {} to a {what} of task {owner}\n{}",

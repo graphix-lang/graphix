@@ -825,7 +825,15 @@ not a gap count.
   `use`; every name arrives by declaration, `use`, or prelude;
   `self`/`super`/`package` roots (`package::` is the registered
   package, else a loaded script's own top level, else `/`);
-  declarations, `let` included, are statement-position only.
+  declarations, `let` included, are statement-position only. A module
+  with an interface compiles its body with its `mod` statement and
+  checks it with the statement (`Module::typecheck0`), in a compile task
+  of its own; a run of them checks in parallel, after the statements
+  before it. Siblings reach each other only through interfaces: an impl
+  a body adds undeclared is hidden from its siblings' checks
+  (`Env::hidden_impls`) and seen after them, and a module's check that
+  writes a cell created outside the module is refused (annotate the
+  binding it would decide; `design/parallel_compile.md`).
 - **Place references** (`design/place_references.md`): `&a[i]`,
   `&s.f`, `&t.0`, `&m{k}` are root + path; writes patch the root at
   delivery; a dynamic key is a moving reference. References de-fuse.
