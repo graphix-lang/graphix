@@ -468,7 +468,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         NodeView::Bind(self)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // The Bind stays live to publish the fused value to its BindId.
         fuse(&mut self.node, ctx)?;
         Ok(None)

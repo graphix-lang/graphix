@@ -1083,7 +1083,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         crate::NodeView::Module(self)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // A dynamic module's body compiles at run time (`compile_source`),
         // after fusion, and is never fused; its loader is not fused here.
         let _module = profile::module(&self.scope.lexical);

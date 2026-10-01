@@ -6,7 +6,7 @@
 //! with fresh state, where the region bakes nothing that differs.
 
 use crate::{
-    ApplyView, ErrorHandler, ExecCtx, Node, NodeView, Rt, UserEvent,
+    ApplyView, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, Rt, UserEvent,
     expr::ExprId,
     fusion::{
         FusedKernel, collect_region_inputs,
@@ -117,7 +117,7 @@ impl std::fmt::Debug for SlotShare {
 
 /// Record a prototype walk's attempt at `node`, which built `fused`.
 pub(crate) fn record<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     node: &Node<R, E>,
     fused: Option<&mut Node<R, E>>,
 ) {
@@ -137,7 +137,7 @@ pub(crate) fn record<R: Rt, E: UserEvent>(
 /// fused: the same root, inputs of the same names and kinds in the same
 /// order, the same return and the same print.
 pub(crate) fn reuse<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     node: &Node<R, E>,
     return_type: &Type,
 ) -> Option<Node<R, E>> {
@@ -199,8 +199,8 @@ pub(crate) fn reuse<R: Rt, E: UserEvent>(
 /// Fuse a collection's prototype through `f`: the table its slots
 /// share, or `None` when no slot would find a kernel in it.
 pub(crate) fn fuse_prototype<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    f: impl FnOnce(&mut ExecCtx<R, E>) -> Result<()>,
+    ctx: &mut CompileCtx<R, E>,
+    f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<()>,
 ) -> Result<Option<SlotShare>> {
     match ctx.fusion.share.take() {
         None => {
@@ -234,10 +234,10 @@ pub(crate) fn fuse_prototype<R: Rt, E: UserEvent>(
 /// Fuse a slot's freshly bound instance through `f` from its
 /// collection's table. A region the table does not answer node-walks.
 pub(crate) fn fuse_slot<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     share: &SlotShare,
     top_id: ExprId,
-    f: impl FnOnce(&mut ExecCtx<R, E>) -> Result<()>,
+    f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<()>,
 ) {
     let reuse = Share::Reuse { table: share.table.clone(), next: share.base };
     let saved = ctx.fusion.share.replace(reuse);

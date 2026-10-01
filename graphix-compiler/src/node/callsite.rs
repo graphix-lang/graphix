@@ -1173,6 +1173,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             && let Some(apply) = self.callee.apply_mut()
         {
             share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx));
+            ctx.apply_deferred();
         }
         // Defaults update for the first time under the init view.
         let prev_init = mem::replace(&mut event.init, true);
@@ -2179,7 +2180,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         if let Some(n) = &mut self.lowered {
             return n.fuse(ctx);
         }

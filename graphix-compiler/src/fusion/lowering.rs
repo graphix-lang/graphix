@@ -4,7 +4,7 @@
 //! emitters consume.
 
 use crate::{
-    BindId, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Update, UserEvent,
+    BindId, CompileCtx, Node, NodeView, PrintFlag, Refs, Rt, Update, UserEvent,
     env::Env,
     expr::{ExprId, ExprKind, ModPath},
     fusion::{
@@ -119,7 +119,7 @@ pub struct BuiltinCallDiscovery {
 /// omitted and checked by emission.
 pub(crate) fn walk_node_for_builtin_calls<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) -> Result<(), FusionBlocker> {
     let mut failure = None;
@@ -255,7 +255,7 @@ fn try_register_cast<R: Rt, E: UserEvent>(
 /// builtins.
 fn try_register_builtin_call_from_callsite<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
     out: &mut BuiltinCallDiscovery,
 ) -> Option<FusionBlocker> {
     let apply_expr = cs.spec();
@@ -778,7 +778,7 @@ pub(crate) type FnResolutions = SmallVec<[u64; 4]>;
 
 fn body_fingerprint<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
-    ec: &ExecCtx<R, E>,
+    ec: &CompileCtx<R, E>,
 ) -> (QopCoverage, FnResolutions) {
     let mut cov = QopCoverage::new();
     let mut res = FnResolutions::new();
@@ -923,7 +923,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     site_ftype: &FnType,
     kernel_name: &ArcStr,
-    ec: &ExecCtx<R, E>,
+    ec: &CompileCtx<R, E>,
 ) -> Result<triomphe::Arc<CachedKernel>, Refusal> {
     // The key is the site's type, not `g.typ()`: the instance shares
     // tvar cells with the def, so `g.typ()` reports whichever
@@ -1003,7 +1003,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
 fn instance_agrees<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     site: &FnType,
-    ec: &ExecCtx<R, E>,
+    ec: &CompileCtx<R, E>,
 ) -> Result<(), Refusal> {
     let gt = g.typ().resolve_tvars();
     let args_agree = gt.args.len() == site.args.len()
@@ -1040,7 +1040,7 @@ struct FormalSlots {
 fn formal_slots<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: Option<BindId>,
-    ec: &ExecCtx<R, E>,
+    ec: &CompileCtx<R, E>,
 ) -> Result<FormalSlots, Refusal> {
     let inv = invariant_formals(g, self_bind);
     let mut out = FormalSlots {
@@ -1106,7 +1106,7 @@ fn formal_slots<R: Rt, E: UserEvent>(
 fn capture_slots<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: Option<BindId>,
-    ec: &ExecCtx<R, E>,
+    ec: &CompileCtx<R, E>,
 ) -> Result<LPooled<Vec<(CaptureSlot, ParamKind)>>, Refusal> {
     // Formal patterns bind outside the body, so `refs` reports them as
     // external.
@@ -1150,7 +1150,7 @@ fn capture_slots<R: Rt, E: UserEvent>(
 pub(crate) fn structural_tail_loop<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: BindId,
-    ec: &ExecCtx<R, E>,
+    ec: &CompileCtx<R, E>,
 ) -> bool {
     let mut refs = Refs::default();
     g.body().refs(&mut refs);
@@ -1212,7 +1212,7 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
     body: &Node<R, E>,
     self_bind: BindId,
     formal_slot_types_by_position: &[(usize, Type)],
-    ec: &ExecCtx<R, E>,
+    ec: &CompileCtx<R, E>,
 ) -> bool {
     let mut ok = true;
     fusion::for_each_emitted_node(body, &mut |n| {

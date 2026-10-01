@@ -327,8 +327,9 @@ applications called by `CallSite`). `Update` requires `update`,
 expression context to errors; `err!`/`errf!` build error values.
 
 **Compiling never reaches the runtime.** Compile, `typecheck0`/`1`
-(`Update` and `Apply`) and `BuiltIn::init` take a `CompileCtx`; update,
-delete, sleep, fusion and image decode take the `ExecCtx`. What
+(`Update` and `Apply`), fusion (its state is `CompileCtx::fusion`; a
+region it replaces is discarded) and `BuiltIn::init` take a
+`CompileCtx`; update, delete, sleep and image decode take the `ExecCtx`. What
 compiling would ask of the runtime it defers: a reference is recorded
 (`CompileCtx::record_ref`), an abandoned node, application or stored
 value is discarded (`discard`, `discard_apply`, `discard_stored`), and

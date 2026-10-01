@@ -156,7 +156,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let _ = self.each(|n| Ok(n.sleep(ctx)));
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts(self.entries.iter_mut().flat_map(|(k, v)| [k, v]), ctx)
     }
 
@@ -330,7 +330,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.key.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.source, &mut self.key], ctx)
     }
 

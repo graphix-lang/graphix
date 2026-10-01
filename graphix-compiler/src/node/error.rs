@@ -417,7 +417,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         NodeView::Catch(self)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // a catch is a fusion boundary; the handler's own subtrees fuse
         fuse(&mut self.handler, ctx)?;
         if let Some(abort) = &mut self.seq_abort {
@@ -792,7 +792,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
@@ -1020,7 +1020,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         NodeView::SeqGuard(self)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fuse(&mut self.n, ctx)?;
         Ok(None)
     }
@@ -1121,7 +1121,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
         NodeView::SeqAbort(self)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fuse(&mut self.n, ctx)?;
         Ok(None)
     }
@@ -1202,7 +1202,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 

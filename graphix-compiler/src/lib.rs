@@ -535,7 +535,7 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.emit_clif(cx))
     }
 
-    pub fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    pub fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         stack::ensure_sufficient(|| self.0.fuse(ctx))
     }
 
@@ -687,7 +687,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// Fuse inside this apply when its call site did not fuse
     /// (`GXLambda` fuses its instance body's sync regions in place).
     /// Build errors must be swallowed, never fail the compile.
-    fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn fuse(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
     }
 }
@@ -848,7 +848,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// recursed into its children via [`fusion::fuse`]. The default is
     /// `Ok(None)` with no recursion; only the containers fusion
     /// descends through override it.
-    fn fuse(&mut self, _ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         Ok(None)
     }
 }
@@ -922,7 +922,7 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
 /// error. Registered via [`ExecCtx::register_attribute`]. The
 /// definition assertions (`#[tail_recursive]`/`#[sync]`/`#[async]`)
 /// are compiler-reserved, not registry attributes.
-pub type AttributeCheckFn<R, E> = fn(&ExecCtx<R, E>, &Attr, &Node<R, E>) -> Result<()>;
+pub type AttributeCheckFn<R, E> = fn(&CompileCtx<R, E>, &Attr, &Node<R, E>) -> Result<()>;
 
 /// What an attribute demands of its target whatever fusion made of it:
 /// it also runs on a node absorbed into a larger kernel, where
@@ -968,7 +968,7 @@ pub trait Attribute<R: Rt, E: UserEvent> {
     /// The bare attribute name (`native` for `#[native]`); a flat
     /// global namespace.
     const NAME: &str;
-    fn check(ctx: &ExecCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()>;
+    fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()>;
     /// See [`AttributeTargetFn`].
     fn check_target(_attr: &Attr, _node: &Node<R, E>) -> Result<()> {
         Ok(())
@@ -1003,7 +1003,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
         Ok(())
     }
 
-    fn check(ctx: &ExecCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
+    fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
         <Self as Attribute<R, E>>::check_target(attr, node)?;
         if let NodeView::FusedKernel(_) = node.view() {
             return Ok(());
@@ -1471,6 +1471,8 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// The id of the concurrent compile task this one runs in
     /// ([`typ::tvar::InTask`]); 0 at the root.
     pub(crate) task: u32,
+    /// The fusion subsystem's state; see [`fusion::FusionCtx`].
+    pub fusion: fusion::FusionCtx,
 }
 
 enum Discarded<R: Rt, E: UserEvent> {
@@ -1492,8 +1494,6 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// The call sites through which `Value` comparison and printing
     /// reach core-trait implementations, built on first use.
     pub(crate) core_hook_sites: node::coretraits::CoreHookSites<R, E>,
-    /// The fusion subsystem's state; see [`fusion::FusionCtx`].
-    pub fusion: fusion::FusionCtx,
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
@@ -1544,6 +1544,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             pending_refs: AHashMap::default(),
             discarded: Vec::new(),
             task: self.task,
+            fusion: self.fusion.fork(),
         }
     }
 
@@ -1577,6 +1578,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             pending_refs,
             discarded,
             task: _,
+            fusion,
         } = fork;
         self.tags.join(tags);
         self.env.join(env);
@@ -1599,6 +1601,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             *self.pending_refs.entry(k).or_default() += n;
         }
         self.discarded.extend(discarded);
+        self.fusion.join(fusion);
     }
 
     /// Record that `top_id` reads `id`: the runtime is told at the next
@@ -1741,12 +1744,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 pending_refs: AHashMap::default(),
                 discarded: Vec::new(),
                 task: 0,
+                fusion: fusion::FusionCtx::new()?,
             },
             image_decoder: None,
             libstate: LibState::default(),
             rt: user,
             core_hook_sites: node::coretraits::CoreHookSites::default(),
-            fusion: fusion::FusionCtx::new()?,
             control: Arc::new(Control::new()),
         };
         this.register_attribute::<Native>()?;

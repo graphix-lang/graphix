@@ -858,7 +858,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         self.callback.image_encode(buf)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
@@ -1278,7 +1278,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         self.acc_type.encode(buf)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
@@ -1471,7 +1471,7 @@ fn callback<R: Rt, E: UserEvent>(prototype: &Node<R, E>) -> Option<&GXLambda<R, 
 /// Fuse the prototype's instance of a statically resolved callback,
 /// whose kernels the slots' instances share.
 fn fuse_callback<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     prototype: &mut Node<R, E>,
     callback: &mut Callback,
 ) -> Result<Option<Node<R, E>>> {

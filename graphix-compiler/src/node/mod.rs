@@ -291,7 +291,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // parens are a fusion boundary: the interior gets its own region pass
         fuse(&mut self.n, ctx)?;
         Ok(None)
@@ -1115,7 +1115,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         emit_block_node(cx, &self.children)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         for child in self.children.iter_mut() {
             fuse(child, ctx)?;
         }
@@ -1233,7 +1233,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts(self.args.iter_mut(), ctx)
     }
 
@@ -1362,7 +1362,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         self.node.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.node], ctx)
     }
 
@@ -1688,7 +1688,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
@@ -1806,7 +1806,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
@@ -1926,7 +1926,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts(self.n.iter_mut(), ctx)
     }
 
@@ -2117,7 +2117,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.trigger, &mut self.arg.node], ctx)
     }
 

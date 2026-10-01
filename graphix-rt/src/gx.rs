@@ -790,7 +790,7 @@ impl<X: GXExt> GX<X> {
         // in the persistent JIT module until finalize fails.
         let env = self.ctx.env.clone();
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
-            self.ctx.fusion.reset_jit_for_check()?;
+            self.ctx.cx.fusion.reset_jit_for_check()?;
             *sink = Some(Arc::new(parking_lot::Mutex::new(Ide::new())));
         }
         let resolvers_for_call: Resolvers = match resolver_override {

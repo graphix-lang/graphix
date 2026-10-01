@@ -568,7 +568,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         if dbgenv::gxdbg_instance_fusion() {
             let before = ctx.fusion.stats.failed.len();
             let fused_before = ctx.fusion.stats.fused;
@@ -835,7 +835,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.emit_clif(callsite, cx)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.apply.fuse(ctx)
     }
 

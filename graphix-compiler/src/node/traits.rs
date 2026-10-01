@@ -261,7 +261,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         self.defaults.view()
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         self.defaults.fuse(ctx)
     }
 }
@@ -681,7 +681,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         NodeView::Impl(self)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         self.body.fuse(ctx)
     }
 }

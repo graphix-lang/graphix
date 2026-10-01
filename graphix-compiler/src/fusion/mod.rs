@@ -19,7 +19,7 @@ pub(crate) mod share;
 pub use kernel::FusedKernel;
 
 use crate::{
-    ApplyView, BindId, ExecCtx, LambdaId, Node, NodeView, PrintFlag, Refs, Rt, Update,
+    ApplyView, BindId, CompileCtx, LambdaId, Node, NodeView, PrintFlag, Refs, Rt, Update,
     UserEvent,
     env::Env,
     expr::{Expr, ExprId, ExprKind, ModPath, Origin},
@@ -124,6 +124,24 @@ pub struct FusionStats {
 }
 
 impl FusionStats {
+    /// Add a compile task's counts after this one's.
+    fn join(&mut self, other: Self) {
+        let Self {
+            attempted,
+            fused,
+            rejected_before_emit,
+            failed,
+            jit_generations,
+            fused_sources,
+        } = other;
+        self.attempted += attempted;
+        self.fused += fused;
+        self.rejected_before_emit += rejected_before_emit;
+        self.failed.extend(failed);
+        self.jit_generations += jit_generations;
+        self.fused_sources.extend(fused_sources);
+    }
+
     fn record_failure(&mut self, spec: &Expr, reason: &str) {
         self.failed.push(FusionFailure {
             id: spec.id,
@@ -305,17 +323,19 @@ pub struct FusionCtx {
     /// Per-context cranelift module + cross-kernel-call cache, built on
     /// first use ([`Self::jit`]). The mutex is interior mutability for
     /// `ExecCtx`'s `Sync` bound; JIT ops are compile-time only.
-    jit: parking_lot::Mutex<Option<emit::Jit>>,
+    jit: Arc<parking_lot::Mutex<Option<emit::Jit>>>,
     /// Monomorphized lambda-kernel cache. Catch coverage and fn
     /// resolutions are part of the key because the kernel bakes them.
     /// The cached `Arc<KernelSig>` is the callable handle: the JIT's
     /// `by_kernel` cache keys on its pointer identity. It lives as long
     /// as the context's compiled code (a later compile may call an
     /// earlier one's lambda); [`Self::reset_jit_for_check`] clears it.
-    pub kernels: parking_lot::Mutex<
-        BTreeMap<
-            (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions),
-            LambdaCallInfo,
+    pub kernels: Arc<
+        parking_lot::Mutex<
+            BTreeMap<
+                (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions),
+                LambdaCallInfo,
+            >,
         >,
     >,
     /// Whether fusion is enabled for the current compile; set by
@@ -333,6 +353,23 @@ pub struct FusionCtx {
 }
 
 impl FusionCtx {
+    /// A compile task's fusion state: the module and the kernel cache
+    /// shared, its own outcome counters, which [`Self::join`] adds back.
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            jit: self.jit.clone(),
+            kernels: self.kernels.clone(),
+            enabled: self.enabled,
+            stats: FusionStats::default(),
+            top_id: self.top_id,
+            share: None,
+        }
+    }
+
+    pub(crate) fn join(&mut self, fork: Self) {
+        self.stats.join(fork.stats)
+    }
+
     /// The context's JIT module, built on first use.
     pub(crate) fn jit(&self) -> anyhow::Result<MappedMutexGuard<'_, emit::Jit>> {
         let mut jit = self.jit.lock();
@@ -369,8 +406,8 @@ impl FusionCtx {
 
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
-            jit: parking_lot::Mutex::new(None),
-            kernels: parking_lot::Mutex::new(BTreeMap::new()),
+            jit: Arc::new(parking_lot::Mutex::new(None)),
+            kernels: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
             enabled: true,
             stats: FusionStats::default(),
             top_id: None,
@@ -413,7 +450,7 @@ pub(crate) struct FreeVarInput {
 /// fails the build.
 pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
     subtree: &dyn Update<R, E>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> LPooled<Vec<FreeVarInput>> {
     let mut refs = Refs::default();
     subtree.refs(&mut refs);
@@ -438,7 +475,7 @@ pub(crate) fn collect_region_inputs<R: Rt, E: UserEvent>(
 /// has no kernel-input representation.
 pub(crate) fn free_var_input<R: Rt, E: UserEvent>(
     id: BindId,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> Option<FreeVarInput> {
     let b = ctx.env.by_id.get(&id)?;
     // `freeze_for_abi` is env-free and rejects `Type::Ref`, so refs expand
@@ -793,7 +830,7 @@ pub(crate) struct Discovery<'n, R: Rt, E: UserEvent> {
 /// recursion.
 pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
     root: &'n Node<R, E>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> Discovery<'n, R, E> {
     let collect_decorated = !ctx.attr_census.lock().is_empty();
     let mut d = Discovery {
@@ -889,17 +926,15 @@ pub(crate) fn discover_lambda_calls<'n, R: Rt, E: UserEvent>(
 /// attempted. `FusionDisabled` is checked once in [`crate::compile`].
 pub fn fuse<R: Rt, E: UserEvent>(
     child: &mut Node<R, E>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<()> {
     if let Some(new) = try_fuse(child, ctx)? {
-        let mut old = std::mem::replace(child, new);
-        old.delete(ctx);
+        ctx.discard(std::mem::replace(child, new));
         check_node_attributes(child, ctx)?;
         return Ok(());
     }
     if let Some(new) = try_fuse_feeding_args(child, ctx)? {
-        let mut old = std::mem::replace(child, new);
-        old.delete(ctx);
+        ctx.discard(std::mem::replace(child, new));
         check_node_attributes(child, ctx)?;
         return Ok(());
     }
@@ -916,7 +951,7 @@ static FED_ARGS: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["#fed"]));
 /// read a `let` bound to the argument.
 fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
     child: &mut Node<R, E>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
     let top_id = ctx.fusion.top_id.unwrap_or(child.spec().id);
     let Some(cs) = child.downcast_mut::<CallSite<R, E>>() else { return Ok(None) };
@@ -934,8 +969,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         let typ = node.typ().clone();
         let (id, read) = genn::bind(ctx, &FED_ARGS, "arg", typ, top_id);
         if free_var_input(id, ctx).is_none() {
-            let mut read = read;
-            read.delete(ctx);
+            ctx.discard(read);
             continue;
         }
         fed.push((id, std::mem::replace(node, read)));
@@ -953,7 +987,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
             if fed.iter().all(|(id, _)| k.has_input(*id)) {
                 Some(new)
             } else {
-                new.delete(ctx);
+                ctx.discard(new);
                 None
             }
         }
@@ -976,7 +1010,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
                 let id = r.id;
                 if let Some(i) = fed.iter().position(|(fid, _)| *fid == id) {
                     let (_, orig) = fed.swap_remove(i);
-                    std::mem::replace(node, orig).delete(ctx);
+                    ctx.discard(std::mem::replace(node, orig));
                 }
             }
             Ok(None)
@@ -986,11 +1020,10 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
 
 fn descend<R: Rt, E: UserEvent>(
     child: &mut Node<R, E>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<()> {
     if let Some(new) = child.fuse(ctx)? {
-        let mut old = std::mem::replace(child, new);
-        old.delete(ctx);
+        ctx.discard(std::mem::replace(child, new));
     }
     check_node_attributes(child, ctx)
 }
@@ -1002,7 +1035,7 @@ fn descend<R: Rt, E: UserEvent>(
 /// container ends here.
 pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
     parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
     for part in parts {
         if calls_a_function(part) { fuse(part, ctx)? } else { descend(part, ctx)? }
@@ -1034,7 +1067,7 @@ fn calls_a_function<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
 /// (`#[tail_recursive]`/`#[sync]`/`#[async]`) verify in `analysis::analyze`.
 fn check_node_attributes<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> anyhow::Result<()> {
     if ctx.fusion.reusing() {
         return Ok(());
@@ -1058,7 +1091,7 @@ fn check_node_attributes<R: Rt, E: UserEvent>(
 /// kernel ([`crate::AttributeTargetFn`]).
 fn check_attribute_targets<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> anyhow::Result<()> {
     if let Some(dec) = &node.spec().dec {
         for attr in dec.attrs.iter() {
@@ -1079,7 +1112,7 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
 /// Discovery rejects known effects; emission validates the remaining shapes.
 pub fn try_fuse<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
     if !region_is_candidate(node) {
         return Ok(None);
@@ -1106,7 +1139,7 @@ pub fn try_fuse<R: Rt, E: UserEvent>(
 
 fn build_region<R: Rt, E: UserEvent>(
     node: &Node<R, E>,
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     return_type: Type,
 ) -> anyhow::Result<Option<Node<R, E>>> {
     ctx.fusion.stats.attempted += 1;
@@ -1220,7 +1253,7 @@ fn build_region<R: Rt, E: UserEvent>(
 /// De-fuse the region, recording the reason so `attempted` and
 /// `failed` agree.
 fn refuse<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut CompileCtx<R, E>,
     spec: &Expr,
     reason: &str,
 ) -> anyhow::Result<Option<Node<R, E>>> {

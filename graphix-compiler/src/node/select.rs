@@ -1133,7 +1133,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         emit_select_node(cx, self)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         // Reached only when no enclosing region fused this select whole.
         // The scrutinee, each guard and each arm body get their own
         // region passes; constant bodies are skipped.

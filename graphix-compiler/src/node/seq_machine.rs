@@ -417,7 +417,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         bail!("emit_clif: a seq machine sequences across cycles")
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         for s in self.steps.iter_mut() {
             for n in s.nodes.iter_mut() {
                 fusion::fuse(n, ctx)?;

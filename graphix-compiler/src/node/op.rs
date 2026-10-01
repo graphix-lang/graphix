@@ -153,7 +153,7 @@ macro_rules! binary_node {
                 self.rhs.sleep(ctx);
             }
 
-            fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+            fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
                 fusion::fuse_parts([&mut self.lhs, &mut self.rhs], ctx)
             }
 
@@ -465,7 +465,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
@@ -594,7 +594,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         self.n.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 

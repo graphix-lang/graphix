@@ -49,7 +49,7 @@ macro_rules! composite_plumbing {
             self.n.iter_mut().for_each(|n| n.sleep(ctx))
         }
 
-        fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+        fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
             fusion::fuse_parts(self.n.iter_mut(), ctx)
         }
 
@@ -333,7 +333,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts(
             iter::once(&mut self.source).chain(self.replace.iter_mut().map(|r| &mut r.n)),
             ctx,
@@ -478,7 +478,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.source.sleep(ctx)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
 
@@ -830,7 +830,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         self.arg.sleep(ctx)
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.arg], ctx)
     }
 
@@ -1027,7 +1027,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.source.sleep(ctx);
     }
 
-    fn fuse(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Option<Node<R, E>>> {
+    fn fuse(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<Option<Node<R, E>>> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
 

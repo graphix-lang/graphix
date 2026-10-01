@@ -164,9 +164,14 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
 
     /// Feed the input a read of `id` feeds ([`Self::has_input`]) from
     /// `node` instead.
-    pub(crate) fn feed(&mut self, ctx: &mut ExecCtx<R, E>, id: BindId, node: Node<R, E>) {
+    pub(crate) fn feed(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        id: BindId,
+        node: Node<R, E>,
+    ) {
         let i = self.input(id).expect("an input read from the id");
-        std::mem::replace(&mut self.feeders[i], node).delete(ctx);
+        ctx.discard(std::mem::replace(&mut self.feeders[i], node));
     }
 
     /// The feeder nodes, one per kernel input slot.
