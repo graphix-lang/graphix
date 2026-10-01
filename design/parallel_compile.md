@@ -136,6 +136,40 @@ the interface's own type variables, frozen at compile.
 Admin registration, quick build, four P-cores, unpinned smoke runs:
 85-97 -> 61-62 ms.
 
+## Fusion tasks (BUILT)
+
+Fusion's discovery and emission were serial: 127 ms of the admin app's
+fused compile on the main thread, 53 of it CLIF emission under the
+JIT's lock, ~35 discovery, 22 waiting on links. Fusion now runs on the
+`CompileCtx` (its state is `CompileCtx::fusion`; a splice discards what
+it replaces), and the parts of a node that call a function, disjoint
+subtrees, fuse in compile tasks (`fusion::fuse_each`), each against a
+fork of the context, joined in order:
+
+- emission state (`emit::Emission`: the names functions are emitted
+  against, the lambda-kernel signatures and bodies, region layouts and
+  the functions waiting) is per task: a fork freezes the parent's
+  layers into an `Arc` both extend; a task mints ids from the frozen
+  table's next, and its join shifts its ids after the parent's (the
+  callee names in its CLIF rewritten with `reset_user_func_name`), a
+  kernel body the parent already has replacing the task's;
+- the type memo is one `DashMap` table per pass the tasks share
+  (`TypeMemo::current`/`enter`): a result is the same whichever task
+  computes it;
+- only the root links (`FusionCtx::unlinked` is 0 in a task).
+
+A region that failed used to leave its lambda kernels' signatures
+cached without their bodies, and a later region hitting one emitted the
+body from its own instance against the first's slots (`emit_clif:
+undefined local`); the failed attempt now forgets them
+(`Emission::forget_attempt`). That is what made the decisions depend on
+the order regions ran in. With it, serial and task modes decide the
+same (admin: 959 of 2771 regions; the corpus's fusion manifest
+unchanged), and `GRAPHIX_FUSE_SERIAL=1` is the A/B.
+
+Admin app, quick build, bench mode, four P-cores, median of 10: fused
+compile 222.7 -> 208.0 ms (serial mode of the same binary 223.5).
+
 ## Compile tasks (BUILT)
 
 Compiling and type checking take a `CompileCtx`: the registry, the

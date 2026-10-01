@@ -25,7 +25,7 @@ use cranelift_codegen::{
     ir::{
         AbiParam, ExtFuncData, ExternalName, FuncRef, Function, GlobalValue,
         GlobalValueData, InstBuilder, MemFlags, Signature, UserExternalName,
-        UserFuncName, Value as ClifValue, immediates::Imm64, types,
+        UserExternalNameRef, UserFuncName, Value as ClifValue, immediates::Imm64, types,
     },
     isa::{OwnedTargetIsa, TargetIsa},
     settings::{self, Configurable},
@@ -138,17 +138,43 @@ fn trampoline_signature(isa: &dyn TargetIsa) -> Signature {
 /// runtime helpers and constants) by ids of this table alone. Nothing
 /// named here is ever defined: a record names its targets symbolically,
 /// and installing it mints the module's ids.
+///
+/// A compile task's table extends its fork's frozen one ([`Emission`]):
+/// it mints ids from the base's next, and its join renumbers them.
 #[derive(Default)]
 pub(super) struct Names {
+    base: Option<Arc<Names>>,
+    /// The first id this table mints.
+    first: u32,
     /// Each function's signature and whether calls to it are colocated.
     funcs: Vec<(Signature, bool)>,
     data: u32,
 }
 
 impl Names {
+    fn over(base: Arc<Names>) -> Self {
+        Self { first: base.next(), data: base.data, funcs: Vec::new(), base: Some(base) }
+    }
+
+    fn next(&self) -> u32 {
+        self.first + self.funcs.len() as u32
+    }
+
+    fn sig(&self, id: FuncId) -> &(Signature, bool) {
+        let i = id.as_u32();
+        match i.checked_sub(self.first) {
+            Some(i) => &self.funcs[i as usize],
+            None => self
+                .base
+                .as_ref()
+                .expect("an id below a table's first is its base's")
+                .sig(id),
+        }
+    }
+
     fn func(&mut self, sig: &Signature, colocated: bool) -> FuncId {
         self.funcs.push((sig.clone(), colocated));
-        FuncId::from_u32(self.funcs.len() as u32 - 1)
+        FuncId::from_u32(self.next() - 1)
     }
 
     /// A function the module defines: a body, a thunk or a wrapper.
@@ -163,7 +189,7 @@ impl Names {
 
     /// `id` as a callee of `func`, the body being built.
     pub(super) fn import_func(&self, id: FuncId, func: &mut Function) -> FuncRef {
-        let (sig, colocated) = &self.funcs[id.as_u32() as usize];
+        let (sig, colocated) = self.sig(id);
         let signature = func.import_signature(sig.clone());
         let name = func.declare_imported_user_function(UserExternalName {
             namespace: 0,
@@ -193,19 +219,18 @@ impl Names {
     }
 }
 
-/// The emission side of the JIT, which outlives module generations: the
-/// ISA, the ids bodies are emitted against, and the builder scratch.
-struct Emitter {
+/// What emission and linking share and never change: the ISA and the
+/// runtime helpers' ids, declared first in every root [`Names`].
+pub(crate) struct EmitShared {
     isa: OwnedTargetIsa,
-    names: Names,
-    /// The runtime helpers' ids in `names`, declared once.
     helpers: HelperFuncIds,
     /// The helpers by their ids, for naming a relocation's target.
     helper_names: BTreeMap<FuncId, &'static str>,
-    builder_ctx: FunctionBuilderContext,
+    /// The table the helpers are declared in, every root's start.
+    helper_table: Arc<Names>,
 }
 
-impl Emitter {
+impl EmitShared {
     fn new() -> Result<Self> {
         let isa = host_isa()?;
         let mut names = Names::default();
@@ -213,37 +238,7 @@ impl Emitter {
             Ok(names.func(sig, false))
         })?;
         let helper_names = helpers.ids.iter().map(|(n, id)| (*id, *n)).collect();
-        Ok(Self {
-            isa,
-            names,
-            helpers,
-            helper_names,
-            builder_ctx: FunctionBuilderContext::new(),
-        })
-    }
-
-    /// Build the function `id` with `sig` through `emit`. A failed build
-    /// leaves the builder mid-function, so it starts over.
-    fn build(
-        &mut self,
-        id: FuncId,
-        sig: Signature,
-        emit: impl FnOnce(&mut Names, &HelperFuncIds, &mut FunctionBuilder) -> Result<()>,
-    ) -> Result<Function> {
-        let mut func =
-            Function::with_name_signature(UserFuncName::user(0, id.as_u32()), sig);
-        let mut b = FunctionBuilder::new(&mut func, &mut self.builder_ctx);
-        match emit(&mut self.names, &self.helpers, &mut b) {
-            Ok(()) => {
-                b.finalize();
-                Ok(func)
-            }
-            Err(e) => {
-                drop(b);
-                self.builder_ctx = FunctionBuilderContext::new();
-                Err(e)
-            }
-        }
+        Ok(Self { isa, helpers, helper_names, helper_table: Arc::new(names) })
     }
 
     /// Name every relocation target symbolically: a helper, a recorded
@@ -705,7 +700,7 @@ struct CacheKey {
 }
 
 /// A function emitted and not yet compiled.
-struct Pending {
+pub(crate) struct Pending {
     id: FuncId,
     func: Function,
     kernel: Arc<KernelSig>,
@@ -719,27 +714,333 @@ enum PendingOf {
     Wrapper { entry: Arc<OnceLock<Entry>> },
 }
 
+/// The emission caches, layered like [`Names`]: lambda kernel bodies by
+/// key, region layouts, and the lambda kernels' signatures.
+#[derive(Default)]
+struct Caches {
+    base: Option<Arc<Caches>>,
+    /// Lambda kernel bodies; the entry holds the `Arc` so the key's
+    /// address cannot be reused by a later allocation.
+    by_kernel: BTreeMap<CacheKey, CachedKernel>,
+    /// The first layout id this layer mints; 0 is the layout-independent
+    /// id.
+    first_layout: u32,
+    /// Region layout -> id.
+    layout_ids: BTreeMap<SmallVec<[KernelKey; 8]>, u32>,
+    /// The lambda kernels' signatures ([`crate::fusion::KernelCacheKey`]).
+    kernels: BTreeMap<crate::fusion::KernelCacheKey, LambdaCallInfo>,
+}
+
+impl Caches {
+    fn over(base: Arc<Caches>) -> Self {
+        Self { first_layout: base.next_layout(), base: Some(base), ..Self::default() }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.by_kernel.is_empty() && self.layout_ids.is_empty() && self.kernels.is_empty()
+    }
+
+    fn next_layout(&self) -> u32 {
+        self.first_layout + self.layout_ids.len() as u32
+    }
+
+    fn by_kernel(&self, key: &CacheKey) -> Option<&CachedKernel> {
+        self.by_kernel.get(key).or_else(|| self.base.as_ref()?.by_kernel(key))
+    }
+
+    fn layout(&self, layout: &SmallVec<[KernelKey; 8]>) -> Option<u32> {
+        self.layout_ids
+            .get(layout)
+            .copied()
+            .or_else(|| self.base.as_ref()?.layout(layout))
+    }
+
+    fn intern_layout(&mut self, layout: SmallVec<[KernelKey; 8]>) -> u32 {
+        if let Some(id) = self.layout(&layout) {
+            return id;
+        }
+        let id = self.next_layout();
+        self.layout_ids.insert(layout, id);
+        id
+    }
+
+    fn kernel(&self, key: &crate::fusion::KernelCacheKey) -> Option<&LambdaCallInfo> {
+        self.kernels.get(key).or_else(|| self.base.as_ref()?.kernel(key))
+    }
+}
+
+/// What emission builds before a link: the names its bodies are emitted
+/// against, its caches and the functions waiting to compile. A compile
+/// task emits into its own ([`Self::fork`]), over a frozen copy of its
+/// parent's; its join ([`Self::join`]) renumbers its functions after the
+/// parent's, in join order, so the result does not depend on the
+/// schedule.
+pub(crate) struct Emission {
+    shared: Arc<EmitShared>,
+    names: Names,
+    caches: Caches,
+    /// What the regions emitted since the last link, in emission order:
+    /// a body after its callees, a wrapper after its region's bodies.
+    pending: Vec<Pending>,
+    builder_ctx: FunctionBuilderContext,
+    /// The kernel signatures cached since [`Self::attempt`], which a
+    /// region that fails forgets with its bodies.
+    attempt_kernels: Vec<crate::fusion::KernelCacheKey>,
+}
+
+impl Emission {
+    pub(crate) fn new(shared: Arc<EmitShared>) -> Self {
+        let names = Names::over(shared.helper_table.clone());
+        let caches = Caches { first_layout: 1, ..Caches::default() };
+        Self {
+            shared,
+            names,
+            caches,
+            pending: Vec::new(),
+            builder_ctx: FunctionBuilderContext::new(),
+            attempt_kernels: Vec::new(),
+        }
+    }
+
+    /// Whether this is the context's own emission, no layer of it frozen
+    /// for a fork: only it links.
+    pub(crate) fn is_root(&self) -> bool {
+        self.caches.base.is_none()
+    }
+
+    /// How many regions wait for the next link.
+    pub(crate) fn unlinked(&self) -> usize {
+        self.pending.iter().filter(|p| matches!(p.of, PendingOf::Wrapper { .. })).count()
+    }
+
+    pub(crate) fn take_pending(&mut self) -> Vec<Pending> {
+        std::mem::take(&mut self.pending)
+    }
+
+    pub(crate) fn kernel(
+        &self,
+        key: &crate::fusion::KernelCacheKey,
+    ) -> Option<LambdaCallInfo> {
+        self.caches.kernel(key).cloned()
+    }
+
+    pub(crate) fn cache_kernel(
+        &mut self,
+        key: crate::fusion::KernelCacheKey,
+        info: LambdaCallInfo,
+    ) {
+        self.attempt_kernels.push(key.clone());
+        self.caches.kernels.insert(key, info);
+    }
+
+    /// A region's attempt starts: what it caches stays only if it emits.
+    pub(crate) fn attempt(&mut self) {
+        self.attempt_kernels.clear()
+    }
+
+    /// The attempt failed: a kernel signature it cached has no body, and
+    /// a later region reaching it would emit the body from its own
+    /// instance against this one's slots.
+    pub(crate) fn forget_attempt(&mut self) {
+        for key in self.attempt_kernels.drain(..) {
+            self.caches.kernels.remove(&key);
+        }
+    }
+
+    /// A compile task's emission: this one's frozen, which both then
+    /// extend. Siblings forked in a row share one frozen layer.
+    pub(crate) fn fork(&mut self) -> Self {
+        if !self.names.funcs.is_empty() || self.names.base.is_none() {
+            let frozen = Arc::new(std::mem::take(&mut self.names));
+            self.names = Names::over(frozen);
+        }
+        if !self.caches.is_empty() || self.caches.base.is_none() {
+            let frozen = Arc::new(std::mem::take(&mut self.caches));
+            self.caches = Caches::over(frozen);
+        }
+        let names = Names::over(self.names.base.clone().expect("frozen above"));
+        let caches = Caches::over(self.caches.base.clone().expect("frozen above"));
+        Self {
+            shared: self.shared.clone(),
+            names,
+            caches,
+            pending: Vec::new(),
+            builder_ctx: FunctionBuilderContext::new(),
+            attempt_kernels: Vec::new(),
+        }
+    }
+
+    /// Take back a task forked from this one: its functions are numbered
+    /// after this one's, a kernel body this one already has replaces the
+    /// task's, and its functions wait after this one's.
+    pub(crate) fn join(&mut self, fork: Self) {
+        let Self {
+            shared: _,
+            names,
+            caches,
+            pending,
+            builder_ctx: _,
+            attempt_kernels: _,
+        } = fork;
+        let first = names.first;
+        let to = self.names.next();
+        let Caches { base: _, by_kernel, first_layout, layout_ids, kernels } = caches;
+        let mut layouts: LPooled<AHashMap<u32, u32>> = LPooled::take();
+        let mut by_id: LPooled<Vec<(u32, SmallVec<[KernelKey; 8]>)>> =
+            layout_ids.into_iter().map(|(l, id)| (id, l)).collect();
+        by_id.sort_unstable_by_key(|(id, _)| *id);
+        for (id, l) in by_id.drain(..) {
+            layouts.insert(id, self.caches.intern_layout(l));
+        }
+        let layout = |l: u32| if l >= first_layout { layouts[&l] } else { l };
+        // a kernel the task built that this one has: the task's calls go
+        // to this one's body
+        let mut same: LPooled<AHashMap<KernelKey, KernelKey>> = LPooled::take();
+        for (key, info) in kernels {
+            match self.caches.kernel(&key) {
+                Some(have) => {
+                    let (k, h) = (
+                        kernel_abi::kernel_key(&info.kernel),
+                        kernel_abi::kernel_key(&have.kernel),
+                    );
+                    if k != h {
+                        same.insert(k, h);
+                    }
+                }
+                None => {
+                    self.caches.kernels.insert(key, info);
+                }
+            }
+        }
+        let mut moved: LPooled<AHashMap<u32, FuncId>> = LPooled::take();
+        let mut kept: LPooled<Vec<(CacheKey, CachedKernel)>> = LPooled::take();
+        for (key, cached) in by_kernel {
+            let key = CacheKey {
+                kernel: same.get(&key.kernel).copied().unwrap_or(key.kernel),
+                layout: layout(key.layout),
+            };
+            match self.caches.by_kernel(&key) {
+                Some(have) => {
+                    moved.insert(cached.func_id.as_u32(), have.func_id);
+                }
+                None => kept.push((key, cached)),
+            }
+        }
+        let renumber = |id: FuncId| -> FuncId {
+            let i = id.as_u32();
+            if i < first {
+                id
+            } else if let Some(have) = moved.get(&i) {
+                *have
+            } else {
+                FuncId::from_u32(i - first + to)
+            }
+        };
+        for (key, mut cached) in kept.drain(..) {
+            cached.func_id = renumber(cached.func_id);
+            self.caches.by_kernel.insert(key, cached);
+        }
+        self.names.funcs.extend(names.funcs);
+        self.names.data = self.names.data.max(names.data);
+        for mut p in pending {
+            if moved.contains_key(&p.id.as_u32()) {
+                continue;
+            }
+            p.id = renumber(p.id);
+            renumber_function(&mut p.func, &renumber);
+            if let PendingOf::Body { thunk: Some((tid, t)), .. } = &mut p.of {
+                *tid = renumber(*tid);
+                renumber_function(t, &renumber);
+            }
+            self.pending.push(p);
+        }
+    }
+
+    /// Fold back every frozen layer no fork holds any more.
+    pub(crate) fn thaw(&mut self) {
+        while let Some(base) = self.names.base.take() {
+            match Arc::try_unwrap(base) {
+                Ok(mut base) => {
+                    base.funcs.append(&mut self.names.funcs);
+                    base.data = base.data.max(self.names.data);
+                    self.names = base;
+                }
+                Err(base) => {
+                    self.names.base = Some(base);
+                    break;
+                }
+            }
+        }
+        while let Some(base) = self.caches.base.take() {
+            match Arc::try_unwrap(base) {
+                Ok(mut base) => {
+                    base.by_kernel.append(&mut self.caches.by_kernel);
+                    base.layout_ids.append(&mut self.caches.layout_ids);
+                    base.kernels.append(&mut self.caches.kernels);
+                    self.caches = base;
+                }
+                Err(base) => {
+                    self.caches.base = Some(base);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Build the function `id` with `sig` through `emit`. A failed build
+    /// leaves the builder mid-function, so it starts over.
+    fn build(
+        &mut self,
+        id: FuncId,
+        sig: Signature,
+        emit: impl FnOnce(&mut Names, &HelperFuncIds, &mut FunctionBuilder) -> Result<()>,
+    ) -> Result<Function> {
+        let mut func =
+            Function::with_name_signature(UserFuncName::user(0, id.as_u32()), sig);
+        let mut b = FunctionBuilder::new(&mut func, &mut self.builder_ctx);
+        match emit(&mut self.names, &self.shared.helpers, &mut b) {
+            Ok(()) => {
+                b.finalize();
+                Ok(func)
+            }
+            Err(e) => {
+                drop(b);
+                self.builder_ctx = FunctionBuilderContext::new();
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Point `func`'s name and the functions it calls through `renumber`.
+fn renumber_function(func: &mut Function, renumber: &impl Fn(FuncId) -> FuncId) {
+    if let UserFuncName::User(n) = &func.name
+        && n.namespace == 0
+    {
+        let id = renumber(FuncId::from_u32(n.index));
+        func.name = UserFuncName::user(0, id.as_u32());
+    }
+    let names: SmallVec<[(UserExternalNameRef, UserExternalName); 16]> =
+        func.params.user_named_funcs().iter().map(|(r, n)| (r, n.clone())).collect();
+    for (r, n) in names {
+        if n.namespace == 0 {
+            let index = renumber(FuncId::from_u32(n.index)).as_u32();
+            func.params.reset_user_func_name(r, UserExternalName { namespace: 0, index });
+        }
+    }
+}
+
 /// The per-`ExecCtx` JIT. Kernels call each other with direct CLIF
 /// calls, so a pass's records install into one module generation,
 /// which lives as long as the `ExecCtx` or its longest-lived kernel.
 pub struct Jit {
-    /// Boxed: the emitter's builder context is large and this rides
-    /// every `async fn` that moves a `GXConfig`.
-    emitter: Box<Emitter>,
+    shared: Arc<EmitShared>,
     generation: Generation,
     /// Generations retired so far.
     retired: usize,
-    /// Lambda kernel bodies; the entry holds the `Arc` so the key's
-    /// address cannot be reused by a later allocation.
-    by_kernel: BTreeMap<CacheKey, CachedKernel>,
-    /// Region layout → id, from 1; 0 is the layout-independent id.
-    layout_ids: BTreeMap<SmallVec<[KernelKey; 8]>, u32>,
     /// Every compiled kernel body's record, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
     records: BTreeMap<FuncId, Arc<BodyRecord>>,
-    /// What the regions emitted since the last link, in emission order:
-    /// a body after its callees, a wrapper after its region's bodies.
-    pending: Vec<Pending>,
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
     in_flight: Option<InFlight>,
@@ -758,18 +1059,20 @@ unsafe impl Send for Jit {}
 impl Jit {
     /// Errs if cranelift cannot target the host ISA.
     pub fn new() -> Result<Self> {
-        let emitter = Box::new(Emitter::new()?);
-        let generation = Generation::new(&emitter.isa)?;
+        let shared = Arc::new(EmitShared::new()?);
+        let generation = Generation::new(&shared.isa)?;
         Ok(Self {
-            emitter,
+            shared,
             generation,
             retired: 0,
-            by_kernel: BTreeMap::new(),
-            layout_ids: BTreeMap::new(),
             records: BTreeMap::new(),
-            pending: Vec::new(),
             in_flight: None,
         })
+    }
+
+    /// A fresh emission for this module's context.
+    pub(crate) fn emission(&self) -> Emission {
+        Emission::new(self.shared.clone())
     }
 
     /// How many generations have retired.
@@ -777,47 +1080,37 @@ impl Jit {
         self.retired
     }
 
-    /// How many regions wait for the next link.
-    pub(crate) fn unlinked(&self) -> usize {
-        self.pending.iter().filter(|p| matches!(p.of, PendingOf::Wrapper { .. })).count()
-    }
-
     /// Compile everything emitted since the last link, build its records
     /// and install its regions, giving each its entry. Its regions are
     /// spliced and emission accepted them, so a failure is a JIT bug that
     /// no graph could run past: it panics.
-    pub(crate) fn link(&mut self) {
+    pub(crate) fn link(&mut self, mut pending: Vec<Pending>) {
         let _profile = profile::phase(Phase::Link);
         self.finish_in_flight();
-        if self.pending.is_empty() {
+        if pending.is_empty() {
             return;
         }
-        let mut pending = std::mem::take(&mut self.pending);
-        let compiled = backend_all(&*self.emitter.isa, take_functions(&mut pending));
+        let compiled = backend_all(&*self.shared.isa, take_functions(&mut pending));
         self.install_or_panic(pending, compiled)
     }
 
     /// Start compiling everything emitted since the last link on threads
     /// of its own, while emission goes on; it installs at the next link
     /// or batch, so no region of it has its entry before then.
-    pub(crate) fn link_batch(&mut self) {
+    pub(crate) fn link_batch(&mut self, mut pending: Vec<Pending>) {
         let _profile = profile::phase(Phase::Link);
         self.finish_in_flight();
-        if self.pending.is_empty() {
+        if pending.is_empty() {
             return;
         }
-        let mut pending = std::mem::take(&mut self.pending);
         let work = take_functions(&mut pending);
-        let isa = self.emitter.isa.clone();
+        let isa = self.shared.isa.clone();
         let compiled = std::thread::Builder::new()
             .stack_size(STACK)
             .spawn(move || backend_all(&*isa, work));
         match compiled {
             Ok(compiled) => self.in_flight = Some(InFlight { pending, compiled }),
-            Err(_) => {
-                self.pending = pending;
-                self.link()
-            }
+            Err(_) => self.link(pending),
         }
     }
 
@@ -858,7 +1151,7 @@ impl Jit {
                         None => None,
                         Some((tid, _)) => Some((tid, next()?)),
                     };
-                    let relocs = self.emitter.record_relocs(
+                    let relocs = self.shared.record_relocs(
                         &c.relocs,
                         p.id,
                         thunk.as_ref().map(|(tid, _)| *tid),
@@ -869,7 +1162,7 @@ impl Jit {
                     let thunk = match thunk {
                         None => None,
                         Some((_, t)) => {
-                            let relocs = self.emitter.record_relocs(
+                            let relocs = self.shared.record_relocs(
                                 &t.relocs,
                                 p.id,
                                 None,
@@ -905,7 +1198,7 @@ impl Jit {
                     self.records.insert(p.id, record);
                 }
                 PendingOf::Wrapper { entry } => {
-                    let relocs = self.emitter.record_relocs(
+                    let relocs = self.shared.record_relocs(
                         &c.relocs,
                         p.id,
                         None,
@@ -950,7 +1243,7 @@ impl Jit {
             Ok(p) => return Ok((p, self.generation.code.clone())),
             Err(e) => e,
         };
-        self.generation = Generation::new(&self.emitter.isa)?;
+        self.generation = Generation::new(&self.shared.isa)?;
         self.retired += 1;
         if !e.chain().any(|c| c.is::<ArenaExhausted>()) {
             return Err(e);
@@ -985,11 +1278,6 @@ impl Jit {
             own_site,
         })
     }
-
-    fn intern_layout(&mut self, layout: SmallVec<[KernelKey; 8]>) -> u32 {
-        let next = self.layout_ids.len() as u32 + 1;
-        *self.layout_ids.entry(layout).or_insert(next)
-    }
 }
 
 struct CachedKernel {
@@ -1015,7 +1303,7 @@ struct CachedKernel {
 /// builtin sites. A callee without a recorded body fails the whole
 /// region.
 pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
-    jit: &mut Jit,
+    em: &mut Emission,
     kernel: &Arc<KernelSig>,
     callees: &[(KernelKey, Arc<KernelSig>)],
     root: &Node<R, E>,
@@ -1055,11 +1343,11 @@ pub(crate) fn compile_kernel_with_callees_direct<R: Rt, E: UserEvent>(
         .iter()
         .map(|(key, em, spec)| (*key, BodySource { spec: *spec, hook: em }))
         .collect();
-    compile_region(jit, kernel, &parent, callees, &emitters)
+    compile_region(em, kernel, &parent, callees, &emitters)
 }
 
 fn compile_region(
-    jit: &mut Jit,
+    em: &mut Emission,
     kernel: &Arc<KernelSig>,
     parent: &BodySource,
     callees: &[(KernelKey, Arc<KernelSig>)],
@@ -1067,15 +1355,15 @@ fn compile_region(
 ) -> Result<WrappedKernel> {
     let mut build_profile = profile::phase(Phase::JitBuild);
     let mut fresh: SmallVec<[(CacheKey, Arc<KernelSig>); 8]> = SmallVec::new();
-    let mark = jit.pending.len();
-    let r = compile_region_inner(jit, kernel, parent, callees, emitters, &mut fresh);
+    let mark = em.pending.len();
+    let r = compile_region_inner(em, kernel, parent, callees, emitters, &mut fresh);
     if r.is_err() {
         profile::failed(&mut build_profile);
         // A fresh entry of a failed region would hand out an id that no
         // record answers.
-        jit.pending.truncate(mark);
+        em.pending.truncate(mark);
         for (key, _) in fresh.iter() {
-            jit.by_kernel.remove(key);
+            em.caches.by_kernel.remove(key);
         }
     }
     r
@@ -1084,7 +1372,7 @@ fn compile_region(
 /// `fresh` collects the cache entries the region declares, in
 /// declaration order.
 fn compile_region_inner(
-    jit: &mut Jit,
+    em: &mut Emission,
     kernel: &Arc<KernelSig>,
     parent: &BodySource,
     callees: &[(KernelKey, Arc<KernelSig>)],
@@ -1094,7 +1382,8 @@ fn compile_region_inner(
     // Phase 1: declare every kernel in the closure. A callee body with no
     // sibling sites keys on layout 0; the parent is fresh per attempt and
     // never cached.
-    let layout_id = jit.intern_layout(callees.iter().map(|(key, _)| *key).collect());
+    let layout_id =
+        em.caches.intern_layout(callees.iter().map(|(key, _)| *key).collect());
     let layout_of = |key: KernelKey| -> u32 {
         let ext_sites = emitters.get(&key).is_some_and(|e| {
             e.spec
@@ -1112,12 +1401,12 @@ fn compile_region_inner(
     // blocks from it is an out-of-bounds write.
     let mut callee_layouts: LPooled<AHashMap<KernelKey, SiteLayout>> = LPooled::take();
     let parent_key = kernel_abi::kernel_key(kernel);
-    let parent_sig = kernel_signature(&*jit.emitter.isa, kernel)?;
-    let parent_fid = jit.emitter.names.local(&parent_sig);
+    let parent_sig = kernel_signature(&*em.shared.isa, kernel)?;
+    let parent_fid = em.names.local(&parent_sig);
     funcids.push((parent_key, (parent_fid, parent_sig)));
     for (key, k) in callees {
         let key = CacheKey { kernel: *key, layout: layout_of(*key) };
-        let entry = match jit.by_kernel.get(&key) {
+        let entry = match em.caches.by_kernel(&key) {
             Some(e) => {
                 if let Some(l) = e.site_layout.as_ref() {
                     callee_layouts.insert(key.kernel, l.clone());
@@ -1125,9 +1414,9 @@ fn compile_region_inner(
                 (e.func_id, e.signature.clone())
             }
             None => {
-                let sig = kernel_signature(&*jit.emitter.isa, k)?;
-                let fid = jit.emitter.names.local(&sig);
-                jit.by_kernel.insert(
+                let sig = kernel_signature(&*em.shared.isa, k)?;
+                let fid = em.names.local(&sig);
+                em.caches.by_kernel.insert(
                     key,
                     CachedKernel {
                         func_id: fid,
@@ -1159,10 +1448,10 @@ fn compile_region_inner(
             )
         })?;
         let (emitted, pending) =
-            emit_kernel_body(&mut jit.emitter, k, &funcids, body, &callee_layouts)?;
-        jit.pending.push(pending);
+            emit_kernel_body(em, k, &funcids, body, &callee_layouts)?;
+        em.pending.push(pending);
         callee_layouts.insert(key.kernel, emitted.site_layout.clone());
-        if let Some(cached) = jit.by_kernel.get_mut(key) {
+        if let Some(cached) = em.caches.by_kernel.get_mut(key) {
             cached.state_words = emitted.state_words;
             cached.slot_table_words = emitted.slot_table_words;
             cached.state_self_blocks = emitted.state_self_blocks;
@@ -1170,12 +1459,12 @@ fn compile_region_inner(
         }
     }
     let (emitted, pending) =
-        emit_kernel_body(&mut jit.emitter, kernel, &funcids, parent, &callee_layouts)?;
-    jit.pending.push(pending);
+        emit_kernel_body(em, kernel, &funcids, parent, &callee_layouts)?;
+    em.pending.push(pending);
     // Phase 3: the parent's wrapper.
-    let (wrapper_id, func) = emit_wrapper(&mut jit.emitter, kernel, parent_fid)?;
+    let (wrapper_id, func) = emit_wrapper(em, kernel, parent_fid)?;
     let entry = Arc::new(OnceLock::new());
-    jit.pending.push(Pending {
+    em.pending.push(Pending {
         id: wrapper_id,
         func,
         kernel: kernel.clone(),
@@ -1241,7 +1530,7 @@ fn def_order(
 /// link. `funcids` must hold the kernel itself and every callee its
 /// lambda call sites reference.
 fn emit_kernel_body(
-    em: &mut Emitter,
+    em: &mut Emission,
     kernel: &Arc<KernelSig>,
     funcids: &[(KernelKey, (FuncId, Signature))],
     body_emitter: &BodySource,
@@ -1272,7 +1561,7 @@ fn emit_kernel_body(
         callee_keys.insert(kernel_abi::kernel_key(&info.kernel));
     }
     let self_thunk_id = body_emitter.spec.self_call().map(|_| {
-        let tsig = trampoline_signature(&*em.isa);
+        let tsig = trampoline_signature(&*em.shared.isa);
         em.names.local(&tsig)
     });
     let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
@@ -1343,13 +1632,13 @@ fn emit_kernel_body(
 /// result words to `out`. A wrapper also bumps the harness's invocation
 /// counter in debug builds.
 fn emit_trampoline(
-    em: &mut Emitter,
+    em: &mut Emission,
     id: FuncId,
     target: FuncId,
     target_sig: &Signature,
     wrapper: bool,
 ) -> Result<Function> {
-    let sig = trampoline_signature(&*em.isa);
+    let sig = trampoline_signature(&*em.shared.isa);
     let func = em.build(id, sig, |names, helpers, b| {
         let target_ref = names.import_func(target, b.func);
         #[cfg(debug_assertions)]
@@ -1406,12 +1695,12 @@ fn emit_trampoline(
 /// The region's `(args, out)` wrapper around its parent body
 /// `typed_func_id`.
 fn emit_wrapper(
-    em: &mut Emitter,
+    em: &mut Emission,
     kernel: &Arc<KernelSig>,
     typed_func_id: FuncId,
 ) -> Result<(FuncId, Function)> {
-    let wrapper_id = em.names.local(&trampoline_signature(&*em.isa));
-    let kernel_sig = kernel_signature(&*em.isa, kernel)?;
+    let wrapper_id = em.names.local(&trampoline_signature(&*em.shared.isa));
+    let kernel_sig = kernel_signature(&*em.shared.isa, kernel)?;
     let func = emit_trampoline(em, wrapper_id, typed_func_id, &kernel_sig, true)
         .context("wrapper")?;
     Ok((wrapper_id, func))

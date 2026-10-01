@@ -35,11 +35,12 @@ use crate::{
     profile::{self, Phase},
     typ::{FnType, Type},
 };
-use ahash::AHashMap;
 use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
+use dashmap::DashMap;
 use parking_lot::{MappedMutexGuard, MutexGuard};
 use poolshark::local::LPooled;
+use rayon::prelude::*;
 use std::{cell::RefCell, collections::BTreeMap, sync::LazyLock};
 use triomphe::Arc;
 
@@ -166,7 +167,9 @@ impl FusionStats {
 
 /// A fusion pass's memo of the env-dependent type work its regions
 /// repeat: expansions and freezes. Installed for one pass by
-/// [`TypeMemo::scope`]; outside a pass the work is done every time.
+/// [`TypeMemo::scope`] and shared by its compile tasks
+/// ([`TypeMemo::current`], [`TypeMemo::enter`]); outside a pass the work
+/// is done every time.
 #[derive(Default)]
 pub(crate) struct TypeMemo {
     expanded: Table<Type>,
@@ -178,15 +181,15 @@ pub(crate) struct TypeMemo {
 /// same type once the definitions its named types resolve to agree,
 /// which its equality leaves out. Resolution cells fill during a pass,
 /// so only a result computed with every named type already resolved
-/// is kept.
+/// is kept. A result is the same whichever task computes it.
 struct Table<V> {
-    by_id: AHashMap<Identity, (Type, V)>,
-    by_content: AHashMap<(Type, u64), V>,
+    by_id: DashMap<Identity, (Type, V)>,
+    by_content: DashMap<(Type, u64), V>,
 }
 
 impl<V> Default for Table<V> {
     fn default() -> Self {
-        Self { by_id: AHashMap::default(), by_content: AHashMap::default() }
+        Self { by_id: DashMap::default(), by_content: DashMap::default() }
     }
 }
 
@@ -253,63 +256,59 @@ fn resolutions(t: &Type) -> Option<u64> {
 }
 
 thread_local! {
-    static TYPE_MEMO: RefCell<Option<TypeMemo>> = const { RefCell::new(None) };
+    static TYPE_MEMO: RefCell<Option<Arc<TypeMemo>>> = const { RefCell::new(None) };
 }
 
 impl TypeMemo {
     /// Run `f` with a fresh memo for its fusion pass.
     pub(crate) fn scope<T>(f: impl FnOnce() -> T) -> T {
-        let prev = TYPE_MEMO.with(|m| m.borrow_mut().replace(TypeMemo::default()));
+        Self::enter(Some(Arc::new(TypeMemo::default())), f)
+    }
+
+    /// The memo of the pass running on this thread, for its tasks.
+    pub(crate) fn current() -> Option<Arc<TypeMemo>> {
+        TYPE_MEMO.with(|m| m.borrow().clone())
+    }
+
+    /// Run `f` with `memo` installed on this thread.
+    pub(crate) fn enter<T>(memo: Option<Arc<TypeMemo>>, f: impl FnOnce() -> T) -> T {
+        let prev = TYPE_MEMO.with(|m| m.replace(memo));
         let r = f();
         TYPE_MEMO.with(|m| *m.borrow_mut() = prev);
         r
     }
 
-    fn with_table<V, T>(
-        table: fn(&mut TypeMemo) -> &mut Table<V>,
-        f: impl FnOnce(&mut Table<V>) -> T,
-    ) -> Option<T> {
-        TYPE_MEMO.with(|m| m.borrow_mut().as_mut().map(|m| f(table(m))))
-    }
-
     fn cached<V: Clone>(
         t: &Type,
-        table: fn(&mut TypeMemo) -> &mut Table<V>,
+        table: fn(&TypeMemo) -> &Table<V>,
         compute: impl FnOnce() -> V,
     ) -> V {
         let Some((id, owner)) = identity(t) else { return compute() };
-        let Some(hit) =
-            Self::with_table(table, |tb| tb.by_id.get(&id).map(|(_, v)| v.clone()))
-        else {
-            return compute();
-        };
-        if let Some(v) = hit {
+        let Some(memo) = Self::current() else { return compute() };
+        let tb = table(&memo);
+        if let Some(v) = tb.by_id.get(&id).map(|e| e.1.clone()) {
             return v;
         }
         let Some(resolved) = resolutions(t) else { return compute() };
         let key = (!t.has_unbound()).then(|| (t.clone(), resolved));
-        let hit = key.as_ref().and_then(|k| {
-            Self::with_table(table, |tb| tb.by_content.get(k).cloned()).flatten()
-        });
+        let hit = key.as_ref().and_then(|k| tb.by_content.get(k).map(|v| v.clone()));
         let v = hit.unwrap_or_else(compute);
-        Self::with_table(table, |tb| {
-            if let Some(k) = key {
-                tb.by_content.insert(k, v.clone());
-            }
-            tb.by_id.insert(id, (owner, v.clone()));
-        });
+        if let Some(k) = key {
+            tb.by_content.insert(k, v.clone());
+        }
+        tb.by_id.insert(id, (owner, v.clone()));
         v
     }
 
     pub(crate) fn expanded(t: &Type, compute: impl FnOnce() -> Type) -> Type {
-        Self::cached(t, |m| &mut m.expanded, compute)
+        Self::cached(t, |m| &m.expanded, compute)
     }
 
     pub(crate) fn frozen(
         t: &Type,
         compute: impl FnOnce() -> Result<Type, kernel_abi::FreezeError>,
     ) -> Result<Type, kernel_abi::FreezeError> {
-        Self::cached(t, |m| &mut m.frozen, compute)
+        Self::cached(t, |m| &m.frozen, compute)
     }
 }
 
@@ -317,27 +316,23 @@ impl TypeMemo {
 /// functions held uncompiled.
 const LINK_BATCH: usize = 256;
 
+pub(crate) type KernelCacheKey =
+    (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions);
+
 /// Per-[`ExecCtx`] state owned by the fusion subsystem, reached as
 /// `ctx.fusion.<x>`.
 pub struct FusionCtx {
-    /// Per-context cranelift module + cross-kernel-call cache, built on
-    /// first use ([`Self::jit`]). The mutex is interior mutability for
-    /// `ExecCtx`'s `Sync` bound; JIT ops are compile-time only.
+    /// Per-context cranelift module, built on first use ([`Self::jit`]),
+    /// shared by the context's compile tasks for installing. The mutex is
+    /// interior mutability for `ExecCtx`'s `Sync` bound; JIT ops are
+    /// compile-time only.
     jit: Arc<parking_lot::Mutex<Option<emit::Jit>>>,
-    /// Monomorphized lambda-kernel cache. Catch coverage and fn
-    /// resolutions are part of the key because the kernel bakes them.
-    /// The cached `Arc<KernelSig>` is the callable handle: the JIT's
-    /// `by_kernel` cache keys on its pointer identity. It lives as long
-    /// as the context's compiled code (a later compile may call an
-    /// earlier one's lambda); [`Self::reset_jit_for_check`] clears it.
-    pub kernels: Arc<
-        parking_lot::Mutex<
-            BTreeMap<
-                (LambdaId, Arc<FnType>, lowering::QopCoverage, lowering::FnResolutions),
-                LambdaCallInfo,
-            >,
-        >,
-    >,
+    /// What this context, or this compile task, emits before a link: the
+    /// names, the kernel caches (lambda kernel signatures and bodies; a
+    /// later compile may call an earlier one's lambda) and the functions
+    /// waiting. Built with the JIT; a fusion task's is forked from its
+    /// parent's ([`fuse_each`]); [`Self::reset_jit_for_check`] drops it.
+    emission: parking_lot::Mutex<Option<emit::Emission>>,
     /// Whether fusion is enabled for the current compile; set by
     /// [`crate::compile`].
     pub enabled: bool,
@@ -353,12 +348,13 @@ pub struct FusionCtx {
 }
 
 impl FusionCtx {
-    /// A compile task's fusion state: the module and the kernel cache
-    /// shared, its own outcome counters, which [`Self::join`] adds back.
+    /// A compile task's fusion state: the module shared, its own outcome
+    /// counters, which [`Self::join`] adds back. A fusion task gets an
+    /// emission of its own ([`fuse_each`]); any other emits nothing.
     pub(crate) fn fork(&self) -> Self {
         Self {
             jit: self.jit.clone(),
-            kernels: self.kernels.clone(),
+            emission: parking_lot::Mutex::new(None),
             enabled: self.enabled,
             stats: FusionStats::default(),
             top_id: self.top_id,
@@ -367,7 +363,14 @@ impl FusionCtx {
     }
 
     pub(crate) fn join(&mut self, fork: Self) {
-        self.stats.join(fork.stats)
+        self.stats.join(fork.stats);
+        if let Some(task) = fork.emission.into_inner() {
+            self.emission
+                .get_mut()
+                .as_mut()
+                .expect("a fusion task's parent emits")
+                .join(task)
+        }
     }
 
     /// The context's JIT module, built on first use.
@@ -377,6 +380,37 @@ impl FusionCtx {
             *jit = Some(emit::Jit::new()?);
         }
         Ok(MutexGuard::map(jit, |jit| jit.as_mut().expect("built above")))
+    }
+
+    /// What this context or task emits into, built with the JIT.
+    pub(crate) fn emission(
+        &self,
+    ) -> anyhow::Result<MappedMutexGuard<'_, emit::Emission>> {
+        let mut em = self.emission.lock();
+        if em.is_none() {
+            *em = Some(self.jit()?.emission());
+        }
+        Ok(MutexGuard::map(em, |em| em.as_mut().expect("built above")))
+    }
+
+    /// A lambda kernel this task has built, or its parents had.
+    pub(crate) fn kernel(&self, key: &KernelCacheKey) -> Option<LambdaCallInfo> {
+        self.emission.lock().as_ref()?.kernel(key)
+    }
+
+    pub(crate) fn cache_kernel(&self, key: KernelCacheKey, info: LambdaCallInfo) {
+        if let Ok(mut em) = self.emission() {
+            em.cache_kernel(key, info)
+        }
+    }
+
+    /// How many regions this context emitted wait for the next link; a
+    /// fusion task's count for nothing, it does not link.
+    pub(crate) fn unlinked(&self) -> usize {
+        match self.emission.lock().as_ref() {
+            Some(em) if em.is_root() => em.unlinked(),
+            _ => 0,
+        }
     }
 
     /// Compile and install every region fused since the last link; a
@@ -391,11 +425,18 @@ impl FusionCtx {
         self.with_jit(emit::Jit::link_batch)
     }
 
-    fn with_jit(&mut self, f: impl FnOnce(&mut emit::Jit)) {
+    fn with_jit(&mut self, f: impl FnOnce(&mut emit::Jit, Vec<emit::Pending>)) {
+        let pending = match self.emission.get_mut() {
+            Some(em) => {
+                debug_assert!(em.is_root(), "only the context links");
+                em.take_pending()
+            }
+            None => Vec::new(),
+        };
         let mut jit = self.jit.lock();
         let Some(jit) = jit.as_mut() else { return };
         let retired = jit.retired();
-        f(jit);
+        f(jit, pending);
         self.stats.jit_generations += jit.retired() - retired;
     }
 
@@ -407,7 +448,7 @@ impl FusionCtx {
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             jit: Arc::new(parking_lot::Mutex::new(None)),
-            kernels: Arc::new(parking_lot::Mutex::new(BTreeMap::new())),
+            emission: parking_lot::Mutex::new(None),
             enabled: true,
             stats: FusionStats::default(),
             top_id: None,
@@ -424,7 +465,7 @@ impl FusionCtx {
     /// checked file's kernels in one module.
     pub fn reset_jit_for_check(&mut self) -> anyhow::Result<()> {
         *self.jit.lock() = None;
-        self.kernels.lock().clear();
+        *self.emission.get_mut() = None;
         self.stats.failed.clear();
         self.stats.fused_sources.clear();
         Ok(())
@@ -1037,10 +1078,66 @@ pub(crate) fn fuse_parts<'a, R: Rt + 'a, E: UserEvent + 'a>(
     parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
     ctx: &mut CompileCtx<R, E>,
 ) -> anyhow::Result<Option<Node<R, E>>> {
-    for part in parts {
-        if calls_a_function(part) { fuse(part, ctx)? } else { descend(part, ctx)? }
-    }
+    fuse_each(ctx, parts, |part, ctx| {
+        if calls_a_function(part) { fuse(part, ctx) } else { descend(part, ctx) }
+    })?;
     Ok(None)
+}
+
+/// Fuse each of `parts` through `visit`, in compile tasks when there are
+/// several: the parts are disjoint subtrees, each fused against its own
+/// fork of the context, the forks joined in order and the first error
+/// in order the result. A collection's prototype or slot walk matches
+/// its kernels by attempt order, so it runs in order.
+pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
+    ctx: &mut CompileCtx<R, E>,
+    parts: impl IntoIterator<Item = &'a mut Node<R, E>>,
+    visit: fn(&mut Node<R, E>, &mut CompileCtx<R, E>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut parts: LPooled<Vec<&'a mut Node<R, E>>> = parts.into_iter().collect();
+    if parts.len() < 2
+        || ctx.fusion.share.is_some()
+        || crate::dbgenv::graphix_fuse_serial()
+    {
+        return parts.drain(..).try_for_each(|p| visit(p, ctx));
+    }
+    // a part that calls no function is not worth a task
+    let (mut heavy, light): (LPooled<Vec<_>>, LPooled<Vec<_>>) =
+        parts.drain(..).partition(|p| calls_a_function(p));
+    let mut light = light;
+    light.drain(..).try_for_each(|p| visit(p, ctx))?;
+    if heavy.len() < 2 {
+        return heavy.drain(..).try_for_each(|p| visit(p, ctx));
+    }
+    let mut parts = heavy;
+    // fusion records no attribute, and whether there are any decides
+    // what discovery collects
+    let census = ctx.attr_census.lock().clone();
+    let memo = TypeMemo::current();
+    let mut emission = ctx.fusion.emission()?;
+    let mut work: LPooled<Vec<(&mut Node<R, E>, CompileCtx<R, E>)>> = parts
+        .drain(..)
+        .map(|p| {
+            let task = ctx.fork();
+            *task.attr_census.lock() = census.clone();
+            *task.fusion.emission.lock() = Some(emission.fork());
+            (p, task)
+        })
+        .collect();
+    drop(emission);
+    let mut results: Vec<anyhow::Result<()>> = work
+        .par_iter_mut()
+        .map(|(n, task)| TypeMemo::enter(memo.clone(), || visit(n, task)))
+        .collect();
+    for (_, task) in work.drain(..) {
+        task.attr_census.lock().clear();
+        ctx.join(task);
+    }
+    ctx.fusion.emission()?.thaw();
+    if ctx.fusion.unlinked() >= LINK_BATCH {
+        ctx.fusion.link_batch();
+    }
+    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
 }
 
 /// Does the subtree call a lambda or run a collection operation, the
@@ -1157,6 +1254,7 @@ fn build_region<R: Rt, E: UserEvent>(
     let inputs = collect_region_inputs(&**node, ctx);
     drop(phase);
     let phase = profile::phase(Phase::Callees);
+    ctx.fusion.emission()?.attempt();
     let lambdas = discover_lambda_calls(node, ctx);
     drop(phase);
     let source_id = node.spec().id;
@@ -1170,9 +1268,9 @@ fn build_region<R: Rt, E: UserEvent>(
         return_type,
     ));
     let phase = profile::phase(Phase::Emit);
-    let result = ctx.fusion.jit().and_then(|mut jit| {
+    let result = ctx.fusion.emission().and_then(|mut em| {
         emit::compile_kernel_with_callees_direct(
-            &mut jit,
+            &mut em,
             &kernel,
             &lambdas.callees,
             node,
@@ -1186,6 +1284,7 @@ fn build_region<R: Rt, E: UserEvent>(
     let wrapped = match result {
         Ok(w) => w,
         Err(e) => {
+            ctx.fusion.emission()?.forget_attempt();
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
             for (spec, why) in lambdas.refused.iter() {
                 ctx.fusion.stats.record_failure(spec, why);
@@ -1237,7 +1336,7 @@ fn build_region<R: Rt, E: UserEvent>(
         }
     }
     ctx.fusion.stats.record_fused(node.spec());
-    if ctx.fusion.jit()?.unlinked() >= LINK_BATCH {
+    if ctx.fusion.unlinked() >= LINK_BATCH {
         ctx.fusion.link_batch();
     }
     for n in lambdas.decorated.iter() {

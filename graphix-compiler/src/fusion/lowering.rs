@@ -931,8 +931,8 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
     let resolved_typ = triomphe::Arc::new(site_ftype.resolve_tvars());
     let (coverage, fn_resolutions) = body_fingerprint(g.body(), ec);
     let key = (g.id(), resolved_typ, coverage, fn_resolutions);
-    if let Some(cached) = ec.fusion.kernels.lock().get(&key) {
-        return Ok(cached.clone());
+    if let Some(cached) = ec.fusion.kernel(&key) {
+        return Ok(cached);
     }
     let mut discovery = BuiltinCallDiscovery::default();
     walk_node_for_builtin_calls(g.body(), ec, &mut discovery)
@@ -992,7 +992,7 @@ pub(crate) fn build_lambda_kernel<R: Rt, E: UserEvent>(
         self_call,
         apply_sites: discovery.apply_sites,
     });
-    ec.fusion.kernels.lock().insert(key, cached.clone());
+    ec.fusion.cache_kernel(key, cached.clone());
     Ok(cached)
 }
 

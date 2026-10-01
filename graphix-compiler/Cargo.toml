@@ -25,6 +25,7 @@ arcstr = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 combine = { workspace = true }
+dashmap = { workspace = true }
 compact_str = { workspace = true }
 cranelift-codegen = { workspace = true }
 cranelift-frontend = { workspace = true }

@@ -499,7 +499,15 @@ node graph IS the IR — there is no parallel typed IR
   cache keys carry catch coverage and a resolution fingerprint; a pass
   the fusion gate owns must never change what the typechecker sees.
 - **JIT pipeline and memory** (`fusion/emit/jit.rs`): emission names
-  everything by ids of its own (`jit::Names`) and defines nothing;
+  everything by ids of its own (`jit::Names`) and defines nothing.
+  Disjoint subtrees fuse in compile tasks (`fusion::fuse_each`: the
+  parts of a node that call a function); a task emits into its own
+  `Emission` over a frozen copy of its parent's names and caches, and
+  its join renumbers its functions after the parent's in join order, a
+  lambda kernel the parent already has replacing the task's, so the
+  decisions and the output are the serial walk's (`GRAPHIX_FUSE_SERIAL`
+  is the A/B). A region that fails forgets the kernel signatures it
+  cached with its bodies. Only the context's root emission links:
   every `LINK_BATCH` regions a batch starts compiling on threads of its
   own while emission goes on (`FusionCtx::link_batch`), and installs at
   the next batch or at the pass's link (`FusionCtx::link`), which
@@ -727,6 +735,7 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
 | `GRAPHIX_NO_SUBST=1` | every instance checks its body again instead of taking its definition's types (A/B for instances by substitution) |
+| `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
 | `GRAPHIX_TASK_AUDIT=1` | a backtrace at every write by a compile task to a cell or var an earlier task created (statement elaboration must write none) |
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |
