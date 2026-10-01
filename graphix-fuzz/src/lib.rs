@@ -4325,6 +4325,14 @@ async fn check_isolated_in(
             // the child's last stderr lines distinguish a node-walk
             // overflow from a SIGSEGV in JIT'd frames (which prints nothing)
             let stderr = String::from_utf8_lossy(&out.stderr);
+            // the child's address-space cap stopped a runaway subject:
+            // containment, as the stack budget's abort is
+            if stderr
+                .lines()
+                .any(|l| l.starts_with("memory allocation of") && l.ends_with("failed"))
+            {
+                return PoolResult::Agree { ran: false };
+            }
             let tail: Vec<&str> = stderr.lines().rev().take(2).collect();
             let mut status = out.status.to_string();
             for l in tail.into_iter().rev() {

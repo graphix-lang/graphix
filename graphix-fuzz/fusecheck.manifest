@@ -213,6 +213,8 @@ abort	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 1	inloop-bottom-cache-jul2026/00_filter_div0_slot.gx
 0	instance-copy-skew-jul2026/01_null_elem_filter.gx
 0	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
+1	interface-ctor-trait-oct2026/00_two_collections.gx
+29	interface-ctor-trait-oct2026/01_six_modules.gx
 3	interp-format-jul2026/01_union_array_typed_prefix.gx
 2	kernel-frame-init-const-fire-aug2026/00_rec_const_terminal_input_arm.gx
 9	kernel-frame-init-const-fire-aug2026/01_reactive_stale_refire.gx

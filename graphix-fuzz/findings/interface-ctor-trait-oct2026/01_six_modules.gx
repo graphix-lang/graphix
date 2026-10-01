@@ -1,0 +1,104 @@
+// bisect: the parallel module check refused a different module per session
+// (oct01d ryouko divergence_000000; two siblings called an interface fn whose
+// constructor-trait element cell they shared). Agrees on the fixed compiler.
+{ let v0 = (i64:7, { b: (i64:2 + i64:1), c: true, x: (f64:2.5 * f64:1.0) }); let cerr1: Error<Any> = never(); catch(e) cerr1 <- e; let cerr3: Error<Any> = never(); catch(e) { let m = e; cerr3 <- m }; let v0 = str::to_upper(""); let v0 = 'a: Number |v0: 'a, v1: 'a| -> 'a (v0 - v1); let v2: i64 = v0(i64:42, i64:7); let v3: f32 = v0(f32:1.0, (-(f32:-1.0))); let rec v2 = |v4: i64| -> i64 select v4 { v5 if v5 <= i64:0 => v5, v5 => (v2(v5 - i64:1) + v2(v5 - i64:2)) }; let v6 = v2(i64:9); let v6 = 'a: Number |v0: 'a| -> 'a ((v0 + v0) - v0); let v6 = |v3: string, v6: u8| -> string "hello"; let v7 = m0::mk(v0(i64:2, i64:0)); let v8 = (m0::mk(i64:42), i64:-100); let v3 = select v8 { (v0, v9) if str::ends_with(#sfx: "xyz", "hello") => [<"xyz">], (v9, i64:42) if true => [<v6("hello", u8:2), v6("a", u8:0)>], (v9, v3) => { let mt: List<string> = [<>]; mt } }; let v9 = m3::mk((i64:0 + i64:42)); let v10 = (m3::mk(i64:1), select m0::k0 { [<h0, ..>] => h0, [<>] => i64:-100 }); use m3::f2 as v11; let v12 = m4::mk(m4::k4); let v0 = select m3::via(m3::mk(m4::k4)) { i64:1 if (!false) => i64:-100, v13 if (v64:1000000 == v64:7) => cast<i64>({ catch(e) v32:7; ((v32:1000 -? v32:0))? })$, i64:100 => Collection::fold([false], m4::k4, |v5, v11| v5), v13 => v10.1 }; let v13 = m5::mk(str::len("graphix")); let v12 = |v14: u8| -> u8 (v14 - u8:2); let v15 = |v16: u8| -> u8 (v12(v16) + u8:255); let v12 = u8:100; let v17 = v15((u8:0 + v12)); select v10 { (v18, v19) if m0::f0(f32:0.0, m3::k3) => m3::f1(null), (_, v18) => (f64:3.14 * f64:0.0) } }
+// file-v1: m0.gxi
+val k0: List<i64>;
+val f0: fn(a0: f32, a1: u64) -> bool;
+val f1: fn(a0: bool, a1: i64) -> i64;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+val csize: fn(c: Collection) -> i64;
+// file-v1: m0.gx
+let k0: List<i64> = [<i64:1, i64:2, i64:42>];
+let h0 = |v7: u32| -> u32 u32:4294967295;
+let f0 = |v8: f32, v9: u64| false;
+let f1 = |v10: bool, v11: i64| i64:1;
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let un = |t: T| -> i64 t.0;
+let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1);
+// file-v1: m1.gxi
+val f0: fn(a0: [`A, `B(bool, i64), `Some(Array<u8>)], a1: bool) -> z64;
+val f1: fn(a0: &f64, a1: bool) -> i64;
+// file-v1: m1.gx
+let h1 = |v9: v64| -> v64 cast<v64>((u16:1000 + u16:1000))$;
+let f0 = |v10: [`A, `B(bool, i64), `Some(Array<u8>)], v11: bool| array::fold(["xyz"], z64:42, |v12, v13| v12);
+let f1 = |v12: &f64, v13: bool| -> i64 (select (i64:7 /? i64:7) { error as _ => i64:100, i64 as n => n } * select package::m0::k0 { [<h0, ..>] => h0, [<>] => i64:2 });
+// file-v1: m2.gxi
+use super::{m0, m1};
+val k2: bool;
+val f0: fn(a0: bool) -> i64;
+val f1: fn(a0: bool, a1: i64) -> string;
+val f2: fn(a0: bool) -> i64;
+// file-v1: m2.gx
+let k2: bool = (true || false);
+let h2 = |v9: i8| -> i8 ((-(i8:127)) * (v9 * v9));
+let f0 = |v10: bool| -> i64 i64:0;
+let f1 = |v11: bool, v12: i64| "hello";
+let f2 = |v13: bool| -> i64 select m0::k0 { [<h0, ..>] => h0, [<>] => m0::csize(["a", "graphix"]) };
+// file-v1: m3.gxi
+val k3: u64;
+/// generated
+val f0: fn(a0: f64, a1: &u8) -> (i64, bool, i64);
+val f1: fn(a0: [string, null]) -> f64;
+val f2: fn(a0: {a: [string, null], x: u8, y: u8}) -> u8;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };
+impl Tr for T;
+val via: fn<'a: Tr>(x: 'a) -> i64;
+val csize: fn(c: Collection) -> i64;
+// file-v1: m3.gx
+let k3: u64 = u64:1000000;
+let f0 = |v9: f64, v10: &u8| -> (i64, bool, i64) (i64:0, false, i64:1);
+let f1 = |v11: [string, null]| -> f64 f64:0.1;
+let f2 = |v12: {a: [string, null], x: u8, y: u8}| -> u8 ((u8:1 * u8:1) * (u8:100 / u8:2));
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let un = |t: T| -> i64 t.0;
+impl Tr for T { let tv = |t| t.0 };
+let via = 'a: Tr |x: 'a| Tr::tw(x);
+let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1);
+// file-v1: m4.gxi
+use super::{m0, m1, m2, m3};
+val k4: i64;
+/// generated
+val f0: fn(a0: u8) -> i64;
+val f1: fn(a0: u16, a1: u8) -> i64;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+// file-v1: m4.gx
+let k4: i64 = (-(i64:2));
+let h4 = |v12: i64| -> i64 m0::csize(["xyz"]);
+let f0 = |v13: u8| h4(select m0::k0 { [<h0, ..>] => h0, [<>] => i64:7 }) + ((m1::f1(&(f64:3.14), true) + (select m0::k0 { [<h0, ..>] => h0, [<>] => k4 })));
+let f1 = |v14: u16, v15: u8| -> i64 k4;
+type T = Abstract<(i64, i64)>;
+let mk = |x: i64| -> T T((x, x + i64:1));
+let un = |t: T| -> i64 { let T((a, _)) = t; a };
+(f64:2.5 * f64:0.0)
+// file-v1: m5.gxi
+use super::{m0, m1, m2, m3, m4};
+val k5: i16;
+val f0: fn(a0: bool, a1: [f64, null]) -> i64;
+val f1: fn(a0: Array<i64>, a1: f64) -> Map<string, List<bool>>;
+type T;
+val mk: fn(x: i64) -> T;
+val un: fn(t: T) -> i64;
+trait Tr { val tv: fn(self) -> i64; val tw: fn(self) -> i64 = |s| tv(s) + i64:1 };
+impl Tr for T;
+val via: fn<'a: Tr>(x: 'a) -> i64;
+// file-v1: m5.gx
+let k5: i16 = select (i16:0 %? i16:-1000) { i16 as n => n, _ => i16:1 };
+let h5 = |v13: i64| -> i64 (select m0::k0 { [<h0, ..>] => h0, [<>] => v13 } - (i64:-1 - i64:-100));
+let f0 = |v14: bool, v15: [f64, null]| -> i64 h5((i64:-100 * m4::k4)) + ((m4::un(m4::mk(i64:-100)) + ((m3::csize(["a", ""]) - m4::k4))));
+let f1 = |v16: Array<i64>, v17: f64| map::remove({"k2" => [<true>], "k1" => [<true>], "a" => [<false, false>]}, "k0");
+type T = Abstract<i64>;
+let mk = |x: i64| -> T T(x);
+let un = |t: T| -> i64 t.0;
+impl Tr for T { let tv = |t| t.0; let tw = |t| t.0 * i64:2 };
+let via = 'a: Tr |x: 'a| Tr::tw(x);
+(!false)

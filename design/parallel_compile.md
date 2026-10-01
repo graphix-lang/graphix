@@ -128,7 +128,9 @@ without declaring it is hidden from its siblings' checks
 (`Env::hidden_impls`, read through `Env::impls_of`) and seen by the
 statements after the run. And a module's check writes no cell created
 outside the module: such a write (the task audit's foreign write, now
-recorded for the module's task, `tvar::OwnWrites`) refuses the module, so an
+recorded for the module's task, `tvar::OwnWrites`) refuses the module, and is
+not made (`tvar::decided`): every sibling that would make it is refused
+in turn, none sees another's, and the first in order is the error, so an
 unannotated `let x = never()` whose first use is in a child module must
 be annotated. Over the gate the only foreign writes in module tasks are
 the interface's own type variables, frozen at compile.

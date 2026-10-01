@@ -298,6 +298,32 @@ let y = super::x + 1
 "#
     ; graphix_package_core::testing::FuseExpect::None);
 
+// Two siblings that would decide the same outer type are both refused,
+// and the first in order is the one reported, whatever ran first.
+run!(
+    module_check_refusal_is_the_first_in_order,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("left open")
+        && format!("{e:#}").contains("::a")),
+    "/test.gx" => r#"
+let x = never();
+mod a;
+mod b;
+let result = a::y + b::y
+"#,
+    "/test/a.gxi" => r#"
+val y: i64;
+"#,
+    "/test/a.gx" => r#"
+let y = super::x + 1
+"#,
+    "/test/b.gxi" => r#"
+val y: i64;
+"#,
+    "/test/b.gx" => r#"
+let y = super::x + 2
+"#
+    ; graphix_package_core::testing::FuseExpect::None);
+
 // Annotated, the outer binding's type is the module's to read.
 run!(
     module_check_reads_an_annotated_outer_type,

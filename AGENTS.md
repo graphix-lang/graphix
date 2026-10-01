@@ -841,8 +841,11 @@ not a gap count.
   before it. Siblings reach each other only through interfaces: an impl
   a body adds undeclared is hidden from its siblings' checks
   (`Env::hidden_impls`) and seen after them, and a module's check that
-  writes a cell created outside the module is refused (annotate the
-  binding it would decide; `design/parallel_compile.md`).
+  would write a cell created outside the module is refused and the
+  write not made (`tvar::decided`; annotate the binding it would
+  decide; `design/parallel_compile.md`). Every cell of an interface
+  `val`'s function type is generic, a constructor trait's element
+  included: a call copies it.
 - **Place references** (`design/place_references.md`): `&a[i]`,
   `&s.f`, `&t.0`, `&m{k}` are root + path; writes patch the root at
   delivery; a dynamic key is a moving reference. References de-fuse.

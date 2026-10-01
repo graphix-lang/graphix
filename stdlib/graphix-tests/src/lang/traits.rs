@@ -326,6 +326,23 @@ run!(
     "#
 );
 
+// A constructor-trait parameter in an interface is a quantifier, its
+// element included: each call has its own.
+run!(
+    interface_ctor_trait_param_per_call,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3)]),
+    "/test.gx" => r#"
+        mod m;
+        let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
+    "#,
+    "/test/m.gxi" => r#"
+        val csize: fn(c: Collection) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        let csize = |c: Collection| Collection::fold(c, 0, |acc, x| acc + 1)
+    "#
+);
+
 // An abstract type's implementation may live in the type's package.
 run!(
     trait_abstract_impl_in_type_package,

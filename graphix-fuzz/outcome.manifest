@@ -213,6 +213,8 @@ trace	init-over-limit-aug2026/02_fold_over_oversize_init_fires_init.gx
 trace	inloop-bottom-cache-jul2026/00_filter_div0_slot.gx
 reject	instance-copy-skew-jul2026/01_null_elem_filter.gx
 reject	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
+trace	interface-ctor-trait-oct2026/00_two_collections.gx
+trace	interface-ctor-trait-oct2026/01_six_modules.gx
 trace	interp-format-jul2026/01_union_array_typed_prefix.gx
 trace	kernel-frame-init-const-fire-aug2026/00_rec_const_terminal_input_arm.gx
 trace	kernel-frame-init-const-fire-aug2026/01_reactive_stale_refire.gx

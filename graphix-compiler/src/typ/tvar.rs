@@ -179,6 +179,23 @@ pub(super) fn written(cell: &TCell) {
     written_of(cell.task, "cell")
 }
 
+/// A decision about a type (a binding, a conjunct, a merge, a mark) by
+/// the running compile task, reported as [`written`] is. Under
+/// [`OwnWrites`] a decision about what an earlier task created is
+/// recorded and not made: every module of a run that would make it is
+/// refused, whatever order they ran in, and none sees another's.
+pub(super) fn decided(cell: &TCell) -> bool {
+    decided_of(cell.task, "cell")
+}
+
+fn decided_of(owner: u32, what: &str) -> bool {
+    if owner >= TASK.get() {
+        return true;
+    }
+    foreign_write(owner, what);
+    !OWN_WRITES.get().is_some_and(|(task, _)| task == TASK.get())
+}
+
 fn written_of(owner: u32, what: &str) {
     if owner < TASK.get() {
         foreign_write(owner, what)
@@ -649,8 +666,9 @@ impl TVar {
         lower(&t, self.level());
         let cell = self.cell();
         let mut c = cell.write();
-        written(&c);
-        c.binding = Some(t)
+        if decided(&c) {
+            c.binding = Some(t)
+        }
     }
 
     /// Add a conjunct to this var's cell constraints (deduped).
@@ -664,8 +682,9 @@ impl TVar {
         }
         if !new.is_empty() {
             let mut c = cell.write();
-            written(&c);
-            c.constraints.extend(new.drain(..));
+            if decided(&c) {
+                c.constraints.extend(new.drain(..));
+            }
         }
     }
 
@@ -776,8 +795,19 @@ impl TVar {
             (conjuncts, (s.cycle_refused, s.bottom_fed))
         };
         let oid = other.read().id;
+        if !same {
+            let s_task = s_cell.read().task;
+            let o_task = o_cell.read().task;
+            let var_task = self.read().task;
+            if !decided_of(s_task, "cell")
+                || (!to_add.is_empty() && !decided_of(o_task, "cell"))
+                || !decided_of(var_task, "var")
+            {
+                return;
+            }
+        }
         let mut s = self.write();
-        if !same || (how == Merge::Name && (!s.frozen || s.id != oid)) {
+        if same && how == Merge::Name && (!s.frozen || s.id != oid) {
             written_of(s.task, "var");
         }
         if how == Merge::Name {
@@ -799,9 +829,6 @@ impl TVar {
         let level = s_cell.read().level;
         {
             let mut oc = o_cell.write();
-            if !to_add.is_empty() {
-                written(&oc);
-            }
             oc.constraints.extend(to_add.drain(..));
             if !earlier_task(&oc) {
                 oc.cycle_refused |= refused;
@@ -813,7 +840,6 @@ impl TVar {
         // link closes no cycle.
         {
             let mut sc = s_cell.write();
-            written(&sc);
             sc.binding = Some(Type::TVar(other.clone()));
         }
         s.cell = o_cell;
@@ -823,8 +849,8 @@ impl TVar {
 
     pub fn freeze(&self) {
         let mut l = self.write();
-        if !l.frozen {
-            written_of(l.task, "var");
+        if !l.frozen && !decided_of(l.task, "var") {
+            return;
         }
         l.frozen = true;
     }
@@ -875,7 +901,9 @@ impl TVar {
         }
         let concrete = {
             let mut sc = s_cell.write();
-            written(&sc);
+            if !decided(&sc) {
+                return;
+            }
             sc.binding = Some(binding.clone());
             sc.constraints.extend(to_add.drain(..));
             sc.constraints.iter().any(|c| matches!(c, Type::Concrete))
@@ -905,8 +933,8 @@ impl TVar {
     pub fn unbind(&self) {
         let cell = self.cell();
         let mut c = cell.write();
-        if c.binding.is_some() {
-            written(&c);
+        if c.binding.is_some() && !decided(&c) {
+            return;
         }
         c.binding = None
     }
@@ -938,8 +966,8 @@ impl TVar {
         }
         let cell = self.cell();
         let mut c = cell.write();
-        if !c.bottom_fed {
-            written(&c);
+        if !c.bottom_fed && !decided(&c) {
+            return;
         }
         c.bottom_fed = true;
     }
@@ -959,8 +987,8 @@ impl TVar {
         }
         let cell = self.cell();
         let mut c = cell.write();
-        if !c.cycle_refused {
-            written(&c);
+        if !c.cycle_refused && !decided(&c) {
+            return;
         }
         c.cycle_refused = true;
     }

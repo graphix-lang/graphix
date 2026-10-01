@@ -1,0 +1,10 @@
+// bisect: an interface `val` with a constructor-trait parameter shared
+// its element cell across calls (oct01d ryouko divergence_000000: two
+// sibling modules both called it, and which one the parallel module
+// check refused depended on the schedule). Every cell of a declared
+// signature is a quantifier.
+{ let a = m::csize(["a", "b"]); let b = m::csize([<1, 2, 3>]); (a, b) }
+// file-v1: m.gxi
+val csize: fn(c: Collection) -> i64;
+// file-v1: m.gx
+let csize = |c: Collection| Collection::fold(c, 0, |acc, x| acc + 1);
