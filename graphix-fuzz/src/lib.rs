@@ -3930,7 +3930,7 @@ pub fn apply_mem_limit() {
         let limit: u64 = std::env::var("GRAPHIX_FUZZ_MEM_LIMIT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(48 << 30);
+            .unwrap_or(8 << 30);
         if limit > 0 {
             let rl = libc::rlimit { rlim_cur: limit, rlim_max: limit };
             // best effort: a hard limit already below `limit` makes this

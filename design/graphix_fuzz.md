@@ -265,7 +265,12 @@ Three rules learned from a campaign that died of its own exhaust:
   failures are fatal too.
 - **Campaign output lives OUTSIDE the repo** (`~/tmp/target/fuzz/`,
   `GRAPHIX_FUZZ_CORPUS` overrides); the repo's corpus dir syncs across
-  machines. Children get `GRAPHIX_STACK_BUDGET` and an `RLIMIT_AS` (48GB — address space, not RSS; a healthy batch child passes 8GB).
+  machines. Children get `GRAPHIX_STACK_BUDGET` and an `RLIMIT_AS` of 8GB
+  (`GRAPHIX_FUZZ_MEM_LIMIT`): address space, not RSS. On the system
+  allocator a healthy batch child reserves 2.4-3GB for under 1GB
+  resident; at 48GB one runaway subject took a 62GB box with it
+  (systemd-oomd killed the session), where at 8GB it aborts its own
+  child.
 
 The fleet deploy is a script (`fleet.sh deploy`), every step of which
 verifies a fact (pgrep, content fingerprint, the campaign's own gate
