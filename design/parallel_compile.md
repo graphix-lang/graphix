@@ -256,6 +256,11 @@ order (`typecheck0`), while elaboration forks each into a task
   `<-` in the body can name.
 - `contains` took six pooled maps per call; five are taken at their
   first write (`typ::Lazy`).
+- Analysis walks the bodies a level of the call graph reaches in
+  parallel (`analysis::collect_static_graph`, joined in level order;
+  an instance's edges come from its own body, in its order), and
+  computes each instance's body facts and machine-planning summary in
+  parallel before the serial fixpoints: admin app 9.5 -> 6 ms.
 - A builtin call site resolves its function by its `Ref`'s bind id,
   not by looking its name up (fusion discovery and analysis).
 - A compile task's join wrote back each key it touched, once per

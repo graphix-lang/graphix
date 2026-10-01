@@ -7,8 +7,8 @@
 //! tail-loop predicate is `fusion::lowering::structural_tail_loop`.
 
 use crate::{
-    ApplyView, BindId, DefAssertionKind, ExecCtx, LambdaId, LambdaInstanceId, Node,
-    NodeView, Refs, Rt, Update, UserEvent,
+    ApplyView, BindId, CompileCtx, DefAssertionKind, ExecCtx, LambdaId, LambdaInstanceId,
+    Node, NodeView, Refs, Rt, Update, UserEvent,
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
     effects::{EffectKind, RecursionKind},
     expr::{At, ExprKind, ModuleKind},
@@ -25,6 +25,7 @@ use crate::{
 use anyhow::{Result, anyhow};
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
+use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{cell::OnceCell, collections::hash_map::Entry, ptr, sync::atomic::Ordering};
 
@@ -58,8 +59,58 @@ impl<'a, R: Rt, E: UserEvent> StaticCallGraph<'a, R, E> {
     }
 }
 
+/// What one body's walk adds to a [`StaticCallGraph`], and the
+/// instances its resolved calls reach.
+struct BodyWalk<'a, R: Rt, E: UserEvent> {
+    edges: Vec<StaticEdge<'a, R, E>>,
+    machines: Vec<&'a SeqMachine<R, E>>,
+    captures: Vec<(u64, BindId, &'a SeqCapture<R, E>)>,
+    self_binds: Vec<(BindId, LambdaInstanceId)>,
+    reached: Vec<&'a GXLambda<R, E>>,
+}
+
+fn walk_body<'a, R: Rt, E: UserEvent>(
+    node: &'a Node<R, E>,
+    caller: Option<LambdaInstanceId>,
+) -> BodyWalk<'a, R, E> {
+    let mut w = BodyWalk {
+        edges: Vec::new(),
+        machines: Vec::new(),
+        captures: Vec::new(),
+        self_binds: Vec::new(),
+        reached: Vec::new(),
+    };
+    fusion::for_each_node(node, &mut |n| {
+        let site = match n.view() {
+            NodeView::CallSite(site) => site,
+            NodeView::SeqMachine(m) => return w.machines.push(m),
+            NodeView::Bind(b) => {
+                if let NodeView::SeqCapture(c) = b.node.view()
+                    && let Some(id) = b.pattern.single_bind_id()
+                {
+                    w.captures.push((c.machine, id, c))
+                }
+                return;
+            }
+            _ => return,
+        };
+        if let Some(target) = site.static_target() {
+            w.edges.push(StaticEdge { caller, callee: target.instance, site });
+        }
+        let Some(ApplyView::Lambda(g)) = site.resolved_apply() else {
+            return;
+        };
+        if let NodeView::Ref(r) = site.fnode().view() {
+            w.self_binds.push((r.id, g.instance_id()));
+        }
+        w.reached.push(g);
+    });
+    w
+}
+
 /// Walk `root` (or `seed`'s body) and every resolved callee's instance
-/// body once.
+/// body once, the bodies a level reaches walking in parallel and joining
+/// in order.
 fn collect_static_graph<'a, R: Rt, E: UserEvent>(
     root: &'a Node<R, E>,
     seed: Option<&'a GXLambda<R, E>>,
@@ -72,45 +123,33 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
         machines: LPooled::take(),
         captures: LPooled::take(),
     };
-    let mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>> =
-        LPooled::take();
-    match seed {
+    let mut level: Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)> = match seed {
         Some(g) => {
             graph.instances.insert(g.instance_id(), g);
-            stack.push((g.body(), Some(g.instance_id())));
+            vec![(g.body(), Some(g.instance_id()))]
         }
-        None => stack.push((root, None)),
-    }
-    while let Some((node, caller)) = stack.pop() {
-        fusion::for_each_node(node, &mut |n| {
-            let site = match n.view() {
-                NodeView::CallSite(site) => site,
-                NodeView::SeqMachine(m) => return graph.machines.push(m),
-                NodeView::Bind(b) => {
-                    if let NodeView::SeqCapture(c) = b.node.view()
-                        && let Some(id) = b.pattern.single_bind_id()
-                    {
-                        graph.captures.entry(c.machine).or_default().push((id, c))
-                    }
-                    return;
+        None => vec![(root, None)],
+    };
+    while !level.is_empty() {
+        let walks: Vec<BodyWalk<'a, R, E>> =
+            level.par_iter().map(|(n, caller)| walk_body(n, *caller)).collect();
+        level.clear();
+        for w in walks {
+            graph.edges.extend(w.edges);
+            graph.machines.extend(w.machines);
+            for (machine, id, c) in w.captures {
+                graph.captures.entry(machine).or_default().push((id, c))
+            }
+            for (bind, instance) in w.self_binds {
+                graph.add_self_bind(bind, instance)
+            }
+            for g in w.reached {
+                if let Entry::Vacant(e) = graph.instances.entry(g.instance_id()) {
+                    e.insert(g);
+                    level.push((g.body(), Some(g.instance_id())));
                 }
-                _ => return,
-            };
-            if let Some(target) = site.static_target() {
-                graph.edges.push(StaticEdge { caller, callee: target.instance, site });
             }
-            let Some(ApplyView::Lambda(g)) = site.resolved_apply() else {
-                return;
-            };
-            let instance = g.instance_id();
-            if let NodeView::Ref(r) = site.fnode().view() {
-                graph.add_self_bind(r.id, instance);
-            }
-            if let Entry::Vacant(e) = graph.instances.entry(instance) {
-                e.insert(g);
-                stack.push((g.body(), Some(instance)));
-            }
-        });
+        }
     }
     graph
 }
@@ -339,15 +378,19 @@ fn infer_effects<R: Rt, E: UserEvent>(
     ctx: &ExecCtx<R, E>,
 ) -> InstanceFacts {
     let _profile = profile::phase(Phase::Effects);
+    let cx: &CompileCtx<R, E> = ctx;
+    let instances: LPooled<Vec<(LambdaInstanceId, &GXLambda<R, E>)>> =
+        graph.instances.iter().map(|(iid, g)| (*iid, *g)).collect();
+    let computed: Vec<(LambdaInstanceId, BodyFacts)> =
+        instances.par_iter().map(|(iid, g)| (*iid, body_facts(g, graph, cx))).collect();
     let mut bodies: LPooled<IntMap<LambdaInstanceId, BodyFacts>> = LPooled::take();
     let mut callers: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
         LPooled::take();
-    for (iid, g) in graph.instances.iter() {
-        let b = body_facts(g, graph, ctx);
+    for (iid, b) in computed {
         for callee in b.callees.iter() {
-            callers.entry(*callee).or_default().push(*iid);
+            callers.entry(*callee).or_default().push(iid);
         }
-        bodies.insert(*iid, b);
+        bodies.insert(iid, b);
     }
     let mut eff: InstanceFacts =
         bodies.keys().map(|id| (*id, LambdaFacts::PURE)).collect();
@@ -415,7 +458,7 @@ impl LambdaFacts {
 fn body_facts<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     graph: &StaticCallGraph<'_, R, E>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> BodyFacts {
     let body = g.body();
     let local: OnceCell<LPooled<IntSet<BindId>>> = OnceCell::new();
@@ -554,7 +597,7 @@ fn node_facts<R: Rt, E: UserEvent>(
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     graph: Option<&StaticCallGraph<'_, R, E>>,
-    ctx: &ExecCtx<R, E>,
+    ctx: &CompileCtx<R, E>,
     pending: &mut dyn FnMut(LambdaInstanceId),
 ) -> LambdaFacts {
     let of_def = |lid: LambdaId| -> LambdaFacts {
@@ -709,7 +752,7 @@ fn is_call_to<R: Rt, E: UserEvent>(
 }
 
 fn lambda_def<'a, R: Rt, E: UserEvent>(
-    ctx: &'a ExecCtx<R, E>,
+    ctx: &'a CompileCtx<R, E>,
     lid: LambdaId,
 ) -> Option<&'a LambdaDef<R, E>> {
     ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
@@ -918,18 +961,29 @@ fn instance_summaries<R: Rt, E: UserEvent>(
     let mut callees: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
         LPooled::take();
     let mut sums: LPooled<IntMap<LambdaInstanceId, Summary>> = LPooled::take();
-    let mut stack: LPooled<Vec<LambdaInstanceId>> = roots.into_iter().collect();
-    while let Some(i) = stack.pop() {
-        if sums.contains_key(&i) {
-            continue;
+    // level by level: each level's bodies summarize in parallel, and the
+    // callees they name not yet met are the next level
+    let mut level: Vec<LambdaInstanceId> = roots.into_iter().collect();
+    while !level.is_empty() {
+        level.sort_unstable();
+        level.dedup();
+        level.retain(|i| !sums.contains_key(i) && graph.instances.contains_key(i));
+        let done: Vec<(LambdaInstanceId, Summary, SmallVec<[LambdaInstanceId; 4]>)> =
+            level
+                .par_iter()
+                .map(|i| {
+                    let mut s = Summary::default();
+                    let mut cs = SmallVec::new();
+                    local_summary(graph.instances[i].body(), graph, &mut s, &mut cs);
+                    (*i, s, cs)
+                })
+                .collect();
+        level.clear();
+        for (i, s, cs) in done {
+            level.extend(cs.iter().copied());
+            sums.insert(i, s);
+            callees.insert(i, cs);
         }
-        let Some(g) = graph.instances.get(&i) else { continue };
-        let mut s = Summary::default();
-        let mut cs = SmallVec::new();
-        local_summary(g.body(), graph, &mut s, &mut cs);
-        stack.extend(cs.iter().copied());
-        sums.insert(i, s);
-        callees.insert(i, cs);
     }
     let mut callers: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
         LPooled::take();
