@@ -266,6 +266,48 @@ and check are 142 of elaboration's 212 ms, so they bound it, not the
 lack of tasks: forking an expression's sibling calls into tasks as well
 (`f(g(..), h(..))`, literals, select arms) measured no change.
 
+## Against main (measured)
+
+Admin `milestone_timing`, quick builds, medians of 10 alternating runs
+at realtime priority (`chrt -f 50`), main (367582d2, with netidx
+65e2962b: the same `.gx`) against the branch (76bc8f22). Registration
+is the package root, "unfused" and "fused" the app's compile. Fusion
+decides the same: 2772/956 kernels on main, 2771/959 here.
+
+| cores | registration | unfused | fused |
+|---|---|---|---|
+| 4 P-cores, bench | 72.7 -> 62.8 | 264.5 -> 98.8 (2.7x) | 457.6 -> 221.4 (2.1x) |
+| 1 P-core, bench | 74.4 -> 89.9 | 256.9 -> 184.0 (1.4x) | 642.1 -> 561.8 (1.1x) |
+| all 16, bench, unpinned | 87.1 -> 85.4 | 260.3 -> 93.6 (2.8x) | 429.6 -> 189.0 (2.3x) |
+| 2 P-cores, potato (400 MHz) | 781 -> 666 | 2795 -> 1204 (2.3x) | 5530 -> 3373 (1.6x) |
+
+The one-core gain is not threads: instances take their definition's
+types instead of checking again, and discovery's type memo. The
+package root's check, the language server's path
+(`check_vs_build_timing`), moved little: 136 -> 128 ms on four cores,
+220 -> 235 on one; about 100 ms of it is parsing. Elaboration does not
+scale past four cores (unfused 98.8 on four, 93.6 on sixteen): it is at
+its critical path, the `local` over `panels` chain. Registration on
+one core is 15 ms slower than main, the cost of the module tasks with
+no second thread; on two it is already ahead.
+
+The serial part on four P-cores (perf, frame-pointer LTO build, 10 kHz,
+a millisecond with one busy thread is serial):
+
+| | fused (220 ms) | unfused (95 ms) |
+|---|---|---|
+| one busy thread | 67 ms | 43 ms |
+| the first cycle (`rt.compile` times it) | 16 | 9 |
+| analysis | 10.4 | 10.3 |
+| deleting discards (`apply_deferred`) | 8 | small |
+| registering references | 2 | 2 |
+| the link's tail | 8.5 | |
+| the check | 1.6 | 7 |
+| fork and join | 2.8 | 2.2 |
+| discovery and emission | 5.5 | |
+
+Code generation runs at 3.96 of 4 threads, elaboration at 3.8.
+
 ## What stays serial (measured)
 
 A perf profile of the admin app on four P-cores (10 kHz, samples binned
