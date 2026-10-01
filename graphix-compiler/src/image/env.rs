@@ -320,7 +320,7 @@ impl Pack for Env {
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let lexical = lexical_decode(buf)?;
         Ok(Env {
-            by_id: SharedMap::<BindId, Bind>::decode(buf)?.0.into(),
+            by_id: SharedMap::<BindId, Arc<Bind>>::decode(buf)?.0.into(),
             byref_chain: SharedMap::decode(buf)?.0.into(),
             names: SharedMap::decode(buf)?.0.into(),
             abstract_reps: SharedMap::decode(buf)?.0.into(),

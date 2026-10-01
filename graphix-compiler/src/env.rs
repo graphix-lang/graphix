@@ -357,7 +357,7 @@ fn retain_set<K: Ord + Clone>(s: &Set<K>, mut keep: impl FnMut(&K) -> bool) -> S
 
 #[derive(Clone, Debug, Default)]
 pub struct Env {
-    pub by_id: TrackedMap<BindId, Bind>,
+    pub by_id: TrackedMap<BindId, Arc<Bind>>,
     pub byref_chain: TrackedMap<BindId, BindId>,
     pub binds: Map<ModPath, Map<CompactString, BindId>>,
     pub modules: Set<ModPath>,
@@ -441,6 +441,20 @@ impl Env {
 
     /// Restore the lexical environment to the snapshot `other`; the
     /// global registries and IDE sinks stay as they are on `self`.
+    /// A snapshot of the lexical fields alone, the only ones
+    /// [`Self::restore_lexical_env`] reads back: a definition keeps one,
+    /// and holding the global tables too would make every later write
+    /// to them copy what the snapshot shares.
+    pub(crate) fn lexical(&self) -> Self {
+        Self {
+            binds: self.binds.clone(),
+            modules: self.modules.clone(),
+            typedefs: self.typedefs.clone(),
+            traits: self.traits.clone(),
+            ..Self::default()
+        }
+    }
+
     pub(super) fn restore_lexical_env(&self, other: Self) -> Self {
         let Self {
             binds,
@@ -829,7 +843,7 @@ impl Env {
         self.resolve_visible(scope, name, NameNs::Value, |scope, name| {
             self.binds.get_full(scope).and_then(|(scope, vars)| {
                 vars.get(name)
-                    .and_then(|bid| self.by_id.get(bid).map(|bind| (scope, bind)))
+                    .and_then(|bid| self.by_id.get(bid).map(|bind| (scope, &**bind)))
             })
         })
     }
@@ -1573,8 +1587,8 @@ impl Env {
             facet: None,
         };
         self.with_ide(|ide| ide.binds.push(bind.clone()));
-        self.by_id.insert(id, bind);
-        self.by_id.get_mut(&id).expect("just inserted")
+        self.by_id.insert(id, Arc::new(bind));
+        Arc::make_mut(self.by_id.get_mut(&id).expect("just inserted"))
     }
 
     /// Give the binding `id` the type `typ`. Every reference compiled
@@ -1582,8 +1596,8 @@ impl Env {
     /// its latest entry wins.
     pub fn retype(&mut self, id: BindId, typ: Type) {
         if let Some(b) = self.by_id.get_mut(&id) {
-            b.typ = typ;
-            let b = b.clone();
+            Arc::make_mut(b).typ = typ;
+            let b = (**b).clone();
             self.with_ide(|ide| ide.binds.push(b));
         }
     }
@@ -1592,7 +1606,7 @@ impl Env {
     /// scrutinee whose fires come from `inputs`.
     pub fn mark_pattern_bind(&mut self, id: BindId, inputs: Arc<[BindId]>) {
         if let Some(b) = self.by_id.get_mut(&id) {
-            b.facet = Some(Facet::Pattern(inputs));
+            Arc::make_mut(b).facet = Some(Facet::Pattern(inputs));
         }
     }
 
@@ -1614,7 +1628,7 @@ impl Env {
     /// represented by `rep` for wake catch-up.
     pub fn mark_facet(&mut self, id: BindId, rep: BindId) {
         if let Some(b) = self.by_id.get_mut(&id) {
-            b.facet = Some(Facet::Let(rep));
+            Arc::make_mut(b).facet = Some(Facet::Let(rep));
         }
     }
 

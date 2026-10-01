@@ -719,7 +719,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             self_bind: Mutex::new(None),
             resident: TagValue::phantom(),
             first_dispatch: true,
-            env: ctx.env.clone(),
+            env: ctx.env.lexical(),
         })
     }
 
@@ -1190,7 +1190,7 @@ impl Lambda {
         let init = make_init(
             id,
             flags,
-            ctx.env.clone(),
+            ctx.env.lexical(),
             scope,
             typ.clone(),
             argspec.clone(),
@@ -1210,7 +1210,7 @@ impl Lambda {
         let def = ctx.registry.lambdawrap.wrap(LambdaDef {
             id,
             typ: typ.clone(),
-            env: ctx.env.clone(),
+            env: ctx.env.lexical(),
             argspec,
             init,
             scope: scope.clone(),
@@ -1270,7 +1270,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         let faux_id = BindId::new();
         ctx.env.by_id.insert(
             faux_id,
-            Bind {
+            Arc::new(Bind {
                 doc: None,
                 export: false,
                 id: faux_id,
@@ -1280,7 +1280,7 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
                 pos: SourcePosition::default(),
                 ori: Arc::new(Origin::default()),
                 facet: None,
-            },
+            }),
         );
         let scope = def.scope.with_catch((faux_id, ExprId::new()), false);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();

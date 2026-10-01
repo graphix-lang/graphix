@@ -114,7 +114,10 @@ impl<'a> Query<'a> {
 
     fn bind(&self, id: BindId) -> Option<&'a Bind> {
         let Checked { env, ide } = self.checked;
-        env.by_id.get(&id).or_else(|| ide.binds.iter().rev().find(|b| b.id == id))
+        env.by_id
+            .get(&id)
+            .map(|b| &**b)
+            .or_else(|| ide.binds.iter().rev().find(|b| b.id == id))
     }
 
     fn typedef(&self, scope: &ModPath, name: &str) -> Option<&'a TypeDef> {
