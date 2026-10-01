@@ -349,7 +349,8 @@ fn take_functions(pending: &mut [Pending]) -> Vec<(FuncId, Function)> {
 const STACK: usize = 8 << 20;
 
 /// Compile every function in `work` on as many threads as there is work
-/// for; the results are in `work`'s order whatever the threads did.
+/// for, up to the compile's thread budget (rayon's pool); the results are
+/// in `work`'s order whatever the threads did.
 fn backend_all(
     isa: &dyn TargetIsa,
     mut work: Vec<(FuncId, Function)>,
@@ -357,9 +358,7 @@ fn backend_all(
     const PER_THREAD: usize = 8;
     let work: Vec<(FuncId, &mut Function)> =
         work.iter_mut().map(|(id, f)| (*id, f)).collect();
-    let threads = std::thread::available_parallelism()
-        .map_or(1, |n| n.get())
-        .min(work.len().div_ceil(PER_THREAD));
+    let threads = rayon::current_num_threads().min(work.len().div_ceil(PER_THREAD));
     if threads <= 1 {
         let mut ctx = Context::new();
         return work.into_iter().map(|(id, f)| backend(isa, &mut ctx, id, f)).collect();

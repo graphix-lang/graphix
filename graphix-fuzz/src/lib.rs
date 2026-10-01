@@ -2165,7 +2165,7 @@ async fn run_order_child(order: &WorkOrder, timeout: Duration) -> OrderResult {
         cpu: Duration::ZERO,
         clean: false,
     };
-    let mut cmd = tokio::process::Command::new(child_exe());
+    let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
     let out_path = sandbox.path().join("order-out");
     cmd.arg("gen-batch")
@@ -2256,7 +2256,7 @@ async fn run_batch_child(
     timeout: Duration,
 ) -> (bool, AHashMap<usize, BatchVerdict>, Duration) {
     use tokio::io::AsyncWriteExt;
-    let mut cmd = tokio::process::Command::new(child_exe());
+    let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
     let verdict_path = sandbox.path().join("verdicts");
     cmd.arg("check-batch")
@@ -2911,7 +2911,7 @@ async fn must_reject(
 /// verdict-file text.
 pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, String> {
     use std::process::Stdio;
-    let mut cmd = tokio::process::Command::new(child_exe());
+    let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
     let out_path = sandbox.path().join("tm-verdicts");
     cmd.arg("typemorph-one")
@@ -3861,6 +3861,22 @@ fn child_exe() -> std::path::PathBuf {
     return std::env::current_exe().expect("current_exe");
 }
 
+/// Compile threads per child. A campaign runs a child per slot, and a
+/// fuzzed program is too small for its compile to gain from more; every
+/// thread costs the child its own allocator arena and pools. Two keep
+/// the compile's tasks and link batches concurrent.
+const CHILD_COMPILE_THREADS: &str = "2";
+
+/// A child of this binary, its compile threads capped unless the
+/// caller set them.
+fn child_command() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(child_exe());
+    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+        cmd.env("RAYON_NUM_THREADS", CHILD_COMPILE_THREADS);
+    }
+    cmd
+}
+
 /// CPU (user + system) this process has burned so far: the soak
 /// scheduler's currency. A slot is not a core, and the CPU a slot draws
 /// differs per source, so CPU shares are allocated on measured burn.
@@ -4010,7 +4026,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
 /// keeps its context's JIT pages, so the child pays the leak and exits.
 async fn selfcheck_isolated(prog: &str, timeout: Duration) -> Vec<&'static str> {
     use tokio::io::AsyncWriteExt;
-    let mut cmd = tokio::process::Command::new(child_exe());
+    let mut cmd = child_command();
     let _sandbox = sandbox_cwd(&mut cmd);
     cmd.arg("selfcheck-one")
         .env("TOKIO_WORKER_THREADS", "2")
@@ -4162,7 +4178,7 @@ pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> 
         timeout: Duration,
     ) -> std::result::Result<(Option<i32>, String), String> {
         use tokio::io::AsyncWriteExt;
-        let mut cmd = tokio::process::Command::new(child_exe());
+        let mut cmd = child_command();
         let _sandbox = sandbox_cwd(&mut cmd);
         cmd.arg("detcheck-one")
             .env("TOKIO_WORKER_THREADS", "2")
@@ -4239,7 +4255,7 @@ pub async fn detcheck(
 /// evaluator kills only the child; the campaign records a crash finding
 /// and keeps running.
 async fn check_isolated(prog: &str, timeout: Duration) -> (PoolResult, Duration) {
-    let mut cmd = tokio::process::Command::new(child_exe());
+    let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
     let res = check_isolated_in(prog, timeout, &mut cmd).await;
     (res, child_cpu(sandbox.path()))
@@ -4330,7 +4346,7 @@ pub const CAMPAIGN_MINIMIZE_BUDGET: usize = 80;
 /// unminimized mutant instead.
 async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
     use tokio::io::AsyncWriteExt;
-    let mut cmd = tokio::process::Command::new(child_exe());
+    let mut cmd = child_command();
     let sandbox = sandbox_cwd(&mut cmd);
     // inside the sandbox, so the guard's drop cleans it up
     let out_path = sandbox.path().join("min.gx");
