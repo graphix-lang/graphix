@@ -13,7 +13,6 @@ publish = false
 [dependencies]
 bytes = { workspace = true }
 libc = "0.2"
-mimalloc = { workspace = true }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
 arcstr = { workspace = true }

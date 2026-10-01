@@ -90,8 +90,11 @@ a triviality floor) join a bounded FIFO ring of mutation seeds sampled
 seeds, bounded by the mix and eviction. `FuzzStats::novel` is the
 exploration metric. Ring trajectories are not seed-reproducible;
 findings embed their program text, and the seed-replay gates never use
-the ring. mimalloc is the fuzz binary's global allocator (~12% of
-subject CPU was glibc malloc cold-start).
+the ring. The fuzz binary allocates with the system allocator, as the
+shell does: a child's memory, not its CPU, bounds a box's slots, and
+mimalloc held twice the memory (a 32-program batch: 330 MB on glibc,
+680-840 MB on mimalloc, ~5% less CPU). A child compiles on two threads
+(`RAYON_NUM_THREADS`, set on every child unless the caller set it).
 
 ## 3. The oracle
 

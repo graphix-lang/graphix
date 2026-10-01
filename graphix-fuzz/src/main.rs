@@ -15,11 +15,6 @@ use std::{
     time::Duration,
 };
 
-// Harness-only: subjects are re-execs of this binary and allocate like
-// the compiler they drive.
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 /// Default soak mix, as CPU shares `fuzz:generate:reactive:typemorph`,
 /// the first three weighted by measured findings per CPU-second.
 const DEFAULT_MIX: &str = "50:25:25:10";

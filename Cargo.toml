@@ -15,7 +15,6 @@ opt-level = "s"
 debug = false
 
 [workspace.dependencies]
-mimalloc = "0.1"
 syn = "2"
 quote = "1"
 proc-macro2 = "1"
