@@ -1000,8 +1000,23 @@ impl FnType {
         let probe = BitFlags::empty();
         for (sig_tv, sig_tc) in self.constraint_view().iter() {
             let mut found = false;
-            if let Ok(i) = impl_tvs.binary_search_by(|(n, _)| n.cmp(&sig_tv.name)) {
-                for c in impl_tvs[i].1.cell_constraints().iter() {
+            // the impl variable the signature's was matched with, else the
+            // same-named one: either form of a bound (`'c: C`, `c: C`)
+            // names its variable its own way
+            let sig_addr = sig_tv.cell_addr();
+            let matched = impl_tvs
+                .iter()
+                .find(|(_, tv)| {
+                    matches!(tvar_map.get(&tv.cell_addr()), Some(Type::TVar(s)) if s.cell_addr() == sig_addr)
+                })
+                .or_else(|| {
+                    impl_tvs
+                        .binary_search_by(|(n, _)| n.cmp(&sig_tv.name))
+                        .ok()
+                        .map(|i| &impl_tvs[i])
+                });
+            if let Some((_, impl_tv)) = matched {
+                for c in impl_tv.cell_constraints().iter() {
                     if c == sig_tc
                         || (c.contains_with_flags(probe, env, sig_tc)?
                             && sig_tc.contains_with_flags(probe, env, c)?)

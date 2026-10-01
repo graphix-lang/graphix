@@ -1579,6 +1579,41 @@ impl Type {
         }
     }
 
+    /// Whether `tc` bounds by a constructor trait (`Collection`), whose
+    /// implementations are constructors (`Array<'_>`).
+    pub(crate) fn is_ctor_trait_bound(env: &Env, tc: &Type) -> bool {
+        match tc {
+            Type::Ref(tr) => env
+                .trait_of_ref(tr)
+                .and_then(|tid| env.trait_def(tid))
+                .is_some_and(|d| d.hole),
+            _ => false,
+        }
+    }
+
+    /// This type with each occurrence of a quantifier `ctors` names
+    /// applied to that quantifier's element: a variable bounded by a
+    /// constructor trait (`'c: Collection`) stands for a constructor
+    /// applied (`'c<'e>`), as a trait-typed parameter does
+    /// ([`Self::trait_param`]).
+    pub(crate) fn apply_ctor_quantifiers(&self, ctors: &[(ArcStr, Type)]) -> Type {
+        self.apply_ctor_quantifiers_int(ctors).unwrap_or_else(|| self.clone())
+    }
+
+    fn apply_ctor_quantifiers_int(&self, ctors: &[(ArcStr, Type)]) -> Option<Type> {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                ctors.iter().find(|(name, _)| *name == tv.name).map(|(_, elem)| {
+                    Type::App(Arc::new(self.clone()), Arc::new(elem.clone()))
+                })
+            }
+            Type::App(c, a) => a
+                .apply_ctor_quantifiers_int(ctors)
+                .map(|a| Type::App(c.clone(), Arc::new(a))),
+            t => t.cow_children(&mut |c| c.apply_ctor_quantifiers_int(ctors)),
+        })
+    }
+
     /// This type with its hole replaced by `arg`; `None` if it has no
     /// hole (it is not a constructor).
     pub fn fill_hole(&self, arg: &Type) -> Option<Type> {
@@ -2020,10 +2055,11 @@ impl Type {
                 changed |= !rtype.ptr_eq_shallow(&ft.rtype);
                 let throws = ft.throws.rewrite_trait_args_int(env)?;
                 changed |= !throws.ptr_eq_shallow(&ft.throws);
-                if !changed {
+                let ctors = ctor_quantifiers(ft, env);
+                if !changed && ctors.is_empty() {
                     return Ok(self.clone());
                 }
-                Ok(Type::Fn(Arc::new(FnType {
+                let ft = FnType {
                     args: Arc::from_iter(args.drain(..)),
                     vargs,
                     rtype,
@@ -2031,7 +2067,13 @@ impl Type {
                     explicit_throws: ft.explicit_throws,
                     quantifiers: Arc::from_iter(quantifiers.drain(..)),
                     lambda_ids: ft.lambda_ids.clone(),
-                })))
+                };
+                if ctors.is_empty() {
+                    return Ok(Type::Fn(Arc::new(ft)));
+                }
+                let ft =
+                    ft.cow_walk(|t| t.apply_ctor_quantifiers_int(&ctors)).unwrap_or(ft);
+                Ok(Type::Fn(Arc::new(ft)))
             }
             t => {
                 let mut err = None;
@@ -2170,3 +2212,28 @@ macro_rules! uuid_id_codec {
 
 uuid_id_codec!(AbstractId);
 uuid_id_codec!(TraitId);
+
+/// The declared quantifiers of `ft` bounded by constructor traits alone,
+/// each with an element of its own ([`Type::apply_ctor_quantifiers`]).
+fn ctor_quantifiers(ft: &FnType, env: &Env) -> LPooled<Vec<(ArcStr, Type)>> {
+    let mut out: LPooled<Vec<(ArcStr, Type)>> = LPooled::take();
+    if ft.quantifiers.is_empty() {
+        return out;
+    }
+    let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    ft.collect_tvars(&mut named);
+    for q in ft.quantifiers.iter() {
+        let Some(tv) = named.get(q) else { continue };
+        let cons = tv.cell_constraints();
+        if !tv.is_bound()
+            && !cons.is_empty()
+            && cons.iter().all(|c| Type::is_ctor_trait_bound(env, c))
+        {
+            let elem = Type::TVar(TVar::empty_named(
+                format_compact!("{q}#elem").as_str().into(),
+            ));
+            out.push((q.clone(), elem));
+        }
+    }
+    out
+}

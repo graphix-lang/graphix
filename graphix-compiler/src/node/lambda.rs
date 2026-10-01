@@ -1037,18 +1037,44 @@ impl Lambda {
         let id = LambdaId::new();
         let level = Level::definition(id);
         let _level = AtLevel::enter(level);
+        // a quantifier bounded by constructor traits alone stands for a
+        // constructor applied: each occurrence is `'c<'c#elem>`
+        let mut ctors: LPooled<Vec<(ArcStr, Type)>> = LPooled::take();
+        for (tv, _) in l.constraints.iter() {
+            let bounds = || l.constraints.iter().filter(|(t, _)| t.name == tv.name);
+            if ctors.iter().any(|(n, _)| *n == tv.name)
+                || !bounds().all(|(_, tc)| {
+                    Type::is_ctor_trait_bound(&ctx.env, &tc.scope_refs(&scope.lexical))
+                })
+            {
+                continue;
+            }
+            let elem =
+                TVar::empty_named(format_compact!("{}#elem", tv.name).as_str().into());
+            ctors.push((tv.name.clone(), Type::TVar(elem)));
+        }
         let vargs = match l.vargs.as_ref() {
             None => None,
             Some(None) => Some(None),
-            Some(Some(typ)) => Some(Some(typ.scope_refs(&scope.lexical))),
+            Some(Some(typ)) => {
+                Some(Some(typ.scope_refs(&scope.lexical).apply_ctor_quantifiers(&ctors)))
+            }
         };
         let rtype = match l.rtype.as_ref() {
             None => None,
-            Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
+            Some(t) => Some(
+                t.scope_refs(&scope.lexical)
+                    .rewrite_trait_args(&ctx.env)?
+                    .apply_ctor_quantifiers(&ctors),
+            ),
         };
         let throws = match l.throws.as_ref() {
             None => None,
-            Some(t) => Some(t.scope_refs(&scope.lexical).rewrite_trait_args(&ctx.env)?),
+            Some(t) => Some(
+                t.scope_refs(&scope.lexical)
+                    .rewrite_trait_args(&ctx.env)?
+                    .apply_ctor_quantifiers(&ctors),
+            ),
         };
         // a trait as a parameter's type is a fresh bounded quantifier
         // (`|s: Read|` ≡ `'s: Read |s: 's|`), joined to the declared ones
@@ -1070,7 +1096,10 @@ impl Lambda {
                             trait_quantifiers.push((tv.clone(), typ.clone()));
                             Some(Type::trait_param(&ctx.env, tv, tr))
                         }
-                        _ => Some(typ.rewrite_trait_args(&ctx.env)?),
+                        _ => Some(
+                            typ.rewrite_trait_args(&ctx.env)?
+                                .apply_ctor_quantifiers(&ctors),
+                        ),
                     }
                 }
             };

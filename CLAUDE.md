@@ -634,7 +634,11 @@ not a gap count.
 - **Traits v1** (`design/traits.md`): static dispatch on the self
   argument's type; a union self lowers to a select; impls are global
   facts; core `Eq`/`Ord`/`Display` ride the value (map keys, sort,
-  operators, printers, both engines). The io traits `Read`/`Lines`/
+  operators, printers, both engines). A quantifier bounded by
+  constructor traits alone (`'c: Collection`) is a constructor applied
+  (`'c<'c#elem>`), as a trait-typed parameter (`c: Collection`) is, and
+  an interface's bounds pair with the implementation's through the
+  matched types, whichever form each side writes. The io traits `Read`/`Lines`/
   `Write`/`Close`/`Seek`/`Socket` over five stream types.
 - **Module system** (`design/module_system.md`): Rust-2018-style
   `use`; every name arrives by declaration, `use`, or prelude;

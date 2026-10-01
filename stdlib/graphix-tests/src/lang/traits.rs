@@ -343,6 +343,80 @@ run!(
     "#
 );
 
+// A quantifier bounded by a constructor trait is a constructor applied,
+// as a trait-typed parameter is, in either form and on either side of
+// an interface.
+const CTOR_QUANTIFIER: &str = r#"
+{
+  let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1);
+  let same = 'c: Collection |c: 'c| -> 'c c;
+  (csize(["a", "b"]), csize(same([<1, 2, 3>])))
+}
+"#;
+run!(ctor_quantifier, CTOR_QUANTIFIER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3)])
+});
+
+run!(
+    ctor_quantifier_in_an_interface,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3)]),
+    "/test.gx" => r#"
+        mod m;
+        let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
+    "#,
+    "/test/m.gxi" => r#"
+        val csize: fn<'c: Collection>(c: 'c) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1)
+    "#
+);
+
+run!(
+    ctor_quantifier_sig_over_a_param,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3)]),
+    "/test.gx" => r#"
+        mod m;
+        let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
+    "#,
+    "/test/m.gxi" => r#"
+        val csize: fn<'c: Collection>(c: 'c) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        let csize = |c: Collection| Collection::fold(c, 0, |acc, x| acc + 1)
+    "#
+);
+
+run!(
+    ctor_param_sig_over_a_quantifier,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a[..] == [Value::I64(2), Value::I64(3)]),
+    "/test.gx" => r#"
+        mod m;
+        let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
+    "#,
+    "/test/m.gxi" => r#"
+        val csize: fn(c: Collection) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, |acc, x| acc + 1)
+    "#
+);
+
+run!(
+    ctor_quantifier_wrong_bound_refused,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("missing constraint")),
+    "/test.gx" => r#"
+        mod m;
+        let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
+    "#,
+    "/test/m.gxi" => r#"
+        val csize: fn<'c: Collection>(c: 'c) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        let csize = 'c: Number |c: 'c| 0
+    "#
+    ; graphix_package_core::testing::FuseExpect::None);
+
 // An abstract type's implementation may live in the type's package.
 run!(
     trait_abstract_impl_in_type_package,
