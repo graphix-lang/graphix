@@ -879,6 +879,30 @@ run!(cast_struct_fields, CAST_STRUCT_FIELDS, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == r#"[["x", i64:1], ["y", i64:2]]"#
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A reference is not a number: a cast whose source can hold one is
+// refused where the check sees it, and fails where only an instance
+// does.
+const CAST_OF_A_REFERENCE: &str = r#"{ let v = 0; cast<f32>(&v) }"#;
+run!(cast_of_a_reference, CAST_OF_A_REFERENCE, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const CAST_OF_A_NESTED_REFERENCE: &str = r#"{ let v = 0; cast<Array<i64>>([&v]) }"#;
+run!(cast_of_a_nested_reference, CAST_OF_A_NESTED_REFERENCE, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const CAST_OF_A_REFERENCE_IN_AN_INSTANCE: &str = r#"
+{
+  let f = |x| cast<i64>(x);
+  let v = 0;
+  f(&v)
+}
+"#;
+run!(cast_of_a_reference_in_an_instance, CAST_OF_A_REFERENCE_IN_AN_INSTANCE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("can't cast a reference"))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // `never<T>` writes a type name like an annotation does.
 run!(
     never_type_names_are_defined,

@@ -524,6 +524,10 @@ before fusion in both modes. A typedef must be contractive: every
 self-reference sits under a constructor (`type T = [i64, T]` is refused
 at `Env::deftype`), which is what makes the coinductive ref-pair memos
 sound.
+A reference is not a number: a cast whose source can hold one is
+refused (`Type::holds_ref`), and where only an instance knows the
+source, the cast yields its `InvalidCast` error; a reference widened to
+`Any` is the program's own business.
 Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`.
 
 **Two-phase typecheck knot.** While an instance body typechecks, its

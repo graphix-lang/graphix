@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CAST_ERR, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, PrintFlag, Refs,
-    Restore, Rt, Scope, Tag, TagValue, Update, UserEvent, env,
+    BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
+    PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update, UserEvent, env, errf,
     expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody},
     format_with_flags,
     fusion::{
@@ -180,6 +180,7 @@ impl WakeBit {
 
 thread_local! {
     static DESELECTING_ARM: Cell<bool> = const { Cell::new(false) };
+    static RUNTIME_BIND: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f` inside (`true`) or outside (`false`) the sleep of an arm a
@@ -828,7 +829,10 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
 ) -> Result<T> {
     ctx.pending_settles.push(Vec::new());
     let names = ctx.pending_names.len();
-    let res = f(ctx);
+    let res = {
+        let _restore = Restore::replace(&RUNTIME_BIND, true);
+        f(ctx)
+    };
     // a runtime bind elaborates: what it defers is no check's
     ctx.pending_names.truncate(names);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
@@ -867,7 +871,9 @@ fn typecheck1_settled<R: Rt, E: UserEvent>(
 /// settles) in [`evaluation_order`], each in a compile task forked from
 /// the body's state before any runs: no statement's elaboration reads
 /// another's. The tasks join in order; the first error in order is the
-/// body's.
+/// body's. A bind at run time elaborates them in order on its own
+/// thread: an activation's body is small, and waking the pool for it
+/// costs more than its work.
 pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     nodes: &mut [Node<R, E>],
@@ -875,7 +881,7 @@ pub(crate) fn typecheck1_statements<R: Rt, E: UserEvent>(
     module: bool,
 ) -> Result<()> {
     let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
-    if order.len() < 2 {
+    if order.len() < 2 || RUNTIME_BIND.get() {
         return typecheck_in_order(ctx, nodes, catches, module, typecheck1_settled);
     }
     let mut slots: LPooled<Vec<Option<&mut Node<R, E>>>> =
@@ -1512,6 +1518,10 @@ pub struct TypeCast<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub target: Type,
     pub n: Node<R, E>,
+    /// The source can hold a reference: every value casts to the cast
+    /// error. Known only once the source's type is, so the check refuses
+    /// what it can see and an instance of a generic body fails here.
+    src_ref: bool,
     resident: TagValue,
 }
 
@@ -1524,12 +1534,14 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
         let typ = Type::decode(buf)?;
         let target = Type::decode(buf)?;
         let n = decode_node(ctx, buf)?;
+        let src_ref = n.typ().holds_ref(&ctx.env);
         Ok(Node::new(Self {
             slept: WakeBit::default(),
             spec,
             typ,
             target,
             n,
+            src_ref,
             resident: TagValue::phantom(),
         }))
     }
@@ -1553,6 +1565,7 @@ impl<R: Rt, E: UserEvent> TypeCast<R, E> {
             typ,
             target,
             n,
+            src_ref: false,
             resident: TagValue::phantom(),
         }))
     }
@@ -1572,7 +1585,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         let tag = tv.tag();
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = tv.value_cloned();
-        let v = self.target.cast_from(&ctx.env, self.n.typ(), v);
+        let v = if self.src_ref {
+            errf!(CAST_ERR_TAG, "can't cast a reference")
+        } else {
+            self.target.cast_from(&ctx.env, self.n.typ(), v)
+        };
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -1602,7 +1619,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))?;
+        if self.n.typ().holds_ref(&ctx.env) {
+            bailat!(self.spec, "can't cast a reference")
+        }
+        Ok(())
     }
 
     fn typecheck0_instance(
@@ -1615,6 +1636,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
+        self.src_ref = self.n.typ().holds_ref(&ctx.env);
         Ok(())
     }
 
@@ -1623,6 +1645,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        if self.src_ref {
+            bail!("a cast of a reference does not emit CLIF")
+        }
         emit_cast_node(cx, &self.n, &self.target, self.spec.id)
     }
 }

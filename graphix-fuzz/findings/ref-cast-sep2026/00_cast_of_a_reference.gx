@@ -1,0 +1,5 @@
+// expect: reject
+// A reference is not a number (sep30b katana divergence_000001: the
+// cast read the bind id, which an image relocates, so cold and warm
+// disagreed).
+{ let v = 0; cast<f32>(&v) }

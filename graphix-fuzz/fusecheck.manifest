@@ -304,6 +304,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 0	recursive-activation-blocks-aug2026/03_per_depth_builtin_state.gx
 0	recursive-activation-blocks-aug2026/04_sibling_activation_trees.gx
 2	recursive-activation-blocks-aug2026/05_forward_edge_callee_block.gx
+0	ref-cast-sep2026/00_cast_of_a_reference.gx
 0	refparam-occurs-aug2026/00_flatmap_typedef_wedge.gx
 31	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 4	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx

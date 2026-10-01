@@ -133,6 +133,32 @@ impl Type {
         self.check_cast_int(env, &mut LPooled::take())
     }
 
+    /// Whether a value of this type can hold a reference, outside a
+    /// function or an abstract type, which a cast never takes apart. A
+    /// cast refuses such a source: a reference is not a number.
+    pub(crate) fn holds_ref(&self, env: &Env) -> bool {
+        self.holds_ref_int(env, &mut LPooled::take())
+    }
+
+    fn holds_ref_int(&self, env: &Env, seen: &mut AHashSet<usize>) -> bool {
+        ensure_sufficient(|| match self {
+            Type::ByRef(_) => true,
+            Type::Fn(_) | Type::Abstract { .. } => false,
+            Type::TVar(_) | Type::App(..) => {
+                self.deref_cloned().is_some_and(|t| t.holds_ref_int(env, seen))
+            }
+            Type::Ref(tr) => match tr.def_key() {
+                Some(k) if !seen.insert(k) => false,
+                _ => self.lookup_ref(env).is_ok_and(|t| t.holds_ref_int(env, seen)),
+            },
+            t => {
+                let mut r = false;
+                t.for_each_child(&mut |c| r = r || c.holds_ref_int(env, seen));
+                r
+            }
+        })
+    }
+
     fn cast_int(
         &self,
         env: &Env,

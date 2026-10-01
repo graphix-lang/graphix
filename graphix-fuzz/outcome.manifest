@@ -304,6 +304,7 @@ trace	recursive-activation-blocks-aug2026/02_tail_position_ride.gx
 trace	recursive-activation-blocks-aug2026/03_per_depth_builtin_state.gx
 trace	recursive-activation-blocks-aug2026/04_sibling_activation_trees.gx
 trace	recursive-activation-blocks-aug2026/05_forward_edge_callee_block.gx
+reject	ref-cast-sep2026/00_cast_of_a_reference.gx
 reject	refparam-occurs-aug2026/00_flatmap_typedef_wedge.gx
 trace	refwrite-guard-flip-aug2026/00_shadowed_map_guard_select.gx
 trace	refwrite-guard-flip-aug2026/01_dynmod_xmod_guard_flip.gx
