@@ -442,6 +442,7 @@ trace	standing-bottom-refire-sep2026/09_value_select_bottom.gx
 trace	strict-bottom-collections-aug2026/00_loop_op_poison.gx
 trace	strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx
 trace	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
+trace	table-typedef-scope-oct2026/00_body_typedef_alias.gx
 trace	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
 trace	tail-arg-bottom-jul2026/01_bottomed_arg_depth_abort.gx
 trace	tail-arg-bottom-jul2026/02_alternating_bottom_ride.gx

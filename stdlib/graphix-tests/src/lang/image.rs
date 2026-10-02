@@ -18,7 +18,7 @@ use graphix_package_core::testing::{
     TestCtx, init_lsp_with_registration, init_session_with_setup, init_with_registration,
     init_with_session,
 };
-use graphix_rt::{GXEvent, RegistrationImage};
+use graphix_rt::{CompRes, GXEvent, NoExt, RegistrationImage};
 use netidx::publisher::Value;
 use netidx_core::pack::Pack;
 use poolshark::global::GPooled;
@@ -308,10 +308,11 @@ async fn program_image_restores_kernels() -> Result<()> {
     Ok(())
 }
 
-/// A runtime restored from an image holding a program runs it to the
-/// same values, in the same order, as the runtime that compiled it.
-#[tokio::test]
-async fn program_image_restores() -> Result<()> {
+/// `program` compiled cold, writing its image, and restored from it:
+/// each runtime's program and the root values it produced, in order.
+async fn cold_and_warm(
+    program: &str,
+) -> Result<((CompRes<NoExt>, Vec<Value>), (CompRes<NoExt>, Vec<Value>))> {
     let (tx, mut cold_rx) = mpsc::channel(10);
     let (reg_tx, _reg_rx) = oneshot::channel();
     let (prog_tx, prog_rx) = oneshot::channel();
@@ -320,19 +321,13 @@ async fn program_image_restores() -> Result<()> {
         TEST_REGISTER,
         CFlag::FusionDisabled.into(),
         RegistrationImage::Save(reg_tx),
-        Some(Source::Internal(PROGRAM.into())),
+        Some(Source::Internal(program.into())),
         Some(prog_tx),
     )
     .await?;
     let image = prog_rx.await??;
     let cold_program = cold.rt.program().await?.expect("the program compiled");
     let cold_values = first_values(&mut cold_rx).await;
-    let last = cold_values.last().expect("the program produced its tuple");
-    assert_eq!(
-        format!("{last}"),
-        "[i64:22, i64:5, i64:20, \"pt 3 4 sum 20\", i64:9, [i64:2, i64:3], i64:10, i64:2, \
-         i64:8, \"two\", i64:-1, \"pt 3 4 sum 20\", i64:10, i64:11, \"i64:10\"]"
-    );
     let (tx, mut warm_rx) = mpsc::channel(10);
     let warm = init_with_session(
         tx,
@@ -344,12 +339,48 @@ async fn program_image_restores() -> Result<()> {
     )
     .await?;
     let warm_program = warm.rt.program().await?.expect("the program restored");
-    assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
-    assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));
     let warm_values = first_values(&mut warm_rx).await;
-    assert_eq!(cold_values, warm_values);
     cold.shutdown().await;
     warm.shutdown().await;
+    Ok(((cold_program, cold_values), (warm_program, warm_values)))
+}
+
+/// A runtime restored from an image holding a program runs it to the
+/// same values, in the same order, as the runtime that compiled it.
+#[tokio::test]
+async fn program_image_restores() -> Result<()> {
+    let ((cold_program, cold_values), (warm_program, warm_values)) =
+        cold_and_warm(PROGRAM).await?;
+    let last = cold_values.last().expect("the program produced its tuple");
+    assert_eq!(
+        format!("{last}"),
+        "[i64:22, i64:5, i64:20, \"pt 3 4 sum 20\", i64:9, [i64:2, i64:3], i64:10, i64:2, \
+         i64:8, \"two\", i64:-1, \"pt 3 4 sum 20\", i64:10, i64:11, \"i64:10\"]"
+    );
+    assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
+    assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));
+    assert_eq!(cold_values, warm_values);
+    Ok(())
+}
+
+/// A callback whose body declares typedefs, one naming another, bound at
+/// run time per slot: its instances take its check's types, whose
+/// references to those typedefs the image carries resolved (a block's
+/// scope is named by ids the image relocates).
+#[tokio::test]
+async fn program_image_restores_body_typedefs() -> Result<()> {
+    const BODY_TYPEDEFS: &str = r#"
+array::fold(array::init(20, |i| i), 0, |a, x| {
+    type Box<'a> = { v: 'a };
+    type Both = [Array<Box<i64>>, Array<Box<string>>];
+    type BS = Array<Box<string>>;
+    let b: Both = [{ v: x }];
+    a + select b { BS as _ => 0, Array<Box<i64>> as _ => 1 }
+})
+"#;
+    let ((_, cold_values), (_, warm_values)) = cold_and_warm(BODY_TYPEDEFS).await?;
+    assert_eq!(cold_values.last(), Some(&Value::I64(20)), "{cold_values:?}");
+    assert_eq!(cold_values, warm_values);
     Ok(())
 }
 

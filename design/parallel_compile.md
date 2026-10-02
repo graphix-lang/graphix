@@ -445,7 +445,11 @@ through the same map (`Type::instantiate_with`: a bound cell is
 followed, an open one a closed gate owns is copied once, any other is
 shared). The table owns the typedefs its rows name (`DefTable::
 typedefs`): a typedef its body declares is in the env only while the
-body compiles, and a row outlives the check. Each node kind takes its types from its row and does
+body compiles, and a row outlives the check. Every type reference a row
+holds is resolved in the check's environment when the table is recorded
+(`Type::seed_refs`), so no instance looks a name up by a block scope
+only the check had: an image relocates the ids a block's scope is named
+by, never the names. Each node kind takes its types from its row and does
 only the state part of its check:
 - a call site installs its signature, placeholders for omitted
   defaults, joins its raise, and pre-unifies each argument with its

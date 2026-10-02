@@ -1722,6 +1722,12 @@ impl Type {
     }
 
     pub fn seed_refs(&self, env: &Env) -> bool {
+        self.seed_refs_seen(env, &mut LPooled::take())
+    }
+
+    /// [`Self::seed_refs`] over types that share `seen`, the cells and
+    /// nodes already walked.
+    pub(crate) fn seed_refs_seen(&self, env: &Env, seen: &mut IntSet<usize>) -> bool {
         fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>) -> bool {
             ensure_sufficient(|| {
                 if let Some(node) = node_addr(t)
@@ -1764,7 +1770,7 @@ impl Type {
                 all
             })
         }
-        go(self, env, &mut LPooled::take())
+        go(self, env, seen)
     }
 
     /// Whether this type reaches the definition `name` in `scope` again

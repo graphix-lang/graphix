@@ -115,7 +115,11 @@ impl DefTable {
         Ok(())
     }
 
-    fn record<R: Rt, E: UserEvent>(body: &Node<R, E>) -> Self {
+    /// The check of `body`, whose typedefs are in `env`: every type
+    /// reference a row holds is resolved there now, so no instance looks
+    /// a name up by a scope only this check had (an image relocates the
+    /// ids a block's scope is named by, never the names).
+    fn record<R: Rt, E: UserEvent>(body: &Node<R, E>, env: &Env) -> Self {
         let mut table = Self::default();
         let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
         fusion::for_each_node(body, &mut |n| {
@@ -142,6 +146,15 @@ impl DefTable {
             table.types.remove(&id);
             table.ftypes.remove(&id);
             table.lambdas.remove(&id);
+        }
+        let mut seen: LPooled<IntSet<usize>> = LPooled::take();
+        for t in table.types.values() {
+            t.seed_refs_seen(env, &mut seen);
+        }
+        for ft in table.ftypes.values() {
+            ft.for_each_part(&mut |t, _| {
+                t.seed_refs_seen(env, &mut seen);
+            });
         }
         table.own_typedefs();
         table
@@ -1729,7 +1742,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             if res.is_ok()
                 && let ApplyView::Lambda(g) = f.view()
             {
-                let table = SArc::new(DefTable::record(&g.body));
+                let table = SArc::new(DefTable::record(&g.body, &g.env));
                 def.table.set(Tables { table, outer: None });
             }
             // a builtin's check `Apply` is retained for `CallSite::typecheck1`;

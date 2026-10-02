@@ -1,0 +1,7 @@
+// A definition's check table carried a reference to a typedef its body
+// declares (Box, inside BS) with its resolution cell empty, so an
+// instance looked the name up by the check's block scope. An image
+// relocates the ids that scope is named by, so a restored slot's bind
+// found nothing and the warm run produced no value. The check's rows are
+// resolved when the table is recorded. Found by oct02a fuzz (katana).
+{ let src = array::init(200, |i| i); array::fold(src, 0, |a, x| { type Box<'a> = { v: 'a }; type Both = [Array<Box<i64>>, Array<Box<string>>]; type BS = Array<Box<string>>; let x: Both = [{ v: 1 }]; select x { BS as s => 0, Array<Box<i64>> as b => 1 } }) }
