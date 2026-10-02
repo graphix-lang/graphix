@@ -41,16 +41,6 @@ spirit, call me out.
 Recurring idioms and configurations in my Rust work that are worth knowing
 and following.
 
-## Build Configuration
-
-Rust creates a huge and unbounded volume of build artifacts, often 10s of
-gigabyes for a single build. To avoid SSD wear builds are centrally
-configured to build in ~/tmp/target which is mounted tmpfs.
-
-Please do not build anywhere else unless I explicitly tell you to. If it fills
-up, just run cargo clean. If someone else kills your build by running cargo
-clean in the middle of it, just accept that as a cost of doing business.
-
 ## Library Preferences
 
 - The anyhow crate is the standard for rust error handling, don't use anything
@@ -251,7 +241,7 @@ allocation can be avoided, `smallvec` where it cannot.
 
 ## Building and testing
 
-Builds go to `~/tmp/target` (tmpfs; centrally configured — never build
+Builds go to `~/tmp/target` (centrally configured — never build
 elsewhere). Dev profile is `opt-level = "s"`, no debug info; release is
 `opt-level = 3`, LTO, one codegen unit, stripped; `quick` is release
 with thin LTO and 16 codegen units: a third of the compile time, nearly

@@ -57,7 +57,7 @@ allocation can be avoided, `smallvec` where it cannot.
 
 ## Building and testing
 
-Builds go to `~/tmp/target` (tmpfs; centrally configured — never build
+Builds go to `~/tmp/target` (centrally configured — never build
 elsewhere). Dev profile is `opt-level = "s"`, no debug info; release is
 `opt-level = 3`, LTO, one codegen unit, stripped; `quick` is release
 with thin LTO and 16 codegen units: a third of the compile time, nearly
