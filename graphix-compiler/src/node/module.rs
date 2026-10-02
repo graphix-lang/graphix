@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, PendingImport, Refs, Rt, Scope, Tag,
-    TagValue, Update, UserEvent,
+    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, PendingImport, Refs, Rt, Saved,
+    Scope, Tag, TagValue, Update, UserEvent,
     compiler::compile,
     env::{self, Env, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -782,7 +782,8 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     /// program statement's checks: a deferred import must name
     /// something, and analysis checks the definition assertions it
     /// reaches. A loaded body is never fused, so no fusion pass
-    /// reconciles its registry attributes.
+    /// reconciles its registry attributes. A failure leaves nothing it
+    /// registered.
     fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
         let exprs =
@@ -790,6 +791,12 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical);
+        let saved = Saved::take(ctx);
+        let env = self.env.clone();
+        let sig_env = match &self.body {
+            Body::Static => None,
+            Body::Dynamic { sig_env, .. } => Some(sig_env.clone()),
+        };
         let pending = mem::take(&mut ctx.pending_imports);
         let census = ctx.attr_census.lock().len();
         let res = self.compile_inner(ctx, &exprs).and_then(|()| {
@@ -798,6 +805,19 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         });
         ctx.attr_census.lock().truncate(census);
         ctx.pending_imports = pending;
+        if res.is_err() {
+            // before `drop_deferred`: a reference the body took under the
+            // module's statement cancels while it is still pending
+            self.clear_compiled(ctx);
+            ctx.drop_deferred();
+            self.env = env;
+            if let (Body::Dynamic { sig_env, .. }, Some(saved_sig)) =
+                (&mut self.body, sig_env)
+            {
+                *sig_env = saved_sig;
+            }
+            saved.restore(ctx);
+        }
         res
     }
 

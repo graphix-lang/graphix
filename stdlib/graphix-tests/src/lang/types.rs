@@ -1050,6 +1050,33 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
+// A verdict read from an application still being decided is that
+// application's assumption: A refuses, so B, which holds A, refuses too,
+// though B was first reached inside A.
+run!(
+    cast_to_a_reference_through_a_cycle,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference")),
+    "/test.gx" => r#"
+        type Ph<'x> = [null, Array<Ph<'x>>];
+        type A = (B, &i64);
+        type B = Array<A>;
+        let result = cast<(Ph<A>, B)>((null, [([], u64:5)]))
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    cast_of_a_reference_through_a_cycle,
+    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference")),
+    "/test.gx" => r#"
+        type Ph<'x> = [null, Array<Ph<'x>>];
+        type A = (B, &i64);
+        type B = Array<A>;
+        let v = 5;
+        let s: (Ph<A>, B) = (null, [([], &v)]);
+        let result = cast<(null, Array<(Array<i64>, u64)>)>(s)
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
 // `never<T>` writes a type name like an annotation does.
 run!(
     never_type_names_are_defined,

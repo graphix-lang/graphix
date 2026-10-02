@@ -206,6 +206,36 @@ async fn failed_compiles_leave_no_definitions() -> Result<()> {
     Ok(())
 }
 
+/// A dynamic module's source that fails to compile leaves nothing it
+/// registered, as a statement does.
+#[tokio::test(flavor = "current_thread")]
+async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(64);
+    let ctx = init(tx).await?;
+    let before = ctx.rt.env_stats().await?;
+    for _ in 0..5 {
+        let (eid, res) = compile_one(
+            &ctx,
+            r#"{
+                let status = mod m dynamic {
+                    sandbox whitelist [core];
+                    sig { val h: i64 };
+                    source "let a = 1; let f = |x| x + a; let g = |y| y; let h = missing"
+                };
+                select status { error as e => e, null as _ => error("compiled") }
+            }"#,
+        )
+        .await?;
+        await_update(&mut rx, eid, |v| matches!(v, Value::Error(_))).await?;
+        drop(res);
+    }
+    let after = ctx.rt.env_stats().await?;
+    ctx.shutdown().await;
+    assert_eq!(before.lambda_defs_len, after.lambda_defs_len);
+    assert_eq!(before.ref_var_total, after.ref_var_total);
+    Ok(())
+}
+
 /// A builtin definition restored from an image rebuilds its check under
 /// the definition gate, which takes its catch binding with it.
 #[tokio::test(flavor = "current_thread")]

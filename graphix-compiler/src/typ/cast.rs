@@ -15,7 +15,7 @@ use immutable_chunkmap::map::Map;
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::fmt;
+use std::{fmt, mem};
 use triomphe::Arc;
 
 #[derive(Debug, Clone, Copy)]
@@ -102,30 +102,58 @@ fn ref_key(tr: &TypeRef) -> Option<RefKey> {
 /// definition recurses (`type N<'a> = [null, ('a, N<Array<'a>>)]`).
 type ShapeKey = (usize, SmallVec<[bool; 4]>);
 
-/// What a walk knows of one application: it is being decided (a cycle
-/// through it holds coinductively), or what was decided.
+/// What a walk knows of one application: it is being decided, at its
+/// depth in the walk, or what was decided.
 enum Verdict<T> {
-    Deciding,
+    Deciding(usize),
     Decided(T),
 }
 
-type Verdicts<T> = AHashMap<ShapeKey, Verdict<T>>;
+struct Verdicts<T> {
+    known: LPooled<AHashMap<ShapeKey, Verdict<T>>>,
+    /// The number of applications being decided.
+    depth: usize,
+    /// The shallowest application being decided that the decision in
+    /// progress read.
+    read: usize,
+}
 
-/// `decide` the application `k` once per walk: a repeat while it is being
-/// decided answers `cycle`, any later one the decision.
-fn decide_once<T: Clone>(
+impl<T> Verdicts<T> {
+    fn new() -> Self {
+        Self { known: LPooled::take(), depth: 0, read: usize::MAX }
+    }
+}
+
+/// `decide` the application `k` once per walk. A repeat while it is being
+/// decided answers `cycle`, an assumption that holds coinductively for
+/// `k` itself; a decision that read the assumption of an application
+/// further out answers `cycle` only provisionally, since that application
+/// may yet fail it, so it is not kept.
+fn decide_once<T: Clone + PartialEq>(
     seen: &mut Verdicts<T>,
     k: ShapeKey,
     cycle: T,
     decide: impl FnOnce(&mut Verdicts<T>) -> T,
 ) -> T {
-    match seen.get(&k) {
-        Some(Verdict::Deciding) => cycle,
+    match seen.known.get(&k) {
+        Some(Verdict::Deciding(depth)) => {
+            seen.read = seen.read.min(*depth);
+            cycle
+        }
         Some(Verdict::Decided(t)) => t.clone(),
         None => {
-            seen.insert(k.clone(), Verdict::Deciding);
+            let depth = seen.depth;
+            seen.depth += 1;
+            seen.known.insert(k.clone(), Verdict::Deciding(depth));
+            let outer = mem::replace(&mut seen.read, usize::MAX);
             let t = decide(seen);
-            seen.insert(k, Verdict::Decided(t.clone()));
+            seen.depth -= 1;
+            if seen.read < depth && t == cycle {
+                seen.known.remove(&k);
+            } else {
+                seen.known.insert(k, Verdict::Decided(t.clone()));
+            }
+            seen.read = seen.read.min(outer);
             t
         }
     }
@@ -164,23 +192,6 @@ impl Type {
             Type::ByRef(_) => bail!("can't cast a reference"),
             Type::Ref(tr) => {
                 let t = self.lookup_ref(env)?;
-                // CR Claude for Eric: the keys fix Id<i64> vouching for
-                // Id<&i64>, but `decide_once` saves a verdict reached while an
-                // enclosing key was still `Deciding` (assumed castable). When
-                // that key then fails, the saved verdict is wrong, and a
-                // parameter's failure is dropped into `shape` here, so the
-                // walk keeps going and reuses it. Witness (casts, prints
-                // `(null, [([], 5)])`, a forged &i64):
-                //   type Ph<'x> = [null, Array<Ph<'x>>];
-                //   type A = (B, &i64);
-                //   type B = Array<A>;
-                //   cast<(Ph<A>, B)>((null, [([], u64:5)]))
-                // Ph<A>'s shape decides A, which saves B as castable from
-                // A's provisional verdict. holds_ref_int has the same
-                // pattern (B saved as holding no reference), but my
-                // attempts to show it through a cast source were refused.
-                // Save only a verdict that no `Deciding` answer fed, or drop
-                // the verdicts saved under a key that then fails.
                 let shape = tr
                     .params
                     .iter()
@@ -212,14 +223,14 @@ impl Type {
     }
 
     pub fn check_cast(&self, env: &Env) -> Result<()> {
-        self.check_cast_int(env, &mut LPooled::take())
+        self.check_cast_int(env, &mut Verdicts::new())
     }
 
     /// Whether a value of this type can hold a reference, outside a
     /// function or an abstract type, which a cast never takes apart. A
     /// cast refuses such a source: a reference is not a number.
     pub(crate) fn holds_ref(&self, env: &Env) -> bool {
-        self.holds_ref_int(env, &mut LPooled::take())
+        self.holds_ref_int(env, &mut Verdicts::new())
     }
 
     fn holds_ref_int(&self, env: &Env, seen: &mut Verdicts<bool>) -> bool {
@@ -230,14 +241,14 @@ impl Type {
                 self.deref_cloned().is_some_and(|t| t.holds_ref_int(env, seen))
             }
             Type::Ref(tr) => {
+                let Ok(t) = self.lookup_ref(env) else { return false };
                 let shape =
                     tr.params.iter().map(|p| p.holds_ref_int(env, seen)).collect();
-                let holds = |seen: &mut Verdicts<bool>| {
-                    self.lookup_ref(env).is_ok_and(|t| t.holds_ref_int(env, seen))
-                };
                 match tr.def_key() {
-                    None => holds(seen),
-                    Some(k) => decide_once(seen, (k, shape), false, holds),
+                    None => t.holds_ref_int(env, seen),
+                    Some(k) => decide_once(seen, (k, shape), false, |seen| {
+                        t.holds_ref_int(env, seen)
+                    }),
                 }
             }
             t => {

@@ -685,3 +685,28 @@ async fn module_errors_are_framed_by_the_module() -> Result<()> {
     }
     Ok(())
 }
+
+// A source that fails to compile leaves nothing behind: the next one
+// compiles the same names.
+const DYNAMIC_MODULE_AFTER_A_FAILURE: &str = r#"
+{
+    let source = "let f = |x| x; let h = missing";
+    source <- sys::time::after_idle(duration:10.ms, "let f = |x| x + 1; let h = f(41)");
+    let status = mod m dynamic {
+        sandbox whitelist [core];
+        sig { val h: i64 };
+        source source
+    };
+    select status {
+        error as _ => never(),
+        null as _ => m::h
+    }
+}
+"#;
+
+run!(dynamic_module_after_a_failure, DYNAMIC_MODULE_AFTER_A_FAILURE, |v: Result<
+    &Value,
+>| match v {
+    Ok(Value::I64(42)) => true,
+    _ => false,
+});
