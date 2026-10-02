@@ -36,7 +36,7 @@ use super::{
         TruncAnchor, TruncLeaf, TruncRec,
     },
     nodes::emit_owned_value_operand_node,
-    record::{EmitConst, KernelConst},
+    record::{EmitConst, KernelConst, KernelType},
     scalar::scalar_to_payload_i64,
 };
 
@@ -755,7 +755,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
 
     /// The address of a cast site's destination type.
     pub fn interned_type(&mut self, t: &Type) -> Result<ClifValue> {
-        self.const_ptr(KernelConst::Type(Box::new(t.clone())))
+        self.const_ptr(KernelConst::Type(Box::new(KernelType::new(t.clone()))))
     }
 
     /// The address of a handler-ful `?` site, the delivery drain's key

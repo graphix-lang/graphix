@@ -13,9 +13,9 @@ use crate::{
     },
     image,
     node::error::QopSite,
-    typ::Type,
+    typ::{ResolvedRef, Type},
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
@@ -34,13 +34,31 @@ use triomphe::Arc;
 /// shared with its symbol lookup fn.
 pub(crate) type SymbolTable = Arc<Mutex<AHashMap<CompactString, usize>>>;
 
+/// A type a kernel reads, with the definitions its names resolve to: a
+/// resolution cell holds its definition weakly, and the typedef nodes of
+/// a region fusion replaces are deleted with the region.
+pub struct KernelType {
+    pub typ: Type,
+    _defs: Vec<std::sync::Arc<ResolvedRef>>,
+}
+
+impl KernelType {
+    pub fn new(typ: Type) -> Self {
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut defs: LPooled<AHashMap<usize, std::sync::Arc<ResolvedRef>>> =
+            LPooled::take();
+        typ.named_defs(&mut cells, &mut defs);
+        Self { typ, _defs: defs.drain().map(|(_, r)| r).collect() }
+    }
+}
+
 /// A pointee the code refers to by address, owned here when it is one,
 /// with what a loader needs to recreate it. Every occurrence in a body
 /// is an imported data symbol whose address is the pointer itself.
 pub enum KernelConst {
     Str(Box<ArcStr>),
     Value(Box<Value>),
-    Type(Box<Type>),
+    Type(Box<KernelType>),
     QopSite(Box<QopSite>),
     /// A builtin's plain fast fn, by the builtin's name.
     FastFn {
@@ -65,7 +83,7 @@ impl KernelConst {
         match self {
             KernelConst::Str(b) => &**b as *const ArcStr as usize,
             KernelConst::Value(b) => &**b as *const Value as usize,
-            KernelConst::Type(b) => &**b as *const Type as usize,
+            KernelConst::Type(b) => &b.typ as *const Type as usize,
             KernelConst::QopSite(b) => &**b as *const QopSite as usize,
             KernelConst::FastFn { f, .. } => *f as usize,
             KernelConst::TypedFn { f, .. } | KernelConst::Cast(f) => *f as usize,
@@ -339,7 +357,7 @@ impl Pack for KernelConst {
         1 + match self {
             KernelConst::Str(s) => s.encoded_len(),
             KernelConst::Value(v) => v.encoded_len(),
-            KernelConst::Type(t) => t.encoded_len(),
+            KernelConst::Type(t) => t.typ.encoded_len(),
             KernelConst::QopSite(q) => {
                 image::handler_len(&q.handler)
                     + q.own_top.encoded_len()
@@ -365,7 +383,7 @@ impl Pack for KernelConst {
             }
             KernelConst::Type(t) => {
                 buf.put_u8(tag::TYPE);
-                t.encode(buf)
+                t.typ.encode(buf)
             }
             KernelConst::QopSite(q) => {
                 buf.put_u8(tag::QOP_SITE);
@@ -394,7 +412,7 @@ impl Pack for KernelConst {
         Ok(match u8::decode(buf)? {
             tag::STR => KernelConst::Str(Box::new(ArcStr::decode(buf)?)),
             tag::VALUE => KernelConst::Value(Box::new(Value::decode(buf)?)),
-            tag::TYPE => KernelConst::Type(Box::new(Type::decode(buf)?)),
+            tag::TYPE => KernelConst::Type(Box::new(KernelType::new(Type::decode(buf)?))),
             tag::QOP_SITE => {
                 let handler = image::handler_decode(buf)?;
                 let own_top = ExprId::decode(buf)?;

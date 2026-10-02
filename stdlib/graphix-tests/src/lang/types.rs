@@ -970,6 +970,20 @@ run!(
     "#
 );
 
+// A fused cast to a typedef its block declares: the block's typedef node
+// goes with the region fusion replaces, and the kernel keeps the
+// definitions its types name.
+const CAST_TO_A_BLOCK_TYPEDEF: &str = r#"{ type T = i64; cast<T>(u8:41)$ + 1 }"#;
+run!(cast_to_a_block_typedef, CAST_TO_A_BLOCK_TYPEDEF, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
+const CAST_TO_A_BLOCK_NESTED_ALIAS: &str =
+    r#"{ type Id<'a> = 'a; cast<Id<Id<i64>>>(u8:41)$ + 1 }"#;
+run!(cast_to_a_block_nested_alias, CAST_TO_A_BLOCK_NESTED_ALIAS, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(42)))
+});
+
 // A definition whose parameters grow as it recurses is a cast target:
 // every application of it holds what its parameters hold.
 run!(

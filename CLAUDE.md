@@ -330,7 +330,9 @@ handles both. `TypeRef` carries a write-once resolution cell
 is), never overwrite a filled cell; the cell holds the definition
 weakly and the `TypeDef` owns it (a recursive body reaches its own
 cell), so a type outliving its definition's env entry is refused,
-never re-resolved; `Env::seed_typedef_refs` runs right
+never re-resolved, and what outlives the entry owns the definitions
+its types name (a definition's check table, a kernel's type constant:
+`DefTable::typedefs`, `record::KernelType`); `Env::seed_typedef_refs` runs right
 before fusion in both modes. A typedef must be contractive: every
 self-reference sits under a constructor (`type T = [i64, T]` is refused
 at `Env::deftype`), which is what makes the coinductive ref-pair memos
