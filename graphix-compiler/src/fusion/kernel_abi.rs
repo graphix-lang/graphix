@@ -1084,7 +1084,6 @@ pub(crate) fn site_leaf_encode(
 pub(crate) fn site_leaf_decode(buf: &mut impl Buf) -> Result<Arc<SiteLeaf>, PackError> {
     crate::image::object_decode(
         buf,
-        |d| &mut d.site_leaves,
         |buf| {
             let stride = u32::decode(buf)?;
             let anchors: Vec<SiteAnchor> = PackTrait::decode(buf)?;
@@ -1127,7 +1126,6 @@ pub(crate) fn kernel_sig_decode(buf: &mut impl Buf) -> Result<Arc<KernelSig>, Pa
     use std::sync::atomic::AtomicU64;
     crate::image::object_decode(
         buf,
-        |d| &mut d.kernel_sigs,
         |buf| {
             let fn_name = ArcStr::decode(buf)?;
             let params = Vec::<KernelParam>::decode(buf)?;

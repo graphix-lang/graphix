@@ -1400,7 +1400,6 @@ impl Pack for FnType {
         if image::is_decoding() {
             image::object_decode(
                 buf,
-                |d| &mut d.fntypes,
                 |buf| {
                     let own = <Option<LambdaId> as Pack>::decode(buf)?;
                     Self::shape_decode(buf, own)

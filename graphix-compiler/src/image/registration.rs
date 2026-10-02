@@ -36,7 +36,7 @@ use netidx_value::Value;
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 21;
+pub const REGISTRATION_FORMAT: u8 = 22;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -230,7 +230,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             let heap_at = buf.len();
             drop(p);
             let p = profile::phase(Phase::ImageHeap);
-            let eager = image::encoding(|e| e.object_counts()).unwrap_or_default();
             loop {
                 let Some((id, body)) = image::encoding(|e| e.deferred.pop()).flatten()
                 else {
@@ -253,7 +252,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 id.encode(&mut buf)?;
                 encode_varint(at, &mut buf);
             }
-            eager.encode(&mut buf)?;
             encode_varint(offsets.len() as u64, &mut buf);
             for at in offsets {
                 encode_varint(at, &mut buf);
@@ -354,7 +352,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                     let id = LambdaInstanceId::decode(&mut table)?;
                     instances.insert(id, decode_varint(&mut table)?);
                 }
-                let eager = image::ObjectCounts::decode(&mut table)?;
                 let n = decode_varint(&mut table)? as usize;
                 let mut offsets = Vec::with_capacity(n.min(table.len()));
                 for _ in 0..n {
@@ -366,7 +363,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 image::decoding(|d| {
                     d.set_instances(instances);
                     d.set_offsets(offsets);
-                    d.reserve(eager);
                 });
                 let p = profile::phase(Phase::ImageEnv);
                 let env: Env = Pack::decode(&mut bytes)?;

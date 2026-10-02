@@ -342,8 +342,14 @@ contains; the nested occurrence is a reference like any other. And an
 expression is keyed by
 the address of the first expression seen with its id and contents
 (`image::expr_key`, `Expr::same_tree`), so every clone of a def body
-shares one definition. The trailer also carries the eager object
-counts so a restore sizes its tables once.
+shares one definition. A restore keeps every object it builds in one
+slot per ordinal (`ImageDecoder::objects`), so a reference is an index,
+not a lookup: warm start 77 to 67 ms on two P-cores, 784 to 683 ms in
+potato mode, against fourteen tables keyed by definition offset.
+Decoding the objects ahead of their uses on worker threads, in levels
+of reference cycles, measured 87 ms on two P-cores and 698 in potato
+mode: the threads contend on the shared objects' reference counts, and
+an object built long before its use is cold when used.
 
 Measured on the admin TUI, pinned, optimized without LTO: restore 19
 to 14 ms, first cycle 42 to 28 ms, warm start 70 to 51 ms; image 10.6
@@ -542,9 +548,9 @@ constructors, which recompute every hash and refuse a node the map
 could not have built, so an image hashed differently fails the read.
 A snapshot whose maps are unchanged costs one reference per field.
 The node tables belong to the caller — an `EncodeTable` per image
-write, a `DecodeTable` per runtime so an instance decoded later
-resolves into nodes decoded earlier — installed for a call by a
-session guard. `encoded_len` is an upper bound: the image writer
+write; a decoded node is an object of the runtime's decoder, so an
+instance decoded later resolves into nodes decoded earlier — installed
+for a call by a session guard. `encoded_len` is an upper bound: the image writer
 reserves it and patches the prefix after encoding, and no
 length-wrapped derive holds a shared map.
 

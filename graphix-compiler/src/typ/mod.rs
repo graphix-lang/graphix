@@ -996,12 +996,7 @@ impl PackTrait for Type {
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         if image::is_decoding() {
-            image::object_decode(
-                buf,
-                |d| &mut d.types,
-                |b| Self::shape_decode(b),
-                |b| Self::decode(b),
-            )
+            image::object_decode(buf, |b| Self::shape_decode(b), |b| Self::decode(b))
         } else {
             Self::shape_decode(buf)
         }

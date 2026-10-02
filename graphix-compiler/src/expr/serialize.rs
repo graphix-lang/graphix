@@ -114,7 +114,6 @@ impl Pack for Expr {
         if image::is_decoding() {
             image::object_decode(
                 buf,
-                |d| &mut d.exprs,
                 |buf| {
                     if bool::decode(buf)? {
                         return Ok((**NOP).clone());

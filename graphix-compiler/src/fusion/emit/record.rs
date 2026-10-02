@@ -475,7 +475,6 @@ pub(crate) fn record_encode(
 pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackError> {
     image::object_decode(
         buf,
-        |d| &mut d.records,
         |buf| {
             let kind_tag = u8::decode(buf)?;
             let label = ArcStr::decode(buf)?;

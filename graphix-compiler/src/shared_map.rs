@@ -20,14 +20,10 @@ use crate::{
     env::{Hasher, Map, Set},
     image::{self, ImageBuf},
 };
-use ahash::AHashMap;
 use bytes::{Buf, BufMut};
 use imhm::{Contents, NewSlot, NodeHandle, NodeRef, SlotRef};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
-use std::{
-    any::{Any, TypeId},
-    hash::Hash,
-};
+use std::{any::Any, hash::Hash};
 
 /// A map packed with its sharing. The wrapped map is the environment's
 /// own (an `Arc` clone), so wrapping is free. Its keys must decode to
@@ -55,24 +51,17 @@ pub struct RelocatedSet<K: Hash + Eq + Clone>(pub Set<K>);
 pub(crate) trait Item: Hash + Eq + Clone + Send + Sync + 'static {}
 impl<T: Hash + Eq + Clone + Send + Sync + 'static> Item for T {}
 
-/// The nodes a decoder has built, by the offset of their definition,
-/// across every map and set unpacked under one decoder.
-#[derive(Default)]
-pub struct DecodeTable {
-    by_type: AHashMap<TypeId, Box<dyn Any + Send + Sync>>,
-}
+impl<K, V> image::Object for NodeHandle<K, V>
+where
+    K: Item,
+    V: Clone + Send + Sync + 'static,
+{
+    fn into_obj(self) -> image::Obj {
+        image::map_node_obj(self)
+    }
 
-impl DecodeTable {
-    fn nodes<K, V>(&mut self) -> &mut AHashMap<u64, NodeHandle<K, V>>
-    where
-        K: Item,
-        V: Clone + Send + Sync + 'static,
-    {
-        self.by_type
-            .entry(TypeId::of::<(K, V)>())
-            .or_insert_with(|| Box::new(AHashMap::<u64, NodeHandle<K, V>>::new()))
-            .downcast_mut()
-            .expect("decode table entry keyed by its own type")
+    fn of(obj: &image::Obj) -> Option<&Self> {
+        image::map_node_of(obj)
     }
 }
 
@@ -196,7 +185,6 @@ where
     let pd = std::cell::RefCell::new(pair_decode);
     image::object_decode(
         buf,
-        |d| d.maps.nodes::<K, V>(),
         |sub| {
             let pair_decode = &mut **pd.borrow_mut();
             let depth = u8::decode(sub)?;
