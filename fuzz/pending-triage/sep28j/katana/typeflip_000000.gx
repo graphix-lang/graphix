@@ -1,4 +1,0 @@
-// typeflip label-missing#7: MISPLACED: N: feedback is undefined
-// class: TYPEFLIP:label-missing: MISPLACED: N: feedback is undefined
-// mutant: { use sys::*; let v = 1 / 0; let qf = queuefn(|#tick: Any, x: i64| -> i64 tick ~ x + 1000); let ticks: Any = array::iter([null, null]); let xs = array::iter([10, 20, 30]); let out = qf(#tick: ticks, xs); feedback <- out; let count = 0; `B(7, "xy"); let done: Any = sys::time::timer(duration:200.ms, false); done ~ count }
-{ use sys::*; let v = 1 / 0; let qf = queuefn(#trigger: let feedback: Any = never(), |#tick: Any, x: i64| -> i64 tick ~ x + 1000); let ticks: Any = array::iter([null, null]); let xs = array::iter([10, 20, 30]); let out = qf(#tick: ticks, xs); feedback <- out; let count = 0; `B(7, "xy"); let done: Any = sys::time::timer(duration:200.ms, false); done ~ count }
