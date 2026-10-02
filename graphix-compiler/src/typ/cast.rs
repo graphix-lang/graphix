@@ -6,9 +6,10 @@ use crate::{
     stack::ensure_sufficient,
     typ::{Type, TypeRef, tval::NakedPrefix},
 };
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use enumflags2::{BitFlags, bitflags};
 use immutable_chunkmap::map::Map;
 use netidx_value::{Typ, ValArray, Value};
@@ -101,12 +102,49 @@ fn ref_key(tr: &TypeRef) -> Option<RefKey> {
 /// definition recurses (`type N<'a> = [null, ('a, N<Array<'a>>)]`).
 type ShapeKey = (usize, SmallVec<[bool; 4]>);
 
+/// What a walk knows of one application: it is being decided (a cycle
+/// through it holds coinductively), or what was decided.
+enum Verdict<T> {
+    Deciding,
+    Decided(T),
+}
+
+type Verdicts<T> = AHashMap<ShapeKey, Verdict<T>>;
+
+/// `decide` the application `k` once per walk: a repeat while it is being
+/// decided answers `cycle`, any later one the decision.
+fn decide_once<T: Clone>(
+    seen: &mut Verdicts<T>,
+    k: ShapeKey,
+    cycle: T,
+    decide: impl FnOnce(&mut Verdicts<T>) -> T,
+) -> T {
+    match seen.get(&k) {
+        Some(Verdict::Deciding) => cycle,
+        Some(Verdict::Decided(t)) => t.clone(),
+        None => {
+            seen.insert(k.clone(), Verdict::Deciding);
+            let t = decide(seen);
+            seen.insert(k, Verdict::Decided(t.clone()));
+            t
+        }
+    }
+}
+
 impl Type {
-    fn check_cast_int(&self, env: &Env, seen: &mut AHashSet<ShapeKey>) -> Result<()> {
+    fn check_cast_int(
+        &self,
+        env: &Env,
+        seen: &mut Verdicts<Option<ArcStr>>,
+    ) -> Result<()> {
         ensure_sufficient(|| self.check_cast_inner(env, seen))
     }
 
-    fn check_cast_inner(&self, env: &Env, seen: &mut AHashSet<ShapeKey>) -> Result<()> {
+    fn check_cast_inner(
+        &self,
+        env: &Env,
+        seen: &mut Verdicts<Option<ArcStr>>,
+    ) -> Result<()> {
         match self {
             Type::App(c, a) => match Type::app_filled(c, a) {
                 Some(t) => t.check_cast_int(env, seen),
@@ -127,15 +165,23 @@ impl Type {
             Type::Ref(tr) => {
                 let t = self.lookup_ref(env)?;
                 // XCR Codex for Eric: keyed by what the parameters admit, here
-                // and in holds_ref_int.
+                // and in holds_ref_int, each application decided once.
                 let shape = tr
                     .params
                     .iter()
                     .map(|p| p.check_cast_int(env, seen).is_ok())
                     .collect();
-                match tr.def_key().is_none_or(|k| seen.insert((k, shape))) {
-                    true => t.check_cast_int(env, seen),
-                    false => Ok(()),
+                let Some(k) = tr.def_key().map(|k| (k, shape)) else {
+                    return t.check_cast_int(env, seen);
+                };
+                let refused = decide_once(seen, k, None, |seen| {
+                    t.check_cast_int(env, seen)
+                        .err()
+                        .map(|e| ArcStr::from(format_compact!("{e:#}").as_str()))
+                });
+                match refused {
+                    None => Ok(()),
+                    Some(why) => bail!("{why}"),
                 }
             }
             t => {
@@ -161,7 +207,7 @@ impl Type {
         self.holds_ref_int(env, &mut LPooled::take())
     }
 
-    fn holds_ref_int(&self, env: &Env, seen: &mut AHashSet<ShapeKey>) -> bool {
+    fn holds_ref_int(&self, env: &Env, seen: &mut Verdicts<bool>) -> bool {
         ensure_sufficient(|| match self {
             Type::ByRef(_) => true,
             Type::Fn(_) | Type::Abstract { .. } => false,
@@ -171,8 +217,13 @@ impl Type {
             Type::Ref(tr) => {
                 let shape =
                     tr.params.iter().map(|p| p.holds_ref_int(env, seen)).collect();
-                tr.def_key().is_none_or(|k| seen.insert((k, shape)))
-                    && self.lookup_ref(env).is_ok_and(|t| t.holds_ref_int(env, seen))
+                let holds = |seen: &mut Verdicts<bool>| {
+                    self.lookup_ref(env).is_ok_and(|t| t.holds_ref_int(env, seen))
+                };
+                match tr.def_key() {
+                    None => holds(seen),
+                    Some(k) => decide_once(seen, (k, shape), false, holds),
+                }
             }
             t => {
                 let mut r = false;
