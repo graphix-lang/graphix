@@ -349,6 +349,21 @@ requirement to its own callers. The builtin's `typecheck1` only extracts
 the type with `extract_cast_type(Some(resolved))`. It never refuses: a
 program that type checked has a known type there.
 
+#### Builtins that wrap a function
+
+A builtin that takes any function and reads its signature, such as
+`queuefn`, declares that parameter's type `Function`:
+
+```graphix
+let queuefn = 'a: Function |#count: &[i64, null] = &null, #trigger: Any, f: 'a| -> 'a 'core_queuefn;
+val queuefn: fn<'a: Function>(?#count:&[i64, null], #trigger:Any, f: 'a) -> 'a;
+```
+
+The type checker refuses every program that passes something else
+there, a value that is not a function or one whose type stays unknown,
+and the builtin's `typecheck1` reads the signature from the resolved
+argument (through type references) without refusing.
+
 ### BindIds and Refs
 
 `BindId` is a very fundamental type in compiler guts. The

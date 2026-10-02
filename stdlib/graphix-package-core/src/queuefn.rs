@@ -5,6 +5,7 @@ use graphix_compiler::{
     Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, Event, ExecCtx, InitFn,
     LambdaId, Node, Refs, Rt, Scope, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
+    env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
     image::{self, ImageBuf},
     node::{genn, lambda::LambdaDef},
@@ -222,7 +223,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
         }
         let fid = BindId::new();
         ctx.record_ref(fid, top_id);
-        let ftyp = resolved.and_then(|r| extract_fn_arg_type(r, 2));
+        let ftyp = resolved.and_then(|r| extract_fn_arg_type(&ctx.env, r, 2));
         Ok(Box::new(Self {
             state: Arc::new(Mutex::new(QueueState::new())),
             fid,
@@ -420,11 +421,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
     fn typecheck1(
         &mut self,
-        _ctx: &mut CompileCtx<R, E>,
+        ctx: &mut CompileCtx<R, E>,
         _from: &mut [Node<R, E>],
         resolved: &FnType,
     ) -> Result<()> {
-        if let Some(ft) = extract_fn_arg_type(resolved, 2) {
+        if let Some(ft) = extract_fn_arg_type(&ctx.env, resolved, 2) {
             self.ftyp = Some(ft);
         } else {
             bail!("queuefn: third argument must be a function")
@@ -481,11 +482,15 @@ fn build_wrapper_apply<R: Rt, E: UserEvent>(
     }))
 }
 
-/// Extract the FnType from `ft.args[idx]`, expanding refs if needed.
-fn extract_fn_arg_type(ft: &FnType, idx: usize) -> Option<Arc<FnType>> {
-    let typ = ft.args.get(idx)?;
-    match &typ.typ {
-        Type::Fn(ft) => Some(ft.clone()),
-        _ => None,
+/// The function type `ft.args[idx]` holds, through bindings and type
+/// references: the signature's `Function` bound promises one.
+fn extract_fn_arg_type(env: &Env, ft: &FnType, idx: usize) -> Option<Arc<FnType>> {
+    let mut typ = ft.args.get(idx)?.typ.with_deref(|t| t.cloned())?;
+    loop {
+        typ = match &typ {
+            Type::Fn(ft) => return Some(ft.clone()),
+            Type::Ref(_) => typ.lookup_ref(env).ok()?.with_deref(|t| t.cloned())?,
+            _ => return None,
+        }
     }
 }

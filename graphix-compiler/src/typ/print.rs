@@ -161,6 +161,7 @@ impl Type {
             },
             Self::Hole => write!(f, "'_"),
             Self::Concrete => write!(f, "Concrete"),
+            Self::Function => write!(f, "Function"),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref(TypeRef { scope: _, name, params, .. }) => {
@@ -238,7 +239,8 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::Abstract { .. }
         | Type::App(..)
         | Type::Hole
-        | Type::Concrete => false,
+        | Type::Concrete
+        | Type::Function => false,
     }
 }
 
@@ -265,7 +267,11 @@ fn pretty_lone_arg(
 impl PrettyDisplay for Type {
     fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
         match self {
-            Self::Abstract { .. } | Self::App(..) | Self::Hole | Self::Concrete => {
+            Self::Abstract { .. }
+            | Self::App(..)
+            | Self::Hole
+            | Self::Concrete
+            | Self::Function => {
                 writeln!(buf, "{self}")
             }
             Self::Bottom => writeln!(buf, "_"),

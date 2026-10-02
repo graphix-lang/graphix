@@ -220,7 +220,8 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         | Type::Primitive(_)
         | Type::Abstract { .. }
         | Type::Hole
-        | Type::Concrete => return None,
+        | Type::Concrete
+        | Type::Function => return None,
     };
     Some(((std::mem::discriminant(t), x, y), t.clone()))
 }

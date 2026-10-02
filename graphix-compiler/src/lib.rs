@@ -2368,7 +2368,7 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
                 ori: spec.ori.clone(),
                 pos: spec.pos,
                 end: spec.end.get(),
-                typ: n.typ().resolve_tvars(),
+                typ: n.typ().snapshot(),
                 cell: matches!(n.typ(), typ::Type::TVar(_)),
             })
         });

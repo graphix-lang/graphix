@@ -5193,6 +5193,10 @@ mod tests {
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-unknown#"),
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-missing#"),
             (
+                "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }",
+                "function-bound#",
+            ),
+            (
                 "{ let f = |#a: i64 = 1, x: i64| -> i64 a + x; \
                  let w = |h: fn(?#a: i64, x: i64) -> i64| -> i64 h(2); w(f) }",
                 "label-default#",

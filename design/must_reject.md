@@ -186,6 +186,12 @@ loses a default the expected type lets a caller omit), right site the
 definition and every statement using the lambda. Open: a label passed
 twice, the disjoint labeled argument, the explicit disjoint default.
 
+**8. Function bounds.** Site: a call argument whose parameter type is a
+cell with the `Function` conjunct (`queuefn`'s `f`). Mutation: the
+argument replaced with a literal. Rule: `'a: Function` admits only a
+function type (`Type::function_holds`). Built (`function-bound`), right
+site the call.
+
 ## Labeled and optional arguments across the fuzzer
 
 Family 7 needs call sites to work on, and today the generators have

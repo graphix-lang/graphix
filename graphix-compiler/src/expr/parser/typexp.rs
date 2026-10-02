@@ -77,7 +77,9 @@ where
 {
     let concrete = attempt(spaces().with(string("Concrete")).skip(not_prefix()))
         .map(|_| Type::Concrete);
-    sep_by1(choice((concrete, typ())), attempt(spaces().with(token('+'))))
+    let function = attempt(spaces().with(string("Function")).skip(not_prefix()))
+        .map(|_| Type::Function);
+    sep_by1(choice((concrete, function, typ())), attempt(spaces().with(token('+'))))
 }
 
 /// Flatten `(tvar, bounds)` pairs into one `(tvar, type)` pair per

@@ -42,7 +42,7 @@ impl TVar {
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
             // conjunct reaching this cell has no finite witness.
-            if matches!(c, Type::Concrete)
+            if matches!(c, Type::Concrete | Type::Function)
                 || c.is_trait_ref(env)
                 || would_cycle_inner(addr, c)
             {
@@ -118,6 +118,9 @@ impl TVar {
                 if !self.is_bound() && self.requires_concrete() {
                     return Err(self.not_concrete());
                 }
+                if !self.is_bound() && self.requires_function() {
+                    return Err(self.not_function());
+                }
                 Ok(())
             }
         }
@@ -126,6 +129,14 @@ impl TVar {
     fn not_concrete(&self) -> anyhow::Error {
         anyhow::anyhow!(
             "the type '{} must be fully known here, a type-directed operation reads it: \
+             annotate it",
+            self.name
+        )
+    }
+
+    fn not_function(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "the type '{} must be a function here, an operation reads its signature: \
              annotate it",
             self.name
         )
@@ -141,6 +152,10 @@ impl TVar {
         if cell.constraints.iter().any(|c| matches!(c, Type::Concrete)) {
             drop(cell);
             return Err(self.not_concrete());
+        }
+        if cell.constraints.iter().any(|c| matches!(c, Type::Function)) {
+            drop(cell);
+            return Err(self.not_function());
         }
         // The only solution was infinite; ⊥ would be a lie.
         if cell.cycle_refused {
@@ -266,15 +281,17 @@ impl FnType {
         // type the signature holds is its callers' to pick
         let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.inner_quantifiers(&mut quantifiers);
-        // a `Concrete` cell met only inside a conjunct is no position of
-        // the signature: nothing reads it, so it is left as it stands
+        // a `Concrete` or `Function` cell met only inside a conjunct is no
+        // position of the signature: nothing reads it, so it is left as
+        // it stands
         for i in order.drain(..) {
             let tv = &nodes[i].1;
             let addr = tv.cell_addr();
             if exempt.contains(&addr)
                 || quantifiers.contains_key(&addr)
                 || kept.iter().any(|k| k.contains(&addr))
-                || (!positional.contains_key(&addr) && tv.requires_concrete())
+                || (!positional.contains_key(&addr)
+                    && (tv.requires_concrete() || tv.requires_function()))
             {
                 continue;
             }

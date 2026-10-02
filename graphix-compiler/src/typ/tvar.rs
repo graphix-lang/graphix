@@ -860,6 +860,11 @@ impl TVar {
         self.cell().read().constraints.iter().any(|c| matches!(c, Type::Concrete))
     }
 
+    /// Whether the cell holds the `Function` conjunct.
+    pub(crate) fn requires_function(&self) -> bool {
+        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Function))
+    }
+
     /// Bind self to `binding` (other's, read by the caller), merging
     /// other's constraints into self's cell.
     pub(super) fn copy(&self, other: &Self, binding: Type) {
@@ -1060,6 +1065,24 @@ impl TVar {
 // plain recursion (chiefly whether `Ref` params are walked); the rest
 // routes through `Type::try_for_each_child` / `Type::cow_children`.
 impl Type {
+    /// Whether `Function ⊇ self` holds as the type stands: a function
+    /// type, through bindings and type references; an open cell is
+    /// admitted, the terminal settle refuses it open.
+    pub(crate) fn function_holds(&self, env: &Env, commit: bool) -> Result<bool> {
+        ensure_sufficient(|| match self {
+            Type::Fn(_) => Ok(true),
+            Type::TVar(tv) => match tv.binding() {
+                None => Ok(true),
+                Some(b) => b.function_holds(env, commit),
+            },
+            Type::Ref(_) => match self.lookup_ref_with(env, commit)? {
+                Some(t) => t.function_holds(env, commit),
+                None => Ok(false),
+            },
+            _ => Ok(false),
+        })
+    }
+
     /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ anywhere,
     /// bound cells judged by their bindings, open cells admitted (a bind
     /// hands them the conjunct).

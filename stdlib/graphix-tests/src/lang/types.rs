@@ -495,6 +495,39 @@ async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
     Ok(())
 }
 
+// A builtin that wraps a function declares it `'a: Function`: anything
+// else is refused by the check, a parameter's at its call, a cell left
+// open (⊥ binds nothing) at its settle, and every function type is
+// admitted, a typedef's included.
+#[tokio::test(flavor = "current_thread")]
+async fn function_bounds_admit_only_functions() -> Result<()> {
+    for src in [
+        r#"queuefn(#trigger: 0, 0)"#,
+        r#"queuefn(#trigger: 0, never())"#,
+        r#"{ let g = |h| queuefn(#trigger: 0, h); g(1) }"#,
+        r#"{ let k: [fn(x: i64) -> i64, null] = null; queuefn(#trigger: 0, k) }"#,
+    ] {
+        let msg = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => format!("{e:#}"),
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(
+            msg.contains("Function does not contain")
+                || msg.contains("must be a function here"),
+            "wrong refusal for {src}: {msg}"
+        );
+    }
+    for src in [
+        r#"{ type F = fn(x: i64) -> i64; let k: F = |x| x + 1; queuefn(#trigger: 0, k)(41) }"#,
+        r#"{ let g = |h| queuefn(#trigger: 0, h); g(|x: i64| x + 1)(41) }"#,
+    ] {
+        let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+        assert_eq!(v, Value::I64(42), "{src}");
+        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
 // A generic function's signature is what its body bound: a call's types
 // follow from it, so a mismatch is refused at the call, never inside an
 // instance.

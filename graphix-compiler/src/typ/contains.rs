@@ -527,6 +527,8 @@ impl Type {
         match (self, t) {
             (Self::Concrete, t) => Ok(t.concrete_holds()),
             (_, Self::Concrete) => Ok(false),
+            (Self::Function, t) => t.function_holds(env, commit),
+            (_, Self::Function) => Ok(false),
             (Self::Hole, Self::Hole) => Ok(true),
             (Self::Hole, Self::TVar(tv)) => match tv.binding() {
                 Some(b) => Self::Hole.contains_int(flags, env, hist, &b),

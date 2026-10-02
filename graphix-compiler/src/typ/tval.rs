@@ -143,6 +143,7 @@ impl<'a> TVal<'a> {
                 | Type::Abstract { .. }
                 | Type::Hole
                 | Type::Concrete
+                | Type::Function
                 | Type::Bottom
                 | Type::Any
                 | Type::Error(_),

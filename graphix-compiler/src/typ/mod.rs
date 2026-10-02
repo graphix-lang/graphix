@@ -77,6 +77,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         | Type::App(..)
         | Type::Hole
         | Type::Concrete
+        | Type::Function
         | Type::Primitive(_)
         | Type::Any
         | Type::Bottom
@@ -680,6 +681,10 @@ pub enum Type {
     /// with no open cell and no ⊥ in it, so a type-directed builtin can act
     /// on it. Legal only as a constraint.
     Concrete,
+    /// The conjunct `'a: Function`: whatever binds the cell is a function
+    /// type, so a builtin wrapping a function can read its signature.
+    /// Legal only as a constraint.
+    Function,
 }
 
 mod tag {
@@ -702,6 +707,7 @@ mod tag {
     pub const APP: u8 = 16;
     pub const HOLE: u8 = 17;
     pub const CONCRETE: u8 = 18;
+    pub const FUNCTION: u8 = 19;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -757,6 +763,7 @@ impl Type {
             Type::Any => out.put_u8(tag::ANY),
             Type::Hole => out.put_u8(tag::HOLE),
             Type::Concrete => out.put_u8(tag::CONCRETE),
+            Type::Function => out.put_u8(tag::FUNCTION),
             Type::Primitive(p) => {
                 out.put_u8(tag::PRIMITIVE);
                 out.put_u64_le(p.bits() as u64);
@@ -844,7 +851,7 @@ impl Type {
 
     fn shape_len_inner(&self) -> usize {
         1 + match self {
-            Type::Bottom | Type::Any | Type::Hole | Type::Concrete => 0,
+            Type::Bottom | Type::Any | Type::Hole | Type::Concrete | Type::Function => 0,
             Type::Primitive(p) => p.encoded_len(),
             Type::Ref(r) => r.encoded_len(),
             Type::Fn(f) => f.encoded_len(),
@@ -871,6 +878,7 @@ impl Type {
             Type::Any => Ok(buf.put_u8(tag::ANY)),
             Type::Hole => Ok(buf.put_u8(tag::HOLE)),
             Type::Concrete => Ok(buf.put_u8(tag::CONCRETE)),
+            Type::Function => Ok(buf.put_u8(tag::FUNCTION)),
             Type::Primitive(p) => {
                 buf.put_u8(tag::PRIMITIVE);
                 p.encode(buf)
@@ -947,6 +955,7 @@ impl Type {
             tag::ANY => Type::Any,
             tag::HOLE => Type::Hole,
             tag::CONCRETE => Type::Concrete,
+            tag::FUNCTION => Type::Function,
             tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
             tag::REF => Type::Ref(PackTrait::decode(buf)?),
             tag::FN => Type::Fn(PackTrait::decode(buf)?),
@@ -1013,6 +1022,7 @@ impl PartialEq for Type {
             (Type::Any, _) => matches!(other, Type::Any),
             (Type::Hole, _) => matches!(other, Type::Hole),
             (Type::Concrete, _) => matches!(other, Type::Concrete),
+            (Type::Function, _) => matches!(other, Type::Function),
             (Type::Primitive(a), _) => matches!(other, Type::Primitive(b) if a == b),
             _ => ensure_sufficient(|| self.eq_composite(other)),
         }
@@ -1034,6 +1044,7 @@ impl Type {
             Type::Any => matches!(other, Type::Any),
             Type::Hole => matches!(other, Type::Hole),
             Type::Concrete => matches!(other, Type::Concrete),
+            Type::Function => matches!(other, Type::Function),
             Type::Primitive(a) => matches!(other, Type::Primitive(b) if a == b),
             Type::Ref(a) => matches!(other, Type::Ref(b) if a == b),
             Type::Fn(a) => {
@@ -1090,6 +1101,7 @@ impl Type {
             Type::App(..) => tag::APP,
             Type::Hole => tag::HOLE,
             Type::Concrete => tag::CONCRETE,
+            Type::Function => tag::FUNCTION,
         }
     }
 
@@ -1135,6 +1147,7 @@ impl Ord for Type {
             | Type::Any
             | Type::Hole
             | Type::Concrete
+            | Type::Function
             | Type::Primitive(_) => self.cmp_fields(other),
             _ => ensure_sufficient(|| self.cmp_fields(other)),
         })
@@ -1145,7 +1158,7 @@ impl Hash for Type {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.rank().hash(state);
         match self {
-            Type::Bottom | Type::Any | Type::Hole | Type::Concrete => (),
+            Type::Bottom | Type::Any | Type::Hole | Type::Concrete | Type::Function => (),
             Type::Primitive(p) => p.hash(state),
             t => ensure_sufficient(|| match t {
                 Type::Ref(r) => r.hash(state),
@@ -1177,6 +1190,7 @@ impl Hash for Type {
                 | Type::Any
                 | Type::Hole
                 | Type::Concrete
+                | Type::Function
                 | Type::Primitive(_) => (),
             }),
         }
@@ -1207,6 +1221,7 @@ impl Drop for Type {
             | Type::Any
             | Type::Hole
             | Type::Concrete
+            | Type::Function
             | Type::Primitive(_)
             | Type::TVar(_) => false,
             Type::Ref(tr) => tr.params.is_unique() || tr.resolved.is_unique(),
@@ -1232,6 +1247,7 @@ impl Drop for Type {
                 | Type::Any
                 | Type::Hole
                 | Type::Concrete
+                | Type::Function
                 | Type::Primitive(_) => (),
                 Type::Ref(r) => drop(ptr::read(r)),
                 Type::Fn(f) => drop(ptr::read(f)),
@@ -1289,7 +1305,8 @@ impl Type {
             | Type::Primitive(_)
             | Type::TVar(_)
             | Type::Hole
-            | Type::Concrete => ControlFlow::Continue(()),
+            | Type::Concrete
+            | Type::Function => ControlFlow::Continue(()),
             Type::App(c, a) => {
                 f(c)?;
                 f(a)
@@ -1384,7 +1401,8 @@ impl Type {
             | Type::Primitive(_)
             | Type::TVar(_)
             | Type::Hole
-            | Type::Concrete => None,
+            | Type::Concrete
+            | Type::Function => None,
             Type::App(c, a) => match (f(c), f(a)) {
                 (None, None) => None,
                 (c2, a2) => Some(Type::app(
@@ -1961,7 +1979,7 @@ impl Type {
                 Some(filled) => ensure_sufficient(|| filled.with_deref(f)),
                 None => f(Some(self)),
             },
-            Self::Hole | Self::Concrete => f(Some(self)),
+            Self::Hole | Self::Concrete | Self::Function => f(Some(self)),
             Self::Bottom
             | Self::Abstract { .. }
             | Self::Any

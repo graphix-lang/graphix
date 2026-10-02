@@ -1,0 +1,5 @@
+// expect: reject
+// queuefn's f was typed a bare 'a, so the check accepted a non-function
+// and the builtin's typecheck1 refused it at elaboration. f is
+// `'a: Function`: the check refuses it. Found by oct01f typemorph (aieka).
+queuefn(#trigger: 0, 0)

@@ -3,7 +3,8 @@
 //! the checker must refuse, and require the refusal where the mutation
 //! or its rigid consumer is. Families 1 (monomorphic reuse), 2 (rigid
 //! variables), 3 (a shared variable at a call), 4 (widening into a rigid
-//! consumer), 5 (variant widening), 6 (retyping a let) and 7 (labels).
+//! consumer), 5 (variant widening), 6 (retyping a let), 7 (labels) and 8
+//! (a function bound).
 
 use crate::{mutate, typemorph};
 use ahash::AHashMap;
@@ -32,6 +33,7 @@ pub enum Family {
     LabelUnknown,
     LabelMissing,
     LabelDefault,
+    FunctionBound,
 }
 
 impl std::fmt::Display for Family {
@@ -46,6 +48,7 @@ impl std::fmt::Display for Family {
             Family::WidenConsumer => "widen-consumer",
             Family::VariantWiden => "variant-widen",
             Family::Retype => "retype",
+            Family::FunctionBound => "function-bound",
         })
     }
 }
@@ -187,6 +190,7 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     widen_through_let(&root, &pre, types, cap, &mut out);
     variant_widen(&root, &pre, types, cap, &mut out);
     retype(&root, &pre, types, cap, &mut out);
+    function_bound(&root, &pre, types, cap, &mut out);
     out
 }
 
@@ -410,6 +414,55 @@ fn shared_var(
         let at = arg_indices(i, &sizes, ap.args.len())[b];
         let cand = mutate::replace(root, at, &u);
         out.extend(finish(Family::SharedVar, i, &cand, |_, pre| {
+            vec![pre.get(i).and_then(span)]
+        }));
+        taken += 1;
+    }
+}
+
+/// Family 8. A call argument whose parameter is `'a: Function` (a builtin
+/// that wraps a function) replaced by a literal: the bound admits only a
+/// function type (`Type::Function`). Right site: the call.
+fn function_bound(
+    root: &Expr,
+    pre: &[Expr],
+    types: &TypeMap,
+    cap: usize,
+    out: &mut Vec<RejectProbe>,
+) {
+    let bounded = |t: &Type| match t {
+        Type::TVar(tv) => {
+            tv.cell_constraints().iter().any(|c| matches!(c, Type::Function))
+        }
+        _ => false,
+    };
+    let sizes = mutate::sizes(root);
+    let mut taken = 0usize;
+    for (i, e) in pre.iter().enumerate() {
+        if taken >= cap {
+            break;
+        }
+        let ExprKind::Apply(ap) = &e.kind else { continue };
+        let Some(ft) = callee_type(types, ap) else { continue };
+        let at = arg_indices(i, &sizes, ap.args.len());
+        let mut positional = ft.args.iter().filter(|a| a.label().is_none());
+        let mut found = None;
+        for (j, (label, arg)) in ap.args.iter().enumerate() {
+            let param = match label {
+                Some(l) => ft.args.iter().find(|a| a.label() == Some(l)),
+                None => positional.next(),
+            };
+            if found.is_none()
+                && !binds_outward(arg)
+                && param.is_some_and(|p| bounded(&p.typ))
+            {
+                found = Some(at[j]);
+            }
+        }
+        let Some(at) = found else { continue };
+        let lit = ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos();
+        let cand = mutate::replace(root, at, &lit);
+        out.extend(finish(Family::FunctionBound, i, &cand, |_, pre| {
             vec![pre.get(i).and_then(span)]
         }));
         taken += 1;

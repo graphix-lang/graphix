@@ -247,6 +247,23 @@ it to its bound would type the argument's parameter as the whole set
 (`Number`), which is a different claim: values of several numeric
 types at once.
 
+### `Function`: a conjunct that is a predicate
+
+`'a: Function` (`Type::Function`, parsed only as a bound) says whatever
+binds the cell is a function type. A builtin that wraps a function and
+reads its signature declares it (`queuefn`); its `typecheck1` reads the
+signature through type references and never refuses.
+
+- `Function ⊇ t` holds for a function type, through bindings and type
+  references (`Type::function_holds`), and for an open cell; ⊥ and a
+  union are not functions. It is not hereditary.
+- Like `Concrete`, it is never a witness, travels as a conjunct, and a
+  cell that stays open to the terminal settle at a position of the
+  signature is refused ("the type 'a must be a function here"): ⊥ binds
+  no cell, so `queuefn(#trigger: t, never())` is refused there.
+- The checked-types snapshot tooling reads (`Type::snapshot`) keeps an
+  open cell's `Concrete` and `Function` conjuncts.
+
 ### `FnType` derives its constraint list from the cells
 
 The `constraints` list is gone from `FnType` (`typ/fntyp.rs`). Every

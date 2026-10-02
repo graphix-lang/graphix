@@ -181,6 +181,7 @@ trace	frame-taint-exit-jul2026/02_original.gx
 trace	framed-arg-stale-formal-aug2026/00_fold_go_retrigger.gx
 trace	framed-formal-seed-aug2026/01_fold_in_rec_arm_one_step.gx
 trace	framed-formal-seed-aug2026/02_found_form_min_element.gx
+reject	function-bound-oct2026/00_queuefn_non_function.gx
 trace	fusion-flips-display-backend-aug2026/00_tui_backend_selection.gx
 reject	fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx
 trace	guard-bind-store-tag-aug2026/00_refwrite_guard_livelock.gx

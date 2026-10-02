@@ -39,6 +39,9 @@ pub(super) struct ResolveTvarsCx {
     fresh: LPooled<nohash::IntMap<usize, TVar>>,
     in_progress: LPooled<nohash::IntSet<usize>>,
     memo: LPooled<AHashMap<NormKey, Option<Type>>>,
+    /// An open cell's copy keeps its predicate conjuncts (`Concrete`,
+    /// `Function`), which name no cell.
+    predicates: bool,
 }
 
 impl ResolveTvarsCx {
@@ -48,6 +51,7 @@ impl ResolveTvarsCx {
             fresh: LPooled::take(),
             in_progress: LPooled::take(),
             memo: LPooled::take(),
+            predicates: false,
         }
     }
 }
@@ -71,6 +75,7 @@ pub(crate) fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::App(..)
         | Type::Hole
         | Type::Concrete
+        | Type::Function
         | Type::Ref(_)
         | Type::TVar(_)
         | Type::Variant(_, _, _) => None,
@@ -189,6 +194,13 @@ impl Type {
             .unwrap_or_else(|| self.clone())
     }
 
+    /// [`Self::resolve_tvars`] for tooling: an open cell keeps the
+    /// predicates it must satisfy.
+    pub fn snapshot(&self) -> Self {
+        let mut cx = ResolveTvarsCx { predicates: true, ..ResolveTvarsCx::take() };
+        self.resolve_tvars_seen_int(&mut cx).unwrap_or_else(|| self.clone())
+    }
+
     /// `None` = no TVar anywhere beneath — the caller keeps the original.
     pub(super) fn resolve_tvars_seen_int(&self, cx: &mut ResolveTvarsCx) -> Option<Self> {
         ensure_sufficient(|| self.resolve_tvars_seen(cx))
@@ -206,7 +218,8 @@ impl Type {
             | Type::Any
             | Type::Primitive(_)
             | Type::Hole
-            | Type::Concrete => None,
+            | Type::Concrete
+            | Type::Function => None,
             Type::App(c, a) => {
                 match (c.resolve_tvars_seen_int(cx), a.resolve_tvars_seen_int(cx)) {
                     (None, None) => None,
@@ -246,6 +259,13 @@ impl Type {
                     }
                     None => {
                         let fresh = tv.fresh_copy();
+                        if cx.predicates {
+                            for c in tv.cell_constraints() {
+                                if matches!(c, Type::Concrete | Type::Function) {
+                                    fresh.add_cell_constraint(c);
+                                }
+                            }
+                        }
                         cx.fresh.insert(addr, fresh.clone());
                         Type::TVar(fresh)
                     }
@@ -323,7 +343,8 @@ impl Type {
             | Type::Abstract { .. }
             | Type::Primitive(_)
             | Type::Hole
-            | Type::Concrete => None,
+            | Type::Concrete
+            | Type::Function => None,
             Type::App(c, a) => match (c.normalize_int(cx), a.normalize_int(cx)) {
                 (None, None) => None,
                 (c2, a2) => Some(Type::app(
@@ -445,6 +466,8 @@ impl Type {
             | (Type::Hole, _)
             | (_, Type::Hole)
             | (Type::Concrete, _)
+            | (Type::Function, _)
+            | (_, Type::Function)
             | (_, Type::Concrete) => {
                 if self == t {
                     Some(self.clone())
