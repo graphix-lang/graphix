@@ -611,7 +611,10 @@ not a gap count.
   that holds both (`node/mod.rs::write_mismatch`).
 - **Sets and coverage**: select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member;
-  a `null` literal covers `null`; bool literals and variant heads
+  a `null` literal covers `null`; a collection type test (`Array<T> as`)
+  narrows later arms only of collections whose every element it
+  covers, since a mixed one that fails it may still hold a `T`;
+  bool literals and variant heads
   (payload irrefutable) pool per position
   inside composite patterns; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over

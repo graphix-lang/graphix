@@ -2375,6 +2375,55 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
     }
 }
 
+/// The registries a compile or a registration read writes, as they were
+/// before it, so a failure puts them back.
+pub(crate) struct Saved {
+    env: Env,
+    lambda_defs: TrackedMap<LambdaId, Value>,
+    bind_to_lambda: TrackedMap<BindId, Value>,
+    builtin_bindings: TrackedMap<(ModPath, CompactString), BuiltinBindInfo>,
+    fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
+    connect_targets: TrackedSet<BindId>,
+    batch_connect_targets: TrackedSet<BindId>,
+    tags: TrackedSet<ArcStr>,
+}
+
+impl Saved {
+    pub(crate) fn take<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>) -> Self {
+        Saved {
+            env: ctx.env.clone(),
+            lambda_defs: ctx.lambda_defs.clone(),
+            bind_to_lambda: ctx.bind_to_lambda.clone(),
+            builtin_bindings: ctx.builtin_bindings.clone(),
+            fn_forward_resolutions: ctx.fn_forward_resolutions.clone(),
+            connect_targets: ctx.connect_targets.clone(),
+            batch_connect_targets: ctx.batch_connect_targets.clone(),
+            tags: ctx.tags.clone(),
+        }
+    }
+
+    pub(crate) fn restore<R: Rt, E: UserEvent>(self, ctx: &mut ExecCtx<R, E>) {
+        let Saved {
+            env,
+            lambda_defs,
+            bind_to_lambda,
+            builtin_bindings,
+            fn_forward_resolutions,
+            connect_targets,
+            batch_connect_targets,
+            tags,
+        } = self;
+        ctx.env = env;
+        ctx.lambda_defs = lambda_defs;
+        ctx.bind_to_lambda = bind_to_lambda;
+        ctx.builtin_bindings = builtin_bindings;
+        ctx.fn_forward_resolutions = fn_forward_resolutions;
+        ctx.connect_targets = connect_targets;
+        ctx.batch_connect_targets = batch_connect_targets;
+        ctx.tags = tags;
+    }
+}
+
 /// Build the top-level node `spec` with `build`, then check and fuse it,
 /// unwinding what it registered on failure.
 fn compile_top<R: Rt, E: UserEvent>(
@@ -2399,29 +2448,32 @@ fn compile_top<R: Rt, E: UserEvent>(
     ctx.pending_settles.push(Vec::new());
     let top_id = spec.id;
     ctx.fusion.top_id = Some(top_id);
-    let env = ctx.env.clone();
+    let saved = Saved::take(ctx);
     let st = Instant::now();
     let build_profile = profile::phase(Phase::BuildGraph);
     let compiled = build(ctx, &spec, top_id);
     drop(build_profile);
     let (mut node, out_scope) = match compiled {
         Ok(n) => n,
+        // XCR Codex for Eric: every failure puts the registries back.
         Err(e) => {
             ctx.drop_deferred();
-            ctx.env = env;
+            saved.restore(ctx);
             return Err(e);
         }
     };
     info!("compile time {:?}", st.elapsed());
     if let Err(err) = check_pending_imports(ctx) {
-        return Err(abandon_stmt(ctx, node, env, err));
+        return Err(abandon_stmt(ctx, node, saved, err));
     }
     if let Err(e) = check_and_fuse(ctx, flags, &mut node) {
-        return Err(abandon_stmt(ctx, node, env, e));
+        return Err(abandon_stmt(ctx, node, saved, e));
     }
     // An attribute the fusion walk neither dispatched nor absorbed
-    // would silently assert nothing.
-    if ctx.fusion.enabled {
+    // would silently assert nothing; a check runs no fusion walk and
+    // leaves the attributes to a build.
+    // XCR Codex for Eric: the audit is skipped under CheckOnly.
+    if ctx.fusion.enabled && !flags.contains(CFlag::CheckOnly) {
         let census = ctx.attr_census.lock();
         if !census.is_empty() {
             let dispatched = ctx.attr_dispatched.lock();
@@ -2437,7 +2489,7 @@ fn compile_top<R: Rt, E: UserEvent>(
                     drop(census);
                     drop(dispatched);
                     drop(absorbed);
-                    return Err(abandon_stmt(ctx, node, env, e));
+                    return Err(abandon_stmt(ctx, node, saved, e));
                 }
             }
         }
@@ -2451,11 +2503,11 @@ fn compile_top<R: Rt, E: UserEvent>(
 fn abandon_stmt<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<R, E>,
     mut node: Node<R, E>,
-    env: Env,
+    saved: Saved,
     e: anyhow::Error,
 ) -> anyhow::Error {
     ctx.drop_deferred();
     node.delete(ctx);
-    ctx.env = env;
+    saved.restore(ctx);
     e
 }

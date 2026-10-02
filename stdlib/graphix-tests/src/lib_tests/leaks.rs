@@ -188,6 +188,24 @@ async fn core_hook_sites_leave_no_bindings() -> Result<()> {
     Ok(())
 }
 
+/// A statement that fails to compile leaves nothing it registered: the
+/// definitions it built before the failure go with it.
+#[tokio::test(flavor = "current_thread")]
+async fn failed_compiles_leave_no_definitions() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = init(tx).await?;
+    let before = ctx.rt.env_stats().await?.lambda_defs_len;
+    for _ in 0..5 {
+        let r =
+            ctx.rt.compile(literal!("{ let f = |x| x; let g = |y| y; missing }")).await;
+        assert!(r.is_err(), "the statement names nothing called missing");
+    }
+    let after = ctx.rt.env_stats().await?.lambda_defs_len;
+    ctx.shutdown().await;
+    assert_eq!(before, after, "failed compiles kept {} definitions", after - before);
+    Ok(())
+}
+
 /// A builtin definition restored from an image rebuilds its check under
 /// the definition gate, which takes its catch binding with it.
 #[tokio::test(flavor = "current_thread")]

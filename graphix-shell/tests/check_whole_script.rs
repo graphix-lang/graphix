@@ -21,3 +21,21 @@ async fn check_types_a_top_level_let_by_its_writers() -> Result<()> {
         .check()
         .await
 }
+
+/// The check runs no fusion pass, so it leaves `#[native]` to the build:
+/// an attribute that a build would dispatch is no error of the check.
+const NATIVE: &str = r#"
+let f = |x: i64| -> i64 x * 2 + 1;
+let r = #[native] f(20);
+let a = #[native] array::map([1, 2, 3], |x| x + 1);
+(r, a)
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_leaves_native_to_the_build() -> Result<()> {
+    ShellBuilder::<NoExt>::default()
+        .mode(Mode::Check(Source::Internal(NATIVE.into())))
+        .build()?
+        .check()
+        .await
+}

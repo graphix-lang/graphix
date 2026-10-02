@@ -15,14 +15,13 @@ use super::{
     SharedDecoder, defs, nodes, scope_decode, scope_encode,
 };
 use crate::{
-    BindId, BuiltinBindInfo, ExecCtx, LambdaId, LambdaInstanceId, Node, Rt, Scope,
+    BindId, BuiltinBindInfo, ExecCtx, LambdaId, LambdaInstanceId, Node, Rt, Saved, Scope,
     UserEvent,
     env::Env,
     expr::{ExprId, ModPath},
     image,
     node::lambda::LambdaDef,
     profile::{self, Phase},
-    tracked::{TrackedMap, TrackedSet},
     typ::Type,
 };
 use ahash::AHashMap;
@@ -31,7 +30,6 @@ use bytes::{Buf, BufMut, Bytes};
 use compact_str::CompactString;
 use log::{info, warn};
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
-use netidx_value::Value;
 
 const MAGIC: &[u8; 4] = b"GXIM";
 
@@ -351,7 +349,13 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 let mut instances = AHashMap::with_capacity(n.min(table.len() / 2));
                 for _ in 0..n {
                     let id = LambdaInstanceId::decode(&mut table)?;
-                    instances.insert(id, decode_varint(&mut table)?);
+                    // XCR Codex for Eric: an instance outside the heap refuses
+                    // the image here.
+                    let at = decode_varint(&mut table)?;
+                    if !(heap_at as u64..table_at as u64).contains(&at) {
+                        return Err(PackError::InvalidFormat);
+                    }
+                    instances.insert(id, at);
                 }
                 let n = decode_varint(&mut table)? as usize;
                 let mut offsets = Vec::with_capacity(n.min(table.len()));
@@ -393,54 +397,5 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             return Err(PackError::InvalidFormat);
         }
         Ok((shared, scope, program))
-    }
-}
-
-/// What a registration read writes into the session, as it was before,
-/// so a failed read puts it back.
-struct Saved {
-    env: Env,
-    lambda_defs: TrackedMap<LambdaId, Value>,
-    bind_to_lambda: TrackedMap<BindId, Value>,
-    builtin_bindings: TrackedMap<(ModPath, CompactString), BuiltinBindInfo>,
-    fn_forward_resolutions: TrackedMap<BindId, LambdaId>,
-    connect_targets: TrackedSet<BindId>,
-    batch_connect_targets: TrackedSet<BindId>,
-    tags: TrackedSet<ArcStr>,
-}
-
-impl Saved {
-    fn take<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>) -> Self {
-        Saved {
-            env: ctx.env.clone(),
-            lambda_defs: ctx.lambda_defs.clone(),
-            bind_to_lambda: ctx.bind_to_lambda.clone(),
-            builtin_bindings: ctx.builtin_bindings.clone(),
-            fn_forward_resolutions: ctx.fn_forward_resolutions.clone(),
-            connect_targets: ctx.connect_targets.clone(),
-            batch_connect_targets: ctx.batch_connect_targets.clone(),
-            tags: ctx.tags.clone(),
-        }
-    }
-
-    fn restore<R: Rt, E: UserEvent>(self, ctx: &mut ExecCtx<R, E>) {
-        let Saved {
-            env,
-            lambda_defs,
-            bind_to_lambda,
-            builtin_bindings,
-            fn_forward_resolutions,
-            connect_targets,
-            batch_connect_targets,
-            tags,
-        } = self;
-        ctx.env = env;
-        ctx.lambda_defs = lambda_defs;
-        ctx.bind_to_lambda = bind_to_lambda;
-        ctx.builtin_bindings = builtin_bindings;
-        ctx.fn_forward_resolutions = fn_forward_resolutions;
-        ctx.connect_targets = connect_targets;
-        ctx.batch_connect_targets = batch_connect_targets;
-        ctx.tags = tags;
     }
 }

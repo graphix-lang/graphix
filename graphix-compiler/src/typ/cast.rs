@@ -4,7 +4,7 @@ use crate::{
     errf,
     node::list,
     stack::ensure_sufficient,
-    typ::{Type, tval::NakedPrefix},
+    typ::{Type, TypeRef, tval::NakedPrefix},
 };
 use ahash::AHashSet;
 use anyhow::{Result, bail};
@@ -87,12 +87,26 @@ fn cast_elts<T>(
     Ok(out)
 }
 
+/// A type reference as a path walk keys it: its definition and the
+/// parameters it is applied to, so `Id<i64>` and `Id<&i64>` are two.
+type RefKey = (usize, Arc<[Type]>);
+
+fn ref_key(tr: &TypeRef) -> Option<RefKey> {
+    tr.def_key().map(|k| (k, tr.params.clone()))
+}
+
+/// A type reference as a walk deciding a property that composes over a
+/// type's parts keys it: its definition and whether each parameter has
+/// the property. Exact, and finite where the parameters grow as the
+/// definition recurses (`type N<'a> = [null, ('a, N<Array<'a>>)]`).
+type ShapeKey = (usize, SmallVec<[bool; 4]>);
+
 impl Type {
-    fn check_cast_int(&self, env: &Env, seen: &mut AHashSet<usize>) -> Result<()> {
+    fn check_cast_int(&self, env: &Env, seen: &mut AHashSet<ShapeKey>) -> Result<()> {
         ensure_sufficient(|| self.check_cast_inner(env, seen))
     }
 
-    fn check_cast_inner(&self, env: &Env, seen: &mut AHashSet<usize>) -> Result<()> {
+    fn check_cast_inner(&self, env: &Env, seen: &mut AHashSet<ShapeKey>) -> Result<()> {
         match self {
             Type::App(c, a) => match Type::app_filled(c, a) {
                 Some(t) => t.check_cast_int(env, seen),
@@ -112,9 +126,16 @@ impl Type {
             Type::ByRef(_) => bail!("can't cast a reference"),
             Type::Ref(tr) => {
                 let t = self.lookup_ref(env)?;
-                match tr.def_key() {
-                    Some(k) if !seen.insert(k) => Ok(()),
-                    _ => t.check_cast_int(env, seen),
+                // XCR Codex for Eric: keyed by what the parameters admit, here
+                // and in holds_ref_int.
+                let shape = tr
+                    .params
+                    .iter()
+                    .map(|p| p.check_cast_int(env, seen).is_ok())
+                    .collect();
+                match tr.def_key().is_none_or(|k| seen.insert((k, shape))) {
+                    true => t.check_cast_int(env, seen),
+                    false => Ok(()),
                 }
             }
             t => {
@@ -140,17 +161,19 @@ impl Type {
         self.holds_ref_int(env, &mut LPooled::take())
     }
 
-    fn holds_ref_int(&self, env: &Env, seen: &mut AHashSet<usize>) -> bool {
+    fn holds_ref_int(&self, env: &Env, seen: &mut AHashSet<ShapeKey>) -> bool {
         ensure_sufficient(|| match self {
             Type::ByRef(_) => true,
             Type::Fn(_) | Type::Abstract { .. } => false,
             Type::TVar(_) | Type::App(..) => {
                 self.deref_cloned().is_some_and(|t| t.holds_ref_int(env, seen))
             }
-            Type::Ref(tr) => match tr.def_key() {
-                Some(k) if !seen.insert(k) => false,
-                _ => self.lookup_ref(env).is_ok_and(|t| t.holds_ref_int(env, seen)),
-            },
+            Type::Ref(tr) => {
+                let shape =
+                    tr.params.iter().map(|p| p.holds_ref_int(env, seen)).collect();
+                tr.def_key().is_none_or(|k| seen.insert((k, shape)))
+                    && self.lookup_ref(env).is_ok_and(|t| t.holds_ref_int(env, seen))
+            }
             t => {
                 let mut r = false;
                 t.for_each_child(&mut |c| r = r || c.holds_ref_int(env, seen));
@@ -162,7 +185,7 @@ impl Type {
     fn cast_int(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(usize, usize)>,
+        hist: &mut AHashSet<(RefKey, usize)>,
         src: Option<&Type>,
         v: &Value,
     ) -> Cast {
@@ -176,7 +199,7 @@ impl Type {
     fn cast_inner(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(usize, usize)>,
+        hist: &mut AHashSet<(RefKey, usize)>,
         src: Option<&Type>,
         v: &Value,
     ) -> Cast {
@@ -470,8 +493,13 @@ impl Type {
                     Ok(t) => t,
                     Err(_) => return Err(self.cast_fail("undefined type", v)),
                 };
-                let key = (tr.def_key().unwrap_or(0), (v as *const Value).addr());
-                if !hist.insert(key) {
+                // XCR Codex for Eric: the parameters are in the path key, also
+                // in is_a_int_inner: Id<Id<i64>> expands Id twice.
+                let Some(key) = ref_key(tr).map(|k| (k, (v as *const Value).addr()))
+                else {
+                    return Err(self.cast_fail("undefined type", v));
+                };
+                if !hist.insert(key.clone()) {
                     return Err(
                         self.cast_fail("the type recurses without consuming it", v)
                     );
@@ -522,7 +550,7 @@ impl Type {
     fn is_a_int(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(usize, usize)>,
+        hist: &mut AHashSet<(RefKey, usize)>,
         flags: BitFlags<IsAFlags>,
         v: &Value,
     ) -> bool {
@@ -532,7 +560,7 @@ impl Type {
     fn is_a_int_inner(
         &self,
         env: &Env,
-        hist: &mut AHashSet<(usize, usize)>,
+        hist: &mut AHashSet<(RefKey, usize)>,
         flags: BitFlags<IsAFlags>,
         v: &Value,
     ) -> bool {
@@ -548,8 +576,11 @@ impl Type {
             Type::Ref(tr) => match self.lookup_ref(env) {
                 Err(_) => false,
                 Ok(t) => {
-                    let key = (tr.def_key().unwrap_or(0), (v as *const Value).addr());
-                    hist.insert(key) && {
+                    let Some(key) = ref_key(tr).map(|k| (k, (v as *const Value).addr()))
+                    else {
+                        return false;
+                    };
+                    hist.insert(key.clone()) && {
                         let r = t.is_a_int(env, hist, flags, v);
                         hist.remove(&key);
                         r
@@ -699,7 +730,7 @@ impl Type {
     /// against their member; explicit `x as T` stays strict.
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
         let mut scrut: LPooled<Vec<Type>> = LPooled::take();
-        let mut seen: LPooled<Vec<usize>> = LPooled::take();
+        let mut seen: LPooled<Vec<RefKey>> = LPooled::take();
         flatten_union_members(scrutinee, env, &mut scrut, &mut seen)?;
         let mut sfacts: LPooled<Vec<MemberFacts>> = LPooled::take();
         for m in scrut.iter() {
@@ -857,7 +888,7 @@ fn flatten_union_members(
     t: &Type,
     env: &Env,
     out: &mut LPooled<Vec<Type>>,
-    seen: &mut LPooled<Vec<usize>>,
+    seen: &mut LPooled<Vec<RefKey>>,
 ) -> Option<()> {
     ensure_sufficient(|| match t {
         Type::Set(ts) => {
@@ -868,7 +899,7 @@ fn flatten_union_members(
         }
         Type::Ref(tr) => {
             let t = t.lookup_ref(env).ok()?;
-            let key = tr.def_key()?;
+            let key = ref_key(tr)?;
             if seen.contains(&key) {
                 return None;
             }

@@ -491,31 +491,21 @@ impl Type {
                 Some(tv) => t.diff_int(env, hist, &tv)?,
                 None => self.clone(),
             }),
-            (Type::List(t0), Type::List(t1)) => {
-                if t0 == t1 {
-                    Ok(Type::Primitive(BitFlags::empty()))
-                } else {
-                    match t0.diff_int(env, hist, t1)? {
-                        Type::Primitive(p) if p.is_empty() => {
-                            Ok(Type::Primitive(BitFlags::empty()))
-                        }
-                        d => Ok(Type::List(Arc::new(d))),
-                    }
-                }
-            }
-            (Type::Array(t0), Type::Array(t1)) => {
-                if t0 == t1 {
-                    Ok(Type::Primitive(BitFlags::empty()))
-                } else {
-                    // An emptied element type empties the array type;
-                    // `Array<[]>` would be uninhabited but nonempty to
-                    // the containment walk.
-                    match t0.diff_int(env, hist, t1)? {
-                        Type::Primitive(p) if p.is_empty() => {
-                            Ok(Type::Primitive(BitFlags::empty()))
-                        }
-                        d => Ok(Type::Array(Arc::new(d))),
-                    }
+            // A collection that fails an element type test may still hold
+            // elements that pass it: one that is not all `t1` is any
+            // collection of `t0`, so only a `t1` covering every element
+            // subtracts anything.
+            // XCR Codex for Eric: element-wise subtraction is gone, for List
+            // too; a partial overlap keeps the whole collection type.
+            (Type::List(t0), Type::List(t1)) | (Type::Array(t0), Type::Array(t1)) => {
+                let covered = t0 == t1
+                    || matches!(
+                        t0.diff_int(env, hist, t1)?,
+                        Type::Primitive(p) if p.is_empty()
+                    );
+                match covered {
+                    true => Ok(Type::Primitive(BitFlags::empty())),
+                    false => Ok(self.clone()),
                 }
             }
             (Type::Primitive(p), Type::Array(t)) => {

@@ -936,6 +936,51 @@ run!(cast_of_a_reference_in_an_instance, CAST_OF_A_REFERENCE_IN_AN_INSTANCE, |v:
     matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("can't cast a reference"))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// An alias applied twice is two types: `Id<i64>` checked does not vouch
+// for `Id<&i64>`, as target or as source.
+const CAST_TO_A_REFERENCE_THROUGH_AN_ALIAS: &str = r#"
+{
+  type Id<'a> = 'a;
+  cast<(Id<i64>, Id<&i64>)>((1, u64:0))
+}
+"#;
+run!(cast_to_a_reference_through_an_alias, CAST_TO_A_REFERENCE_THROUGH_AN_ALIAS, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const CAST_OF_A_REFERENCE_THROUGH_AN_ALIAS: &str = r#"
+{
+  type Id<'a> = 'a;
+  let v = 5;
+  let t: (Id<i64>, Id<&i64>) = (1, &v);
+  cast<(i64, u64)>(t)
+}
+"#;
+run!(cast_of_a_reference_through_an_alias, CAST_OF_A_REFERENCE_THROUGH_AN_ALIAS, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("can't cast a reference"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A name expanded twice on one value with other parameters is no cycle.
+run!(
+    cast_to_a_nested_alias,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(42))),
+    "/test.gx" => r#"
+        type Id<'a> = 'a;
+        let result = cast<Id<Id<i64>>>(u8:41)$ + 1
+    "#
+);
+
+// A definition whose parameters grow as it recurses is a cast target:
+// every application of it holds what its parameters hold.
+run!(
+    cast_to_a_growing_definition,
+    |v: Result<&Value>| matches!(v, Ok(Value::Null)),
+    "/test.gx" => r#"
+        type N<'a> = [null, ('a, N<Array<'a>>)];
+        let result = cast<N<i64>>(null)$
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
 // `never<T>` writes a type name like an annotation does.
 run!(
     never_type_names_are_defined,

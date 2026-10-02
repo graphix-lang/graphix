@@ -308,41 +308,76 @@ async fn program_image_restores_kernels() -> Result<()> {
     Ok(())
 }
 
+/// One run of `program`, compiled cold, or restored from `image` when
+/// given; the cold run also hands back the program image it wrote.
+async fn session(
+    program: &str,
+    image: Option<Bytes>,
+) -> Result<(CompRes<NoExt>, Vec<Value>, Option<Bytes>, bool)> {
+    let (tx, mut rx) = mpsc::channel(10);
+    let (reg_tx, _reg_rx) = oneshot::channel();
+    let (prog_tx, prog_rx) = oneshot::channel();
+    // a restored image's program wins; a refused one compiles the source
+    let src = Some(Source::Internal(program.into()));
+    let flags = CFlag::FusionDisabled.into();
+    let (reg, prog_tx) = match image {
+        None => (RegistrationImage::Save(reg_tx), Some(prog_tx)),
+        Some(image) => {
+            drop(prog_tx);
+            (RegistrationImage::Load(image), None)
+        }
+    };
+    let ctx = init_with_session(tx, TEST_REGISTER, flags, reg, src, prog_tx).await?;
+    let written = match prog_rx.await {
+        Ok(image) => Some(image?),
+        Err(_) => None,
+    };
+    let compiled = ctx.rt.program().await?.expect("the program compiled or restored");
+    let values = first_values(&mut rx).await;
+    let restored = ctx.rt.env_stats().await?.restored;
+    ctx.shutdown().await;
+    Ok((compiled, values, written, restored))
+}
+
 /// `program` compiled cold, writing its image, and restored from it:
 /// each runtime's program and the root values it produced, in order.
 async fn cold_and_warm(
     program: &str,
 ) -> Result<((CompRes<NoExt>, Vec<Value>), (CompRes<NoExt>, Vec<Value>))> {
-    let (tx, mut cold_rx) = mpsc::channel(10);
-    let (reg_tx, _reg_rx) = oneshot::channel();
-    let (prog_tx, prog_rx) = oneshot::channel();
-    let cold = init_with_session(
-        tx,
-        TEST_REGISTER,
-        CFlag::FusionDisabled.into(),
-        RegistrationImage::Save(reg_tx),
-        Some(Source::Internal(program.into())),
-        Some(prog_tx),
-    )
-    .await?;
-    let image = prog_rx.await??;
-    let cold_program = cold.rt.program().await?.expect("the program compiled");
-    let cold_values = first_values(&mut cold_rx).await;
-    let (tx, mut warm_rx) = mpsc::channel(10);
-    let warm = init_with_session(
-        tx,
-        TEST_REGISTER,
-        CFlag::FusionDisabled.into(),
-        RegistrationImage::Load(image),
-        None,
-        None,
-    )
-    .await?;
-    let warm_program = warm.rt.program().await?.expect("the program restored");
-    let warm_values = first_values(&mut warm_rx).await;
-    cold.shutdown().await;
-    warm.shutdown().await;
+    let (cold_program, cold_values, image, _) = session(program, None).await?;
+    let image = image.expect("the cold run wrote its image");
+    let (warm_program, warm_values, _, restored) = session(program, Some(image)).await?;
+    assert!(restored, "the warm runtime compiled cold");
     Ok(((cold_program, cold_values), (warm_program, warm_values)))
+}
+
+/// `image` with its first instance's offset `at`: the trailer rewritten,
+/// the header's offset of what follows it moved by the change in length.
+fn with_first_instance_at(image: &Bytes, at: u64) -> Bytes {
+    use bytes::Buf;
+    use netidx_core::pack::{decode_varint, encode_varint};
+    let mut b = &image[5..];
+    String::decode(&mut b).expect("the isa");
+    let header = image.len() - b.len();
+    let (heap_at, table_at, counts_at) =
+        (b.get_u64(), b.get_u64() as usize, b.get_u64() as usize);
+    assert!((heap_at as usize) < table_at);
+    let mut table = &image[table_at..counts_at];
+    let n = decode_varint(&mut table).unwrap();
+    assert!(n > 0, "the program image holds an instance in its heap");
+    let id = decode_varint(&mut table).unwrap();
+    decode_varint(&mut table).unwrap();
+    let mut rewritten = Vec::new();
+    encode_varint(n, &mut rewritten);
+    encode_varint(id, &mut rewritten);
+    encode_varint(at, &mut rewritten);
+    rewritten.extend_from_slice(table);
+    let mut out = image[..table_at].to_vec();
+    out.extend_from_slice(&rewritten);
+    let counts = table_at + rewritten.len();
+    out.extend_from_slice(&image[counts_at..]);
+    out[header + 16..header + 24].copy_from_slice(&(counts as u64).to_be_bytes());
+    Bytes::from(out)
 }
 
 /// A runtime restored from an image holding a program runs it to the
@@ -360,6 +395,20 @@ async fn program_image_restores() -> Result<()> {
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
     assert_eq!(show(&cold_program.exprs[0].typ), show(&warm_program.exprs[0].typ));
     assert_eq!(cold_values, warm_values);
+    Ok(())
+}
+
+/// An image whose instance table points outside its heap is refused when
+/// it is read, so the session runs cold rather than fail a first call.
+#[tokio::test]
+async fn an_instance_outside_the_heap_is_refused() -> Result<()> {
+    let (_, cold_values, image, _) = session(PROGRAM, None).await?;
+    let image = image.expect("the cold run wrote its image");
+    let past_the_end = image.len() as u64 + 1000;
+    let bad = with_first_instance_at(&image, past_the_end);
+    let (_, values, _, restored) = session(PROGRAM, Some(bad)).await?;
+    assert!(!restored, "an image with an instance past its end restored");
+    assert_eq!(cold_values, values);
     Ok(())
 }
 

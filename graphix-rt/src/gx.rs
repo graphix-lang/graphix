@@ -615,6 +615,7 @@ impl<X: GXExt> GX<X> {
                         ref_var_keys,
                         ref_var_total,
                         store_len: self.ctx.rt.store.len(),
+                        lambda_defs_len: self.ctx.lambda_defs.len(),
                         restored: self.restored,
                     });
                 }

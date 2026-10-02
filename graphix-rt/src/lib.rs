@@ -570,6 +570,8 @@ pub struct EnvStats {
     pub ref_var_total: usize,
     /// number of variables with a delivery in the runtime store
     pub store_len: usize,
+    /// number of lambda definitions the context holds (`lambda_defs`)
+    pub lambda_defs_len: usize,
     /// the registration was restored from an image (a bad image compiles
     /// cold instead)
     pub restored: bool,

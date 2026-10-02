@@ -2685,6 +2685,52 @@ run!(array_union_type_test, ARRAY_UNION_TYPE_TEST, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "a")
 });
 
+// A type test over a mixed collection's elements narrows nothing after
+// it: an array that is not all i64 may still hold an i64.
+const ARRAY_ELEMENT_TEST_KEEPS_RESIDUAL: &str = r#"
+{
+  let x: Array<[i64, string]> = [1, "a"];
+  let r: string = select x { Array<i64> as _ => "ints", s => s[0]$ };
+  r
+}
+"#;
+
+run!(array_element_test_keeps_residual, ARRAY_ELEMENT_TEST_KEEPS_RESIDUAL, |v: Result<&Value>| v.is_err();
+ graphix_package_core::testing::FuseExpect::None);
+
+const ARRAY_ELEMENT_TEST_RESIDUAL_MIXED: &str = r#"
+{
+  let x: Array<[i64, string]> = [1, "a"];
+  select x {
+    Array<i64> as _ => "ints",
+    s => select s[0]$ { string as t => t, i64 as n => "[n]" }
+  }
+}
+"#;
+
+run!(
+    array_element_test_residual_mixed,
+    ARRAY_ELEMENT_TEST_RESIDUAL_MIXED,
+    |v: Result<&Value>| { matches!(v, Ok(Value::String(s)) if &**s == "1") }
+);
+
+const LIST_ELEMENT_TEST_RESIDUAL_MIXED: &str = r#"
+{
+  let x: List<[i64, string]> = [<1, "a">];
+  select x {
+    List<i64> as _ => "ints",
+    [<h, rest..>] => select h { string as t => t, i64 as n => "[n]" },
+    [<>] => "empty"
+  }
+}
+"#;
+
+run!(list_element_test_residual_mixed, LIST_ELEMENT_TEST_RESIDUAL_MIXED, |v: Result<
+    &Value,
+>| {
+    matches!(v, Ok(Value::String(s)) if &**s == "1")
+});
+
 // Each array or list member of a scrutinee has its own length ladder.
 const ARRAY_LIST_LADDERS: &str = r#"
 {

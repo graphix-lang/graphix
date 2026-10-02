@@ -1768,7 +1768,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             Some(at) => {
                 let image = dec.image().clone();
                 image::DecodeImage::with(&mut dec, || {
-                    let mut sub = &image[at as usize..];
+                    let Some(mut sub) = image.get(at as usize..) else {
+                        bail!("instance {instance:?} at {at} is past the image")
+                    };
                     GXLambda::image_decode(ctx, &mut sub)
                         .map_err(|e| anyhow!("instance {instance:?} at {at}: {e:?}"))
                 })
