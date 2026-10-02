@@ -204,17 +204,19 @@ fn operand_type<'t>(env: &Env, lt: &'t Type, rt: &'t Type) -> Result<Option<&'t 
     Ok(one.then_some(lt))
 }
 
-/// An operand whose type is known must be in `bound` now; an open cell
-/// carries `bound` as a constraint for later.
+/// An operand whose type is known must be in `bound` now; an open cell,
+/// alone or a member of a union, carries `bound` as a constraint for
+/// later: binding it to `bound` would claim every type the bound admits
+/// at once.
 pub(super) fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
-    if t.with_deref(|t| t.is_some()) {
-        bound.check_contains(env, t)
-    } else {
-        match t {
-            Type::TVar(tv) => tv.narrow_cell(env, bound.clone()),
-            _ => Ok(()),
-        }
-    }
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => match tv.binding() {
+            Some(b) => constrain_operand(env, bound, &b),
+            None => tv.narrow_cell(env, bound.clone()),
+        },
+        Type::Set(ts) => ts.iter().try_for_each(|m| constrain_operand(env, bound, m)),
+        t => bound.check_contains(env, t),
+    })
 }
 
 /// The numeric primitives a value of `t` may be, through bound cells,

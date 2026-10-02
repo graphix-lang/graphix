@@ -181,6 +181,11 @@ An image carries each cell's level and each definition's depth.
   binding: an unannotated `let` over a ⊥ initializer seeds a fresh
   cell, writers refine it at their tc0, and the check's settle
   (`PendingSettle::LetOverBottom`) binds a cell nobody refined to ⊥.
+- An operator's bound (`Number` for arithmetic, an integer for an
+  index) narrows an open cell of its operand, alone or a member of a
+  union (`[i64, 'x]`), and checks only the known parts
+  (`op::constrain_operand`); it never binds the cell to the bound, which
+  would claim every type the bound admits at once.
 - A cell remembers that ⊥ reached it while open (`TCell::bottom_fed`,
   set by that `contains` arm, merged by aliasing, copied at
   instantiation like the conjuncts). Every other production binds a

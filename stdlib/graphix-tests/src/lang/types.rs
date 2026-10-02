@@ -936,6 +936,37 @@ run!(cast_of_a_reference_in_an_instance, CAST_OF_A_REFERENCE_IN_AN_INSTANCE, |v:
     matches!(v, Ok(Value::Error(e)) if format!("{e}").contains("can't cast a reference"))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// An arithmetic operand that is a union with an open member narrows the
+// member to the bound, never binds it to the bound: the member stays one
+// type a later use picks, here ⊥ (only ⊥ was produced into `x`). A
+// callback bound by `let` checks as the same one inline does.
+const OPERAND_BOUND_NARROWS_AN_OPEN_MEMBER: &str = r#"
+{
+  let x = never();
+  let f = |i| array::map([0, x], |j| i + j);
+  let r = array::map([2], f);
+  1
+}
+"#;
+run!(
+    operand_bound_narrows_an_open_member,
+    OPERAND_BOUND_NARROWS_AN_OPEN_MEMBER,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(1))) }
+);
+
+const OPERAND_WITH_TWO_NUMERIC_MEMBERS: &str = r#"
+{
+  let x = never();
+  x <- 1.5;
+  let f = |i| array::map([0, x], |j| i + j);
+  let r = array::map([2], f);
+  1
+}
+"#;
+run!(operand_with_two_numeric_members, OPERAND_WITH_TWO_NUMERIC_MEMBERS, |v: Result<&Value>| {
+    matches!(v, Err(e) if format!("{e:#}").contains("more than one numeric type"))
+}; graphix_package_core::testing::FuseExpect::None);
+
 // An alias applied twice is two types: `Id<i64>` checked does not vouch
 // for `Id<&i64>`, as target or as source.
 const CAST_TO_A_REFERENCE_THROUGH_AN_ALIAS: &str = r#"

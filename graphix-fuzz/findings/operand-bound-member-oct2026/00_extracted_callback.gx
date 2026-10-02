@@ -1,0 +1,7 @@
+// An arithmetic operand typed a union with an open member, [i64, 'x]
+// with 'x a let over ⊥, met the Number bound as a containment, which
+// bound 'x to the whole numeric set and refused the program as mixed
+// numeric; inline, the callback's parameter was i64 first and 'x took
+// it. The bound now narrows an open member and 'x settles ⊥. Found by
+// oct02c typemorph (ryouko), the let-extract mutant of the inline form.
+{ let x = never(); let tm__0 = |i| array::map([0, x], |j| select 0 { 0 if (i + j + x - x) % 2 == -9223372036854775808 => 1, _ => 2 }); let a = array::map([2, 100], tm__0); let c = count(a); select count(x) { 4 => c, _ => never() } }
