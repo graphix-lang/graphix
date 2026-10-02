@@ -495,8 +495,6 @@ impl Type {
             // elements that pass it: one that is not all `t1` is any
             // collection of `t0`, so only a `t1` covering every element
             // subtracts anything.
-            // XCR Codex for Eric: element-wise subtraction is gone, for List
-            // too; a partial overlap keeps the whole collection type.
             (Type::List(t0), Type::List(t1)) | (Type::Array(t0), Type::Array(t1)) => {
                 let covered = t0 == t1
                     || matches!(

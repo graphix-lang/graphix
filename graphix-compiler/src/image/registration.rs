@@ -349,8 +349,6 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 let mut instances = AHashMap::with_capacity(n.min(table.len() / 2));
                 for _ in 0..n {
                     let id = LambdaInstanceId::decode(&mut table)?;
-                    // XCR Codex for Eric: an instance outside the heap refuses
-                    // the image here.
                     let at = decode_varint(&mut table)?;
                     if !(heap_at as u64..table_at as u64).contains(&at) {
                         return Err(PackError::InvalidFormat);

@@ -2455,7 +2455,14 @@ fn compile_top<R: Rt, E: UserEvent>(
     drop(build_profile);
     let (mut node, out_scope) = match compiled {
         Ok(n) => n,
-        // XCR Codex for Eric: every failure puts the registries back.
+        // CR Claude for Eric: fixed here, but a dynamic module's recompile
+        // (`Module::compile_source`, node/module.rs) never reaches
+        // compile_top. When it fails, the nodes built before the failure are
+        // dropped without `delete`, nothing restores `lambda_defs`, and
+        // `apply_deferred` runs instead of `drop_deferred`. Measured: a
+        // source `let f = |x| x; let g = |y| y; let h = missing` keeps 2
+        // definitions per failed compile (438 -> 448 over 5); the same source
+        // with `let h = 1` keeps none. Share `Saved` there.
         Err(e) => {
             ctx.drop_deferred();
             saved.restore(ctx);
@@ -2472,7 +2479,6 @@ fn compile_top<R: Rt, E: UserEvent>(
     // An attribute the fusion walk neither dispatched nor absorbed
     // would silently assert nothing; a check runs no fusion walk and
     // leaves the attributes to a build.
-    // XCR Codex for Eric: the audit is skipped under CheckOnly.
     if ctx.fusion.enabled && !flags.contains(CFlag::CheckOnly) {
         let census = ctx.attr_census.lock();
         if !census.is_empty() {

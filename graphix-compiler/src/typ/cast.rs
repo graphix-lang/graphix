@@ -164,8 +164,23 @@ impl Type {
             Type::ByRef(_) => bail!("can't cast a reference"),
             Type::Ref(tr) => {
                 let t = self.lookup_ref(env)?;
-                // XCR Codex for Eric: keyed by what the parameters admit, here
-                // and in holds_ref_int, each application decided once.
+                // CR Claude for Eric: the keys fix Id<i64> vouching for
+                // Id<&i64>, but `decide_once` saves a verdict reached while an
+                // enclosing key was still `Deciding` (assumed castable). When
+                // that key then fails, the saved verdict is wrong, and a
+                // parameter's failure is dropped into `shape` here, so the
+                // walk keeps going and reuses it. Witness (casts, prints
+                // `(null, [([], 5)])`, a forged &i64):
+                //   type Ph<'x> = [null, Array<Ph<'x>>];
+                //   type A = (B, &i64);
+                //   type B = Array<A>;
+                //   cast<(Ph<A>, B)>((null, [([], u64:5)]))
+                // Ph<A>'s shape decides A, which saves B as castable from
+                // A's provisional verdict. holds_ref_int has the same
+                // pattern (B saved as holding no reference), but my
+                // attempts to show it through a cast source were refused.
+                // Save only a verdict that no `Deciding` answer fed, or drop
+                // the verdicts saved under a key that then fails.
                 let shape = tr
                     .params
                     .iter()
@@ -544,8 +559,6 @@ impl Type {
                     Ok(t) => t,
                     Err(_) => return Err(self.cast_fail("undefined type", v)),
                 };
-                // XCR Codex for Eric: the parameters are in the path key, also
-                // in is_a_int_inner: Id<Id<i64>> expands Id twice.
                 let Some(key) = ref_key(tr).map(|k| (k, (v as *const Value).addr()))
                 else {
                     return Err(self.cast_fail("undefined type", v));
