@@ -929,16 +929,15 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let mut prime_default_refs = prime_default_refs;
         self.prepare_bind(ctx, scope, flags, f, &mut defaults)?;
         prime_default_refs(ctx, &defaults);
-        let resolved_ftype = self.ftype.as_ref().map(FnType::resolve_tvars);
-        let mode = resolved_ftype
-            .as_ref()
-            .map(BindMode::Dynamic)
-            .unwrap_or(BindMode::Definition);
-        let mut apply = self.init_prepared_bind(ctx, scope, f, mode)?;
+        // a site its check never typed sees the callee as a call would
+        let view = match &self.ftype {
+            Some(ft) => ft.resolve_tvars(),
+            None => f.typ.instantiate(&ctx.rec_defs),
+        };
+        let mut apply =
+            self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
-            if crate::dbgenv::gxdbg_swallow() {
-                eprintln!("SWALLOWED-TC0 at {}: {e:#}", self.spec);
-            }
+            log::error!("a run-time bind at {} did not type: {e:#}", self.spec);
         }
         Ok(apply)
     }
@@ -976,6 +975,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             _ => None,
         };
         crate::PendingSettle::Site {
+            sigs: smallvec::SmallVec::new(),
             ftype: ftype.clone(),
             rtype,
             exempt,
@@ -1147,11 +1147,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 if !already_active {
                     let _tc1_span = perfdbg::span(&perfdbg::TC1_NS);
                     if let Err(e) = apply.typecheck1(ctx, &mut [], &instance_ftype) {
-                        if dbgenv::gxdbg_swallow() {
-                            eprintln!("SWALLOWED-LAZY-TC1 at {}: {e:#}", self.spec);
-                        }
-                        log::trace!(
-                            "bind: lazy-bound callee body typecheck1 failed: {e:#}"
+                        log::error!(
+                            "a run-time bind at {} did not elaborate: {e:#}",
+                            self.spec
                         );
                     }
                 }
@@ -1760,10 +1758,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn materialize(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
         let Callee::Imaged { instance, .. } = &self.callee else { return Ok(()) };
         let instance = *instance;
-        let mut dec = ctx
+        let shared = ctx
             .image_decoder
-            .take()
+            .clone()
             .ok_or_else(|| anyhow!("no image to decode instance {instance:?} from"))?;
+        let mut dec = shared.lock();
         let decoded = match dec.instance_offset(instance) {
             None => Err(anyhow!("instance {instance:?} is not in the image")),
             Some(at) => {
@@ -1775,7 +1774,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 })
             }
         };
-        ctx.image_decoder = Some(dec);
+        drop(dec);
         ctx.apply_deferred();
         let apply: Box<dyn Apply<R, E>> = Box::new(decoded?);
         let Callee::Imaged { first_update, .. } =

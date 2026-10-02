@@ -28,6 +28,7 @@ use crate::{
         kernel_abi::{KernelSig, SiteLeaf},
     },
     ids::{IdRelocation, IdSpan, IdSpans},
+    node::lambda::DefTable,
     typ::{
         FnType, ResolvedRef, TVar, Type,
         tvar::{TCell, TVarId},
@@ -207,6 +208,8 @@ pub struct ImageEncoder {
     pub(crate) kernel_sigs: Table<usize, triomphe::Arc<KernelSig>>,
     pub(crate) site_leaves: Table<usize, triomphe::Arc<SiteLeaf>>,
     pub(crate) records: Table<usize, triomphe::Arc<BodyRecord>>,
+    /// Definitions' check tables by `Arc`.
+    pub(crate) def_tables: Table<usize, sync::Arc<DefTable>>,
     /// The distinct trees seen with each id, as the session's own
     /// clones (a clone shares its children): an expression is keyed by
     /// the address of the clone it matches, so a caller's address is
@@ -270,6 +273,7 @@ pub(crate) enum Obj {
     KernelSig(triomphe::Arc<KernelSig>),
     SiteLeaf(triomphe::Arc<SiteLeaf>),
     Record(triomphe::Arc<BodyRecord>),
+    DefTable(sync::Arc<DefTable>),
     MapNode(Box<dyn std::any::Any + Send + Sync>),
 }
 
@@ -321,6 +325,7 @@ object!(box FnType, FnType);
 object!(triomphe::Arc<KernelSig>, KernelSig);
 object!(triomphe::Arc<SiteLeaf>, SiteLeaf);
 object!(triomphe::Arc<BodyRecord>, Record);
+object!(sync::Arc<DefTable>, DefTable);
 
 /// A map node is stored by its map's types.
 pub(crate) fn map_node_obj<T: Clone + Send + Sync + 'static>(node: T) -> Obj {
@@ -357,7 +362,14 @@ pub struct ImageDecoder {
     fastcalls: AHashMap<&'static str, FastCall>,
     instances: AHashMap<LambdaInstanceId, u64>,
     relocations: Relocations,
+    /// The handle the session holds this decoder by, for a definition
+    /// that decodes part of the image later.
+    shared: Weak<Mutex<ImageDecoder>>,
 }
+
+/// A session's decoder as the context and its restored definitions
+/// hold it.
+pub type SharedDecoder = sync::Arc<Mutex<ImageDecoder>>;
 
 impl ImageDecoder {
     /// Enter `obj` in the slot of the definition being decoded. A value
@@ -399,7 +411,19 @@ impl ImageDecoder {
             fastcalls: AHashMap::new(),
             instances: AHashMap::new(),
             relocations,
+            shared: Weak::new(),
         })
+    }
+
+    /// The decoder as the session holds it.
+    pub fn share(self) -> SharedDecoder {
+        let shared = sync::Arc::new(Mutex::new(self));
+        shared.lock().shared = sync::Arc::downgrade(&shared);
+        shared
+    }
+
+    pub(crate) fn shared(&self) -> Weak<Mutex<ImageDecoder>> {
+        self.shared.clone()
     }
 
     /// The image every offset in the session refers into. Set before
@@ -1171,6 +1195,31 @@ where
         e.scratch.push(def);
     });
     written
+}
+
+/// The ordinal the object reference at the head of `buf` names, read
+/// without decoding the object, for [`object_at`] later.
+pub(crate) fn object_ref(buf: &mut impl Buf) -> Result<u32, PackError> {
+    with_slice(buf, |sub| {
+        if !sub.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match sub.get_u8() {
+            REF => ref_ord(sub),
+            _ => Err(PackError::InvalidFormat),
+        }
+    })
+}
+
+/// The object `ord` names: the session's, or decoded with `full`.
+pub(crate) fn object_at<T: Object>(
+    ord: u32,
+    full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+) -> Result<T, PackError> {
+    match built::<T>(ord) {
+        Some(t) => Ok(t),
+        None => decode_at(ord, full),
+    }
 }
 
 /// The ordinal a reference names.

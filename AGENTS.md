@@ -302,11 +302,14 @@ of every call site it recorded, drained before typecheck1 elaborates:
 a definition's gate keeps what its body bound as its signature (only a
 vacuous ⊥ reopens), so a call's types follow from the signature, and
 elaboration refusing what the check accepted is a type-system bug
-(`GRAPHIX_ELAB_AUDIT` reports it). An instance does not check again: its
-types are its definition's check's (`node::lambda::DefTable`),
+(`GRAPHIX_ELAB_AUDIT` reports it). An instance does not check again, a
+run-time bind's and a restored definition's included: its types are its
+definition's check's (`node::lambda::DefTable`, which an image carries),
 substituted by its signature, and each node's `typecheck0_instance`
 does only the state part of its check (the default is the check;
-`design/parallel_compile.md`). Every type name a definition
+`design/parallel_compile.md`). An instance the table cannot type is
+refused, a compiler bug, never checked instead (`node::lambda::Typing`).
+Every type name a definition
 writes, a typedef body's included, must name something by the check's
 end, expanded or not (`design/env_independent_typerefs.md`).
 
@@ -377,7 +380,8 @@ imaged node kind owns an `Update::image_encode` / `image_decode` pair
 in its own file; a kind without one fails the write (`image::NOT_IMAGED`,
 logged) and the shell runs cold, never a partial image. Every shared
 object (expressions, types, function types, origins, paths, handlers,
-resolution cells, type variables, map nodes) is written once, in the
+resolution cells, type variables, map nodes, definitions' check tables)
+is written once, in the
 definitions area after the body and the heap (`ImageEncoder::finish`),
 and every occurrence of it, the first included, is a reference to the
 ordinal its first sight assigned; the trailer maps ordinals to
@@ -675,8 +679,9 @@ node graph IS the IR — there is no parallel typed IR
   function or a reference) settles to the widest argument whatever
   the order, one a callback or a reference holds to the first
   (`callsite.rs::Widening`); a formal with its own quantifiers (`f: fn<'b: C>(..)`) is
-  rank-2: its argument is checked with `'b` rigid, and an open
-  quantifier never binds to its bound (`design/tvar_constraints.md`);
+  rank-2: its argument is checked with `'b` rigid, a call copies `'b`
+  generic, and an open quantifier never binds to its bound, no site's
+  settle decides it (`design/tvar_constraints.md`);
   union collapse requires strict tvar identity; a free union member stays free (a type test over an
   untyped parameter binds it: annotate the parameter, not the arms); float comparison is a total order (`NaN ==
   NaN`, below every number) so `Value` is map-key-able; checked arith

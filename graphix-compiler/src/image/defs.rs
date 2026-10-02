@@ -11,7 +11,9 @@ use super::{
 use crate::{
     ExecCtx, LambdaId, Rt, UserEvent,
     expr::{Arg, Expr},
-    node::lambda::{DefBody, DefOrigin, LambdaDef, make_init},
+    node::lambda::{
+        DefBody, DefOrigin, LambdaDef, make_init, tables_decode, tables_encode,
+    },
     typ::FnType,
 };
 use bytes::{Buf, BufMut};
@@ -61,7 +63,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
         typ,
         init: _,
         check: _,
-        table: _,
+        table,
         intrinsic_effect,
         stateless,
         recursion,
@@ -85,7 +87,8 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
     level.encode(buf)?;
     body_encode(body, buf)?;
     flags_encode(*flags, buf)?;
-    spec.encode(buf)
+    spec.encode(buf)?;
+    tables_encode(table.get(), buf)
 }
 
 /// Rebuild a definition and register it in `ctx.lambda_defs`.
@@ -106,6 +109,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
     let body = body_decode(buf)?;
     let flags = flags_decode(buf)?;
     let spec: Expr = Pack::decode(buf)?;
+    let table = std::sync::Arc::new(tables_decode(buf)?);
     let init = make_init(
         id,
         flags,
@@ -115,6 +119,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         argspec.clone(),
         spec.clone(),
         body.clone(),
+        table.clone(),
     );
     ctx.wrap_lambda(LambdaDef {
         id,
@@ -124,7 +129,7 @@ pub(crate) fn def_decode<R: Rt, E: UserEvent>(
         typ,
         init,
         check: Mutex::new(None),
-        table: std::sync::OnceLock::new(),
+        table,
         intrinsic_effect: Mutex::new(intrinsic_effect),
         stateless: AtomicBool::new(stateless),
         recursion: Mutex::new(recursion),

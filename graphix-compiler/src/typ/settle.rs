@@ -195,12 +195,14 @@ impl FnType {
     /// dependency order: a member settles only after every member its
     /// binding or constraints reach. Ordering keys are (name, TVarId)
     /// only — `cell_addr` is ASLR-dependent and used for identity alone.
-    /// `exempt` cells are ordered but not settled.
+    /// `exempt` cells, and every cell in `kept` (what the enclosing
+    /// definitions' signatures reach now), are ordered but not settled.
     pub fn settle_terminal(
         &self,
         env: &Env,
         rtype_cell: Option<&TVar>,
         exempt: &AHashSet<usize>,
+        kept: &[&AHashSet<usize>],
     ) -> Result<()> {
         let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut tvs);
@@ -259,12 +261,19 @@ impl FnType {
         for i in 0..nodes.len() {
             visit(i, &edges, &mut seen, &mut order);
         }
+        // an enclosing definition's signature is settled by each call,
+        // what it reaches as it stands now; a quantifier of a function
+        // type the signature holds is its callers' to pick
+        let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.inner_quantifiers(&mut quantifiers);
         // a `Concrete` cell met only inside a conjunct is no position of
         // the signature: nothing reads it, so it is left as it stands
         for i in order.drain(..) {
             let tv = &nodes[i].1;
             let addr = tv.cell_addr();
             if exempt.contains(&addr)
+                || quantifiers.contains_key(&addr)
+                || kept.iter().any(|k| k.contains(&addr))
                 || (!positional.contains_key(&addr) && tv.requires_concrete())
             {
                 continue;

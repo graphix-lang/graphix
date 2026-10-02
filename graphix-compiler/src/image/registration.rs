@@ -11,8 +11,8 @@
 //! anything decodes.
 
 use super::{
-    DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder, defs,
-    nodes, scope_decode, scope_encode,
+    DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder,
+    SharedDecoder, defs, nodes, scope_decode, scope_encode,
 };
 use crate::{
     BindId, BuiltinBindInfo, ExecCtx, LambdaId, LambdaInstanceId, Node, Rt, Scope,
@@ -36,7 +36,7 @@ use netidx_value::Value;
 const MAGIC: &[u8; 4] = b"GXIM";
 
 /// The registration image's format; a cache key includes it.
-pub const REGISTRATION_FORMAT: u8 = 22;
+pub const REGISTRATION_FORMAT: u8 = 23;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
@@ -305,7 +305,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         &mut self,
         image: Bytes,
         nodes: &mut Vec<(ExprId, Node<R, E>)>,
-    ) -> Result<(ImageDecoder, Scope, Option<ProgramRoot>), PackError> {
+    ) -> Result<(SharedDecoder, Scope, Option<ProgramRoot>), PackError> {
         let mut bytes: &[u8] = &image;
         if bytes.len() < MAGIC.len() + 1 || &bytes[..MAGIC.len()] != MAGIC {
             return Err(PackError::InvalidFormat);
@@ -333,7 +333,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         if counts_bytes.has_remaining() {
             return Err(PackError::InvalidFormat);
         }
-        let mut dec = ImageDecoder::new(counts)?;
+        let shared = ImageDecoder::new(counts)?.share();
+        let mut dec = shared.lock();
         dec.set_image(image.clone());
         dec.set_fastcalls(
             self.registry
@@ -387,10 +388,11 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                 };
                 Ok((scope, program))
             })?;
+        drop(dec);
         if image.len() - bytes.remaining() != heap_at {
             return Err(PackError::InvalidFormat);
         }
-        Ok((dec, scope, program))
+        Ok((shared, scope, program))
     }
 }
 

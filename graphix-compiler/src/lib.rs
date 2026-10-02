@@ -66,6 +66,7 @@ use poolshark::{
     global::{GPooled, Pool},
     local::LPooled,
 };
+use smallvec::SmallVec;
 use std::{
     any::{Any, TypeId},
     cell::Cell,
@@ -1286,8 +1287,7 @@ impl AbstractTypeRegistry {
 /// one instantiation (a self-call); different identities are distinct
 /// even while the def is resolving. Source identity, not `LambdaId`,
 /// because a literal in an instance body is re-minted per compile.
-pub(crate) type FnArgIdentity =
-    smallvec::SmallVec<[(node::callsite::ArgKey, Option<ExprId>); 4]>;
+pub(crate) type FnArgIdentity = SmallVec<[(node::callsite::ArgKey, Option<ExprId>); 4]>;
 
 #[derive(Clone)]
 pub(crate) struct ResolvingLambda {
@@ -1298,7 +1298,7 @@ pub(crate) struct ResolvingLambda {
 
 /// The active instantiations of one def, innermost last. A stack: a
 /// site inside `h(k)` may reach a still-resolving `h(g)`.
-pub(crate) type ResolvingStack = smallvec::SmallVec<[ResolvingLambda; 2]>;
+pub(crate) type ResolvingStack = SmallVec<[ResolvingLambda; 2]>;
 
 impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// The active instantiation of `def` with exactly this identity.
@@ -1486,7 +1486,7 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     pub cx: CompileCtx<R, E>,
     /// The tables of the image this session was restored from, for
     /// anything decoded later.
-    pub(crate) image_decoder: Option<image::ImageDecoder>,
+    pub(crate) image_decoder: Option<image::SharedDecoder>,
     /// Library state for builtins.
     pub libstate: LibState,
     /// The runtime.
@@ -1831,9 +1831,11 @@ pub(crate) enum PendingSettle {
         /// The site's return-type cell.
         rtype: Option<typ::TVar>,
         /// Cells (by address) exempt from settling: an omitted defaulted
-        /// argument's, and those the signature of an enclosing definition
-        /// reaches (generalized, settled by each call).
+        /// argument's.
         exempt: AHashSet<usize>,
+        /// The signatures of the enclosing definitions: what they reach
+        /// is generalized, settled by each call.
+        sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
         spec: Arc<Expr>,
     },
     /// An operator's operand cell, settled once the frame's sites have.
@@ -1871,11 +1873,27 @@ impl PendingSettle {
         env: &Env,
         mut on_err: impl FnMut(&Arc<Expr>, anyhow::Error) -> Result<()>,
     ) -> Result<()> {
+        let mut reached: LPooled<AHashMap<usize, AHashSet<usize>>> = LPooled::take();
         for s in frame.iter() {
-            if let PendingSettle::Site { ftype, rtype, exempt, spec } = s
-                && let Err(e) = ftype.settle_terminal(env, rtype.as_ref(), exempt)
-            {
-                on_err(spec, e)?
+            if let PendingSettle::Site { ftype, rtype, exempt, sigs, spec } = s {
+                let mut kept: SmallVec<[&AHashSet<usize>; 2]> = SmallVec::new();
+                for sig in sigs.iter() {
+                    reached.entry(triomphe::Arc::as_ptr(sig).addr()).or_insert_with(
+                        || {
+                            let mut cells: LPooled<AHashMap<usize, typ::TVar>> =
+                                LPooled::take();
+                            sig.reached_cells(&mut cells);
+                            cells.keys().copied().collect()
+                        },
+                    );
+                }
+                for sig in sigs.iter() {
+                    kept.push(&reached[&triomphe::Arc::as_ptr(sig).addr()]);
+                }
+                if let Err(e) = ftype.settle_terminal(env, rtype.as_ref(), exempt, &kept)
+                {
+                    on_err(spec, e)?
+                }
             }
         }
         for s in frame.iter() {

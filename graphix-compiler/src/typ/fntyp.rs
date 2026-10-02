@@ -710,6 +710,61 @@ impl FnType {
         }
     }
 
+    /// Map each open quantifier of a function type the signature holds
+    /// (a rank-2 formal's `fn<'b: C>`) that a call copies to a fresh
+    /// generic cell, its conjuncts copied through `walk`: the formal's
+    /// callers pick it, never the site that passes the argument.
+    fn generic_inner_quantifiers(
+        &self,
+        known: &mut AHashMap<usize, TVar>,
+        open: &IntSet<LambdaId>,
+        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
+    ) {
+        let mut inner: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        self.inner_quantifiers(&mut inner);
+        inner.retain(|addr, tv| !known.contains_key(addr) && tv.level().copied_by(open));
+        for (addr, tv) in inner.iter() {
+            known.insert(*addr, TVar::empty_generic(tv.name.clone()));
+        }
+        for (addr, tv) in inner.iter() {
+            let f = known[addr].clone();
+            for c in tv.cell_constraints() {
+                f.add_cell_constraint(walk(&c, known));
+            }
+        }
+    }
+
+    /// The open quantifiers of every function type the signature holds
+    /// (a rank-2 formal's `fn<'b: C>`), by cell.
+    pub(super) fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
+        fn go(t: &Type, out: &mut AHashMap<usize, TVar>, seen: &mut AHashSet<usize>) {
+            crate::stack::ensure_sufficient(|| match t {
+                Type::TVar(tv) => {
+                    if seen.insert(tv.cell_addr())
+                        && let Some(b) = tv.binding()
+                    {
+                        go(&b, out, seen)
+                    }
+                }
+                Type::Fn(ft) => {
+                    if !ft.quantifiers.is_empty() {
+                        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                        ft.collect_tvars(&mut named);
+                        for (name, tv) in named.drain() {
+                            if ft.quantifiers.contains(&name) && !tv.is_bound() {
+                                out.insert(tv.cell_addr(), tv);
+                            }
+                        }
+                    }
+                    ft.for_each_part(&mut |t, _| go(t, out, seen))
+                }
+                t => t.for_each_child(&mut |c| go(c, out, seen)),
+            })
+        }
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        self.for_each_part(&mut |t, _| go(t, out, &mut seen));
+    }
+
     /// A call's copy of a signature whose cells it shares (a parameter
     /// called in its definition's body): only the quantifiers are fresh.
     pub(crate) fn shared_call(&self) -> Self {
@@ -728,9 +783,11 @@ impl FnType {
     pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let how = Fresh::Instantiate(open);
-        self.fresh_quantifiers(&mut known, |c, known| {
+        let walk = |c: &Type, known: &mut AHashMap<usize, TVar>| {
             c.reset_tvars_int(known, how).unwrap_or_else(|| c.clone())
-        });
+        };
+        self.fresh_quantifiers(&mut known, walk);
+        self.generic_inner_quantifiers(&mut known, open, walk);
         let fresh = self.reset_tvars_int(&mut known, how);
         let copies: LPooled<AHashSet<usize>> =
             known.values().map(|tv| tv.cell_addr()).collect();

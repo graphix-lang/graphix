@@ -159,8 +159,8 @@ The first slice of step 3, keyed and stored as the cache rule above
 says. The image is the session after the package root modules compiled
 and before any cycle: the environment (`image/env.rs`), every lambda
 definition as data (`image/defs.rs`: body, lexical snapshot, scope,
-scheme, analysis facts; `init` is rebuilt by `make_init`, a builtin's
-check `Apply` on first use), the context's tables, the root nodes and
+scheme, analysis facts, its check's table; `init` is rebuilt by
+`make_init`, a builtin's check `Apply` on first use), the context's tables, the root nodes and
 the root scope (`image/registration.rs`). Ids relocate through
 `image_id!`; expressions keep their ids and origins; type variables
 keep their two-level sharing; handlers of the dynamic scope, module
@@ -168,6 +168,17 @@ paths, origins and type-reference resolution cells are shared
 objects. A definition's or a module's snapshot carries only the four
 lexical fields, the only ones `restore_lexical_env` reads, which took
 the stdlib test image from 7.5 MB to 1.2 MB.
+
+A definition's check table (`node::lambda::DefTable`, what its
+instances substitute) is an object, and a restored definition keeps
+only its ordinal: its first instance decodes it, from whatever compile
+task asks, through the session's shared decoder (`SharedDecoder`;
+`node::lambda::DefTables`). A lambda an instance defined is written
+with its rows renamed through the enclosing instance's map. Admin app,
+bench mode, realtime: the image grows from 7.5 to 8.4 MB (fusion on:
+8.1 to 9.0), and the warm start drops from 60.9 to 58.8 ms (fusion on:
+65.4 to 62.8), its run-time binds substituting instead of checking.
+Decoding every table at the restore instead cost 4 to 7 ms.
 
 Expressions and function types are objects too, keyed by address
 (`image::object_len/encode/decode`): a node's spec and a definition's

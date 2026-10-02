@@ -293,7 +293,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             typ: ftyp,
             init,
             check: Mutex::new(None),
-            table: std::sync::OnceLock::new(),
+            table: Default::default(),
             intrinsic_effect: Mutex::new(EffectKind::Async),
             stateless: std::sync::atomic::AtomicBool::new(false),
             recursion: Mutex::new(RecursionKind::NotRecursive),

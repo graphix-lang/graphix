@@ -159,6 +159,13 @@ An image carries each cell's level and each definition's depth.
   as positions included, and settles whatever remains. A cell still
   unbound and unconstrained after the whole tc0 phase binds ⊥
   (`TVar::settle_or_bottom`): nothing ever produced or constrained it.
+- A site's settle leaves what an enclosing definition's signature
+  reaches when the settle runs, not when the gate closed: an impl
+  head's `'k` reaches a method's scheme only once the impl relates
+  them, after the method's gate closed (`PendingSettle::Site::sigs`).
+  It also leaves every quantifier of a function type its signature
+  holds (`FnType::inner_quantifiers`): a rank-2 formal's `'b` is its
+  callers' to pick.
 - The check decides every cell it creates: the drain runs the site
   settles, then the operator operand and `let`-over-⊥ settles, then the
   rules judged over them (`PendingSettle`). Elaboration never settles
@@ -228,7 +235,10 @@ argument's typecheck0 and a `check_contains_rigid` all run against
 that one expansion (each expansion of a typedef reference freshens its
 cells). `apply(|x| x * x)` checks; `apply(|x| x + 1)` and
 `apply(|x: i64| ..)` are refused, since they hold only where `'b` is
-`i64`.
+`i64`. A call of `apply` copies `'b` generic
+(`FnType::generic_inner_quantifiers`): the argument's cells the check
+aliases to it stay its own scheme's, which each call of `f` copies,
+and the passing site's settle leaves it.
 
 `FnType::contains` checks a declared bound only for a BOUND variable
 (`bounds_hold`). An open one stays open, standing for one type the

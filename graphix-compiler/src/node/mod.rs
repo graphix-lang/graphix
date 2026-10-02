@@ -905,8 +905,7 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
 
 /// Run a runtime bind `f` in a settle frame of its own and settle what
 /// it deferred when it returns: no statement boundary follows a bind
-/// at run time. A refused settle is a lazy body's swallowed typecheck
-/// error, logged like the others.
+/// at run time. A refused settle is a compiler bug, logged.
 pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<R, E>,
     f: impl FnOnce(&mut ExecCtx<R, E>) -> Result<T>,
@@ -921,10 +920,7 @@ pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
     ctx.pending_names.truncate(names);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
     let _ = crate::PendingSettle::drain(&pending, &ctx.env, |spec, e| {
-        if crate::dbgenv::gxdbg_swallow() {
-            eprintln!("SWALLOWED-LAZY-SETTLE at {spec}: {e:#}");
-        }
-        log::trace!("bind: lazy-bound callee settle failed: {e:#}");
+        log::error!("a run-time bind's settle at {spec} refused: {e:#}");
         Ok(())
     });
     res

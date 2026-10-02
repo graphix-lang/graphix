@@ -460,8 +460,24 @@ only the state part of its check:
   the instance form (`typecheck0_with` over a `node::Child` visitor);
 - the instance itself checks neither its arguments nor its return.
 
-The default `typecheck0_instance` is the check, so a node kind nothing
-converted stays correct. `GRAPHIX_NO_SUBST=1` checks every instance.
+The default `typecheck0_instance` is the check: the leaves, a reference
+(which copies its binding's scheme), and declarations. `GRAPHIX_NO_SUBST=1`
+checks every instance.
+
+**Every instance.** An instance records how it is typed
+(`node::lambda::Typing`): it is its definition's check, it substitutes
+the definition's table, or it was restored from an image. It takes the
+table from its definition's `init`, which shares the definition's table
+cell, never from the context's registry. A dynamic bind substitutes like
+a static one; a callee whose parameter list differs from the site's view
+(a defaulted label the view omits) is built at a call's copy of its
+definition's signature, fitted to the view as a call fits it. An image
+carries every definition's table (`DefTable::image_encode`; a lambda an
+instance defined is written with its rows renamed through the enclosing
+instance's map), so a restored definition's instances, at run time and
+in a program compiled over a restored registration, substitute too. An
+instance whose definition recorded no table, or whose signature the
+definition's does not hold, is refused: a compiler bug, never a check.
 
 Where the old instance check refined an open cell of a generalized
 signature (the element of an empty-array arm beside a typed one), the
@@ -476,9 +492,6 @@ Admin app, `milestone_timing`, same binary, substitution off → on:
 | four threads | 200 → 151 ms | 390 → 355 ms |
 
 Instance setup is now 9% of the samples, the definitions' checks 8%.
-Open: a dynamic bind still checks its instance
-(`callsite.rs::setup_dynamic_bind`, the lazy `typecheck1`); an image
-does not carry tables, so a restored definition's instances check.
 
 ## The audit
 
@@ -487,11 +500,7 @@ outside a definition gate, and every narrowing the instance's return makes
 to its static site. `=bt` adds a backtrace. Over the gate and `regress` it
 reports:
 
-- the type-directed builtin hooks above;
-- runtime-bind rechecks that fail on correct programs and are swallowed.
-  They have less information than the site: `[]` in one arm leaves a
-  fresh cell a rigid recheck cannot bind. These go away with the
-  record-and-substitute design.
+- the type-directed builtin hooks above.
 
 The unify-back at `setup_static_bind` never narrowed a site. Once the
 audit is clean it becomes a finding that every fuzz lane records.
@@ -499,7 +508,7 @@ audit is clean it becomes a finding that every fuzz lane records.
 ## Steps
 
 1. Make the audit clean: the builtin constraint (`Concrete` is built);
-   dynamic binds by substitution. Static instances by substitution are
+   instances by substitution, dynamic and restored ones included, are
    BUILT (above).
 2. The audits as fuzz findings, soaked. OPEN.
 3. Split ExecCtx into the compile context and the runtime. BUILT.

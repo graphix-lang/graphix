@@ -166,7 +166,37 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.each(|n| wrap!(n, n.typecheck0(ctx)))?;
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+        self.each(|n| wrap!(n, n.typecheck1(ctx)))
+    }
+
+    fn view(&self) -> NodeView<'_, R, E> {
+        NodeView::Map(self)
+    }
+
+    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
+        emit_map_new_node(cx, &self.entries, &self.typ)
+    }
+}
+
+impl<R: Rt, E: UserEvent> Map<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        self.each(|n| wrap!(n, child(n, ctx)))?;
         let bottom = Type::Bottom;
         let mut kts: LPooled<Vec<&Type>> = LPooled::take();
         let mut vts: LPooled<Vec<&Type>> = LPooled::take();
@@ -180,18 +210,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
         Ok(self.typ.check_contains(&ctx.env, &rtype)?)
-    }
-
-    fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.each(|n| wrap!(n, n.typecheck1(ctx)))
-    }
-
-    fn view(&self) -> NodeView<'_, R, E> {
-        NodeView::Map(self)
-    }
-
-    fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-        emit_map_new_node(cx, &self.entries, &self.typ)
     }
 }
 
@@ -221,6 +239,21 @@ pub(crate) fn map_get(src: &Value, key: &Value) -> Value {
 }
 
 impl<R: Rt, E: UserEvent> MapRef<R, E> {
+    fn typecheck0_with(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        child: &mut super::Child<'_, R, E>,
+    ) -> Result<()> {
+        wrap!(self.source, child(&mut self.source, ctx))?;
+        wrap!(self.key, child(&mut self.key, ctx))?;
+        let mt = Type::Map {
+            key: Arc::new(self.key.typ().clone()),
+            value: Arc::new(self.vtyp.clone()),
+        };
+        wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
+        Ok(())
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<R, E>,
         buf: &mut &[u8],
@@ -290,14 +323,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        wrap!(self.source, self.source.typecheck0(ctx))?;
-        wrap!(self.key, self.key.typecheck0(ctx))?;
-        let mt = Type::Map {
-            key: Arc::new(self.key.typ().clone()),
-            value: Arc::new(self.vtyp.clone()),
-        };
-        wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
-        Ok(())
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+    }
+
+    fn typecheck0_instance(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+    ) -> Result<()> {
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {

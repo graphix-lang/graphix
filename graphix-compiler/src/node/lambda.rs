@@ -20,7 +20,7 @@ use crate::{
         },
     },
     image::{
-        self, ImageBuf,
+        self, ImageBuf, ImageDecoder,
         env::{lexical_decode, lexical_encode},
         nodes::{NodeTag, decode_node, put_tag},
     },
@@ -28,17 +28,18 @@ use crate::{
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
-        tvar::{AtLevel, Level, RigidGate},
+        tvar::{AtLevel, InTask, Level, RigidGate},
     },
     wrap,
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
+use bytes::{Buf, BufMut};
 use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
-use netidx_core::pack::{Pack, PackError};
+use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
 use netidx_value::Value;
 use nohash::IntSet;
 use parking_lot::Mutex;
@@ -48,7 +49,7 @@ use std::{
     hash::Hash,
     mem,
     sync::{
-        Arc as SArc, OnceLock,
+        Arc as SArc, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -142,16 +143,186 @@ impl DefTable {
             table.ftypes.remove(&id);
             table.lambdas.remove(&id);
         }
+        table.own_typedefs();
+        table
+    }
+
+    fn own_typedefs(&mut self) {
         let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
         let mut defs: LPooled<AHashMap<usize, SArc<ResolvedRef>>> = LPooled::take();
-        for t in table.types.values() {
+        for t in self.types.values() {
             t.named_defs(&mut cells, &mut defs);
         }
-        for ft in table.ftypes.values() {
+        for ft in self.ftypes.values() {
             ft.for_each_part(&mut |t, _| t.named_defs(&mut cells, &mut defs));
         }
-        table.typedefs.extend(defs.drain().map(|(_, r)| r));
-        table
+        self.typedefs.clear();
+        self.typedefs.extend(defs.drain().map(|(_, r)| r));
+    }
+
+    /// The table an image carries for `tables`: a lambda an instance
+    /// defined has its rows renamed through the enclosing instance's map
+    /// already, as its instances read them.
+    fn imaged(tables: &Tables) -> SArc<DefTable> {
+        let Some(outer) = &tables.outer else { return tables.table.clone() };
+        let outer = outer.lock();
+        let t = &tables.table;
+        let mut table = DefTable {
+            types: t.types.iter().map(|(id, t)| (*id, t.rename_with(&outer))).collect(),
+            ftypes: t
+                .ftypes
+                .iter()
+                .map(|(id, ft)| (*id, rename_fn(ft, &outer)))
+                .collect(),
+            lambdas: t.lambdas.clone(),
+            typedefs: vec![],
+        };
+        table.own_typedefs();
+        SArc::new(table)
+    }
+
+    fn image_encode(
+        table: &SArc<DefTable>,
+        buf: &mut impl BufMut,
+    ) -> Result<(), PackError> {
+        let key = SArc::as_ptr(table) as usize;
+        image::object_encode(
+            &key,
+            |k| (*k, table.clone()),
+            |e| &mut e.def_tables,
+            buf,
+            |buf| {
+                encode_varint(table.types.len() as u64, buf);
+                for (id, t) in table.types.iter() {
+                    id.encode(buf)?;
+                    t.encode(buf)?;
+                }
+                encode_varint(table.ftypes.len() as u64, buf);
+                for (id, ft) in table.ftypes.iter() {
+                    id.encode(buf)?;
+                    ft.encode(buf)?;
+                }
+                encode_varint(table.lambdas.len() as u64, buf);
+                for (id, l) in table.lambdas.iter() {
+                    id.encode(buf)?;
+                    Self::image_encode(l, buf)?;
+                }
+                encode_varint(table.typedefs.len() as u64, buf);
+                for r in table.typedefs.iter() {
+                    image::resolved_encode(r, buf)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn image_decode(buf: &mut impl Buf) -> Result<SArc<DefTable>, PackError> {
+        fn len(buf: &mut &[u8]) -> Result<usize, PackError> {
+            let n = decode_varint(buf)? as usize;
+            if n > buf.remaining() {
+                return Err(PackError::BufferShort);
+            }
+            Ok(n)
+        }
+        image::object_decode(
+            buf,
+            |sub| {
+                let n = len(sub)?;
+                let mut types = AHashMap::with_capacity(n);
+                for _ in 0..n {
+                    types.insert(ExprId::decode(sub)?, Type::decode(sub)?);
+                }
+                let n = len(sub)?;
+                let mut ftypes = AHashMap::with_capacity(n);
+                for _ in 0..n {
+                    ftypes.insert(ExprId::decode(sub)?, FnType::decode(sub)?);
+                }
+                let n = len(sub)?;
+                let mut lambdas = AHashMap::with_capacity(n);
+                for _ in 0..n {
+                    lambdas.insert(ExprId::decode(sub)?, Self::image_decode(sub)?);
+                }
+                let n = len(sub)?;
+                let typedefs = (0..n)
+                    .map(|_| image::resolved_decode(sub))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(SArc::new(DefTable { types, ftypes, lambdas, typedefs }))
+            },
+            |b| Self::image_decode(b),
+        )
+    }
+}
+
+fn rename_fn(ft: &FnType, known: &AHashMap<usize, TVar>) -> FnType {
+    match &Type::Fn(Arc::new(ft.clone())).rename_with(known) {
+        Type::Fn(ft) => (**ft).clone(),
+        _ => unreachable!("a renamed function type is a function type"),
+    }
+}
+
+/// A definition's check tables as an image writes them, `None` for a
+/// definition with none.
+pub(crate) fn tables_encode(
+    tables: Option<&Tables>,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    match tables {
+        None => Ok(buf.put_u8(0)),
+        Some(t) => {
+            buf.put_u8(1);
+            DefTable::image_encode(&DefTable::imaged(t), buf)
+        }
+    }
+}
+
+/// A restored definition's tables are read from the image by its first
+/// instance.
+pub(crate) fn tables_decode(buf: &mut impl Buf) -> Result<DefTables, PackError> {
+    if !buf.has_remaining() {
+        return Err(PackError::BufferShort);
+    }
+    match buf.get_u8() {
+        0 => Ok(DefTables::default()),
+        1 => {
+            let ord = image::object_ref(buf)?;
+            let decoder =
+                image::decoding(|d| d.shared()).ok_or(PackError::InvalidFormat)?;
+            Ok(DefTables { tables: OnceLock::new(), imaged: Some((decoder, ord)) })
+        }
+        _ => Err(PackError::UnknownTag),
+    }
+}
+
+/// A definition's check tables: set by its check, or, for a definition
+/// restored from an image, read from it when an instance first asks.
+#[derive(Debug, Default)]
+pub struct DefTables {
+    tables: OnceLock<Tables>,
+    imaged: Option<(Weak<Mutex<ImageDecoder>>, u32)>,
+}
+
+impl DefTables {
+    pub(crate) fn get(&self) -> Option<&Tables> {
+        if let Some(t) = self.tables.get() {
+            return Some(t);
+        }
+        let (decoder, ord) = self.imaged.as_ref()?;
+        let decoder = decoder.upgrade()?;
+        let mut dec = decoder.lock();
+        // restored cells belong to no compile task, whichever reads them
+        let _task = InTask::enter(0);
+        let table = image::DecodeImage::with(&mut dec, || {
+            image::object_at(*ord, |b| DefTable::image_decode(b))
+        });
+        match table {
+            Ok(table) => self.set(Tables { table, outer: None }),
+            Err(e) => log::error!("a restored definition's tables did not decode: {e:?}"),
+        }
+        self.tables.get()
+    }
+
+    pub(crate) fn set(&self, tables: Tables) {
+        let _ = self.tables.set(tables);
     }
 }
 
@@ -231,8 +402,9 @@ pub struct LambdaDef<R: Rt, E: UserEvent> {
     /// A builtin definition's check `Apply`, built by the definition gate
     /// ([`Self::builtin_check`]).
     pub check: Mutex<Option<Box<dyn Apply<R, E>>>>,
-    /// What the definition's check settled, for its instances.
-    pub table: OnceLock<Tables>,
+    /// What the definition's check settled, for its instances; shared
+    /// with `init`, which hands it to each instance.
+    pub table: SArc<DefTables>,
     /// Intrinsic sync/async effect, computed by `analysis::infer_effects`
     /// after all lambdas are compiled. Calls through fn-typed parameters
     /// do not contribute; the call site joins the resolved arg's effect.
@@ -336,11 +508,11 @@ impl<R: Rt, E: UserEvent> Pack for LambdaDef<R, E> {
         0
     }
 
-    fn encode(&self, _buf: &mut impl bytes::BufMut) -> Result<(), PackError> {
+    fn encode(&self, _buf: &mut impl BufMut) -> Result<(), PackError> {
         Err(PackError::Application(0))
     }
 
-    fn decode(_buf: &mut impl bytes::Buf) -> Result<Self, PackError> {
+    fn decode(_buf: &mut impl Buf) -> Result<Self, PackError> {
         Err(PackError::Application(0))
     }
 }
@@ -374,6 +546,19 @@ pub struct GXLambda<R: Rt, E: UserEvent> {
     /// typechecks under it too: the caller's env, which drives the
     /// checks, may lack the defining module's private typedefs.
     env: Env,
+    typing: Typing,
+}
+
+/// How an instance's check types its body.
+#[derive(Debug)]
+pub(crate) enum Typing {
+    /// It is its definition's check, which checks the body.
+    Definition,
+    /// From the definition's check, substituted by the instance's
+    /// signature: the definition's tables and signature.
+    Substituted(SArc<DefTables>, Arc<FnType>),
+    /// Restored from an image, written after its check.
+    Restored,
 }
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
@@ -438,15 +623,29 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
 
 impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     /// The types an instance takes from its definition's check; `None`
-    /// for the definition's own check, or a definition with no table.
-    fn instance_types(&self, ctx: &CompileCtx<R, E>) -> Option<InstanceTypes> {
+    /// for the definition's own check, which checks the body. An
+    /// instance its definition's check cannot type is a compiler bug.
+    fn instance_types(&self, ctx: &CompileCtx<R, E>) -> Result<Option<InstanceTypes>> {
+        let (table, def) = match &self.typing {
+            Typing::Definition => return Ok(None),
+            Typing::Restored => {
+                bail!("a restored instance of {:?} is checked again", self.id)
+            }
+            Typing::Substituted(table, def) => (table, def),
+        };
         if dbgenv::graphix_no_subst() {
-            return None;
+            return Ok(None);
         }
-        let def = ctx.lambda_defs.get(&self.id).cloned();
-        let def = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())?;
-        let tables = def.table.get().filter(|_| !Arc::ptr_eq(&self.typ, &def.typ))?;
-        InstanceTypes::new(ctx, tables.clone(), &def.typ, &self.typ)
+        let Some(tables) = table.get() else {
+            bail!(
+                "an instance of {:?}, whose definition's check recorded no types",
+                self.id
+            )
+        };
+        match InstanceTypes::new(ctx, tables.clone(), def, &self.typ) {
+            Some(types) => Ok(Some(types)),
+            None => bail!("an instance at {} of a definition typed {def}", self.typ),
+        }
     }
 }
 
@@ -501,7 +700,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         let res = (|| {
             // an instance's formals and return are its site's, which the
             // definition's check covers
-            let types = self.instance_types(ctx);
+            let types = self.instance_types(ctx)?;
             for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter())
             {
                 wrap!(arg, arg.typecheck0(ctx))?;
@@ -623,6 +822,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         flags: BitFlags<CFlag>,
         id: LambdaId,
         typ: Arc<FnType>,
+        typing: Typing,
         argspec: Arc<[Arg]>,
         args: &[Node<R, E>],
         scope: &Scope,
@@ -630,15 +830,17 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         body: Expr,
     ) -> Result<Self> {
         let origin = body.ori.clone();
-        Self::new_with_body(ctx, id, typ, argspec, args, scope, origin, |ctx, _| {
+        let build = |ctx: &mut CompileCtx<R, E>, _: &[StructPatternNode]| {
             compile(ctx, flags, body, scope, tid)
-        })
+        };
+        Self::new_with_body(ctx, id, typ, typing, argspec, args, scope, origin, build)
     }
 
     pub(super) fn new_collection(
         ctx: &mut CompileCtx<R, E>,
         id: LambdaId,
         typ: Arc<FnType>,
+        typing: Typing,
         argspec: Arc<[Arg]>,
         args: &[Node<R, E>],
         scope: &Scope,
@@ -651,6 +853,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             ctx,
             id,
             typ.clone(),
+            typing,
             argspec,
             args,
             scope,
@@ -663,6 +866,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
         ctx: &mut CompileCtx<R, E>,
         id: LambdaId,
         typ: Arc<FnType>,
+        typing: Typing,
         argspec: Arc<[Arg]>,
         args: &[Node<R, E>],
         scope: &Scope,
@@ -676,7 +880,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             bail!("arity mismatch, expected {} arguments", argspec.len())
         }
         // a narrower `typ` would truncate the zip below and silently drop
-        // parameters; bailing lets a Dynamic dispatch retry with `def_typ`
+        // parameters
         if argspec.len() != typ.args.len() {
             bail!(
                 "instance signature has {} parameters, the definition has {}",
@@ -720,6 +924,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             resident: TagValue::phantom(),
             first_dispatch: true,
             env: ctx.env.lexical(),
+            typing,
         })
     }
 
@@ -749,6 +954,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
             resident: TagValue::phantom(),
             first_dispatch: true,
             env,
+            typing: Typing::Restored,
         })
     }
 }
@@ -940,6 +1146,7 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
     def_argspec: Arc<[Arg]>,
     def_spec: Expr,
     body: DefBody,
+    table: SArc<DefTables>,
 ) -> InitFn<R, E> {
     let def_scope = scope.append_block("fn", id.inner());
     SArc::new(move |scope, ctx, args, mode, tid| {
@@ -947,26 +1154,30 @@ pub(crate) fn make_init<R: Rt, E: UserEvent>(
         let scope =
             Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
         ctx.with_restored(def_env.clone(), |ctx| match &body {
-            DefBody::Expr(body) => instantiate(ctx, mode, &def_typ, |ctx, typ| {
-                let argspec = def_argspec.clone();
-                GXLambda::new(
-                    ctx,
-                    flags,
-                    id,
-                    typ,
-                    argspec,
-                    args,
-                    &scope,
-                    tid,
-                    body.clone(),
-                )
-            }),
+            DefBody::Expr(body) => {
+                instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
+                    let argspec = def_argspec.clone();
+                    GXLambda::new(
+                        ctx,
+                        flags,
+                        id,
+                        typ,
+                        typing,
+                        argspec,
+                        args,
+                        &scope,
+                        tid,
+                        body.clone(),
+                    )
+                })
+            }
             DefBody::Collection(intrinsic) => {
-                instantiate(ctx, mode, &def_typ, |ctx, typ| {
+                instantiate(ctx, mode, &def_typ, &table, |ctx, typ, typing| {
                     GXLambda::new_collection(
                         ctx,
                         id,
                         typ,
+                        typing,
                         def_argspec.clone(),
                         args,
                         &scope,
@@ -1000,19 +1211,32 @@ pub(crate) fn same_parameters(a: &FnType, b: &FnType) -> bool {
 
 /// Build an instance at the signature `mode` names: the site's, unless a
 /// dynamic bind's runtime callee has another parameter list than the
-/// site's view, which takes the definition's own.
+/// site's view (a label the site omits, defaulted): then a call's copy
+/// of the definition's, fitted to the site's view as a call fits it.
 fn instantiate<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     mode: BindMode<'_>,
     def_typ: &Arc<FnType>,
-    build: impl FnOnce(&mut CompileCtx<R, E>, Arc<FnType>) -> Result<GXLambda<R, E>>,
+    table: &SArc<DefTables>,
+    build: impl FnOnce(&mut CompileCtx<R, E>, Arc<FnType>, Typing) -> Result<GXLambda<R, E>>,
 ) -> Result<Box<dyn Apply<R, E>>> {
+    let typing = match mode {
+        BindMode::Definition => Typing::Definition,
+        BindMode::Static { .. } | BindMode::Dynamic(_) => {
+            Typing::Substituted(table.clone(), def_typ.clone())
+        }
+    };
     let typ = match mode {
         BindMode::Static { instance, .. } => Arc::new(instance.clone()),
         BindMode::Dynamic(r) if same_parameters(r, def_typ) => Arc::new(r.clone()),
-        BindMode::Dynamic(_) | BindMode::Definition => def_typ.clone(),
+        BindMode::Dynamic(r) => {
+            let copy = def_typ.instantiate(&ctx.rec_defs);
+            r.check_contains(&ctx.env, &copy)?;
+            Arc::new(copy)
+        }
+        BindMode::Definition => def_typ.clone(),
     };
-    Ok(Box::new(build(ctx, typ)?))
+    Ok(Box::new(build(ctx, typ, typing)?))
 }
 
 impl Lambda {
@@ -1216,6 +1440,7 @@ impl Lambda {
         }
         typ.lambda_ids.set_id(id);
         typ.claim(level);
+        let table = SArc::new(DefTables::default());
         let init = make_init(
             id,
             flags,
@@ -1225,6 +1450,7 @@ impl Lambda {
             argspec.clone(),
             spec.clone(),
             body.clone(),
+            table.clone(),
         );
         let (intrinsic_effect, stateless) = match &body {
             DefBody::Expr(_) | DefBody::Collection(_) => (EffectKind::Sync, true),
@@ -1244,7 +1470,7 @@ impl Lambda {
             init,
             scope: scope.clone(),
             check: Mutex::new(None),
-            table: OnceLock::new(),
+            table,
             intrinsic_effect: Mutex::new(intrinsic_effect),
             stateless: AtomicBool::new(stateless),
             recursion: Mutex::new(RecursionKind::NotRecursive),
@@ -1350,14 +1576,14 @@ impl<R: Rt, E: UserEvent> DefGate<R, E> {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
         self.sig.generalize(self.depth);
-        let mut sig: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.sig.reached_cells(&mut sig);
         for s in frame.iter_mut() {
-            if let crate::PendingSettle::Site { exempt, .. } = s {
-                exempt.extend(sig.keys().copied());
+            if let crate::PendingSettle::Site { sigs, .. } = s {
+                sigs.push(self.sig.clone());
             }
         }
         if let Some((table, spec)) = table {
+            let mut sig: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            self.sig.reached_cells(&mut sig);
             frame.push(crate::PendingSettle::Body {
                 table,
                 owner: self.def,
@@ -1504,7 +1730,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
                 && let ApplyView::Lambda(g) = f.view()
             {
                 let table = SArc::new(DefTable::record(&g.body));
-                let _ = def.table.set(Tables { table, outer: None });
+                def.table.set(Tables { table, outer: None });
             }
             // a builtin's check `Apply` is retained for `CallSite::typecheck1`;
             // a user body is not re-checked per call site
@@ -1563,7 +1789,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
         }
         def.typ.generalize(def.level);
-        let _ = def.table.set(tables);
+        def.table.set(tables);
         Ok(())
     }
 
