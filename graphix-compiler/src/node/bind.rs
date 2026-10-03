@@ -141,7 +141,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         let mut refs = Refs::default();
         self.node.refs(&mut refs);
         refs.triggering.difference(&refs.bound).any(|id| {
-            !ctx.event.wake_phantoms.contains(id)
+            !ctx.event.wake_phantoms.contains_key(id)
                 && matches!(read_var(ctx, id), Some(VarRead::Delivered(tv)) if tv.tag().triggers())
         })
     }
@@ -364,7 +364,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             let quiet = !tag.triggers();
             if wake_phantom && !quiet {
                 self.pattern.ids(&mut |id| {
-                    ctx.event.wake_phantoms.insert(id);
+                    ctx.event.wake_phantoms.insert(id, ());
                 });
             }
             if tag.is_bottom() {

@@ -377,19 +377,19 @@ impl<X: GXExt> GX<X> {
             "compiled references left unreplayed"
         );
         self.ctx.view().apply_deferred();
-        macro_rules! push_event {
-            ($id:expr, $v:expr, $event:ident, $refed:ident, $overflow:ident) => {
-                match self.ctx.event.$event.entry($id) {
+        macro_rules! push_custom {
+            ($id:expr, $v:expr) => {
+                match self.ctx.event.custom.lock().entry($id) {
                     Entry::Vacant(e) => {
                         e.insert($v);
-                        if let Some(exps) = self.ctx.rt.$refed.get(&$id) {
+                        if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
                             for id in exps.keys() {
                                 self.ctx.rt.updated.entry(*id).or_insert(false);
                             }
                         }
                     }
                     Entry::Occupied(_) => {
-                        self.ctx.rt.$overflow.push_back(($id, $v));
+                        self.ctx.rt.custom_updates.push_back(($id, $v));
                     }
                 }
             };
@@ -448,17 +448,17 @@ impl<X: GXExt> GX<X> {
         }
         for _ in 0..self.ctx.rt.custom_updates.len() {
             let (id, u) = self.ctx.rt.custom_updates.pop_front().unwrap();
-            push_event!(id, u, custom, by_ref, custom_updates)
+            push_custom!(id, u)
         }
         for (id, u) in custom_tasks.drain(..) {
-            push_event!(id, u, custom, by_ref, custom_updates)
+            push_custom!(id, u)
         }
         if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.ctx.event) {
             error!("could not marshall user events {e:?}")
         }
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
-            || !self.ctx.event.custom.is_empty();
+            || !self.ctx.event.custom.lock().is_empty();
         // `block_in_place` keeps a wedged node from starving the IO tasks
         // and the caller that would `interrupt()`/`abort()` it; on
         // `current_thread` there is nowhere to migrate, so run inline.

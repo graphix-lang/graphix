@@ -10,10 +10,7 @@ use netidx_value::Value;
 use nohash::IntMap;
 use poolshark::global::GPooled;
 use std::{collections::VecDeque, fmt::Debug, future, time::Duration};
-use tokio::{
-    task::{self, JoinSet},
-    time,
-};
+use tokio::{task::JoinSet, time};
 use triomphe::Arc;
 
 /// `GRAPHIX_DBG_VARS=1` prints every runtime variable event:
@@ -51,6 +48,11 @@ pub struct GXRt<X: GXExt> {
 }
 
 impl<X: GXExt> GXRt<X> {
+    /// The whole store.
+    pub fn store(&self) -> &IntMap<BindId, (TagValue, u64)> {
+        &self.store
+    }
+
     fn previous_cycle(&self) -> u64 {
         self.cycle.wrapping_sub(1)
     }
@@ -102,10 +104,8 @@ impl<X: GXExt> Default for GXRt<X> {
 }
 
 impl<X: GXExt> Rt for GXRt<X> {
-    type AbortHandle = task::AbortHandle;
-
-    fn store(&self) -> &IntMap<BindId, (TagValue, u64)> {
-        &self.store
+    fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)> {
+        self.store.get(id)
     }
 
     fn store_insert(&mut self, id: BindId, tv: TagValue) {
@@ -236,15 +236,12 @@ impl<X: GXExt> Rt for GXRt<X> {
     >(
         &mut self,
         f: F,
-    ) -> Self::AbortHandle {
-        self.custom_tasks.spawn(f)
+    ) {
+        self.custom_tasks.spawn(f);
     }
 
-    fn spawn_var<F: Future<Output = (BindId, Value)> + Send + 'static>(
-        &mut self,
-        f: F,
-    ) -> Self::AbortHandle {
-        self.tasks.spawn(f)
+    fn spawn_var<F: Future<Output = (BindId, Value)> + Send + 'static>(&mut self, f: F) {
+        self.tasks.spawn(f);
     }
 
     fn watch(

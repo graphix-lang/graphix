@@ -801,7 +801,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         }
         let mut reply = None;
         if self.current.is_some() {
-            if let Some(mut cbt) = ctx.event.custom.remove(&self.wid) {
+            if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
                     let v = match &self.cast_typ {
@@ -1188,7 +1188,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                 ctx.event.variables.insert(self.x, TagValue::fired(args));
             }};
         }
-        if let Some(mut cbt) = ctx.event.custom.remove(&self.id) {
+        if let Some(mut cbt) = ctx.event.take_custom(&self.id) {
             if let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>() {
                 if let Some(c) = c.0.take() {
                     if crate::netstate::rpc_dbg() {

@@ -632,7 +632,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
             }
         }
         for bid in &self.bind_ids {
-            let Some(mut cbt) = ctx.event.custom.remove(bid) else { continue };
+            let Some(mut cbt) = ctx.event.take_custom(bid) else { continue };
             let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<WEvent>() else {
                 continue;
             };

@@ -12,6 +12,7 @@ pub use graphix_types::{
 pub(crate) use graphix_types::{CAST_ERR, CAST_ERR_TAG, Restore, profile, stack};
 
 pub mod analysis;
+pub mod branch;
 pub(crate) mod dbgenv;
 pub mod effects;
 pub use effects::Effect;
@@ -72,7 +73,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{task, time::Instant};
+use tokio::time::Instant;
 use tracked::{TrackedMap, TrackedSet};
 use triomphe::Arc;
 
@@ -150,11 +151,13 @@ pub struct Event<E: UserEvent> {
     pub wake_init: bool,
     /// The binds a wake republished fired only because the woken arm's
     /// constants fired, not an input.
-    pub wake_phantoms: IntSet<BindId>,
+    pub wake_phantoms: branch::Layered<()>,
     /// The overlay: this cycle's transient deliveries. Not the value
-    /// store: reads fall through to [`Rt::store`].
-    pub variables: IntMap<BindId, TagValue>,
-    pub custom: IntMap<BindId, Box<dyn CustomBuiltinType>>,
+    /// store: reads fall through to [`Rt::store_get`].
+    pub variables: branch::Layered<TagValue>,
+    /// The cycle's custom deliveries, each taken by its consumer; one
+    /// map for every branch of the cycle.
+    pub custom: Arc<Mutex<IntMap<BindId, Box<dyn CustomBuiltinType>>>>,
     pub user: E,
 }
 
@@ -163,11 +166,45 @@ impl<E: UserEvent> Event<E> {
         Event {
             init: false,
             wake_init: false,
-            wake_phantoms: IntSet::default(),
-            variables: IntMap::default(),
-            custom: IntMap::default(),
+            wake_phantoms: branch::Layered::default(),
+            variables: branch::Layered::default(),
+            custom: Arc::new(Mutex::new(IntMap::default())),
             user,
         }
+    }
+
+    /// Take the cycle's custom delivery for `id`.
+    pub fn take_custom(&self, id: &BindId) -> Option<Box<dyn CustomBuiltinType>> {
+        self.custom.lock().remove(id)
+    }
+
+    /// Run `f` on the cycle's custom delivery for `id`, left in place.
+    pub fn with_custom<T>(
+        &self,
+        id: &BindId,
+        f: impl FnOnce(&dyn CustomBuiltinType) -> Option<T>,
+    ) -> Option<T> {
+        self.custom.lock().get(id).and_then(|c| f(&**c))
+    }
+
+    /// The event a branch forked from this one runs over.
+    pub(crate) fn fork(&self) -> Self {
+        Event {
+            init: self.init,
+            wake_init: self.wake_init,
+            wake_phantoms: self.wake_phantoms.fork(),
+            variables: self.variables.fork(),
+            custom: self.custom.clone(),
+            user: self.user.clone(),
+        }
+    }
+
+    /// Apply what the forked branch's event `child` delivered.
+    pub(crate) fn merge(&mut self, child: Self) {
+        let Self { init: _, wake_init: _, wake_phantoms, variables, custom: _, user: _ } =
+            child;
+        self.wake_phantoms.merge(wake_phantoms);
+        self.variables.merge(variables);
     }
 
     pub fn clear(&mut self) {
@@ -176,7 +213,7 @@ impl<E: UserEvent> Event<E> {
         *wake_init = false;
         wake_phantoms.clear();
         variables.clear();
-        custom.clear();
+        custom.lock().clear();
         user.clear();
     }
 }
@@ -834,19 +871,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
     }
 }
 
-pub trait Abortable {
-    fn abort(&self);
-}
-
-impl Abortable for task::AbortHandle {
-    fn abort(&self) {
-        task::AbortHandle::abort(self)
-    }
-}
-
 pub trait Rt: Debug + Any {
-    type AbortHandle: Abortable;
-
     fn clear(&mut self);
 
     /// Called whenever a bound variable (or lambda) is referenced;
@@ -869,19 +894,17 @@ pub trait Rt: Debug + Any {
     fn ref_path(&self, cell: &BindId) -> Option<&(BindId, node::place::Path)>;
     fn clear_ref_path(&mut self, cell: &BindId);
 
-    /// The persistent store: the (production, cycle stamp) of every
-    /// bound variable's last delivery. `stamp == cycle()` reads as
-    /// delivered this cycle, an older stamp as standing (Stale; Fired
-    /// under an init view), absence as the phantom. Maintained at
-    /// delivery, never ahead of it.
-    fn store(&self) -> &IntMap<BindId, (TagValue, u64)>;
+    /// The persistent store: the (production, cycle stamp) of a bound
+    /// variable's last delivery. `stamp == cycle()` reads as delivered
+    /// this cycle, an older stamp as standing (Stale; Fired under an
+    /// init view), absence as the phantom. Maintained at delivery, never
+    /// ahead of it.
+    fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)>;
 
     /// The last delivered value of a bind; `None` if the last delivery
     /// was a bottom.
     fn store_value(&self, id: &BindId) -> Option<Value> {
-        self.store().get(id).and_then(|(tv, _)| {
-            if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) }
-        })
+        branch::stored_value(self.store_get(id))
     }
 
     /// Insert a production into the store, stamped with the current
@@ -907,20 +930,15 @@ pub trait Rt: Debug + Any {
     fn set_timer(&mut self, id: BindId, timeout: Duration);
 
     /// Spawn a task whose output is delivered as a custom event for the
-    /// returned `BindId`. `abort` before completion guarantees no
-    /// delivery.
+    /// returned `BindId`.
     fn spawn<F: Future<Output = (BindId, Box<dyn CustomBuiltinType>)> + Send + 'static>(
         &mut self,
         f: F,
-    ) -> Self::AbortHandle;
+    );
 
     /// Spawn a task whose output is delivered as a variable event for
-    /// the returned `BindId`. `abort` before completion guarantees no
-    /// delivery.
-    fn spawn_var<F: Future<Output = (BindId, Value)> + Send + 'static>(
-        &mut self,
-        f: F,
-    ) -> Self::AbortHandle;
+    /// the returned `BindId`.
+    fn spawn_var<F: Future<Output = (BindId, Value)> + Send + 'static>(&mut self, f: F);
 
     /// Deliver batches arriving on the channel as custom updates.
     fn watch(
@@ -1167,7 +1185,7 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
     pub cx: &'a mut CompileCtx<R, E>,
     pub(crate) image_decoder: &'a mut Option<image::SharedDecoder>,
     pub libstate: &'a mut LibState,
-    pub rt: &'a mut R,
+    pub rt: branch::RtView<'a, R>,
     pub(crate) core_hook_sites: &'a mut node::coretraits::CoreHookSites<R, E>,
     pub control: &'a Arc<Control>,
     pub event: &'a mut Event<E>,
@@ -1436,6 +1454,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
     pub fn view(&mut self) -> ExecCtx<'_, R, E> {
         let Self { cx, image_decoder, libstate, rt, core_hook_sites, control, event } =
             self;
+        let rt = branch::RtView::Root(rt);
         ExecCtx { cx, image_decoder, libstate, rt, core_hook_sites, control, event }
     }
 }
@@ -1447,7 +1466,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             cx: &mut *self.cx,
             image_decoder: &mut *self.image_decoder,
             libstate: &mut *self.libstate,
-            rt: &mut *self.rt,
+            rt: self.rt.reborrow(),
             core_hook_sites: &mut *self.core_hook_sites,
             control: self.control,
             event,

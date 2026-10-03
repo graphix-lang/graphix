@@ -48,7 +48,6 @@ use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    collections::hash_map::Entry,
     fmt, mem,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
@@ -1108,11 +1107,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
             let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
                 refs.with_external_refs(|id| {
-                    if let Some(v) = ctx.rt.store_value(&id) {
-                        if let Entry::Vacant(e) = ctx.event.variables.entry(id) {
-                            e.insert(TagValue::fired(v));
-                            set.push(id);
-                        }
+                    if let Some(v) = ctx.rt.store_value(&id)
+                        && ctx.event.variables.try_insert(id, TagValue::fired(v)).is_ok()
+                    {
+                        set.push(id);
                     }
                 });
             })?;

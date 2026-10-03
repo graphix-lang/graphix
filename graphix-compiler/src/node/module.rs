@@ -30,7 +30,7 @@ use netidx_core::{
 };
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
-use std::{any::Any, collections::hash_map::Entry, fmt::Write, mem, sync::LazyLock};
+use std::{any::Any, fmt::Write, mem, sync::LazyLock};
 use triomphe::Arc;
 
 /// Compile one `use` item into the scope's namespace table
@@ -984,10 +984,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 n.refs(&mut refs);
             }
             refs.with_external_refs(|id| {
-                if let Some(v) = ctx.rt.store_value(&id)
-                    && let Entry::Vacant(e) = ctx.event.variables.entry(id)
-                {
-                    e.insert(TagValue::fired(v.clone()));
+                if let Some(v) = ctx.rt.store_value(&id) {
+                    let _ = ctx.event.variables.try_insert(id, TagValue::fired(v));
                 }
             });
         }

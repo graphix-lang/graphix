@@ -72,7 +72,7 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
     if let Some(tv) = ctx.event.variables.get(id) {
         return Some(VarRead::Delivered(tv));
     }
-    match ctx.rt.store().get(id) {
+    match ctx.rt.store_get(id) {
         Some((tv, stamp)) if *stamp == ctx.rt.cycle() => Some(VarRead::Delivered(tv)),
         Some((tv, _)) => Some(VarRead::Standing(tv)),
         None => None,

@@ -250,13 +250,14 @@ fn scan_db_events<E: UserEvent>(
     convert: fn(&DbEvent) -> Option<Value>,
 ) -> Option<Value> {
     let bid = bind_id?;
-    let cbt = event.custom.get(&bid)?;
-    let events = (&**cbt as &dyn Any).downcast_ref::<DbEvents>()?;
-    let mut vals: LPooled<Vec<Value>> = events.0.iter().filter_map(convert).collect();
-    if vals.is_empty() {
-        return None;
-    }
-    Some(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
+    event.with_custom(&bid, |cbt| {
+        let events = (cbt as &dyn Any).downcast_ref::<DbEvents>()?;
+        let mut vals: LPooled<Vec<Value>> = events.0.iter().filter_map(convert).collect();
+        if vals.is_empty() {
+            return None;
+        }
+        Some(Value::Array(ValArray::from_iter_exact(vals.drain(..))))
+    })
 }
 
 macro_rules! db_event_accessor {

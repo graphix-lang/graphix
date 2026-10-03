@@ -26,7 +26,7 @@ use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{Typ, ValArray, Value};
 use poolshark::local::LPooled;
-use std::{collections::hash_map::Entry, fmt, sync::LazyLock};
+use std::{fmt, sync::LazyLock};
 use triomphe::Arc;
 
 pub(super) static ECHAIN: LazyLock<ModPath> =
@@ -577,11 +577,8 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     if handler_top != own_top {
         ctx.rt.set_var(id, v)
     } else {
-        match ctx.event.variables.entry(id) {
-            Entry::Vacant(slot) => {
-                slot.insert(TagValue::fired(v));
-            }
-            Entry::Occupied(_) => ctx.rt.set_var(id, v),
+        if let Err(tv) = ctx.event.variables.try_insert(id, TagValue::fired(v)) {
+            ctx.rt.set_var(id, tv.value())
         }
     }
 }

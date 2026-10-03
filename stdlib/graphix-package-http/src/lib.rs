@@ -847,7 +847,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 }));
             }
         }
-        if let Some(mut cbt) = ctx.event.custom.remove(&self.id) {
+        if let Some(mut cbt) = ctx.event.take_custom(&self.id) {
             if let Some(req) = (&mut *cbt as &mut dyn Any).downcast_mut::<HttpReqEvent>()
             {
                 let request = req.request.clone();

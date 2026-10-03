@@ -5,7 +5,7 @@
 use crate::{TEST_REGISTER, init};
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
-use graphix_compiler::{Rt, expr::ExprId};
+use graphix_compiler::expr::ExprId;
 use graphix_package_core::testing::{TestCtx, init_with_registration};
 use graphix_rt::{GXEvent, RegistrationImage};
 use netidx::publisher::Value;
