@@ -7,8 +7,8 @@
 //! tail-loop predicate is `fusion::lowering::structural_tail_loop`.
 
 use crate::{
-    ApplyView, BindId, DefAssertionKind, ExecCtx, LambdaId, LambdaInstanceId, Node,
-    NodeView, Refs, Rt, Update, UserEvent,
+    ApplyView, BindId, CompileCtx, DefAssertionKind, ExecCtx, LambdaId, LambdaInstanceId,
+    Node, NodeView, Refs, Rt, Update, UserEvent,
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
     effects::{EffectKind, RecursionKind},
     expr::{At, ExprKind, ModuleKind},
@@ -81,6 +81,29 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
         }
         None => stack.push((root, None)),
     }
+    walk_static_graph(&mut graph, stack);
+    graph
+}
+
+/// [`collect_static_graph`] from several roots.
+fn collect_static_graph_of<'a, R: Rt, E: UserEvent>(
+    roots: impl IntoIterator<Item = &'a Node<R, E>>,
+) -> StaticCallGraph<'a, R, E> {
+    let mut graph = StaticCallGraph {
+        instances: LPooled::take(),
+        edges: LPooled::take(),
+        self_binds: LPooled::take(),
+        machines: LPooled::take(),
+        captures: LPooled::take(),
+    };
+    walk_static_graph(&mut graph, roots.into_iter().map(|r| (r, None)).collect());
+    graph
+}
+
+fn walk_static_graph<'a, R: Rt, E: UserEvent>(
+    graph: &mut StaticCallGraph<'a, R, E>,
+    mut stack: LPooled<Vec<(&'a Node<R, E>, Option<LambdaInstanceId>)>>,
+) {
     while let Some((node, caller)) = stack.pop() {
         fusion::for_each_node(node, &mut |n| {
             let site = match n.view() {
@@ -112,7 +135,6 @@ fn collect_static_graph<'a, R: Rt, E: UserEvent>(
             }
         });
     }
-    graph
 }
 
 #[derive(Clone, Copy, Default)]
@@ -814,22 +836,27 @@ impl Vars {
     }
 }
 
-/// What code reads and writes, following statically resolved calls.
+/// What code reads and writes, following statically resolved calls,
+/// and whether it may call an ordered builtin ([`crate::BuiltIn::ORDERED`]).
 #[derive(Default)]
 struct Summary {
     reads: Vars,
     writes: Vars,
+    ordered: bool,
 }
 
 impl Summary {
     fn opaque(&mut self) {
         self.reads.all = true;
         self.writes.all = true;
+        self.ordered = true;
     }
 
     fn union(&mut self, other: &Summary) -> bool {
         let r = self.reads.union(&other.reads);
-        self.writes.union(&other.writes) || r
+        let o = !self.ordered && other.ordered;
+        self.ordered |= other.ordered;
+        self.writes.union(&other.writes) || r || o
     }
 }
 
@@ -840,6 +867,7 @@ impl Summary {
 fn local_summary<R: Rt, E: UserEvent>(
     n: &Node<R, E>,
     graph: &StaticCallGraph<'_, R, E>,
+    ordered: &dyn Fn(&str) -> bool,
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
@@ -847,10 +875,18 @@ fn local_summary<R: Rt, E: UserEvent>(
         NodeView::Ref(r) => {
             s.reads.ids.insert(r.id);
         }
+        // a kernel reads only through its feeders
+        NodeView::FusedKernel(k) => {
+            k.feeders().iter().for_each(|f| local_summary(f, graph, ordered, s, callees))
+        }
         NodeView::Connect(c) => {
             s.writes.ids.insert(c.id);
         }
-        NodeView::ConnectDeref(_) => s.writes.refs = true,
+        // the write reads the reference to find its target
+        NodeView::ConnectDeref(c) => {
+            s.writes.refs = true;
+            s.reads.ids.insert(c.src_id);
+        }
         NodeView::Deref(_) => s.reads.refs = true,
         NodeView::Module(m) if is_dynamic_module(m) => s.opaque(),
         NodeView::CallSite(cs) => {
@@ -865,7 +901,8 @@ fn local_summary<R: Rt, E: UserEvent>(
                 {
                     return callees.push(g.instance_id());
                 }
-                Some(ApplyView::BuiltIn) => {
+                Some(ApplyView::BuiltIn(name)) => {
+                    s.ordered |= ordered(name);
                     let reaches =
                         cs.args.values().filter_map(|a| a.node.as_ref()).any(|a| {
                             a.typ().with_deref(|t| {
@@ -898,7 +935,7 @@ fn local_summary<R: Rt, E: UserEvent>(
                     cs.static_target().is_some(),
                     match cs.resolved_apply() {
                         Some(ApplyView::Lambda(_)) => "lambda",
-                        Some(ApplyView::BuiltIn) => "builtin",
+                        Some(ApplyView::BuiltIn(_)) => "builtin",
                         None => "none",
                     }
                 );
@@ -913,6 +950,7 @@ fn local_summary<R: Rt, E: UserEvent>(
 /// writes joined with its callees', to a fixpoint over recursion.
 fn instance_summaries<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
+    ordered: &dyn Fn(&str) -> bool,
     roots: impl IntoIterator<Item = LambdaInstanceId>,
 ) -> LPooled<IntMap<LambdaInstanceId, Summary>> {
     let mut callees: LPooled<IntMap<LambdaInstanceId, SmallVec<[LambdaInstanceId; 4]>>> =
@@ -926,7 +964,7 @@ fn instance_summaries<R: Rt, E: UserEvent>(
         let Some(g) = graph.instances.get(&i) else { continue };
         let mut s = Summary::default();
         let mut cs = SmallVec::new();
-        local_summary(g.body(), graph, &mut s, &mut cs);
+        local_summary(g.body(), graph, ordered, &mut s, &mut cs);
         stack.extend(cs.iter().copied());
         sums.insert(i, s);
         callees.insert(i, cs);
@@ -958,6 +996,82 @@ fn instance_summaries<R: Rt, E: UserEvent>(
     sums
 }
 
+/// A block's statements as runs for forking (`design/parallel_eval.md`
+/// §3.3): `(start, end)` ranges over `children`, catches left out. A run
+/// is contiguous and holds no catch, and no statement in it reads what
+/// an earlier statement of the run publishes, nor shares an ordered
+/// call with one. A module, trait or impl statement is a run of its own:
+/// what a later statement reads of it (a core-trait method a comparison
+/// dispatches to) no summary sees.
+pub(crate) fn plan_block<R: Rt, E: UserEvent>(
+    children: &[Node<R, E>],
+    catches: &[usize],
+    ctx: &CompileCtx<R, E>,
+) -> Box<[(u32, u32)]> {
+    let graph = collect_static_graph_of(children.iter());
+    let ordered = |name: &str| ctx.builtin_ordered(name);
+    let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
+        .iter()
+        .map(|n| {
+            let mut s = Summary::default();
+            let mut cs = SmallVec::new();
+            local_summary(n, &graph, &ordered, &mut s, &mut cs);
+            (s, cs)
+        })
+        .collect();
+    let sums = instance_summaries(
+        &graph,
+        &ordered,
+        locals.iter().flat_map(|(_, cs)| cs.iter().copied()),
+    );
+    let mut runs: LPooled<Vec<(u32, u32)>> = LPooled::take();
+    let mut start: Option<usize> = None;
+    let mut published = Vars::default();
+    let mut run_ordered = false;
+    let mut after_module = false;
+    for (i, n) in children.iter().enumerate() {
+        if catches.contains(&i) {
+            if let Some(a) = start.take() {
+                runs.push((a as u32, i as u32));
+            }
+            continue;
+        }
+        let (local, cs) = &locals[i];
+        let mut access = Summary::default();
+        access.union(local);
+        cs.iter().filter_map(|c| sums.get(c)).for_each(|c| {
+            access.union(c);
+        });
+        let module = matches!(
+            n.spec().kind,
+            ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_)
+        );
+        let joins = start.is_some()
+            && !module
+            && !after_module
+            && !access.reads.meets(&published)
+            && !(access.ordered && run_ordered);
+        if !joins {
+            if let Some(a) = start.replace(i) {
+                runs.push((a as u32, i as u32));
+            }
+            published = Vars::default();
+            run_ordered = false;
+        }
+        let mut refs = Refs::without_callees();
+        n.refs(&mut refs);
+        refs.with_bound(|id| {
+            published.ids.insert(id);
+        });
+        run_ordered |= access.ordered;
+        after_module = module;
+    }
+    if let Some(a) = start {
+        runs.push((a as u32, children.len() as u32));
+    }
+    runs.drain(..).collect()
+}
+
 /// Decide each seq machine's step boundaries: a step enters in the cycle
 /// its predecessor completes unless it reads or writes a variable a write
 /// since the last next-cycle boundary is still carrying there
@@ -978,9 +1092,9 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
                     .map(|s| {
                         let mut sum = Summary::default();
                         let mut cs = SmallVec::new();
-                        s.nodes
-                            .iter()
-                            .for_each(|n| local_summary(n, graph, &mut sum, &mut cs));
+                        s.nodes.iter().for_each(|n| {
+                            local_summary(n, graph, &|_| false, &mut sum, &mut cs)
+                        });
                         (sum, cs)
                     })
                     .collect()
@@ -988,6 +1102,7 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
             .collect();
     let sums = instance_summaries(
         graph,
+        &|_| false,
         steps.iter().flat_map(|m| m.iter().flat_map(|(_, cs)| cs.iter().copied())),
     );
     for (m, local) in machines.iter().zip(steps.iter()) {

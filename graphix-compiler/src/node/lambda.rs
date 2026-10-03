@@ -1033,9 +1033,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.image_encode(buf)
     }
 
-    /// Fusion sees the wrapped builtin's own view.
+    /// Fusion sees the wrapped builtin's own view, named.
     fn view(&self) -> ApplyView<'_, R, E> {
-        self.apply.view()
+        match self.apply.view() {
+            ApplyView::BuiltIn(_) => ApplyView::BuiltIn(&self.name),
+            v => v,
+        }
     }
 
     fn emit_clif(

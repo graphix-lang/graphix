@@ -420,7 +420,7 @@ pub type InitFn<R, E> = sync::Arc<
 pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// Typed view for analysis code. The default is `BuiltIn` (opaque).
     fn view(&self) -> ApplyView<'_, R, E> {
-        ApplyView::BuiltIn
+        ApplyView::BuiltIn("")
     }
 
     /// Same borrowed-production contract as [`Update::update`]: the
@@ -509,7 +509,9 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
 /// lambda with a walkable body, or an opaque builtin.
 pub enum ApplyView<'a, R: Rt, E: UserEvent> {
     Lambda(&'a GXLambda<R, E>),
-    BuiltIn,
+    /// A builtin, by its registered name (empty below the wrapper that
+    /// knows it).
+    BuiltIn(&'a str),
 }
 
 /// Exhaustive typed view of the compiled node graph, one variant per

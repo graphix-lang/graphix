@@ -1242,7 +1242,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             self.setup_static_bind(ctx, &scope, self.flags, def)?;
         let instance = match apply.view() {
             ApplyView::Lambda(g) => Some(g.instance_id()),
-            ApplyView::BuiltIn => None,
+            ApplyView::BuiltIn(_) => None,
         };
         if let Some(instance) = instance {
             self.static_target = Some(StaticCallTarget {
@@ -1581,7 +1581,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 None => "none",
                 Some(a) => match a.view() {
                     ApplyView::Lambda(_) => "lambda",
-                    ApplyView::BuiltIn => "builtin",
+                    ApplyView::BuiltIn(_) => "builtin",
                 },
             };
             eprintln!(
@@ -1707,7 +1707,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
             Callee::Static { apply, .. } => match apply.view() {
                 ApplyView::Lambda(_) => Ok(CALLEE_INSTANCE),
-                ApplyView::BuiltIn => Ok(CALLEE_BUILTIN),
+                ApplyView::BuiltIn(_) => Ok(CALLEE_BUILTIN),
             },
             Callee::Imaged { .. } => Err(PackError::Application(image::NOT_IMAGED)),
         }

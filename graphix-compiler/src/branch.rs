@@ -6,7 +6,7 @@
 //! a parent is suspended in the join until both of its branches return.
 
 use crate::{
-    BindId, CompileCtx, CustomBuiltinType, ExecCtx, Rt, TagValue, UserEvent,
+    BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Rt, TagValue, UserEvent,
     expr::ExprId, node::place::Path,
 };
 use futures::channel::mpsc;
@@ -50,6 +50,8 @@ enum RtOp {
 pub struct ForkRt<R: Rt> {
     parent: *const RtView<'static, R>,
     cycle: u64,
+    /// Under `GRAPHIX_PAR_AUDIT`, every variable this branch read.
+    reads: Option<parking_lot::Mutex<IntSet<BindId>>>,
     store: IntMap<BindId, Option<(TagValue, u64)>>,
     ref_paths: IntMap<BindId, Option<(BindId, Path)>>,
     log: Vec<RtOp>,
@@ -60,6 +62,13 @@ pub struct ForkRt<R: Rt> {
 unsafe impl<R: Rt + Sync> Send for ForkRt<R> {}
 
 impl<R: Rt> ForkRt<R> {
+    /// Under `GRAPHIX_PAR_AUDIT`, note that this branch read `id`.
+    pub(crate) fn note_read(&self, id: BindId) {
+        if let Some(reads) = &self.reads {
+            reads.lock().insert(id);
+        }
+    }
+
     /// Queue a write of `v` to `id` before everything this branch did.
     pub(crate) fn queue_first(&mut self, id: BindId, v: Value) {
         self.log.insert(0, RtOp::SetVar(id, v));
@@ -71,6 +80,8 @@ impl<R: Rt> ForkRt<R> {
         Self {
             parent: parent as *const RtView<'_, R> as *const RtView<'static, R>,
             cycle: parent.cycle(),
+            reads: crate::dbgenv::graphix_par_audit()
+                .then(|| parking_lot::Mutex::new(IntSet::default())),
             store: IntMap::default(),
             ref_paths: IntMap::default(),
             log: Vec::new(),
@@ -254,9 +265,12 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// Apply what the forked branch `child` did, after everything this
     /// view did before the fork and before anything it does after.
     pub(crate) fn merge(&mut self, child: ForkRt<R>) {
-        let ForkRt { parent: _, cycle: _, store, ref_paths, log } = child;
+        let ForkRt { parent: _, cycle: _, reads, store, ref_paths, log } = child;
         match self {
             Self::Fork(f) => {
+                if let (Some(mine), Some(theirs)) = (&f.reads, reads) {
+                    mine.lock().extend(theirs.into_inner());
+                }
                 f.store.extend(store);
                 f.ref_paths.extend(ref_paths);
                 f.log.extend(log);
@@ -546,6 +560,9 @@ where
     };
     let ra = a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a));
     let rb = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
+    if let Some(reads) = &rt_b.reads {
+        audit(&reads.lock(), &ev_a, &rt_a, &ev_b, &rt_b);
+    }
     // what both delivered, the left delivered first: the right's waits a
     // cycle, queued where serial evaluation would have queued it
     for id in ev_b.variables.delivered_in_both(&ev_a.variables).drain(..) {
@@ -559,6 +576,28 @@ where
     ctx.rt.merge(rt_b);
     ctx.event.merge(ev_b);
     (ra, rb)
+}
+
+/// `GRAPHIX_PAR_AUDIT`: the right branch read nothing the left one
+/// published this cycle, which serial evaluation would have shown it.
+fn audit<R: Rt, E: UserEvent>(
+    right_reads: &IntSet<BindId>,
+    left: &Event<E>,
+    left_rt: &ForkRt<R>,
+    right: &Event<E>,
+    right_rt: &ForkRt<R>,
+) {
+    let own = |ev: &Event<E>, rt: &ForkRt<R>, id: &BindId| {
+        ev.variables.map.contains_key(id) || rt.store.contains_key(id)
+    };
+    for id in right_reads {
+        if own(left, left_rt, id) && !own(right, right_rt, id) {
+            panic!(
+                "GRAPHIX_PAR_AUDIT: a forked branch read {id:?}, which its \
+                 left sibling published in the same cycle"
+            )
+        }
+    }
 }
 
 /// Forks nest at most this deep: a branch this deep runs its fork

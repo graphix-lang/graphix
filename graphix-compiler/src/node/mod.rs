@@ -69,6 +69,9 @@ pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
     ctx: &'a ExecCtx<'_, R, E>,
     id: &BindId,
 ) -> Option<VarRead<'a>> {
+    if let crate::branch::RtView::Fork(f) = &ctx.rt {
+        f.note_read(*id);
+    }
     if let Some(tv) = ctx.event.variables.get(id) {
         return Some(VarRead::Delivered(tv));
     }
@@ -617,9 +620,35 @@ pub struct Block<R: Rt, E: UserEvent> {
     /// Production slot for the catch-bearing path: the last covered
     /// child's borrow can't be held across the catches pass.
     resident: TagValue,
+    /// The statements as runs for forking (`analysis::plan_block`), made
+    /// at the first update that may fork.
+    plan: Option<Box<[(u32, u32)]>>,
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
+    /// [`Update::update`] forking each run of its plan.
+    fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let plan = self.plan.get_or_insert_with(|| {
+            crate::analysis::plan_block(&self.children, &self.catches, ctx)
+        });
+        let last = self.children.len();
+        let mut res: Option<TagValue> = None;
+        for &(a, b) in plan.iter() {
+            let tv = update_run(ctx, &mut self.children[a as usize..b as usize]);
+            if b as usize == last {
+                res = Some(tv.clone());
+            }
+        }
+        for &c in self.catches.iter().rev() {
+            self.children[c].update(ctx);
+        }
+        match res {
+            _ if self.module => TagValue::phantom_ref(),
+            Some(tv) => self.resident.set(tv),
+            None => self.resident.ride(),
+        }
+    }
+
     /// Build a `Block` from compiled children. A module produces no
     /// value; a `do` block's value is its last child's.
     pub fn new(module: bool, children: Box<[Node<R, E>]>, spec: Expr) -> Node<R, E> {
@@ -629,6 +658,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches: Box::default(),
             resident: TagValue::phantom(),
+            plan: None,
         })
     }
 
@@ -649,6 +679,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches,
             resident: TagValue::phantom(),
+            plan: None,
         }))
     }
 }
@@ -775,6 +806,20 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
         _ => compile(ctx, flags, e.clone(), scope, top_id),
     }?;
     Ok((node, scope.clone()))
+}
+
+/// Update a run of independent statements, forking halves where the
+/// runtime forks: the last statement's production.
+fn update_run<'a, R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    nodes: &'a mut [Node<R, E>],
+) -> &'a TagValue {
+    if nodes.len() > 1 && crate::branch::forks(ctx) {
+        let (l, r) = nodes.split_at_mut(nodes.len() / 2);
+        return crate::branch::fork_join(ctx, |c| update_run(c, l), |c| update_run(c, r))
+            .1;
+    }
+    nodes.iter_mut().fold(TagValue::phantom_ref(), |_, n| n.update(ctx))
 }
 
 /// A block's children in evaluation order: those a `catch` covers in
@@ -1010,6 +1055,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
             children,
             catches,
             resident: TagValue::phantom(),
+            plan: None,
         }))
     }
 }
@@ -1024,6 +1070,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        if self.children.len() > 1 && crate::branch::forks(ctx) {
+            return self.update_forking(ctx);
+        }
         if self.catches.is_empty() {
             let res = self
                 .children
@@ -1418,7 +1467,7 @@ pub(super) enum WriteTarget {
 pub struct ConnectDeref<R: Rt, E: UserEvent> {
     pub(crate) spec: Expr,
     pub(super) rhs: Node<R, E>,
-    pub(super) src_id: BindId,
+    pub(crate) src_id: BindId,
     pub(super) target: Option<WriteTarget>,
     pub(super) top_id: ExprId,
 }

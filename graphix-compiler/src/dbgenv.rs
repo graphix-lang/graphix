@@ -24,6 +24,7 @@ dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
 dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
+dbg_flag!(graphix_par_audit, "GRAPHIX_PAR_AUDIT");
 dbg_flag!(
     #[cfg(debug_assertions)]
     gxdbg_callret,

@@ -123,25 +123,38 @@ That is the idiom the book will teach.
 ### 3.3 Fork plans
 
 A `join` forks two closures, so a fork point needs a series-parallel
-schedule, not a DAG. For each fork point the analysis computes a
-**fork plan**: the children split into a sequence of waves, where each
-wave's members are independent of each other and depend only on
-earlier waves. A child goes in the wave after the last wave holding
-something it depends on. Within a wave, the cost model (§5) decides
-which members fork and how they pair. A DAG loses a little to waves.
-Waves are what `join` can express, and they are predictable.
+schedule, and the merge order must stay serial order: two statements'
+`<-` writes to one variable queue in the order they merge. So a block's
+plan is **runs**, not waves: its statements split into contiguous runs,
+and a statement starts a new run when it reads what an earlier
+statement of the run publishes or both reach an ordered call
+(`analysis::plan_block`). A run forks in halves and merges left to
+right; runs run in order. Waves would run a later statement ahead of an
+earlier independent one and reorder their writes.
 
-Plans are computed per instance (as `plan_machines` plans seq steps),
-after resolution, in the analysis pass. The summaries are already
-computed there for seq machines. This extends that computation to
-every fork point with at least two children, stores the waves in the
-node, and images them with the node (as `Step::same_cycle` is). A
-runtime bind plans the new instance in `analyze_bound_callee`
-(C/analysis.rs:229). This is a new consumer of an existing walk, not
-a new walk. The loss without it is the whole feature.
+- A run never spans a `catch` (catches run last, serially), and a
+  module, trait or impl statement is a run of its own: what a later
+  statement reads of it, a core-trait method a comparison dispatches to
+  through the value hooks, no summary sees. An impl's methods capture
+  only lets written before it, which are in earlier runs.
+- `publishes` is each statement's bound ids (`Refs::with_bound`, callee
+  bodies left out); an over-approximation, since an inner block's lets
+  are out of every sibling's scope.
+- A summary reads through a fused kernel's feeders and records the
+  reference a `*r <- v` reads.
+- The plan is made at a block's first update that may fork and kept in
+  the node, not imaged: a runtime that never forks pays nothing for it.
+  A callee bound later than the plan stays opaque in it (conservative).
 
-A fork point whose children are all in one wave per child (a chain)
-stores nothing and never forks.
+Top-level roots are not planned: a script compiles as one block, which
+is.
+
+**`GRAPHIX_PAR_AUDIT=1`**: every forked branch records the variables it
+reads (`ForkRt::note_read`, from `read_var`); at a join, a right
+branch that read what its left sibling published panics. The forced
+gate runs clean under it (5300 tests); its first run found the three
+summary gaps listed under "owed to main" and the core-trait hook
+dependency.
 
 ## 4. The branch context
 
@@ -591,6 +604,26 @@ Phase 1 is the bulk of the diff, and phases 2–3 are where correctness
 is won. Phase 4 is small by comparison, because by then a fork is
 already a merge, and the only new thing is that the two sides run at
 once.
+
+### Found on this branch, owed to main
+
+- **Dependency summaries were blind to fused kernels.**
+  `analysis::local_summary` walks with `fusion::for_each_node`, which
+  does not descend into a `FusedKernel`, so a kernel's reads through its
+  feeders were missing from every summary. Phase 3's block plans hit it
+  (`graphix-shell/tests/jit_arena_rotation.rs` hung under
+  `GRAPHIX_PAR=force`); the branch fixes it in `local_summary`. The seq
+  machine plans its step boundaries from the same summaries
+  (`analysis::plan_machines`), so on main a fused step that reads a
+  variable a pending write targets may be judged same-cycle and read the
+  stale value. **If this branch is not merged, investigate and fix that
+  on main** (Eric, 2026-10-03).
+- **A write through a reference (`*r <- v`) read nothing in its
+  summary,** though it reads `r` to find the target: the walk visits
+  only its right side. The block plan put `let r = &v` and `*r <- 1`
+  in one run (`lang::select::select_guard_after_tainted_init` under
+  `GRAPHIX_PAR_AUDIT`); the branch records the read. Owed to main on
+  the same terms.
 
 ## 12. Deferred and declined
 
