@@ -475,9 +475,11 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
 /// - **jit**: the full fusion + JIT path. Asserts the `FuseExpect`
 ///   annotation (and the optional `; shape:` NodeShape) against the
 ///   live post-fusion graph; debug builds only, where the counters exist.
+/// - **par**: the node-walk with every fork point forked
+///   (`ParMode::Force`, `design/parallel_eval.md`).
 ///
-/// Expands to `mod $name { fn interp() … fn jit() … }` — two
-/// `#[tokio::test(flavor = "current_thread")]` functions.
+/// Expands to `mod $name { fn interp() … fn jit() … fn par() … }` —
+/// three `#[tokio::test(flavor = "current_thread")]` functions.
 #[macro_export]
 macro_rules! run {
     // The `; shape:` and `; jit_only` arms must precede the plain
@@ -525,6 +527,7 @@ macro_rules! run {
 
             async fn run_with_flags(
                 flags: ::graphix_compiler::BitFlags<::graphix_compiler::CFlag>,
+                par: ::graphix_compiler::ParMode,
                 reset_counters_after_init: bool,
                 fusion_check: bool,
                 check_shape: bool,
@@ -540,7 +543,7 @@ macro_rules! run {
                 let resolver = ::graphix_compiler::expr::VfsResolver::new(tbl);
                 let ctx = $crate::testing::init_with_flags_and_setup(
                     tx, &crate::TEST_REGISTER, vec![resolver], flags,
-                    |_ctx| {},
+                    |ctx| ctx.control.set_par_mode(par),
                 ).await?;
                 // Init compiles the stdlib root and may fuse there;
                 // only the fixture's own compile should count.
@@ -624,6 +627,19 @@ macro_rules! run {
             async fn interp() -> ::anyhow::Result<()> {
                 run_with_flags(
                     ::graphix_compiler::CFlag::FusionDisabled.into(),
+                    ::graphix_compiler::ParMode::from_env(),
+                    false,
+                    false,
+                    false,
+                ).await
+            }
+
+            #[$interp]
+            #[::tokio::test(flavor = "current_thread")]
+            async fn par() -> ::anyhow::Result<()> {
+                run_with_flags(
+                    ::graphix_compiler::CFlag::FusionDisabled.into(),
+                    ::graphix_compiler::ParMode::Force,
                     false,
                     false,
                     false,
@@ -638,6 +654,7 @@ macro_rules! run {
                 if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
                     run_with_flags(
                         ::graphix_compiler::BitFlags::empty(),
+                        ::graphix_compiler::ParMode::from_env(),
                         true,
                         false,
                         false,
@@ -664,6 +681,7 @@ macro_rules! run {
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
                     run_with_flags(
                         ::graphix_compiler::BitFlags::empty(),
+                        ::graphix_compiler::ParMode::from_env(),
                         true,
                         false,
                         false,
@@ -687,6 +705,7 @@ macro_rules! run {
                 }
                 run_with_flags(
                     ::graphix_compiler::BitFlags::empty(),
+                    ::graphix_compiler::ParMode::from_env(),
                     true,
                     true,
                     true,
