@@ -3,8 +3,8 @@ use crate::{
     dbgenv::graphix_dbg_bind,
     expr::{At, Expr, ModPath, Origin, Sandbox, TypeDefBody},
     ide::{
-        FieldRefSite, Ide, IdeMode, ModuleInternalView, ModuleRefSite, ReferenceSite,
-        ScopeMapEntry, SigImplLink, TypeRefSite, Warning,
+        FieldRefSite, Ide, IdeMode, ModuleRefSite, ReferenceSite, ScopeMapEntry,
+        SigImplLink, TypeRefSite, Warning,
     },
     is_do_block, mod_root,
     profile::{self, Phase},
@@ -577,11 +577,6 @@ impl Env {
 
     pub fn push_sig_link(&self, link: SigImplLink) {
         self.with_ide(|ide| ide.sig_links.push(link))
-    }
-
-    /// A module's internal view, for the IDE.
-    pub fn push_module_internal_view(&self, view: ModuleInternalView) {
-        self.with_ide(|ide| ide.module_internals.push(view))
     }
 
     pub fn apply_sandbox(&self, spec: &Sandbox) -> Result<Self> {

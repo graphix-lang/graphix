@@ -9,7 +9,7 @@ use crate::{
         Sandbox, Sig, SigItem, SigKind, Source, TypeDefBody, TypeDefExpr, UseItem,
         WrittenAt, add_interface_modules, parser,
     },
-    ide::{ModuleInternalView, ModuleRefSite, SigImplLink},
+    ide::{ModuleRefSite, SigImplLink},
     image::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
@@ -769,12 +769,6 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         let _module = profile::module(&scope.lexical);
         t.compile_inner(ctx, &exprs)
             .with_context(|| format_compact!("compiling module {}", scope.lexical))?;
-        if ctx.env.ide.is_lsp() {
-            ctx.env.push_module_internal_view(ModuleInternalView {
-                scope: t.scope.lexical.clone(),
-                env: t.env.clone(),
-            });
-        }
         Ok(Node::new(t))
     }
 

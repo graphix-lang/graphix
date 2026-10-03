@@ -6,7 +6,7 @@
 
 use crate::{
     BindId, SourcePosition,
-    env::{Bind, Env},
+    env::Bind,
     expr::{ModPath, Origin, WrittenPath},
     typ::Type,
 };
@@ -103,14 +103,6 @@ pub struct SigImplLink {
     pub impl_id: BindId,
 }
 
-/// Per-module snapshot of the impl-side env, where implementation
-/// bindings shadow sig proxies.
-#[derive(Debug, Clone)]
-pub struct ModuleInternalView {
-    pub scope: ModPath,
-    pub env: Env,
-}
-
 /// One checked expression's type: the node's written span and its type
 /// snapshot (`Type::resolve_tvars`), so nothing unified after the check
 /// moves it. Recorded only when a check asks for types.
@@ -191,8 +183,6 @@ pub struct Ide {
     pub warnings: GPooled<Vec<Warning>>,
     /// `val`-sig ↔ `let`-impl bind links.
     pub sig_links: GPooled<Vec<SigImplLink>>,
-    /// Per-module impl-side env snapshots.
-    pub module_internals: GPooled<Vec<ModuleInternalView>>,
     /// Every checked node's type outside lambda bodies, when the check
     /// asked for them (`record_expr_types`).
     pub expr_types: GPooled<Vec<ExprTypeSite>>,
@@ -219,8 +209,6 @@ impl Ide {
             LazyLock::new(|| Pool::new(64, 4096));
         static SIG_LINK_POOL: LazyLock<Pool<Vec<SigImplLink>>> =
             LazyLock::new(|| Pool::new(32, 4096));
-        static MODULE_INTERNAL_VIEW_POOL: LazyLock<Pool<Vec<ModuleInternalView>>> =
-            LazyLock::new(|| Pool::new(32, 4096));
         static EXPR_TYPE_SITE_POOL: LazyLock<Pool<Vec<ExprTypeSite>>> =
             LazyLock::new(|| Pool::new(32, 65536));
         Self {
@@ -233,7 +221,6 @@ impl Ide {
             field_refs: FIELD_REF_SITE_POOL.take(),
             warnings: WARNING_POOL.take(),
             sig_links: SIG_LINK_POOL.take(),
-            module_internals: MODULE_INTERNAL_VIEW_POOL.take(),
             expr_types: EXPR_TYPE_SITE_POOL.take(),
         }
     }
@@ -250,7 +237,6 @@ impl Ide {
             field_refs,
             warnings,
             sig_links,
-            module_internals,
             expr_types,
         } = other;
         self.binds.append(binds);
@@ -263,7 +249,6 @@ impl Ide {
         self.field_refs.append(field_refs);
         self.warnings.append(warnings);
         self.sig_links.append(sig_links);
-        self.module_internals.append(module_internals);
         self.expr_types.append(expr_types);
     }
 
