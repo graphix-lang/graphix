@@ -26,7 +26,9 @@ use poolshark::{global::GPooled, local::LPooled};
 use std::{
     any::Any,
     cmp::Ordering,
+    fmt::Debug,
     hash::{Hash, Hasher},
+    marker::PhantomData,
     ops::Deref,
     sync::Arc,
     time::Duration,
@@ -106,7 +108,7 @@ impl_value_conv!(WInterest {
 });
 
 #[derive(Debug)]
-struct WEvent(NEvent);
+pub(crate) struct WEvent(NEvent);
 
 impl CustomBuiltinType for WEvent {}
 
@@ -500,187 +502,120 @@ fn extract_bind_ids(v: &Value, out: &mut IntSet<BindId>) {
     }
 }
 
-fn scan_watch_events<E: UserEvent>(
-    bind_ids: &IntSet<BindId>,
-    event: &mut Event<E>,
-    convert: fn(&mut WEvent) -> Value,
-) -> Option<Value> {
-    for bid in bind_ids {
-        if let Some(mut cbt) = event.custom.remove(bid) {
-            if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<WEvent>() {
-                if let EventKind::Error(e) = &w.0.event {
-                    return Some(errf!("WatchError", "{e:?}"));
-                }
-                return Some(convert(w));
-            }
-        }
-    }
-    None
-}
-
-fn convert_path(w: &mut WEvent) -> Value {
-    w.0.paths.drain().next().map(utf8_path).unwrap_or(Value::Null)
-}
-
-fn convert_events(w: &mut WEvent) -> Value {
-    let event: Value = match &w.0.event {
-        EventKind::Event(int) => WInterest(*int).into(),
-        EventKind::Error(_) => unreachable!(),
-    };
-    #[derive(IntoValue)]
-    struct Fields {
-        event: Value,
-        paths: ValArray,
-    }
-    let paths = ValArray::from_iter_exact(w.0.paths.drain().map(utf8_path));
-    Fields { event, paths }.into()
+/// What a watch stream outputs per event.
+pub(crate) trait WatchKind: Debug + Send + Sync + 'static {
+    const NAME: &str;
+    fn convert(w: &mut WEvent) -> Value;
 }
 
 #[derive(Debug)]
-pub(crate) struct WatchPath {
-    top_id: ExprId,
-    cached: CachedVals,
-    bind_ids: IntSet<BindId>,
-    out: TagValue,
-}
+pub(crate) struct PathKind;
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
-    const EFFECT: Effect = Effect::Async;
+impl WatchKind for PathKind {
     const NAME: &str = "sys_watch_path";
 
-    fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
-        _typ: &'a FnType,
-        _resolved: Option<&'d FnType>,
-        _scope: &'b Scope,
-        from: &'c [Node<R, E>],
-        top_id: ExprId,
-    ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(WatchPath {
-            top_id,
-            cached: CachedVals::new(from),
-            bind_ids: IntSet::default(),
-            out: TagValue::phantom(),
-        }))
-    }
-
-    fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
-        _from: &[Node<R, E>],
-        buf: &mut &[u8],
-    ) -> Result<Box<dyn Apply<R, E>>, PackError> {
-        let top_id = ExprId::decode(buf)?;
-        let cached = CachedVals::image_decode(buf)?;
-        Ok(Box::new(WatchPath {
-            top_id,
-            cached,
-            bind_ids: IntSet::default(),
-            out: TagValue::phantom(),
-        }))
-    }
-}
-
-impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
-    /// `bind_ids` are registered watches on live OS watchers.
-    fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
-        if !self.bind_ids.is_empty() {
-            return Err(PackError::Application(image::NOT_QUIESCENT));
-        }
-        self.top_id.encode(buf)?;
-        self.cached.image_encode(buf)
-    }
-
-    fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) -> &TagValue {
-        if self.cached.update(ctx, from, event) {
-            for bid in self.bind_ids.drain() {
-                ctx.unref_var(bid, self.top_id);
-            }
-            for v in self.cached.0.iter() {
-                if let Some(v) = v {
-                    extract_bind_ids(v, &mut self.bind_ids);
-                }
-            }
-            for bid in &self.bind_ids {
-                ctx.rt.ref_var(*bid, self.top_id);
-            }
-        }
-        match scan_watch_events(&self.bind_ids, event, convert_path) {
-            Some(v) => self.out.set(TagValue::fired(v)),
-            None => self.out.ride(),
-        }
-    }
-
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in self.bind_ids.drain() {
-            ctx.unref_var(bid, self.top_id);
-        }
-        self.cached.clear();
-        self.out = TagValue::phantom();
-    }
-
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in &self.bind_ids {
-            ctx.unref_var(*bid, self.top_id);
-        }
+    fn convert(w: &mut WEvent) -> Value {
+        w.0.paths.drain().next().map(utf8_path).unwrap_or(Value::Null)
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct WatchEvents {
+pub(crate) struct EventsKind;
+
+impl WatchKind for EventsKind {
+    const NAME: &str = "sys_watch_events";
+
+    fn convert(w: &mut WEvent) -> Value {
+        let event: Value = match &w.0.event {
+            EventKind::Event(int) => WInterest(*int).into(),
+            EventKind::Error(_) => unreachable!(),
+        };
+        #[derive(IntoValue)]
+        struct Fields {
+            event: Value,
+            paths: ValArray,
+        }
+        let paths = ValArray::from_iter_exact(w.0.paths.drain().map(utf8_path));
+        Fields { event, paths }.into()
+    }
+}
+
+pub(crate) type WatchPath = WatchStream<PathKind>;
+pub(crate) type WatchEvents = WatchStream<EventsKind>;
+
+/// The events of a set of watches, one per cycle: every event of a cycle
+/// is written to the stream's own variable, and the runtime delivers the
+/// writes to one variable a cycle apart.
+#[derive(Debug)]
+pub(crate) struct WatchStream<K: WatchKind> {
     top_id: ExprId,
     cached: CachedVals,
     bind_ids: IntSet<BindId>,
+    id: BindId,
     out: TagValue,
+    kind: PhantomData<K>,
 }
 
-impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
+impl<R: Rt, E: UserEvent, K: WatchKind> BuiltIn<R, E> for WatchStream<K> {
     const EFFECT: Effect = Effect::Async;
-    const NAME: &str = "sys_watch_events";
+    const NAME: &str = K::NAME;
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut CompileCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved: Option<&'d FnType>,
         _scope: &'b Scope,
         from: &'c [Node<R, E>],
         top_id: ExprId,
     ) -> Result<Box<dyn Apply<R, E>>> {
-        Ok(Box::new(WatchEvents {
+        let id = BindId::new();
+        ctx.record_ref(id, top_id);
+        Ok(Box::new(Self {
             top_id,
             cached: CachedVals::new(from),
             bind_ids: IntSet::default(),
+            id,
             out: TagValue::phantom(),
+            kind: PhantomData,
         }))
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
         let top_id = ExprId::decode(buf)?;
+        let id = BindId::decode(buf)?;
         let cached = CachedVals::image_decode(buf)?;
-        Ok(Box::new(WatchEvents {
+        ctx.record_ref(id, top_id);
+        Ok(Box::new(Self {
             top_id,
             cached,
             bind_ids: IntSet::default(),
+            id,
             out: TagValue::phantom(),
+            kind: PhantomData,
         }))
     }
 }
 
-impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
+impl<K: WatchKind> WatchStream<K> {
+    fn unwatch<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<R, E>) {
+        for bid in self.bind_ids.drain() {
+            ctx.unref_var(bid, self.top_id);
+        }
+    }
+}
+
+impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
     /// `bind_ids` are registered watches on live OS watchers.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         if !self.bind_ids.is_empty() {
             return Err(PackError::Application(image::NOT_QUIESCENT));
         }
         self.top_id.encode(buf)?;
+        self.id.encode(buf)?;
         self.cached.image_encode(buf)
     }
 
@@ -691,35 +626,42 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
         event: &mut Event<E>,
     ) -> &TagValue {
         if self.cached.update(ctx, from, event) {
-            for bid in self.bind_ids.drain() {
-                ctx.unref_var(bid, self.top_id);
-            }
-            for v in self.cached.0.iter() {
-                if let Some(v) = v {
-                    extract_bind_ids(v, &mut self.bind_ids);
-                }
+            self.unwatch(ctx);
+            for v in self.cached.0.iter().flatten() {
+                extract_bind_ids(v, &mut self.bind_ids);
             }
             for bid in &self.bind_ids {
                 ctx.rt.ref_var(*bid, self.top_id);
             }
         }
-        match scan_watch_events(&self.bind_ids, event, convert_events) {
-            Some(v) => self.out.set(TagValue::fired(v)),
+        for bid in &self.bind_ids {
+            let Some(mut cbt) = event.custom.remove(bid) else { continue };
+            let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<WEvent>() else {
+                continue;
+            };
+            let v = match &w.0.event {
+                EventKind::Error(e) => errf!("WatchError", "{e:?}"),
+                EventKind::Event(_) => K::convert(w),
+            };
+            ctx.rt.set_var(self.id, v);
+        }
+        match event.variables.remove(&self.id) {
+            Some(tv) => self.out.set(TagValue::fired(tv.value_cloned())),
             None => self.out.ride(),
         }
     }
 
     fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in self.bind_ids.drain() {
-            ctx.unref_var(bid, self.top_id);
-        }
+        self.unwatch(ctx);
         self.cached.clear();
         self.out = TagValue::phantom();
+        ctx.unref_var(self.id, self.top_id);
+        self.id = BindId::new();
+        ctx.rt.ref_var(self.id, self.top_id);
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
-        for bid in &self.bind_ids {
-            ctx.unref_var(*bid, self.top_id);
-        }
+        self.unwatch(ctx);
+        ctx.unref_var(self.id, self.top_id);
     }
 }
