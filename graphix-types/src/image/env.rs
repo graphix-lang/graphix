@@ -230,7 +230,7 @@ where
 }
 
 /// A definition's or a module's snapshot: only the lexical fields are
-/// ever read from it (`Env::restore_lexical_env`), so only they travel.
+/// ever read from it (`Env::swap_lexical`), so only they travel.
 pub(crate) fn lexical_len(env: &Env) -> usize {
     shared_map::map_len(&env.binds)
         + SharedSet(env.modules.clone()).encoded_len()

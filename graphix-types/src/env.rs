@@ -395,7 +395,7 @@ pub struct Env {
     pub typedefs: Map<ModPath, Map<CompactString, TypeDef>>,
     /// Every scope's explicit namespace (imports + globs), keyed by
     /// scope path. A global registry, not lexical state: it survives
-    /// `restore_lexical_env`, so deferred resolution can consult the
+    /// `swap_lexical`, so deferred resolution can consult the
     /// defining module's table.
     pub names: TrackedMap<ModPath, ScopeNames>,
     /// Every Graphix-minted abstract type's representation, global;
@@ -480,10 +480,8 @@ impl Env {
         self.ide.join(ide);
     }
 
-    /// Restore the lexical environment to the snapshot `other`; the
-    /// global registries and IDE sinks stay as they are on `self`.
     /// A snapshot of the lexical fields alone, the only ones
-    /// [`Self::restore_lexical_env`] reads back: a definition keeps one,
+    /// [`Self::swap_lexical`] exchanges: a definition keeps one,
     /// and holding the global tables too would make every later write
     /// to them copy what the snapshot shares.
     #[doc(hidden)]
@@ -497,8 +495,10 @@ impl Env {
         }
     }
 
+    /// Exchange the lexical environment with `other`'s; the global
+    /// registries and IDE sinks stay as they are on `self`.
     #[doc(hidden)]
-    pub fn restore_lexical_env(&self, other: Self) -> Self {
+    pub fn swap_lexical(&mut self, other: &mut Self) {
         let Self {
             binds,
             modules,
@@ -516,21 +516,10 @@ impl Env {
             ide: _,
             hidden_impls: _,
         } = other;
-        Self { binds, modules, typedefs, traits, ..self.clone() }
-    }
-
-    /// [`Self::restore_lexical_env`] taking the lexical maps out of
-    /// `other`, so the restored env holds them alone and updates them
-    /// in place.
-    #[doc(hidden)]
-    pub fn restore_lexical_env_mut(&self, other: &mut Self) -> Self {
-        self.restore_lexical_env(Self {
-            binds: mem::take(&mut other.binds),
-            modules: mem::take(&mut other.modules),
-            typedefs: mem::take(&mut other.typedefs),
-            traits: mem::take(&mut other.traits),
-            ..Self::default()
-        })
+        mem::swap(&mut self.binds, binds);
+        mem::swap(&mut self.modules, modules);
+        mem::swap(&mut self.typedefs, typedefs);
+        mem::swap(&mut self.traits, traits);
     }
 
     /// Run `f` on the active IDE sink, if any.

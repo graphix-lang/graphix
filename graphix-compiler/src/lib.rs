@@ -1004,28 +1004,22 @@ macro_rules! env_restore_methods {
         /// the current one back. Bindings `f` creates are retained.
         pub fn with_restored<T, F: FnOnce(&mut Self) -> T>(
             &mut self,
-            env: Env,
+            mut env: Env,
             f: F,
         ) -> T {
-            let snap = self.env.restore_lexical_env(env);
-            let orig = mem::replace(&mut self.env, snap);
-            let r = f(self);
-            self.env = self.env.restore_lexical_env(orig);
-            r
+            self.with_restored_mut(&mut env, f)
         }
 
-        /// [`Self::with_restored`] mutating `env` in place, so two envs
-        /// keep continuity across invocations.
+        /// [`Self::with_restored`] leaving the lexical environment `f`
+        /// built in `env`, so two envs keep continuity across invocations.
         pub fn with_restored_mut<T, F: FnOnce(&mut Self) -> T>(
             &mut self,
             env: &mut Env,
             f: F,
         ) -> T {
-            let snap = self.env.restore_lexical_env_mut(env);
-            let orig = mem::replace(&mut self.env, snap);
+            self.env.swap_lexical(env);
             let r = f(self);
-            *env = self.env.clone();
-            self.env = self.env.restore_lexical_env(orig);
+            self.env.swap_lexical(env);
             r
         }
     };
