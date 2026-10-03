@@ -311,8 +311,12 @@ pushing from parallel branches would leave the queue in either order,
 and the values read from it later follow that order. Such a builtin
 declares itself `Ordered` (a constant beside `EFFECT`). Two subtrees
 that both contain an `Ordered` call are dependent (§3.2) and keep their
-serial order. What the default is for a builtin not yet audited is
-§13's open item 5.
+serial order. A builtin is unordered unless it declares `Ordered`: the
+types already force thread safety, the class is rare and visible (state
+shared across nodes, usually an `Arc` more than one node holds), and
+phase 2 audits the stdlib for it. A missed case shows as run-to-run
+nondeterminism, which the forced-parallel fuzzer pair can find in the
+stdlib.
 
 Async builtins spawn through `rt.spawn_var`/`set_timer`/`watch`, which
 the log carries to the root (§4.2). Their completions arrive in later
@@ -496,7 +500,7 @@ semantics-touching ones soak before the next.
 | phase | content | proves |
 |---|---|---|
 | 1 | The branch context, serial only: `ExecCtx` split into `Shared` + branch, `Event` folded in, every rt/libstate/compile write routed through the root's exclusive state, the `custom`/tombstone/id-order audits. No delta, no log, no thread. | The refactor is serial-equivalent and costs nothing: the gate, a fleet soak, and a GUI-suite and admin-TUI timing at parity. |
-| 2 | Deltas, logs and compile tasks with an artificial fork: under `GRAPHIX_PAR=force`, every legal fork point runs its two sides serially, but through separate branch contexts, separate compile tasks for runtime binds, and the merge. `LibState` through `&`; `Ordered` declarations. | Merge correctness, runtime compiles included, without threads: the fuzzer pair serial vs. forced-merge; `run!` gains a `par` mode. |
+| 2 | Deltas, logs and compile tasks with an artificial fork: under `GRAPHIX_PAR=force`, every legal fork point runs its two sides serially, but through separate branch contexts, separate compile tasks for runtime binds, and the merge. `LibState` through `&`; the stdlib audit for in-language shared state, `Ordered` declarations. | Merge correctness, runtime compiles included, without threads: the fuzzer pair serial vs. forced-merge; `run!` gains a `par` mode. |
 | 3 | Fork plans: `publishes`, the waves, imaging the plans, `GRAPHIX_PAR_AUDIT`. | The analysis finds what serial order needed; the audit runs under the fuzzer's forced mode. |
 | 4 | The pool, `par::join`, thread-locals, the per-cycle stack budget, the cost histograms and decisions, `#[parallel]`/`#[serial]`, `GRAPHIX_PAR`. | Real parallelism: a bench corpus of wide programs (§12), speedup per core count. |
 | 5 | Node-walk collections: slot ranges, and growth built in chunked compile tasks (§8). | Collection scaling, growth included. |
@@ -540,11 +544,6 @@ Taken (Eric, 2026-10-03):
    not worth having.
 6. The fork decision reads the 75th percentile to start (§5), tuned
    against the phase 4 benches.
-
-Open:
-
-1. The default for a builtin not yet audited for in-language shared
-   state (§6): `Ordered` (correct until audited, may serialize) or
-   unordered (the known case, `queuefn`, declares itself; a missed one is
-   a nondeterminism the forced-parallel fuzzer pair can find).
+7. A builtin is parallel-safe unless it declares `Ordered` (§6); the
+   stdlib is audited in phase 2.
 
