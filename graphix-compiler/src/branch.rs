@@ -104,6 +104,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
+    #[inline]
     pub fn ref_var(&mut self, id: BindId, ref_by: ExprId) {
         logged!(self, ref_var(id, ref_by), RtOp::RefVar(id, ref_by))
     }
@@ -112,6 +113,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         logged!(self, unref_var(id, ref_by), RtOp::UnrefVar(id, ref_by))
     }
 
+    #[inline]
     pub fn set_var(&mut self, id: BindId, value: Value) {
         logged!(self, set_var(id, value), RtOp::SetVar(id, value))
     }
@@ -120,6 +122,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         logged!(self, patch_var(id, path, value), RtOp::PatchVar(id, path, value))
     }
 
+    #[inline]
     pub fn notify_set(&mut self, id: BindId) {
         logged!(self, notify_set(id), RtOp::NotifySet(id))
     }
@@ -153,6 +156,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         logged!(self, watch_var(s), RtOp::WatchVar(s))
     }
 
+    #[inline]
     pub fn cycle(&self) -> u64 {
         match self {
             Self::Root(r) => r.cycle(),
@@ -162,6 +166,7 @@ impl<'a, R: Rt> RtView<'a, R> {
 
     /// The (production, cycle stamp) of `id`'s last delivery; see
     /// [`Rt::store_get`].
+    #[inline]
     pub fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)> {
         let mut view: &RtView<'_, R> = self;
         loop {
@@ -176,10 +181,12 @@ impl<'a, R: Rt> RtView<'a, R> {
     }
 
     /// See [`Rt::store_value`].
+    #[inline]
     pub fn store_value(&self, id: &BindId) -> Option<Value> {
         stored_value(self.store_get(id))
     }
 
+    #[inline]
     pub fn store_insert(&mut self, id: BindId, tv: TagValue) {
         match self {
             Self::Root(r) => r.store_insert(id, tv),
@@ -198,6 +205,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         }
     }
 
+    #[inline]
     pub fn store_remove(&mut self, id: &BindId) {
         match self {
             Self::Root(r) => r.store_remove(id),
@@ -308,11 +316,13 @@ impl<V: std::fmt::Debug> std::fmt::Debug for Layered<V> {
 }
 
 impl<V: Clone> Layered<V> {
+    #[inline]
     fn parent(&self) -> Option<&Layered<V>> {
         // SAFETY: see the type.
         unsafe { self.parent.as_ref() }
     }
 
+    #[inline]
     pub fn get(&self, id: &BindId) -> Option<&V> {
         let mut layer = self;
         loop {
@@ -323,11 +333,13 @@ impl<V: Clone> Layered<V> {
         }
     }
 
+    #[inline]
     pub fn contains_key(&self, id: &BindId) -> bool {
         self.get(id).is_some()
     }
 
     /// Set `id`, returning what it held.
+    #[inline]
     pub fn insert(&mut self, id: BindId, v: V) -> Option<V> {
         match self.map.insert(id, Some(v)) {
             Some(prev) => prev,
@@ -336,6 +348,7 @@ impl<V: Clone> Layered<V> {
     }
 
     /// Set `id` if it holds nothing, else hand `v` back.
+    #[inline]
     pub fn try_insert(&mut self, id: BindId, v: V) -> Result<(), V> {
         if self.contains_key(&id) {
             return Err(v);
@@ -345,6 +358,7 @@ impl<V: Clone> Layered<V> {
     }
 
     /// Remove `id`, returning what it held.
+    #[inline]
     pub fn remove(&mut self, id: &BindId) -> Option<V> {
         match self.parent() {
             None => self.map.remove(id).flatten(),
@@ -455,6 +469,7 @@ impl<'a, R: Rt, E: UserEvent> CxView<'a, R, E> {
 impl<'a, R: Rt, E: UserEvent> Deref for CxView<'a, R, E> {
     type Target = CompileCtx<R, E>;
 
+    #[inline]
     fn deref(&self) -> &CompileCtx<R, E> {
         let mut view: &CxView<'_, R, E> = self;
         loop {
@@ -470,6 +485,7 @@ impl<'a, R: Rt, E: UserEvent> Deref for CxView<'a, R, E> {
 }
 
 impl<'a, R: Rt, E: UserEvent> DerefMut for CxView<'a, R, E> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
         match self {
             Self::Root(c) => c,
@@ -502,7 +518,7 @@ where
     let (mut ev_a, mut ev_b) = (ctx.event.fork(), ctx.event.fork());
     let (libstate, hooks, control, decoder) =
         (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
-    let fork_depth = ctx.fork_depth + 1;
+    let (fork_depth, par) = (ctx.fork_depth + 1, ctx.par);
     let branch = |cx, rt, event| ExecCtx {
         cx: CxView::Fork(cx),
         image_decoder: decoder,
@@ -512,6 +528,7 @@ where
         control,
         event,
         fork_depth,
+        par,
     };
     let ra = a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a));
     let rb = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
@@ -532,6 +549,7 @@ pub const MAX_FORK_DEPTH: u8 = 16;
 
 /// Whether a fork point forks. Until the cost model, only a forced
 /// runtime does.
+#[inline]
 pub fn forks<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>) -> bool {
-    ctx.fork_depth < MAX_FORK_DEPTH && ctx.control.par_mode() == ParMode::Force
+    ctx.par == ParMode::Force && ctx.fork_depth < MAX_FORK_DEPTH
 }

@@ -1191,17 +1191,21 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
     pub event: &'a mut Event<E>,
     /// How many forks this branch is below the cycle's root.
     pub(crate) fork_depth: u8,
+    /// The runtime's parallel mode when the view was made.
+    pub(crate) par: graphix_types::stack::ParMode,
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
     type Target = CompileCtx<R, E>;
 
+    #[inline]
     fn deref(&self) -> &CompileCtx<R, E> {
         &self.cx
     }
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
         &mut self.cx
     }
@@ -1470,6 +1474,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             control,
             event,
             fork_depth: 0,
+            par: control.par_mode(),
         }
     }
 }
@@ -1486,6 +1491,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             control: self.control,
             event,
             fork_depth: self.fork_depth,
+            par: self.par,
         }
     }
 
