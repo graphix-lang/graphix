@@ -1,7 +1,7 @@
 # Parallel evaluation
 
 Status: PROPOSED on branch `parallel-eval` (2026-10-03). Nothing is
-built. The rules below are the plan; open decisions are in §13.
+built. The rules below are the plan; the decisions taken are in §13.
 Pins: none yet (§11 lists the ones each phase adds).
 
 ## 1. Goal
@@ -13,13 +13,14 @@ cost, and the program can force or forbid them with attributes.
 
 Three commitments shape everything else:
 
-- **Serial equivalence.** A parallel run is observably identical to the
-  serial one: the same per-cycle productions, the same order in the
-  next cycle's write queue, the same order of output. The language
-  already leaves independent computations unordered. Where an order is
-  observable, the parallel run reproduces it. The serial node-walk then
-  stays the oracle, and the fuzzer gains a pair (serial vs. forced
-  parallel) instead of losing its bit-for-bit comparison.
+- **Serial equivalence in the language.** A parallel run computes what
+  the serial one computes: the same per-cycle productions, the same
+  order in the next cycle's write queue, the same error deliveries. The
+  serial node-walk stays the oracle, and the fuzzer gains a pair
+  (serial vs. forced parallel) instead of losing its bit-for-bit
+  comparison. External effects are not part of this: they happen when
+  they run, and independent branches' effects have no order between
+  them (§6).
 - **The serial path pays nothing.** A program that never forks runs as
   fast as today. Forking costs only where it happens.
 - **Not tuned to today's corpus.** The corpus is small and was written
@@ -52,10 +53,10 @@ S = `stdlib/graphix-package-*/src`.)
 | scoped flags `event.init`, `wake_init` | set and restored around a child (13 scopes: CallSite, MapQ, FoldQ, Catch, Module, Select, seq) | per-branch copies |
 | overlay removals | `CachedArgsAsync` removes its own id (S/core/lib.rs:904); consumers `take` `event.custom` entries (S/http/lib.rs:839, S/sys/net.rs:809, S/sys/watch.rs:509) | tombstones in the delta; `custom` behind a `Mutex` (rare) |
 | other `Rt` calls | `ref_var`/`unref_var`, `set_ref_path`, `set_timer`, `spawn`, `spawn_var`, `watch`, `watch_var` (RT/rt.rs:158-251) | logged; applied in order at merge. `set_ref_path` is also read back (`ref_path`), so it joins the delta |
-| `libstate` | builtins `get_or_default`/`set` per-context library state (T/lib.rs:185): `NetState`, `PrintSink`, `TuiControl`, args | a builtin that touches it is `Shared` (§6) |
-| shared builtin state | `queuefn`'s `Arc<Mutex<QueueState>>` between the owner and every wrapper site (S/core/queuefn.rs:96); net publish batches (S/sys/netstate.rs:420) | `Shared` (§6) |
-| external output | `print`/`println`/`dbg`/`log` write synchronously (S/core/lib.rs:2508), `sys_exit` exits, `sys_net_write` writes | `Shared`; printing moves to a branch sink (§6) |
-| compiles at run time | slot growth, dynamic binds, recursive activations, lazily decoded image bodies, dynamic modules and core-trait hook sites (§8) write most of `CompileCtx` | under the compile lock (§8) |
+| `libstate` | builtins `get_or_default`/`set` per-context library state (T/lib.rs:185): `NetState`, `PrintSink`, `TuiControl`, args | reached through `&` in a forked branch; each value guards its own mutation (§6) |
+| in-language shared state | `queuefn`'s `Arc<Mutex<QueueState>>` between the owner and every wrapper site (S/core/queuefn.rs:96): its order decides values | `Ordered` (§6) |
+| external effects | `print`/`println`/`dbg`/`log` write synchronously (S/core/lib.rs:2508), `sys_exit` exits, `sys_net_write` writes, net publish batches (S/sys/netstate.rs:420) | happen when they run; no order between parallel branches (§6) |
+| compiles at run time | slot growth, dynamic binds, recursive activations, lazily decoded image bodies, dynamic modules and core-trait hook sites (§8) write most of `CompileCtx` | in a compile task per branch, joined at the merge (§8) |
 | thread-locals | kernel loans, `VALUE_HOOKS`, the interrupt scope, `RUNTIME_BIND`, `DESELECTING_ARM`, tvar `LEVEL`/`TASK` | re-entered per job by the one fork helper (§9) |
 
 Nothing else crosses. Node state is owned by its node (sleep state is
@@ -95,7 +96,7 @@ dependent. It lands next cycle, and the merge keeps the queue in serial
 order (§4.2).
 
 > Sibling `j` depends on an earlier sibling `i` iff `reads(j)` meets
-> `publishes(i)`, or both contain a `Shared` call (§6).
+> `publishes(i)`, or both contain an `Ordered` call (§6).
 
 `reads` is the dependency summary's read set
 (`dependency_summaries.md` §2), following statically resolved calls
@@ -163,8 +164,8 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
 }
 ```
 
-- **Root branch.** The cycle's root holds the runtime, library state
-  and compile state exclusively (`Base::Root(&mut ..)`). It writes
+- **Root branch.** The cycle's root holds the runtime and the compile
+  state exclusively (`Base::Root(&mut ..)`). It writes
   through, exactly as today. An unforked program never builds a delta
   or a log: that is the "serial path pays nothing" rule in the type.
 - **Forked branch.** `join` reborrows the parent's state as `&` for
@@ -280,41 +281,44 @@ them. Fork plans (§3.3), which are static, are imaged.
 **Before there is data,** a fork point runs serially, unless an
 attribute forces it.
 
-## 6. Builtins
+## 6. Builtins and side effects
 
-Every builtin gets a second classification beside `EFFECT`
-(`effects.rs`): whether it touches state another node can observe
-within the cycle.
+**External effects happen when they happen.** Printing, logging, file
+and network I/O, process exit: a builtin performs its effect at the
+moment it runs, as today, with no buffering. Independent branches'
+effects have no order between them; within a branch they keep program
+order. A program that needs an order makes it a dependency (one call
+reads a value the other produces) or runs under `#[serial]`. The
+fuzzer already compares a cycle's printed lines sorted
+(graphix-fuzz/src/lib.rs:696), since their order within a cycle was an
+evaluation-order artifact before any thread existed.
 
-- **`Local`.** All its state is its own node's (an `Apply`'s fields), or
-  it has none. Every `Stateless` builtin is `Local` by rule. A `Sync`
-  builtin with node-owned state (`once`, `uniq`, `count`, `hold`,
-  `take`, `skip`) is `Local` once audited.
-- **`Shared`.** It reads or writes `libstate`, an `Arc` shared with other
-  nodes (`queuefn`), process-global state, or performs output in
-  `update`. Two subtrees that both contain a `Shared` call are ordered
-  (§3.2): they never run beside each other, so their effects keep their
-  serial order.
+**A builtin must be thread-safe, and the types say so.** A forked
+branch reaches library state only through `&`. `LibState` becomes a
+map of `Send + Sync` values read through `&self`; a value that
+mutates guards itself (`PrintSink` is already
+`Arc<Mutex<SinkBuf>>`, S/core/lib.rs:101), and lazy creation
+(`get_or_default`) locks the map, which is rare. A builtin that wants
+`&mut` library state does not compile until it takes a lock. Node-owned
+state (an `Apply`'s fields) needs nothing: the node is updated by one
+branch.
 
-The default for a builtin not yet audited is `Shared`: correctness
-first, parallelism as the audit proceeds. The builtin trait gains a
-constant for it, like `EFFECT`.
-
-Printing is the exception worth engineering, because printing is how
-people debug parallel code. `emit_line` (S/core/lib.rs:2508) already
-writes to a `PrintSink` when one is installed. Under a fork, each
-branch gets a sink buffer in its log, and the root writes the buffers
-out in serial order at merge. `print`, `println`, `dbg` and `log`
-become `Local`. Output appears at the end of the parallel region rather
-than mid-cycle. A cycle is atomic, so nothing can tell the difference
-except a wall clock.
+**In-language shared state is ordered.** One class remains: state
+shared between nodes whose order decides values, not output.
+`queuefn`'s queue, shared by the owner and every wrapper call site
+(S/core/queuefn.rs:96), is the case in the stdlib today. Two sites
+pushing from parallel branches would leave the queue in either order,
+and the values read from it later follow that order. Such a builtin
+declares itself `Ordered` (a constant beside `EFFECT`). Two subtrees
+that both contain an `Ordered` call are dependent (§3.2) and keep their
+serial order. What the default is for a builtin not yet audited is
+§13's open item 5.
 
 Async builtins spawn through `rt.spawn_var`/`set_timer`/`watch`, which
-the log already orders. Their completions arrive in later cycles in
-whatever order the world delivers them, as today. A builtin that holds
-a callback (`array_group`, `queuefn`, `opt`, net, http) builds its
-callee through `CallSite::bind`, which is §8's concern. Being `Local`
-says nothing about that.
+the log carries to the root (§4.2). Their completions arrive in later
+cycles in whatever order the world delivers them, as today. A builtin
+that holds a callback (`array_group`, `queuefn`, `opt`, net, http)
+builds its callee through `CallSite::bind`, which is §8's concern.
 
 `rand` uses the thread-local RNG. Its values are not reproducible today
 either, so nothing changes.
@@ -366,43 +370,60 @@ mid-cycle:
 | core-trait hook sites | `take_site` → `build_site` (C/node/coretraits.rs:224) | env, `pending_refs`, `core_hook_sites`; entered from inside `Value::eq`/`cmp`/`fmt` |
 | delete and sleep | `unbind_variable`, `unref_var`, `Lambda::delete` | env, `pending_refs`, `lambda_defs`, `bind_to_lambda` |
 
-**v1: one compile lock.** `CompileCtx` lives in `Shared` behind a
-`parking_lot::Mutex`. A branch that reaches one of these paths takes
-the lock, compiles against the master, and releases it. Two hot read
-paths do not take the lock. Select patterns and casts read types
-(C/node/select.rs:905, C/node/mod.rs:1655), and fused kernels borrow an
-env for typed calls (C/fusion/kernel.rs:386). These read an `Arc<Env>`
-snapshot held by the branch. The snapshot is cheap: `Env` is persistent
-maps. A branch's snapshot refreshes after its own compile, so new code
-sees what it was compiled against. Other branches keep their snapshot:
-they are independent of the compile by §3, and the types they read did
-not change under them.
+**Every runtime compile runs in a compile task.** Parallel evaluation
+is worth little if the instances it needs are built one at a time: a
+wide collection's growth is tens of microseconds per slot, nearly all
+of it instance construction. So a branch that reaches one of these
+paths compiles in a compile task forked from its parent's compile view.
+This is the machinery statement elaboration already uses
+(`parallel_compile.md`):
 
-Deferred work stays deferred. `record_ref` and `discard` collect into
-the branch's log rather than `CompileCtx`, and `apply_deferred` becomes
-a log replay at the root.
+- `CompileCtx::fork`/`join` (C/lib.rs:1163);
+- a fresh `tvar::new_task()` per task, so a task never writes a cell an
+  earlier task created (`tvar::decided`, refused under `OwnWrites`);
+- refs and discards deferred per task.
 
-**v2: slot construction in compile tasks.** The lock serializes the
-expensive part of a parallel collection's growth: tens of microseconds
-per slot, all under one mutex. The compile-task machinery already does this for
-statement elaboration (`parallel_compile.md`). `CompileCtx::fork`/`join`
-(C/lib.rs:1163), task-owned type cells (`tvar::new_task`, `decided`),
-and joins in evaluation order. A collection that grows by many slots
-builds them in tasks, one per chunk, and joins in index order. Under
-v1, a large growth is one cycle's serial cost, as today.
+The fork is made at a branch's first compile, so a branch that compiles
+nothing pays nothing. It joins into the parent at the branch merge, in
+serial order, as compile tasks join in evaluation order today. Two
+branches never see each other's compiles before the join, and §3 makes
+that safe: they are independent.
 
-**Dynamic modules.** The module recompile runs rayon from inside
-`update` today (C/node/mod.rs:949). Under the eval pool, that `par_iter`
-runs on the same pool, which nests correctly. A dynamic module is
-`opaque` in its summary, so nothing forks beside it.
+- **Ownership checks turn on at run time.** Runtime code runs with
+  `TASK = 0` today, so no cell-ownership check applies to a runtime
+  bind. In tasks it does, and `GRAPHIX_TASK_AUDIT` covers runtime binds.
+- **Collection growth is chunked.** A collection growing by many slots
+  builds them in tasks, one per chunk (the grain from the construction
+  histogram, §5), joined in index order.
+- **Hot reads are not compiles.** Select patterns and casts read types
+  (C/node/select.rs:905, C/node/mod.rs:1655) and kernels borrow an env
+  for typed calls (C/fusion/kernel.rs:386). They read the branch's view:
+  the parent's compile state through `&`, or the branch's task fork once
+  it has one.
+- **Two shared resources keep their locks:** the JIT (a kernel install,
+  C/fusion/emit/jit.rs:1263) and the image decoder
+  (C/node/callsite.rs:1768). Both are taken once per first use.
+- **Joins touch disjoint keys.** `TrackedMap::join` keeps the last join
+  per key and detects no conflict. Runtime binds write fresh ids
+  (`by_id`, `bind_to_lambda` keyed by new `BindId`s) and balanced pairs
+  (`resolving_lambdas`, the temporary `lambda_defs` entry), so two forks
+  write disjoint keys. Under `GRAPHIX_PAR_AUDIT` the join asserts it.
+
+**Dynamic modules** compile in their branch's task too. Their checks'
+internal `par_iter` (C/node/mod.rs:949) nests in the evaluation pool. A
+dynamic module is `opaque` in its summary, so nothing forks beside it.
 
 **Core-trait hooks** reach `&mut ExecCtx` through a raw pointer
 published in `VALUE_HOOKS` (C/node/coretraits.rs:368) and re-enter node
-updates from inside `Value::eq`/`cmp`/`fmt`. Under branches, the
-pointer is the branch context, installed per job (§9), so a hook runs
-in the branch that compared. Building a new hook site takes the compile
-lock. The `core_hook_sites` registry moves into `Shared` behind its own
-`Mutex`, and spare events become branch scratch.
+updates from inside `Value::eq`/`cmp`/`fmt`. The pointer is a loan to
+one thread, made by a frame that holds the context and waits inside the
+comparison, so under branches each job loans its own branch (§9) and
+the aliasing is today's, once per job. The hook call sites are stateful
+graphs pooled per (trait, type) in `core_hook_sites`. Two branches
+comparing the same abstract type need two sites, so spare sites and
+spare events become branch scratch. A site built in a branch's task
+joins the registry at the merge; one that two branches both built is
+kept once and the other deleted.
 
 **Ids.** Ids minted in parallel are unique (global atomics,
 T/ids.rs:138) but their values depend on scheduling. That is acceptable
@@ -435,8 +456,7 @@ are 16 MB, with `stacker` growing segments as today.
 workers the worst case is N times the budget, and the fuzzer's children
 run under an 8 GB address-space cap. The budget becomes per cycle: the
 `Control` holds an atomic of bytes granted, every worker charges its
-growth against it, and the abort fires at the total. §13 asks whether
-that is the containment we want.
+growth against it, and the abort fires at the total (§13).
 
 **Interrupt and abort.** `Control` is atomics, already shared. Every
 job polls it through its own `CURRENT`. A panic in a job (a kernel's
@@ -476,10 +496,10 @@ semantics-touching ones soak before the next.
 | phase | content | proves |
 |---|---|---|
 | 1 | The branch context, serial only: `ExecCtx` split into `Shared` + branch, `Event` folded in, every rt/libstate/compile write routed through the root's exclusive state, the `custom`/tombstone/id-order audits. No delta, no log, no thread. | The refactor is serial-equivalent and costs nothing: the gate, a fleet soak, and a GUI-suite and admin-TUI timing at parity. |
-| 2 | Deltas and logs with an artificial fork: under `GRAPHIX_PAR=force`, every legal fork point runs its two sides serially, but through separate branch contexts and the merge. Builtin `Local`/`Shared` classification; branch print sinks. | Merge correctness, without threads: the fuzzer pair serial vs. forced-merge; `run!` gains a `par` mode. |
+| 2 | Deltas, logs and compile tasks with an artificial fork: under `GRAPHIX_PAR=force`, every legal fork point runs its two sides serially, but through separate branch contexts, separate compile tasks for runtime binds, and the merge. `LibState` through `&`; `Ordered` declarations. | Merge correctness, runtime compiles included, without threads: the fuzzer pair serial vs. forced-merge; `run!` gains a `par` mode. |
 | 3 | Fork plans: `publishes`, the waves, imaging the plans, `GRAPHIX_PAR_AUDIT`. | The analysis finds what serial order needed; the audit runs under the fuzzer's forced mode. |
 | 4 | The pool, `par::join`, thread-locals, the per-cycle stack budget, the cost histograms and decisions, `#[parallel]`/`#[serial]`, `GRAPHIX_PAR`. | Real parallelism: a bench corpus of wide programs (§12), speedup per core count. |
-| 5 | Node-walk collections: slot ranges; then slot construction in compile tasks (§8 v2). | Collection scaling, growth included. |
+| 5 | Node-walk collections: slot ranges, and growth built in chunked compile tasks (§8). | Collection scaling, growth included. |
 | 6 | Parallel loops inside kernels. | Fused collection scaling. |
 | 7 | Book chapter: the independence rule, the attributes, the idioms (§3.2). | — |
 
@@ -505,16 +525,26 @@ once.
   measured as the intended workload, not checked against what existing
   programs do.
 
-## 13. Open decisions
+## 13. Decisions
 
-1. **`#[parallel]` as an assertion.** Refuse it where the analysis finds
-   nothing to fork? Recommended: yes, as `#[native]`.
-2. **`#[serial]` through calls.** Dynamic, as proposed? Recommended: yes.
-3. **Stack budget per cycle** (§9) rather than per thread? Recommended:
-   yes; per-thread budgets multiply with the pool.
-4. **Printing at the end of a parallel region** rather than mid-cycle
-   (§6). Recommended: accept; a cycle is atomic.
-5. **Unaudited builtins default to `Shared`** (§6). Recommended: yes; the
-   audit raises parallelism, never correctness.
-6. **The quantile** the decision reads (§5): p75 to start, tuned against
-   the phase 4 benches.
+Taken (Eric, 2026-10-03):
+
+1. `#[parallel]` is a compile error where the analysis finds nothing to
+   fork within it.
+2. `#[serial]` is dynamic: it covers callees.
+3. The stack budget is per cycle, shared by every worker (§9).
+4. External effects happen when they run, unbuffered and unordered
+   between parallel branches (§6). Programs that need an order say so.
+5. Runtime compiles run in compile tasks, in parallel, from the start
+   (§8): parallel evaluation without parallel instance construction is
+   not worth having.
+6. The fork decision reads the 75th percentile to start (§5), tuned
+   against the phase 4 benches.
+
+Open:
+
+1. The default for a builtin not yet audited for in-language shared
+   state (§6): `Ordered` (correct until audited, may serialize) or
+   unordered (the known case, `queuefn`, declares itself; a missed one is
+   a nondeterminism the forced-parallel fuzzer pair can find).
+
