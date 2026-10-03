@@ -441,6 +441,50 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     Ok(())
 }
 
+// Two watches establishing in one cycle each deliver their event.
+#[tokio::test(flavor = "current_thread")]
+async fn test_watch_simultaneous_events_all_delivered() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel::<GPooled<Vec<GXEvent>>>(10);
+    let ctx = crate::init(tx).await?;
+    let temp_dir = tempfile::tempdir()?;
+    let file1 = temp_dir.path().join("file1.txt");
+    let file2 = temp_dir.path().join("file2.txt");
+    fs::write(&file1, b"one").await?;
+    fs::write(&file2, b"two").await?;
+    let code = format!(
+        r#"{{
+  use sys::fs::watch::{{self, *}};
+  let w = create(null)?;
+  let h1 = watch(#interest: [`Established], w, "{file1}")?;
+  let h2 = watch(#interest: [`Established], w, "{file2}")?;
+  path(h1, h2)
+}}"#,
+        file1 = escape_path(file1.display()),
+        file2 = escape_path(file2.display()),
+    );
+    let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
+    let eid = compiled.exprs[0].id;
+    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(timeout);
+    let mut paths: Vec<Value> = Vec::new();
+    loop {
+        tokio::select! {
+            _ = &mut timeout => break,
+            Some(mut batch) = rx.recv() => {
+                for event in batch.drain(..) {
+                    if let GXEvent::Updated(id, v) = event
+                        && id == eid
+                    {
+                        paths.push(v);
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(paths.len(), 2, "one Established per watch: {paths:?}");
+    Ok(())
+}
+
 // established -> pending -> established.
 watch_test! {
     name: test_watch_established_to_pending,
