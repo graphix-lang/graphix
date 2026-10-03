@@ -3,8 +3,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -150,7 +149,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> BuiltIn<R, E> for IoLines<BATCHED
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -173,14 +172,13 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         // One reader per instance, started by the first stream that
         // arrives. A stream is consumed as it is read, so re-arming on a
         // later delivery of the same handle would race the reader.
-        if let Some(tv) = seam_value(from[0].update(ctx, event))
+        if let Some(tv) = seam_value(from[0].update(ctx))
             && tv.is_fired()
             && !self.started
             && let Some(stream) = stream_of(&tv.value_cloned())
@@ -191,17 +189,17 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
             let id = self.id;
             tokio::spawn(line_reader(stream, id, BATCHED, tx));
         }
-        match event.variables.get(&self.id) {
+        match ctx.event.variables.get(&self.id) {
             Some(tv) => self.out.set(TagValue::fired(tv.value_cloned())),
             None => self.out.ride(),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
     }
 }

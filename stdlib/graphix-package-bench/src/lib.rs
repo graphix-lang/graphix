@@ -4,7 +4,7 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::CachedVals;
@@ -36,7 +36,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MandelbrotIterate {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -52,11 +52,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if !self.args.update(ctx, from, event) {
+        if !self.args.update(ctx, from) {
             return self.out.ride();
         }
         let res = match &self.args.0[..] {
@@ -95,7 +94,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MandelbrotIterate {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.args.clear()
     }
 }

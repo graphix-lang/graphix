@@ -281,11 +281,11 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         Self(std::mem::ManuallyDrop::new(Box::new(node)))
     }
 
-    pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        stack::ensure_sufficient(|| self.0.update(ctx, event))
+    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        stack::ensure_sufficient(|| self.0.update(ctx))
     }
 
-    pub fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         stack::ensure_sufficient(|| self.0.delete(ctx))
     }
 
@@ -301,7 +301,7 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.refs(refs))
     }
 
-    pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         stack::ensure_sufficient(|| self.0.sleep(ctx))
     }
 
@@ -387,13 +387,12 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// returned `&TagValue` is the builtin's resident result slot.
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue;
 
     /// Delete any internally generated nodes.
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         ()
     }
 
@@ -442,7 +441,7 @@ pub trait Apply<R: Rt, E: UserEvent>: Debug + Send + Sync + Any {
     /// are retained; a builtin that discards pending work or detaches an
     /// event source must clear its output to phantom, and the restart
     /// builtins clear their latches.
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>);
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>);
 
     /// Emit this call site into the open JIT kernel as CLIF.
     /// `Ok(Some(cv))`: emitted. `Ok(None)`: shape not handled, and no
@@ -551,10 +550,10 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     /// borrowed from the node's own resident slot. Every awake node
     /// delivers every cycle; a quiet cycle rides the resident. See
     /// [`TagView`].
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue;
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue;
 
     /// Delete the node and its children from the context.
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>);
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>);
 
     /// First typecheck pass: structural checking. Each node checks
     /// itself and recurses into its children.
@@ -588,7 +587,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
     fn spec(&self) -> &Expr;
 
     /// Pause the node (an unselected arm).
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>);
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>);
 
     /// The node's typed view for compile-time analysis.
     fn view(&self) -> NodeView<'_, R, E>;
@@ -631,7 +630,7 @@ pub trait Update<R: Rt, E: UserEvent>: Debug + Send + Sync + Any + 'static {
 /// argument references.
 pub type BuiltInDecodeFn<R, E> =
     fn(
-        &mut ExecCtx<R, E>,
+        &mut ExecCtx<'_, R, E>,
         &[Node<R, E>],
         &mut &[u8],
     ) -> std::result::Result<Box<dyn Apply<R, E>>, netidx_core::pack::PackError>;
@@ -684,7 +683,7 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     /// Restore an application `image_encode` wrote, over the restored
     /// argument references (`from`, as `init` saw them).
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> std::result::Result<Box<dyn Apply<R, E>>, netidx_core::pack::PackError>;
@@ -1124,8 +1123,9 @@ enum Discarded<R: Rt, E: UserEvent> {
     Stored(BindId),
 }
 
-/// The compile context and the runtime: what a node's update reads.
-pub struct ExecCtx<R: Rt, E: UserEvent> {
+/// The compile context, the runtime and the cycle's event: what an
+/// embedder owns. Nodes see it through an [`ExecCtx`].
+pub struct ExecState<R: Rt, E: UserEvent> {
     pub cx: CompileCtx<R, E>,
     /// The tables of the image this session was restored from, for
     /// anything decoded later.
@@ -1140,9 +1140,11 @@ pub struct ExecCtx<R: Rt, E: UserEvent> {
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
+    /// The cycle's event.
+    pub event: Event<E>,
 }
 
-impl<R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<R, E> {
+impl<R: Rt, E: UserEvent> std::ops::Deref for ExecState<R, E> {
     type Target = CompileCtx<R, E>;
 
     fn deref(&self) -> &CompileCtx<R, E> {
@@ -1150,9 +1152,35 @@ impl<R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<R, E> {
+impl<R: Rt, E: UserEvent> std::ops::DerefMut for ExecState<R, E> {
     fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
         &mut self.cx
+    }
+}
+
+/// What a node's update, delete and sleep read and write: a view of an
+/// [`ExecState`].
+pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
+    pub cx: &'a mut CompileCtx<R, E>,
+    pub(crate) image_decoder: &'a mut Option<image::SharedDecoder>,
+    pub libstate: &'a mut LibState,
+    pub rt: &'a mut R,
+    pub(crate) core_hook_sites: &'a mut node::coretraits::CoreHookSites<R, E>,
+    pub control: &'a Arc<Control>,
+    pub event: &'a mut Event<E>,
+}
+
+impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
+    type Target = CompileCtx<R, E>;
+
+    fn deref(&self) -> &CompileCtx<R, E> {
+        self.cx
+    }
+}
+
+impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
+    fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
+        self.cx
     }
 }
 
@@ -1351,10 +1379,11 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     }
 }
 
-impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
-    /// Build a new execution context. A low-level interface for custom
+impl<R: Rt, E: UserEvent> ExecState<R, E> {
+    /// Build a new execution state over the runtime `rt`, with `user`
+    /// as the event's user part. A low-level interface for custom
     /// runtimes; most embedders want `graphix-rt`.
-    pub fn new(user: R) -> Result<Self> {
+    pub fn new(rt: R, user: E) -> Result<Self> {
         let id = AbstractTypeRegistry::uuid::<LambdaDef<R, E>>("lambda");
         let mut this = Self {
             cx: CompileCtx {
@@ -1391,12 +1420,35 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             },
             image_decoder: None,
             libstate: LibState::default(),
-            rt: user,
+            rt,
             core_hook_sites: node::coretraits::CoreHookSites::default(),
             control: Arc::new(Control::new()),
+            event: Event::new(user),
         };
         this.register_attribute::<Native>()?;
         Ok(this)
+    }
+
+    /// The view nodes run under.
+    pub fn view(&mut self) -> ExecCtx<'_, R, E> {
+        let Self { cx, image_decoder, libstate, rt, core_hook_sites, control, event } =
+            self;
+        ExecCtx { cx, image_decoder, libstate, rt, core_hook_sites, control, event }
+    }
+}
+
+impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
+    /// The same view, borrowed for a shorter time, over `event`.
+    pub fn with_event<'b>(&'b mut self, event: &'b mut Event<E>) -> ExecCtx<'b, R, E> {
+        ExecCtx {
+            cx: &mut *self.cx,
+            image_decoder: &mut *self.image_decoder,
+            libstate: &mut *self.libstate,
+            rt: &mut *self.rt,
+            core_hook_sites: &mut *self.core_hook_sites,
+            control: self.control,
+            event,
+        }
     }
 
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
@@ -1780,7 +1832,7 @@ impl Drop for DynNode {
 /// Compile the expression into a node graph in the given context and
 /// scope, returning the root node.
 pub fn compile<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     spec: Expr,
@@ -1794,7 +1846,7 @@ pub fn compile<R: Rt, E: UserEvent>(
 /// seeding (in both modes) and fusion; only the check under
 /// [`CFlag::CheckOnly`]. The caller restores its env on `Err`.
 pub fn check_and_fuse<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,
 ) -> Result<()> {
@@ -1807,7 +1859,7 @@ pub fn check_and_fuse<R: Rt, E: UserEvent>(
 }
 
 fn check_and_fuse_inner<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     node: &mut Node<R, E>,
 ) -> Result<()> {
@@ -1867,7 +1919,7 @@ pub(crate) fn drain_pending_settles<R: Rt, E: UserEvent>(
 /// A written type name that did not resolve at its definition's check
 /// must name something once the check ends.
 pub(crate) fn check_pending_names<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
 ) -> Result<()> {
     use expr::At;
     for (tr, spec) in mem::take(&mut ctx.pending_names) {
@@ -1897,7 +1949,7 @@ pub(crate) fn defer_unresolved_names<R: Rt, E: UserEvent>(
 /// A `use` whose name did not exist at its compile position must name
 /// something by the end of the compile that deferred it.
 pub(crate) fn check_pending_imports<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
 ) -> Result<()> {
     for p in mem::take(&mut ctx.pending_imports) {
         let Some(e) = ctx.env.names.get(&p.scope).and_then(|sn| sn.imports.get(&p.key))
@@ -1922,7 +1974,7 @@ pub(crate) fn check_pending_imports<R: Rt, E: UserEvent>(
 /// for the statements that follow: thread the returned scope into the
 /// next compile, or later statements escape the catch's coverage.
 pub fn compile_stmt<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     spec: Expr,
@@ -1946,7 +1998,7 @@ pub fn compile_stmt<R: Rt, E: UserEvent>(
 /// is checked, so a `let` takes its type from the writers below it.
 /// `spec` is the block's expression.
 pub fn compile_script<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     scope: &Scope,
     spec: Expr,
@@ -1997,7 +2049,7 @@ pub(crate) struct Saved {
 }
 
 impl Saved {
-    pub(crate) fn take<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>) -> Self {
+    pub(crate) fn take<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>) -> Self {
         Saved {
             env: ctx.env.clone(),
             lambda_defs: ctx.lambda_defs.clone(),
@@ -2010,7 +2062,7 @@ impl Saved {
         }
     }
 
-    pub(crate) fn restore<R: Rt, E: UserEvent>(self, ctx: &mut ExecCtx<R, E>) {
+    pub(crate) fn restore<R: Rt, E: UserEvent>(self, ctx: &mut ExecCtx<'_, R, E>) {
         let Saved {
             env,
             lambda_defs,
@@ -2035,10 +2087,10 @@ impl Saved {
 /// Build the top-level node `spec` with `build`, then check and fuse it,
 /// unwinding what it registered on failure.
 fn compile_top<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     flags: BitFlags<CFlag>,
     spec: Expr,
-    build: impl FnOnce(&mut ExecCtx<R, E>, &Expr, ExprId) -> Result<(Node<R, E>, Scope)>,
+    build: impl FnOnce(&mut ExecCtx<'_, R, E>, &Expr, ExprId) -> Result<(Node<R, E>, Scope)>,
 ) -> Result<(Node<R, E>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
@@ -2107,7 +2159,7 @@ fn compile_top<R: Rt, E: UserEvent>(
 /// it registered (runtime refs, lambda and `<-` target entries), then
 /// restore the environment it started from.
 fn abandon_stmt<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     mut node: Node<R, E>,
     saved: Saved,
     e: anyhow::Error,

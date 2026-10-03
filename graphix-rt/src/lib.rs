@@ -15,7 +15,7 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    BindId, CFlag, Control, Event, ExecCtx, FusionStats, LambdaId, NoUserEvent, Scope,
+    BindId, CFlag, Control, Event, ExecState, FusionStats, LambdaId, NoUserEvent, Scope,
     UserEvent,
     env::Env,
     expr::{ExprId, ModPath, ResolverFactory, ResolverRef, Source},
@@ -414,10 +414,10 @@ enum ToGX<X: GXExt> {
     GetEnv {
         res: oneshot::Sender<Env>,
     },
-    /// Run a closure with the runtime's ExecCtx; the bridge for
+    /// Run a closure with the runtime's ExecState; the bridge for
     /// handle-side consumers that need `ctx.libstate`.
     WithCtx {
-        f: Box<dyn FnOnce(&mut ExecCtx<GXRt<X>, X::UserEvent>) + Send>,
+        f: Box<dyn FnOnce(&mut ExecState<GXRt<X>, X::UserEvent>) + Send>,
     },
     Delete {
         id: ExprId,
@@ -612,13 +612,13 @@ impl<X: GXExt> Clone for GXHandle<X> {
 }
 
 impl<X: GXExt> GXHandle<X> {
-    /// Run `f` with the runtime's `ExecCtx` on the runtime task and
+    /// Run `f` with the runtime's `ExecState` on the runtime task and
     /// return its result; the accessor for handle-side consumers of
     /// `ctx.libstate`.
     pub async fn with_ctx<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(&mut ExecCtx<GXRt<X>, X::UserEvent>) -> T + Send + 'static,
+        F: FnOnce(&mut ExecState<GXRt<X>, X::UserEvent>) -> T + Send + 'static,
     {
         let (tx, rx) = oneshot::channel();
         self.0
@@ -1028,7 +1028,7 @@ pub struct GXConfig<X: GXExt> {
     #[builder(setter(strip_option), default)]
     trace: Option<(usize, u64)>,
     /// The execution context with any builtins already registered
-    ctx: ExecCtx<GXRt<X>, X::UserEvent>,
+    ctx: ExecState<GXRt<X>, X::UserEvent>,
     /// The text of the root module
     #[builder(setter(strip_option), default)]
     root: Option<ArcStr>,
@@ -1052,7 +1052,7 @@ pub struct GXConfig<X: GXExt> {
 impl<X: GXExt> GXConfig<X> {
     /// Create a new config
     pub fn builder(
-        ctx: ExecCtx<GXRt<X>, X::UserEvent>,
+        ctx: ExecState<GXRt<X>, X::UserEvent>,
         sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     ) -> GXConfigBuilder<X> {
         GXConfigBuilder::default().ctx(ctx).sub(sub)
@@ -1067,7 +1067,7 @@ impl<X: GXExt> GXConfig<X> {
     /// library. To build a runtime with the full standard library and nothing
     /// else simply pass the output of `graphix_stdlib::register` to start.
     pub async fn start(self) -> Result<GXHandle<X>> {
-        // The handle and the running `ExecCtx` share the control.
+        // The handle and the running `ExecState` share the control.
         let control = self.ctx.control.clone();
         let (init_tx, init_rx) = oneshot::channel();
         let (tx, rx) = tmpsc::unbounded_channel();

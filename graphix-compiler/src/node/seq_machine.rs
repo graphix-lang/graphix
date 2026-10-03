@@ -11,7 +11,7 @@ use super::{
     typecheck1_statements, wake::TrackedFires,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue,
     Update, UserEvent,
     expr::{Expr, ExprId, SeqCaptureExpr, SeqMachineExpr},
     fusion::{
@@ -152,7 +152,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -208,7 +208,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
 /// Put step `j` to sleep and re-collect what it reads, as a select
 /// deselects an arm (`select.rs::deselect`).
 fn deselect<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     tracked: &mut TrackedFires,
     j: usize,
     step: &mut Step<R, E>,
@@ -225,34 +225,33 @@ fn deselect<R: Rt, E: UserEvent>(
 /// its catch-up deliveries; its completion writes run only in the cycle
 /// it completes. Whether it completed.
 fn evaluate<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     tracked: &mut TrackedFires,
     k: usize,
     step: &mut Step<R, E>,
     entered: bool,
 ) -> bool {
-    let (init, wake) = (event.init, event.wake_init);
+    let (init, wake) = (ctx.event.init, ctx.event.wake_init);
     if entered {
-        event.init = true;
-        event.wake_init = true;
+        ctx.event.init = true;
+        ctx.event.wake_init = true;
     }
-    let injected = tracked.deliver(ctx, event, k);
+    let injected = tracked.deliver(ctx, k);
     let mut done = false;
     for i in evaluation_order(step.nodes.len(), &step.catches) {
         if i > step.value && !done {
             continue;
         }
-        step.nodes[i].update(ctx, event);
+        step.nodes[i].update(ctx);
         if i == step.value {
-            done = event.variables.get(&step.value_id).is_some_and(|tv| {
+            done = ctx.event.variables.get(&step.value_id).is_some_and(|tv| {
                 tv.is_fired() && (!step.until || tv.value_cloned() == Value::Bool(true))
             });
         }
     }
-    TrackedFires::restore(event, injected);
-    event.init = init;
-    event.wake_init = wake;
+    TrackedFires::restore(ctx.event, injected);
+    ctx.event.init = init;
+    ctx.event.wake_init = wake;
     done
 }
 
@@ -278,7 +277,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
         let (tracked, lets) = tracked.get_or_insert_with(|| {
             let tracked =
@@ -293,13 +292,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
             }
             (tracked, lets)
         });
-        let at = pc.update(ctx, event);
+        let at = pc.update(ctx);
         let target = match at.is_fired().then(|| at.value_cloned()) {
             Some(Value::String(l)) if l == "Idle" => Some(None),
             Some(Value::String(l)) => steps.iter().position(|s| s.label == l).map(Some),
             _ => None,
         };
-        tracked.observe(ctx, event);
+        tracked.observe(ctx);
         let mut entered = false;
         match target {
             Some(None) => {
@@ -319,7 +318,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         let mut evaluated: SmallVec<[usize; 4]> = SmallVec::new();
         while let Some(k) = *current {
             evaluated.push(k);
-            if !evaluate(ctx, event, tracked, k, &mut steps[k], entered) {
+            if !evaluate(ctx, tracked, k, &mut steps[k], entered) {
                 break;
             }
             deselect(ctx, tracked, k, &mut steps[k]);
@@ -333,17 +332,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
                 ctx.rt.set_var(*pc_id, at);
                 break;
             }
-            event.variables.insert(*pc_id, TagValue::fired(at.clone()));
+            ctx.event.variables.insert(*pc_id, TagValue::fired(at.clone()));
             ctx.rt.store_insert(*pc_id, TagValue::fired(at));
             ctx.rt.notify_set(*pc_id);
             *current = Some(n);
             entered = true;
         }
-        tracked.observe_except(ctx, event, &evaluated, Some(lets));
+        tracked.observe_except(ctx, &evaluated, Some(lets));
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pc.delete(ctx);
         for s in self.steps.iter_mut() {
             for n in s.nodes.iter_mut() {
@@ -352,7 +351,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pc.sleep(ctx);
         for s in self.steps.iter_mut() {
             for n in s.nodes.iter_mut() {
@@ -458,7 +457,7 @@ impl<R: Rt, E: UserEvent> SeqCapture<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -485,16 +484,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqCapture<R, E> {
         self.is_live.load(Relaxed).encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        self.chosen().update(ctx, event)
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        self.chosen().update(ctx)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.snapshot.delete(ctx);
         self.live.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.snapshot.sleep(ctx);
         self.live.sleep(ctx);
     }

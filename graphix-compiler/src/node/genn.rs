@@ -161,7 +161,7 @@ impl<R: Rt, E: UserEvent> SynthCall<R, E> {
     }
 
     /// Delete the site and its argument bindings.
-    pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    pub(crate) fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.site.delete(ctx);
         for id in self.args.drain(..) {
             ctx.env.unbind_variable(id);

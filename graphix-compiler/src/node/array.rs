@@ -1,6 +1,6 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather, list, produce_constant};
 use crate::{
-    CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
     UserEvent, defetyp,
     env::Env,
     err,
@@ -53,7 +53,7 @@ pub struct ArrayRef<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let source = decode_node(ctx, buf)?;
@@ -187,9 +187,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.etyp.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let s = self.source.update(ctx, event);
-        let i = self.i.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let s = self.source.update(ctx);
+        let i = self.i.update(ctx);
         let tag = s.tag().join(i.tag());
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = s.with_value(|s| match (s, i.with_value(index_i64)) {
@@ -224,7 +224,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         self.i.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.delete(ctx);
         self.i.delete(ctx);
     }
@@ -237,7 +237,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
         &self.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.source.sleep(ctx);
         self.i.sleep(ctx);
@@ -270,7 +270,7 @@ pub struct ArraySlice<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let source = decode_node(ctx, buf)?;
@@ -331,10 +331,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         self.typ.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let s = self.source.update(ctx, event);
-        let start = self.start.as_mut().map(|n| n.update(ctx, event));
-        let end = self.end.as_mut().map(|n| n.update(ctx, event));
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let s = self.source.update(ctx);
+        let start = self.start.as_mut().map(|n| n.update(ctx));
+        let end = self.end.as_mut().map(|n| n.update(ctx));
         let tag = [start, end].iter().flatten().fold(s.tag(), |t, b| t.join(b.tag()));
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let bound = |b: Option<&TagValue>| {
@@ -380,7 +380,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.delete(ctx);
         if let Some(start) = &mut self.start {
             start.delete(ctx);
@@ -390,7 +390,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.source.sleep(ctx);
         if let Some(start) = &mut self.start {
@@ -554,7 +554,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -572,11 +572,11 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         encode_nodes(&self.n, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         if self.n.is_empty() {
-            return produce_constant(event, &mut self.resident, K::empty);
+            return produce_constant(ctx.event, &mut self.resident, K::empty);
         }
-        let (tag, prods) = gather(ctx, event, &mut self.n);
+        let (tag, prods) = gather(ctx, &mut self.n);
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = K::build(prods.into_iter().map(|tv| tv.value_cloned()));
         self.resident.set(TagValue::tagged(v, tag))
@@ -590,11 +590,11 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.iter_mut().for_each(|n| n.delete(ctx))
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }

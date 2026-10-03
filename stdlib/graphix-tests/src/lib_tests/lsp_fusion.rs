@@ -61,6 +61,7 @@ async fn kernel_outlives_jit_reset() -> Result<()> {
     let result = ctx
         .rt
         .with_ctx(move |ctx| -> Result<()> {
+            let ctx = &mut ctx.view();
             let flags = BitFlags::empty();
             let scope = Scope::root().append("jit_reset");
             let mut input =
@@ -80,7 +81,7 @@ async fn kernel_outlives_jit_reset() -> Result<()> {
                 let mut event = Event::new(NoUserEvent);
                 event.init = i == 0;
                 event.variables.insert(id, TagValue::tagged(Value::I64(n), Tag::FIRED));
-                let v = node.update(ctx, &mut event);
+                let v = node.update(&mut ctx.with_event(&mut event));
                 assert_eq!(v.value_cloned(), Value::I64(n * 2 + 1), "step {i}");
             }
             node.delete(ctx);

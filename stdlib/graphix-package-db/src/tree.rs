@@ -433,7 +433,7 @@ impl ImageState for DbTreeEv {
     }
 
     fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let (key_typ, key_typ_str, val_typ_str) = tree_types_decode(buf)?;

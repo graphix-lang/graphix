@@ -10,7 +10,7 @@ use super::{
     pattern::StructPatternNode,
 };
 use crate::{
-    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, Event, ExecCtx, FnArgIdentity,
+    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, ResolvingLambda, Rt, Scope, Tag,
     TagValue, Update, UserEvent, analysis, bailat, dbgenv, deref_typ,
     env::Env,
@@ -916,14 +916,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn setup_dynamic_bind<F>(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
         f: &LambdaDef<R, E>,
         prime_default_refs: F,
     ) -> Result<Box<dyn Apply<R, E>>>
     where
-        F: FnMut(&mut ExecCtx<R, E>, &Refs),
+        F: FnMut(&mut ExecCtx<'_, R, E>, &Refs),
     {
         let mut defaults = Refs::default();
         let mut prime_default_refs = prime_default_refs;
@@ -1091,12 +1091,11 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     fn bind(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         scope: Scope,
         flags: BitFlags<CFlag>,
         fv: Value,
         f: &LambdaDef<R, E>,
-        event: &mut Event<E>,
         set: &mut Vec<BindId>,
     ) -> Result<()> {
         let _bind_span = perfdbg::span(&perfdbg::BIND_NS);
@@ -1110,7 +1109,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
                 refs.with_external_refs(|id| {
                     if let Some(v) = ctx.rt.store_value(&id) {
-                        if let Entry::Vacant(e) = event.variables.entry(id) {
+                        if let Entry::Vacant(e) = ctx.event.variables.entry(id) {
                             e.insert(TagValue::fired(v));
                             set.push(id);
                         }
@@ -1175,20 +1174,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             ctx.apply_deferred();
         }
         // Defaults update for the first time under the init view.
-        let prev_init = mem::replace(&mut event.init, true);
+        let prev_init = mem::replace(&mut ctx.event.init, true);
         for arg in self.args.values_mut() {
             if arg.is_default
                 && let Some(node) = &mut arg.node
             {
-                let tv = node.update(ctx, event).clone();
+                let tv = node.update(ctx).clone();
                 let feeds = Feeds::Id(arg.id);
-                if publish_production(ctx, event, feeds, &tv, true, QuietAtRoot::Deliver)
-                {
+                if publish_production(ctx, feeds, &tv, true, QuietAtRoot::Deliver) {
                     set.push(arg.id);
                 }
             }
         }
-        event.init = prev_init;
+        ctx.event.init = prev_init;
         if restored_def {
             ctx.lambda_defs.remove(&f.id);
         }
@@ -1526,11 +1524,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
-    fn update_call(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> &TagValue {
+    fn update_call(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
         if matches!(self.callee, Callee::Imaged { .. })
             && let Err(e) = self.materialize(ctx)
@@ -1548,13 +1542,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let mut prods: SmallVec<[(BindId, TagValue); 4]> = SmallVec::new();
         for arg in self.args.values_mut() {
             let Some(node) = &mut arg.node else { continue };
-            let tv = node.update(ctx, event);
+            let tv = node.update(ctx);
             let fired = tv.tag().triggers();
             arg_fired |= fired;
             if may_bind && !fired {
                 prods.push((arg.id, tv.clone()));
             }
-            if publish_production(ctx, event, Feeds::Id(arg.id), tv, false, root) {
+            if publish_production(ctx, Feeds::Id(arg.id), tv, false, root) {
                 set.push(arg.id);
             }
         }
@@ -1562,20 +1556,20 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // callee discards the value.
         let static_callee = matches!(self.callee, Callee::Static { .. });
         let (fnode_tag, fnode_value) = {
-            let tv = self.fnode.update(ctx, event);
+            let tv = self.fnode.update(ctx);
             let tag = tv.tag();
             (tag, (!static_callee && !tag.is_bottom()).then(|| tv.value_cloned()))
         };
         if fnode_tag.is_bottom() && !static_callee {
             for id in set.drain(..) {
-                event.variables.remove(&id);
+                ctx.event.variables.remove(&id);
             }
             return self.resident.set_bottom(fnode_tag.triggers() || arg_fired);
         }
         let bound = if let Callee::Static { first_update, .. } = &mut self.callee {
             mem::replace(first_update, false)
         } else {
-            fnode_value.is_some_and(|v| self.rebind(ctx, event, v, &mut set))
+            fnode_value.is_some_and(|v| self.rebind(ctx, v, &mut set))
         };
         if bound {
             for (id, tv) in prods.iter() {
@@ -1591,7 +1585,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 } else {
                     QuietAtRoot::Stand
                 };
-                if publish_production(ctx, event, Feeds::Id(*id), tv, true, root) {
+                if publish_production(ctx, Feeds::Id(*id), tv, true, root) {
                     set.push(*id);
                 }
             }
@@ -1611,12 +1605,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let res = match self.callee.apply_mut() {
             None => None,
-            Some(f) if !bound => Some(f.update(ctx, &mut self.arg_refs, event).clone()),
+            Some(f) if !bound => Some(f.update(ctx, &mut self.arg_refs).clone()),
             Some(f) => {
                 // A fresh bind dispatches under the init view.
-                let init = mem::replace(&mut event.init, true);
-                let res = f.update(ctx, &mut self.arg_refs, event).clone();
-                event.init = init;
+                let init = mem::replace(&mut ctx.event.init, true);
+                let res = f.update(ctx, &mut self.arg_refs).clone();
+                ctx.event.init = init;
                 Some(res)
             }
         };
@@ -1628,7 +1622,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             );
         }
         for id in set.drain(..) {
-            event.variables.remove(&id);
+            ctx.event.variables.remove(&id);
         }
         match res {
             Some(tv) => self.resident.set(tv),
@@ -1643,8 +1637,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// whose bind failed; true when a fresh callee was bound.
     fn rebind(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         v: Value,
         set: &mut Vec<BindId>,
     ) -> bool {
@@ -1659,7 +1652,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             panic!("value {v:?} is not a function")
         };
         let scope = self.scope.clone();
-        match self.bind(ctx, scope, self.flags, v.clone(), lb, event, set) {
+        match self.bind(ctx, scope, self.flags, v.clone(), lb, set) {
             Ok(()) => true,
             Err(e) => {
                 error!("{}: binding the callee failed: {e:#}", self.spec);
@@ -1687,7 +1680,7 @@ impl<R: Rt, E: UserEvent> Arg<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<(ArgKey, Self), PackError> {
         let key = ArgKey::decode(buf)?;
@@ -1762,7 +1755,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// Decode the instance the image holds for this site and bind it.
-    fn materialize(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<()> {
+    fn materialize(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<()> {
         let Callee::Imaged { instance, .. } = &self.callee else { return Ok(()) };
         let instance = *instance;
         let shared = ctx
@@ -1799,7 +1792,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = TArc::new(Expr::decode(buf)?);
@@ -1915,14 +1908,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         match self.lowered.is_some() {
-            true => self.lowered.as_mut().unwrap().update(ctx, event),
-            false => self.update_call(ctx, event),
+            true => self.lowered.as_mut().unwrap().update(ctx),
+            false => self.update_call(ctx),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(mut n) = self.lowered.take() {
             n.delete(ctx);
             return;
@@ -1942,7 +1935,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         if let Some(n) = &mut self.lowered {
             return n.sleep(ctx);
@@ -2316,8 +2309,7 @@ pub(crate) enum QuietAtRoot {
 /// callee's first dispatch reads its arguments as new. Returns whether
 /// the overlay was written.
 pub(crate) fn publish_production<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     feeds: Feeds<'_>,
     tv: &TagValue,
     born: bool,
@@ -2345,7 +2337,7 @@ pub(crate) fn publish_production<R: Rt, E: UserEvent>(
             }
         }
         if let Some(t) = overlay {
-            event.variables.insert(id, TagValue::tagged(v, t));
+            ctx.event.variables.insert(id, TagValue::tagged(v, t));
         }
     };
     match (feeds, bottom) {

@@ -3,8 +3,8 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, LambdaId, Node, Rt, Scope,
-    TagValue, UserEvent, deref_typ,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Node, Rt, Scope, TagValue,
+    UserEvent, deref_typ,
     effects::Effect,
     err, errf,
     expr::ExprId,
@@ -74,7 +74,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Write {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -97,9 +97,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         fn set(dv: &mut Either<(Path, Dval), Vec<Value>>, val: &Value) {
             match dv {
@@ -109,8 +108,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 }
             }
         }
-        let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
-        let (val, val_fired) = seam_arg(ctx, &mut from[1], event);
+        let (path, path_fired) = seam_arg(ctx, &mut from[0]);
+        let (val, val_fired) = seam_arg(ctx, &mut from[1]);
         let mut wrote = false;
         if path_fired
             && let Some(path) = &path
@@ -171,14 +170,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         self.out.ride()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Either::Left((_, dv)) = &self.dv {
             NetState::get(ctx).unsubscribe(dv.clone(), self.id)
         }
         self.dv = Either::Right(vec![])
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         match &mut self.dv {
             Either::Left((_, dv)) => {
@@ -238,7 +237,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Subscribe {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -272,13 +271,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         static ERR_TAG: ArcStr = literal!("SubscribeError");
         let woke = std::mem::take(&mut self.slept);
-        let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
+        let (path, path_fired) = seam_arg(ctx, &mut from[0]);
         match (path, path_fired || woke) {
             (_, false) => (),
             (Some(Value::String(path)), true)
@@ -319,7 +317,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
         let res = self.cur.as_ref().and_then(|_| {
-            event.variables.get(&self.id).map(|v| match &self.cast_typ {
+            ctx.event.variables.get(&self.id).map(|v| match &self.cast_typ {
                 Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
                 None => v.value_cloned(),
             })
@@ -348,14 +346,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         Ok(())
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         if let Some((_, dv)) = self.cur.take() {
             NetState::get(ctx).unsubscribe(dv, self.id)
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept = true;
         self.out = TagValue::phantom();
         if let Some((_, dv)) = self.cur.take() {
@@ -399,7 +397,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for RpcCall {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -420,9 +418,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         fn parse_args(
             path: &Value,
@@ -447,8 +444,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
             };
             Ok((path, args))
         }
-        let (path, path_fired) = seam_arg(ctx, &mut from[0], event);
-        let (args, args_fired) = seam_arg(ctx, &mut from[1], event);
+        let (path, path_fired) = seam_arg(ctx, &mut from[0]);
+        let (args, args_fired) = seam_arg(ctx, &mut from[1]);
         if (path_fired || args_fired)
             && let (Some(path), Some(args)) = (&path, &args)
         {
@@ -461,7 +458,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
                 Ok((path, args)) => NetState::get(ctx).call_rpc(ctx, path, args, self.id),
             }
         }
-        let res = event.variables.get(&self.id).map(|v| match &self.cast_typ {
+        let res = ctx.event.variables.get(&self.id).map(|v| match &self.cast_typ {
             Some(typ) => typ.cast_value(&ctx.env, v.value_cloned()),
             None => v.value_cloned(),
         });
@@ -499,11 +496,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for RpcCall {
         Ok(())
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
@@ -545,7 +542,7 @@ macro_rules! list {
             }
 
             fn image_decode(
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 _from: &[Node<R, E>],
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -573,12 +570,11 @@ macro_rules! list {
 
             fn update(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &mut [Node<R, E>],
-                event: &mut Event<E>,
             ) -> &TagValue {
-                let (_, trigger_fired) = seam_arg(ctx, &mut from[0], event);
-                let (path, path_fired) = seam_arg(ctx, &mut from[1], event);
+                let (_, trigger_fired) = seam_arg(ctx, &mut from[0]);
+                let (path, path_fired) = seam_arg(ctx, &mut from[1]);
                 match (path, path_fired, trigger_fired) {
                     (Some(Value::String(path)), true, _)
                         if self
@@ -596,7 +592,7 @@ macro_rules! list {
                     }
                     _ => (),
                 }
-                let res = event.variables.get(&self.id).and_then(|v| {
+                let res = ctx.event.variables.get(&self.id).and_then(|v| {
                     v.with_value(|v| match v {
                         Value::Null => None,
                         Value::Error(e) => Some(errf!(literal!("ListError"), "{e}")),
@@ -609,12 +605,12 @@ macro_rules! list {
                 }
             }
 
-            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+            fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 ctx.unref_var(self.id, self.top_id);
                 NetState::get(ctx).stop_list(self.id);
             }
 
-            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 ctx.unref_var(self.id, self.top_id);
                 NetState::get(ctx).stop_list(self.id);
                 self.id = BindId::new();
@@ -718,7 +714,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Publish<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -761,9 +757,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         macro_rules! publish {
             ($path:expr, $v:expr) => {{
@@ -782,12 +777,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             }};
         }
         let woke = std::mem::take(&mut self.slept);
-        let (fv, f_fired) = seam_arg(ctx, &mut from[0], event);
-        let (pathv, path_fired) = seam_arg(ctx, &mut from[1], event);
-        let (val, val_fired) = seam_arg(ctx, &mut from[2], event);
+        let (fv, f_fired) = seam_arg(ctx, &mut from[0]);
+        let (pathv, path_fired) = seam_arg(ctx, &mut from[1]);
+        let (val, val_fired) = seam_arg(ctx, &mut from[2]);
         if f_fired && let Some(v) = fv {
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            event.variables.insert(self.pid, TagValue::fired(v));
+            ctx.event.variables.insert(self.pid, TagValue::fired(v));
         }
         match ((path_fired || woke, val_fired), (&pathv, &val)) {
             ((true, _), (Some(Value::String(path)), Some(v)))
@@ -806,7 +801,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         }
         let mut reply = None;
         if self.current.is_some() {
-            if let Some(mut cbt) = event.custom.remove(&self.wid) {
+            if let Some(mut cbt) = ctx.event.custom.remove(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
                     let v = match &self.cast_typ {
@@ -814,12 +809,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                         None => req.value.clone(),
                     };
                     ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
-                    event.variables.insert(self.x, TagValue::fired(v));
+                    ctx.event.variables.insert(self.x, TagValue::fired(v));
                     reply = req.send_result.take();
                 }
             }
         }
-        if let Some(v) = graphix_package_core::seam_tick(self.on_write.update(ctx, event))
+        if let Some(v) = graphix_package_core::seam_tick(self.on_write.update(ctx))
             .map(|tv| tv.clone())
         {
             if let Some(reply) = reply {
@@ -852,7 +847,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.on_write.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some((_, val)) = self.current.take() {
             NetState::get(ctx).unpublish(val);
         }
@@ -863,7 +858,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
         self.on_write.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept = true;
         self.out = TagValue::phantom();
         if let Some((_, val)) = self.current.take() {
@@ -1053,7 +1048,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for PublishRpc<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1102,18 +1097,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let woke = std::mem::take(&mut self.slept);
-        let (pathv, path_fired) = seam_arg(ctx, &mut from[0], event);
-        let (docv, doc_fired) = seam_arg(ctx, &mut from[1], event);
-        let (specv, spec_fired) = seam_arg(ctx, &mut from[2], event);
-        let (fv, f_fired) = seam_arg(ctx, &mut from[3], event);
+        let (pathv, path_fired) = seam_arg(ctx, &mut from[0]);
+        let (docv, doc_fired) = seam_arg(ctx, &mut from[1]);
+        let (specv, spec_fired) = seam_arg(ctx, &mut from[2]);
+        let (fv, f_fired) = seam_arg(ctx, &mut from[3]);
         if f_fired && let Some(v) = fv {
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            event.variables.insert(self.pid, TagValue::fired(v));
+            ctx.event.variables.insert(self.pid, TagValue::fired(v));
         }
         if path_fired || doc_fired || spec_fired || woke {
             if crate::netstate::rpc_dbg() {
@@ -1191,10 +1185,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
                     None => Value::Array(args),
                 };
                 ctx.rt.store_insert(self.x, TagValue::fired(args.clone()));
-                event.variables.insert(self.x, TagValue::fired(args));
+                ctx.event.variables.insert(self.x, TagValue::fired(args));
             }};
         }
-        if let Some(mut cbt) = event.custom.remove(&self.id) {
+        if let Some(mut cbt) = ctx.event.custom.remove(&self.id) {
             if let Some(c) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetRpcCall>() {
                 if let Some(c) = c.0.take() {
                     if crate::netstate::rpc_dbg() {
@@ -1218,8 +1212,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
             }
         }
         loop {
-            match graphix_package_core::seam_tick(self.f.update(ctx, event))
-                .map(|tv| tv.clone())
+            match graphix_package_core::seam_tick(self.f.update(ctx)).map(|tv| tv.clone())
             {
                 None => break self.out.ride(),
                 Some(v) => {
@@ -1270,7 +1263,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.f.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.current = None;
         ctx.rt.store_remove(&self.x);
@@ -1279,7 +1272,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for PublishRpc<R, E> {
         self.f.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept = true;
         self.out = TagValue::phantom();
         if crate::netstate::rpc_dbg() {

@@ -16,8 +16,8 @@ use super::{
     lambda::LambdaDef,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope,
-    SourcePosition, TagValue, Update, UserEvent, bailat,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, SourcePosition,
+    TagValue, Update, UserEvent, bailat,
     env::{Env, ImplDef, Map, TraitDef, TraitMethodRef},
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
@@ -203,7 +203,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
 
 impl<R: Rt, E: UserEvent> Trait<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -221,8 +221,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         self.defaults.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        self.defaults.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        self.defaults.update(ctx);
         TagValue::phantom_ref()
     }
 
@@ -242,12 +242,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Trait<R, E> {
         &self.spec
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.defaults.delete(ctx);
         ctx.env.undeftrait(&self.def);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.defaults.sleep(ctx)
     }
 
@@ -582,7 +582,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
 
 impl<R: Rt, E: UserEvent> Impl<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -617,8 +617,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        self.body.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        self.body.update(ctx);
         TagValue::phantom_ref()
     }
 
@@ -659,7 +659,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         &self.spec
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.body.delete(ctx);
         for p in self.prototypes.iter_mut() {
             p.delete(ctx)
@@ -669,7 +669,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.body.sleep(ctx)
     }
 

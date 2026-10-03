@@ -7,7 +7,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use futures::{SinkExt, channel::mpsc};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, Event, ExecCtx,
+    Apply, BindId, BuiltIn, CBATCH_POOL, CompileCtx, CustomBuiltinType, ExecCtx,
     LambdaId, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     errf,
@@ -207,7 +207,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpClientEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_client";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+    fn eval(
+        &mut self,
+        _ctx: &mut ExecCtx<'_, R, E>,
+        cached: &CachedVals,
+    ) -> Option<Value> {
         let timeout = cached.get::<Option<Duration>>(0)?;
         let default_headers = cached.0.get(1)?.as_ref()?.clone();
         let redirect_limit = cached.get::<u32>(2)?;
@@ -246,7 +250,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpDefaultClientEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_default_client";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+    fn eval(
+        &mut self,
+        _ctx: &mut ExecCtx<'_, R, E>,
+        cached: &CachedVals,
+    ) -> Option<Value> {
         cached.0.get(0)?.as_ref()?;
         Some(CLIENT_WRAPPER.wrap(ClientValue { client: DEFAULT_CLIENT.clone() }))
     }
@@ -261,7 +269,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HttpServerAddrEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "http_server_addr";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+    fn eval(
+        &mut self,
+        _ctx: &mut ExecCtx<'_, R, E>,
+        cached: &CachedVals,
+    ) -> Option<Value> {
         let v = cached.0.get(0)?.as_ref()?;
         match v {
             Value::Abstract(a) => {
@@ -702,7 +714,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for HttpServe<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -744,18 +756,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        let (addrv, addr_fired) = seam_arg(ctx, &mut from[0], event);
-        let (certv, cert_fired) = seam_arg(ctx, &mut from[1], event);
-        let (keyv, key_fired) = seam_arg(ctx, &mut from[2], event);
-        let (maxv, max_fired) = seam_arg(ctx, &mut from[3], event);
-        let (fv, f_fired) = seam_arg(ctx, &mut from[4], event);
+        let (addrv, addr_fired) = seam_arg(ctx, &mut from[0]);
+        let (certv, cert_fired) = seam_arg(ctx, &mut from[1]);
+        let (keyv, key_fired) = seam_arg(ctx, &mut from[2]);
+        let (maxv, max_fired) = seam_arg(ctx, &mut from[3]);
+        let (fv, f_fired) = seam_arg(ctx, &mut from[4]);
         if f_fired && let Some(v) = fv {
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            event.variables.insert(self.pid, TagValue::fired(v));
+            ctx.event.variables.insert(self.pid, TagValue::fired(v));
         }
         let mut server_result = None;
         if addr_fired || cert_fired || key_fired || max_fired {
@@ -836,7 +847,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 }));
             }
         }
-        if let Some(mut cbt) = event.custom.remove(&self.id) {
+        if let Some(mut cbt) = ctx.event.custom.remove(&self.id) {
             if let Some(req) = (&mut *cbt as &mut dyn Any).downcast_mut::<HttpReqEvent>()
             {
                 let request = req.request.clone();
@@ -848,11 +859,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
             if let Some((req, _)) = self.queue.front() {
                 self.ready = false;
                 ctx.rt.store_insert(self.x, TagValue::fired(req.clone()));
-                event.variables.insert(self.x, TagValue::fired(req.clone()));
+                ctx.event.variables.insert(self.x, TagValue::fired(req.clone()));
             }
         }
         loop {
-            match graphix_package_core::seam_tick(self.handler.update(ctx, event))
+            match graphix_package_core::seam_tick(self.handler.update(ctx))
                 .map(|tv| tv.clone())
             {
                 None => break,
@@ -867,7 +878,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                         Some((req, _)) => {
                             self.ready = false;
                             ctx.rt.store_insert(self.x, TagValue::fired(req.clone()));
-                            event.variables.insert(self.x, TagValue::fired(req.clone()));
+                            ctx.event
+                                .variables
+                                .insert(self.x, TagValue::fired(req.clone()));
                         }
                         None => break,
                     }
@@ -893,7 +906,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         self.handler.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         if let Some(abort) = self.abort.take() {
             abort.abort();
@@ -904,7 +917,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         self.handler.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);

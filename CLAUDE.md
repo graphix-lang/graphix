@@ -131,7 +131,13 @@ Key types: `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration — `fold`, the seq rewrite and
 the fuzzer's preorder all ride them, so a new `ExprKind` child is added
 there and nowhere else), `Node<R, E>` (a newtype over `Box<dyn Update>`;
-construct with `Node::new`), `ExecCtx<R, E>` (a `CompileCtx`: the registry, the program's state and the compile's scratch, which it derefs to; plus the runtime: `rt`, `libstate`, `control`, `fusion`),
+construct with `Node::new`), `ExecState<R, E>` (what an embedder owns: a
+`CompileCtx` (the registry, the program's state and the compile's scratch,
+which it derefs to), the runtime `rt`, `libstate`, `control` and the
+cycle's `Event`), `ExecCtx<'a, R, E>` (the view `update`, `delete`,
+`sleep` and image decode take, `ExecState::view`: borrows of those
+fields, derefs to the `CompileCtx`; the event is `ctx.event`, and
+`with_event` runs a subtree over another event),
 `Scope` (lexical `ModPath` + `DynScope`, the chain of error handlers a
 `?` sees, following the CALL chain).
 

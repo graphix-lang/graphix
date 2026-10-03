@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use compact_str::format_compact;
 use graphix_compiler::{
-    Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, Event, ExecCtx, InitFn,
-    LambdaId, Node, Refs, Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BindMode, BuiltIn, CompileCtx, Effect, ExecCtx, InitFn, LambdaId,
+    Node, Refs, Rt, Scope, TagValue, UserEvent,
     effects::{EffectKind, RecursionKind},
     env::Env,
     expr::{Arg, ArgKind, ExprId, StructurePattern, WrittenAt},
@@ -80,13 +80,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let mut delta: LPooled<Vec<(BindId, Value)>> = LPooled::take();
         for (i, n) in from.iter_mut().enumerate() {
-            if let Some(v) = seam_tick(n.update(ctx, event)) {
+            if let Some(v) = seam_tick(n.update(ctx)) {
                 if let Some(bid) = self.arg_bids.get(i) {
                     delta.push((*bid, v.value_cloned()));
                 }
@@ -100,7 +99,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                     drop(s);
                     for (bid, v) in delta.drain(..) {
                         ctx.rt.store_insert(bid, TagValue::fired(v.clone()));
-                        event.variables.insert(bid, TagValue::fired(v));
+                        ctx.event.variables.insert(bid, TagValue::fired(v));
                     }
                     None
                 } else {
@@ -122,7 +121,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        match seam_tick(self.pred.update(ctx, event)).map(|tv| tv.value_cloned()) {
+        match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
@@ -144,11 +143,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         self.pred.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pred.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pred.sleep(ctx);
     }
 }
@@ -177,7 +176,7 @@ pub(crate) struct QueueFn<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -238,7 +237,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> QueueFn<R, E> {
-    fn build_lambda(&mut self, ctx: &mut ExecCtx<R, E>) -> Result<Value> {
+    fn build_lambda(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<Value> {
         let ftyp = self
             .ftyp
             .clone()
@@ -305,7 +304,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
         Ok(ctx.wrap_lambda(def))
     }
 
-    fn maybe_write_count(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn maybe_write_count(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let to_write = {
             let mut s = self.state.lock();
             if let Some(bid) = s.count_ref {
@@ -344,16 +343,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
-        if let Some(v) =
-            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
-        {
+        if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned()) {
             let new_ref = match &v {
                 Value::U64(b) => {
                     let outer = BindId::from(*b);
@@ -366,7 +362,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             s.last_written_depth = s.depth();
         }
         let mut new_lambda: Option<Value> = None;
-        if let Some(tv) = seam_value(from[2].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[2].update(ctx)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
             // A lazily-built instance never saw typecheck1; the runtime
@@ -377,7 +373,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
             ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
-            event.variables.insert(self.fid, TagValue::tagged(v, tag));
+            ctx.event.variables.insert(self.fid, TagValue::tagged(v, tag));
             if self.lambda.is_none() {
                 match self.build_lambda(ctx) {
                     Ok(lv) => {
@@ -393,7 +389,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
                 }
             }
         }
-        let trigger_fired = seam_tick(from[1].update(ctx, event)).is_some();
+        let trigger_fired = seam_tick(from[1].update(ctx)).is_some();
         if trigger_fired {
             let popped = {
                 let mut s = self.state.lock();
@@ -412,7 +408,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             }
         }
         self.maybe_write_count(ctx);
-        let res = if event.init { self.lambda.clone() } else { new_lambda };
+        let res = if ctx.event.init { self.lambda.clone() } else { new_lambda };
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
@@ -435,11 +431,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.fid, self.top_id);
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         let mut s = self.state.lock();
         s.queue.clear();
         s.pop_count = 1;

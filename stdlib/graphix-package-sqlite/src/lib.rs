@@ -219,7 +219,7 @@ impl EvalCachedAsync for SqliteQueryEv {
 
     fn map_value<R: Rt, E: UserEvent>(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         v: Value,
     ) -> Option<Value> {
         match self.cast_typ.as_ref() {

@@ -7,7 +7,7 @@
 #[cfg(debug_assertions)]
 use crate::fusion::emit_helpers::record_fusion_invocation;
 use crate::{
-    BindId, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
+    BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Update, UserEvent,
     expr::Expr,
     fusion::{
         emit::{
@@ -182,7 +182,7 @@ impl<R: Rt, E: UserEvent> FusedKernel<R, E> {
     /// Rebuild a region from an image: the wrapper record installs into
     /// the context's module and the node allocates fresh state.
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -303,13 +303,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         record_encode(w.wrapper(), buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
         let mut any_updated = false;
         let mut any_bottom = false;
         let mut polled: SmallVec<[&TagValue; 8]> = SmallVec::new();
         for src in self.feeders.iter_mut() {
-            let tv = src.update(ctx, event);
+            let tv = src.update(ctx);
             let tag = tv.tag();
             any_updated |= tag.triggers();
             any_bottom |= tag.is_bottom();
@@ -319,14 +319,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             eprintln!(
                 "KPOLL {} init={} any_updated={any_updated} tags={:?} present={:?}",
                 self.kernel.fn_name,
-                event.init,
+                ctx.event.init,
                 polled.iter().map(|tv| tv.tag().bits()).collect::<Vec<_>>(),
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>(),
             );
         }
         if !(any_updated
             || any_bottom
-            || event.init
+            || ctx.event.init
             || woke
             || self.resident.tag().is_bottom())
         {
@@ -336,7 +336,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             eprintln!(
                 "KERNEL INVOKE {} init={} fired={:?} present={:?}",
                 self.kernel.fn_name,
-                event.init,
+                ctx.event.init,
                 polled.iter().map(|tv| tv.is_fired()).collect::<Vec<_>>(),
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>()
             );
@@ -345,8 +345,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         record_fusion_invocation();
         let mut slots: LPooled<Vec<u64>> = LPooled::take();
         // Slot 0: bit 0 init view, bit 1 wake.
-        let wake = event.wake_init || woke;
-        slots.push(event.init as u64 | (wake as u64) << 1);
+        let wake = ctx.event.wake_init || woke;
+        slots.push(ctx.event.init as u64 | (wake as u64) << 1);
         slots.push(if self.state.is_empty() {
             0
         } else {
@@ -382,14 +382,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // snapshot when a hook can fire) and delivers its raises after.
         // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)
         // and `out` is two words the wrapper fills.
-        let ((), mut raises) =
-            crate::node::coretraits::with_display_hooks(ctx, event, |env| {
-                emit_helpers::with_qop_raises(|| {
-                    emit_helpers::with_kernel_env(env, || unsafe {
-                        f(slots.as_ptr(), out.as_mut_ptr());
-                    })
+        let ((), mut raises) = crate::node::coretraits::with_display_hooks(ctx, |env| {
+            emit_helpers::with_qop_raises(|| {
+                emit_helpers::with_kernel_env(env, || unsafe {
+                    f(slots.as_ptr(), out.as_mut_ptr());
                 })
-            });
+            })
+        });
         for (site, v) in raises.drain(..) {
             // SAFETY: `site` is a `QopSite` constant of the kernel's
             // record, which outlives its code.
@@ -403,7 +402,6 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
                 handler.raise();
                 crate::node::error::deliver_error(
                     ctx,
-                    event,
                     handler,
                     top,
                     &site.spec,
@@ -468,13 +466,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for feeder in self.feeders.iter_mut() {
             feeder.delete(ctx);
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if crate::dbgenv::gxdbg_kernel_sleep() {
             eprintln!("FUSED-KERNEL-SLEEP {:?}", self.spec.id);
         }

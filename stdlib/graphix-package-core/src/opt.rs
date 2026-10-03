@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Refs, Rt, Scope,
-    Tag, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Refs, Rt, Scope, Tag,
+    TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -28,7 +28,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsSomeEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_some)));
     const NAME: &str = "core_opt_is_some";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(ctx, fc_is_some, from)
     }
 }
@@ -50,7 +50,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsNoneEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_none)));
     const NAME: &str = "core_opt_is_none";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(ctx, fc_is_none, from)
     }
 }
@@ -65,7 +65,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_contains";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), _) => Some(Value::Bool(false)),
             (Some(v), Some(x)) => {
@@ -86,7 +86,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrDefaultEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_or_default";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), Some(d)) => Some(d.clone()),
             (Some(v), _) => Some(v.clone()),
@@ -105,7 +105,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_or";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), Some(b)) => Some(b.clone()),
             (Some(a), _) => Some(a.clone()),
@@ -124,7 +124,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_and";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), _) => Some(Value::Null),
             (Some(_), Some(b)) => Some(b.clone()),
@@ -156,7 +156,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for XorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_xor)));
     const NAME: &str = "core_opt_xor";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(ctx, fc_xor, from)
     }
 }
@@ -171,7 +171,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_zip";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), _) | (_, Some(Value::Null)) => Some(Value::Null),
             (Some(a), Some(b)) => Some(Value::Array(ValArray::from_iter_exact(
@@ -204,7 +204,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
     const NAME: &str = "core_opt_unzip";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         crate::fast_eval(ctx, fc_unzip, from)
     }
 }
@@ -219,7 +219,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OkOrEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_opt_ok_or";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), Some(e)) => Some(Value::Error(e.clone().into())),
             (Some(v), _) => Some(v.clone()),
@@ -247,7 +247,10 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         self.x.encode(buf)
     }
 
-    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
         let inner = image::decode_node(ctx, buf)?;
         let fid = BindId::decode(buf)?;
         let x = BindId::decode(buf)?;
@@ -278,23 +281,18 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         Ok(Self { inner, fid, x })
     }
 
-    fn feed_callable(
-        &self,
-        ctx: &mut ExecCtx<R, E>,
-        from: &mut [Node<R, E>],
-        event: &mut Event<E>,
-    ) {
-        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+    fn feed_callable(&self, ctx: &mut ExecCtx<'_, R, E>, from: &mut [Node<R, E>]) {
+        if let Some(tv) = seam_value(from[1].update(ctx)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
             ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
-            event.variables.insert(self.fid, TagValue::tagged(v, tag));
+            ctx.event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
     }
 
-    fn feed_x(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, v: Value, tag: Tag) {
+    fn feed_x(&self, ctx: &mut ExecCtx<'_, R, E>, v: Value, tag: Tag) {
         ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
-        event.variables.insert(self.x, TagValue::tagged(v, tag));
+        ctx.event.variables.insert(self.x, TagValue::tagged(v, tag));
     }
 
     /// A null input emits `on_null` without invoking the callback; a
@@ -303,13 +301,12 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     /// cycle: it is always for the input just consumed.
     fn tick_unary(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
         on_null: Value,
     ) -> Option<Value> {
-        self.feed_callable(ctx, from, event);
-        let direct = match seam_value(from[0].update(ctx, event)) {
+        self.feed_callable(ctx, from);
+        let direct = match seam_value(from[0].update(ctx)) {
             Some(tv) => {
                 let tag = tv.tag();
                 // Only a fired null emits; a stale null is quiet.
@@ -318,23 +315,22 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
                     Value::Null if drives => Some(on_null),
                     Value::Null => None,
                     v => {
-                        self.feed_x(ctx, event, v, tag);
+                        self.feed_x(ctx, v, tag);
                         None
                     }
                 }
             }
             None => None,
         };
-        let inner_out =
-            seam_tick(self.inner.update(ctx, event)).map(|tv| tv.value_cloned());
+        let inner_out = seam_tick(self.inner.update(ctx)).map(|tv| tv.value_cloned());
         direct.or(inner_out)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.inner.sleep(ctx);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.rt.store_remove(&self.fid);
         ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
@@ -358,7 +354,7 @@ pub(crate) struct OptMap<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptMap<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -395,11 +391,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        match self.s.tick_unary(ctx, from, event, Value::Null) {
+        match self.s.tick_unary(ctx, from, Value::Null) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
@@ -417,11 +412,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptMap<R, E> {
         self.s.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.sleep(ctx);
     }
 }
@@ -434,7 +429,7 @@ pub(crate) struct OptFlatMap<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFlatMap<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -471,11 +466,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        match self.s.tick_unary(ctx, from, event, Value::Null) {
+        match self.s.tick_unary(ctx, from, Value::Null) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
@@ -493,11 +487,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFlatMap<R, E> {
         self.s.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.sleep(ctx);
     }
 }
@@ -511,7 +505,7 @@ pub(crate) struct OptFilter<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptFilter<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -551,12 +545,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        self.s.feed_callable(ctx, from, event);
-        let direct = match seam_value(from[0].update(ctx, event)) {
+        self.s.feed_callable(ctx, from);
+        let direct = match seam_value(from[0].update(ctx)) {
             Some(tv) => {
                 let tag = tv.tag();
                 // A stale null neither emits nor clears the pending latch.
@@ -569,7 +562,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
                     Value::Null => None,
                     v => {
                         self.pending = Some(v.clone());
-                        self.s.feed_x(ctx, event, v, tag);
+                        self.s.feed_x(ctx, v, tag);
                         None
                     }
                 }
@@ -577,7 +570,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
             None => None,
         };
         let inner_out =
-            seam_tick(self.s.inner.update(ctx, event)).map(|b| match b.value_cloned() {
+            seam_tick(self.s.inner.update(ctx)).map(|b| match b.value_cloned() {
                 Value::Bool(true) => self.pending.clone().unwrap_or(Value::Null),
                 _ => Value::Null,
             });
@@ -599,11 +592,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptFilter<R, E> {
         self.s.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pending = None;
         self.s.sleep(ctx);
     }
@@ -617,7 +610,7 @@ pub(crate) struct OptIsSomeAnd<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsSomeAnd<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -654,11 +647,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        match self.s.tick_unary(ctx, from, event, Value::Bool(false)) {
+        match self.s.tick_unary(ctx, from, Value::Bool(false)) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
@@ -676,11 +668,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsSomeAnd<R, E> {
         self.s.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.sleep(ctx);
     }
 }
@@ -693,7 +685,7 @@ pub(crate) struct OptIsNoneOr<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptIsNoneOr<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -730,11 +722,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        match self.s.tick_unary(ctx, from, event, Value::Bool(true)) {
+        match self.s.tick_unary(ctx, from, Value::Bool(true)) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
@@ -752,11 +743,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptIsNoneOr<R, E> {
         self.s.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.sleep(ctx);
     }
 }
@@ -782,7 +773,10 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         self.last_f.encode(buf)
     }
 
-    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
         let inner = image::decode_node(ctx, buf)?;
         let fid = BindId::decode(buf)?;
         let last_a = Pack::decode(buf)?;
@@ -811,25 +805,24 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
     /// next null `a`.
     fn tick(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> OrElseTick {
-        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[1].update(ctx)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
             ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
-            event.variables.insert(self.fid, TagValue::tagged(v, tag));
+            ctx.event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
         // A stale delivery refreshes the latches but does not drive
         // an emission.
-        let a_fired = if let Some(a) = seam_value(from[0].update(ctx, event)) {
+        let a_fired = if let Some(a) = seam_value(from[0].update(ctx)) {
             self.last_a = Some(a.value_cloned());
             a.is_fired()
         } else {
             false
         };
-        let f_fired = if let Some(v) = seam_value(self.inner.update(ctx, event)) {
+        let f_fired = if let Some(v) = seam_value(self.inner.update(ctx)) {
             self.last_f = Some(v.value_cloned());
             v.is_fired()
         } else {
@@ -838,13 +831,13 @@ impl<R: Rt, E: UserEvent> OrElseShared<R, E> {
         OrElseTick { a_fired, f_fired }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.last_a = None;
         self.last_f = None;
         self.inner.sleep(ctx);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.rt.store_remove(&self.fid);
         self.inner.delete(ctx);
     }
@@ -866,7 +859,7 @@ pub(crate) struct OptOrElse<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOrElse<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -903,11 +896,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        let OrElseTick { a_fired: a_up, f_fired: f_up } = self.s.tick(ctx, from, event);
+        let OrElseTick { a_fired: a_up, f_fired: f_up } = self.s.tick(ctx, from);
         let res = if a_up {
             match &self.s.last_a {
                 Some(Value::Null) => self.s.last_f.clone(),
@@ -937,11 +929,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOrElse<R, E> {
         self.s.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.sleep(ctx);
     }
 }
@@ -954,7 +946,7 @@ pub(crate) struct OptOkOrElse<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for OptOkOrElse<R, E> {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -991,11 +983,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        let OrElseTick { a_fired: a_up, f_fired: f_up } = self.s.tick(ctx, from, event);
+        let OrElseTick { a_fired: a_up, f_fired: f_up } = self.s.tick(ctx, from);
         let wrap_err = |e: Value| Value::Error(e.into());
         let res = if a_up {
             match &self.s.last_a {
@@ -1026,11 +1017,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for OptOkOrElse<R, E> {
         self.s.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.s.sleep(ctx);
     }
 }

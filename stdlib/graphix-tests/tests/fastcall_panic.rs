@@ -28,7 +28,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PanicProbe {
     const NAME: &str = "panic_probe";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_panic_at_three)));
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_panic_at_three, from)
     }
 }

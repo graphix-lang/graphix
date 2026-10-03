@@ -8,8 +8,8 @@ use super::{
     read_var, standing_view,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
-    PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, UserEvent, bailat,
+    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs,
+    Rt, Scope, Tag, TagValue, Update, UserEvent, bailat,
     compiler::compile,
     dbgenv,
     env::Env,
@@ -137,12 +137,12 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// Whether an input the initializer's fire can come through was
     /// delivered fired this cycle, live or as a wake catch-up, and not
     /// by a wake's constants.
-    fn input_fired(&self, ctx: &ExecCtx<R, E>, event: &Event<E>) -> bool {
+    fn input_fired(&self, ctx: &ExecCtx<'_, R, E>) -> bool {
         let mut refs = Refs::default();
         self.node.refs(&mut refs);
         refs.triggering.difference(&refs.bound).any(|id| {
-            !event.wake_phantoms.contains(id)
-                && matches!(read_var(ctx, event, id), Some(VarRead::Delivered(tv)) if tv.tag().triggers())
+            !ctx.event.wake_phantoms.contains(id)
+                && matches!(read_var(ctx, id), Some(VarRead::Delivered(tv)) if tv.tag().triggers())
         })
     }
 
@@ -298,7 +298,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
 
 impl<R: Rt, E: UserEvent> Bind<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -325,12 +325,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.node.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
         // At a wake the initializer's constants fire; the fire is the wake's,
         // not an event's, unless one of its inputs fired too.
-        let wake_phantom = event.wake_init && !self.input_fired(ctx, event);
-        let tv = self.node.update(ctx, event);
+        let wake_phantom = ctx.event.wake_init && !self.input_fired(ctx);
+        let tv = self.node.update(ctx);
         let tag = tv.tag();
         // A stale RHS is already served by the store, except before the
         // first publish, which goes out whatever its tag. A fresh bottom
@@ -364,12 +364,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             let quiet = !tag.triggers();
             if wake_phantom && !quiet {
                 self.pattern.ids(&mut |id| {
-                    event.wake_phantoms.insert(id);
+                    ctx.event.wake_phantoms.insert(id);
                 });
             }
             if tag.is_bottom() {
                 self.pattern.ids(&mut |id| {
-                    event.variables.insert(id, TagValue::tagged(Value::Null, tag));
+                    ctx.event.variables.insert(id, TagValue::tagged(Value::Null, tag));
                     ctx.rt.store_insert(
                         id,
                         TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM),
@@ -381,7 +381,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
             } else {
                 let v = tv.value_cloned();
                 self.pattern.bind(&v, &mut |id, v| {
-                    event.variables.insert(id, TagValue::tagged(v.clone(), tag));
+                    ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
                     ctx.rt.store_insert(id, TagValue::fired(v));
                     if !quiet {
                         ctx.rt.notify_set(id);
@@ -400,7 +400,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.node.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         // The static-resolution index outlives batches; a deleted
         // bind's entry must go with it.
         self.pattern.ids(&mut |id| {
@@ -422,7 +422,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         self.pattern.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.node.sleep(ctx);
     }
@@ -632,7 +632,7 @@ impl Ref {
 
     /// Replays the reference registration `compile` made with the runtime.
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Arc::new(Expr::decode(buf)?);
@@ -652,10 +652,10 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // Overlays first, then the store; a store miss rides the resident.
         let dbg = dbgenv::gxdbg_ref();
-        let r = match read_var(ctx, event, &self.id) {
+        let r = match read_var(ctx, &self.id) {
             Some(VarRead::Delivered(tv)) => {
                 if dbg {
                     eprintln!(
@@ -669,15 +669,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
                 self.resident.set(tv.clone())
             }
             Some(VarRead::Standing(tv)) => {
-                let tv = standing_view(event, tv);
+                let tv = standing_view(ctx.event, tv);
                 if dbg {
                     eprintln!(
                         "REF {} @{} {:?} STANDING (ei={} wi={}) tag={:?} val={:?}",
                         self.spec,
                         self.spec.pos,
                         self.id,
-                        event.init,
-                        event.wake_init,
+                        ctx.event.init,
+                        ctx.event.wake_init,
                         tv.tag(),
                         tv.value_cloned()
                     );
@@ -703,11 +703,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Ref {
         refs.read(self.id);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id)
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn spec(&self) -> &Expr {
         &self.spec
@@ -806,7 +806,10 @@ impl<R: Rt, E: UserEvent> PlaceStep<R, E> {
         }
     }
 
-    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
         if !buf.has_remaining() {
             return Err(PackError::BufferShort);
         }
@@ -896,7 +899,10 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         self.scope.encode(buf)
     }
 
-    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
         let root = decode_node(ctx, buf)?;
         let n = decode_varint(buf)? as usize;
         let mut steps = Vec::with_capacity(n);
@@ -966,8 +972,8 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         Ok(Place { root, steps, scope: scope.lexical.clone(), path: Path::new() })
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Resolved<'_> {
-        let root = self.root.update(ctx, event).clone();
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Resolved<'_> {
+        let root = self.root.update(ctx).clone();
         let mut moved = root.tag().triggers();
         self.path.clear();
         let id = root_place(&self.root).map(|(id, under)| {
@@ -979,7 +985,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
         for step in &mut self.steps {
             match step {
                 PlaceStep::Index(n) => {
-                    let tv = n.update(ctx, event);
+                    let tv = n.update(ctx);
                     moved |= tv.tag().triggers();
                     let i = if tv.tag().is_bottom() {
                         None
@@ -996,7 +1002,7 @@ impl<R: Rt, E: UserEvent> Place<R, E> {
                     self.path.push(place::Step::Field(name.name.clone()))
                 }
                 PlaceStep::Key(n) => {
-                    let tv = n.update(ctx, event);
+                    let tv = n.update(ctx);
                     moved |= tv.tag().triggers();
                     if tv.tag().is_bottom() {
                         complete = false
@@ -1111,7 +1117,7 @@ pub struct ByRef<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> ByRef<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1175,7 +1181,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     /// embedders read directly: a fire this cycle, bottoms included, as a
     /// `let` publishes; a quiet production under an init view stands in
     /// it, so the cell exists from the reference's birth.
-    fn publish(&self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>, tv: TagValue) {
+    fn publish(&self, ctx: &mut ExecCtx<'_, R, E>, tv: TagValue) {
         let tag = tv.tag();
         if tag.triggers() {
             let stored = if tag.is_bottom() {
@@ -1184,15 +1190,15 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
                 TagValue::fired(tv.value_cloned())
             };
             ctx.rt.store_insert(self.id, stored);
-            event.variables.insert(self.id, tv);
+            ctx.event.variables.insert(self.id, tv);
             ctx.rt.notify_set(self.id);
-        } else if event.init {
+        } else if ctx.event.init {
             ctx.rt.store_insert_standing(self.id, tv);
         }
     }
 
     /// Drop the place registration; was there one?
-    fn unregister(&mut self, ctx: &mut ExecCtx<R, E>) -> bool {
+    fn unregister(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> bool {
         let was = self.registered.take().is_some();
         if was {
             ctx.rt.clear_ref_path(&self.id);
@@ -1201,7 +1207,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
     }
 
     /// The cell when the place has no element: bottom.
-    fn bottom_mirror(&self, ctx: &mut ExecCtx<R, E>) {
+    fn bottom_mirror(&self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.rt.store_insert(self.id, TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM));
     }
 }
@@ -1224,20 +1230,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         }
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let moved = match &mut self.referent {
             Referent::Channel(n) => {
-                let tv = n.update(ctx, event).clone();
-                self.publish(ctx, event, tv);
+                let tv = n.update(ctx).clone();
+                self.publish(ctx, tv);
                 false
             }
             Referent::Place(place) => {
-                let Resolved { address, root, moved } = place.update(ctx, event);
+                let Resolved { address, root, moved } = place.update(ctx);
                 let Some(Address { bind, path, steps }) = address else {
                     if self.unregister(ctx) {
                         self.bottom_mirror(ctx);
                     }
-                    return self.resident.set_bottom(moved || event.init);
+                    return self.resident.set_bottom(moved || ctx.event.init);
                 };
                 let same = self
                     .registered
@@ -1250,17 +1256,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 }
                 // the cell mirrors the element, read through the address;
                 // a bottom root sets it bottom
-                if moved || event.init {
+                if moved || ctx.event.init {
                     let read = match root.tag().is_bottom() {
                         true => None,
-                        false => Some(with_hooks(ctx, event, || {
+                        false => Some(with_hooks(ctx, || {
                             root.with_value(|v| place::read_path(v, steps))
                         })),
                     };
                     match read {
                         Some(Ok(v)) => {
                             let tag = if moved { Tag::FIRED } else { root.tag() };
-                            self.publish(ctx, event, TagValue::tagged(v, tag))
+                            self.publish(ctx, TagValue::tagged(v, tag))
                         }
                         Some(Err(e)) => {
                             log::warn!("read through a reference: {e}");
@@ -1272,20 +1278,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
                 moved
             }
         };
-        if event.init || moved {
+        if ctx.event.init || moved {
             self.resident.set(TagValue::fired(Value::U64(self.id.inner())))
         } else {
             self.resident.ride()
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.env.byref_chain.remove(&self.id);
         self.unregister(ctx);
         self.referent.each(&mut |n| n.delete(ctx));
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.referent.each(&mut |n| n.sleep(ctx));
     }
 
@@ -1343,7 +1349,7 @@ pub struct Deref<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Deref<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1389,7 +1395,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
     /// cycle late, the referent does not; a chainless reference's own
     /// cell is its only storage). Returns the binding and whether it
     /// changed.
-    fn address(&mut self, ctx: &mut ExecCtx<R, E>, cell: BindId) -> (BindId, bool) {
+    fn address(&mut self, ctx: &mut ExecCtx<'_, R, E>, cell: BindId) -> (BindId, bool) {
         let (id, path) = match ctx.rt.ref_path(&cell) {
             Some((root, path)) => (*root, &path[..]),
             None => (ctx.env.byref_chain.get(&cell).copied().unwrap_or(cell), &[][..]),
@@ -1411,7 +1417,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         }
     }
 
-    fn release(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn release(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some((id, _)) = self.addr.take() {
             ctx.unref_var(id, self.top_id);
         }
@@ -1428,8 +1434,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         self.addr.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.child.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.child.update(ctx);
         let addr = tv.tag();
         let cell = match addr.is_bottom() {
             true => None,
@@ -1443,16 +1449,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
             return self.resident.set_bottom(addr.triggers());
         };
         let (id, moved) = self.address(ctx, cell);
-        let res = match read_var(ctx, event, &id) {
+        let res = match read_var(ctx, &id) {
             Some(VarRead::Delivered(tv)) => Some(tv.clone()),
-            Some(VarRead::Standing(tv)) => Some(standing_view(event, tv)),
+            Some(VarRead::Standing(tv)) => Some(standing_view(ctx.event, tv)),
             None => None,
         };
         let res = match (res, &self.addr) {
             (Some(tv), Some((_, path))) if !path.is_empty() && !tv.tag().is_bottom() => {
-                let read = with_hooks(ctx, event, || {
-                    tv.with_value(|v| place::read_path(v, path))
-                });
+                let read =
+                    with_hooks(ctx, || tv.with_value(|v| place::read_path(v, path)));
                 match read {
                     Ok(v) => {
                         let mut c = TagValue::fired(v);
@@ -1479,12 +1484,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.release(ctx);
         self.child.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.child.sleep(ctx);
     }
 

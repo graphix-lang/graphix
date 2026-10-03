@@ -6,8 +6,7 @@ use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::CompactString;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
-    UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     errf,
     expr::ExprId,
@@ -427,7 +426,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TempDirPathEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_tempdir_path)));
     const NAME: &str = "sys_tempdir_path";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_tempdir_path, from)
     }
 }
@@ -481,7 +480,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for JoinPathEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_join_path)));
     const NAME: &str = "sys_join_path";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_join_path, from)
     }
 }
@@ -513,7 +512,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Args {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -529,11 +528,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if event.init && self.once.take() {
+        if ctx.event.init && self.once.take() {
             let pargs = ctx.libstate.get_or_default::<ProgramArgs>();
             let arr: ValArray =
                 pargs.0.iter().map(|s| Value::String(s.clone())).collect();
@@ -543,9 +541,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Args {
         }
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.once.reset();
     }
 }
@@ -569,7 +567,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -584,13 +582,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         if let Some(Value::I64(code)) = from
             .get_mut(0)
-            .and_then(|n| seam_tick(n.update(ctx, event)))
+            .and_then(|n| seam_tick(n.update(ctx)))
             .map(|tv| tv.value_cloned())
         {
             use std::io::Write;
@@ -601,9 +598,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 graphix_derive::defpackage! {

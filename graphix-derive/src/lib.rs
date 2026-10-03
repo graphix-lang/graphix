@@ -412,7 +412,7 @@ pub fn defpackage(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         impl<X: ::graphix_rt::GXExt> ::graphix_package::Package<X> for P {
             fn register(
                 &self,
-                ctx: &mut ::graphix_compiler::ExecCtx<::graphix_rt::GXRt<X>, X::UserEvent>,
+                ctx: &mut ::graphix_compiler::ExecState<::graphix_rt::GXRt<X>, X::UserEvent>,
                 modules: &mut ::ahash::AHashMap<
                     ::netidx_core::path::Path,
                     ::graphix_compiler::expr::VfsEntry,

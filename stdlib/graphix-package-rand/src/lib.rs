@@ -4,7 +4,7 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{CachedVals, seam_tick};
@@ -36,7 +36,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Rand {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -52,9 +52,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         macro_rules! gen_cases {
             ($start:expr, $end:expr, $($typ:ident),+) => {
@@ -68,7 +67,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
                 }
             };
         }
-        let up = self.args.update(ctx, from, event);
+        let up = self.args.update(ctx, from);
         let res = if up {
             match &self.args.0[..] {
                 [Some(start), Some(end), Some(_)] => gen_cases!(
@@ -85,7 +84,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.args.clear()
     }
 }
@@ -111,7 +110,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Pick {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -126,24 +125,22 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Pick {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        let res =
-            seam_tick(from[0].update(ctx, event)).and_then(|a| match a.value_cloned() {
-                Value::Array(a) if a.len() > 0 => {
-                    Some(a[rng().random_range(0..a.len())].clone())
-                }
-                _ => None,
-            });
+        let res = seam_tick(from[0].update(ctx)).and_then(|a| match a.value_cloned() {
+            Value::Array(a) if a.len() > 0 => {
+                Some(a[rng().random_range(0..a.len())].clone())
+            }
+            _ => None,
+        });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 #[derive(Debug)]
@@ -168,7 +165,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Shuffle {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -184,26 +181,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Shuffle {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        let res =
-            seam_tick(from[0].update(ctx, event)).and_then(|a| match a.value_cloned() {
-                Value::Array(a) => {
-                    self.buf.extend(a.iter().cloned());
-                    self.buf.shuffle(&mut rng());
-                    Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
-                }
-                _ => None,
-            });
+        let res = seam_tick(from[0].update(ctx)).and_then(|a| match a.value_cloned() {
+            Value::Array(a) => {
+                self.buf.extend(a.iter().cloned());
+                self.buf.shuffle(&mut rng());
+                Some(Value::Array(ValArray::from_iter_exact(self.buf.drain(..))))
+            }
+            _ => None,
+        });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.buf.clear()
     }
 }

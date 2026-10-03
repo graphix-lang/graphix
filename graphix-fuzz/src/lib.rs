@@ -216,7 +216,7 @@ impl Outcome {
 /// Run `code` (a wrapper: optional headers + expression body, see
 /// [`Subject`]) under `mode`, returning the per-cycle trace of
 /// everything `result` emitted across every epoch, or why nothing ran.
-/// A fresh `ExecCtx` is created per call so fusion state and the
+/// A fresh `ExecState` is created per call so fusion state and the
 /// per-context JIT never leak between runs.
 pub async fn run_program(code: &str, mode: Mode, timeout: Duration) -> Outcome {
     run_program_routed(code, mode, Route::InLanguage, timeout).await
@@ -451,7 +451,7 @@ async fn program_result(ctx: &TestCtx) -> anyhow::Result<CompRes<NoExt>> {
 }
 
 /// [`run_program`], also returning the compile-time [`FusionStats`]
-/// delta for the program itself (stats accumulate per `ExecCtx`, so the
+/// delta for the program itself (stats accumulate per `ExecState`, so the
 /// post-init baseline is subtracted).
 pub async fn run_program_with_stats(
     code: &str,

@@ -8,7 +8,7 @@ use arcstr::ArcStr;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag, ExecCtx, FusionStats, PrintFlag,
+    CFlag, ExecState, FusionStats, PrintFlag,
     env::Env,
     expr::{CouldNotResolve, ExprId, ResolverFactory, ResolverRef, Source, VfsResolver},
     format_with_flags,
@@ -139,11 +139,11 @@ impl Mode {
 }
 
 /// The embedder's context-setup hook — runs against the freshly
-/// created [`ExecCtx`] before anything compiles. The place to seed
+/// created [`ExecState`] before anything compiles. The place to seed
 /// package libstate entries (the CLI seeds sys::net's `NetConfig`
 /// and `NetTimeouts` here); embedders can do whatever they need.
 pub type SetupContext<X> =
-    Box<dyn FnOnce(&mut ExecCtx<GXRt<X>, <X as GXExt>::UserEvent>) + Send + 'static>;
+    Box<dyn FnOnce(&mut ExecState<GXRt<X>, <X as GXExt>::UserEvent>) + Send + 'static>;
 
 #[derive(Builder)]
 #[builder(pattern = "owned")]
@@ -221,8 +221,7 @@ impl<X: GXExt> Shell<X> {
         &mut self,
         sub: mpsc::Sender<GPooled<Vec<GXEvent>>>,
     ) -> Result<GXHandle<X>> {
-        let mut ctx =
-            ExecCtx::new(GXRt::<X>::new()).context("creating graphix context")?;
+        let mut ctx = GXRt::<X>::new_state().context("creating graphix context")?;
         if let Some(setup) = self.setup_context.take() {
             setup(&mut ctx);
         }

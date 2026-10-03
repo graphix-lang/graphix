@@ -1063,7 +1063,7 @@ impl StructPatternNode {
         }
     }
 
-    pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) {
+    pub fn delete<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<'_, R, E>) {
         self.ids(&mut |id| {
             ctx.rt.store_remove(&id);
             ctx.env.unbind_variable(id);
@@ -1104,7 +1104,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let explicit_type_predicate = bool::decode(buf)?;
@@ -1253,13 +1253,12 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// stale leaves, never fired ones.
     pub(super) fn bind_event(
         &self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         v: &Value,
         tag: crate::Tag,
     ) {
         self.structure_predicate.bind(v, &mut |id, v| {
-            event.variables.insert(id, TagValue::tagged(v.clone(), tag));
+            ctx.event.variables.insert(id, TagValue::tagged(v.clone(), tag));
             ctx.rt.store_insert(id, TagValue::tagged(v, tag));
         })
     }
@@ -1273,14 +1272,10 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// Tick the guard (it must see every cycle) and return its
     /// production tag (`None` = no guard). The caller reads channel
     /// bottomness off `guard.tag`.
-    pub(super) fn update(
-        &mut self,
-        ctx: &mut ExecCtx<R, E>,
-        event: &mut Event<E>,
-    ) -> Option<Tag> {
+    pub(super) fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Option<Tag> {
         match &mut self.guard {
             None => None,
-            Some(g) => Some(g.update(ctx, event)),
+            Some(g) => Some(g.update(ctx)),
         }
     }
 
@@ -1353,7 +1348,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         }
     }
 
-    pub(super) fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    pub(super) fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(n) = &mut self.guard {
             n.node.delete(ctx)
         }

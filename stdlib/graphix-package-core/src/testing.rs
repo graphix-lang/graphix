@@ -100,7 +100,7 @@ pub async fn init_with_setup<F>(
 ) -> Result<TestCtx>
 where
     F: FnOnce(
-        &mut graphix_compiler::ExecCtx<
+        &mut graphix_compiler::ExecState<
             GXRt<NoExt>,
             <NoExt as graphix_rt::GXExt>::UserEvent,
         >,
@@ -121,7 +121,7 @@ pub async fn init_with_flags_and_setup<F>(
 ) -> Result<TestCtx>
 where
     F: FnOnce(
-        &mut graphix_compiler::ExecCtx<
+        &mut graphix_compiler::ExecState<
             GXRt<NoExt>,
             <NoExt as graphix_rt::GXExt>::UserEvent,
         >,
@@ -187,7 +187,7 @@ pub async fn init_session_with_setup<F>(
 ) -> Result<TestCtx>
 where
     F: FnOnce(
-        &mut graphix_compiler::ExecCtx<
+        &mut graphix_compiler::ExecState<
             GXRt<NoExt>,
             <NoExt as graphix_rt::GXExt>::UserEvent,
         >,
@@ -245,7 +245,7 @@ pub async fn init_lsp_mode<F>(
 ) -> Result<TestCtx>
 where
     F: FnOnce(
-        &mut graphix_compiler::ExecCtx<
+        &mut graphix_compiler::ExecState<
             GXRt<NoExt>,
             <NoExt as graphix_rt::GXExt>::UserEvent,
         >,
@@ -268,7 +268,7 @@ async fn init_inner<F>(
 ) -> Result<TestCtx>
 where
     F: FnOnce(
-        &mut graphix_compiler::ExecCtx<
+        &mut graphix_compiler::ExecState<
             GXRt<NoExt>,
             <NoExt as graphix_rt::GXExt>::UserEvent,
         >,
@@ -278,7 +278,7 @@ where
     // Nothing seeds NetConfig, so tests that touch sys::net share one
     // process-internal netidx materialized on demand.
     let st = std::time::Instant::now();
-    let mut ctx = graphix_compiler::ExecCtx::new(GXRt::<NoExt>::new())?;
+    let mut ctx = GXRt::<NoExt>::new_state()?;
     log::info!("context creation time: {:?}", st.elapsed());
     let mut modules = ahash::AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
@@ -330,7 +330,7 @@ pub async fn eval_with_setup<F>(
 ) -> Result<(Value, TestCtx)>
 where
     F: FnOnce(
-        &mut graphix_compiler::ExecCtx<
+        &mut graphix_compiler::ExecState<
             GXRt<NoExt>,
             <NoExt as graphix_rt::GXExt>::UserEvent,
         >,

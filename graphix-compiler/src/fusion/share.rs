@@ -279,7 +279,7 @@ impl SlotShare {
 
     /// Each kernel installs into the context's module from its record.
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let base = decode_varint(buf)? as usize;

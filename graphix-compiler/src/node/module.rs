@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, PendingImport, Refs, Rt, Saved,
-    Scope, Tag, TagValue, Update, UserEvent,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, PendingImport, Refs, Rt, Saved, Scope, Tag,
+    TagValue, Update, UserEvent,
     compiler::compile,
     env::{self, Env, ImplDef, ImportEntry, Map, UseAnchor, scope_params},
     errf,
@@ -639,7 +639,7 @@ pub struct Module<R: Rt, E: UserEvent> {
 /// Store a production for `id` as the binding that made it does, a
 /// bottom included.
 fn store_production<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     id: BindId,
     tv: &TagValue,
 ) {
@@ -660,7 +660,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -778,7 +778,11 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     /// reaches. A loaded body is never fused, so no fusion pass
     /// reconciles its registry attributes. A failure leaves nothing it
     /// registered.
-    fn compile_source(&mut self, ctx: &mut ExecCtx<R, E>, text: ArcStr) -> Result<()> {
+    fn compile_source(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        text: ArcStr,
+    ) -> Result<()> {
         let ori = Arc::new(Origin { parent: None, source: Source::Unspecified, text });
         let exprs =
             add_interface_modules(parser::parse((*ori).clone())?, &self.sig, &ori);
@@ -889,7 +893,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         })
     }
 
-    fn clear_compiled(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn clear_compiled(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for Proxy { inner, outer, .. } in self.proxy.drain(..) {
             ctx.unref_var(inner, self.top_id);
             ctx.unref_var(outer, self.top_id);
@@ -901,7 +905,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         })
     }
 
-    fn sleep_nodes(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep_nodes(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.with_restored_mut(&mut self.env, |ctx| {
             for n in &mut self.nodes {
                 n.sleep(ctx);
@@ -932,13 +936,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let mut compiled = false;
         let mut src_tag = Tag::FIRED;
         let src = match &mut self.body {
             Body::Static => None,
             Body::Dynamic { source, .. } => {
-                let tv = source.update(ctx, event);
+                let tv = source.update(ctx);
                 let tag = tv.tag();
                 if !tag.triggers() {
                     None
@@ -981,32 +985,32 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
             }
             refs.with_external_refs(|id| {
                 if let Some(v) = ctx.rt.store_value(&id)
-                    && let Entry::Vacant(e) = event.variables.entry(id)
+                    && let Entry::Vacant(e) = ctx.event.variables.entry(id)
                 {
                     e.insert(TagValue::fired(v.clone()));
                 }
             });
         }
-        let init = event.init;
+        let init = ctx.event.init;
         if compiled {
-            event.init = true;
+            ctx.event.init = true;
         }
         for Proxy { inner, outer, private_inner } in &self.proxy {
-            if *private_inner && let Some(tv) = event.variables.get(outer) {
+            if *private_inner && let Some(tv) = ctx.event.variables.get(outer) {
                 let tv = tv.clone();
                 store_production(ctx, *inner, &tv);
-                event.variables.insert(*inner, tv);
+                ctx.event.variables.insert(*inner, tv);
             }
         }
         for i in super::evaluation_order(self.nodes.len(), &self.catches) {
-            let _ = self.nodes[i].update(ctx, event);
+            let _ = self.nodes[i].update(ctx);
         }
-        event.init = init;
+        ctx.event.init = init;
         for Proxy { inner, outer, private_inner } in &self.proxy {
             let tv = if *private_inner {
-                event.variables.remove(inner)
+                ctx.event.variables.remove(inner)
             } else {
-                event.variables.get(inner).cloned()
+                ctx.event.variables.get(inner).cloned()
             };
             let tv = match tv {
                 Some(tv) => tv,
@@ -1019,7 +1023,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
                 None => continue,
             };
             store_production(ctx, *outer, &tv);
-            event.variables.insert(*outer, tv);
+            ctx.event.variables.insert(*outer, tv);
         }
         if compiled {
             self.resident.set(TagValue::tagged(Value::Null, src_tag))
@@ -1028,7 +1032,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.delete(ctx);
         }
@@ -1044,7 +1048,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Module<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.sleep(ctx);
         }

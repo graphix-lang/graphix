@@ -4,7 +4,7 @@
 )]
 use arcstr::ArcStr;
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, errf, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{FireOnce, ProgramArgs};
@@ -157,7 +157,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Parse {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -172,11 +172,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        let Some(tv) = graphix_package_core::seam_tick(from[0].update(ctx, event)) else {
+        let Some(tv) = graphix_package_core::seam_tick(from[0].update(ctx)) else {
             return self.out.ride();
         };
         let spec = tv.value_cloned();
@@ -215,9 +214,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Parse {
         self.out.set(TagValue::fired(res))
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.once.reset();
     }
 }

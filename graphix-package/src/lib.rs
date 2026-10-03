@@ -11,7 +11,7 @@ use compact_str::{CompactString, format_compact};
 use crates_io_api::AsyncClient;
 use flate2::bufread::MultiGzDecoder;
 use graphix_compiler::{
-    ExecCtx,
+    ExecState,
     env::Env,
     expr::{ExprId, VfsEntry},
 };
@@ -115,7 +115,7 @@ pub trait Package<X: GXExt>: Send + Sync {
     /// package's dependency packages.
     fn register(
         &self,
-        ctx: &mut ExecCtx<GXRt<X>, X::UserEvent>,
+        ctx: &mut ExecState<GXRt<X>, X::UserEvent>,
         modules: &mut AHashMap<netidx_core::path::Path, VfsEntry>,
         root_mods: &mut IndexSet<ArcStr>,
     ) -> Result<()>;

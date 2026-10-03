@@ -60,7 +60,7 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
     }
 
     fn image_decode(
-        _ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
+        _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
         _from: &[::graphix_compiler::Node<R, E>],
         buf: &mut &[u8],
     ) -> ::std::result::Result<
@@ -86,11 +86,10 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
 
     fn update(
         &mut self,
-        ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
+        ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
         from: &mut [::graphix_compiler::Node<R, E>],
-        event: &mut ::graphix_compiler::Event<E>,
     ) -> &::graphix_compiler::TagValue {
-        if !self.args.update(ctx, from, event) {
+        if !self.args.update(ctx, from) {
             return self.out.ride();
         }
         let __res = match &self.args.0[..] {
@@ -114,7 +113,7 @@ impl<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>) {
         self.args.clear()
     }
 }

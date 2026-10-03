@@ -8,9 +8,9 @@ use super::{
 };
 use crate::SourcePosition;
 use crate::{
-    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, Event, ExecCtx, InitFn,
-    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
-    UserEvent, dbgenv,
+    Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, InitFn, LambdaId,
+    LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update, UserEvent,
+    dbgenv,
     effects::{EffectKind, RecursionKind},
     env::{Bind, Env},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, Origin},
@@ -680,9 +680,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let woke = self.slept.take();
         let first = mem::replace(&mut self.first_dispatch, false);
@@ -690,14 +689,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         // the first dispatch and after a wake
         let root = if first || woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         for (arg, pat) in from.iter_mut().zip(&self.args) {
-            let tv = arg.update(ctx, event);
-            publish_production(ctx, event, Feeds::Pattern(pat), tv, false, root);
+            let tv = arg.update(ctx);
+            publish_production(ctx, Feeds::Pattern(pat), tv, false, root);
         }
         // an interrupted dispatch is not a bottom: it rides its last result
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
-        let res = self.body.update(ctx, event).clone();
+        let res = self.body.update(ctx).clone();
         self.resident.set(res)
     }
 
@@ -810,7 +809,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         self.body.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.body.delete(ctx);
         for n in &self.args {
             n.ids(&mut |id| {
@@ -820,7 +819,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         // a recursion shrinking one level does not shrink the external
         // calls it made
@@ -941,7 +940,7 @@ impl<R: Rt, E: UserEvent> GXLambda<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let id = LambdaId::decode(buf)?;
@@ -980,7 +979,7 @@ pub(crate) struct BuiltInLambda<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> BuiltInLambda<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
@@ -1016,12 +1015,7 @@ impl UnknownBuiltIn {
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for UnknownBuiltIn {
-    fn update(
-        &mut self,
-        _: &mut ExecCtx<R, E>,
-        _: &mut [Node<R, E>],
-        _: &mut Event<E>,
-    ) -> &TagValue {
+    fn update(&mut self, _: &mut ExecCtx<'_, R, E>, _: &mut [Node<R, E>]) -> &TagValue {
         &self.0
     }
 
@@ -1029,7 +1023,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for UnknownBuiltIn {
         Err(PackError::Application(crate::image::NOT_IMAGED))
     }
 
-    fn sleep(&mut self, _: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _: &mut ExecCtx<'_, R, E>) {}
 }
 
 impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
@@ -1059,11 +1053,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        self.apply.update(ctx, from, event)
+        self.apply.update(ctx, from)
     }
 
     fn typecheck0(
@@ -1111,11 +1104,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for BuiltInLambda<R, E> {
         self.apply.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.apply.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.apply.sleep(ctx);
     }
 }
@@ -1503,7 +1496,7 @@ impl Lambda {
 
 impl Lambda {
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1674,8 +1667,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
     }
 
     /// A lambda literal is a constant.
-    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        produce_constant(event, &mut self.resident, || self.def.clone())
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        produce_constant(ctx.event, &mut self.resident, || self.def.clone())
     }
 
     fn spec(&self) -> &Expr {
@@ -1684,7 +1677,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         // a retained def keeps its `LambdaIds` link-graph nodes alive, and
         // `typecheck1`'s `ids()` walks grow with them
         if let Some(def) = self.def.downcast_ref::<LambdaDef<R, E>>() {
@@ -1692,7 +1685,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn typ(&self) -> &Type {
         &self.typ

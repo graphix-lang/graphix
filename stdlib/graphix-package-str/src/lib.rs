@@ -38,7 +38,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StartsWithEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_starts_with)));
     const NAME: &str = "str_starts_with";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_starts_with, from)
     }
 }
@@ -61,7 +61,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EndsWithEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_ends_with)));
     const NAME: &str = "str_ends_with";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_ends_with, from)
     }
 }
@@ -84,7 +84,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_contains)));
     const NAME: &str = "str_contains";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_contains, from)
     }
 }
@@ -108,7 +108,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripPrefixEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_strip_prefix)));
     const NAME: &str = "str_strip_prefix";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_strip_prefix, from)
     }
 }
@@ -132,7 +132,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StripSuffixEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_strip_suffix)));
     const NAME: &str = "str_strip_suffix";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_strip_suffix, from)
     }
 }
@@ -153,7 +153,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim)));
     const NAME: &str = "str_trim";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_trim, from)
     }
 }
@@ -174,7 +174,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimStartEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim_start)));
     const NAME: &str = "str_trim_start";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_trim_start, from)
     }
 }
@@ -195,7 +195,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TrimEndEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_trim_end)));
     const NAME: &str = "str_trim_end";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_trim_end, from)
     }
 }
@@ -218,7 +218,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ReplaceEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_replace)));
     const NAME: &str = "str_replace";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_replace, from)
     }
 }
@@ -243,7 +243,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DirnameEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_dirname)));
     const NAME: &str = "str_dirname";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_dirname, from)
     }
 }
@@ -267,7 +267,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BasenameEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_basename)));
     const NAME: &str = "str_basename";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_basename, from)
     }
 }
@@ -305,7 +305,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for RowColEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_row_col)));
     const NAME: &str = "str_row_col";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_row_col, from)
     }
 }
@@ -364,7 +364,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringJoinEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_join)));
     const NAME: &str = "str_join";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_join, from)
     }
 }
@@ -401,7 +401,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringConcatEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_concat)));
     const NAME: &str = "str_concat";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_concat, from)
     }
 }
@@ -472,7 +472,7 @@ macro_rules! escape_fn {
 
             fn eval(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
                 fast_eval(ctx, $fc, from)
@@ -499,7 +499,7 @@ macro_rules! split_fn {
 
             fn eval(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
                 fast_eval(ctx, $fc, from)
@@ -577,7 +577,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitEscapedEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_split_escaped)));
     const NAME: &str = "str_split_escaped";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_split_escaped, from)
     }
 }
@@ -613,7 +613,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitNEscapedEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_splitn_escaped)));
     const NAME: &str = "str_splitn_escaped";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_splitn_escaped, from)
     }
 }
@@ -644,7 +644,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringSplitOnceEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_split_once)));
     const NAME: &str = "str_split_once";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_split_once, from)
     }
 }
@@ -675,7 +675,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringRSplitOnceEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_rsplit_once)));
     const NAME: &str = "str_rsplit_once";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_rsplit_once, from)
     }
 }
@@ -696,7 +696,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToLowerEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_to_lower)));
     const NAME: &str = "str_to_lower";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_to_lower, from)
     }
 }
@@ -717,7 +717,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for StringToUpperEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_to_upper)));
     const NAME: &str = "str_to_upper";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_to_upper, from)
     }
 }
@@ -744,7 +744,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SprintfEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sprintf)));
     const NAME: &str = "str_sprintf";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_sprintf, from)
     }
 }
@@ -758,7 +758,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for LenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(str_len)));
     const NAME: &str = "str_len";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, str_len, from)
     }
 }
@@ -801,7 +801,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SubEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sub)));
     const NAME: &str = "str_sub";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_sub, from)
     }
 }
@@ -864,7 +864,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ParseEv {
         Ok(())
     }
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval_typed(ctx, fc_parse, self.rtype.as_ref()?, from)
     }
 }

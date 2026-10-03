@@ -228,6 +228,7 @@ impl<X: GXExt> DataTableW<X> {
             selection_ref.last.as_ref().map(parse_selection).unwrap_or_default();
         let subscriber = gx
             .with_ctx(|ctx| {
+                let ctx = &mut ctx.view();
                 graphix_package_sys::netstate::NetState::get(ctx).subscriber(ctx)
             })
             .await??;

@@ -1,7 +1,7 @@
 use super::{WakeBit, compiler::compile, coretraits::with_hooks, dense_gate};
 use crate::{
-    CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
-    Update, UserEvent, defetyp, err, errf,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    UserEvent, defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::{
         self,
@@ -53,7 +53,7 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -115,21 +115,21 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         if self.entries.is_empty() {
-            return super::produce_constant(event, &mut self.resident, || {
+            return super::produce_constant(ctx.event, &mut self.resident, || {
                 Value::Map(CMap::new())
             });
         }
         let (mut keys, mut vals): (SmallVec<[&mut Node<R, E>; 8]>, SmallVec<[_; 8]>) =
             self.entries.iter_mut().map(|(k, v)| (k, v)).unzip();
         let keys: SmallVec<[&TagValue; 8]> =
-            keys.iter_mut().map(|k| k.update(ctx, event)).collect();
+            keys.iter_mut().map(|k| k.update(ctx)).collect();
         let vals: SmallVec<[&TagValue; 8]> =
-            vals.iter_mut().map(|v| v.update(ctx, event)).collect();
+            vals.iter_mut().map(|v| v.update(ctx)).collect();
         let tag = keys.iter().chain(vals.iter()).fold(Tag::STALE, |t, p| t.join(p.tag()));
         dense_gate!(self, tag.triggers(), tag.is_bottom());
-        let m = with_hooks(ctx, event, || {
+        let m = with_hooks(ctx, || {
             let mut m = CMap::new();
             for (k, v) in keys.iter().zip(vals.iter()) {
                 m.insert_cow(k.value_cloned(), v.value_cloned());
@@ -147,11 +147,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let _ = self.each(|n| Ok(n.delete(ctx)));
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         let _ = self.each(|n| Ok(n.sleep(ctx)));
     }
@@ -255,7 +255,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let source = decode_node(ctx, buf)?;
@@ -312,13 +312,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.vtyp.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let s = self.source.update(ctx, event);
-        let k = self.key.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let s = self.source.update(ctx);
+        let k = self.key.update(ctx);
         let tag = s.tag().join(k.tag());
         dense_gate!(self, tag.triggers(), tag.is_bottom());
-        let v =
-            with_hooks(ctx, event, || s.with_value(|s| k.with_value(|k| map_get(s, k))));
+        let v = with_hooks(ctx, || s.with_value(|s| k.with_value(|k| map_get(s, k))));
         self.resident.set(TagValue::tagged(v, tag))
     }
 
@@ -345,7 +344,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         self.key.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.delete(ctx);
         self.key.delete(ctx);
     }
@@ -358,7 +357,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
         &self.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.source.sleep(ctx);
         self.key.sleep(ctx);

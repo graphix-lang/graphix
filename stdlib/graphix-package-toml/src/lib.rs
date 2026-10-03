@@ -160,7 +160,7 @@ impl EvalCachedAsync for TomlReadEv {
 
     fn map_value<R: Rt, E: UserEvent>(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         v: Value,
     ) -> Option<Value> {
         match &self.cast_typ {
@@ -227,7 +227,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteStrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_str)));
     const NAME: &str = "toml_write_str";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+    fn eval(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        cached: &CachedVals,
+    ) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_write_str, cached)
     }
 }
@@ -259,7 +263,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for TomlWriteBytesEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
     const NAME: &str = "toml_write_bytes";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+    fn eval(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        cached: &CachedVals,
+    ) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_write_bytes, cached)
     }
 }

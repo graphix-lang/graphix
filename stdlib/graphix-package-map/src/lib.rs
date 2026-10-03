@@ -4,8 +4,8 @@
 )]
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Rt, Scope,
-    TagValue, UserEvent, effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
+    UserEvent, effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::{CachedArgs, CachedVals, EvalCached, seam_tick};
 use netidx::subscriber::Value;
@@ -28,7 +28,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get)));
     const NAME: &str = "map_get";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_get, from)
     }
 }
@@ -51,7 +51,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for GetOrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_get_or)));
     const NAME: &str = "map_get_or";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_get_or, from)
     }
 }
@@ -74,7 +74,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for InsertEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_insert)));
     const NAME: &str = "map_insert";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_insert, from)
     }
 }
@@ -95,7 +95,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for RemoveEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_remove)));
     const NAME: &str = "map_remove";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_remove, from)
     }
 }
@@ -126,7 +126,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -145,12 +145,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         if let Some(Value::Map(m)) =
-            seam_tick(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+            seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned())
         {
             for (k, v) in m.into_iter() {
                 let pair = Value::Array(ValArray::from_iter_exact(
@@ -159,18 +158,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
                 ctx.rt.set_var(self.id, pair);
             }
         }
-        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        let res = ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
@@ -210,7 +209,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -250,15 +249,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event)).is_some() {
+        if seam_tick(from[0].update(ctx)).is_some() {
             self.triggered += 1;
         }
         if let Some(Value::Map(m)) =
-            seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+            seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
         {
             let pairs: LPooled<Vec<(Value, Value)>> =
                 m.into_iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -279,18 +277,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
                 self.queue.pop_front();
             }
         }
-        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        let res = ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);

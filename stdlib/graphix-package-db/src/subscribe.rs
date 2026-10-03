@@ -142,7 +142,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for DbSubscribe {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -162,14 +162,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
-        let prefix_val = graphix_package_core::seam_tick(from[0].update(ctx, event))
+        let prefix_val = graphix_package_core::seam_tick(from[0].update(ctx))
             .map(|tv| tv.value_cloned());
-        let tree_changed = graphix_package_core::seam_tick(from[1].update(ctx, event))
+        let tree_changed = graphix_package_core::seam_tick(from[1].update(ctx))
             .map(|tv| tv.value_cloned());
         let tree_is_new = tree_changed.is_some();
         if let Some(v) = tree_changed {
@@ -223,7 +222,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.out.ride()
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
@@ -231,7 +230,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.out = TagValue::phantom();
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(abort) = self.abort.take() {
             abort.abort();
         }
@@ -291,7 +290,7 @@ macro_rules! db_event_accessor {
             }
 
             fn image_decode(
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 _from: &[Node<R, E>],
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -314,11 +313,10 @@ macro_rules! db_event_accessor {
 
             fn update(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &mut [Node<R, E>],
-                event: &mut Event<E>,
             ) -> &TagValue {
-                if self.cached.update(ctx, from, event) {
+                if self.cached.update(ctx, from) {
                     if let Some(bid) = self.bind_id.take() {
                         ctx.unref_var(bid, self.top_id);
                     }
@@ -332,13 +330,13 @@ macro_rules! db_event_accessor {
                     }
                     self.bind_id = bid;
                 }
-                match scan_db_events(self.bind_id, event, $convert) {
+                match scan_db_events(self.bind_id, ctx.event, $convert) {
                     Some(v) => self.out.set(TagValue::fired(v)),
                     None => self.out.ride(),
                 }
             }
 
-            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 if let Some(bid) = self.bind_id.take() {
                     ctx.unref_var(bid, self.top_id);
                 }
@@ -346,7 +344,7 @@ macro_rules! db_event_accessor {
                 self.out = TagValue::phantom();
             }
 
-            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+            fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 if let Some(bid) = self.bind_id {
                     ctx.unref_var(bid, self.top_id);
                 }

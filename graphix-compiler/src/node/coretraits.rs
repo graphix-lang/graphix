@@ -224,7 +224,7 @@ impl<R: Rt, E: UserEvent> std::fmt::Debug for CoreHookSites<R, E> {
 }
 
 fn build_site<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     t: CoreTrait,
     h: &Hook,
 ) -> Result<HookSite<R, E>> {
@@ -242,12 +242,12 @@ fn build_site<R: Rt, E: UserEvent>(
 /// value this cycle (the bottom the callers' rules resolve);
 /// `Some(Some(v))` = its result.
 fn call_hook<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     t: CoreTrait,
     args: &[&GxAbstract],
 ) -> Option<Option<Value>> {
     let mut event = ctx.core_hook_sites.take_event()?;
-    let r = call_hook_over(ctx, &mut event, t, args);
+    let r = call_hook_over(&mut ctx.with_event(&mut event), t, args);
     ctx.core_hook_sites.give_event(event);
     r
 }
@@ -278,7 +278,7 @@ fn same_version(
 /// pool is empty. The entry stays in the registry, so a re-entrant
 /// dispatch for the same tag finds it; a nested call takes another site.
 fn take_site<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     t: CoreTrait,
     args: &[&GxAbstract],
 ) -> Option<Loan<R, E>> {
@@ -328,7 +328,7 @@ fn take_site<R: Rt, E: UserEvent>(
     Some(Loan { key, version, slot, typ, site })
 }
 
-fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, mut loan: Loan<R, E>) {
+fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, mut loan: Loan<R, E>) {
     let pool = ctx
         .core_hook_sites
         .sites
@@ -342,8 +342,7 @@ fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, mut loan: Loan<R, E
 }
 
 fn call_hook_over<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     t: CoreTrait,
     args: &[&GxAbstract],
 ) -> Option<Option<Value>> {
@@ -352,21 +351,21 @@ fn call_hook_over<R: Rt, E: UserEvent>(
     for (id, g) in s.call.args.iter().zip(args.iter()) {
         let v = as_value(g);
         ctx.rt.store_insert(*id, TagValue::fired(v.clone()));
-        event.variables.insert(*id, TagValue::fired(v));
+        ctx.event.variables.insert(*id, TagValue::fired(v));
     }
     if s.first {
         s.first = false;
-        event.init = true;
+        ctx.event.init = true;
     }
-    let tv = s.call.site.update(ctx, event);
+    let tv = s.call.site.update(ctx);
     let r = if tv.tag().is_bottom() { None } else { Some(tv.value_cloned()) };
-    event.init = false;
+    ctx.event.init = false;
     return_site(ctx, loan);
     Some(r)
 }
 
-struct HookState<R: Rt, E: UserEvent> {
-    ctx: *mut ExecCtx<R, E>,
+struct HookState<'a, R: Rt, E: UserEvent> {
+    ctx: *mut ExecCtx<'a, R, E>,
 }
 
 /// Re-wrap a `GxAbstract` (received by reference inside the vtable
@@ -387,7 +386,7 @@ fn warn_pair_bottom(t: CoreTrait, a: &GxAbstract) {
 
 /// Does the implementation bottom on the key `k`?
 fn key_bottoms<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     t: CoreTrait,
     k: &GxAbstract,
 ) -> bool {
@@ -400,7 +399,7 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
     b: &GxAbstract,
 ) -> Option<bool> {
     // SAFETY: `state` points into the live `eval_with_hooks` frame.
-    let s = unsafe { &mut *(state as *mut HookState<R, E>) };
+    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
     let ctx = unsafe { &mut *s.ctx };
     match call_hook(ctx, CoreTrait::Eq, &[a, b])? {
         Some(Value::Bool(x)) => Some(x),
@@ -439,7 +438,7 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
     b: &GxAbstract,
 ) -> Option<Ordering> {
     // SAFETY: as in `dispatch_eq`.
-    let s = unsafe { &mut *(state as *mut HookState<R, E>) };
+    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
     let ctx = unsafe { &mut *s.ctx };
     match call_hook(ctx, CoreTrait::Ord, &[a, b])? {
         Some(v) => match ordering_of(&v) {
@@ -470,7 +469,7 @@ fn dispatch_cmp<R: Rt, E: UserEvent>(
 
 fn dispatch_fmt<R: Rt, E: UserEvent>(state: *mut u8, a: &GxAbstract) -> Option<ArcStr> {
     // SAFETY: as in `dispatch_eq`.
-    let s = unsafe { &mut *(state as *mut HookState<R, E>) };
+    let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
     let ctx = unsafe { &mut *s.ctx };
     match call_hook(ctx, CoreTrait::Display, &[a])? {
         Some(Value::String(s)) => Some(s),
@@ -498,9 +497,9 @@ pub fn hooks_live(env: &Env) -> bool {
 /// Remember the user event the seam's own events are made from. Every
 /// loan that has an event seeds; a loan inside a builtin's `eval` has
 /// none and needs its caller's (`CachedArgs::update`) to have.
-pub fn seed<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, event: &Event<E>) {
+pub fn seed<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>) {
     if ctx.core_hook_sites.template.is_none() {
-        ctx.core_hook_sites.template = Some(event.user.clone());
+        ctx.core_hook_sites.template = Some(ctx.event.user.clone());
     }
 }
 
@@ -510,26 +509,25 @@ pub fn seed<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, event: &Event<E>) {
 /// hook dispatches through the context over an event of the seam's
 /// own. Loans nest.
 pub fn with_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce() -> T,
 ) -> T {
-    seed(ctx, event);
+    seed(ctx);
     eval_with_hooks(ctx, f)
 }
 
 /// [`with_hooks`] inside a builtin's `eval`, which has no event: armed
 /// when a loan with one came first, else `f` runs unarmed (structural).
 pub fn eval_with_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce() -> T,
 ) -> T {
     if !hooks_live(&ctx.env) || ctx.core_hook_sites.template.is_none() {
         return f();
     }
-    let mut state = HookState::<R, E> { ctx: ctx as *mut _ };
+    let mut state = HookState { ctx: ctx as *mut ExecCtx<'_, R, E> };
     let handle = ValueHookDispatch {
-        state: &mut state as *mut HookState<R, E> as *mut u8,
+        state: &mut state as *mut HookState<'_, R, E> as *mut u8,
         eq: dispatch_eq::<R, E>,
         cmp: dispatch_cmp::<R, E>,
         fmt: dispatch_fmt::<R, E>,
@@ -543,17 +541,16 @@ pub fn eval_with_hooks<R: Rt, E: UserEvent, T>(
 /// that builds or runs its site through the context invalidates
 /// nothing `f` reads.
 pub fn with_display_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce(&Env) -> T,
 ) -> T {
-    seed(ctx, event);
+    seed(ctx);
     eval_with_display_hooks(ctx, f)
 }
 
 /// [`with_display_hooks`] inside a builtin's `eval`.
 pub fn eval_with_display_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce(&Env) -> T,
 ) -> T {
     if !hooks_live(&ctx.env) || ctx.core_hook_sites.template.is_none() {

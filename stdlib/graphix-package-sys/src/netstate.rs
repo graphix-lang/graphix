@@ -231,7 +231,7 @@ impl NetState {
     /// Get (or create) the net state for this runtime. On creation the
     /// pump/flusher/graveyard tasks spawn and their delivery channels
     /// register with the runtime — which is why this needs `ctx`.
-    pub fn get<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>) -> NetState {
+    pub fn get<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>) -> NetState {
         if let Some(st) = ctx.libstate.get::<NetState>() {
             return st.clone();
         }
@@ -381,14 +381,17 @@ impl NetState {
     /// The netidx handles, materializing on first touch per [`NetConfig`].
     /// Self-hosted/config builds run on a dedicated side thread, so this is
     /// legal from sync builtin code; the caller blocks for the spinup once.
-    fn handles<R: Rt, E: UserEvent>(&self, ctx: &mut ExecCtx<R, E>) -> Result<&Handles> {
+    fn handles<R: Rt, E: UserEvent>(
+        &self,
+        ctx: &mut ExecCtx<'_, R, E>,
+    ) -> Result<&Handles> {
         let cfg = ctx.libstate.get::<NetConfig>().cloned().unwrap_or(NetConfig::Internal);
         self.0.handles.get_or_materialize(cfg)
     }
 
     pub(crate) fn subscribe<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         flags: UpdatesFlags,
         path: Path,
         id: BindId,
@@ -417,7 +420,7 @@ impl NetState {
 
     pub(crate) fn publish<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         path: Path,
         value: Value,
         write_id: BindId,
@@ -457,7 +460,7 @@ impl NetState {
 
     pub(crate) fn call_rpc<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         path: Path,
         args: Vec<(arcstr::ArcStr, Value)>,
         id: BindId,
@@ -520,7 +523,7 @@ impl NetState {
 
     pub(crate) fn publish_rpc<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         path: Path,
         doc: Value,
         spec: Vec<netidx_protocols::rpc::server::ArgSpec>,
@@ -548,7 +551,7 @@ impl NetState {
     /// registered with the resolver before the list runs.
     pub(crate) fn list<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         id: BindId,
         path: Path,
         table: bool,
@@ -633,7 +636,7 @@ impl NetState {
     /// data_table). Materializes on first call.
     pub fn subscriber<R: Rt, E: UserEvent>(
         &self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
     ) -> Result<Subscriber> {
         Ok(self.handles(ctx)?.subscriber.clone())
     }

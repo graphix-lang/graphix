@@ -86,12 +86,8 @@ impl TrackedFires {
     /// Record this cycle's sound fires of tracked inputs. Runs before
     /// routing, so the taken arm consumes same-cycle fires immediately
     /// and no-arm cycles accumulate them for a future waker.
-    pub(crate) fn observe<R: Rt, E: UserEvent>(
-        &mut self,
-        ctx: &ExecCtx<R, E>,
-        event: &Event<E>,
-    ) {
-        self.observe_except(ctx, event, &[], None)
+    pub(crate) fn observe<R: Rt, E: UserEvent>(&mut self, ctx: &ExecCtx<'_, R, E>) {
+        self.observe_except(ctx, &[], None)
     }
 
     /// [`Self::observe`] after the arms `evaluated` ran this cycle: the
@@ -101,8 +97,7 @@ impl TrackedFires {
     /// first arm to read them in a later cycle.
     pub(crate) fn observe_except<R: Rt, E: UserEvent>(
         &mut self,
-        ctx: &ExecCtx<R, E>,
-        event: &Event<E>,
+        ctx: &ExecCtx<'_, R, E>,
         evaluated: &[usize],
         carried: Option<&IntSet<BindId>>,
     ) {
@@ -111,7 +106,7 @@ impl TrackedFires {
             if !pending.contains(id)
                 && (carried.is_some_and(|c| c.contains(id))
                     || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
-                && let Some(VarRead::Delivered(tv)) = read_var(ctx, event, id)
+                && let Some(VarRead::Delivered(tv)) = read_var(ctx, id)
                 && tv.tag().is_fired()
                 && !tv.tag().is_bottom()
             {
@@ -127,8 +122,7 @@ impl TrackedFires {
     /// and injects nothing.
     pub(crate) fn deliver<R: Rt, E: UserEvent>(
         &mut self,
-        ctx: &ExecCtx<R, E>,
-        event: &mut Event<E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         i: usize,
     ) -> SmallVec<[(BindId, Option<TagValue>); 4]> {
         let mut injected: SmallVec<[(BindId, Option<TagValue>); 4]> = SmallVec::new();
@@ -146,7 +140,7 @@ impl TrackedFires {
         for key in keys {
             self.pending.remove(&key);
             for id in set[&key].iter().copied() {
-                let standing = match read_var(ctx, event, &id) {
+                let standing = match read_var(ctx, &id) {
                     Some(VarRead::Delivered(_)) => None,
                     Some(VarRead::Standing(tv)) if !tv.tag().is_bottom() => {
                         Some(tv.value_cloned())
@@ -154,7 +148,7 @@ impl TrackedFires {
                     _ => None,
                 };
                 if let Some(v) = standing {
-                    let prev = event.variables.insert(id, TagValue::fired(v));
+                    let prev = ctx.event.variables.insert(id, TagValue::fired(v));
                     injected.push((id, prev));
                 }
             }

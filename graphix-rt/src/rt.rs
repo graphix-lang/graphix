@@ -2,7 +2,7 @@ use crate::GXExt;
 use chrono::prelude::*;
 use futures::{FutureExt, channel::mpsc, stream::SelectAll};
 use graphix_compiler::{
-    BindId, CustomBuiltinType, Rt, TagValue,
+    BindId, CustomBuiltinType, ExecState, Rt, TagValue,
     expr::ExprId,
     node::place::{Path, VarUpdate},
 };
@@ -53,6 +53,14 @@ pub struct GXRt<X: GXExt> {
 impl<X: GXExt> GXRt<X> {
     fn previous_cycle(&self) -> u64 {
         self.cycle.wrapping_sub(1)
+    }
+
+    /// An execution state over a new runtime, its event's user part
+    /// the extension's empty event.
+    pub fn new_state() -> anyhow::Result<ExecState<Self, X::UserEvent>> {
+        let mut rt = Self::new();
+        let user = rt.ext.empty_event();
+        ExecState::new(rt, user)
     }
 
     /// A runtime with no network; packages deliver external events

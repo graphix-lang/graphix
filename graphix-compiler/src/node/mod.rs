@@ -66,11 +66,10 @@ pub(crate) enum VarRead<'a> {
 /// Read a variable: the overlay, then the persistent store. `None`
 /// means the bind has never delivered.
 pub(crate) fn read_var<'a, R: Rt, E: UserEvent>(
-    ctx: &'a ExecCtx<R, E>,
-    event: &'a Event<E>,
+    ctx: &'a ExecCtx<'_, R, E>,
     id: &BindId,
 ) -> Option<VarRead<'a>> {
-    if let Some(tv) = event.variables.get(id) {
+    if let Some(tv) = ctx.event.variables.get(id) {
         return Some(VarRead::Delivered(tv));
     }
     match ctx.rt.store().get(id) {
@@ -201,7 +200,7 @@ impl Nop {
 
 impl Nop {
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         Ok(Self::new(Type::decode(buf)?))
@@ -214,13 +213,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Nop {
         self.typ.encode(buf)
     }
 
-    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, _ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn typecheck0(&mut self, _ctx: &mut CompileCtx<R, E>) -> Result<()> {
         Ok(())
@@ -253,7 +252,7 @@ pub struct ExplicitParens<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> ExplicitParens<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -289,15 +288,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ExplicitParens<R, E> {
         Ok(None)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        self.n.update(ctx, event)
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        self.n.update(ctx)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.sleep(ctx);
     }
 
@@ -361,7 +360,7 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         Ok(Self::new(decode_node(ctx, buf)?))
@@ -373,8 +372,8 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
 
     /// Update the node, returning the production's tag. A bottom
     /// production poisons the tag but never overwrites the value.
-    pub fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> Tag {
-        let tv = self.node.update(ctx, event);
+    pub fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Tag {
+        let tv = self.node.update(ctx);
         let tag = tv.tag();
         if !tag.is_bottom() {
             self.value = Some(tv.value_cloned());
@@ -385,7 +384,7 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
 
     /// Sleep is pause, not reset: the held value and its at-rest taint
     /// survive.
-    pub fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.node.sleep(ctx)
     }
 }
@@ -396,15 +395,14 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
 /// composite's own tag. The productions stay borrowed, so a value is
 /// cloned only once the gate let it through.
 pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
 ) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
     let mut tag = Tag::STALE;
     let prods = nodes
         .iter_mut()
         .map(|c| {
-            let tv = c.update(ctx, event);
+            let tv = c.update(ctx);
             tag = tag.join(tv.tag());
             tv
         })
@@ -465,7 +463,7 @@ impl TypeDef {
 
 impl TypeDef {
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -483,7 +481,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         self.name.encode(buf)
     }
 
-    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, _event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, _ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         TagValue::phantom_ref()
     }
 
@@ -501,11 +499,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeDef {
         &self.spec
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.env.undeftype(&self.scope, &self.name)
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn typ(&self) -> &Type {
         Type::BOTTOM
@@ -536,7 +534,7 @@ impl Constant {
 
 impl Constant {
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -564,13 +562,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Constant {
         self.typ.encode(buf)
     }
 
-    fn update(&mut self, _ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        produce_constant(event, &mut self.resident, || self.value.clone())
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        produce_constant(ctx.event, &mut self.resident, || self.value.clone())
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn refs(&self, _refs: &mut Refs) {}
 
@@ -899,8 +897,8 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
 /// it deferred when it returns: no statement boundary follows a bind
 /// at run time. A refused settle is a compiler bug, logged.
 pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<R, E>,
-    f: impl FnOnce(&mut ExecCtx<R, E>) -> Result<T>,
+    ctx: &mut ExecCtx<'_, R, E>,
+    f: impl FnOnce(&mut ExecCtx<'_, R, E>) -> Result<T>,
 ) -> Result<T> {
     ctx.pending_settles.push(Vec::new());
     let names = ctx.pending_names.len();
@@ -992,7 +990,7 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let module = bool::decode(buf)?;
@@ -1018,19 +1016,19 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         image::slice_encode(&self.catches, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         if self.catches.is_empty() {
             let res = self
                 .children
                 .iter_mut()
-                .fold(TagValue::phantom_ref(), |_, n| n.update(ctx, event));
+                .fold(TagValue::phantom_ref(), |_, n| n.update(ctx));
             return if self.module { TagValue::phantom_ref() } else { res };
         }
         // the value is the last syntactic child's (absent if it is a catch)
         let last = self.children.len() - 1;
         let mut res: Option<TagValue> = None;
         for i in evaluation_order(self.children.len(), &self.catches) {
-            let r = self.children[i].update(ctx, event);
+            let r = self.children[i].update(ctx);
             if i == last && self.catches.last() != Some(&last) {
                 res = Some(r.clone());
             }
@@ -1042,13 +1040,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for n in &mut self.children {
             n.delete(ctx)
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for n in &mut self.children {
             n.sleep(ctx)
         }
@@ -1122,7 +1120,7 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1173,14 +1171,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         encode_nodes(&self.args, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         use std::fmt::Write;
         // rendered under the value-hook loan so a core `Display` impl on
         // an abstract part applies (`coretraits::with_display_hooks`)
-        let (tag, prods) = gather(ctx, event, &mut self.args);
+        let (tag, prods) = gather(ctx, &mut self.args);
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let mut buf: LPooled<String> = LPooled::take();
-        coretraits::with_display_hooks(ctx, event, |env| {
+        coretraits::with_display_hooks(ctx, |env| {
             for (typ, tv) in self.typs.iter().zip(prods.iter()) {
                 tv.with_value(|v| match v {
                     Value::String(s) => write!(buf, "{s}"),
@@ -1206,13 +1204,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for n in &mut self.args {
             n.delete(ctx)
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         for n in &mut self.args {
             n.sleep(ctx);
@@ -1271,7 +1269,7 @@ pub struct Connect<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Connect<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1319,9 +1317,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         self.id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // only a fired RHS writes
-        let tv = self.node.update(ctx, event);
+        let tv = self.node.update(ctx);
         if tv.is_fired() {
             ctx.rt.set_var(self.id, tv.value_cloned())
         }
@@ -1340,11 +1338,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
         self.node.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.node.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.node.sleep(ctx);
     }
 
@@ -1420,7 +1418,7 @@ pub struct ConnectDeref<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1464,7 +1462,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
     /// write lands: a place, when the cell stands for one, else the
     /// referent through the byref chain. A chainless plain reference
     /// (`&(a + b)`) has nowhere to write.
-    fn resolve(ctx: &ExecCtx<R, E>, tv: &TagValue) -> Option<WriteTarget> {
+    fn resolve(ctx: &ExecCtx<'_, R, E>, tv: &TagValue) -> Option<WriteTarget> {
         let cell = tv.with_value(|v| match v {
             Value::U64(id) => Some(BindId::from(*id)),
             _ => None,
@@ -1489,16 +1487,16 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // a fired RHS writes; a retarget writes the RHS's current value;
         // a bottom RHS never writes
         let (rhs_fired, rhs_val) = {
-            let tv = self.rhs.update(ctx, event);
+            let tv = self.rhs.update(ctx);
             let t = tv.tag();
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
         let mut up = rhs_fired;
-        if let Some(tv) = event.variables.get(&self.src_id) {
+        if let Some(tv) = ctx.event.variables.get(&self.src_id) {
             // a reference delivered without a target (a place whose
             // address is undetermined) has nowhere to write
             let t = Self::resolve(ctx, tv);
@@ -1509,7 +1507,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         } else if self.target.is_none() {
             // an instance created after the reference value was delivered
             // finds it only in the standing store
-            if let Some(read) = read_var(ctx, event, &self.src_id) {
+            if let Some(read) = read_var(ctx, &self.src_id) {
                 let tv = match read {
                     VarRead::Delivered(tv) | VarRead::Standing(tv) => tv,
                 };
@@ -1544,12 +1542,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
         self.rhs.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.src_id, self.top_id);
         self.rhs.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.rhs.sleep(ctx);
     }
 
@@ -1591,7 +1589,7 @@ pub struct TypeCast<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> TypeCast<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1644,8 +1642,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.n.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.n.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = tv.value_cloned();
@@ -1665,11 +1663,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TypeCast<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
     }
@@ -1751,7 +1749,7 @@ impl<R: Rt, E: UserEvent> Never<R, E> {
 
 impl<R: Rt, E: UserEvent> Never<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1769,9 +1767,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         encode_nodes(&self.n, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         for n in self.n.iter_mut() {
-            n.update(ctx, event);
+            n.update(ctx);
         }
         TagValue::phantom_ref()
     }
@@ -1784,11 +1782,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.iter_mut().for_each(|n| n.delete(ctx))
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
@@ -1835,7 +1833,7 @@ pub struct Any<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Any<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1873,13 +1871,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         encode_nodes(&self.n, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // the first triggering value-bearing production wins; a
         // triggering bottom never beats one (`any(risky?, default)`)
         let mut winner: Option<TagValue> = None;
         let mut bottomed = false;
         for s in self.n.iter_mut() {
-            let tv = s.update(ctx, event);
+            let tv = s.update(ctx);
             let tag = tv.tag();
             if tag.triggers() {
                 if tag.is_bottom() {
@@ -1904,11 +1902,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.iter_mut().for_each(|n| n.delete(ctx))
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.iter_mut().for_each(|n| n.sleep(ctx))
     }
 
@@ -1967,7 +1965,7 @@ pub struct Sample<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Sample<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -2044,11 +2042,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.arg.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // only a fired trigger samples or banks debt
-        let t = self.trigger.update(ctx, event);
+        let t = self.trigger.update(ctx);
         let fired = t.tag().is_fired();
-        self.arg.update(ctx, event);
+        self.arg.update(ctx);
         let (triggered, id) = match &mut self.banking {
             Banking::Strict => {
                 return match (fired, self.arg.value.as_ref(), self.arg.tag.is_bottom()) {
@@ -2064,7 +2062,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         if fired {
             *triggered += 1;
         }
-        let var = event.variables.get(&id).cloned();
+        let var = ctx.event.variables.get(&id).cloned();
         // a banked trigger is answered from the held arg this cycle; the
         // rest of the debt is paid through `id`
         let answered = match &self.arg.value {
@@ -2089,7 +2087,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.debt_id() {
             ctx.unref_var(id, self.top_id);
             ctx.rt.store_remove(&id);
@@ -2098,7 +2096,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Sample<R, E> {
         self.trigger.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.arg.sleep(ctx);
         self.trigger.sleep(ctx);
     }

@@ -268,7 +268,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for CreateWatcher {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -290,15 +290,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        let poll_interval = seam_value(from[0].update(ctx, event))
+        let poll_interval = seam_value(from[0].update(ctx))
             .and_then(|v| v.value_cloned().cast_to::<Option<Duration>>().ok().flatten());
-        let batch_size = seam_value(from[1].update(ctx, event))
+        let batch_size = seam_value(from[1].update(ctx))
             .and_then(|v| v.value_cloned().cast_to::<Option<i64>>().ok().flatten());
-        let trigger = seam_tick(from[2].update(ctx, event)).is_some();
+        let trigger = seam_tick(from[2].update(ctx)).is_some();
         match poll_interval {
             Some(poll_interval) if poll_interval < Duration::from_millis(100) => {
                 return self.out.set(TagValue::fired(errf!(
@@ -352,7 +351,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 #[derive(Debug)]
@@ -384,7 +383,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchApply {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -411,12 +410,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let mut up = false;
-        if let Some(Ok(mut int)) = seam_tick(from[0].update(ctx, event))
+        if let Some(Ok(mut int)) = seam_tick(from[0].update(ctx))
             .map(|v| v.value_cloned().cast_to::<LPooled<Vec<WInterest>>>())
         {
             let int = int.drain(..).fold(BitFlags::empty(), |mut acc, fl| {
@@ -426,12 +424,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
             up = true;
             self.interest = Some(int);
         }
-        if let Some(watcher_val) = seam_tick(from[1].update(ctx, event)) {
+        if let Some(watcher_val) = seam_tick(from[1].update(ctx)) {
             up = true;
             self.watcher_val = Some(watcher_val.value_cloned());
         }
-        if let Some(Ok(path)) = seam_tick(from[2].update(ctx, event))
-            .map(|tv| tv.value_cloned().cast_to::<ArcStr>())
+        if let Some(Ok(path)) =
+            seam_tick(from[2].update(ctx)).map(|tv| tv.value_cloned().cast_to::<ArcStr>())
         {
             up = true;
             self.path = Some(path);
@@ -463,7 +461,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchApply {
         self.out.ride()
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.interest = None;
         self.path = None;
         self.watcher_val = None;
@@ -565,7 +563,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchPath {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -592,11 +590,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if self.cached.update(ctx, from, event) {
+        if self.cached.update(ctx, from) {
             for bid in self.bind_ids.drain() {
                 ctx.unref_var(bid, self.top_id);
             }
@@ -609,13 +606,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
                 ctx.rt.ref_var(*bid, self.top_id);
             }
         }
-        match scan_watch_events(&self.bind_ids, event, convert_path) {
+        match scan_watch_events(&self.bind_ids, ctx.event, convert_path) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for bid in self.bind_ids.drain() {
             ctx.unref_var(bid, self.top_id);
         }
@@ -623,7 +620,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchPath {
         self.out = TagValue::phantom();
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for bid in &self.bind_ids {
             ctx.unref_var(*bid, self.top_id);
         }
@@ -659,7 +656,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for WatchEvents {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -686,11 +683,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if self.cached.update(ctx, from, event) {
+        if self.cached.update(ctx, from) {
             for bid in self.bind_ids.drain() {
                 ctx.unref_var(bid, self.top_id);
             }
@@ -703,13 +699,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
                 ctx.rt.ref_var(*bid, self.top_id);
             }
         }
-        match scan_watch_events(&self.bind_ids, event, convert_events) {
+        match scan_watch_events(&self.bind_ids, ctx.event, convert_events) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for bid in self.bind_ids.drain() {
             ctx.unref_var(bid, self.top_id);
         }
@@ -717,7 +713,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WatchEvents {
         self.out = TagValue::phantom();
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         for bid in &self.bind_ids {
             ctx.unref_var(*bid, self.top_id);
         }

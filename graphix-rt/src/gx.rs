@@ -5,7 +5,7 @@ use bytes::Bytes;
 use enumflags2::BitFlags;
 use futures::{StreamExt, future::try_join_all};
 use graphix_compiler::{
-    BindId, CFlag, CustomBuiltinType, Event, ExecCtx, Node, Rt, Scope, compile,
+    BindId, CFlag, CustomBuiltinType, ExecState, Node, Rt, Scope, compile,
     expr::{
         self, Expr, ExprId, ExprKind, FilesResolver, ModPath, Origin, ResolverRef,
         Resolvers, RootFile, Source, parse_modpath,
@@ -211,8 +211,7 @@ struct CallableInt {
 }
 
 pub(super) struct GX<X: GXExt> {
-    ctx: ExecCtx<GXRt<X>, X::UserEvent>,
-    event: Event<X::UserEvent>,
+    ctx: ExecState<GXRt<X>, X::UserEvent>,
     nodes: IndexMap<ExprId, Node<GXRt<X>, X::UserEvent>, BuildNoHashHasher<ExprId>>,
     callables: IntMap<CallableId, CallableInt>,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
@@ -265,14 +264,12 @@ impl<X: GXExt> GX<X> {
                 }
             }
         };
-        let event = Event::new(cfg.ctx.rt.ext.empty_event());
         let mut ctx = cfg.ctx;
         if cfg.lsp_mode {
             ctx.env.ide = IdeMode::Lsp(None);
         }
         let mut t = Self {
             ctx,
-            event,
             nodes: IndexMap::default(),
             callables: IntMap::default(),
             sub: cfg.sub,
@@ -355,6 +352,7 @@ impl<X: GXExt> GX<X> {
     fn restore_registration(&mut self, bytes: Bytes) -> Result<()> {
         let reg = self
             .ctx
+            .view()
             .read_registration(bytes)
             .map_err(|e| anyhow!("reading the registration image: {e:?}"))?;
         for (id, n) in reg.nodes {
@@ -375,13 +373,13 @@ impl<X: GXExt> GX<X> {
         mut batch: GPooled<Vec<GXEvent>>,
     ) {
         debug_assert!(
-            !self.ctx.deferred_pending(),
+            !self.ctx.view().deferred_pending(),
             "compiled references left unreplayed"
         );
-        self.ctx.apply_deferred();
+        self.ctx.view().apply_deferred();
         macro_rules! push_event {
             ($id:expr, $v:expr, $event:ident, $refed:ident, $overflow:ident) => {
-                match self.event.$event.entry($id) {
+                match self.ctx.event.$event.entry($id) {
                     Entry::Vacant(e) => {
                         e.insert($v);
                         if let Some(exps) = self.ctx.rt.$refed.get(&$id) {
@@ -402,15 +400,14 @@ impl<X: GXExt> GX<X> {
         // order on each other's result.
         macro_rules! push_var_event {
             ($id:expr, $u:expr) => {
-                if self.event.variables.contains_key(&$id) {
+                if self.ctx.event.variables.contains_key(&$id) {
                     self.ctx.rt.var_updates.push_back(($id, $u));
                 } else {
                     let v = match $u {
                         VarUpdate::Set(v) => Some(v),
                         VarUpdate::Patch(path, v) => match self.ctx.rt.store_value(&$id) {
                             Some(cur) => {
-                                let (ctx, event) = (&mut self.ctx, &mut self.event);
-                                match coretraits::with_hooks(ctx, event, || {
+                                match coretraits::with_hooks(&mut self.ctx.view(), || {
                                     place::write_path(&cur, &path, v)
                                 }) {
                                     Ok(nv) => Some(nv),
@@ -432,7 +429,7 @@ impl<X: GXExt> GX<X> {
                             graphix_compiler::TagValue::fired(v.clone()),
                         );
                         // an ordinary runtime delivery is a FIRED event
-                        self.event.variables.insert($id, graphix_compiler::TagValue::fired(v));
+                        self.ctx.event.variables.insert($id, graphix_compiler::TagValue::fired(v));
                         if let Some(exps) = self.ctx.rt.by_ref.get(&$id) {
                             for id in exps.keys() {
                                 self.ctx.rt.updated.entry(*id).or_insert(false);
@@ -456,12 +453,12 @@ impl<X: GXExt> GX<X> {
         for (id, u) in custom_tasks.drain(..) {
             push_event!(id, u, custom, by_ref, custom_updates)
         }
-        if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.event) {
+        if let Err(e) = self.ctx.rt.ext.do_cycle(&mut self.ctx.event) {
             error!("could not marshall user events {e:?}")
         }
         let worked = !self.ctx.rt.updated.is_empty()
-            || !self.event.variables.is_empty()
-            || !self.event.custom.is_empty();
+            || !self.ctx.event.variables.is_empty()
+            || !self.ctx.event.custom.is_empty();
         // `block_in_place` keeps a wedged node from starving the IO tasks
         // and the caller that would `interrupt()`/`abort()` it; on
         // `current_thread` there is nowhere to migrate, so run inline.
@@ -474,9 +471,9 @@ impl<X: GXExt> GX<X> {
             let _interrupt = graphix_compiler::InterruptScope::new(&self.ctx.control);
             for (id, n) in self.nodes.iter_mut() {
                 if let Some(init) = self.ctx.rt.updated.get(id) {
-                    self.event.init = *init;
+                    self.ctx.event.init = *init;
                     // Only a FIRED production becomes an event.
-                    let tv = n.update(&mut self.ctx, &mut self.event);
+                    let tv = n.update(&mut self.ctx.view());
                     if tv.is_fired() {
                         let v = tv.value_cloned();
                         let watched = matches!(
@@ -525,7 +522,7 @@ impl<X: GXExt> GX<X> {
                 }
             }
         }
-        self.event.clear();
+        self.ctx.event.clear();
         self.ctx.rt.updated.clear();
     }
 
@@ -557,7 +554,7 @@ impl<X: GXExt> GX<X> {
                 }
                 ToGX::Delete { id } => {
                     if let Some(mut n) = self.nodes.shift_remove(&id) {
-                        n.delete(&mut self.ctx);
+                        n.delete(&mut self.ctx.view());
                     }
                     debug!("delete {id:?}");
                     batch.push(GXEvent::Env(self.ctx.env.clone()));
@@ -676,7 +673,7 @@ impl<X: GXExt> GX<X> {
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         for e in exprs.iter() {
             let (n, advanced) = graphix_compiler::compile_stmt(
-                &mut self.ctx,
+                &mut self.ctx.view(),
                 flags,
                 &self.scope,
                 e.clone(),
@@ -706,7 +703,7 @@ impl<X: GXExt> GX<X> {
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         for e in exprs.iter() {
             let (n, advanced) = graphix_compiler::compile_stmt(
-                &mut self.ctx,
+                &mut self.ctx.view(),
                 self.flags,
                 &self.scope,
                 e.clone(),
@@ -839,7 +836,7 @@ impl<X: GXExt> GX<X> {
             let res = match &initial_scope {
                 Some(_) => exprs.iter().try_for_each(|e| {
                     let (n, _) = graphix_compiler::compile_stmt(
-                        &mut self.ctx,
+                        &mut self.ctx.view(),
                         flags,
                         &Scope::root(),
                         e.clone(),
@@ -852,7 +849,7 @@ impl<X: GXExt> GX<X> {
                     let stmts = Arc::from_iter(exprs.iter().cloned());
                     let spec = wrap_file_in_do(stmts.clone(), Arc::new(ori.clone()));
                     graphix_compiler::compile_script(
-                        &mut self.ctx,
+                        &mut self.ctx.view(),
                         flags,
                         &Scope::root(),
                         spec,
@@ -863,7 +860,7 @@ impl<X: GXExt> GX<X> {
             };
             if let Err(e) = res.with_context(|| ori.clone()) {
                 for mut n in nodes.drain(..) {
-                    n.delete(&mut self.ctx);
+                    n.delete(&mut self.ctx.view());
                 }
                 return Err(e);
             }
@@ -876,7 +873,7 @@ impl<X: GXExt> GX<X> {
                 graphix_compiler::record_expr_types(&nodes, &mut ide.expr_types);
             }
             for mut n in nodes.drain(..) {
-                n.delete(&mut self.ctx);
+                n.delete(&mut self.ctx.view());
             }
             Ok((Arc::from_iter(exprs), crate::CheckResult { env, ide }))
         };
@@ -907,7 +904,7 @@ impl<X: GXExt> GX<X> {
         let id = wrapped.id;
         self.prune_static_resolution();
         self.ctx.batch_connect_targets.clear();
-        let n = compile(&mut self.ctx, self.flags, &scope, wrapped)
+        let n = compile(&mut self.ctx.view(), self.flags, &scope, wrapped)
             .with_context(|| ori.clone())?;
         let typ = n.typ().clone();
         self.nodes.insert(id, n);
@@ -932,15 +929,17 @@ impl<X: GXExt> GX<X> {
         let eid = ExprId::new();
         let argn = lb.typ.args.iter().zip(args.iter());
         let argn = argn
-            .map(|(arg, id)| genn::reference(&mut self.ctx, *id, arg.typ.clone(), eid))
+            .map(|(arg, id)| {
+                genn::reference(&mut self.ctx.view(), *id, arg.typ.clone(), eid)
+            })
             .collect::<smallvec::SmallVec<[_; 2]>>();
         let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
-        self.ctx.begin_runtime_node(eid);
-        graphix_compiler::check_and_fuse(&mut self.ctx, self.flags, &mut n)?;
-        self.event.init = true;
-        n.update(&mut self.ctx, &mut self.event);
-        self.event.clear();
+        self.ctx.view().begin_runtime_node(eid);
+        graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)?;
+        self.ctx.event.init = true;
+        n.update(&mut self.ctx.view());
+        self.ctx.event.clear();
         let cid = CallableId::new();
         self.callables.insert(cid, CallableInt { expr: eid, args });
         self.nodes.insert(eid, n);
@@ -964,8 +963,8 @@ impl<X: GXExt> GX<X> {
             .get(&id)
             .map(|b| b.typ.clone())
             .unwrap_or_else(|| Type::Any);
-        let n = genn::reference(&mut self.ctx, id, typ.clone(), eid);
-        self.ctx.apply_deferred();
+        let n = genn::reference(&mut self.ctx.view(), id, typ.clone(), eid);
+        self.ctx.view().apply_deferred();
         self.nodes.insert(eid, n);
         let target_bid = self.ctx.env.byref_chain.get(&id).copied();
         Ok(Ref {
@@ -997,7 +996,7 @@ impl<X: GXExt> GX<X> {
     fn delete_callable(&mut self, id: CallableId) {
         if let Some(c) = self.callables.remove(&id) {
             if let Some(mut n) = self.nodes.shift_remove(&c.expr) {
-                n.delete(&mut self.ctx)
+                n.delete(&mut self.ctx.view())
             }
         }
     }

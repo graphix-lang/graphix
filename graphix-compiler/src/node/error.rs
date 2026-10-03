@@ -1,7 +1,7 @@
 use super::{VarRead, read_var};
 use crate::{
-    BindId, CFlag, CompileCtx, ErrorHandler, Event, ExecCtx, Node, NodeView, PrintFlag,
-    Refs, Rt, Scope, Tag, TagValue, Update, UserEvent,
+    BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, Node, NodeView, PrintFlag, Refs,
+    Rt, Scope, Tag, TagValue, Update, UserEvent,
     compiler::compile,
     defetyp, deref_typ,
     env::Env,
@@ -154,7 +154,7 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
 
 impl<R: Rt, E: UserEvent> Catch<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -302,13 +302,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.top_id.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let _ = self.handler.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let _ = self.handler.update(ctx);
         let cycle = ctx.rt.cycle();
         let capture =
             self.seq_abort.as_ref().and_then(|a| a.capture().filter(|_| !a.pending));
         // a delivery whose raise was given up while asleep is not counted again
-        let delivered = match read_var(ctx, event, &self.bind_id) {
+        let delivered = match read_var(ctx, &self.bind_id) {
             Some(VarRead::Delivered(tv))
                 if self.last_cycle != Some(cycle)
                     && tv.tag().is_fired()
@@ -331,7 +331,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
         if let Some(abort) = &mut self.seq_abort {
             if let Some(manual) = abort.manual_mut()
-                && manual.update(ctx, event).is_fired()
+                && manual.update(ctx).is_fired()
             {
                 self.received = self.received.wrapping_add(1);
                 abort.pending = true;
@@ -341,15 +341,15 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                 && !self.own_handler.has_nested_errors()
             {
                 abort.pending = false;
-                let init = std::mem::replace(&mut event.init, true);
-                let _ = abort.node.update(ctx, event);
-                event.init = init;
+                let init = std::mem::replace(&mut ctx.event.init, true);
+                let _ = abort.node.update(ctx);
+                ctx.event.init = init;
             }
         }
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.give_up_in_flight();
         ctx.unref_var(self.bind_id, self.top_id);
         ctx.rt.store_remove(&self.bind_id);
@@ -360,7 +360,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.give_up_in_flight();
         self.handler.sleep(ctx);
         if let Some(abort) = &mut self.seq_abort {
@@ -565,8 +565,7 @@ pub(crate) use report_ignored;
 /// deliveries land in this cycle's event, cross-top ones go through
 /// `rt.set_var`.
 pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     handler: &ErrorHandler,
     own_top: ExprId,
     spec: &Expr,
@@ -578,7 +577,7 @@ pub(crate) fn deliver_error<R: Rt, E: UserEvent>(
     if handler_top != own_top {
         ctx.rt.set_var(id, v)
     } else {
-        match event.variables.entry(id) {
+        match ctx.event.variables.entry(id) {
             Entry::Vacant(slot) => {
                 slot.insert(TagValue::fired(v));
             }
@@ -670,7 +669,7 @@ pub struct Qop<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -755,8 +754,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         image::flags_encode(self.flags, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.n.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.n.update(ctx);
         strip_production(self.strip, tv, &mut self.resident, |v| {
             let e = match v {
                 Value::Error(e) => (**e).clone(),
@@ -765,7 +764,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
             match &self.handler {
                 Some(handler) => {
                     handler.raise();
-                    deliver_error(ctx, event, handler, self.top_id, &self.spec, e);
+                    deliver_error(ctx, handler, self.top_id, &self.spec, e);
                 }
                 None => report_failure!(&unhandled_msg(&diagnostic_site(&self.spec), &e)),
             }
@@ -784,11 +783,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         self.n.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.sleep(ctx);
     }
 
@@ -872,7 +871,7 @@ pub struct SeqGuard<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> SeqGuard<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -921,7 +920,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         image::handler_encode(&self.machine, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let current = (self.handler.generation(), self.machine.generation());
         let (generation, passed, owed) = match self.state {
             GuardState::Sleeping if self.machine.aborted_in(ctx.rt.cycle()) => {
@@ -941,13 +940,13 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
             }
             GuardState::Failed => {
                 if self.handler.has_nested_errors() {
-                    let _ = self.n.update(ctx, event);
+                    let _ = self.n.update(ctx);
                 }
                 return self.resident.ride();
             }
         };
         if generation == current || self.handler.has_nested_errors() {
-            let value = self.n.update(ctx, event);
+            let value = self.n.update(ctx);
             if generation == (self.handler.generation(), self.machine.generation()) {
                 if self.handler.has_nested_errors() {
                     if value.is_fired() {
@@ -979,11 +978,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqGuard<R, E> {
         self.resident.set_bottom(true)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.state = GuardState::Sleeping;
         self.n.sleep(ctx);
     }
@@ -1039,7 +1038,7 @@ pub struct SeqAbortEvent<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1074,18 +1073,18 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqAbortEvent<R, E> {
         image::handler_encode(&self.machine, buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        if self.n.update(ctx, event).is_fired() {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        if self.n.update(ctx).is_fired() {
             self.machine.abort(ctx.rt.cycle());
         }
         TagValue::phantom_ref()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.sleep(ctx);
     }
 
@@ -1138,7 +1137,7 @@ pub struct OrNever<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> OrNever<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -1172,8 +1171,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         self.strip.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.n.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.n.update(ctx);
         strip_production(self.strip, tv, &mut self.resident, |v| {
             // a null is not a failure
             if let Value::Error(e) = v {
@@ -1194,11 +1193,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         self.n.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.sleep(ctx);
     }
 

@@ -21,12 +21,11 @@ further into internals, the details can change more often, but in general
 getting a Graphix runtime going involves the following:
 
 ```rust
-use graphix_compiler::ExecCtx;
 use graphix_rt::{GXConfig, GXRt, NoExt};
 use tokio::sync::mpsc;
 
 // set up an execution context using the generic runtime with no customization
-let mut ctx = ExecCtx::new(GXRt::<NoExt>::new())?;
+let mut ctx = GXRt::<NoExt>::new_state()?;
 // ... use the context to register all your built-ins, etc
 
 // set up a channel to receive events from the RT

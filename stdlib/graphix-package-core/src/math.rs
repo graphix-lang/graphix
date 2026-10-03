@@ -25,7 +25,7 @@ macro_rules! unary_f64 {
 
             fn eval(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
                 fast_eval(ctx, $ev::fast, from)
@@ -53,7 +53,7 @@ macro_rules! binary_f64 {
 
             fn eval(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
                 fast_eval(ctx, $ev::fast, from)
@@ -80,7 +80,7 @@ macro_rules! unary_f64_pred {
 
             fn eval(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
                 fast_eval(ctx, $ev::fast, from)
@@ -154,7 +154,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MathClampEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_clamp)));
     const NAME: &str = "core_math_clamp";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_clamp, from)
     }
 }

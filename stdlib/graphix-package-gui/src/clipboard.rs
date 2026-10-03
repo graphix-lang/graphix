@@ -47,7 +47,7 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
     }
 
     fn image_decode<R: Rt, E: UserEvent>(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         Ok(Self(PhantomData))

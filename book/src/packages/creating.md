@@ -116,7 +116,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyMinEv {
     // result depends only on the arguments; no fast call yet.
     const EFFECT: Effect = Effect::Stateless(None);
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -174,7 +174,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MyLenEv {
     const NAME: &str = "mylib_len";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(my_len)));
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(my_len, from)
     }
 }
@@ -221,7 +221,7 @@ Here is a minimal example -- `once` passes through exactly one update:
 ```rust
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 
@@ -234,7 +234,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MyOnce {
     const NAME: &str = "mylib_once";
 
     fn init<'a, 'b, 'c>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
@@ -248,12 +248,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for MyOnce {
 impl<R: Rt, E: UserEvent> Apply<R, E> for MyOnce {
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> Option<Value> {
         match from {
-            [s] => s.update(ctx, event).and_then(|v| {
+            [s] => s.update(ctx).and_then(|v| {
                 if self.val {
                     None
                 } else {
@@ -265,7 +264,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for MyOnce {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.val = false
     }
 }

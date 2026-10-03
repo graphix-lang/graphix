@@ -6,8 +6,8 @@ use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use bytes::{Buf, BufMut};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, FastFn, Node, Refs, Rt,
-    Scope, Tag, TagValue, TagView, TypedFastFn, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, FastFn, Node, Refs, Rt, Scope,
+    Tag, TagValue, TagView, TypedFastFn, UserEvent,
     effects::Effect,
     err, errf,
     expr::{Expr, ExprId},
@@ -308,11 +308,10 @@ pub fn seam_value<'a>(tv: &'a TagValue) -> Option<&'a TagValue> {
 /// delivery is an event. Every arg must be read every cycle, so call
 /// this for each of `from` unconditionally before any early return.
 pub fn seam_arg<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     node: &mut Node<R, E>,
-    event: &mut Event<E>,
 ) -> (Option<Value>, bool) {
-    match seam_value(node.update(ctx, event)) {
+    match seam_value(node.update(ctx)) {
         Some(tv) => {
             let fired = tv.is_fired();
             (Some(tv.value_cloned()), fired)
@@ -331,7 +330,7 @@ pub struct CachedVals(pub Box<[Option<Value>]>, pub Box<[Tag]>);
 pub trait ImageState: Sized {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError>;
     fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError>;
 }
@@ -351,7 +350,7 @@ macro_rules! unit_image_state {
             }
 
             fn image_decode<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>(
-                _ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
+                _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
                 _buf: &mut &[u8],
             ) -> ::std::result::Result<Self, ::netidx_core::pack::PackError> {
                 Ok($t)
@@ -374,7 +373,7 @@ macro_rules! pack_image_state {
             }
 
             fn image_decode<R: ::graphix_compiler::Rt, E: ::graphix_compiler::UserEvent>(
-                _ctx: &mut ::graphix_compiler::ExecCtx<R, E>,
+                _ctx: &mut ::graphix_compiler::ExecCtx<'_, R, E>,
                 buf: &mut &[u8],
             ) -> ::std::result::Result<Self, ::netidx_core::pack::PackError> {
                 ::netidx_core::pack::Pack::decode(buf)
@@ -440,11 +439,10 @@ impl CachedVals {
     /// A tainted production marks the slot's tag but keeps the value.
     pub fn update<R: Rt, E: UserEvent>(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> bool {
-        self.update_full(ctx, from, event).is_some_and(|t| t.triggers())
+        self.update_full(ctx, from).is_some_and(|t| t.triggers())
     }
 
     /// [`Self::update`] with the full production summary: `None` = no
@@ -452,13 +450,12 @@ impl CachedVals {
     /// fired, else STALE.
     pub fn update_full<R: Rt, E: UserEvent>(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> Option<Tag> {
         let mut prod: Option<Tag> = None;
         for (i, src) in from.iter_mut().enumerate() {
-            let tv = src.update(ctx, event);
+            let tv = src.update(ctx);
             let tag = tv.tag();
             if tag.is_bottom() {
                 self.1[i] = Tag::STALE_BOTTOM;
@@ -536,7 +533,7 @@ fn fast_args(from: &CachedVals) -> Option<LPooled<Vec<Value>>> {
 /// the node-walk half of a fastcall builtin, so `eval` and the JIT share
 /// one implementation.
 pub fn fast_eval<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     f: FastFn,
     from: &CachedVals,
 ) -> Option<Value> {
@@ -547,7 +544,7 @@ pub fn fast_eval<R: Rt, E: UserEvent>(
 /// [`fast_eval`] for a `FastCall::Typed` fn: `typ` is the call site's
 /// resolved return type (`resolved.rtype` from `typecheck1`).
 pub fn fast_eval_typed<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     f: TypedFastFn,
     typ: &Type,
     from: &CachedVals,
@@ -602,7 +599,7 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
         Self::default()
     }
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value>;
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value>;
 
     fn typecheck0(
         &mut self,
@@ -655,7 +652,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -675,16 +672,15 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let woke = std::mem::take(&mut self.woke_pending);
         // A loan inside `eval` has no event; this one seeds the seam's.
-        coretraits::seed(ctx, event);
+        coretraits::seed(ctx);
         let (ev, cached, last_result) =
             (&mut self.t, &mut self.cached, &mut self.last_result);
-        Self::update_inner(ev, cached, last_result, woke, ctx, from, event)
+        Self::update_inner(ev, cached, last_result, woke, ctx, from)
     }
 
     fn typecheck0(
@@ -704,7 +700,7 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         self.t.typecheck1(ctx, from, resolved)
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.woke_pending = true;
     }
 }
@@ -727,12 +723,12 @@ pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static 
 
     /// Take runtime state `init` could not reach (it compiles, the
     /// runtime is not there); runs at each update, before `prepare_args`.
-    fn attach<R: Rt, E: UserEvent>(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn attach<R: Rt, E: UserEvent>(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     /// map the final value with access to self and ctx
     fn map_value<R: Rt, E: UserEvent>(
         &mut self,
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         v: Value,
     ) -> Option<Value> {
         Some(v)
@@ -765,24 +761,19 @@ impl<T> CachedArgs<T> {
         cached: &mut CachedVals,
         last_result: &'a mut TagValue,
         woke: bool,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &'a TagValue
     where
         T: EvalCached<R, E>,
     {
-        let eval = |ev: &mut T,
-                    cached: &CachedVals,
-                    ctx: &mut ExecCtx<R, E>,
-                    _event: &mut Event<E>| ev.eval(ctx, cached);
-        match cached.update_full(ctx, from, event) {
+        match cached.update_full(ctx, from) {
             None => last_result.ride(),
             Some(t) if cached.any_bottom() => {
                 // A bottom arg bottoms the invocation without calling eval.
                 TagValue::bottom_null(t.triggers())
             }
-            Some(t) if t.is_fired() => match eval(ev, cached, ctx, event) {
+            Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
                 Some(v) => last_result.set(TagValue::fired(v)),
                 None => last_result.ride(),
             },
@@ -791,7 +782,7 @@ impl<T> CachedArgs<T> {
                 // stateless eval re-runs from the present slots; a
                 // stateful one must not (its last result is its state).
                 if T::EFFECT.is_stateless() && woke {
-                    match eval(ev, cached, ctx, event) {
+                    match ev.eval(ctx, cached) {
                         Some(v) => last_result.set(TagValue::stale(v)),
                         None => last_result.retag(Tag::STALE),
                     }
@@ -802,7 +793,7 @@ impl<T> CachedArgs<T> {
             Some(_) => {
                 // Nothing to re-surface yet: run eval once to establish
                 // the value channel, STALE.
-                match eval(ev, cached, ctx, event) {
+                match ev.eval(ctx, cached) {
                     Some(v) => last_result.set(TagValue::stale(v)),
                     None => last_result.ride(),
                 }
@@ -848,7 +839,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> BuiltIn<R, E> for CachedArgsAsync<
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -886,13 +877,12 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let mut bottomed = false;
         self.t.attach(ctx);
-        if self.cached.update(ctx, from, event) {
+        if self.cached.update(ctx, from) {
             if self.cached.any_bottom() {
                 // A completed reply from a prior invocation still
                 // wins the cycle's output.
@@ -901,7 +891,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
                 self.queued.push_back(args);
             }
         }
-        let res = event.variables.remove(&self.id).and_then(|tv| {
+        let res = ctx.event.variables.remove(&self.id).and_then(|tv| {
             self.running = false;
             self.t.map_value(ctx, tv.value())
         });
@@ -936,13 +926,13 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.t.typecheck1(ctx, from, resolved)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.queued.clear();
         self.cached.clear();
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         self.running = false;
         self.out = TagValue::phantom();
@@ -967,7 +957,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IsErrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_is_err)));
     const NAME: &str = "core_is_err";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_is_err, from)
     }
 }
@@ -981,7 +971,7 @@ struct FilterErr {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for FilterErr {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1012,22 +1002,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for FilterErr {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        match seam_tick(from[0].update(ctx, event)).and_then(|tv| {
-            match tv.value_cloned() {
-                v @ Value::Error(_) => Some(v),
-                _ => None,
-            }
+        match seam_tick(from[0].update(ctx)).and_then(|tv| match tv.value_cloned() {
+            v @ Value::Error(_) => Some(v),
+            _ => None,
         }) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 fn fc_error(args: &[Value]) -> Option<Value> {
@@ -1042,7 +1029,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ToErrorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_error)));
     const NAME: &str = "core_error";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_error, from)
     }
 }
@@ -1057,7 +1044,7 @@ struct Once {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1087,12 +1074,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let res = match from {
-            [s] => seam_tick(s.update(ctx, event)).and_then(|tv| {
+            [s] => seam_tick(s.update(ctx)).and_then(|tv| {
                 if self.val {
                     None
                 } else {
@@ -1108,7 +1094,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.val = false
     }
 }
@@ -1121,7 +1107,7 @@ struct Take {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Take {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1152,33 +1138,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         // Seed the countdown on a tick only: a stale ride of #n must
         // not clobber the running count.
-        if let Some(n) = seam_tick(from[0].update(ctx, event))
+        if let Some(n) = seam_tick(from[0].update(ctx))
             .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        let res =
-            seam_tick(from[1].update(ctx, event)).and_then(|tv| match &mut self.n {
-                None => None,
-                Some(n) if *n > 0 => {
-                    *n -= 1;
-                    Some(tv.value_cloned())
-                }
-                Some(_) => None,
-            });
+        let res = seam_tick(from[1].update(ctx)).and_then(|tv| match &mut self.n {
+            None => None,
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                Some(tv.value_cloned())
+            }
+            Some(_) => None,
+        });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.n = None
     }
 }
@@ -1191,7 +1175,7 @@ struct Skip {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Skip {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1222,33 +1206,31 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Skip {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         // Seed the countdown on a tick only: a stale ride of #n must
         // not clobber the running count.
-        if let Some(n) = seam_tick(from[0].update(ctx, event))
+        if let Some(n) = seam_tick(from[0].update(ctx))
             .and_then(|tv| tv.value_cloned().cast_to::<usize>().ok())
         {
             self.n = Some(n)
         }
-        let res =
-            seam_tick(from[1].update(ctx, event)).and_then(|tv| match &mut self.n {
-                None => Some(tv.value_cloned()),
-                Some(n) if *n > 0 => {
-                    *n -= 1;
-                    None
-                }
-                Some(_) => Some(tv.value_cloned()),
-            });
+        let res = seam_tick(from[1].update(ctx)).and_then(|tv| match &mut self.n {
+            None => Some(tv.value_cloned()),
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                None
+            }
+            Some(_) => Some(tv.value_cloned()),
+        });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.n = None
     }
 }
@@ -1274,7 +1256,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AllEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_all)));
     const NAME: &str = "core_all";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_all, from)
     }
 }
@@ -1297,7 +1279,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_sum";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
             res @ Some(Value::Error(_)) => res,
             res => add_vals(res, v.clone()),
@@ -1323,7 +1305,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ProductEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_product";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
             res @ Some(Value::Error(_)) => res,
             res => prod_vals(res, v.clone()),
@@ -1349,7 +1331,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DivideEv {
     const EFFECT: Effect = Effect::Stateless(None);
     const NAME: &str = "core_divide";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         from.flat_iter().fold(None, |res, v| match res {
             res @ Some(Value::Error(_)) => res,
             res => div_vals(res, v.clone()),
@@ -1369,7 +1351,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
 
     // Each argument is compared as a whole value; no flattening, as
     // the declared type `fn(a: 'a, @args: 'a) -> 'a` promises.
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         coretraits::eval_with_hooks(ctx, || {
             let mut res: Option<&Value> = None;
             for v in from.0.iter() {
@@ -1399,7 +1381,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
     const NAME: &str = "core_max";
 
     // Whole-value comparison, no flattening — see `MinEv`.
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         coretraits::eval_with_hooks(ctx, || {
             let mut res: Option<&Value> = None;
             for v in from.0.iter() {
@@ -1428,7 +1410,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for AndEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_and";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(true));
         for v in from.flat_iter() {
             match v {
@@ -1453,7 +1435,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for OrEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_or";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
         for v in from.flat_iter() {
             match v {
@@ -1538,7 +1520,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitAndEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_and)));
     const NAME: &str = "core_bit_and";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_bit_and, from)
     }
 }
@@ -1553,7 +1535,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitOrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_or)));
     const NAME: &str = "core_bit_or";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_bit_or, from)
     }
 }
@@ -1568,7 +1550,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitXorEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_xor)));
     const NAME: &str = "core_bit_xor";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_bit_xor, from)
     }
 }
@@ -1601,7 +1583,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for BitNotEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_bit_not)));
     const NAME: &str = "core_bit_not";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_bit_not, from)
     }
 }
@@ -1616,7 +1598,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShlEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shl)));
     const NAME: &str = "core_shl";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_shl, from)
     }
 }
@@ -1631,7 +1613,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ShrEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_shr)));
     const NAME: &str = "core_shr";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_shr, from)
     }
 }
@@ -1693,7 +1675,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Filter<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1715,28 +1697,25 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[1].update(ctx)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
             ctx.rt.store_insert(self.fid, TagValue::fired(v.clone()));
-            event.variables.insert(self.fid, TagValue::tagged(v, tag));
+            ctx.event.variables.insert(self.fid, TagValue::tagged(v, tag));
         }
-        if let Some(tv) = seam_value(from[0].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[0].update(ctx)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
             self.pending = Some(v.clone());
             ctx.rt.store_insert(self.x, TagValue::fired(v.clone()));
-            event.variables.insert(self.x, TagValue::tagged(v, tag));
+            ctx.event.variables.insert(self.x, TagValue::tagged(v, tag));
         }
-        let res = seam_tick(self.pred.update(ctx, event)).and_then(|b| {
-            match b.value_cloned() {
-                Value::Bool(true) => self.pending.clone(),
-                _ => None,
-            }
+        let res = seam_tick(self.pred.update(ctx)).and_then(|b| match b.value_cloned() {
+            Value::Bool(true) => self.pending.clone(),
+            _ => None,
         });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -1757,14 +1736,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Filter<R, E> {
         self.pred.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.rt.store_remove(&self.fid);
         ctx.rt.store_remove(&self.x);
         ctx.env.unbind_variable(self.x);
         self.pred.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pending = None;
         self.pred.sleep(ctx);
     }
@@ -1781,7 +1760,7 @@ struct Queue {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Queue {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1833,34 +1812,33 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Queue {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event)).is_some() {
+        if seam_tick(from[0].update(ctx)).is_some() {
             self.triggered += 1;
         }
-        if seam_tick(from[1].update(ctx, event)).is_some() {
+        if seam_tick(from[1].update(ctx)).is_some() {
             self.queue.clear();
         }
-        if let Some(tv) = seam_tick(from[2].update(ctx, event)) {
+        if let Some(tv) = seam_tick(from[2].update(ctx)) {
             self.queue.push_back(tv.value_cloned());
         }
         while self.triggered > 0 && self.queue.len() > 0 {
             self.triggered -= 1;
             ctx.rt.set_var(self.id, self.queue.pop_front().unwrap());
         }
-        match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
@@ -1879,7 +1857,7 @@ struct Hold {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Hold {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -1919,14 +1897,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event)).is_some() {
+        if seam_tick(from[0].update(ctx)).is_some() {
             self.triggered += 1;
         }
-        if let Some(tv) = seam_tick(from[1].update(ctx, event)) {
+        if let Some(tv) = seam_tick(from[1].update(ctx)) {
             self.current = Some(tv.value_cloned());
         }
         if self.triggered > 0
@@ -1939,9 +1916,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Hold {
         }
     }
 
-    fn delete(&mut self, _: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, _: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _: &mut ExecCtx<'_, R, E>) {
         self.triggered = 0;
         self.current = None;
     }
@@ -1957,7 +1934,7 @@ struct Seq {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Seq {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -2000,11 +1977,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if self.args.update(ctx, from, event) {
+        if self.args.update(ctx, from) {
             let err = match &self.args.0[..] {
                 [Some(Value::I64(i)), Some(Value::I64(j))] if i <= j => {
                     let e = literal!("RangeError");
@@ -2030,17 +2006,17 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
                 return self.out.set(TagValue::fired(e));
             }
         }
-        match event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
+        match ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned()) {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
@@ -2062,7 +2038,7 @@ struct Throttle {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Throttle {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -2114,9 +2090,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         macro_rules! emit_cached {
             () => {{
@@ -2144,7 +2119,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         // A fired duration retunes the wait; any value-bearing delivery
         // of the throttled arg lands in `last_v`, but only a fired one
         // is an event to throttle.
-        let new_wait = match seam_value(from[0].update(ctx, event)) {
+        let new_wait = match seam_value(from[0].update(ctx)) {
             Some(tv) if tv.is_fired() => tv.with_value(|v| match v {
                 Value::Duration(d) => Some(**d),
                 _ => None,
@@ -2152,7 +2127,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             _ => None,
         };
         let mut up1 = false;
-        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[1].update(ctx)) {
             up1 = tv.is_fired();
             self.last_v = Some(tv.value_cloned());
         }
@@ -2175,7 +2150,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
             }
         }
         if let Some(id) = self.tid
-            && let Some(_) = event.variables.get(&id)
+            && let Some(_) = ctx.event.variables.get(&id)
         {
             ctx.unref_var(id, self.top_id);
             self.tid = None;
@@ -2185,13 +2160,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Throttle {
         self.out.ride()
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.tid.take() {
             ctx.unref_var(id, self.top_id);
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.delete(ctx);
         self.last = None;
         self.wait = Duration::ZERO;
@@ -2208,7 +2183,7 @@ struct Count {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Count {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -2238,14 +2213,10 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if from
-            .into_iter()
-            .fold(false, |u, n| u || seam_tick(n.update(ctx, event)).is_some())
-        {
+        if from.into_iter().fold(false, |u, n| u || seam_tick(n.update(ctx)).is_some()) {
             self.count += 1;
             self.out.set(TagValue::fired(Value::I64(self.count)))
         } else {
@@ -2253,7 +2224,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.count = 0
     }
 }
@@ -2266,7 +2237,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MeanEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "core_mean";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         static TAG: ArcStr = literal!("MeanError");
         let mut total = 0.;
         let mut samples = 0;
@@ -2299,7 +2270,7 @@ struct Uniq(Option<Value>, TagValue);
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Uniq {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -2329,16 +2300,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let (last, out) = (&mut self.0, &mut self.1);
-        let Some(v) = seam_tick(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
-        else {
+        let Some(v) = seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned()) else {
             return out.ride();
         };
-        let changed = coretraits::with_hooks(ctx, event, || Some(&v) != last.as_ref());
+        let changed = coretraits::with_hooks(ctx, || Some(&v) != last.as_ref());
         if changed {
             *last = Some(v.clone());
             out.set(TagValue::fired(v))
@@ -2347,7 +2316,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Uniq {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.0 = None
     }
 }
@@ -2424,7 +2393,7 @@ struct Dbg {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -2467,31 +2436,28 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(v) =
-            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+        if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned())
             && let Ok(d) = v.cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
-        else {
+        let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned()) else {
             return self.out.ride();
         };
         self.buf.clear();
         write!(self.buf, "{} dbg({}): ", self.spec.pos, self.spec).unwrap();
         let (buf, typ) = (&mut self.buf, &self.typ);
-        coretraits::with_display_hooks(ctx, event, |env| {
+        coretraits::with_display_hooks(ctx, |env| {
             write!(buf, "{}", TVal { env, typ, v: &v }).unwrap()
         });
         emit_line(ctx, self.dest, &self.buf, "\n");
         self.out.set(TagValue::fired(v))
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
     fn typecheck0(
         &mut self,
@@ -2506,7 +2472,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Dbg {
 /// Where a print builtin's output goes this cycle, and the line it
 /// writes there.
 fn emit_line<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     dest: LogDest,
     line: &str,
     suffix: &str,
@@ -2541,7 +2507,7 @@ struct Log {
 
 impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Log {
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -2581,32 +2547,29 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if let Some(v) =
-            seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+        if let Some(v) = seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned())
             && let Ok(d) = v.cast_to::<LogDest>()
         {
             self.dest = d;
         }
-        let Some(v) = seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
-        else {
+        let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned()) else {
             return self.out.ride();
         };
         self.buf.clear();
         write!(self.buf, "{}: ", self.scope.lexical).unwrap();
         let typ = from[1].typ().clone();
         let buf = &mut self.buf;
-        coretraits::with_display_hooks(ctx, event, |env| {
+        coretraits::with_display_hooks(ctx, |env| {
             write!(buf, "{}", TVal { env, typ: &typ, v: &v }).unwrap()
         });
         emit_line(ctx, self.dest, &self.buf, "\n");
         self.out.set(TagValue::fired(Value::Null))
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 macro_rules! printfn {
@@ -2623,7 +2586,7 @@ macro_rules! printfn {
             const NAME: &str = $name;
 
             fn image_decode(
-                _ctx: &mut ExecCtx<R, E>,
+                _ctx: &mut ExecCtx<'_, R, E>,
                 _from: &[Node<R, E>],
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -2656,25 +2619,23 @@ macro_rules! printfn {
 
             fn update(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &mut [Node<R, E>],
-                event: &mut Event<E>,
             ) -> &TagValue {
                 if let Some(v) =
-                    seam_value(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+                    seam_value(from[0].update(ctx)).map(|tv| tv.value_cloned())
                     && let Ok(d) = v.cast_to::<LogDest>()
                 {
                     self.dest = d;
                 }
-                let Some(v) =
-                    seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+                let Some(v) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
                 else {
                     return self.out.ride();
                 };
                 self.buf.clear();
                 let typ = from[1].typ().clone();
                 let buf = &mut self.buf;
-                coretraits::with_display_hooks(ctx, event, |env| {
+                coretraits::with_display_hooks(ctx, |env| {
                     match &v {
                         Value::String(s) => write!(buf, "{s}"),
                         v => write!(buf, "{}", TVal { env, typ: &typ, v }),
@@ -2685,7 +2646,7 @@ macro_rules! printfn {
                 self.out.set(TagValue::fired(Value::Null))
             }
 
-            fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+            fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
         }
     };
 }
@@ -2703,7 +2664,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ArrayLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(array_len)));
     const NAME: &str = "core_array_len";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, array_len, from)
     }
 }
@@ -2727,7 +2688,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapLenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(map_len)));
     const NAME: &str = "core_map_len";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, map_len, from)
     }
 }
@@ -2760,7 +2721,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MapUnionEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_map_union)));
     const NAME: &str = "core_map_union";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_map_union, from)
     }
 }

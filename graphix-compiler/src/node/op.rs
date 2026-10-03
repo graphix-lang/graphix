@@ -1,6 +1,6 @@
 use super::{CFlag, WakeBit, compiler::compile, coretraits, dense_gate};
 use crate::{
-    CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
+    CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue, Update,
     UserEvent, defetyp,
     env::Env,
     expr::{Expr, ExprId},
@@ -98,7 +98,7 @@ macro_rules! binary_node {
             }
 
             pub(crate) fn image_decode(
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 buf: &mut &[u8],
             ) -> Result<Node<R, E>, PackError> {
                 let spec = Expr::decode(buf)?;
@@ -142,12 +142,12 @@ macro_rules! binary_node {
                 self.rhs.refs(refs);
             }
 
-            fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+            fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 self.lhs.delete(ctx);
                 self.rhs.delete(ctx);
             }
 
-            fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+            fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
                 self.slept.set();
                 self.lhs.sleep(ctx);
                 self.rhs.sleep(ctx);
@@ -171,10 +171,10 @@ macro_rules! binary_node {
 /// from the caller; otherwise the operands, whether they triggered and
 /// the result's tag.
 macro_rules! gated_operands {
-    ($self:ident, $ctx:ident, $event:ident) => {{
+    ($self:ident, $ctx:ident) => {{
         let woke = $self.slept.take();
-        let l = $self.lhs.update($ctx, $event);
-        let r = $self.rhs.update($ctx, $event);
+        let l = $self.lhs.update($ctx);
+        let r = $self.rhs.update($ctx);
         let (lt, rt) = (l.tag(), r.tag());
         let trig = lt.triggers() || rt.triggers();
         dense_gate!($self.resident, trig, lt.is_bottom() || rt.is_bottom(), woke);
@@ -254,13 +254,9 @@ fn refuse_mixed_numeric(env: &Env, t: &Type, what: &str) -> Result<()> {
 macro_rules! compare_op {
     ($name:ident, $op:tt) => {
         binary_node!($name, Type::boolean(), {
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                event: &mut Event<E>,
-            ) -> &TagValue {
-                let (l, r, _, tag) = gated_operands!(self, ctx, event);
-                let v = coretraits::with_hooks(ctx, event, || {
+            fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+                let (l, r, _, tag) = gated_operands!(self, ctx);
+                let v = coretraits::with_hooks(ctx, || {
                     l.with_value(|lv| r.with_value(|rv| (lv $op rv).into()))
                 });
                 self.resident.set(TagValue::tagged(v, tag))
@@ -324,12 +320,8 @@ macro_rules! bool_op {
     ($name:ident, $op:tt) => {
         binary_node!($name, Type::boolean(), {
             // Strict, not short-circuit: `false && ⊥ = ⊥`.
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                event: &mut Event<E>,
-            ) -> &TagValue {
-                let (l, r, _, tag) = gated_operands!(self, ctx, event);
+            fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+                let (l, r, _, tag) = gated_operands!(self, ctx);
                 let v = l.with_value(|lv| {
                     r.with_value(|rv| match (lv, rv) {
                         (Value::Bool(b0), Value::Bool(b1)) => Some(Value::Bool(*b0 $op *b1)),
@@ -405,7 +397,7 @@ impl<R: Rt, E: UserEvent> Not<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -433,8 +425,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.n.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.n.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         match tv.with_value(|v| match v {
@@ -458,11 +450,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         self.n.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
     }
@@ -520,7 +512,7 @@ impl<R: Rt, E: UserEvent> Neg<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -552,9 +544,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         // Integers wrap, matching the JIT's `ineg`.
-        let tv = self.n.update(ctx, event);
+        let tv = self.n.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let neg = tv.with_value(|v| match v {
@@ -587,11 +579,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         self.n.refs(refs);
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.n.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.n.sleep(ctx);
     }
@@ -770,12 +762,8 @@ macro_rules! arith_op {
         binary_node!($name, Type::empty_tvar(), {
             arith_emit_clif!($checked, $base);
 
-            fn update(
-                &mut self,
-                ctx: &mut ExecCtx<R, E>,
-                event: &mut Event<E>,
-            ) -> &TagValue {
-                let (l, r, trig, tag) = gated_operands!(self, ctx, event);
+            fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+                let (l, r, trig, tag) = gated_operands!(self, ctx);
                 let v = l.with_value(|lv| {
                     r.with_value(|rv| {
                         arith(BinOp::$base, $checked, lv.clone(), rv.clone())

@@ -93,7 +93,7 @@ pub(crate) fn def_encode<R: Rt, E: UserEvent>(
 
 /// Rebuild a definition and register it in `ctx.lambda_defs`.
 pub(crate) fn def_decode<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     buf: &mut impl Buf,
 ) -> Result<LambdaId, PackError> {
     let id = LambdaId::decode(buf)?;

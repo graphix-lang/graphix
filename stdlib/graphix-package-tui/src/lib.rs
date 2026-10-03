@@ -20,8 +20,7 @@ use crossterm::{
 use futures::{SinkExt, StreamExt, channel::mpsc, stream::Fuse};
 use gauge::GaugeW;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event as GxEvent, ExecCtx, Node, Rt, Scope,
-    TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect,
     env::Env,
     errf,
@@ -516,7 +515,7 @@ impl EvalCachedAsync for SuspendEv {
 
     const NAME: &str = "tui_suspend";
 
-    fn attach<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn attach<R: Rt, E: UserEvent>(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if self.control.is_none() {
             self.control = Some(ctx.libstate.get_or_default::<TuiControl>().clone());
         }
@@ -570,7 +569,7 @@ impl ImageState for SuspendEv {
     }
 
     fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         Ok(Self {
@@ -601,7 +600,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Exit {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -616,12 +615,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut GxEvent<E>,
     ) -> &TagValue {
         if let Some(n) = from.get_mut(0)
-            && seam_tick(n.update(ctx, event)).is_some()
+            && seam_tick(n.update(ctx)).is_some()
             && let Some(stop) = ctx.libstate.get::<TuiControl>()
         {
             fire(&stop.0.stop, Ok(()));
@@ -629,7 +627,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
         TagValue::phantom_ref()
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 struct Tui<X: GXExt> {

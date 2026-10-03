@@ -5,8 +5,8 @@
 use ahash::AHashSet;
 use anyhow::{Result, bail};
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, LambdaId, Node, Refs,
-    Rt, Scope, TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, LambdaId, Node, Refs, Rt,
+    Scope, TagValue, UserEvent,
     effects::Effect,
     expr::ExprId,
     image::{self, ImageBuf},
@@ -42,7 +42,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ConcatEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_concat)));
     const NAME: &str = "array_concat";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_concat, from)
     }
 }
@@ -68,7 +68,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushBackEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_back)));
     const NAME: &str = "array_push_back";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_push_back, from)
     }
 }
@@ -94,7 +94,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PushFrontEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_push_front)));
     const NAME: &str = "array_push_front";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_push_front, from)
     }
 }
@@ -110,7 +110,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
     const EFFECT: Effect = Effect::Sync;
     const NAME: &str = "array_window";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         // window requires ALL its args before producing anything.
         match &from.0[..] {
             [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..]
@@ -164,7 +164,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FlattenEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_flatten)));
     const NAME: &str = "array_flatten";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_flatten, from)
     }
 }
@@ -188,7 +188,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SortEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_sort)));
     const NAME: &str = "array_sort";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         fast_eval(ctx, fc_sort, from)
     }
 }
@@ -219,7 +219,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DedupEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_dedup)));
     const NAME: &str = "array_dedup";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_dedup, from)
     }
 }
@@ -242,7 +242,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for EnumerateEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_enumerate)));
     const NAME: &str = "array_enumerate";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_enumerate, from)
     }
 }
@@ -267,7 +267,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ZipEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_zip)));
     const NAME: &str = "array_zip";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_zip, from)
     }
 }
@@ -305,7 +305,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for UnzipEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_unzip)));
     const NAME: &str = "array_unzip";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_unzip, from)
     }
 }
@@ -369,7 +369,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -406,9 +406,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         macro_rules! set {
             ($v:expr) => {{
@@ -416,19 +415,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
                 ctx.rt.store_insert(self.nid, TagValue::fired(len.clone()));
-                event.variables.insert(self.nid, TagValue::fired(len));
+                ctx.event.variables.insert(self.nid, TagValue::fired(len));
                 ctx.rt.store_insert(self.xid, TagValue::fired($v.clone()));
-                event.variables.insert(self.xid, TagValue::fired($v));
+                ctx.event.variables.insert(self.xid, TagValue::fired($v));
             }};
         }
-        if let Some(tv) = seam_tick(from[0].update(ctx, event)) {
+        if let Some(tv) = seam_tick(from[0].update(ctx)) {
             self.queue.push_back(tv.value_cloned());
         }
-        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[1].update(ctx)) {
             let tag = tv.tag();
             let v = tv.value_cloned();
             ctx.rt.store_insert(self.pid, TagValue::fired(v.clone()));
-            event.variables.insert(self.pid, TagValue::tagged(v, tag));
+            ctx.event.variables.insert(self.pid, TagValue::tagged(v, tag));
         }
         if self.ready && self.queue.len() > 0 {
             let v = self.queue.pop_front().unwrap();
@@ -439,7 +438,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             if ctx.interrupted() {
                 break None;
             }
-            match seam_tick(self.pred.update(ctx, event)).map(|tv| tv.value_cloned()) {
+            match seam_tick(self.pred.update(ctx)).map(|tv| tv.value_cloned()) {
                 None => break None,
                 Some(v) => {
                     self.ready = true;
@@ -476,14 +475,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.rt.store_remove(&self.nid);
         ctx.rt.store_remove(&self.pid);
         ctx.rt.store_remove(&self.xid);
         self.pred.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pred.sleep(ctx);
     }
 }
@@ -508,7 +507,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Iter {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -527,12 +526,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         if let Some(Value::Array(a)) =
-            seam_tick(from[0].update(ctx, event)).map(|tv| tv.value_cloned())
+            seam_tick(from[0].update(ctx)).map(|tv| tv.value_cloned())
         {
             for v in a.iter() {
                 // Cooperative interrupt: abort a wedged iter over a huge
@@ -543,18 +541,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Iter {
                 ctx.rt.set_var(self.0, v.clone());
             }
         }
-        let res = event.variables.get(&self.0).map(|tv| tv.value_cloned());
+        let res = ctx.event.variables.get(&self.0).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.2.set(TagValue::fired(v)),
             None => self.2.ride(),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.0, self.1)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.0, self.1);
         self.0 = BindId::new();
         ctx.rt.ref_var(self.0, self.1);
@@ -594,7 +592,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for IterQ {
     }
 
     fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -617,15 +615,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event)).is_some() {
+        if seam_tick(from[0].update(ctx)).is_some() {
             self.triggered += 1;
         }
         if let Some(Value::Array(a)) =
-            seam_tick(from[1].update(ctx, event)).map(|tv| tv.value_cloned())
+            seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned())
         {
             if a.len() > 0 {
                 self.queue.push_back((0, a));
@@ -645,18 +642,18 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for IterQ {
                 self.queue.pop_front();
             }
         }
-        let res = event.variables.get(&self.id).map(|tv| tv.value_cloned());
+        let res = ctx.event.variables.get(&self.id).map(|tv| tv.value_cloned());
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
             None => self.out.ride(),
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.unref_var(self.id, self.top_id);
         self.id = BindId::new();
         ctx.rt.ref_var(self.id, self.top_id);
@@ -693,7 +690,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for IotaEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_iota)));
     const NAME: &str = "array_iota";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_iota, from)
     }
 }
@@ -723,7 +720,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for RotateEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_rotate)));
     const NAME: &str = "array_rotate";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_rotate, from)
     }
 }

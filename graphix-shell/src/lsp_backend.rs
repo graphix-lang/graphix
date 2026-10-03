@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag, ExecCtx,
+    CFlag,
     env::Env,
     expr::{BufferOverrides, FilesResolver, ResolverRef, Source, VfsResolver},
 };
@@ -44,8 +44,7 @@ pub fn serve(connection: Connection) -> Result<()> {
 }
 
 async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
-    let mut ctx =
-        ExecCtx::new(GXRt::<NoExt>::new()).context("creating graphix context")?;
+    let mut ctx = GXRt::<NoExt>::new_state().context("creating graphix context")?;
     let mut vfs = AHashMap::default();
     let mut root_mods = graphix_package::IndexSet::new();
     for pkg in crate::stdlib_packages::<NoExt>() {

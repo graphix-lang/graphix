@@ -3,8 +3,8 @@ use arcstr::literal;
 use bytes::{Buf, BufMut};
 use chrono::Utc;
 use graphix_compiler::{
-    Apply, BindId, BuiltIn, CompileCtx, Event, ExecCtx, FastCall, Node, Rt, Scope,
-    TagValue, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, FastCall, Node, Rt, Scope, TagValue,
+    UserEvent,
     effects::Effect,
     err,
     expr::ExprId,
@@ -20,7 +20,7 @@ use std::{ops::SubAssign, time::Duration};
 
 /// Drop a timer's private fire id: its reference and the value the
 /// runtime stored for it, which no one else can read.
-fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<R, E>, id: BindId, eid: ExprId) {
+fn release<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, eid: ExprId) {
     ctx.unref_var(id, eid);
     ctx.rt.store_remove(&id);
 }
@@ -60,7 +60,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for AfterIdle {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -90,17 +90,16 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         let mut timeout_up = false;
-        if let Some(tv) = seam_value(from[0].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[0].update(ctx)) {
             timeout_up = tv.is_fired();
             self.timeout_v = Some(tv.value_cloned());
         }
         let mut val_up = false;
-        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[1].update(ctx)) {
             val_up = tv.is_fired();
             self.last_v = Some(tv.value_cloned());
         }
@@ -122,7 +121,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
             }
         }
         let res = self.id.and_then(|id| {
-            if event.variables.contains_key(&id) {
+            if ctx.event.variables.contains_key(&id) {
                 self.id = None;
                 release(ctx, id, self.eid);
                 self.last_v.clone()
@@ -136,13 +135,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.id.take() {
             release(ctx, id, self.eid)
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         if let Some(id) = self.id.take() {
             release(ctx, id, self.eid);
@@ -255,7 +254,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Timer {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -288,9 +287,8 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         macro_rules! error {
             () => {{
@@ -311,12 +309,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                 ctx.rt.set_timer(id, $dur);
             }};
         }
-        let new_timeout = match seam_value(from[0].update(ctx, event)) {
+        let new_timeout = match seam_value(from[0].update(ctx)) {
             Some(tv) if tv.is_fired() => Some(tv.value_cloned()),
             _ => None,
         };
         let mut repeat_up = false;
-        if let Some(tv) = seam_value(from[1].update(ctx, event)) {
+        if let Some(tv) = seam_value(from[1].update(ctx)) {
             repeat_up = tv.is_fired();
             self.repeat_v = Some(tv.value_cloned());
         }
@@ -350,7 +348,9 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         }
         let res = self
             .id
-            .and_then(|id| event.variables.get(&id).map(|now| (id, now)))
+            .and_then(|id| {
+                ctx.event.variables.get(&id).map(|now| (id, now.value_cloned()))
+            })
             .map(|(id, now)| {
                 release(ctx, id, self.eid);
                 self.id = None;
@@ -360,7 +360,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                         schedule!(dur)
                     }
                 }
-                now.value_cloned()
+                now
             });
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
@@ -368,13 +368,13 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         if let Some(id) = self.id.take() {
             release(ctx, id, self.eid);
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.out = TagValue::phantom();
         self.repeat_v = None;
         self.timeout = None;
@@ -406,7 +406,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Now {
     }
 
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -421,20 +421,19 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Now {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
-        if seam_tick(from[0].update(ctx, event)).is_some() {
+        if seam_tick(from[0].update(ctx)).is_some() {
             self.out.set(TagValue::fired(Value::from(Utc::now())))
         } else {
             self.out.ride()
         }
     }
 
-    fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 macro_rules! time_fn {
@@ -456,7 +455,7 @@ macro_rules! time_fn {
 
             fn eval(
                 &mut self,
-                ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 from: &CachedVals,
             ) -> Option<Value> {
                 fast_eval(ctx, $fc, from)

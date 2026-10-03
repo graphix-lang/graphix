@@ -1,6 +1,6 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather};
 use crate::{
-    CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
     UserEvent, abstract_value, bailat, deref_typ,
     expr::{At, Expr, ExprId, ExprKind, ModPath, WrittenAt},
     fusion::{
@@ -40,11 +40,11 @@ macro_rules! composite_plumbing {
             &self.typ
         }
 
-        fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+        fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
             self.n.iter_mut().for_each(|n| n.delete(ctx))
         }
 
-        fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+        fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
             self.slept.set();
             self.n.iter_mut().for_each(|n| n.sleep(ctx))
         }
@@ -74,11 +74,11 @@ macro_rules! composite_plumbing {
 /// with `$empty` for a childless one, a bottom, or a ride; otherwise
 /// the children's values and the tag of the result.
 macro_rules! gathered {
-    ($self:ident, $ctx:ident, $event:ident, $empty:expr) => {{
+    ($self:ident, $ctx:ident, $empty:expr) => {{
         if $self.n.is_empty() {
-            return super::produce_constant($event, &mut $self.resident, || $empty);
+            return super::produce_constant($ctx.event, &mut $self.resident, || $empty);
         }
-        let (tag, prods) = gather($ctx, $event, &mut $self.n);
+        let (tag, prods) = gather($ctx, &mut $self.n);
         dense_gate!($self, tag.triggers(), tag.is_bottom());
         (prods.into_iter().map(|tv| tv.value_cloned()), tag)
     }};
@@ -127,7 +127,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 
 impl<R: Rt, E: UserEvent> Struct<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -157,8 +157,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
 
     composite_plumbing!(Struct);
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (vals, tag) = gathered!(self, ctx, event, Value::Array(ValArray::from([])));
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let (vals, tag) = gathered!(self, ctx, Value::Array(ValArray::from([])));
         let iter = self.names.iter().zip(vals).map(|(name, v)| {
             let name = Value::String(name.clone());
             Value::Array(ValArray::from_iter_exact([name, v].into_iter()))
@@ -200,7 +200,10 @@ impl<R: Rt, E: UserEvent> Replace<R, E> {
         self.n.image_encode(buf)
     }
 
-    fn image_decode(ctx: &mut ExecCtx<R, E>, buf: &mut &[u8]) -> Result<Self, PackError> {
+    fn image_decode(
+        ctx: &mut ExecCtx<'_, R, E>,
+        buf: &mut &[u8],
+    ) -> Result<Self, PackError> {
         let index = Option::<usize>::decode(buf)?;
         let name = ArcStr::decode(buf)?;
         let n = decode_node(ctx, buf)?;
@@ -221,7 +224,7 @@ pub struct StructWith<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> StructWith<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -287,12 +290,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let index: SmallVec<[Option<usize>; 8]> =
             self.replace.iter().map(|r| r.index).collect();
-        let src = self.source.update(ctx, event);
+        let src = self.source.update(ctx);
         let vals: SmallVec<[&TagValue; 8]> =
-            self.replace.iter_mut().map(|r| r.n.update(ctx, event)).collect();
+            self.replace.iter_mut().map(|r| r.n.update(ctx)).collect();
         let tag = vals.iter().fold(src.tag(), |t, v| t.join(v.tag()));
         // an unshaped (non-struct-rep) source is bottom
         let shaped = src.with_value(|v| matches!(v, Value::Array(_)));
@@ -322,12 +325,12 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         &self.typ
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.delete(ctx);
         self.replace.iter_mut().for_each(|r| r.n.delete(ctx))
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.source.sleep(ctx);
         self.replace.iter_mut().for_each(|r| r.n.sleep(ctx))
@@ -386,7 +389,7 @@ pub struct StructRef<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> StructRef<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -447,8 +450,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.field_name.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.source.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.source.update(ctx);
         let tag = tv.tag();
         if tag.is_bottom() {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
@@ -470,11 +473,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         self.source.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.sleep(ctx)
     }
 
@@ -555,7 +558,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
 
 impl<R: Rt, E: UserEvent> Tuple<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -580,8 +583,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
     }
     composite_plumbing!(Tuple);
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (vals, tag) = gathered!(self, ctx, event, Value::Array(ValArray::from([])));
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let (vals, tag) = gathered!(self, ctx, Value::Array(ValArray::from([])));
         let v = Value::Array(ValArray::from_iter_exact(vals));
         self.resident.set(TagValue::tagged(v, tag))
     }
@@ -644,7 +647,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
 
 impl<R: Rt, E: UserEvent> Variant<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -672,8 +675,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
     }
     composite_plumbing!(Variant);
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let (vals, tag) = gathered!(self, ctx, event, Value::String(self.tag.clone()));
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let (vals, tag) = gathered!(self, ctx, Value::String(self.tag.clone()));
         let a = iter::once(Value::String(self.tag.clone())).chain(vals);
         let v = Value::Array(ValArray::from_iter(a));
         self.resident.set(TagValue::tagged(v, tag))
@@ -718,7 +721,7 @@ pub struct Construct<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> Construct<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -792,8 +795,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         self.arg.image_encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.arg.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.arg.update(ctx);
         let tag = tv.tag();
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let params = self.params.get_or_insert_with(|| match &self.typ.resolve_tvars() {
@@ -821,11 +824,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         self.arg.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.arg.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         self.arg.sleep(ctx)
     }
@@ -923,7 +926,7 @@ pub struct TupleRef<R: Rt, E: UserEvent> {
 
 impl<R: Rt, E: UserEvent> TupleRef<R, E> {
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let spec = Expr::decode(buf)?;
@@ -986,8 +989,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.scope.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
-        let tv = self.source.update(ctx, event);
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let tv = self.source.update(ctx);
         let tag = tv.tag();
         if tag.is_bottom() {
             return self.resident.set(TagValue::tagged(Value::Null, tag));
@@ -1019,11 +1022,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         self.source.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.delete(ctx)
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.source.sleep(ctx);
     }
 

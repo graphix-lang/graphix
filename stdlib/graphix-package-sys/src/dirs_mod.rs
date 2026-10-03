@@ -1,5 +1,5 @@
 use graphix_compiler::{
-    Apply, BuiltIn, CompileCtx, Event, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
+    Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, TagValue, UserEvent,
     effects::Effect, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_package_core::FireOnce;
@@ -31,7 +31,7 @@ macro_rules! dirs_builtin {
             }
 
             fn image_decode(
-                _ctx: &mut ExecCtx<R, E>,
+                _ctx: &mut ExecCtx<'_, R, E>,
                 _from: &[Node<R, E>],
                 buf: &mut &[u8],
             ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -47,11 +47,10 @@ macro_rules! dirs_builtin {
 
             fn update(
                 &mut self,
-                _ctx: &mut ExecCtx<R, E>,
+                ctx: &mut ExecCtx<'_, R, E>,
                 _from: &mut [Node<R, E>],
-                event: &mut Event<E>,
             ) -> &TagValue {
-                if event.init && self.once.take() {
+                if ctx.event.init && self.once.take() {
                     let v = match $fn() {
                         Some(p) => Value::String(crate::convert_path(&p)),
                         None => Value::Null,
@@ -62,9 +61,9 @@ macro_rules! dirs_builtin {
                 }
             }
 
-            fn delete(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+            fn delete(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 
-            fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+            fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
                 self.once.reset();
             }
         }

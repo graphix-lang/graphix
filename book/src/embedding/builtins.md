@@ -74,7 +74,7 @@ do not reset every builtin merely because it is classified asynchronous.
 ```rust
 use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 
@@ -87,7 +87,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
     const NAME: &str = "core_once";
 
     fn init<'a, 'b, 'c>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved_typ: Option<&'a FnType>,
         _scope: &'b Scope,
@@ -101,12 +101,11 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Once {
 impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> Option<Value> {
         match from {
-            [s] => s.update(ctx, event).and_then(|v| {
+            [s] => s.update(ctx).and_then(|v| {
                 if self.val {
                     None
                 } else {
@@ -118,7 +117,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Once {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
         self.val = false
     }
 }
@@ -159,7 +158,7 @@ use graphix_compiler::{
     genn,
     node::Node,
     typ::{FnType, Typ, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 use smallvec::{smallvec, SmallVec};
@@ -180,7 +179,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
     const NAME: &str = "array_group";
 
     fn init<'a, 'b, 'c>(
-        ctx: &'a mut ExecCtx<R, E>,
+        ctx: &'a mut CompileCtx<R, E>,
         typ: &'a FnType,
         _resolved_typ: Option<&'a FnType>,
         scope: &'b Scope,
@@ -223,9 +222,8 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Group<R, E> {
 impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> Option<Value> {
         macro_rules! set {
             ($v:expr) => {{
@@ -233,24 +231,24 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
                 ctx.cached.insert(self.nid, len.clone());
-                event.variables.insert(self.nid, len);
+                ctx.event.variables.insert(self.nid, len);
                 ctx.cached.insert(self.xid, $v.clone());
-                event.variables.insert(self.xid, $v);
+                ctx.event.variables.insert(self.xid, $v);
             }};
         }
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx) {
             self.queue.push_back(v);
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx) {
             ctx.cached.insert(self.pid, v.clone());
-            event.variables.insert(self.pid, v);
+            ctx.event.variables.insert(self.pid, v);
         }
         if self.ready && self.queue.len() > 0 {
             let v = self.queue.pop_front().unwrap();
             set!(v);
         }
         loop {
-            match self.pred.update(ctx, event) {
+            match self.pred.update(ctx) {
                 None => break None,
                 Some(v) => {
                     self.ready = true;
@@ -274,7 +272,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
 
     fn typecheck(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         _from: &mut [Node<R, E>],
     ) -> anyhow::Result<()> {
         self.pred.typecheck(ctx)
@@ -284,14 +282,14 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.refs(refs)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         ctx.cached.remove(&self.nid);
         ctx.cached.remove(&self.pid);
         ctx.cached.remove(&self.xid);
         self.pred.delete(ctx);
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.pred.sleep(ctx);
     }
 }

@@ -18,7 +18,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for Probe {
     const NAME: &str = "hook_loan_probe";
     const EFFECT: Effect = Effect::Sync;
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         Some(Value::Bool(from.0[0].as_ref()? == from.0[1].as_ref()?))
     }
 }

@@ -17,6 +17,7 @@ async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
     let result = ctx
         .rt
         .with_ctx(move |ctx| -> Result<()> {
+            let ctx = &mut ctx.view();
             let scope = Scope::root().append("strict_bottom");
             let mut input = compile(
                 ctx,
@@ -72,7 +73,7 @@ async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
                         let payload =
                             if tag.is_bottom() { Value::Null } else { value.clone() };
                         event.variables.insert(id, TagValue::tagged(payload, tag));
-                        let actual = node.update(ctx, &mut event);
+                        let actual = node.update(&mut ctx.with_event(&mut event));
                         assert_eq!(
                             actual.tag(),
                             tag,
@@ -120,7 +121,7 @@ async fn strict_bottom(fusion_disabled: bool) -> Result<()> {
                 event.variables.insert(id, TagValue::tagged(value.clone(), expected));
                 let payload = if tag.is_bottom() { Value::Null } else { Value::I64(9) };
                 event.variables.insert(unused_id, TagValue::tagged(payload, tag));
-                let actual = node.update(ctx, &mut event);
+                let actual = node.update(&mut ctx.with_event(&mut event));
                 assert_eq!(actual.tag(), expected, "unused bottom, step={i}: {actual:?}");
                 assert_eq!(actual.value_cloned(), Value::I64(17));
             }
@@ -153,6 +154,7 @@ async fn strict_sample(fusion_disabled: bool) -> Result<()> {
     let result = ctx
         .rt
         .with_ctx(move |ctx| -> Result<()> {
+            let ctx = &mut ctx.view();
             let scope = Scope::root().append("strict_sample");
             let mut bindings = Vec::new();
             for name in ["clock", "input", "sampled"] {
@@ -199,13 +201,13 @@ async fn strict_sample(fusion_disabled: bool) -> Result<()> {
                     bindings[1].1,
                     TagValue::tagged(Value::I64(value), input_tag),
                 );
-                let actual = sample.update(ctx, &mut event).clone();
+                let actual = sample.update(&mut ctx.with_event(&mut event)).clone();
                 assert_eq!(actual.tag(), expected_tag, "sample step {i}: {actual:?}");
                 if !expected_tag.is_bottom() {
                     assert_eq!(actual.value_cloned(), Value::I64(expected_value));
                 }
                 event.variables.insert(bindings[2].1, actual);
-                let actual = consumer.update(ctx, &mut event);
+                let actual = consumer.update(&mut ctx.with_event(&mut event));
                 assert_eq!(actual.tag(), expected_tag, "consumer step {i}: {actual:?}");
                 if !expected_tag.is_bottom() {
                     assert_eq!(actual.value_cloned(), Value::I64(expected_value + 1));
@@ -245,6 +247,7 @@ async fn bottom_scrutinee_consults_no_guard(fusion_disabled: bool) -> Result<()>
     let result = ctx
         .rt
         .with_ctx(move |ctx| -> Result<()> {
+            let ctx = &mut ctx.view();
             let scope = Scope::root().append("bottom_scrutinee");
             let mut bindings = Vec::new();
             for name in ["x", "g"] {
@@ -287,7 +290,7 @@ async fn bottom_scrutinee_consults_no_guard(fusion_disabled: bool) -> Result<()>
                     .insert(bindings[0].1, TagValue::tagged(Value::Null, x_tag));
                 let g = if g_tag.is_bottom() { Value::Null } else { Value::I64(1) };
                 event.variables.insert(bindings[1].1, TagValue::tagged(g, g_tag));
-                let actual = node.update(ctx, &mut event);
+                let actual = node.update(&mut ctx.with_event(&mut event));
                 assert_eq!(actual.tag(), expected, "step {i}: {actual:?}");
             }
             node.delete(ctx);

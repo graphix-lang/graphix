@@ -71,7 +71,7 @@ pub(crate) fn opt_node_encode<R: Rt, E: UserEvent>(
 }
 
 pub(crate) fn opt_node_decode<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     buf: &mut &[u8],
 ) -> Result<Option<Node<R, E>>, PackError> {
     if !buf.has_remaining() {
@@ -85,7 +85,7 @@ pub(crate) fn opt_node_decode<R: Rt, E: UserEvent>(
 }
 
 pub fn decode_nodes<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     buf: &mut &[u8],
 ) -> Result<Vec<Node<R, E>>, PackError> {
     // every node is one tag byte at least
@@ -100,14 +100,14 @@ pub fn decode_nodes<R: Rt, E: UserEvent>(
 /// Decode one node: its tag, then its kind's codec. Recurses once per
 /// node level, under the stack guard like every other node walk.
 pub fn decode_node<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     buf: &mut &[u8],
 ) -> Result<Node<R, E>, PackError> {
     crate::stack::ensure_sufficient(|| decode_tagged(ctx, buf))
 }
 
 fn decode_tagged<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     buf: &mut &[u8],
 ) -> Result<Node<R, E>, PackError> {
     use node::{

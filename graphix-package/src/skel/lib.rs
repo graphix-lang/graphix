@@ -1,6 +1,6 @@
 use anyhow::Result;
 use graphix_compiler::{
-    Apply, BuiltIn, Effect, Event, ExecCtx, Node, Rt, Scope, TagValue, TagView,
+    Apply, BuiltIn, CompileCtx, Effect, ExecCtx, Node, Rt, Scope, TagValue, TagView,
     UserEvent, effects::EffectKind, expr::ExprId, image::ImageBuf, typ::FnType,
 };
 use graphix_derive::defpackage;
@@ -22,7 +22,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const EFFECT: Effect = Effect::Async;
 
     fn init<'a, 'b, 'c, 'd>(
-        _ctx: &'a mut ExecCtx<R, E>,
+        _ctx: &'a mut CompileCtx<R, E>,
         _typ: &'a FnType,
         _resolved_typ: Option<&'d FnType>,
         _scope: &'b Scope,
@@ -35,7 +35,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     // Restore what `image_encode` wrote; `from` is the argument list as
     // `init` saw it. The result slot is never imaged.
     fn image_decode(
-        _ctx: &mut ExecCtx<R, E>,
+        _ctx: &mut ExecCtx<'_, R, E>,
         _from: &[Node<R, E>],
         _buf: &mut &[u8],
     ) -> Result<Box<dyn Apply<R, E>>, PackError> {
@@ -52,12 +52,11 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
 
     fn update(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
-        event: &mut Event<E>,
     ) -> &TagValue {
         // Every awake arg produces every cycle; match the view exhaustively.
-        match from[0].update(ctx, event).view() {
+        match from[0].update(ctx).view() {
             TagView::Fired(tv) => {
                 let v = tv.with_value(|v| match v {
                     Value::Error(_) => Value::Bool(true),
@@ -73,7 +72,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
         }
     }
 
-    fn sleep(&mut self, _ctx: &mut ExecCtx<R, E>) {}
+    fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {}
 }
 
 #[derive(Debug, Default)]
@@ -82,7 +81,7 @@ struct ExampleCachedEv;
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for ExampleCachedEv {
     const NAME: &str = "{{name}}_example_cached";
 
-    fn eval(&mut self, _ctx: &mut ExecCtx<R, E>, from: &CachedVals) -> Option<Value> {
+    fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
         let mut res = Some(Value::Bool(false));
         for v in from.flat_iter() {
             match v {

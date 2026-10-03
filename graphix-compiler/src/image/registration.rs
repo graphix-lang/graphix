@@ -15,8 +15,8 @@ use super::{
     Restored, SharedDecoder, defs, nodes, scope_decode, scope_encode,
 };
 use crate::{
-    BindId, BuiltinBindInfo, ExecCtx, LambdaId, LambdaInstanceId, Node, Rt, Saved, Scope,
-    UserEvent,
+    BindId, BuiltinBindInfo, CompileCtx, ExecCtx, ExecState, LambdaId, LambdaInstanceId,
+    Node, Rt, Saved, Scope, UserEvent,
     env::Env,
     expr::{ExprId, ModPath},
     image,
@@ -90,7 +90,7 @@ struct Tables<'a, R: Rt, E: UserEvent> {
 }
 
 impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
-    fn collect(ctx: &'a ExecCtx<R, E>) -> Result<Self, PackError> {
+    fn collect(ctx: &'a CompileCtx<R, E>) -> Result<Self, PackError> {
         let mut defs: Vec<&LambdaDef<R, E>> = ctx
             .lambda_defs
             .iter()
@@ -152,7 +152,7 @@ impl<'a, R: Rt, E: UserEvent> Tables<'a, R, E> {
 }
 
 fn restore_tables<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     buf: &mut impl Buf,
 ) -> Result<(), PackError> {
     let n = decode_varint(buf)? as usize;
@@ -176,7 +176,7 @@ fn restore_tables<R: Rt, E: UserEvent>(
     Ok(())
 }
 
-impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
+impl<R: Rt, E: UserEvent> ExecState<R, E> {
     /// The registration image of this session with `nodes` as the root
     /// nodes, or an error naming what the image cannot carry.
     pub fn write_registration(
@@ -272,7 +272,9 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         buf.patch_u64(offsets_at + 16, counts_at as u64);
         Ok(buf.freeze())
     }
+}
 
+impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
     /// Restore a registration image into this session, which must have
     /// its builtins registered and nothing compiled. The decoder stays
     /// with the session for anything decoded later. A bad image fails
@@ -286,7 +288,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let mut nodes = Vec::new();
         match self.decode_registration(image, &mut nodes) {
             Ok((dec, scope, program)) => {
-                self.image_decoder = Some(dec);
+                *self.image_decoder = Some(dec);
                 self.apply_deferred();
                 Ok(Registration { nodes, scope, program })
             }

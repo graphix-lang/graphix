@@ -61,7 +61,7 @@ impl EvalCachedAsync for PackReadEv {
 
     fn map_value<R: Rt, E: UserEvent>(
         &mut self,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         v: Value,
     ) -> Option<Value> {
         match &self.cast_typ {
@@ -103,7 +103,11 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for PackWriteBytesEv {
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(fc_write_bytes)));
     const NAME: &str = "pack_write_bytes";
 
-    fn eval(&mut self, ctx: &mut ExecCtx<R, E>, cached: &CachedVals) -> Option<Value> {
+    fn eval(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        cached: &CachedVals,
+    ) -> Option<Value> {
         graphix_package_core::fast_eval(ctx, fc_write_bytes, cached)
     }
 }

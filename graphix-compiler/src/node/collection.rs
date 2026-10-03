@@ -3,7 +3,7 @@ use super::{
     list, pattern::StructPatternNode,
 };
 use crate::{
-    ApplyView, BindId, CompileCtx, Event, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
+    ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent,
     dbgenv::gxdbg_slot,
     expr::{Expr, ExprId},
@@ -131,7 +131,7 @@ impl CollectionIntrinsic {
     }
 
     pub(crate) fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let intrinsic = Self::decode(buf)?;
@@ -374,7 +374,7 @@ impl Callback {
     }
 
     fn image_decode<R: Rt, E: UserEvent>(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Self, PackError> {
         let scope = scope_decode(buf)?;
@@ -442,7 +442,10 @@ enum CallKind {
 
 impl CallKind {
     /// The slot call a prototype settled on.
-    fn slot<R: Rt, E: UserEvent>(ctx: &ExecCtx<R, E>, prototype: &Node<R, E>) -> Self {
+    fn slot<R: Rt, E: UserEvent>(
+        ctx: &ExecCtx<'_, R, E>,
+        prototype: &Node<R, E>,
+    ) -> Self {
         let NodeView::CallSite(site) = prototype.view() else { return Self::Slot(None) };
         let def = site
             .static_target
@@ -455,11 +458,11 @@ impl CallKind {
 /// Resize `slots` to `n`, deleting the excess and adding with `add`:
 /// true when the length changed.
 fn resize<R: Rt, E: UserEvent, S>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     slots: &mut Vec<S>,
     n: usize,
-    delete: fn(&mut S, &mut ExecCtx<R, E>),
-    mut add: impl FnMut(&mut ExecCtx<R, E>) -> S,
+    delete: fn(&mut S, &mut ExecCtx<'_, R, E>),
+    mut add: impl FnMut(&mut ExecCtx<'_, R, E>) -> S,
 ) -> bool {
     let old = slots.len();
     for mut s in slots.drain(n.min(old)..) {
@@ -496,7 +499,7 @@ impl<R: Rt, E: UserEvent> Slot<R, E> {
         self.state.value().expect("finish runs once every slot holds a value")
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.delete(ctx);
         ctx.rt.store_remove(&self.id);
         ctx.env.unbind_variable(self.id);
@@ -808,7 +811,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
 
     fn image_decode(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let CollectionIntrinsic::Map(op, flavor) = intrinsic else {
@@ -827,8 +830,8 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
         Ok(Self::with(base, Callback::image_decode(ctx, buf)?))
     }
 
-    fn finish(&self, ctx: &mut ExecCtx<R, E>, event: &Event<E>) -> Value {
-        with_hooks(ctx, event, || self.base.finish(&self.slots, &self.current))
+    fn finish(&self, ctx: &mut ExecCtx<'_, R, E>) -> Value {
+        with_hooks(ctx, || self.base.finish(&self.slots, &self.current))
     }
 }
 
@@ -862,12 +865,12 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
         let old_len = self.slots.len();
         let mut production = None;
         let (tag, sval) = {
-            let tv = self.base.source.update(ctx, event);
+            let tv = self.base.source.update(ctx);
             let tag = tv.tag();
             (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
@@ -898,7 +901,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 for (slot, value) in
                     self.slots[from..].iter().zip(source.values().skip(from))
                 {
-                    deliver(ctx, event, slot.id, TagValue::tagged(value, tag));
+                    deliver(ctx, slot.id, TagValue::tagged(value, tag));
                 }
                 self.current = source;
                 // A resize or a source back from bottom changes the result
@@ -909,23 +912,23 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                     production = merge_tag(production, tag);
                 }
                 if self.slots.is_empty() {
-                    let v = self.finish(ctx, event);
+                    let v = self.finish(ctx);
                     return self.resident.set(TagValue::tagged(v, tag));
                 }
             }
         }
-        let saved_init = event.init;
+        let saved_init = ctx.event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
-                event.init = saved_init;
+                ctx.event.init = saved_init;
                 return self.resident.ride();
             }
             // A fresh slot's first dispatch runs under a forced init view.
             if i >= old_len {
-                event.init = true;
+                ctx.event.init = true;
             }
             let slot = &mut self.slots[i];
-            let tv = slot.call.update(ctx, event);
+            let tv = slot.call.update(ctx);
             let tag = tv.tag();
             if gxdbg_slot() {
                 eprintln!(
@@ -940,7 +943,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
             }
             slot.state.set(tv);
         }
-        event.init = saved_init;
+        ctx.event.init = saved_init;
         if !source_ok {
             return self.resident.set_bottom(src_trig);
         }
@@ -970,14 +973,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
             return self.resident.set_bottom(tag.triggers());
         }
         if self.slots.iter().all(|slot| slot.state.value().is_some()) {
-            let v = self.finish(ctx, event);
+            let v = self.finish(ctx);
             self.resident.set(TagValue::tagged(v, tag))
         } else {
             self.resident.set_bottom(tag.triggers())
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let Self { base, slots, .. } = self;
         base.source.delete(ctx);
         base.prototype.delete(ctx);
@@ -1021,7 +1024,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         &self.base.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.slept.set();
         // Slot values survive sleep: sleep is pause.
         self.base.source.sleep(ctx);
@@ -1063,7 +1066,7 @@ impl<R: Rt, E: UserEvent> FoldSlot<R, E> {
         Self { acc_id, element_id, call, state: SlotState::Empty }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         self.call.delete(ctx);
         for id in [self.acc_id, self.element_id] {
             ctx.rt.store_remove(&id);
@@ -1219,7 +1222,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
     fn image_decode(
         intrinsic: CollectionIntrinsic,
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let CollectionIntrinsic::Fold(flavor) = intrinsic else {
@@ -1243,19 +1246,14 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
 
 /// Deliver `tv` to a callback argument this cycle and stand it in the
 /// store, a bottom as a stale bottom.
-fn deliver<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
-    id: BindId,
-    tv: TagValue,
-) {
+fn deliver<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, id: BindId, tv: TagValue) {
     let standing = if tv.tag().is_bottom() {
         TagValue::tagged(Value::Null, Tag::STALE_BOTTOM)
     } else {
         tv.clone()
     };
     ctx.rt.store_insert(id, standing);
-    event.variables.insert(id, tv);
+    ctx.event.variables.insert(id, tv);
 }
 
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
@@ -1282,11 +1280,11 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         fuse_callback(ctx, &mut self.base.prototype, &mut self.callback)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let woke = self.slept.take();
         let old_len = self.slots.len();
         let (tag, sval) = {
-            let tv = self.base.source.update(ctx, event);
+            let tv = self.base.source.update(ctx);
             let tag = tv.tag();
             (tag, if tag.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
@@ -1313,16 +1311,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                 for (slot, value) in
                     self.slots[from..].iter().zip(source.values().skip(from))
                 {
-                    deliver(ctx, event, slot.element_id, TagValue::tagged(value, tag));
+                    deliver(ctx, slot.element_id, TagValue::tagged(value, tag));
                 }
             }
         }
         // A bottom init is a poisoned delivery to slot 0's acc, not a
         // whole-fold abort: a callback that never consumes the acc
         // recovers.
-        let init = self.base.init.update(ctx, event).clone();
+        let init = self.base.init.update(ctx).clone();
         if let Some(slot) = self.slots.first() {
-            deliver(ctx, event, slot.acc_id, init.clone());
+            deliver(ctx, slot.acc_id, init.clone());
         }
         if self.slots.is_empty() && source_ok {
             return match init.tag() {
@@ -1336,16 +1334,16 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         // init delivery reaches the result only through a slot that
         // consumes it. A triggering taint still counts, for the bottom arm.
         let mut any_trig = !source_ok && src_trig;
-        let saved_init = event.init;
+        let saved_init = ctx.event.init;
         for i in 0..self.slots.len() {
             if ctx.interrupted() {
-                event.init = saved_init;
+                ctx.event.init = saved_init;
                 return self.resident.ride();
             }
             // A fresh slot's first dispatch runs under a forced init view,
             // its acc seeded with the chain's state as it stands.
             if i >= old_len {
-                event.init = true;
+                ctx.event.init = true;
                 let seed = match i {
                     0 if init.tag().is_bottom() => {
                         Some(TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM))
@@ -1360,19 +1358,19 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                     },
                 };
                 if let Some(seed) = seed {
-                    deliver(ctx, event, self.slots[i].acc_id, seed);
+                    deliver(ctx, self.slots[i].acc_id, seed);
                 }
             }
             let slot = &mut self.slots[i];
-            let tv = slot.call.update(ctx, event).clone();
+            let tv = slot.call.update(ctx).clone();
             any_trig |= tv.tag().triggers();
             slot.state.set(&tv);
             // The production, a bottom included, travels the acc chain.
             if let Some(next) = self.slots.get(i + 1) {
-                deliver(ctx, event, next.acc_id, tv);
+                deliver(ctx, next.acc_id, tv);
             }
         }
-        event.init = saved_init;
+        ctx.event.init = saved_init;
         // An interior slot's poison bottoms the fold only if a downstream
         // callback consumes it; only the last slot's state is the result.
         match self.slots.last().map(|s| &s.state) {
@@ -1390,7 +1388,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         }
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let Self { base, slots, .. } = self;
         base.source.delete(ctx);
         base.init.delete(ctx);
@@ -1441,7 +1439,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         &self.base.spec
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         // The slot states survive sleep: sleep is pause.
         self.slept.set();
         self.base.source.sleep(ctx);

@@ -5,8 +5,8 @@ use super::{
     wake::TrackedFires,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt,
-    Scope, Tag, TagValue, Update, UserEvent, bailat,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
+    TagValue, Update, UserEvent, bailat,
     env::Env,
     expr::{At, Expr, ExprId, ExprKind, Pattern, union_members},
     format_with_flags,
@@ -62,7 +62,7 @@ struct LazyArmFacts {
 
 impl LazyArmFacts {
     fn build<R: Rt, E: UserEvent>(
-        ctx: &ExecCtx<R, E>,
+        ctx: &ExecCtx<'_, R, E>,
         scrut: &Type,
         arms: &[(PatternNode<R, E>, Node<R, E>)],
     ) -> Self {
@@ -156,14 +156,13 @@ fn evaluate_arm<R: Rt, E: UserEvent>(
     tracked: &mut TrackedFires,
     arm: &mut Node<R, E>,
     i: usize,
-    ctx: &mut ExecCtx<R, E>,
-    event: &mut Event<E>,
+    ctx: &mut ExecCtx<'_, R, E>,
 ) -> (Tag, Option<Value>) {
-    let injected = tracked.deliver(ctx, event, i);
-    let tv = arm.update(ctx, event);
+    let injected = tracked.deliver(ctx, i);
+    let tv = arm.update(ctx);
     let t = tv.tag();
     let v = if t.is_bottom() { None } else { Some(tv.value_cloned()) };
-    TrackedFires::restore(event, injected);
+    TrackedFires::restore(ctx.event, injected);
     (t, v)
 }
 
@@ -188,7 +187,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     }
 
     pub(crate) fn image_decode(
-        ctx: &mut ExecCtx<R, E>,
+        ctx: &mut ExecCtx<'_, R, E>,
         buf: &mut &[u8],
     ) -> Result<Node<R, E>, PackError> {
         let arg = Held::image_decode(ctx, buf)?;
@@ -572,7 +571,7 @@ impl Ladder {
 /// the arm is deleted, not retained (`CallSite::sleep`), so unreached
 /// activations are shed.
 fn deselect<R: Rt, E: UserEvent>(
-    ctx: &mut ExecCtx<R, E>,
+    ctx: &mut ExecCtx<'_, R, E>,
     tracked: &mut TrackedFires,
     j: usize,
     (pat, body): &mut (PatternNode<R, E>, Node<R, E>),
@@ -867,7 +866,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         self.spec.encode(buf)
     }
 
-    fn update(&mut self, ctx: &mut ExecCtx<R, E>, event: &mut Event<E>) -> &TagValue {
+    fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         if self.arm_facts.is_none() {
             let scrut = self.arg.node.typ().clone();
             self.arm_facts = Some(LazyArmFacts::build(ctx, &scrut, &self.arms));
@@ -890,8 +889,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // the chain consults contribute fires or bottomness.
         let mut guard_tags: SmallVec<[Option<Tag>; 8]> =
             SmallVec::with_capacity(arms.len());
-        let arg_prod = arg.update(ctx, event);
-        tracked.observe(ctx, event);
+        let arg_prod = arg.update(ctx);
+        tracked.observe(ctx);
         // Guards are live nodes and tick every cycle, even under a
         // tainted scrutinee. The bind is delivered only to an arm whose
         // shape admits the value: the checker narrowed the binds by that
@@ -904,14 +903,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         && pat.guard.is_some()
                         && pat.shape_matches(&ctx.env, shallow.as_ref(), v) =>
                 {
-                    pat.bind_event(ctx, event, v, arg_prod);
+                    pat.bind_event(ctx, v, arg_prod);
                     true
                 }
                 _ => false,
             };
-            guard_tags.push(pat.update(ctx, event));
+            guard_tags.push(pat.update(ctx));
             if bound {
-                pat.unbind_event(event);
+                pat.unbind_event(ctx.event);
             }
         }
         // Any guard fire drives a re-match; whether it affects the
@@ -926,8 +925,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
             eprintln!(
                 "SELECT[{}] upd init={} pat_up={pat_up} sel={selected:?} argc={v:?} vars={}",
                 spec.pos,
-                event.init,
-                event.variables.len()
+                ctx.event.init,
+                ctx.event.variables.len()
             );
         }
         enum ChainOut {
@@ -973,22 +972,22 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         let tv = match chain {
             ChainOut::Undet => return resident.set_bottom(planes.anyfire),
             ChainOut::Quiet(i) => {
-                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx, event);
+                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) if *selected == Some(i) => {
                 if crate::dbgenv::graphix_dbg_select() {
                     eprintln!("SELECT[{}] same-arm i={i} arg={v:?}", spec.pos);
                 }
-                arms[i].0.bind_event(ctx, event, v, arg_prod);
-                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx, event);
+                arms[i].0.bind_event(ctx, v, arg_prod);
+                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx);
                 planes.emit(t, v)
             }
             ChainOut::Taken(Some(i)) => {
                 if crate::dbgenv::graphix_dbg_select() {
                     eprintln!(
                         "SELECT[{}] BECOMING-SELECTED {selected:?} -> {i} init={}",
-                        spec.pos, event.init
+                        spec.pos, ctx.event.init
                     );
                 }
                 if let Some(j) = selected.replace(i) {
@@ -999,23 +998,23 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // under an init view a guard's fire is its birth, not a flip.
                 let bind_tag = if arg_prod.triggers() {
                     arg_prod
-                } else if planes.guard_fire && !event.init && !woke {
+                } else if planes.guard_fire && !ctx.event.init && !woke {
                     Tag::FIRED
                 } else {
                     Tag::STALE
                 };
-                arms[i].0.bind_event(ctx, event, v, bind_tag);
+                arms[i].0.bind_event(ctx, v, bind_tag);
                 // A slept arm resumes under the wake view; a
                 // skip-sleep arm was never updated, so this is its
                 // birth and gets `init` only.
-                let (init, wake) = (event.init, event.wake_init);
-                event.init = true;
+                let (init, wake) = (ctx.event.init, ctx.event.wake_init);
+                ctx.event.init = true;
                 if sleep_on_deselect[i] {
-                    event.wake_init = true;
+                    ctx.event.wake_init = true;
                 }
-                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx, event);
-                event.init = init;
-                event.wake_init = wake;
+                let (t, v) = evaluate_arm(tracked, &mut arms[i].1, i, ctx);
+                ctx.event.init = init;
+                ctx.event.wake_init = wake;
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.
@@ -1029,7 +1028,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         resident.set(tv)
     }
 
-    fn delete(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let Self {
             selected: _,
             arg,
@@ -1048,7 +1047,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         }
     }
 
-    fn sleep(&mut self, ctx: &mut ExecCtx<R, E>) {
+    fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         let Self {
             selected: _,
             arg,
