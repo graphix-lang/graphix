@@ -621,3 +621,17 @@ const BUILTIN_CALLBACK_RAISES_TO_CALLER: &str = r#"
 run!(builtin_callback_raises_to_caller, BUILTIN_CALLBACK_RAISES_TO_CALLER, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == "\"Caught\""
 }; graphix_package_core::testing::FuseExpect::None);
+
+// Two raises to one handler in one cycle: the first is delivered that
+// cycle, the second the next, from forked siblings as from serial ones.
+const TWO_RAISES_ONE_HANDLER: &str = r#"
+{
+  let n = 0;
+  let r = { catch(e) n <- e ~ n + 1; (error(`A)?, error(`B)?) };
+  select n { 2 => true, _ => never() }
+}
+"#;
+
+run!(two_raises_one_handler, TWO_RAISES_ONE_HANDLER, |v: Result<&Value>| {
+    matches!(v, Ok(Value::Bool(true)))
+});

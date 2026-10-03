@@ -13,7 +13,7 @@ use futures::channel::mpsc;
 use graphix_types::stack::ParMode;
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
-use poolshark::global::GPooled;
+use poolshark::{global::GPooled, local::LPooled};
 use std::{
     future::Future,
     ops::{Deref, DerefMut},
@@ -60,6 +60,11 @@ pub struct ForkRt<R: Rt> {
 unsafe impl<R: Rt + Sync> Send for ForkRt<R> {}
 
 impl<R: Rt> ForkRt<R> {
+    /// Queue a write of `v` to `id` before everything this branch did.
+    pub(crate) fn queue_first(&mut self, id: BindId, v: Value) {
+        self.log.insert(0, RtOp::SetVar(id, v));
+    }
+
     /// A branch forked from `parent`, which must not be used until the
     /// branch has merged back.
     pub(crate) fn new(parent: &RtView<'_, R>) -> Self {
@@ -381,6 +386,17 @@ impl<V: Clone> Layered<V> {
         own.or(from_parent)
     }
 
+    /// The ids this layer and `other` both delivered themselves.
+    pub(crate) fn delivered_in_both(&self, other: &Self) -> LPooled<Vec<BindId>> {
+        self.map.keys().filter(|id| other.map.contains_key(*id)).copied().collect()
+    }
+
+    /// Take this layer's own entry for `id`, leaving what its parent
+    /// holds visible.
+    pub(crate) fn take_own(&mut self, id: &BindId) -> Option<V> {
+        self.map.remove(id)
+    }
+
     /// The entries this layer holds.
     pub fn len(&self) -> usize {
         self.map.len()
@@ -530,6 +546,12 @@ where
     };
     let ra = a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a));
     let rb = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
+    // what both delivered, the left delivered first: the right's waits a
+    // cycle, queued where serial evaluation would have queued it
+    for id in ev_b.variables.delivered_in_both(&ev_a.variables).drain(..) {
+        let tv = ev_b.variables.take_own(&id).expect("delivered");
+        rt_b.queue_first(id, tv.value());
+    }
     ctx.cx.merge(cx_a);
     ctx.rt.merge(rt_a);
     ctx.event.merge(ev_a);
