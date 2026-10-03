@@ -243,9 +243,9 @@ fn call_hook<R: Rt, E: UserEvent>(
     t: CoreTrait,
     args: &[&GxAbstract],
 ) -> Option<Option<Value>> {
-    let mut event = ctx.core_hook_sites.take_event(&ctx.event.user);
+    let mut event = ctx.core_hook_sites.lock().take_event(&ctx.event.user);
     let r = call_hook_over(&mut ctx.with_event(&mut event), t, args);
-    ctx.core_hook_sites.give_event(event);
+    ctx.core_hook_sites.lock().give_event(event);
     r
 }
 
@@ -274,6 +274,8 @@ fn same_version(
 /// Take a site for `args` out of the registry, building one when the
 /// pool is empty. The entry stays in the registry, so a re-entrant
 /// dispatch for the same tag finds it; a nested call takes another site.
+/// The registry is locked only while it is read or written: a site is
+/// built and run outside it.
 fn take_site<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     t: CoreTrait,
@@ -287,54 +289,62 @@ fn take_site<R: Rt, E: UserEvent>(
     }
     let key = (t as u8, args[0].id);
     let version = impls_version(&ctx.env, t);
-    let stale = ctx
-        .core_hook_sites
-        .sites
-        .get(&key)
-        .is_some_and(|e| !same_version(&e.version, &version));
-    if stale {
-        let mut e = ctx.core_hook_sites.sites.remove(&key).unwrap();
-        for (_, c) in e.by_type.iter_mut() {
-            for mut s in c.iter_mut().flat_map(|c| c.pool.drain(..)) {
-                s.call.delete(ctx);
-            }
+    let (stale, found) = {
+        let mut reg = ctx.core_hook_sites.lock();
+        let stale = match reg.sites.get(&key) {
+            Some(e) if !same_version(&e.version, &version) => reg.sites.remove(&key),
+            _ => None,
+        };
+        let entry = reg.sites.entry(key).or_insert_with(|| SiteEntry {
+            version: version.clone(),
+            by_type: SmallVec::new(),
+        });
+        let slot = entry.slot(&ctx.cx.env, t, &typ);
+        let found = entry
+            .candidate(slot, &typ)
+            .map(|c| (slot, c.pool.pop().ok_or_else(|| c.hook.clone())));
+        (stale, found)
+    };
+    for (_, c) in stale.into_iter().flat_map(|e| e.by_type) {
+        for mut s in c.into_iter().flat_map(|c| c.pool) {
+            s.call.delete(ctx);
         }
     }
-    let entry = ctx.core_hook_sites.sites.entry(key).or_insert_with(|| SiteEntry {
-        version: version.clone(),
-        by_type: SmallVec::new(),
-    });
-    let slot = entry.slot(&ctx.cx.env, t, &typ);
-    let c = entry.candidate(slot, &typ)?;
-    let site = match c.pool.pop() {
-        Some(s) => s,
-        None => {
-            let hook = c.hook.clone();
-            match build_site(ctx, t, &hook) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("core trait site for {}: {e:?}", hook.typ);
-                    if let Some(e) = ctx.core_hook_sites.sites.get_mut(&key) {
-                        e.by_type[slot].1 = None;
-                    }
-                    return None;
+    let (slot, site) = found?;
+    let site = match site {
+        Ok(s) => s,
+        Err(hook) => match build_site(ctx, t, &hook) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("core trait site for {}: {e:?}", hook.typ);
+                if let Some(e) = ctx.core_hook_sites.lock().sites.get_mut(&key) {
+                    e.by_type[slot].1 = None;
                 }
+                return None;
             }
-        }
+        },
     };
     Some(Loan { key, version, slot, typ, site })
 }
 
-fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, mut loan: Loan<R, E>) {
-    let pool = ctx
-        .core_hook_sites
-        .sites
-        .get_mut(&loan.key)
-        .filter(|e| same_version(&e.version, &loan.version))
-        .and_then(|e| e.candidate(loan.slot, &loan.typ));
-    match pool {
-        Some(c) => c.pool.push(loan.site),
-        None => loan.site.call.delete(ctx),
+fn return_site<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>, loan: Loan<R, E>) {
+    let rejected = {
+        let mut reg = ctx.core_hook_sites.lock();
+        let pool = reg
+            .sites
+            .get_mut(&loan.key)
+            .filter(|e| same_version(&e.version, &loan.version))
+            .and_then(|e| e.candidate(loan.slot, &loan.typ));
+        match pool {
+            Some(c) => {
+                c.pool.push(loan.site);
+                None
+            }
+            None => Some(loan.site),
+        }
+    };
+    if let Some(mut site) = rejected {
+        site.call.delete(ctx)
     }
 }
 

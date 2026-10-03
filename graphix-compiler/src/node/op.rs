@@ -173,8 +173,12 @@ macro_rules! binary_node {
 macro_rules! gated_operands {
     ($self:ident, $ctx:ident) => {{
         let woke = $self.slept.take();
-        let l = $self.lhs.update($ctx);
-        let r = $self.rhs.update($ctx);
+        let (lhs, rhs) = (&mut $self.lhs, &mut $self.rhs);
+        let (l, r) = if $crate::branch::forks($ctx) {
+            $crate::branch::fork_join($ctx, |c| lhs.update(c), |c| rhs.update(c))
+        } else {
+            (lhs.update($ctx), rhs.update($ctx))
+        };
         let (lt, rt) = (l.tag(), r.tag());
         let trig = lt.triggers() || rt.triggers();
         dense_gate!($self.resident, trig, lt.is_bottom() || rt.is_bottom(), woke);

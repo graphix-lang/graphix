@@ -398,6 +398,13 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
 ) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
+    if nodes.len() > 1 && crate::branch::forks(ctx) {
+        let (l, r) = nodes.split_at_mut(nodes.len() / 2);
+        let ((lt, mut lp), (rt, rp)) =
+            crate::branch::fork_join(ctx, |c| gather(c, l), |c| gather(c, r));
+        lp.extend(rp);
+        return (lt.join(rt), lp);
+    }
     let mut tag = Tag::STALE;
     let prods = nodes
         .iter_mut()

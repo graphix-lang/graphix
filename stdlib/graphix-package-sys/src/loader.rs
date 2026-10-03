@@ -52,7 +52,7 @@ impl NetidxResolver {
     pub fn factory(timeout: Option<Duration>) -> ResolverFactory {
         std::sync::Arc::new(move |libstate: &mut LibState, rest: &str| {
             let handles = libstate.get_or_default::<NetHandles>().clone();
-            let cfg = libstate.get::<NetConfig>().cloned().unwrap_or(NetConfig::Internal);
+            let cfg = libstate.get::<NetConfig>().unwrap_or(NetConfig::Internal);
             Ok(std::sync::Arc::new(NetidxResolver {
                 source: SubSource::Lazy { handles, cfg },
                 base: Path::from_str(rest),

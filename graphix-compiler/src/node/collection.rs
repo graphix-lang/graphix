@@ -468,9 +468,12 @@ fn resize<R: Rt, E: UserEvent, S>(
     for mut s in slots.drain(n.min(old)..) {
         delete(&mut s, ctx)
     }
-    while slots.len() < n {
-        let s = add(ctx);
-        slots.push(s)
+    if slots.len() < n {
+        while slots.len() < n {
+            let s = add(ctx);
+            slots.push(s)
+        }
+        ctx.apply_deferred();
     }
     old != n
 }
@@ -843,6 +846,57 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
     })
 }
 
+/// Update `slots`, the slots from index `at` on, forking halves where the
+/// runtime forks: the join of their triggering productions, or `None`
+/// when an interrupt stopped the loop. A slot at `old_len` or past it is
+/// fresh, and its first dispatch runs under a forced init view.
+fn update_slots<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    slots: &mut [Slot<R, E>],
+    at: usize,
+    old_len: usize,
+) -> Option<Option<Tag>> {
+    if slots.len() > 1 && crate::branch::forks(ctx) {
+        let mid = slots.len() / 2;
+        let (l, r) = slots.split_at_mut(mid);
+        let (lp, rp) = crate::branch::fork_join(
+            ctx,
+            |c| update_slots(c, l, at, old_len),
+            |c| update_slots(c, r, at + mid, old_len),
+        );
+        let (lp, rp) = (lp?, rp?);
+        return Some(match rp {
+            Some(tag) => merge_tag(lp, tag),
+            None => lp,
+        });
+    }
+    let mut production = None;
+    for (j, slot) in slots.iter_mut().enumerate() {
+        let i = at + j;
+        if ctx.interrupted() {
+            return None;
+        }
+        if i >= old_len {
+            ctx.event.init = true;
+        }
+        let tv = slot.call.update(ctx);
+        let tag = tv.tag();
+        if gxdbg_slot() {
+            eprintln!(
+                "SLOT call[{i}] produced tag={} fresh={}",
+                tag.bits(),
+                i >= old_len
+            );
+        }
+        // Only triggering productions fold into the firing decision.
+        if tag.triggers() {
+            production = merge_tag(production, tag);
+        }
+        slot.state.set(tv);
+    }
+    Some(production)
+}
+
 impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
     /// The slots and the current collection exist only once a cycle has
     /// run.
@@ -918,32 +972,13 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
             }
         }
         let saved_init = ctx.event.init;
-        for i in 0..self.slots.len() {
-            if ctx.interrupted() {
-                ctx.event.init = saved_init;
-                return self.resident.ride();
-            }
-            // A fresh slot's first dispatch runs under a forced init view.
-            if i >= old_len {
-                ctx.event.init = true;
-            }
-            let slot = &mut self.slots[i];
-            let tv = slot.call.update(ctx);
-            let tag = tv.tag();
-            if gxdbg_slot() {
-                eprintln!(
-                    "SLOT call[{i}] produced tag={} fresh={}",
-                    tag.bits(),
-                    i >= old_len
-                );
-            }
-            // Only triggering productions fold into the firing decision.
-            if tag.triggers() {
-                production = merge_tag(production, tag);
-            }
-            slot.state.set(tv);
-        }
+        let slots = update_slots(ctx, &mut self.slots, 0, old_len);
         ctx.event.init = saved_init;
+        match slots {
+            None => return self.resident.ride(),
+            Some(Some(tag)) => production = merge_tag(production, tag),
+            Some(None) => (),
+        }
         if !source_ok {
             return self.resident.set_bottom(src_trig);
         }

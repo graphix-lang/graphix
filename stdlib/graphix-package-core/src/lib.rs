@@ -90,7 +90,7 @@ pub fn extract_cast_type(resolved_typ: Option<&FnType>) -> Option<Type> {
 }
 
 /// Program arguments stored in LibState. Index 0 is the script filename.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ProgramArgs(pub Vec<ArcStr>);
 
 /// Print-capture sink, seeded into `ctx.libstate` by harnesses. When
@@ -2476,7 +2476,7 @@ fn emit_line<R: Rt, E: UserEvent>(
     suffix: &str,
 ) {
     let sink = match dest {
-        LogDest::Stdout | LogDest::Stderr => ctx.libstate.get::<PrintSink>().cloned(),
+        LogDest::Stdout | LogDest::Stderr => ctx.libstate.get::<PrintSink>(),
         LogDest::Log(_) => None,
     };
     match (dest, sink) {

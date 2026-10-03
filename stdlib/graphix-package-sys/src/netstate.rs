@@ -235,11 +235,8 @@ impl NetState {
         if let Some(st) = ctx.libstate.get::<NetState>() {
             return st.clone();
         }
-        let timeouts = ctx
-            .libstate
-            .get::<NetTimeouts>()
-            .cloned()
-            .unwrap_or(NetTimeouts { publish: None });
+        let timeouts =
+            ctx.libstate.get::<NetTimeouts>().unwrap_or(NetTimeouts { publish: None });
         let (updates_tx, mut updates_rx) = mpsc::channel(100);
         let (writes_tx, mut writes_rx) = mpsc::channel(100);
         let (rpcs_tx, mut rpcs_rx) = mpsc::channel(100);
@@ -385,7 +382,7 @@ impl NetState {
         &self,
         ctx: &mut ExecCtx<'_, R, E>,
     ) -> Result<&Handles> {
-        let cfg = ctx.libstate.get::<NetConfig>().cloned().unwrap_or(NetConfig::Internal);
+        let cfg = ctx.libstate.get::<NetConfig>().unwrap_or(NetConfig::Internal);
         self.0.handles.get_or_materialize(cfg)
     }
 

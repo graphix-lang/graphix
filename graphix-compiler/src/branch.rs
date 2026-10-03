@@ -5,12 +5,21 @@
 //! and logs of its own; its parent links are raw pointers, valid because
 //! a parent is suspended in the join until both of its branches return.
 
-use crate::{BindId, CustomBuiltinType, Rt, TagValue, expr::ExprId, node::place::Path};
+use crate::{
+    BindId, CompileCtx, CustomBuiltinType, ExecCtx, Rt, TagValue, UserEvent,
+    expr::ExprId, node::place::Path,
+};
 use futures::channel::mpsc;
+use graphix_types::stack::ParMode;
 use netidx_value::Value;
 use nohash::IntMap;
 use poolshark::global::GPooled;
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+    time::Duration,
+};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
@@ -40,6 +49,7 @@ enum RtOp {
 /// reference paths (`None` = removed), and the log of everything else.
 pub struct ForkRt<R: Rt> {
     parent: *const RtView<'static, R>,
+    cycle: u64,
     store: IntMap<BindId, Option<(TagValue, u64)>>,
     ref_paths: IntMap<BindId, Option<(BindId, Path)>>,
     log: Vec<RtOp>,
@@ -55,6 +65,7 @@ impl<R: Rt> ForkRt<R> {
     pub(crate) fn new(parent: &RtView<'_, R>) -> Self {
         Self {
             parent: parent as *const RtView<'_, R> as *const RtView<'static, R>,
+            cycle: parent.cycle(),
             store: IntMap::default(),
             ref_paths: IntMap::default(),
             log: Vec::new(),
@@ -145,19 +156,22 @@ impl<'a, R: Rt> RtView<'a, R> {
     pub fn cycle(&self) -> u64 {
         match self {
             Self::Root(r) => r.cycle(),
-            Self::Fork(f) => f.parent().cycle(),
+            Self::Fork(f) => f.cycle,
         }
     }
 
     /// The (production, cycle stamp) of `id`'s last delivery; see
     /// [`Rt::store_get`].
     pub fn store_get(&self, id: &BindId) -> Option<&(TagValue, u64)> {
-        match self {
-            Self::Root(r) => r.store_get(id),
-            Self::Fork(f) => match f.store.get(id) {
-                Some(e) => e.as_ref(),
-                None => f.parent().store_get(id),
-            },
+        let mut view: &RtView<'_, R> = self;
+        loop {
+            match view {
+                RtView::Root(r) => return r.store_get(id),
+                RtView::Fork(f) => match f.store.get(id) {
+                    Some(e) => return e.as_ref(),
+                    None => view = f.parent(),
+                },
+            }
         }
     }
 
@@ -170,8 +184,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         match self {
             Self::Root(r) => r.store_insert(id, tv),
             Self::Fork(f) => {
-                let stamp = f.parent().cycle();
-                f.store.insert(id, Some((tv, stamp)));
+                f.store.insert(id, Some((tv, f.cycle)));
             }
         }
     }
@@ -180,8 +193,7 @@ impl<'a, R: Rt> RtView<'a, R> {
         match self {
             Self::Root(r) => r.store_insert_standing(id, tv),
             Self::Fork(f) => {
-                let stamp = f.parent().cycle().wrapping_sub(1);
-                f.store.insert(id, Some((tv, stamp)));
+                f.store.insert(id, Some((tv, f.cycle.wrapping_sub(1))));
             }
         }
     }
@@ -196,12 +208,15 @@ impl<'a, R: Rt> RtView<'a, R> {
     }
 
     pub fn ref_path(&self, cell: &BindId) -> Option<&(BindId, Path)> {
-        match self {
-            Self::Root(r) => r.ref_path(cell),
-            Self::Fork(f) => match f.ref_paths.get(cell) {
-                Some(e) => e.as_ref(),
-                None => f.parent().ref_path(cell),
-            },
+        let mut view: &RtView<'_, R> = self;
+        loop {
+            match view {
+                RtView::Root(r) => return r.ref_path(cell),
+                RtView::Fork(f) => match f.ref_paths.get(cell) {
+                    Some(e) => return e.as_ref(),
+                    None => view = f.parent(),
+                },
+            }
         }
     }
 
@@ -226,7 +241,7 @@ impl<'a, R: Rt> RtView<'a, R> {
     /// Apply what the forked branch `child` did, after everything this
     /// view did before the fork and before anything it does after.
     pub(crate) fn merge(&mut self, child: ForkRt<R>) {
-        let ForkRt { parent: _, store, ref_paths, log } = child;
+        let ForkRt { parent: _, cycle: _, store, ref_paths, log } = child;
         match self {
             Self::Fork(f) => {
                 f.store.extend(store);
@@ -299,9 +314,12 @@ impl<V: Clone> Layered<V> {
     }
 
     pub fn get(&self, id: &BindId) -> Option<&V> {
-        match self.map.get(id) {
-            Some(e) => e.as_ref(),
-            None => self.parent().and_then(|p| p.get(id)),
+        let mut layer = self;
+        loop {
+            match layer.map.get(id) {
+                Some(e) => return e.as_ref(),
+                None => layer = layer.parent()?,
+            }
         }
     }
 
@@ -381,4 +399,139 @@ impl<V: Clone> Layered<V> {
             }
         }
     }
+}
+
+/// A forked branch's compile state: its parent's, read through, until
+/// the branch first writes; then a compile fork of its own
+/// ([`CompileCtx::fork`]) that joins its parent's at the merge.
+pub struct ForkCx<R: Rt, E: UserEvent> {
+    parent: *const CxView<'static, R, E>,
+    own: Option<Box<CompileCtx<R, E>>>,
+}
+
+// SAFETY: `parent` is only read, and only while the parent is suspended
+// in the join that forked this branch.
+unsafe impl<R: Rt + Sync, E: UserEvent + Sync> Send for ForkCx<R, E> {}
+
+impl<R: Rt, E: UserEvent> ForkCx<R, E> {
+    /// A branch forked from `parent`, which must not be used until the
+    /// branch has merged back.
+    pub(crate) fn new(parent: &CxView<'_, R, E>) -> Self {
+        Self {
+            parent: parent as *const CxView<'_, R, E> as *const CxView<'static, R, E>,
+            own: None,
+        }
+    }
+
+    fn parent(&self) -> &CxView<'_, R, E> {
+        // SAFETY: see the type.
+        unsafe { &*(self.parent as *const CxView<'_, R, E>) }
+    }
+}
+
+/// The compile state as a branch sees it.
+pub enum CxView<'a, R: Rt, E: UserEvent> {
+    Root(&'a mut CompileCtx<R, E>),
+    Fork(&'a mut ForkCx<R, E>),
+}
+
+impl<'a, R: Rt, E: UserEvent> CxView<'a, R, E> {
+    /// The same view, borrowed for a shorter time.
+    pub fn reborrow(&mut self) -> CxView<'_, R, E> {
+        match self {
+            Self::Root(c) => CxView::Root(c),
+            Self::Fork(f) => CxView::Fork(f),
+        }
+    }
+
+    /// Take back what the forked branch `child` compiled.
+    pub(crate) fn merge(&mut self, child: ForkCx<R, E>) {
+        if let Some(cx) = child.own {
+            self.join(*cx)
+        }
+    }
+}
+
+impl<'a, R: Rt, E: UserEvent> Deref for CxView<'a, R, E> {
+    type Target = CompileCtx<R, E>;
+
+    fn deref(&self) -> &CompileCtx<R, E> {
+        let mut view: &CxView<'_, R, E> = self;
+        loop {
+            match view {
+                CxView::Root(c) => return c,
+                CxView::Fork(f) => match &f.own {
+                    Some(c) => return c,
+                    None => view = f.parent(),
+                },
+            }
+        }
+    }
+}
+
+impl<'a, R: Rt, E: UserEvent> DerefMut for CxView<'a, R, E> {
+    fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
+        match self {
+            Self::Root(c) => c,
+            Self::Fork(f) => {
+                if f.own.is_none() {
+                    let parent: &CompileCtx<R, E> = f.parent();
+                    let mut own = Box::new(parent.fork());
+                    own.def_assertions = parent.def_assertions.clone();
+                    f.own = Some(own);
+                }
+                f.own.as_mut().unwrap()
+            }
+        }
+    }
+}
+
+/// Run `a` and `b` as two branches forked from `ctx` and merge them back,
+/// `a`'s first: neither sees what the other did, and `ctx` ends as the
+/// serial evaluation of `a` then `b` would leave it.
+pub fn fork_join<R, E, A, B, RA, RB>(ctx: &mut ExecCtx<'_, R, E>, a: A, b: B) -> (RA, RB)
+where
+    R: Rt,
+    E: UserEvent,
+    A: FnOnce(&mut ExecCtx<'_, R, E>) -> RA,
+    B: FnOnce(&mut ExecCtx<'_, R, E>) -> RB,
+{
+    debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
+    let (mut rt_a, mut rt_b) = (ForkRt::new(&ctx.rt), ForkRt::new(&ctx.rt));
+    let (mut cx_a, mut cx_b) = (ForkCx::new(&ctx.cx), ForkCx::new(&ctx.cx));
+    let (mut ev_a, mut ev_b) = (ctx.event.fork(), ctx.event.fork());
+    let (libstate, hooks, control, decoder) =
+        (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
+    let fork_depth = ctx.fork_depth + 1;
+    let branch = |cx, rt, event| ExecCtx {
+        cx: CxView::Fork(cx),
+        image_decoder: decoder,
+        libstate,
+        rt: RtView::Fork(rt),
+        core_hook_sites: hooks,
+        control,
+        event,
+        fork_depth,
+    };
+    let ra = a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a));
+    let rb = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
+    ctx.cx.merge(cx_a);
+    ctx.rt.merge(rt_a);
+    ctx.event.merge(ev_a);
+    ctx.cx.merge(cx_b);
+    ctx.rt.merge(rt_b);
+    ctx.event.merge(ev_b);
+    (ra, rb)
+}
+
+/// Forks nest at most this deep: a branch this deep runs its fork
+/// points serially. Every lookup a branch makes walks at most this many
+/// layers, and binary splits this deep already outnumber any machine's
+/// cores many times over.
+pub const MAX_FORK_DEPTH: u8 = 16;
+
+/// Whether a fork point forks. Until the cost model, only a forced
+/// runtime does.
+pub fn forks<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>) -> bool {
+    ctx.fork_depth < MAX_FORK_DEPTH && ctx.control.par_mode() == ParMode::Force
 }

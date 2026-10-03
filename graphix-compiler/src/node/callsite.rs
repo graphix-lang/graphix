@@ -1530,26 +1530,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             warn!("decoding the instance of {}: {e:#}; resolving it afresh", self.spec);
             self.callee = Callee::DynamicUnbound;
         }
-        let mut set: LPooled<Vec<BindId>> = LPooled::take();
-        let mut arg_fired = false;
         let may_bind = match &self.callee {
             Callee::Static { first_update, .. } => *first_update,
             _ => true,
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
-        let mut prods: SmallVec<[(BindId, TagValue); 4]> = SmallVec::new();
-        for arg in self.args.values_mut() {
-            let Some(node) = &mut arg.node else { continue };
-            let tv = node.update(ctx);
-            let fired = tv.tag().triggers();
-            arg_fired |= fired;
-            if may_bind && !fired {
-                prods.push((arg.id, tv.clone()));
-            }
-            if publish_production(ctx, Feeds::Id(arg.id), tv, false, root) {
-                set.push(arg.id);
-            }
-        }
+        let ArgsOut { fired: arg_fired, prods, mut set } =
+            update_args(ctx, self.args.as_mut_slice(), may_bind, root);
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
         let static_callee = matches!(self.callee, Callee::Static { .. });
@@ -1756,10 +1743,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn materialize(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> Result<()> {
         let Callee::Imaged { instance, .. } = &self.callee else { return Ok(()) };
         let instance = *instance;
-        let shared = ctx
-            .image_decoder
-            .clone()
-            .ok_or_else(|| anyhow!("no image to decode instance {instance:?} from"))?;
+        let shared =
+            ctx.image_decoder.get().cloned().ok_or_else(|| {
+                anyhow!("no image to decode instance {instance:?} from")
+            })?;
         let mut dec = shared.lock();
         let at = dec
             .ext_ref::<image::Restored>()
@@ -2288,6 +2275,51 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
 pub(crate) enum Feeds<'a> {
     Id(BindId),
     Pattern(&'a StructPatternNode),
+}
+
+/// What updating a call's arguments left: whether one fired, the
+/// productions a fresh bind replays, and the argument ids published
+/// this cycle.
+struct ArgsOut {
+    fired: bool,
+    prods: SmallVec<[(BindId, TagValue); 4]>,
+    set: LPooled<Vec<BindId>>,
+}
+
+/// Update `args` and publish each production on its argument's id,
+/// forking halves where the runtime forks.
+fn update_args<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
+    may_bind: bool,
+    root: QuietAtRoot,
+) -> ArgsOut {
+    if args.len() > 1 && crate::branch::forks(ctx) {
+        let (l, r) = args.split_at_mut(args.len() / 2);
+        let (mut lo, ro) = crate::branch::fork_join(
+            ctx,
+            |c| update_args(c, l, may_bind, root),
+            |c| update_args(c, r, may_bind, root),
+        );
+        lo.fired |= ro.fired;
+        lo.prods.extend(ro.prods);
+        lo.set.extend(ro.set.iter().copied());
+        return lo;
+    }
+    let mut out = ArgsOut { fired: false, prods: SmallVec::new(), set: LPooled::take() };
+    for arg in args.values_mut() {
+        let Some(node) = &mut arg.node else { continue };
+        let tv = node.update(ctx);
+        let fired = tv.tag().triggers();
+        out.fired |= fired;
+        if may_bind && !fired {
+            out.prods.push((arg.id, tv.clone()));
+        }
+        if publish_production(ctx, Feeds::Id(arg.id), tv, false, root) {
+            out.set.push(arg.id);
+        }
+    }
+    out
 }
 
 /// What a quiet production does; the store serves the value channel.

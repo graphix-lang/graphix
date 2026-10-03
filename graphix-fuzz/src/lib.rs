@@ -407,7 +407,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         None,
         None,
         move |ctx| {
-            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = sink;
+            ctx.libstate.set(sink);
         },
     )
     .await
@@ -997,7 +997,7 @@ async fn run_subject(
         program_image,
         Some((subj.sched.max_events, subj.sched.max_cycles)),
         move |ctx| {
-            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = seeded;
+            ctx.libstate.set(seeded);
         },
     )
     .await
@@ -2790,7 +2790,7 @@ pub async fn typemorph_subject(
     let sink = graphix_package_core::PrintSink::default();
     let ctx =
         init_with_flags_and_setup(tx, REGISTER, vec![], Mode::Jit.flags(), move |ctx| {
-            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = sink;
+            ctx.libstate.set(sink);
         })
         .await
         .map_err(|e| format!("runtime init failed: {e:?}"))?;
@@ -2848,7 +2848,7 @@ async fn must_reject(
         vec![],
         Mode::Interp.flags(),
         move |ctx| {
-            *ctx.libstate.get_or_default::<graphix_package_core::PrintSink>() = sink;
+            ctx.libstate.set(sink);
         },
     )
     .await

@@ -3,7 +3,7 @@ use std::{
     cell::Cell,
     sync::{
         LazyLock,
-        atomic::{AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering},
     },
 };
 
@@ -154,6 +154,33 @@ pub enum CtlFlag {
 pub struct Control {
     flags: AtomicU32,
     stack_budget: AtomicUsize,
+    par: AtomicU8,
+}
+
+/// How a runtime forks the independent subtrees of a cycle
+/// (`design/parallel_eval.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ParMode {
+    /// Never.
+    Off,
+    /// Where the cost model says a fork pays.
+    Auto,
+    /// At every legal fork point.
+    Force,
+}
+
+impl ParMode {
+    /// `GRAPHIX_PAR` (`off`, `auto` or `force`), else `Off`.
+    pub fn from_env() -> Self {
+        static MODE: LazyLock<ParMode> =
+            LazyLock::new(|| match std::env::var("GRAPHIX_PAR").as_deref() {
+                Ok("force") => ParMode::Force,
+                Ok("auto") => ParMode::Auto,
+                _ => ParMode::Off,
+            });
+        *MODE
+    }
 }
 
 impl Default for Control {
@@ -167,7 +194,20 @@ impl Control {
         Control {
             flags: AtomicU32::new(0),
             stack_budget: AtomicUsize::new(default_budget()),
+            par: AtomicU8::new(ParMode::from_env() as u8),
         }
+    }
+
+    pub fn par_mode(&self) -> ParMode {
+        match self.par.load(Ordering::Relaxed) {
+            1 => ParMode::Auto,
+            2 => ParMode::Force,
+            _ => ParMode::Off,
+        }
+    }
+
+    pub fn set_par_mode(&self, mode: ParMode) {
+        self.par.store(mode as u8, Ordering::Relaxed)
     }
 
     /// The bytes of grown stack segments a thread running this runtime

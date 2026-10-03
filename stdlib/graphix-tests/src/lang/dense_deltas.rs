@@ -36,7 +36,7 @@ pub(super) async fn run_delta(
         vec![resolver],
         flags,
         move |ctx| {
-            *ctx.libstate.get_or_default::<PrintSink>() = seeded;
+            ctx.libstate.set(seeded);
         },
     )
     .await?;

@@ -234,6 +234,47 @@ expected: the cycle cost histogram (§5) says the last cycles were
 expensive, or a `#[parallel]` region is live. Otherwise it runs inline
 on the driver thread, as today, with no thread handoff.
 
+### 4.4 As built (phase 2)
+
+`graphix-compiler/src/branch.rs` holds the branch views:
+
+- **`RtView`** (`ctx.rt`): the runtime at the root, or a `ForkRt`
+  (store and reference-path deltas, `None` a removal, and a log of every
+  other call) over its frozen parent. `Rt::store()` became the per-id
+  `store_get`, and `spawn`/`spawn_var` return nothing (no caller kept
+  the abort handle; async builtins drop stale results by minting a new
+  id on sleep).
+- **`Layered`** maps (`ctx.event.variables`, `wake_phantoms`): a
+  branch's entries and removals over its parent's. Custom deliveries
+  are one locked map every branch shares (`Event::take_custom`,
+  `with_custom`).
+- **`CxView`** (`ctx.cx`): the parent's compile state, read through,
+  until the branch first writes; then a boxed `CompileCtx::fork` that
+  joins at the merge. It inherits the parent's compile task: a new task
+  changes how a settle treats cells of earlier tasks
+  (`tvar::earlier_task`), so giving runtime compiles tasks of their own
+  waits on a `GRAPHIX_TASK_AUDIT` run showing they write none (phase 4).
+  The pending definition assertions are one shared list, so an
+  assertion a branch's bind reaches is checked and retired once.
+- **Shared, not forked**: `LibState` (behind a lock, values read out as
+  clones), the core-trait hook registry (locked only while it is read
+  or written; sites are built and run outside it), the image decoder (a
+  `OnceLock`, set once when the registration image is read), `Control`.
+- **`fork_join`** forks both sides from the same parent, runs both, then
+  merges left then right. Nothing compiled may be pending when it forks:
+  a collection's resize applies what it deferred (`ExecCtx::
+  apply_deferred`) before its slots run, where serial evaluation used to
+  leave it to the first slot's bind.
+- **`MAX_FORK_DEPTH`** (16): a branch that deep runs its fork points
+  serially. Every lookup walks the parent chain, so an unbounded chain
+  (a forced recursion forks at every level) made lookups linear in the
+  depth.
+
+Fork points built: binary operands, constructor fields (`gather`), call
+arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
+`Control`, defaulting from `GRAPHIX_PAR`; until the cost model only
+`Force` forks.
+
 ## 5. The cost model
 
 The engine measures, and the measurements choose the fork points.

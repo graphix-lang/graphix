@@ -37,7 +37,6 @@ use parking_lot::Mutex;
 use std::{
     any::{Any, TypeId},
     cell::Cell,
-    collections::hash_map,
     sync::LazyLock,
     thread::LocalKey,
 };
@@ -181,42 +180,34 @@ pub fn format_with_flags<G: Into<BitFlags<PrintFlag>>, R, F: FnOnce() -> R>(
     f()
 }
 
+/// Library state for builtins, one value per type, shared by every
+/// branch of a cycle: values are handles, read out as clones, and a value
+/// that changes guards itself.
 #[derive(Default)]
-pub struct LibState(AHashMap<TypeId, Box<dyn Any + Send + Sync>>);
+pub struct LibState(Mutex<AHashMap<TypeId, Box<dyn Any + Send + Sync>>>);
 
 impl LibState {
     /// The library state of type `T`, created with `T::default` if absent.
-    pub fn get_or_default<T>(&mut self) -> &mut T
+    pub fn get_or_default<T>(&self) -> T
     where
-        T: Default + Any + Send + Sync,
+        T: Default + Clone + Any + Send + Sync,
     {
-        self.0
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(T::default()) as Box<dyn Any + Send + Sync>)
-            .downcast_mut::<T>()
-            .unwrap()
+        self.get_or_else(T::default)
     }
 
     /// The library state of type `T`, created with `f` if absent.
-    pub fn get_or_else<T, F>(&mut self, f: F) -> &mut T
+    pub fn get_or_else<T, F>(&self, f: F) -> T
     where
-        T: Any + Send + Sync,
+        T: Clone + Any + Send + Sync,
         F: FnOnce() -> T,
     {
         self.0
+            .lock()
             .entry(TypeId::of::<T>())
             .or_insert_with(|| Box::new(f()) as Box<dyn Any + Send + Sync>)
-            .downcast_mut::<T>()
+            .downcast_ref::<T>()
             .unwrap()
-    }
-
-    pub fn entry<'a, T>(
-        &'a mut self,
-    ) -> hash_map::Entry<'a, TypeId, Box<dyn Any + Send + Sync>>
-    where
-        T: Any + Send + Sync,
-    {
-        self.0.entry(TypeId::of::<T>())
+            .clone()
     }
 
     /// True if `T` is present.
@@ -224,41 +215,37 @@ impl LibState {
     where
         T: Any + Send + Sync,
     {
-        self.0.contains_key(&TypeId::of::<T>())
+        self.0.lock().contains_key(&TypeId::of::<T>())
     }
 
     /// The library state of type `T`, if registered.
-    pub fn get<T>(&self) -> Option<&T>
+    pub fn get<T>(&self) -> Option<T>
     where
-        T: Any + Send + Sync,
+        T: Clone + Any + Send + Sync,
     {
-        self.0.get(&TypeId::of::<T>()).map(|t| t.downcast_ref::<T>().unwrap())
-    }
-
-    /// The library state of type `T`, mutably, if registered.
-    pub fn get_mut<T>(&mut self) -> Option<&mut T>
-    where
-        T: Any + Send + Sync,
-    {
-        self.0.get_mut(&TypeId::of::<T>()).map(|t| t.downcast_mut::<T>().unwrap())
+        self.0
+            .lock()
+            .get(&TypeId::of::<T>())
+            .map(|t| t.downcast_ref::<T>().unwrap().clone())
     }
 
     /// Set the library state of type `T`, returning any existing state.
-    pub fn set<T>(&mut self, t: T) -> Option<Box<T>>
+    pub fn set<T>(&self, t: T) -> Option<Box<T>>
     where
         T: Any + Send + Sync,
     {
         self.0
+            .lock()
             .insert(TypeId::of::<T>(), Box::new(t) as Box<dyn Any + Send + Sync>)
             .map(|t| t.downcast::<T>().unwrap())
     }
 
     /// Remove and return the library state of type `T`.
-    pub fn remove<T>(&mut self) -> Option<Box<T>>
+    pub fn remove<T>(&self) -> Option<Box<T>>
     where
         T: Any + Send + Sync,
     {
-        self.0.remove(&TypeId::of::<T>()).map(|t| t.downcast::<T>().unwrap())
+        self.0.lock().remove(&TypeId::of::<T>()).map(|t| t.downcast::<T>().unwrap())
     }
 }
 

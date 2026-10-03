@@ -1119,7 +1119,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// ([`check_pending_names`]).
     pub(crate) pending_names: Vec<(typ::TypeRef, Expr)>,
     /// Pending definition assertions; see [`DefAssertion`].
-    pub(crate) def_assertions: Mutex<Vec<DefAssertion>>,
+    pub(crate) def_assertions: Arc<Mutex<Vec<DefAssertion>>>,
     /// Registry attributes recorded this `compile_stmt`; each must be
     /// dispatched or absorbed by the fusion walk, or the statement errors.
     pub(crate) attr_census: Mutex<Vec<Expr>>,
@@ -1150,14 +1150,14 @@ pub struct ExecState<R: Rt, E: UserEvent> {
     pub cx: CompileCtx<R, E>,
     /// The tables of the image this session was restored from, for
     /// anything decoded later.
-    pub(crate) image_decoder: Option<image::SharedDecoder>,
+    pub(crate) image_decoder: std::sync::OnceLock<image::SharedDecoder>,
     /// Library state for builtins.
     pub libstate: LibState,
     /// The runtime.
     pub rt: R,
     /// The call sites through which `Value` comparison and printing
     /// reach core-trait implementations, built on first use.
-    pub(crate) core_hook_sites: node::coretraits::CoreHookSites<R, E>,
+    pub(crate) core_hook_sites: Mutex<node::coretraits::CoreHookSites<R, E>>,
     /// Interrupt/abort control, shared with the runtime handle. See
     /// [`Control`].
     pub control: Arc<Control>,
@@ -1182,26 +1182,28 @@ impl<R: Rt, E: UserEvent> std::ops::DerefMut for ExecState<R, E> {
 /// What a node's update, delete and sleep read and write: a view of an
 /// [`ExecState`].
 pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
-    pub cx: &'a mut CompileCtx<R, E>,
-    pub(crate) image_decoder: &'a mut Option<image::SharedDecoder>,
-    pub libstate: &'a mut LibState,
+    pub cx: branch::CxView<'a, R, E>,
+    pub(crate) image_decoder: &'a std::sync::OnceLock<image::SharedDecoder>,
+    pub libstate: &'a LibState,
     pub rt: branch::RtView<'a, R>,
-    pub(crate) core_hook_sites: &'a mut node::coretraits::CoreHookSites<R, E>,
+    pub(crate) core_hook_sites: &'a Mutex<node::coretraits::CoreHookSites<R, E>>,
     pub control: &'a Arc<Control>,
     pub event: &'a mut Event<E>,
+    /// How many forks this branch is below the cycle's root.
+    pub(crate) fork_depth: u8,
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
     type Target = CompileCtx<R, E>;
 
     fn deref(&self) -> &CompileCtx<R, E> {
-        self.cx
+        &self.cx
     }
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::DerefMut for ExecCtx<'a, R, E> {
     fn deref_mut(&mut self) -> &mut CompileCtx<R, E> {
-        self.cx
+        &mut self.cx
     }
 }
 
@@ -1229,7 +1231,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             pending_settles: vec![Vec::new()],
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
-            def_assertions: Mutex::new(Vec::new()),
+            def_assertions: Arc::new(Mutex::new(Vec::new())),
             attr_census: Mutex::new(Vec::new()),
             attr_dispatched: Mutex::new(IntSet::default()),
             attr_absorbed: Mutex::new(IntSet::default()),
@@ -1285,7 +1287,10 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
         frame.extend(pending_settles.into_iter().flatten());
         self.pending_imports.extend(pending_imports);
         self.pending_names.extend(pending_names);
-        self.def_assertions.lock().extend(def_assertions.into_inner());
+        if !Arc::ptr_eq(&self.def_assertions, &def_assertions) {
+            let joined = mem::take(&mut *def_assertions.lock());
+            self.def_assertions.lock().extend(joined);
+        }
         self.attr_census.lock().extend(attr_census.into_inner());
         self.attr_dispatched.lock().extend(attr_dispatched.into_inner());
         self.attr_absorbed.lock().extend(attr_absorbed.into_inner());
@@ -1430,7 +1435,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 pending_settles: vec![Vec::new()],
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
-                def_assertions: Mutex::new(Vec::new()),
+                def_assertions: Arc::new(Mutex::new(Vec::new())),
                 attr_census: Mutex::new(Vec::new()),
                 attr_dispatched: Mutex::new(IntSet::default()),
                 attr_absorbed: Mutex::new(IntSet::default()),
@@ -1439,10 +1444,10 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
                 task: 0,
                 fusion: fusion::FusionCtx::new()?,
             },
-            image_decoder: None,
+            image_decoder: std::sync::OnceLock::new(),
             libstate: LibState::default(),
             rt,
-            core_hook_sites: node::coretraits::CoreHookSites::default(),
+            core_hook_sites: Mutex::new(node::coretraits::CoreHookSites::default()),
             control: Arc::new(Control::new()),
             event: Event::new(user),
         };
@@ -1455,7 +1460,17 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
         let Self { cx, image_decoder, libstate, rt, core_hook_sites, control, event } =
             self;
         let rt = branch::RtView::Root(rt);
-        ExecCtx { cx, image_decoder, libstate, rt, core_hook_sites, control, event }
+        let cx = branch::CxView::Root(cx);
+        ExecCtx {
+            cx,
+            image_decoder,
+            libstate,
+            rt,
+            core_hook_sites,
+            control,
+            event,
+            fork_depth: 0,
+        }
     }
 }
 
@@ -1463,13 +1478,14 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// The same view, borrowed for a shorter time, over `event`.
     pub fn with_event<'b>(&'b mut self, event: &'b mut Event<E>) -> ExecCtx<'b, R, E> {
         ExecCtx {
-            cx: &mut *self.cx,
-            image_decoder: &mut *self.image_decoder,
-            libstate: &mut *self.libstate,
+            cx: self.cx.reborrow(),
+            image_decoder: self.image_decoder,
+            libstate: self.libstate,
             rt: self.rt.reborrow(),
-            core_hook_sites: &mut *self.core_hook_sites,
+            core_hook_sites: self.core_hook_sites,
             control: self.control,
             event,
+            fork_depth: self.fork_depth,
         }
     }
 

@@ -189,7 +189,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             ("pending settles", !self.pending_settles.iter().all(|s| s.is_empty())),
             ("an open definition gate", self.def_gate_depth != 0),
             ("lambdas resolving", !self.resolving_lambdas.lock().is_empty()),
-            ("core hook sites", !self.core_hook_sites.is_empty()),
+            ("core hook sites", !self.core_hook_sites.lock().is_empty()),
         ];
         if let Some((what, _)) = busy.iter().find(|(_, b)| *b) {
             warn!("the session is not quiescent: {what}");
@@ -288,7 +288,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<'_, R, E> {
         let mut nodes = Vec::new();
         match self.decode_registration(image, &mut nodes) {
             Ok((dec, scope, program)) => {
-                *self.image_decoder = Some(dec);
+                let fresh = self.image_decoder.set(dec).is_ok();
+                debug_assert!(fresh, "a session restores one registration image");
                 self.apply_deferred();
                 Ok(Registration { nodes, scope, program })
             }
