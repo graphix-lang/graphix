@@ -8,6 +8,9 @@ pub mod nodes;
 mod registration;
 
 pub use graphix_types::image::*;
+// named, not only globbed: a match pattern reads a name the glob does
+// not bring in as a catch-all binding
+pub use graphix_types::image::{DEF, REF};
 pub use nodes::{NOT_IMAGED, decode_node, decode_nodes, encode_nodes};
 pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
 

@@ -385,7 +385,7 @@ pub type SharedDecoder = sync::Arc<Mutex<ImageDecoder>>;
 impl ImageDecoder {
     /// Enter `obj` in the slot of the definition being decoded. A value
     /// a cycle built twice keeps its first.
-    pub fn enter(&mut self, obj: Obj) -> Result<(), PackError> {
+    fn enter(&mut self, obj: Obj) -> Result<(), PackError> {
         let ord = *self.defining.last().ok_or(PackError::InvalidFormat)?;
         let slot = self.objects.get_mut(ord as usize).ok_or(PackError::InvalidFormat)?;
         self.built += 1;
@@ -1118,7 +1118,7 @@ pub fn object_ref(buf: &mut impl Buf) -> Result<u32, PackError> {
 }
 
 /// The object `ord` names: the session's, or decoded with `full`.
-pub fn object_at<T: Object>(
+pub(crate) fn object_at<T: Object>(
     ord: u32,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
 ) -> Result<T, PackError> {
@@ -1146,7 +1146,7 @@ pub fn enter(obj: Obj) -> Result<(), PackError> {
 /// Read an object written by [`object_encode`]: a reference clones the
 /// store's object or decodes its definition with `full`; a definition
 /// decodes `contents` and enters it.
-pub fn object_decode<T: Object>(
+pub(crate) fn object_decode<T: Object>(
     buf: &mut impl Buf,
     contents: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
