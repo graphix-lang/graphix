@@ -24,7 +24,7 @@ use arcstr::ArcStr;
 use bytes::Bytes;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag, FusionStats, Scope,
+    CFlag, FusionStats, ParMode, Scope,
     env::Env,
     expr::{Expr, Origin, VfsEntry, VfsResolver, parser},
 };
@@ -51,15 +51,30 @@ pub enum Mode {
     Interp,
     /// Fusion + cranelift JIT (no flags) — the system under test.
     Jit,
+    /// The node-walk with every fork point forked
+    /// (`design/parallel_eval.md`): what serial evaluation computes.
+    Par,
 }
 
 impl Mode {
     pub fn flags(self) -> BitFlags<CFlag> {
         match self {
-            Mode::Interp => CFlag::FusionDisabled.into(),
+            Mode::Interp | Mode::Par => CFlag::FusionDisabled.into(),
             Mode::Jit => BitFlags::empty(),
         }
     }
+
+    pub fn par(self) -> ParMode {
+        match self {
+            Mode::Par => ParMode::Force,
+            Mode::Interp | Mode::Jit => ParMode::Off,
+        }
+    }
+}
+
+/// `GRAPHIX_FUZZ_PAR=0` disables the forced-fork run (default on).
+fn par_enabled() -> bool {
+    std::env::var("GRAPHIX_FUZZ_PAR").map_or(true, |v| v != "0")
 }
 
 /// How a `callable-v1` program's dispatch epochs are delivered (see
@@ -408,6 +423,7 @@ async fn compile_with_stats(code: &str, mode: Mode, timeout: Duration) -> Compil
         None,
         move |ctx| {
             ctx.libstate.set(sink);
+            ctx.control.set_par_mode(mode.par());
         },
     )
     .await
@@ -998,6 +1014,7 @@ async fn run_subject(
         Some((subj.sched.max_events, subj.sched.max_cycles)),
         move |ctx| {
             ctx.libstate.set(seeded);
+            ctx.control.set_par_mode(mode.par());
         },
     )
     .await
@@ -1229,6 +1246,9 @@ pub enum Pair {
     /// program both engines' builds refused (`jit` holds the refusal):
     /// elaboration refused what the check accepted, a type-system bug.
     Check,
+    /// Serial node-walk vs the node-walk with every fork forced
+    /// (`interp` holds the serial outcome, `jit` the forked one).
+    Par,
 }
 
 /// The label of one session run, for a finding's outcome fields.
@@ -1247,6 +1267,7 @@ fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
         (Jit, Dispatch, NoCache) => "jit/dispatch/nocache",
         (Jit, Dispatch, Cold) => "jit/dispatch/cold",
         (Jit, Dispatch, Warm) => "jit/dispatch/warm",
+        (Par, _, _) => "par",
     }
 }
 
@@ -1277,6 +1298,9 @@ impl Divergence {
                      a program the definition and call-site checks passed: a \
                      type-system bug)"
                 }
+                (Pair::Par, _) => {
+                    "parallel evaluation bug (forked node-walk != serial node-walk)"
+                }
                 (Pair::Route, _) => {
                     "route bug (in-language call != embedder-callable dispatch, interp)"
                 }
@@ -1290,13 +1314,13 @@ impl Divergence {
                     "fusion/JIT bug (final values, interp != jit)"
                 }
                 (Pair::Engine, _) => "fusion/JIT bug (interp != jit)",
-                (Pair::Cold(Mode::Interp, _), _) => {
+                (Pair::Cold(Mode::Interp | Mode::Par, _), _) => {
                     "image bug: writing the program image changed the program (interp)"
                 }
                 (Pair::Cold(Mode::Jit, _), _) => {
                     "image bug: writing the program image changed the program (jit)"
                 }
-                (Pair::Warm(Mode::Interp, _), _) => {
+                (Pair::Warm(Mode::Interp | Mode::Par, _), _) => {
                     "image bug: the restored program differs from the cold one (interp)"
                 }
                 (Pair::Warm(Mode::Jit, _), _) => {
@@ -1315,6 +1339,7 @@ impl Divergence {
             Pair::Twin => ("trace", "trace"),
             Pair::Rejected => ("interp", "jit"),
             Pair::Check => ("check", "build"),
+            Pair::Par => ("interp", "interp/par"),
             Pair::Cold(m, r) => (
                 session_label(m, r, Session::NoCache),
                 session_label(m, r, Session::Cold),
@@ -1456,6 +1481,9 @@ pub async fn check_verdict(
         if let Some(d) = check_sessions(code, tier, timeout).await {
             return (Some(d), Verdict::Unsure);
         }
+        if let Some(d) = check_par(code, &interp, tier, timeout).await {
+            return (Some(d), Verdict::Unsure);
+        }
         return (None, Verdict::of(&interp, &jit));
     }
     // Reference-side Timeout with a value-bearing jit trace is as likely
@@ -1516,6 +1544,41 @@ pub async fn check_verdict(
         }),
         Verdict::Unsure,
     )
+}
+
+/// The forked node-walk against the serial one, whose outcome is
+/// `interp`. A one-sided timeout retries the forked side at the slow
+/// budget; a serial run that disagrees with itself is nondeterminism.
+async fn check_par(
+    code: &str,
+    interp: &Outcome,
+    tier: OracleTier,
+    timeout: Duration,
+) -> Option<Divergence> {
+    if !par_enabled() {
+        return None;
+    }
+    let mut par = run_program(code, Mode::Par, timeout).await;
+    if interp.agrees_with_at(&par, tier) {
+        return None;
+    }
+    if matches!(&par, Outcome::Timeout(_)) && interp.has_events() {
+        par = retry_one_sided_timeout(code, Mode::Par, timeout).await.outcome;
+        if interp.agrees_with_at(&par, tier) {
+            return None;
+        }
+    }
+    let interp2 = run_program(code, Mode::Interp, timeout).await;
+    if !interp.agrees_with_at(&interp2, tier) {
+        return None;
+    }
+    Some(Divergence {
+        code: code.to_string(),
+        interp: interp.clone(),
+        jit: par,
+        tier,
+        pair: Pair::Par,
+    })
 }
 
 struct SlowRetry {
@@ -1707,7 +1770,7 @@ async fn check_callable(
         Route::InLanguage,
         Mode::Interp,
         Route::Dispatch,
-        ia,
+        ia.clone(),
         ib,
         route_agrees,
         timeout,
@@ -1724,6 +1787,9 @@ async fn check_callable(
         return (Some(d), Verdict::Unsure);
     }
     if let Some(d) = check_sessions(code, tier, timeout).await {
+        return (Some(d), Verdict::Unsure);
+    }
+    if let Some(d) = check_par(code, &ia, tier, timeout).await {
         return (Some(d), Verdict::Unsure);
     }
     (None, verdict)
@@ -1823,7 +1889,14 @@ pub async fn run_batch(
                 }
             }
         }
-        let agreed = agreed && sessions_agree;
+        // A forked run that disagrees goes back through the individual
+        // path too.
+        let par_agrees = !(agreed && comparable && par_enabled()) || {
+            let par =
+                run_program_routed(code, Mode::Par, Route::InLanguage, timeout).await;
+            !suspect(&par) && interp.agrees_with_at(&par, tier)
+        };
+        let agreed = agreed && sessions_agree && par_agrees;
         let verdict = if agreed {
             // `ran` is the parent's ring-admission bar and mirrors the
             // individual path: a callable or Excluded subject is never admitted
@@ -4015,6 +4088,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
                 (Mode::Jit, Route::InLanguage) => "jit",
                 (Mode::Interp, Route::Dispatch) => "interp-dispatch",
                 (Mode::Jit, Route::Dispatch) => "jit-dispatch",
+                (Mode::Par, _) => "par",
             });
         }
     }
@@ -6174,10 +6248,15 @@ mod trace_probes {
             ))),
         )]);
         let resolver = VfsResolver::new(tbl);
-        let ctx =
-            init_with_flags_and_setup(tx, REGISTER, vec![resolver], mode.flags(), |_| {})
-                .await
-                .expect("runtime init");
+        let ctx = init_with_flags_and_setup(
+            tx,
+            REGISTER,
+            vec![resolver],
+            mode.flags(),
+            move |ctx| ctx.control.set_par_mode(mode.par()),
+        )
+        .await
+        .expect("runtime init");
         let base = ctx.fusion_stats().await.expect("base stats");
         ctx.rt.trace_start(max_events, max_cycles).expect("trace_start");
         let text = format!("{prelude}\n{{ mod test; test::result }}");
