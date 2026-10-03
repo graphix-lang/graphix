@@ -12,7 +12,7 @@ use crate::{
 use futures::channel::mpsc;
 use graphix_types::stack::ParMode;
 use netidx_value::Value;
-use nohash::IntMap;
+use nohash::{IntMap, IntSet};
 use poolshark::global::GPooled;
 use std::{
     future::Future,
@@ -291,10 +291,11 @@ impl<'a, R: Rt> RtView<'a, R> {
 }
 
 /// A map a branch writes over its parent's: the parent's entries show
-/// through unless the branch wrote or removed them (`None`). A root
-/// map has no parent and holds no removals.
+/// through unless the branch wrote them or removed them (`removed`). A
+/// root map has no parent and no removals.
 pub struct Layered<V> {
-    map: IntMap<BindId, Option<V>>,
+    map: IntMap<BindId, V>,
+    removed: IntSet<BindId>,
     parent: *const Layered<V>,
 }
 
@@ -305,7 +306,11 @@ unsafe impl<V: Send + Sync> Sync for Layered<V> {}
 
 impl<V> Default for Layered<V> {
     fn default() -> Self {
-        Self { map: IntMap::default(), parent: std::ptr::null() }
+        Self {
+            map: IntMap::default(),
+            removed: IntSet::default(),
+            parent: std::ptr::null(),
+        }
     }
 }
 
@@ -326,10 +331,14 @@ impl<V: Clone> Layered<V> {
     pub fn get(&self, id: &BindId) -> Option<&V> {
         let mut layer = self;
         loop {
-            match layer.map.get(id) {
-                Some(e) => return e.as_ref(),
-                None => layer = layer.parent()?,
+            if let Some(v) = layer.map.get(id) {
+                return Some(v);
             }
+            let parent = layer.parent()?;
+            if layer.removed.contains(id) {
+                return None;
+            }
+            layer = parent;
         }
     }
 
@@ -341,8 +350,9 @@ impl<V: Clone> Layered<V> {
     /// Set `id`, returning what it held.
     #[inline]
     pub fn insert(&mut self, id: BindId, v: V) -> Option<V> {
-        match self.map.insert(id, Some(v)) {
-            Some(prev) => prev,
+        match self.map.insert(id, v) {
+            Some(prev) => Some(prev),
+            None if self.parent.is_null() || self.removed.remove(&id) => None,
             None => self.parent().and_then(|p| p.get(&id).cloned()),
         }
     }
@@ -353,64 +363,52 @@ impl<V: Clone> Layered<V> {
         if self.contains_key(&id) {
             return Err(v);
         }
-        self.map.insert(id, Some(v));
+        self.insert(id, v);
         Ok(())
     }
 
     /// Remove `id`, returning what it held.
     #[inline]
     pub fn remove(&mut self, id: &BindId) -> Option<V> {
-        match self.parent() {
-            None => self.map.remove(id).flatten(),
-            Some(p) => {
-                let from_parent = p.get(id).cloned();
-                let own = match from_parent.is_some() {
-                    true => self.map.insert(*id, None),
-                    false => self.map.remove(id),
-                };
-                match own {
-                    Some(prev) => prev,
-                    None => from_parent,
-                }
-            }
+        let own = self.map.remove(id);
+        if self.parent.is_null() || self.removed.contains(id) {
+            return own;
         }
+        let from_parent = self.parent().and_then(|p| p.get(id).cloned());
+        if from_parent.is_some() {
+            self.removed.insert(*id);
+        }
+        own.or(from_parent)
     }
 
-    /// The entries this layer holds, removals included.
+    /// The entries this layer holds.
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
     /// Whether this layer holds nothing.
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.map.is_empty() && self.removed.is_empty()
     }
 
     pub fn clear(&mut self) {
-        self.map.clear()
+        self.map.clear();
+        self.removed.clear();
     }
 
     /// A layer over this one, which must not be used until the layer has
     /// merged back.
     pub(crate) fn fork(&self) -> Self {
-        Self { map: IntMap::default(), parent: self }
+        Self { map: IntMap::default(), removed: IntSet::default(), parent: self }
     }
 
     /// Apply the forked layer `child` over this one.
     pub(crate) fn merge(&mut self, child: Self) {
-        let root = self.parent.is_null();
-        for (id, e) in child.map {
-            match e {
-                Some(v) => {
-                    self.map.insert(id, Some(v));
-                }
-                None if root => {
-                    self.map.remove(&id);
-                }
-                None => {
-                    self.map.insert(id, None);
-                }
-            }
+        for id in child.removed {
+            self.remove(&id);
+        }
+        for (id, v) in child.map {
+            self.insert(id, v);
         }
     }
 }
