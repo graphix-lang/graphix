@@ -1,4 +1,4 @@
-// Scalar integer tail loop: 10M iterations of (cmp, sub, add). The JIT
+// Scalar integer tail loop: 100k iterations of (cmp, sub, add). The JIT
 // lowers self-tail-calls to a native rebind-and-jump loop. The node-walk
 // also handles tail self-calls iteratively (its GXLambda update loop), so
 // it completes without overflowing the stack — this is the case where the
@@ -11,7 +11,7 @@ let rec sum_to = |n: i64, acc: i64| -> i64
     0 => acc,
     _ => sum_to(n - 1, acc + n)
   };
-let n = 10000000;
+let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<i64>(t0)$;
 let result = sum_to(n, seed);

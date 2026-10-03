@@ -83,14 +83,10 @@ that has no fixed kernel ABI, so its hot path node-walks even with
 fusion on. Their ratios measure fusion *coverage* as much as codegen
 quality, which is the point.
 
-The two scalar tail-loop benches (`tail_sum`, `leibniz_pi`) are the
-case where the interpreter does *best* relative to the JIT among the
-fully-fused programs: it handles tail self-calls iteratively (no
-per-element node-graph overhead), so the ratio there is the floor
-(~50x). The HOF benches are where the interpreter's per-element node
-graph hurts most (~1400-2600x). (Non-tail recursion — e.g. fib — would
-overflow the interpreter's native stack; that's a separate limitation,
-not exercised here.)
+The two scalar tail-loop benches (`tail_sum`, `leibniz_pi`) run 100k
+iterations: the node-walk keeps every activation of a tail loop
+(`design/tail_calls_are_calls.md`), about 16 KB each, so at 10M they
+outgrew the machine. The JIT runs them as one native loop.
 
 ## Results
 
@@ -144,8 +140,8 @@ ratios less so.
 | `fold_floatmath`   | heavy f64 math `fold` over 100k                  | yes           |
 | `map_fold`         | `map (*3)` then `fold (+)`, 100k                 | yes (1 kernel)|
 | `filter_fold`      | `filter (even)` then `fold (+)`, 100k            | yes (1 kernel)|
-| `tail_sum`         | scalar int tail loop, 10M                        | yes           |
-| `leibniz_pi`       | scalar f64 tail loop, 10M                        | yes           |
+| `tail_sum`         | scalar int tail loop, 100k                       | yes           |
+| `leibniz_pi`       | scalar f64 tail loop, 100k                       | yes           |
 | `mandelbrot`       | per-pixel escape-time, 100x75                    | yes           |
 | `stream_stats`     | per-tick sliding-window stats, 5000 events       | per-event compute only (async spine node-walks) |
 | `netidx_stream`    | same stats, each tick a real netidx round trip   | per-event compute only (round trip dominates) |

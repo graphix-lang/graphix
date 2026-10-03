@@ -1,4 +1,4 @@
-// Scalar float tail loop: 10M terms of the Leibniz series for pi/4, summed.
+// Scalar float tail loop: 100k terms of the Leibniz series for pi/4, summed.
 // Float division + alternating sign per iteration — a tight numeric kernel
 // the JIT runs as a native loop. Like tail_sum, the node-walk handles the
 // tail self-call iteratively and completes (the scalar-loop case where the
@@ -16,7 +16,7 @@ let rec leib = |n: i64, acc: f64, sign: f64| -> f64
     0 => acc,
     _ => leib(n - 1, acc + sign / cast<f64>(2 * n - 1)$, 0.0 - sign)
   };
-let n = 10000000;
+let n = 100000;
 let t0 = sys::time::now(0);
 let seed = cast<f64>(t0)$;
 let result = leib(n, seed, 1.0);
