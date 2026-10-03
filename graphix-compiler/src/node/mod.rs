@@ -42,7 +42,7 @@ pub(crate) mod data;
 pub(crate) mod error;
 pub mod genn;
 pub mod lambda;
-pub mod list;
+pub use graphix_types::list;
 pub(crate) mod map;
 pub(crate) mod module;
 pub(crate) mod op;

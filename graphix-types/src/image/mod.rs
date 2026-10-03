@@ -11,6 +11,10 @@
 //! resolves into what was decoded earlier, so the runtime owns an
 //! [`ImageDecoder`] and opens a [`DecodeImage`] over it per read.
 
+mod env;
+
+pub use env::{lexical_decode, lexical_encode};
+
 use crate::{
     BindId, CFlag, LambdaId, LambdaInstanceId, SourcePosition,
     expr::{Expr, ExprId, ModPath, Origin, Source, WrittenAt},
@@ -37,8 +41,8 @@ use std::{
 };
 use triomphe::Arc;
 
-pub(crate) const REF: u8 = 0;
-pub(crate) const DEF: u8 = 1;
+pub const REF: u8 = 0;
+pub const DEF: u8 = 1;
 
 /// One value per relocated id domain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -159,7 +163,7 @@ unsafe impl BufMut for ImageBuf {
 
 /// An address-keyed object's table entry holds the object (`P`), so
 /// its address names it alone for the session.
-pub(crate) type Table<K, P = ()> = AHashMap<K, Slot<P>>;
+pub type Table<K, P = ()> = AHashMap<K, Slot<P>>;
 
 #[derive(Default)]
 pub struct ImageEncoder {
@@ -241,7 +245,7 @@ impl ImageEncoder {
 }
 
 /// A decoded object in its ordinal's slot of the store.
-pub(crate) enum Obj {
+pub enum Obj {
     Path(ModPath),
     RefCell(RefCell),
     Resolved(Resolved),
@@ -252,12 +256,12 @@ pub(crate) enum Obj {
     Type(Type),
     FnType(Box<FnType>),
     /// An object of a type the core does not know, by its own `Object`
-    /// impl ([`any_obj`], [`any_of`]).
+    /// impl ([`Foreign`]).
     Any(Box<dyn Any + Send + Sync>),
 }
 
 /// A type the store holds objects of.
-pub(crate) trait Object: Clone {
+pub trait Object: Clone {
     fn into_obj(self) -> Obj;
     fn of(obj: &Obj) -> Option<&Self>;
 }
@@ -314,6 +318,39 @@ pub(crate) fn any_of<T: 'static>(obj: &Obj) -> Option<&T> {
     }
 }
 
+/// An object of a type outside the core, as a session writes and
+/// reads it: the store holds it as [`Obj::Any`].
+#[derive(Clone)]
+pub struct Foreign<T>(pub T);
+
+impl<T: Clone + Send + Sync + 'static> Object for Foreign<T> {
+    fn into_obj(self) -> Obj {
+        any_obj(self)
+    }
+
+    fn of(obj: &Obj) -> Option<&Self> {
+        any_of(obj)
+    }
+}
+
+/// [`object_decode`] for an object of a type outside the core.
+pub fn foreign_decode<T: Clone + Send + Sync + 'static>(
+    buf: &mut impl Buf,
+    contents: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+    full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+) -> Result<T, PackError> {
+    object_decode(buf, |b| contents(b).map(Foreign), |b| full(b).map(Foreign))
+        .map(|f| f.0)
+}
+
+/// [`object_at`] for an object of a type outside the core.
+pub fn foreign_at<T: Clone + Send + Sync + 'static>(
+    ord: u32,
+    full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
+) -> Result<T, PackError> {
+    object_at(ord, |b| full(b).map(Foreign)).map(|f| f.0)
+}
+
 /// The objects an image session has built, each in the slot of its
 /// ordinal, and the image itself, so a reference to an object not built
 /// yet decodes it from its definition.
@@ -348,7 +385,7 @@ pub type SharedDecoder = sync::Arc<Mutex<ImageDecoder>>;
 impl ImageDecoder {
     /// Enter `obj` in the slot of the definition being decoded. A value
     /// a cycle built twice keeps its first.
-    fn enter(&mut self, obj: Obj) -> Result<(), PackError> {
+    pub fn enter(&mut self, obj: Obj) -> Result<(), PackError> {
         let ord = *self.defining.last().ok_or(PackError::InvalidFormat)?;
         let slot = self.objects.get_mut(ord as usize).ok_or(PackError::InvalidFormat)?;
         self.built += 1;
@@ -395,7 +432,7 @@ impl ImageDecoder {
         shared
     }
 
-    pub(crate) fn shared(&self) -> Weak<Mutex<ImageDecoder>> {
+    pub fn shared(&self) -> Weak<Mutex<ImageDecoder>> {
         self.shared.clone()
     }
 
@@ -512,7 +549,7 @@ impl Drop for DecodeImage<'_> {
 /// Run `f` against the installed encoder, or `None` outside a session.
 /// The encoder is out of its slot while `f` runs, so a nested call sees
 /// no session and never a second `&mut`.
-pub(crate) fn encoding<R>(f: impl FnOnce(&mut ImageEncoder) -> R) -> Option<R> {
+pub fn encoding<R>(f: impl FnOnce(&mut ImageEncoder) -> R) -> Option<R> {
     let mut p = ENCODER.take()?;
     // The session guard holds the `&mut` that produced this pointer for
     // as long as it is installed.
@@ -522,7 +559,7 @@ pub(crate) fn encoding<R>(f: impl FnOnce(&mut ImageEncoder) -> R) -> Option<R> {
 }
 
 /// [`encoding`] for the installed decoder.
-pub(crate) fn decoding<R>(f: impl FnOnce(&mut ImageDecoder) -> R) -> Option<R> {
+pub fn decoding<R>(f: impl FnOnce(&mut ImageDecoder) -> R) -> Option<R> {
     let mut p = DECODER.take()?;
     let r = f(unsafe { p.as_mut() });
     DECODER.set(Some(p));
@@ -658,10 +695,7 @@ pub(crate) fn resolved_len(r: &Resolved) -> usize {
     object_len(&key, |k| (*k, r.clone()), |e| &mut e.resolveds)
 }
 
-pub(crate) fn resolved_encode<B: BufMut>(
-    r: &Resolved,
-    buf: &mut B,
-) -> Result<(), PackError> {
+pub fn resolved_encode<B: BufMut>(r: &Resolved, buf: &mut B) -> Result<(), PackError> {
     let key = sync::Arc::as_ptr(r) as usize;
     object_encode(
         &key,
@@ -731,7 +765,7 @@ fn resolved_read(buf: &mut impl Buf) -> Result<ResolvedRead, PackError> {
 
 /// A typedef's definition; one still being decoded is a malformed image,
 /// since no definition contains its own typedef.
-pub(crate) fn resolved_decode(buf: &mut impl Buf) -> Result<Resolved, PackError> {
+pub fn resolved_decode(buf: &mut impl Buf) -> Result<Resolved, PackError> {
     match resolved_read(buf)? {
         ResolvedRead::Built(r) => Ok(r),
         ResolvedRead::Building(_) => Err(PackError::InvalidFormat),
@@ -745,7 +779,7 @@ fn resolved_decode_weak(buf: &mut impl Buf) -> Result<Weak<ResolvedRef>, PackErr
     })
 }
 
-pub(crate) fn flags_encode(
+pub fn flags_encode(
     flags: BitFlags<CFlag>,
     buf: &mut impl BufMut,
 ) -> Result<(), PackError> {
@@ -753,7 +787,7 @@ pub(crate) fn flags_encode(
     Ok(())
 }
 
-pub(crate) fn flags_decode(buf: &mut impl Buf) -> Result<BitFlags<CFlag>, PackError> {
+pub fn flags_decode(buf: &mut impl Buf) -> Result<BitFlags<CFlag>, PackError> {
     if buf.remaining() < 8 {
         return Err(PackError::BufferShort);
     }
@@ -909,14 +943,11 @@ pub(crate) fn tvar_len(tv: &TVar) -> usize {
 }
 
 /// A boxed slice on the wire as the `Vec` it decodes to.
-pub(crate) fn slice_len<T: Pack>(xs: &[T]) -> usize {
+pub fn slice_len<T: Pack>(xs: &[T]) -> usize {
     varint_len(xs.len() as u64) + xs.iter().map(|x| x.encoded_len()).sum::<usize>()
 }
 
-pub(crate) fn slice_encode<T: Pack>(
-    xs: &[T],
-    buf: &mut impl BufMut,
-) -> Result<(), PackError> {
+pub fn slice_encode<T: Pack>(xs: &[T], buf: &mut impl BufMut) -> Result<(), PackError> {
     encode_varint(xs.len() as u64, buf);
     for x in xs {
         x.encode(buf)?;
@@ -932,7 +963,7 @@ pub(crate) fn key<T>(object: &T) -> usize {
 
 /// Run `f` over the buffer's contiguous remainder, which is a slice of
 /// the image, and advance the buffer by what `f` consumed.
-pub(crate) fn with_slice<T>(
+pub fn with_slice<T>(
     buf: &mut impl Buf,
     f: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
 ) -> Result<T, PackError> {
@@ -950,7 +981,7 @@ pub(crate) fn with_slice<T>(
 /// valid image passes through a kind entered before its contents, so it
 /// enters an object before it meets a definition again; an entry with
 /// nothing entered since that definition's last is a cycle in the image.
-pub(crate) fn decode_at<T>(
+pub fn decode_at<T>(
     ord: u32,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
 ) -> Result<T, PackError> {
@@ -987,7 +1018,7 @@ pub(crate) fn decode_at<T>(
 /// An object's place in the session: the ordinal every occurrence
 /// names, assigned at first sight, whether its definition has been
 /// written, and what keeps the object alive for the session.
-pub(crate) struct Slot<P = ()> {
+pub struct Slot<P = ()> {
     ord: u32,
     defined: bool,
     _pin: P,
@@ -1007,7 +1038,7 @@ fn new_ordinal(e: &mut ImageEncoder) -> u32 {
 /// first sight `owned` builds the table's key and pin and the object
 /// takes its ordinal; its definition is written elsewhere. An image
 /// object has no encoding outside a session.
-pub(crate) fn object_len<K, Q, P>(
+pub fn object_len<K, Q, P>(
     key: &Q,
     owned: impl FnOnce(&Q) -> (K, P),
     table: impl Fn(&mut ImageEncoder) -> &mut Table<K, P>,
@@ -1032,7 +1063,7 @@ where
 /// to the definitions area. The object is defined before its contents
 /// are written, so an occurrence of it inside them is a reference too.
 /// Outside a session, an error.
-pub(crate) fn object_encode<K, Q, P, B: BufMut>(
+pub fn object_encode<K, Q, P, B: BufMut>(
     key: &Q,
     owned: impl FnOnce(&Q) -> (K, P),
     table: impl Fn(&mut ImageEncoder) -> &mut Table<K, P>,
@@ -1074,7 +1105,7 @@ where
 
 /// The ordinal the object reference at the head of `buf` names, read
 /// without decoding the object, for [`object_at`] later.
-pub(crate) fn object_ref(buf: &mut impl Buf) -> Result<u32, PackError> {
+pub fn object_ref(buf: &mut impl Buf) -> Result<u32, PackError> {
     with_slice(buf, |sub| {
         if !sub.has_remaining() {
             return Err(PackError::BufferShort);
@@ -1087,7 +1118,7 @@ pub(crate) fn object_ref(buf: &mut impl Buf) -> Result<u32, PackError> {
 }
 
 /// The object `ord` names: the session's, or decoded with `full`.
-pub(crate) fn object_at<T: Object>(
+pub fn object_at<T: Object>(
     ord: u32,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
 ) -> Result<T, PackError> {
@@ -1098,24 +1129,24 @@ pub(crate) fn object_at<T: Object>(
 }
 
 /// The ordinal a reference names.
-pub(crate) fn ref_ord(sub: &mut &[u8]) -> Result<u32, PackError> {
+pub fn ref_ord(sub: &mut &[u8]) -> Result<u32, PackError> {
     u32::try_from(decode_varint(sub)?).map_err(|_| PackError::InvalidFormat)
 }
 
 /// The object built for `ord`, if it has been.
-pub(crate) fn built<T: Object>(ord: u32) -> Option<T> {
+pub fn built<T: Object>(ord: u32) -> Option<T> {
     decoding(|d| d.get::<T>(ord)).flatten()
 }
 
 /// Enter `obj` in the slot of the definition being decoded.
-pub(crate) fn enter(obj: Obj) -> Result<(), PackError> {
+pub fn enter(obj: Obj) -> Result<(), PackError> {
     decoding(|d| d.enter(obj)).unwrap_or(Err(PackError::InvalidFormat))
 }
 
 /// Read an object written by [`object_encode`]: a reference clones the
 /// store's object or decodes its definition with `full`; a definition
 /// decodes `contents` and enters it.
-pub(crate) fn object_decode<T: Object>(
+pub fn object_decode<T: Object>(
     buf: &mut impl Buf,
     contents: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,

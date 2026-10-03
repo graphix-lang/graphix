@@ -11,7 +11,7 @@ pub use modpath::ModPath;
 use netidx_core::{pack::PackError, path::Path};
 use netidx_derive::Pack;
 use netidx_value::Value;
-pub(crate) use pattern::union_members;
+pub use pattern::union_members;
 pub use pattern::{Pattern, StructurePattern};
 use poolshark::local::LPooled;
 pub use resolver::{
@@ -40,7 +40,7 @@ pub mod parser;
 mod pattern;
 pub mod print;
 mod resolver;
-pub(crate) mod seq;
+pub mod seq;
 pub mod serialize;
 #[cfg(test)]
 mod test;
@@ -51,7 +51,7 @@ static DEFAULT_ORIGIN: LazyLock<Arc<Origin>> =
     LazyLock::new(|| Arc::new(Origin::default()));
 
 /// The expression a node built by the compiler, not from source, carries.
-pub(crate) static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
+pub static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
     let mut nop = Expr::default();
     nop.kind = ExprKind::Constant(Value::String(literal!("nop")));
     Arc::new(nop)
@@ -1373,7 +1373,7 @@ impl Expr {
 
     /// A compiler-built expression standing at `at`'s origin and position,
     /// undecorated and with no written end.
-    pub(crate) fn synth(at: &Expr, kind: ExprKind) -> Self {
+    pub fn synth(at: &Expr, kind: ExprKind) -> Self {
         Expr {
             id: ExprId::new(),
             ori: at.ori.clone(),

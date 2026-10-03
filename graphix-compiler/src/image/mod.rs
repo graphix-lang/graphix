@@ -1,17 +1,15 @@
 //! The compiler's part of an image: the handlers a `?` sees, kernel
 //! signatures, body records, definitions' check tables and the instance
-//! heap, kept in the core session ([`session`]) as its extension.
+//! heap, kept in the session core ([`graphix_types::image`]) as its
+//! extension.
 
 mod defs;
-pub(crate) mod env;
 pub mod nodes;
 mod registration;
-mod session;
 
-pub(crate) use env::{lexical_decode, lexical_encode};
+pub use graphix_types::image::*;
 pub use nodes::{NOT_IMAGED, decode_node, decode_nodes, encode_nodes};
 pub use registration::{NOT_QUIESCENT, ProgramRoot, REGISTRATION_FORMAT, Registration};
-pub use session::*;
 
 use crate::{
     BindId, DynScope, ErrorHandler, FastCall, LambdaInstanceId, Scope,
@@ -68,25 +66,6 @@ pub(crate) struct Restored {
     /// Where each instance written to the heap starts in the image.
     pub(crate) instances: AHashMap<LambdaInstanceId, u64>,
 }
-
-macro_rules! any_object {
-    ($t:ty) => {
-        impl Object for $t {
-            fn into_obj(self) -> Obj {
-                any_obj(self)
-            }
-            fn of(obj: &Obj) -> Option<&Self> {
-                any_of(obj)
-            }
-        }
-    };
-}
-
-any_object!(ErrorHandler);
-any_object!(triomphe::Arc<KernelSig>);
-any_object!(triomphe::Arc<SiteLeaf>);
-any_object!(triomphe::Arc<BodyRecord>);
-any_object!(sync::Arc<DefTable>);
 
 /// A dynamic scope is the chain of handlers a `?` sees; each handler is
 /// shared by every node under its catch, so it is an object: written
@@ -151,8 +130,8 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
             ROOT => Ok(DynScope::root()),
             REF => {
                 let ord = ref_ord(sub)?;
-                match built::<ErrorHandler>(ord) {
-                    Some(h) => Ok(DynScope::from_handler(h)),
+                match built::<Foreign<ErrorHandler>>(ord) {
+                    Some(Foreign(h)) => Ok(DynScope::from_handler(h)),
                     None => decode_at(ord, |b| dynscope_decode(b)),
                 }
             }
@@ -163,7 +142,7 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
                 let parent = dynscope_decode(sub)?;
                 let scope = parent.with_catch((bind, expr), machine);
                 let h = scope.handler().expect("with_catch installs a handler");
-                enter(any_obj(h))?;
+                enter(Foreign(h).into_obj())?;
                 Ok(scope)
             }
             _ => Err(PackError::UnknownTag),

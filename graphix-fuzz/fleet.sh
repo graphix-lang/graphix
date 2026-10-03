@@ -135,8 +135,9 @@ corpus_count() { find "$repo/graphix-fuzz/findings" -name '*.gx' | wc -l | tr -d
 # A content fingerprint over the inputs that determine the fuzz binary.
 # Deliberately NOT the whole tree: book/, docs/ and stray editor files
 # differ per box for reasons that cannot affect a build.
-FINGERPRINT='cd ~/proj/graphix && find graphix-compiler graphix-rt graphix-package \
-    graphix-derive graphix-shell graphix-fuzz stdlib Cargo.toml -type f \
+FINGERPRINT='cd ~/proj/graphix && find graphix-types graphix-compiler graphix-rt \
+    graphix-package graphix-derive graphix-ast-pack graphix-shell graphix-fuzz stdlib \
+    Cargo.toml -type f \
     \( -name "*.rs" -o -name "*.gx" -o -name "*.gxi" -o -name "*.toml" -o -name "*.sh" \) \
     ! -path "*/target/*" ! -name "#*" ! -name ".#*" \
     | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-16'
@@ -219,8 +220,8 @@ EOF
 # FLEET_ALLOW_DIRTY=1 skips the entry check for a deliberate
 # uncommitted-tree soak; nothing skips the drift check — a tree that
 # changes MID-DEPLOY is never deliberate.
-FP_ROOTS=(graphix-compiler graphix-rt graphix-package graphix-derive
-          graphix-shell graphix-fuzz stdlib Cargo.toml)
+FP_ROOTS=(graphix-types graphix-compiler graphix-rt graphix-package graphix-derive
+          graphix-ast-pack graphix-shell graphix-fuzz stdlib Cargo.toml)
 
 require_clean_inputs() {
     [[ ${FLEET_ALLOW_DIRTY:-0} == 1 ]] && return 0

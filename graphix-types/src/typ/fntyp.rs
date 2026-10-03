@@ -245,7 +245,7 @@ impl LambdaIds {
         ids
     }
 
-    pub(crate) fn own(&self) -> Option<LambdaId> {
+    pub fn own(&self) -> Option<LambdaId> {
         self.0.read().own
     }
 
@@ -546,7 +546,7 @@ impl FnType {
     }
 
     /// [`Self::try_for_each_type`] without early exit.
-    pub(crate) fn for_each_type(&self, f: &mut impl FnMut(&Type)) {
+    pub fn for_each_type(&self, f: &mut impl FnMut(&Type)) {
         let _ = self.try_for_each_type::<()>(&mut |t| {
             f(t);
             ControlFlow::Continue(())
@@ -558,7 +558,7 @@ impl FnType {
     /// throws. [`Self::alias_tvars`] makes the first-seen occurrence of a
     /// name the surviving cell, so the order is observable. The
     /// conjuncts are guarded per `FnType` address: one can reach back.
-    pub(crate) fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
+    pub fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
         let FnType {
             args,
             vargs,
@@ -599,7 +599,7 @@ impl FnType {
     }
 
     /// [`Type::instantiate_with`] over the signature.
-    pub(crate) fn instantiate_with(
+    pub fn instantiate_with(
         &self,
         known: &mut AHashMap<usize, TVar>,
         open: &IntSet<LambdaId>,
@@ -679,7 +679,7 @@ impl FnType {
 
     /// A reference's copy of the scheme (`Fresh::Scheme`) under the open
     /// gates `open`.
-    pub(crate) fn scheme(&self, open: &IntSet<LambdaId>) -> Self {
+    pub fn scheme(&self, open: &IntSet<LambdaId>) -> Self {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
 
@@ -767,7 +767,7 @@ impl FnType {
 
     /// A call's copy of a signature whose cells it shares (a parameter
     /// called in its definition's body): only the quantifiers are fresh.
-    pub(crate) fn shared_call(&self) -> Self {
+    pub fn shared_call(&self) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.fresh_quantifiers(&mut known, |c, known| c.swap_cells(known));
         if known.is_empty() {
@@ -809,7 +809,7 @@ impl FnType {
     /// Mark generic every cell the signature reaches at `depth` or
     /// deeper: the definition at `depth` closed over them. A cell a
     /// binding lowered above it is its environment's.
-    pub(crate) fn generalize(&self, depth: u32) {
+    pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
         for tv in cells.values() {
@@ -821,7 +821,7 @@ impl FnType {
 
     /// Claim every cell the signature reaches for `level`
     /// ([`TVar::claim`]).
-    pub(crate) fn claim(&self, level: Level) {
+    pub fn claim(&self, level: Level) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
         for tv in cells.values() {

@@ -1,41 +1,30 @@
 [package]
-name = "graphix-compiler"
+name = "graphix-types"
 version = "0.9.0"
 authors = ["Eric Stokes <eestokes@pm.me>"]
 edition = "2024"
 homepage = "https://graphix-lang.github.io/graphix"
 repository = "https://github.com/graphix-lang/graphix"
-description = "A dataflow language for UIs and network programming, compiler"
-documentation = "https://docs.rs/graphix-compiler"
+description = "A dataflow language for UIs and network programming, syntax, types and environment"
+documentation = "https://docs.rs/graphix-types"
 readme = "../README.md"
 license = "MIT"
 categories = ["network-programming", "compilers", "gui"]
-exclude = ["book", "../book"]
-
-[features]
-default = []
-krb5_iov = []
-# Tests measured in tens of seconds, run by the release gate
-# (`cargo test --workspace --features slow-tests`), not per session.
-slow-tests = []
 
 [dependencies]
-graphix-types = { version = "0.9.0", path = "../graphix-types" }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 bytes = { workspace = true }
-dashmap = { workspace = true }
+combine = { workspace = true }
 compact_str = { workspace = true }
-cranelift-codegen = { workspace = true }
-cranelift-frontend = { workspace = true }
-cranelift-jit = { workspace = true }
-cranelift-module = { workspace = true }
-cranelift-native = { workspace = true }
+dirs = { workspace = true }
 enumflags2 = { workspace = true }
+escaping = { workspace = true }
 futures = { workspace = true }
 nohash = { workspace = true }
 ahash = { workspace = true }
 immutable-chunkmap = { workspace = true }
+imhm = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }
 netidx-core = { workspace = true }
@@ -43,11 +32,19 @@ netidx-derive = { workspace = true }
 netidx-value = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }
-rayon = { workspace = true }
+serde = { workspace = true }
+serde_derive = { workspace = true }
+serde_json = { workspace = true }
 smallvec = { workspace = true }
 stacker = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
+chrono = { workspace = true }
 proptest = { workspace = true }
+rust_decimal = { workspace = true }
+tempfile = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-graphix = { workspace = true }

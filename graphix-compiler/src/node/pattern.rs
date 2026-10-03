@@ -1,3 +1,4 @@
+use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, CompileCtx, Event, ExecCtx, PrintFlag, Rt, Scope, Tag, TagValue,
@@ -11,7 +12,6 @@ use crate::{
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
-use combine::stream::position::SourcePosition;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint, varint_len};
 use netidx_value::{Typ, Value};

@@ -39,7 +39,7 @@ use triomphe::Arc;
 pub(crate) fn compile_use_item(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
-    pos: combine::stream::position::SourcePosition,
+    pos: crate::SourcePosition,
     ori: &Arc<Origin>,
     scope: &Scope,
     replace: bool,
@@ -118,7 +118,7 @@ pub(crate) fn compile_use_item(
 pub(crate) fn compile_use_items(
     env: &mut Env,
     pending: &mut Vec<PendingImport>,
-    pos: combine::stream::position::SourcePosition,
+    pos: crate::SourcePosition,
     ori: &Arc<Origin>,
     scope: &Scope,
     replace: bool,

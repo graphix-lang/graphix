@@ -139,7 +139,7 @@ colors at all — the whole query is refused), the regex ones die quiet
    thing that tells it. Fix the rule, and when awkward code came from a
    rule that was missing rather than wrong, add the rule.
 
-The gate for 1–3 is `cargo test -p graphix-compiler queries_compile`
+The gate for 1–3 is `cargo test -p graphix-types queries_compile`
 (every query compiles against the built grammar) plus the ts-compat
 proptests in the same module (the grammar parses what the compiler
 parses). 4 and 5 have no gate; check them by eye.

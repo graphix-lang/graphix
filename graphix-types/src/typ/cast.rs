@@ -1,8 +1,7 @@
 use crate::{
     AbstractTypeRegistry, CAST_ERR_TAG,
     env::Env,
-    errf,
-    node::list,
+    errf, list,
     stack::ensure_sufficient,
     typ::{Type, TypeRef, tval::NakedPrefix},
 };
@@ -229,7 +228,7 @@ impl Type {
     /// Whether a value of this type can hold a reference, outside a
     /// function or an abstract type, which a cast never takes apart. A
     /// cast refuses such a source: a reference is not a number.
-    pub(crate) fn holds_ref(&self, env: &Env) -> bool {
+    pub fn holds_ref(&self, env: &Env) -> bool {
         self.holds_ref_int(env, &mut Verdicts::new())
     }
 

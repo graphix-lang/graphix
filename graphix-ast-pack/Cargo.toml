@@ -5,7 +5,7 @@ edition = "2024"
 description = "Build-time helper that packs a package's graphix source into a pre-parsed AST blob"
 
 [dependencies]
-graphix-compiler = { version = "0.9.0", path = "../graphix-compiler" }
+graphix-types = { version = "0.9.0", path = "../graphix-types" }
 anyhow = { workspace = true }
 arcstr = { workspace = true }
 bytes = { workspace = true }

@@ -495,7 +495,7 @@ pub(crate) fn record_encode(
 }
 
 pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackError> {
-    image::object_decode(
+    image::foreign_decode(
         buf,
         |buf| {
             let kind_tag = u8::decode(buf)?;

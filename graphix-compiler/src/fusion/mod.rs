@@ -47,7 +47,7 @@ use triomphe::Arc;
 #[derive(Debug, Clone)]
 struct FusionSource {
     origin: triomphe::Arc<Origin>,
-    pos: combine::stream::position::SourcePosition,
+    pos: crate::SourcePosition,
     kind: std::mem::Discriminant<ExprKind>,
 }
 

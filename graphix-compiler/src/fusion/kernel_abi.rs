@@ -1082,7 +1082,7 @@ pub(crate) fn site_leaf_encode(
 }
 
 pub(crate) fn site_leaf_decode(buf: &mut impl Buf) -> Result<Arc<SiteLeaf>, PackError> {
-    crate::image::object_decode(
+    crate::image::foreign_decode(
         buf,
         |buf| {
             let stride = u32::decode(buf)?;
@@ -1124,7 +1124,7 @@ pub(crate) fn kernel_sig_encode(
 
 pub(crate) fn kernel_sig_decode(buf: &mut impl Buf) -> Result<Arc<KernelSig>, PackError> {
     use std::sync::atomic::AtomicU64;
-    crate::image::object_decode(
+    crate::image::foreign_decode(
         buf,
         |buf| {
             let fn_name = ArcStr::decode(buf)?;

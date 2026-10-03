@@ -22,7 +22,7 @@ pub(super) struct NormCx {
     memo: LPooled<AHashMap<NormKey, (Type, Option<Type>)>>,
 }
 
-pub(crate) type NormKey = (Discriminant<Type>, usize, usize);
+pub type NormKey = (Discriminant<Type>, usize, usize);
 
 impl NormCx {
     pub(super) fn take() -> Self {
@@ -56,7 +56,7 @@ impl ResolveTvarsCx {
     }
 }
 
-pub(crate) fn norm_key(t: &Type) -> Option<NormKey> {
+pub fn norm_key(t: &Type) -> Option<NormKey> {
     let d = std::mem::discriminant(t);
     match t {
         Type::Set(a) | Type::Tuple(a) => Some((d, (**a).as_ptr() as usize, 0)),

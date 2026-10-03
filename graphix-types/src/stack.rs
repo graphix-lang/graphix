@@ -11,7 +11,7 @@ use std::{
 /// switches to a fresh segment. It must exceed what one recursion
 /// level consumes between two checks (~420KB for an unoptimized
 /// `expr` parse level).
-pub(crate) const RED_ZONE: usize = 1024 * 1024;
+pub const RED_ZONE: usize = 1024 * 1024;
 
 /// Size of each fresh segment. Segments are mmap'd on entry and
 /// released on exit, so this bounds how often a deep recursion pays
@@ -70,7 +70,7 @@ pub fn set_stack_budget(bytes: usize) {
 
 /// Abort the running runtime because a recursion exceeded its budget;
 /// the one exit for both the node-walk and the kernel stack check.
-pub(crate) fn budget_abort() {
+pub fn budget_abort() {
     log::error!(
         "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
          (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",
@@ -88,13 +88,13 @@ thread_local! {
 /// heap segment when the current stack is nearly exhausted. Wrap every
 /// recursion knot a user program can drive arbitrarily deep.
 #[inline(always)]
-pub(crate) fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
+pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
     if stacker::remaining_stack().unwrap_or(0) >= RED_ZONE { f() } else { grow(f) }
 }
 
 /// Whether one more segment would put this thread over the budget of
 /// the runtime running on it.
-pub(crate) fn grow_exceeds_budget() -> bool {
+pub fn grow_exceeds_budget() -> bool {
     let budget = current_stack_budget();
     GROWN.with(|g| g.get() + SEGMENT > budget)
 }
@@ -119,7 +119,7 @@ impl Drop for Grown {
 /// Run `f` on a fresh segment. Over budget, the current runtime is
 /// aborted first; the segment is still granted so the node-walk can
 /// unwind at its next interrupt poll instead of overflowing here.
-pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
+pub fn grow<R>(f: impl FnOnce() -> R) -> R {
     if grow_exceeds_budget() {
         budget_abort();
     }

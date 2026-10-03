@@ -6,6 +6,7 @@ use super::{
     pattern::StructPatternNode,
     produce_constant,
 };
+use crate::SourcePosition;
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, Event, ExecCtx, InitFn,
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
@@ -20,8 +21,7 @@ use crate::{
         },
     },
     image::{
-        self, ImageBuf, ImageDecoder,
-        env::{lexical_decode, lexical_encode},
+        self, ImageBuf, ImageDecoder, lexical_decode, lexical_encode,
         nodes::{NodeTag, decode_node, put_tag},
     },
     profile::{self, Phase},
@@ -36,7 +36,6 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use combine::stream::position::SourcePosition;
 use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError, decode_varint, encode_varint};
@@ -237,7 +236,7 @@ impl DefTable {
             }
             Ok(n)
         }
-        image::object_decode(
+        image::foreign_decode(
             buf,
             |sub| {
                 let n = len(sub)?;
@@ -325,7 +324,7 @@ impl DefTables {
         // restored cells belong to no compile task, whichever reads them
         let _task = InTask::enter(0);
         let table = image::DecodeImage::with(&mut dec, || {
-            image::object_at(*ord, |b| DefTable::image_decode(b))
+            image::foreign_at(*ord, |b| DefTable::image_decode(b))
         });
         match table {
             Ok(table) => self.set(Tables { table, outer: None }),

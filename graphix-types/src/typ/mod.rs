@@ -36,16 +36,16 @@ mod cast;
 pub use cast::IsAFlags;
 mod contains;
 pub use contains::ContainsFlags;
-pub(crate) use contains::TypeMismatch;
+pub use contains::TypeMismatch;
 pub mod fntyp;
 mod matches;
 mod normalize;
-pub(crate) use normalize::{NormKey, norm_key};
+pub use normalize::{NormKey, norm_key};
 mod print;
 mod setops;
-pub(crate) mod settle;
+pub mod settle;
 pub(crate) mod tval;
-pub(crate) mod tvar;
+pub mod tvar;
 
 pub use fntyp::{FnArgKind, FnArgType, FnType};
 pub use tval::TVal;
@@ -327,7 +327,7 @@ impl CoreTrait {
         [Self::Eq, Self::Ord, Self::Display].into_iter().find(|t| t.id() == id)
     }
 
-    pub(crate) fn method(self) -> &'static str {
+    pub fn method(self) -> &'static str {
         match self {
             Self::Eq => "eq",
             Self::Ord => "cmp",
@@ -335,7 +335,7 @@ impl CoreTrait {
         }
     }
 
-    pub(crate) fn arity(self) -> usize {
+    pub fn arity(self) -> usize {
         match self {
             Self::Eq | Self::Ord => 2,
             Self::Display => 1,
@@ -349,7 +349,7 @@ impl CoreTrait {
 /// env-independent after. A recursive definition's body reaches its own
 /// cell, so a strong cell would be a cycle.
 #[derive(Debug)]
-pub(crate) struct ResolvedRef {
+pub struct ResolvedRef {
     canonical_scope: ModPath,
     pos: SourcePosition,
     ori: Arc<Origin>,
@@ -397,7 +397,7 @@ impl ResolvedRef {
             && self.typ == other.typ
     }
 
-    pub(crate) fn canonical_scope(&self) -> &ModPath {
+    pub fn canonical_scope(&self) -> &ModPath {
         &self.canonical_scope
     }
 }
@@ -519,7 +519,7 @@ impl TypeRef {
     }
 
     /// This ref with different `params`, sharing the resolution cell.
-    pub(crate) fn with_params(&self, params: Arc<[Type]>) -> Self {
+    pub fn with_params(&self, params: Arc<[Type]>) -> Self {
         Self { params, ..self.clone() }
     }
 
@@ -560,12 +560,12 @@ impl TypeRef {
     }
 
     /// Identity of the resolution cell: shared by the rebuilds of one ref.
-    pub(crate) fn cell_addr(&self) -> usize {
+    pub fn cell_addr(&self) -> usize {
         Arc::as_ptr(&self.resolved) as *const () as usize
     }
 
     /// [`ResolvedRef::def_key`] of the filled cell.
-    pub(crate) fn def_key(&self) -> Option<usize> {
+    pub fn def_key(&self) -> Option<usize> {
         self.resolved().map(|r| r.def_key())
     }
 
@@ -582,7 +582,7 @@ impl TypeRef {
     /// Does the name mean something: its filled cell, a typedef visible
     /// in `env`, or a trait (a bound)? Never writes the cell: a fill
     /// before every name is registered can capture a shadowed target.
-    pub(crate) fn names_something(&self, env: &Env) -> bool {
+    pub fn names_something(&self, env: &Env) -> bool {
         self.resolved().is_some()
             || self.resolve_pure(env).is_some()
             || env.trait_of_ref(self).is_some()
@@ -611,7 +611,7 @@ impl TypeRef {
     /// A cell whose definition is gone (a type that outlived the env
     /// entry that defined it) is `None` too, and logged: the name may
     /// mean something else now, so it is never re-resolved.
-    pub(crate) fn resolve_in(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
+    pub fn resolve_in(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
         let dead = || {
             log::error!(
                 "type `{}` outlived its definition in `{}`",
@@ -1388,7 +1388,7 @@ impl Type {
 
     /// The definitions this type's filled cells name, and theirs, by
     /// [`ResolvedRef::def_key`]: through bindings and conjuncts.
-    pub(crate) fn named_defs(
+    pub fn named_defs(
         &self,
         cells: &mut AHashSet<usize>,
         out: &mut AHashMap<usize, sync::Arc<ResolvedRef>>,
@@ -1422,7 +1422,7 @@ impl Type {
     }
 
     /// [`Self::try_for_each_child`] without early exit.
-    pub(crate) fn for_each_child(&self, f: &mut impl FnMut(&Type)) {
+    pub fn for_each_child(&self, f: &mut impl FnMut(&Type)) {
         let _ = self.try_for_each_child::<()>(&mut |t| {
             f(t);
             ControlFlow::Continue(())
@@ -1433,7 +1433,7 @@ impl Type {
     /// (`None` from `f` means unchanged); `None` when nothing changed.
     /// Leaves, `TVar` included, return `None`. `Ref` params rebuild
     /// through [`TypeRef::with_params`], sharing the resolution cell.
-    pub(crate) fn cow_children(
+    pub fn cow_children(
         &self,
         f: &mut impl FnMut(&Type) -> Option<Type>,
     ) -> Option<Type> {
@@ -1521,7 +1521,7 @@ impl Type {
     /// The other side of a constructor application, dereferenced and
     /// [`Self::decompose`]d: a reference by name, a bare alias through
     /// its expansion.
-    pub(crate) fn app_split(t: &Type, env: &Env) -> Result<Option<(Type, Type)>> {
+    pub fn app_split(t: &Type, env: &Env) -> Result<Option<(Type, Type)>> {
         let Some(t) = t.deref_cloned() else { return Ok(None) };
         if let Some(parts) = t.decompose() {
             return Ok(Some(parts));
@@ -1594,7 +1594,7 @@ impl Type {
     }
 
     /// The number of holes in this type.
-    pub(crate) fn holes(&self) -> usize {
+    pub fn holes(&self) -> usize {
         ensure_sufficient(|| match self {
             Type::Hole => 1,
             t => {
@@ -1609,7 +1609,7 @@ impl Type {
     /// before the argument typechecks, so an unannotated callback's
     /// parameters take the declared types. A function-typed argument
     /// unifies its parameter positions only; anything else whole.
-    pub(crate) fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
+    pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
         let d = declared.deref_cloned();
         let a = actual.deref_cloned();
         match (&d, &a) {
@@ -1622,7 +1622,7 @@ impl Type {
     /// the fresh bounded quantifier `tv`, applied to a fresh element
     /// when the trait is a constructor trait (`|c: Collection|` ≡
     /// `'c: Collection, c: 'c<'e>`).
-    pub(crate) fn trait_param(env: &Env, tv: TVar, tr: &TypeRef) -> Type {
+    pub fn trait_param(env: &Env, tv: TVar, tr: &TypeRef) -> Type {
         let hole = env
             .trait_of_ref(tr)
             .and_then(|tid| env.trait_def(tid))
@@ -1636,7 +1636,7 @@ impl Type {
 
     /// Whether `tc` bounds by a constructor trait (`Collection`), whose
     /// implementations are constructors (`Array<'_>`).
-    pub(crate) fn is_ctor_trait_bound(env: &Env, tc: &Type) -> bool {
+    pub fn is_ctor_trait_bound(env: &Env, tc: &Type) -> bool {
         match tc {
             Type::Ref(tr) => env
                 .trait_of_ref(tr)
@@ -1651,7 +1651,7 @@ impl Type {
     /// constructor trait (`'c: Collection`) stands for a constructor
     /// applied (`'c<'e>`), as a trait-typed parameter does
     /// ([`Self::trait_param`]).
-    pub(crate) fn apply_ctor_quantifiers(&self, ctors: &[(ArcStr, Type)]) -> Type {
+    pub fn apply_ctor_quantifiers(&self, ctors: &[(ArcStr, Type)]) -> Type {
         self.apply_ctor_quantifiers_int(ctors).unwrap_or_else(|| self.clone())
     }
 
@@ -1743,7 +1743,7 @@ impl Type {
     /// now ([`TypeRef::names_something`]), into `out`: a name's
     /// parameters and a variable's bounds included, a variable's binding
     /// (inferred, not written) not.
-    pub(crate) fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) {
+    pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) {
         fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>, out: &mut Vec<TypeRef>) {
             ensure_sufficient(|| match t {
                 Type::Ref(tr) => {
@@ -1769,7 +1769,7 @@ impl Type {
 
     /// [`Self::seed_refs`] over types that share `seen`, the cells and
     /// nodes already walked.
-    pub(crate) fn seed_refs_seen(&self, env: &Env, seen: &mut IntSet<usize>) -> bool {
+    pub fn seed_refs_seen(&self, env: &Env, seen: &mut IntSet<usize>) -> bool {
         fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>) -> bool {
             ensure_sufficient(|| {
                 if let Some(node) = node_addr(t)
@@ -1860,11 +1860,7 @@ impl Type {
     /// parameter bound is an error and an open argument takes the bound
     /// as a conjunct; a probe (`!commit`) binds nothing and answers a
     /// violated bound with `None`.
-    pub(crate) fn lookup_ref_with(
-        &self,
-        env: &Env,
-        commit: bool,
-    ) -> Result<Option<Type>> {
+    pub fn lookup_ref_with(&self, env: &Env, commit: bool) -> Result<Option<Type>> {
         match self {
             Self::Ref(tr) => {
                 let TypeRef { scope, name, params, pos, ori, resolved: _ } = tr;

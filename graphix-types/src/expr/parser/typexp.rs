@@ -269,7 +269,7 @@ pub(crate) fn declared_fn_type(mut ft: FnType, constraints: &[(TVar, Type)]) -> 
 /// The declared quantifier names of a signature, in source order,
 /// deduplicated: a `+`-bound variable appears once per conjunct in the
 /// constraint list but is one quantifier.
-pub(crate) fn quantifier_names<'a>(tvs: impl Iterator<Item = &'a TVar>) -> Arc<[ArcStr]> {
+pub fn quantifier_names<'a>(tvs: impl Iterator<Item = &'a TVar>) -> Arc<[ArcStr]> {
     let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
     for tv in tvs {
         if !names.contains(&tv.name) {

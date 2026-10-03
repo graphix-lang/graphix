@@ -414,11 +414,7 @@ fn slice_type(list: bool, elem: Type) -> Type {
 /// The concrete members of `t`: bound tvars dereferenced, aliases
 /// expanded, unions flattened. An unbound tvar contributes none, and so
 /// does an alias chain deeper than [`MAX_ALIAS_DEPTH`] (a cyclic typedef).
-pub(crate) fn union_members(
-    env: &Env,
-    t: &Type,
-    out: &mut SmallVec<[Type; 8]>,
-) -> Result<()> {
+pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
     fn walk(
         env: &Env,
         t: &Type,

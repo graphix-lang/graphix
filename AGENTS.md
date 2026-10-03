@@ -211,8 +211,16 @@ functions and closures.
 
 Rust workspace:
 
-- **graphix-compiler**: parser, compiler (`Expr` → node graph),
-  typechecker, fusion/JIT. Entry point `compile()` in `lib.rs`.
+- **graphix-types**: the static half: syntax (parser, AST, printer,
+  formatter, module resolution), types and their checker, the
+  environment, the image session core. It reaches nothing of the
+  compiler and carries no cranelift; `graphix-ast-pack` (every package's
+  build-dependency) depends on it alone. An image object of a type the
+  core does not know rides `image::Foreign` and the session's extension
+  (`image::Compiled`, `image::Restored` in the compiler).
+- **graphix-compiler**: compiler (`Expr` → node graph), elaboration,
+  fusion/JIT; re-exports graphix-types' modules (`graphix_compiler::
+  {expr, typ, env}`). Entry point `compile()` in `lib.rs`.
 - **graphix-rt**: the runtime that executes node graphs in a background
   task, driven through `GXHandle`; embedder extensions via `GXExt`.
 - **graphix-package**: package manager (loading, vendoring, standalone
@@ -282,7 +290,7 @@ off-topic failure is discussed with Eric before it is fixed.
 
 ## Architecture
 
-**Pipeline.** Parse (`graphix-compiler/src/expr/parser/`) → `Expr` AST
+**Pipeline.** Parse (`graphix-types/src/expr/parser/`) → `Expr` AST
 with positions → compile (`node/compiler.rs`) → `Node<R, E>` graph →
 typecheck (two passes, `typecheck0`/`typecheck1` on every node) → fuse
 (`fusion/`, when enabled). `typecheck0` also builds `ctx.bind_to_lambda`;
@@ -346,7 +354,8 @@ batched: all simultaneous events form one `Event` delivered in one
 cycle; several writes to one variable in a cycle queue for the next.
 
 **Session images** (`design/program_image.md`): the shell caches the
-session state before any cycle (`graphix-compiler/src/image/`) under
+session state before any cycle (`graphix-compiler/src/image/` over
+the session core in `graphix-types/src/image/`) under
 `$XDG_CACHE_HOME/graphix/registration/<build-id>/<key>.img`: the
 registration entry (the package root compiled; key = image format +
 root; the build id covers the packages compiled in) and, for a script,
@@ -504,7 +513,7 @@ network. The shell library is netidx-agnostic; the CLI is the
 netidx-aware embedder (`ShellBuilder::setup_context`,
 `resolver_factories`, `GXHandle::with_ctx`).
 
-**Types** (`graphix-compiler/src/typ/`): `Type` (structural),
+**Types** (`graphix-types/src/typ/`): `Type` (structural),
 `TVar` (inference cells; `design/tvar_constraints.md`), `FnType`.
 `contains` expands `Type::Ref` through `lookup_ref`, so bindings made
 during `contains` hold the EXPANDED form — code inspecting resolved types
@@ -822,7 +831,7 @@ not a gap count.
 - **Native List** (`design/list_native.md`): `List<'a>` is a compiler
   constructor like `Array`; `[<1, 2>]` literals and `[<h, rest..>]`
   patterns (rest is the O(1) tail; the suffix form is refused); the rep
-  is private to `node/list.rs`.
+  is private to `graphix-types/src/list.rs`.
 - **Nominal abstract types** (`design/nominal_abstract_types.md`):
   `type T = Abstract<rep>`; `T(v)`, `x.0`, pattern `T(p)` only where the
   definition is visible; `T as t` is a nominal tag test anywhere.

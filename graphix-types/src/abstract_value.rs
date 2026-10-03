@@ -23,15 +23,15 @@ use triomphe::Arc;
 /// with_hooks`); with no loan installed the structural case
 /// applies.
 #[repr(C)]
-pub(crate) struct ValueHookDispatch {
+pub struct ValueHookDispatch {
     /// Type-erased pointer to the monomorphized dispatch state
     /// (`node::coretraits::HookState<R, E>`).
-    pub(crate) state: *mut u8,
+    pub state: *mut u8,
     /// `None` means no implementation: take the structural case.
     /// `Some` is always a definite answer.
-    pub(crate) eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
-    pub(crate) cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
-    pub(crate) fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
+    pub eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
+    pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
+    pub fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
 }
 
 thread_local! {
@@ -41,7 +41,7 @@ thread_local! {
 /// Run `f` with `h` as the thread's value-hook dispatch (loans nest);
 /// the previous dispatch is back when `f` returns or unwinds. `h.state`
 /// must stay valid while `f` runs.
-pub(crate) fn with_value_hooks<T>(h: &ValueHookDispatch, f: impl FnOnce() -> T) -> T {
+pub fn with_value_hooks<T>(h: &ValueHookDispatch, f: impl FnOnce() -> T) -> T {
     let _restore = Restore(VALUE_HOOKS.with(|c| c.replace(h)));
     f()
 }
@@ -72,13 +72,13 @@ fn hooked<T>(f: impl FnOnce(&ValueHookDispatch) -> Option<T>) -> Option<T> {
 #[derive(Clone, Pack)]
 #[pack(unwrapped)]
 pub struct GxAbstract {
-    pub(crate) id: AbstractId,
+    pub id: AbstractId,
     /// The type's name, for rendering (`Counter(5)`); identity is `id`.
-    pub(crate) name: ArcStr,
+    pub name: ArcStr,
     /// The type arguments the value was constructed at, so a core-trait
     /// implementation for one instantiation is told from another's.
-    pub(crate) params: Arc<[Type]>,
-    pub(crate) payload: Value,
+    pub params: Arc<[Type]>,
+    pub payload: Value,
 }
 
 impl GxAbstract {
@@ -153,12 +153,7 @@ static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
 });
 
 /// Mint a value of the abstract type `id<params>` around `payload`.
-pub(crate) fn wrap(
-    id: AbstractId,
-    name: ArcStr,
-    params: Arc<[Type]>,
-    payload: Value,
-) -> Value {
+pub fn wrap(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Value {
     WRAPPER.wrap(GxAbstract { id, name, params, payload })
 }
 

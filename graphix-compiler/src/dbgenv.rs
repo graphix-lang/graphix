@@ -13,21 +13,15 @@ macro_rules! dbg_flag {
     };
 }
 
-dbg_flag!(graphix_dbg_bind, "GRAPHIX_DBG_BIND");
-dbg_flag!(graphix_dbg_cycle_bt, "GRAPHIX_DBG_CYCLE_BT");
 dbg_flag!(graphix_dbg_freeze, "GRAPHIX_DBG_FREEZE");
 dbg_flag!(graphix_dbg_invoke, "GRAPHIX_DBG_INVOKE");
 dbg_flag!(graphix_dbg_kernels, "GRAPHIX_DBG_KERNELS");
 dbg_flag!(graphix_dbg_perf, "GRAPHIX_DBG_PERF");
 dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
-dbg_flag!(graphix_dbg_tval, "GRAPHIX_DBG_TVAL");
 dbg_flag!(graphix_dump_clif, "GRAPHIX_DUMP_CLIF");
 dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
-dbg_flag!(graphix_profile, "GRAPHIX_PROFILE");
-dbg_flag!(graphix_profile_instances, "GRAPHIX_PROFILE_INSTANCES");
 dbg_flag!(graphix_rigid_audit, "GRAPHIX_RIGID_AUDIT");
-dbg_flag!(graphix_task_audit, "GRAPHIX_TASK_AUDIT");
 dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(
@@ -50,12 +44,3 @@ dbg_flag!(gxdbg_refmiss, "GXDBG_REFMISS");
 dbg_flag!(gxdbg_resolve, "GXDBG_RESOLVE");
 dbg_flag!(gxdbg_seqplan, "GXDBG_SEQPLAN");
 dbg_flag!(gxdbg_shallow, "GXDBG_SHALLOW");
-dbg_flag!(gxdbg_typeref, "GXDBG_TYPEREF");
-
-/// The value of GRAPHIX_DBG_BIND_BT: a target TVarId for per-cell
-/// write backtraces.
-pub(crate) fn graphix_dbg_bind_bt_id() -> Option<&'static str> {
-    static V: std::sync::LazyLock<Option<String>> =
-        std::sync::LazyLock::new(|| std::env::var("GRAPHIX_DBG_BIND_BT").ok());
-    V.as_deref()
-}

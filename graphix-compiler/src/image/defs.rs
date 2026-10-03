@@ -5,8 +5,8 @@
 //! `Apply` is rebuilt on first use.
 
 use super::{
-    env::{lexical_decode, lexical_encode},
-    flags_decode, flags_encode, scope_decode, scope_encode,
+    flags_decode, flags_encode, lexical_decode, lexical_encode, scope_decode,
+    scope_encode,
 };
 use crate::{
     ExecCtx, LambdaId, Rt, UserEvent,

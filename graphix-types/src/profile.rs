@@ -164,7 +164,7 @@ pub struct ModuleSpan {
     thread: PhantomData<Rc<()>>,
 }
 
-pub(crate) fn module(path: &ModPath) -> Option<ModuleSpan> {
+pub fn module(path: &ModPath) -> Option<ModuleSpan> {
     if !graphix_profile() {
         return None;
     }
@@ -192,7 +192,7 @@ impl Drop for ModuleSpan {
     }
 }
 
-pub(crate) fn instance(
+pub fn instance(
     span: &mut Option<Span>,
     id: LambdaInstanceId,
     definition: LambdaId,
@@ -222,9 +222,9 @@ pub(crate) fn instance(
 
 /// An instance's elaboration (its `typecheck1`, which builds the
 /// instances its call sites reach), open while the guard lives.
-pub(crate) struct Elaboration(Option<(LambdaInstanceId, Instant)>);
+pub struct Elaboration(Option<(LambdaInstanceId, Instant)>);
 
-pub(crate) fn elaboration(id: LambdaInstanceId) -> Elaboration {
+pub fn elaboration(id: LambdaInstanceId) -> Elaboration {
     if !graphix_profile_instances() {
         return Elaboration(None);
     }
@@ -251,7 +251,7 @@ impl Drop for Elaboration {
 }
 
 /// `identity` hashes the call's instantiation identity, when it has one.
-pub(crate) fn instance_signature(
+pub fn instance_signature(
     id: LambdaInstanceId,
     typ: &FnType,
     identity: impl FnOnce() -> Option<u64>,

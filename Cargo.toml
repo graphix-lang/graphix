@@ -142,6 +142,7 @@ members = [
     "graphix-lsp",
     "graphix-shell",
     "graphix-compiler",
+    "graphix-types",
     "graphix-rt",
     "graphix-derive",
     "graphix-ast-pack",

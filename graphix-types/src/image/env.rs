@@ -238,14 +238,14 @@ pub(crate) fn lexical_len(env: &Env) -> usize {
         + shared_map::map_len(&env.traits)
 }
 
-pub(crate) fn lexical_encode(env: &Env, buf: &mut impl BufMut) -> Result<(), PackError> {
+pub fn lexical_encode(env: &Env, buf: &mut impl BufMut) -> Result<(), PackError> {
     nested_encode(&env.binds, buf)?;
     SharedSet(env.modules.clone()).encode(buf)?;
     nested_encode(&env.typedefs, buf)?;
     nested_encode(&env.traits, buf)
 }
 
-pub(crate) fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
+pub fn lexical_decode(buf: &mut impl Buf) -> Result<Env, PackError> {
     Ok(Env {
         binds: nested_decode(buf)?,
         modules: SharedSet::decode(buf)?.0,
