@@ -1535,8 +1535,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             _ => true,
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
-        let ArgsOut { fired: arg_fired, prods, mut set } =
-            update_args(ctx, self.args.as_mut_slice(), may_bind, root);
+        let mut out = ArgsOut::default();
+        update_args(ctx, self.args.as_mut_slice(), may_bind, root, &mut out);
+        let ArgsOut { fired: arg_fired, prods, mut set } = out;
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
         let static_callee = matches!(self.callee, Callee::Static { .. });
@@ -2280,33 +2281,35 @@ pub(crate) enum Feeds<'a> {
 /// What updating a call's arguments left: whether one fired, the
 /// productions a fresh bind replays, and the argument ids published
 /// this cycle.
+#[derive(Default)]
 struct ArgsOut {
     fired: bool,
     prods: SmallVec<[(BindId, TagValue); 4]>,
     set: LPooled<Vec<BindId>>,
 }
 
-/// Update `args` and publish each production on its argument's id,
-/// forking halves where the runtime forks.
+/// Update `args` and publish each production on its argument's id into
+/// `out`, forking halves where the runtime forks.
 fn update_args<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
     may_bind: bool,
     root: QuietAtRoot,
-) -> ArgsOut {
+    out: &mut ArgsOut,
+) {
     if args.len() > 1 && crate::branch::forks(ctx) {
         let (l, r) = args.split_at_mut(args.len() / 2);
-        let (mut lo, ro) = crate::branch::fork_join(
+        let mut ro = ArgsOut::default();
+        crate::branch::fork_join(
             ctx,
-            |c| update_args(c, l, may_bind, root),
-            |c| update_args(c, r, may_bind, root),
+            |c| update_args(c, l, may_bind, root, out),
+            |c| update_args(c, r, may_bind, root, &mut ro),
         );
-        lo.fired |= ro.fired;
-        lo.prods.extend(ro.prods);
-        lo.set.extend(ro.set.iter().copied());
-        return lo;
+        out.fired |= ro.fired;
+        out.prods.extend(ro.prods);
+        out.set.extend(ro.set.iter().copied());
+        return;
     }
-    let mut out = ArgsOut { fired: false, prods: SmallVec::new(), set: LPooled::take() };
     for arg in args.values_mut() {
         let Some(node) = &mut arg.node else { continue };
         let tv = node.update(ctx);
@@ -2319,7 +2322,6 @@ fn update_args<R: Rt, E: UserEvent>(
             out.set.push(arg.id);
         }
     }
-    out
 }
 
 /// What a quiet production does; the store serves the value channel.
