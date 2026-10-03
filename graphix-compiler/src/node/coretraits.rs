@@ -186,13 +186,10 @@ impl<R: Rt, E: UserEvent> SiteEntry<R, E> {
 /// The per-context registry, keyed `(trait, tag)`. An entry resolves on
 /// first use and is rebuilt when the trait's implementation list
 /// changes (`impls_version`). The seam runs its sites over events of
-/// its own (`template`, the user event a loan seeded it with; `spare`,
-/// the ones not in a dispatch), never the caller's, so a loan needs no
-/// event from the caller and lends the context to nothing but the
-/// dispatch.
+/// its own (`spare`, the ones not in a dispatch), never the caller's,
+/// so a loan lends the context to nothing but the dispatch.
 pub struct CoreHookSites<R: Rt, E: UserEvent> {
     sites: AHashMap<(u8, AbstractId), SiteEntry<R, E>>,
-    template: Option<E>,
     spare: Vec<Event<E>>,
 }
 
@@ -201,8 +198,8 @@ impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
         self.sites.is_empty()
     }
 
-    fn take_event(&mut self) -> Option<Event<E>> {
-        self.spare.pop().or_else(|| self.template.clone().map(Event::new))
+    fn take_event(&mut self, user: &E) -> Event<E> {
+        self.spare.pop().unwrap_or_else(|| Event::new(user.clone()))
     }
 
     fn give_event(&mut self, mut event: Event<E>) {
@@ -213,7 +210,7 @@ impl<R: Rt, E: UserEvent> CoreHookSites<R, E> {
 
 impl<R: Rt, E: UserEvent> Default for CoreHookSites<R, E> {
     fn default() -> Self {
-        Self { sites: AHashMap::new(), template: None, spare: Vec::new() }
+        Self { sites: AHashMap::new(), spare: Vec::new() }
     }
 }
 
@@ -246,7 +243,7 @@ fn call_hook<R: Rt, E: UserEvent>(
     t: CoreTrait,
     args: &[&GxAbstract],
 ) -> Option<Option<Value>> {
-    let mut event = ctx.core_hook_sites.take_event()?;
+    let mut event = ctx.core_hook_sites.take_event(&ctx.event.user);
     let r = call_hook_over(&mut ctx.with_event(&mut event), t, args);
     ctx.core_hook_sites.give_event(event);
     r
@@ -398,7 +395,7 @@ fn dispatch_eq<R: Rt, E: UserEvent>(
     a: &GxAbstract,
     b: &GxAbstract,
 ) -> Option<bool> {
-    // SAFETY: `state` points into the live `eval_with_hooks` frame.
+    // SAFETY: `state` points into the live `with_hooks` frame.
     let s = unsafe { &mut *(state as *mut HookState<'_, R, E>) };
     let ctx = unsafe { &mut *s.ctx };
     match call_hook(ctx, CoreTrait::Eq, &[a, b])? {
@@ -494,15 +491,6 @@ pub fn hooks_live(env: &Env) -> bool {
         .any(|t| env.impls.get(&t.id()).is_some_and(|l| !l.is_empty()))
 }
 
-/// Remember the user event the seam's own events are made from. Every
-/// loan that has an event seeds; a loan inside a builtin's `eval` has
-/// none and needs its caller's (`CachedArgs::update`) to have.
-pub fn seed<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>) {
-    if ctx.core_hook_sites.template.is_none() {
-        ctx.core_hook_sites.template = Some(ctx.event.user.clone());
-    }
-}
-
 /// Loan the context to the value seam for the duration of `f`: any
 /// `Value` comparison or print inside honors a core-trait
 /// implementation. `f` sees no context, so the loan is exclusive; a
@@ -512,17 +500,7 @@ pub fn with_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce() -> T,
 ) -> T {
-    seed(ctx);
-    eval_with_hooks(ctx, f)
-}
-
-/// [`with_hooks`] inside a builtin's `eval`, which has no event: armed
-/// when a loan with one came first, else `f` runs unarmed (structural).
-pub fn eval_with_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    f: impl FnOnce() -> T,
-) -> T {
-    if !hooks_live(&ctx.env) || ctx.core_hook_sites.template.is_none() {
+    if !hooks_live(&ctx.env) {
         return f();
     }
     let mut state = HookState { ctx: ctx as *mut ExecCtx<'_, R, E> };
@@ -544,18 +522,9 @@ pub fn with_display_hooks<R: Rt, E: UserEvent, T>(
     ctx: &mut ExecCtx<'_, R, E>,
     f: impl FnOnce(&Env) -> T,
 ) -> T {
-    seed(ctx);
-    eval_with_display_hooks(ctx, f)
-}
-
-/// [`with_display_hooks`] inside a builtin's `eval`.
-pub fn eval_with_display_hooks<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    f: impl FnOnce(&Env) -> T,
-) -> T {
-    if !hooks_live(&ctx.env) || ctx.core_hook_sites.template.is_none() {
+    if !hooks_live(&ctx.env) {
         return f(&ctx.env);
     }
     let env = ctx.env.clone();
-    eval_with_hooks(ctx, || f(&env))
+    with_hooks(ctx, || f(&env))
 }

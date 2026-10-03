@@ -431,8 +431,23 @@ kept once and the other deleted.
 
 **Ids.** Ids minted in parallel are unique (global atomics,
 T/ids.rs:138) but their values depend on scheduling. That is acceptable
-only if nothing observable depends on id order. Phase 1 audits every
-iteration over an id-keyed map whose order reaches output.
+only if nothing observable depends on id order or value. The phase 1
+audit found the cycle loop, event delivery and every runtime map in the
+compiler order-free (lookups, or iteration into sets; `GX.nodes` is an
+`IndexMap` in insertion order). What does depend on ids, to fix before
+phase 4 mints them in parallel:
+
+| site | depends on | reaches |
+|---|---|---|
+| a reference is `Value::U64(BindId)` (C/node/bind.rs:1282) | the id's value | printing, comparison, sorting, map keys of refs |
+| `LambdaDef` `Ord`/`Hash` by `LambdaId` (C/node/lambda.rs:492) | id order | sorting fn values, maps keyed by fns |
+| watch and db subscription handles `Ord`/`Hash` by `BindId` (S/sys/watch.rs:218, S/db/subscribe.rs:47) | id order | the same for those handles |
+| `scan_watch_events` takes the first pending id of an `IntSet` (S/sys/watch.rs:501) | id value | which watch event a node outputs when several fire in a cycle |
+| an inferred tvar is named `'_<TVarId>` (T/typ/tvar.rs:497), synthesized names carry ids (T/expr/seq.rs, `block_component`, `#seam`, `qfn`) | id value | error text that becomes a value (a dynamic module's compile error, `QueueFnErr`) |
+| `sorted_tvars` breaks name ties by `TVarId` (T/typ/fntyp.rs:284) | id order | constraint order in diagnostics |
+| GUI windows iterated from an `IntMap<BindId, ..>` (S/gui/event_loop.rs:126, 407) | id value | the order of several windows' messages |
+
+Compile-time paths sort by id for stable image bytes (C/image/registration.rs:101) and kernel input order (C/fusion/mod.rs:501); neither is observable.
 
 ## 9. Threads
 

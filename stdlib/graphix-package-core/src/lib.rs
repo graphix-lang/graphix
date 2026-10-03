@@ -538,7 +538,7 @@ pub fn fast_eval<R: Rt, E: UserEvent>(
     from: &CachedVals,
 ) -> Option<Value> {
     let args = fast_args(from)?;
-    coretraits::eval_with_hooks(ctx, || f(&args))
+    coretraits::with_hooks(ctx, || f(&args))
 }
 
 /// [`fast_eval`] for a `FastCall::Typed` fn: `typ` is the call site's
@@ -550,7 +550,7 @@ pub fn fast_eval_typed<R: Rt, E: UserEvent>(
     from: &CachedVals,
 ) -> Option<Value> {
     let args = fast_args(from)?;
-    coretraits::eval_with_display_hooks(ctx, |env| f(env, typ, &args))
+    coretraits::with_display_hooks(ctx, |env| f(env, typ, &args))
 }
 
 /// The sort every collection's `sort(#dir, #numeric, c)` runs: `dir`
@@ -578,7 +578,7 @@ pub fn sort_values(
 /// A builtin over cached arguments. `eval` runs unarmed: a fast fn is
 /// armed by [`fast_eval`] (it sees only its arguments), and an `eval`
 /// that compares or prints values itself takes the loan
-/// (`coretraits::eval_with_hooks`, `eval_with_display_hooks`) around
+/// (`coretraits::with_hooks`, `with_display_hooks`) around
 /// that operation, with nothing of the context inside, so a core-trait
 /// implementation on an abstract value applies.
 pub trait EvalCached<R: Rt, E: UserEvent>:
@@ -676,8 +676,6 @@ impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> Apply<R, E> for CachedArgs<T> {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         let woke = std::mem::take(&mut self.woke_pending);
-        // A loan inside `eval` has no event; this one seeds the seam's.
-        coretraits::seed(ctx);
         let (ev, cached, last_result) =
             (&mut self.t, &mut self.cached, &mut self.last_result);
         Self::update_inner(ev, cached, last_result, woke, ctx, from)
@@ -1352,7 +1350,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MinEv {
     // Each argument is compared as a whole value; no flattening, as
     // the declared type `fn(a: 'a, @args: 'a) -> 'a` promises.
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        coretraits::eval_with_hooks(ctx, || {
+        coretraits::with_hooks(ctx, || {
             let mut res: Option<&Value> = None;
             for v in from.0.iter() {
                 match (res, v) {
@@ -1382,7 +1380,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for MaxEv {
 
     // Whole-value comparison, no flattening — see `MinEv`.
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        coretraits::eval_with_hooks(ctx, || {
+        coretraits::with_hooks(ctx, || {
             let mut res: Option<&Value> = None;
             for v in from.0.iter() {
                 match (res, v) {

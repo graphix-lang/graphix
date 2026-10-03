@@ -69,7 +69,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for ContainsEv {
         match (&from.0[0], &from.0[1]) {
             (Some(Value::Null), _) => Some(Value::Bool(false)),
             (Some(v), Some(x)) => {
-                Some(Value::Bool(coretraits::eval_with_hooks(ctx, || v == x)))
+                Some(Value::Bool(coretraits::with_hooks(ctx, || v == x)))
             }
             _ => None,
         }
