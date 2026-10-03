@@ -71,4 +71,5 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, routes, twins, HDD, typemorph |
 | `must_reject.md` | Must-reject mutation from the base's types (rigid consumers, seven families, verdicts); labeled/optional argument generation for every lane |
 | `parallel_compile.md` | the compile context and its forks; compile tasks own the cells they create and the check decides every cell; parallel code generation and statement elaboration; the plan for instances and module bodies |
+| `parallel_eval.md` | PROPOSED: fork independent subtrees of a cycle with `rayon::join`, serial-equivalent by branch contexts merged in order; measured fork decisions; `#[parallel]`/`#[serial]` |
 | `program_image.md` | proposal: cached compilation in three steps (gate facts, kernels, the program image); block-relocated IDs, the lexical edit log, first-dispatch materialization |
