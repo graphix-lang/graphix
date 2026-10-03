@@ -88,7 +88,7 @@ pub type Resolvers = SArc<[ResolverRef]>;
 
 /// Constructs a resolver from the payload of a `scheme:` entry in
 /// GRAPHIX_MODPATH. Registered by the embedder per scheme; `file` is built
-/// in. Receives the context's [`LibState`] so a package resolver can share
+/// in. Receives the context's [`LibState`](crate::LibState) so a package resolver can share
 /// state with its package's builtins.
 pub type ResolverFactory =
     SArc<dyn Fn(&mut crate::LibState, &str) -> Result<ResolverRef> + Send + Sync>;

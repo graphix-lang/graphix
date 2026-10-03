@@ -85,13 +85,18 @@ fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bo
 /// [`Level::GENERIC`], a scheme's variable no definition owns
 /// (`design/tvar_constraints.md`, Generalization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct Level {
+    #[doc(hidden)]
     pub depth: u32,
+    #[doc(hidden)]
     pub owner: Option<LambdaId>,
 }
 
 impl Level {
+    #[doc(hidden)]
     pub const GENERIC: Self = Self { depth: u32::MAX, owner: None };
+    #[doc(hidden)]
     pub const TOP: Self = Self { depth: 0, owner: None };
 
     fn is_generic(&self) -> bool {
@@ -100,6 +105,7 @@ impl Level {
 
     /// The level of the definition `id` compiled now: one below the
     /// enclosing definition's.
+    #[doc(hidden)]
     pub fn definition(id: LambdaId) -> Self {
         let depth = match current_level() {
             l if l.is_generic() => 1,
@@ -144,6 +150,7 @@ static TASKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1
 
 /// A fresh concurrent compile task's id: a task started later has a
 /// larger one; 0 is outside every task.
+#[doc(hidden)]
 pub fn new_task() -> u32 {
     TASKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -151,9 +158,11 @@ pub fn new_task() -> u32 {
 /// Cells created while this lives belong to compile task `id`; dropping
 /// it restores the enclosing task.
 #[must_use]
+#[doc(hidden)]
 pub struct InTask(u32);
 
 impl InTask {
+    #[doc(hidden)]
     pub fn enter(id: u32) -> Self {
         Self(TASK.replace(id))
     }
@@ -206,14 +215,17 @@ fn written_of(owner: u32, what: &str) {
 /// cell or var an earlier task created. A task runs whole on one
 /// thread, and a task run while it waits keeps its own record.
 #[must_use]
+#[doc(hidden)]
 pub struct OwnWrites(Option<(u32, bool)>);
 
 impl OwnWrites {
+    #[doc(hidden)]
     pub fn enter(task: u32) -> Self {
         Self(OWN_WRITES.replace(Some((task, false))))
     }
 
     /// Whether the task wrote outside itself.
+    #[doc(hidden)]
     pub fn foreign(self) -> bool {
         OWN_WRITES.get().is_some_and(|(_, w)| w)
     }
@@ -242,6 +254,7 @@ fn foreign_write(owner: u32, what: &str) {
 }
 
 /// The level a cell created now takes.
+#[doc(hidden)]
 pub fn current_level() -> Level {
     LEVEL.get()
 }
@@ -249,9 +262,11 @@ pub fn current_level() -> Level {
 /// Cells created while this lives take `level`; dropping it restores
 /// the enclosing level.
 #[must_use]
+#[doc(hidden)]
 pub struct AtLevel(Level);
 
 impl AtLevel {
+    #[doc(hidden)]
     pub fn enter(level: Level) -> Self {
         Self(LEVEL.replace(level))
     }
@@ -566,6 +581,7 @@ impl TVar {
     }
 
     /// The cell's level ([`TCell::level`]).
+    #[doc(hidden)]
     pub fn level(&self) -> Level {
         self.cell().read().level
     }
@@ -659,6 +675,7 @@ impl TVar {
     }
 
     /// Bind the cell, replacing any binding.
+    #[doc(hidden)]
     pub fn bind(&self, t: Type) {
         if self.requires_concrete() {
             t.require_concrete();
@@ -690,6 +707,7 @@ impl TVar {
 
     /// Narrow the cell by `c` unless a conjunct already is at least
     /// that narrow (a probe in `env`: `c` contains it).
+    #[doc(hidden)]
     pub fn narrow_cell(&self, env: &Env, c: Type) -> Result<()> {
         for e in self.cell_constraints().iter() {
             if c.contains_with_flags(BitFlags::empty(), env, e)? {
@@ -856,6 +874,7 @@ impl TVar {
     }
 
     /// Whether the cell holds the `Concrete` conjunct.
+    #[doc(hidden)]
     pub fn requires_concrete(&self) -> bool {
         self.cell().read().constraints.iter().any(|c| matches!(c, Type::Concrete))
     }
@@ -960,6 +979,7 @@ impl TVar {
         earlier_task(&self.cell().read())
     }
 
+    #[doc(hidden)]
     pub fn is_rigid(&self) -> bool {
         self.read().cell.read().rigid_gates > 0
     }
@@ -1008,6 +1028,7 @@ impl TVar {
     }
 
     /// Identity of the shared binding cell, for set membership tests.
+    #[doc(hidden)]
     pub fn cell_addr(&self) -> usize {
         Arc::as_ptr(&self.read().cell).addr()
     }
@@ -1234,6 +1255,7 @@ impl Type {
     /// An instance's copy of a type its definition's check settled: the
     /// bindings resolved, and each open cell a closed gate owns copied
     /// once through `known` (the signature's, mapped already).
+    #[doc(hidden)]
     pub fn instantiate_with(
         &self,
         known: &mut AHashMap<usize, TVar>,
@@ -1244,6 +1266,7 @@ impl Type {
 
     /// Self with every open cell `known` maps replaced by its image and
     /// every bound cell by its binding; any other cell is kept.
+    #[doc(hidden)]
     pub fn rename_with(&self, known: &AHashMap<usize, TVar>) -> Type {
         self.rename_int(known).unwrap_or_else(|| self.clone())
     }
@@ -1328,6 +1351,7 @@ impl Type {
     }
 
     /// Unbind any bound tvars, but do not unalias them.
+    #[doc(hidden)]
     pub fn unbind_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => tv.unbind(),
@@ -1340,6 +1364,7 @@ impl Type {
     /// Reopen every cell bound to ⊥: at a definition's gate that is a
     /// vacuous fact (`throws := ⊥`, the body observed nothing). Every other
     /// binding stays, shared with the cells it relates.
+    #[doc(hidden)]
     pub fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {

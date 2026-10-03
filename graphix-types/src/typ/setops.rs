@@ -22,6 +22,7 @@ fn is_empty_ty(t: &Type) -> bool {
 impl Type {
     /// No value inhabits this type: bottom, the empty primitive set, or
     /// an empty union (a `diff` residual with nothing left).
+    #[doc(hidden)]
     pub fn is_uninhabited(&self) -> bool {
         match self {
             Type::Set(ts) => ts.is_empty(),

@@ -11,6 +11,7 @@ use std::{
 /// switches to a fresh segment. It must exceed what one recursion
 /// level consumes between two checks (~420KB for an unoptimized
 /// `expr` parse level).
+#[doc(hidden)]
 pub const RED_ZONE: usize = 1024 * 1024;
 
 /// Size of each fresh segment. Segments are mmap'd on entry and
@@ -63,13 +64,14 @@ pub(crate) fn default_budget() -> usize {
 }
 
 /// Set the stack budget runtimes created from now on start with; a
-/// running one keeps its own ([`crate::Control::set_stack_budget`]).
+/// running one keeps its own ([`Control::set_stack_budget`]).
 pub fn set_stack_budget(bytes: usize) {
     DEFAULT_BUDGET.store(bytes, Ordering::Relaxed);
 }
 
 /// Abort the running runtime because a recursion exceeded its budget;
 /// the one exit for both the node-walk and the kernel stack check.
+#[doc(hidden)]
 pub fn budget_abort() {
     log::error!(
         "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
@@ -88,12 +90,14 @@ thread_local! {
 /// heap segment when the current stack is nearly exhausted. Wrap every
 /// recursion knot a user program can drive arbitrarily deep.
 #[inline(always)]
+#[doc(hidden)]
 pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
     if stacker::remaining_stack().unwrap_or(0) >= RED_ZONE { f() } else { grow(f) }
 }
 
 /// Whether one more segment would put this thread over the budget of
 /// the runtime running on it.
+#[doc(hidden)]
 pub fn grow_exceeds_budget() -> bool {
     let budget = current_stack_budget();
     GROWN.with(|g| g.get() + SEGMENT > budget)
@@ -119,6 +123,7 @@ impl Drop for Grown {
 /// Run `f` on a fresh segment. Over budget, the current runtime is
 /// aborted first; the segment is still granted so the node-walk can
 /// unwind at its next interrupt poll instead of overflowing here.
+#[doc(hidden)]
 pub fn grow<R>(f: impl FnOnce() -> R) -> R {
     if grow_exceeds_budget() {
         budget_abort();
@@ -130,7 +135,7 @@ pub fn grow<R>(f: impl FnOnce() -> R) -> R {
 /// Runtime control signals shared between a runtime handle and the
 /// running `ExecCtx`. `Interrupt` makes in-flight loops abort to bottom
 /// while the runtime keeps going; `Abort` also shuts the runtime down.
-/// Polled lock-free via [`ExecCtx::interrupted`] and `graphix_interrupted`.
+/// Polled lock-free via [`Control::interrupted`] and `graphix_interrupted`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[bitflags]
 #[repr(u32)]

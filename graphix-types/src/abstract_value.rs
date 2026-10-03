@@ -23,14 +23,19 @@ use triomphe::Arc;
 /// with_hooks`); with no loan installed the structural case
 /// applies.
 #[repr(C)]
+#[doc(hidden)]
 pub struct ValueHookDispatch {
     /// Type-erased pointer to the monomorphized dispatch state
     /// (`node::coretraits::HookState<R, E>`).
+    #[doc(hidden)]
     pub state: *mut u8,
     /// `None` means no implementation: take the structural case.
     /// `Some` is always a definite answer.
+    #[doc(hidden)]
     pub eq: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<bool>,
+    #[doc(hidden)]
     pub cmp: fn(*mut u8, &GxAbstract, &GxAbstract) -> Option<Ordering>,
+    #[doc(hidden)]
     pub fmt: fn(*mut u8, &GxAbstract) -> Option<ArcStr>,
 }
 
@@ -41,6 +46,7 @@ thread_local! {
 /// Run `f` with `h` as the thread's value-hook dispatch (loans nest);
 /// the previous dispatch is back when `f` returns or unwinds. `h.state`
 /// must stay valid while `f` runs.
+#[doc(hidden)]
 pub fn with_value_hooks<T>(h: &ValueHookDispatch, f: impl FnOnce() -> T) -> T {
     let _restore = Restore(VALUE_HOOKS.with(|c| c.replace(h)));
     f()
@@ -72,12 +78,16 @@ fn hooked<T>(f: impl FnOnce(&ValueHookDispatch) -> Option<T>) -> Option<T> {
 #[derive(Clone, Pack)]
 #[pack(unwrapped)]
 pub struct GxAbstract {
+    #[doc(hidden)]
     pub id: AbstractId,
     /// The type's name, for rendering (`Counter(5)`); identity is `id`.
+    #[doc(hidden)]
     pub name: ArcStr,
     /// The type arguments the value was constructed at, so a core-trait
     /// implementation for one instantiation is told from another's.
+    #[doc(hidden)]
     pub params: Arc<[Type]>,
+    #[doc(hidden)]
     pub payload: Value,
 }
 
@@ -153,6 +163,7 @@ static WRAPPER: LazyLock<AbstractWrapper<GxAbstract>> = LazyLock::new(|| {
 });
 
 /// Mint a value of the abstract type `id<params>` around `payload`.
+#[doc(hidden)]
 pub fn wrap(id: AbstractId, name: ArcStr, params: Arc<[Type]>, payload: Value) -> Value {
     WRAPPER.wrap(GxAbstract { id, name, params, payload })
 }

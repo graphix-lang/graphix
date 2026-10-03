@@ -304,6 +304,7 @@ impl FnType {
 impl FnType {
     /// Every cell the signature reaches, through bindings and conjuncts,
     /// by address.
+    #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         self.for_each_part(&mut |t, _| reached_cells(t, out))
     }
@@ -330,6 +331,7 @@ fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
 
 /// The cells `t` holds as positions, through bindings, never through
 /// conjuncts.
+#[doc(hidden)]
 pub fn position_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     crate::stack::ensure_sufficient(|| match t {
         Type::TVar(tv) => {

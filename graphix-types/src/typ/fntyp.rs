@@ -245,6 +245,7 @@ impl LambdaIds {
         ids
     }
 
+    #[doc(hidden)]
     pub fn own(&self) -> Option<LambdaId> {
         self.0.read().own
     }
@@ -546,6 +547,7 @@ impl FnType {
     }
 
     /// [`Self::try_for_each_type`] without early exit.
+    #[doc(hidden)]
     pub fn for_each_type(&self, f: &mut impl FnMut(&Type)) {
         let _ = self.try_for_each_type::<()>(&mut |t| {
             f(t);
@@ -558,6 +560,7 @@ impl FnType {
     /// throws. [`Self::alias_tvars`] makes the first-seen occurrence of a
     /// name the surviving cell, so the order is observable. The
     /// conjuncts are guarded per `FnType` address: one can reach back.
+    #[doc(hidden)]
     pub fn for_each_part(&self, f: &mut impl FnMut(&Type, bool)) {
         let FnType {
             args,
@@ -599,6 +602,7 @@ impl FnType {
     }
 
     /// [`Type::instantiate_with`] over the signature.
+    #[doc(hidden)]
     pub fn instantiate_with(
         &self,
         known: &mut AHashMap<usize, TVar>,
@@ -679,6 +683,7 @@ impl FnType {
 
     /// A reference's copy of the scheme (`Fresh::Scheme`) under the open
     /// gates `open`.
+    #[doc(hidden)]
     pub fn scheme(&self, open: &IntSet<LambdaId>) -> Self {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
@@ -767,6 +772,7 @@ impl FnType {
 
     /// A call's copy of a signature whose cells it shares (a parameter
     /// called in its definition's body): only the quantifiers are fresh.
+    #[doc(hidden)]
     pub fn shared_call(&self) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.fresh_quantifiers(&mut known, |c, known| c.swap_cells(known));
@@ -809,6 +815,7 @@ impl FnType {
     /// Mark generic every cell the signature reaches at `depth` or
     /// deeper: the definition at `depth` closed over them. A cell a
     /// binding lowered above it is its environment's.
+    #[doc(hidden)]
     pub fn generalize(&self, depth: u32) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
@@ -821,6 +828,7 @@ impl FnType {
 
     /// Claim every cell the signature reaches for `level`
     /// ([`TVar::claim`]).
+    #[doc(hidden)]
     pub fn claim(&self, level: Level) {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);

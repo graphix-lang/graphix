@@ -228,6 +228,7 @@ impl Type {
     /// Whether a value of this type can hold a reference, outside a
     /// function or an abstract type, which a cast never takes apart. A
     /// cast refuses such a source: a reference is not a number.
+    #[doc(hidden)]
     pub fn holds_ref(&self, env: &Env) -> bool {
         self.holds_ref_int(env, &mut Verdicts::new())
     }

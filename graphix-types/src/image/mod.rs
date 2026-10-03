@@ -41,7 +41,9 @@ use std::{
 };
 use triomphe::Arc;
 
+#[doc(hidden)]
 pub const REF: u8 = 0;
+#[doc(hidden)]
 pub const DEF: u8 = 1;
 
 /// One value per relocated id domain.
@@ -163,6 +165,7 @@ unsafe impl BufMut for ImageBuf {
 
 /// An address-keyed object's table entry holds the object (`P`), so
 /// its address names it alone for the session.
+#[doc(hidden)]
 pub type Table<K, P = ()> = AHashMap<K, Slot<P>>;
 
 #[derive(Default)]
@@ -245,6 +248,7 @@ impl ImageEncoder {
 }
 
 /// A decoded object in its ordinal's slot of the store.
+#[doc(hidden)]
 pub enum Obj {
     Path(ModPath),
     RefCell(RefCell),
@@ -261,6 +265,7 @@ pub enum Obj {
 }
 
 /// A type the store holds objects of.
+#[doc(hidden)]
 pub trait Object: Clone {
     fn into_obj(self) -> Obj;
     fn of(obj: &Obj) -> Option<&Self>;
@@ -432,6 +437,7 @@ impl ImageDecoder {
         shared
     }
 
+    #[doc(hidden)]
     pub fn shared(&self) -> Weak<Mutex<ImageDecoder>> {
         self.shared.clone()
     }
@@ -549,6 +555,7 @@ impl Drop for DecodeImage<'_> {
 /// Run `f` against the installed encoder, or `None` outside a session.
 /// The encoder is out of its slot while `f` runs, so a nested call sees
 /// no session and never a second `&mut`.
+#[doc(hidden)]
 pub fn encoding<R>(f: impl FnOnce(&mut ImageEncoder) -> R) -> Option<R> {
     let mut p = ENCODER.take()?;
     // The session guard holds the `&mut` that produced this pointer for
@@ -559,6 +566,7 @@ pub fn encoding<R>(f: impl FnOnce(&mut ImageEncoder) -> R) -> Option<R> {
 }
 
 /// [`encoding`] for the installed decoder.
+#[doc(hidden)]
 pub fn decoding<R>(f: impl FnOnce(&mut ImageDecoder) -> R) -> Option<R> {
     let mut p = DECODER.take()?;
     let r = f(unsafe { p.as_mut() });
@@ -695,6 +703,7 @@ pub(crate) fn resolved_len(r: &Resolved) -> usize {
     object_len(&key, |k| (*k, r.clone()), |e| &mut e.resolveds)
 }
 
+#[doc(hidden)]
 pub fn resolved_encode<B: BufMut>(r: &Resolved, buf: &mut B) -> Result<(), PackError> {
     let key = sync::Arc::as_ptr(r) as usize;
     object_encode(
@@ -765,6 +774,7 @@ fn resolved_read(buf: &mut impl Buf) -> Result<ResolvedRead, PackError> {
 
 /// A typedef's definition; one still being decoded is a malformed image,
 /// since no definition contains its own typedef.
+#[doc(hidden)]
 pub fn resolved_decode(buf: &mut impl Buf) -> Result<Resolved, PackError> {
     match resolved_read(buf)? {
         ResolvedRead::Built(r) => Ok(r),
@@ -779,6 +789,7 @@ fn resolved_decode_weak(buf: &mut impl Buf) -> Result<Weak<ResolvedRef>, PackErr
     })
 }
 
+#[doc(hidden)]
 pub fn flags_encode(
     flags: BitFlags<CFlag>,
     buf: &mut impl BufMut,
@@ -787,6 +798,7 @@ pub fn flags_encode(
     Ok(())
 }
 
+#[doc(hidden)]
 pub fn flags_decode(buf: &mut impl Buf) -> Result<BitFlags<CFlag>, PackError> {
     if buf.remaining() < 8 {
         return Err(PackError::BufferShort);
@@ -943,10 +955,12 @@ pub(crate) fn tvar_len(tv: &TVar) -> usize {
 }
 
 /// A boxed slice on the wire as the `Vec` it decodes to.
+#[doc(hidden)]
 pub fn slice_len<T: Pack>(xs: &[T]) -> usize {
     varint_len(xs.len() as u64) + xs.iter().map(|x| x.encoded_len()).sum::<usize>()
 }
 
+#[doc(hidden)]
 pub fn slice_encode<T: Pack>(xs: &[T], buf: &mut impl BufMut) -> Result<(), PackError> {
     encode_varint(xs.len() as u64, buf);
     for x in xs {
@@ -963,6 +977,7 @@ pub(crate) fn key<T>(object: &T) -> usize {
 
 /// Run `f` over the buffer's contiguous remainder, which is a slice of
 /// the image, and advance the buffer by what `f` consumed.
+#[doc(hidden)]
 pub fn with_slice<T>(
     buf: &mut impl Buf,
     f: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
@@ -981,6 +996,7 @@ pub fn with_slice<T>(
 /// valid image passes through a kind entered before its contents, so it
 /// enters an object before it meets a definition again; an entry with
 /// nothing entered since that definition's last is a cycle in the image.
+#[doc(hidden)]
 pub fn decode_at<T>(
     ord: u32,
     full: impl FnOnce(&mut &[u8]) -> Result<T, PackError>,
@@ -1018,6 +1034,7 @@ pub fn decode_at<T>(
 /// An object's place in the session: the ordinal every occurrence
 /// names, assigned at first sight, whether its definition has been
 /// written, and what keeps the object alive for the session.
+#[doc(hidden)]
 pub struct Slot<P = ()> {
     ord: u32,
     defined: bool,
@@ -1038,6 +1055,7 @@ fn new_ordinal(e: &mut ImageEncoder) -> u32 {
 /// first sight `owned` builds the table's key and pin and the object
 /// takes its ordinal; its definition is written elsewhere. An image
 /// object has no encoding outside a session.
+#[doc(hidden)]
 pub fn object_len<K, Q, P>(
     key: &Q,
     owned: impl FnOnce(&Q) -> (K, P),
@@ -1063,6 +1081,7 @@ where
 /// to the definitions area. The object is defined before its contents
 /// are written, so an occurrence of it inside them is a reference too.
 /// Outside a session, an error.
+#[doc(hidden)]
 pub fn object_encode<K, Q, P, B: BufMut>(
     key: &Q,
     owned: impl FnOnce(&Q) -> (K, P),
@@ -1105,6 +1124,7 @@ where
 
 /// The ordinal the object reference at the head of `buf` names, read
 /// without decoding the object, for [`object_at`] later.
+#[doc(hidden)]
 pub fn object_ref(buf: &mut impl Buf) -> Result<u32, PackError> {
     with_slice(buf, |sub| {
         if !sub.has_remaining() {
@@ -1129,16 +1149,19 @@ pub(crate) fn object_at<T: Object>(
 }
 
 /// The ordinal a reference names.
+#[doc(hidden)]
 pub fn ref_ord(sub: &mut &[u8]) -> Result<u32, PackError> {
     u32::try_from(decode_varint(sub)?).map_err(|_| PackError::InvalidFormat)
 }
 
 /// The object built for `ord`, if it has been.
+#[doc(hidden)]
 pub fn built<T: Object>(ord: u32) -> Option<T> {
     decoding(|d| d.get::<T>(ord)).flatten()
 }
 
 /// Enter `obj` in the slot of the definition being decoded.
+#[doc(hidden)]
 pub fn enter(obj: Obj) -> Result<(), PackError> {
     decoding(|d| d.enter(obj)).unwrap_or(Err(PackError::InvalidFormat))
 }

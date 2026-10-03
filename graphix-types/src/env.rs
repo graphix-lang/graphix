@@ -315,6 +315,7 @@ pub(crate) fn scope_is_under(s: &str, prefix: &str) -> bool {
 
 /// Iterate the lexical levels of `from` from innermost to the
 /// enclosing module root, inclusive.
+#[doc(hidden)]
 pub fn chain_levels(from: &str) -> impl Iterator<Item = &str> {
     let root = mod_root(from);
     let mut cur = Some(from);
@@ -354,6 +355,7 @@ enum Visit<'a> {
 
 /// A typedef's parameters with their constraints' type references
 /// scoped to `scope`, where the definition is.
+#[doc(hidden)]
 pub fn scope_params(
     params: &[(TVar, Option<Type>)],
     scope: &ModPath,
@@ -421,6 +423,7 @@ pub struct Env {
     /// The modules whose undeclared impls this compile task does not
     /// see: its siblings in a run of module checks, which reach each
     /// other only through their interfaces.
+    #[doc(hidden)]
     pub hidden_impls: Arc<Vec<ModPath>>,
 }
 
@@ -428,6 +431,7 @@ impl Env {
     /// A copy for a compile task: the global registries record what the
     /// task writes, for [`Self::join`]; the lexical maps are the task's
     /// own, as `with_restored` leaves them.
+    #[doc(hidden)]
     pub fn fork(&self) -> Self {
         Self {
             by_id: self.by_id.fork(),
@@ -445,6 +449,7 @@ impl Env {
     }
 
     /// Write back what the task `fork` wrote to the global registries.
+    #[doc(hidden)]
     pub fn join(&mut self, fork: Self) {
         let Self {
             by_id,
@@ -481,6 +486,7 @@ impl Env {
     /// [`Self::restore_lexical_env`] reads back: a definition keeps one,
     /// and holding the global tables too would make every later write
     /// to them copy what the snapshot shares.
+    #[doc(hidden)]
     pub fn lexical(&self) -> Self {
         Self {
             binds: self.binds.clone(),
@@ -491,6 +497,7 @@ impl Env {
         }
     }
 
+    #[doc(hidden)]
     pub fn restore_lexical_env(&self, other: Self) -> Self {
         let Self {
             binds,
@@ -515,6 +522,7 @@ impl Env {
     /// [`Self::restore_lexical_env`] taking the lexical maps out of
     /// `other`, so the restored env holds them alone and updates them
     /// in place.
+    #[doc(hidden)]
     pub fn restore_lexical_env_mut(&self, other: &mut Self) -> Self {
         self.restore_lexical_env(Self {
             binds: mem::take(&mut other.binds),
@@ -1093,6 +1101,7 @@ impl Env {
 
     /// The implementations of `trait_id` this compile task sees: those
     /// registered, less a sibling's undeclared ones ([`Self::hidden_impls`]).
+    #[doc(hidden)]
     pub fn impls_of(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
         let list = self.impls.get(&trait_id)?;
         let hidden = |im: &ImplDef| {

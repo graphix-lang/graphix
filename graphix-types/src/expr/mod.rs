@@ -40,6 +40,7 @@ pub mod parser;
 mod pattern;
 pub mod print;
 mod resolver;
+#[doc(hidden)]
 pub mod seq;
 pub mod serialize;
 #[cfg(test)]
@@ -51,6 +52,7 @@ static DEFAULT_ORIGIN: LazyLock<Arc<Origin>> =
     LazyLock::new(|| Arc::new(Origin::default()));
 
 /// The expression a node built by the compiler, not from source, carries.
+#[doc(hidden)]
 pub static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
     let mut nop = Expr::default();
     nop.kind = ExprKind::Constant(Value::String(literal!("nop")));
@@ -1373,6 +1375,7 @@ impl Expr {
 
     /// A compiler-built expression standing at `at`'s origin and position,
     /// undecorated and with no written end.
+    #[doc(hidden)]
     pub fn synth(at: &Expr, kind: ExprKind) -> Self {
         Expr {
             id: ExprId::new(),

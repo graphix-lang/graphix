@@ -22,6 +22,7 @@ pub(super) struct NormCx {
     memo: LPooled<AHashMap<NormKey, (Type, Option<Type>)>>,
 }
 
+#[doc(hidden)]
 pub type NormKey = (Discriminant<Type>, usize, usize);
 
 impl NormCx {
@@ -56,6 +57,7 @@ impl ResolveTvarsCx {
     }
 }
 
+#[doc(hidden)]
 pub fn norm_key(t: &Type) -> Option<NormKey> {
     let d = std::mem::discriminant(t);
     match t {

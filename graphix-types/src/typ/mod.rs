@@ -43,8 +43,10 @@ mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
 mod setops;
+#[doc(hidden)]
 pub mod settle;
 pub(crate) mod tval;
+#[doc(hidden)]
 pub mod tvar;
 
 pub use fntyp::{FnArgKind, FnArgType, FnType};
@@ -327,6 +329,7 @@ impl CoreTrait {
         [Self::Eq, Self::Ord, Self::Display].into_iter().find(|t| t.id() == id)
     }
 
+    #[doc(hidden)]
     pub fn method(self) -> &'static str {
         match self {
             Self::Eq => "eq",
@@ -335,6 +338,7 @@ impl CoreTrait {
         }
     }
 
+    #[doc(hidden)]
     pub fn arity(self) -> usize {
         match self {
             Self::Eq | Self::Ord => 2,
@@ -349,6 +353,7 @@ impl CoreTrait {
 /// env-independent after. A recursive definition's body reaches its own
 /// cell, so a strong cell would be a cycle.
 #[derive(Debug)]
+#[doc(hidden)]
 pub struct ResolvedRef {
     canonical_scope: ModPath,
     pos: SourcePosition,
@@ -397,6 +402,7 @@ impl ResolvedRef {
             && self.typ == other.typ
     }
 
+    #[doc(hidden)]
     pub fn canonical_scope(&self) -> &ModPath {
         &self.canonical_scope
     }
@@ -519,6 +525,7 @@ impl TypeRef {
     }
 
     /// This ref with different `params`, sharing the resolution cell.
+    #[doc(hidden)]
     pub fn with_params(&self, params: Arc<[Type]>) -> Self {
         Self { params, ..self.clone() }
     }
@@ -560,11 +567,13 @@ impl TypeRef {
     }
 
     /// Identity of the resolution cell: shared by the rebuilds of one ref.
+    #[doc(hidden)]
     pub fn cell_addr(&self) -> usize {
         Arc::as_ptr(&self.resolved) as *const () as usize
     }
 
     /// [`ResolvedRef::def_key`] of the filled cell.
+    #[doc(hidden)]
     pub fn def_key(&self) -> Option<usize> {
         self.resolved().map(|r| r.def_key())
     }
@@ -582,6 +591,7 @@ impl TypeRef {
     /// Does the name mean something: its filled cell, a typedef visible
     /// in `env`, or a trait (a bound)? Never writes the cell: a fill
     /// before every name is registered can capture a shadowed target.
+    #[doc(hidden)]
     pub fn names_something(&self, env: &Env) -> bool {
         self.resolved().is_some()
             || self.resolve_pure(env).is_some()
@@ -611,6 +621,7 @@ impl TypeRef {
     /// A cell whose definition is gone (a type that outlived the env
     /// entry that defined it) is `None` too, and logged: the name may
     /// mean something else now, so it is never re-resolved.
+    #[doc(hidden)]
     pub fn resolve_in(&self, env: &Env) -> Option<sync::Arc<ResolvedRef>> {
         let dead = || {
             log::error!(
@@ -1388,6 +1399,7 @@ impl Type {
 
     /// The definitions this type's filled cells name, and theirs, by
     /// [`ResolvedRef::def_key`]: through bindings and conjuncts.
+    #[doc(hidden)]
     pub fn named_defs(
         &self,
         cells: &mut AHashSet<usize>,
@@ -1422,6 +1434,7 @@ impl Type {
     }
 
     /// [`Self::try_for_each_child`] without early exit.
+    #[doc(hidden)]
     pub fn for_each_child(&self, f: &mut impl FnMut(&Type)) {
         let _ = self.try_for_each_child::<()>(&mut |t| {
             f(t);
@@ -1433,6 +1446,7 @@ impl Type {
     /// (`None` from `f` means unchanged); `None` when nothing changed.
     /// Leaves, `TVar` included, return `None`. `Ref` params rebuild
     /// through [`TypeRef::with_params`], sharing the resolution cell.
+    #[doc(hidden)]
     pub fn cow_children(
         &self,
         f: &mut impl FnMut(&Type) -> Option<Type>,
@@ -1521,6 +1535,7 @@ impl Type {
     /// The other side of a constructor application, dereferenced and
     /// [`Self::decompose`]d: a reference by name, a bare alias through
     /// its expansion.
+    #[doc(hidden)]
     pub fn app_split(t: &Type, env: &Env) -> Result<Option<(Type, Type)>> {
         let Some(t) = t.deref_cloned() else { return Ok(None) };
         if let Some(parts) = t.decompose() {
@@ -1594,6 +1609,7 @@ impl Type {
     }
 
     /// The number of holes in this type.
+    #[doc(hidden)]
     pub fn holes(&self) -> usize {
         ensure_sufficient(|| match self {
             Type::Hole => 1,
@@ -1609,6 +1625,7 @@ impl Type {
     /// before the argument typechecks, so an unannotated callback's
     /// parameters take the declared types. A function-typed argument
     /// unifies its parameter positions only; anything else whole.
+    #[doc(hidden)]
     pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
         let d = declared.deref_cloned();
         let a = actual.deref_cloned();
@@ -1622,6 +1639,7 @@ impl Type {
     /// the fresh bounded quantifier `tv`, applied to a fresh element
     /// when the trait is a constructor trait (`|c: Collection|` ≡
     /// `'c: Collection, c: 'c<'e>`).
+    #[doc(hidden)]
     pub fn trait_param(env: &Env, tv: TVar, tr: &TypeRef) -> Type {
         let hole = env
             .trait_of_ref(tr)
@@ -1636,6 +1654,7 @@ impl Type {
 
     /// Whether `tc` bounds by a constructor trait (`Collection`), whose
     /// implementations are constructors (`Array<'_>`).
+    #[doc(hidden)]
     pub fn is_ctor_trait_bound(env: &Env, tc: &Type) -> bool {
         match tc {
             Type::Ref(tr) => env
@@ -1651,6 +1670,7 @@ impl Type {
     /// constructor trait (`'c: Collection`) stands for a constructor
     /// applied (`'c<'e>`), as a trait-typed parameter does
     /// ([`Self::trait_param`]).
+    #[doc(hidden)]
     pub fn apply_ctor_quantifiers(&self, ctors: &[(ArcStr, Type)]) -> Type {
         self.apply_ctor_quantifiers_int(ctors).unwrap_or_else(|| self.clone())
     }
@@ -1743,6 +1763,7 @@ impl Type {
     /// now ([`TypeRef::names_something`]), into `out`: a name's
     /// parameters and a variable's bounds included, a variable's binding
     /// (inferred, not written) not.
+    #[doc(hidden)]
     pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) {
         fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>, out: &mut Vec<TypeRef>) {
             ensure_sufficient(|| match t {
@@ -1769,6 +1790,7 @@ impl Type {
 
     /// [`Self::seed_refs`] over types that share `seen`, the cells and
     /// nodes already walked.
+    #[doc(hidden)]
     pub fn seed_refs_seen(&self, env: &Env, seen: &mut IntSet<usize>) -> bool {
         fn go(t: &Type, env: &Env, seen: &mut IntSet<usize>) -> bool {
             ensure_sufficient(|| {
@@ -1860,6 +1882,7 @@ impl Type {
     /// parameter bound is an error and an open argument takes the bound
     /// as a conjunct; a probe (`!commit`) binds nothing and answers a
     /// violated bound with `None`.
+    #[doc(hidden)]
     pub fn lookup_ref_with(&self, env: &Env, commit: bool) -> Result<Option<Type>> {
         match self {
             Self::Ref(tr) => {

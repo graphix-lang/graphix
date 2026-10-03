@@ -4,12 +4,12 @@
 )]
 #![recursion_limit = "256"]
 pub use graphix_types::{
-    AbstractTypeRegistry, BindId, CAST_ERR, CAST_ERR_TAG, CFlag, LambdaId,
-    LambdaInstanceId, LibState, PrintFlag, SourcePosition, abstract_value,
-    block_component, defetyp, env, err, errf, expr, format_with_flags, ide,
-    is_block_component, is_do_block, mod_root, shared_map, tracked, typ,
+    AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, PrintFlag,
+    SourcePosition, abstract_value, block_component, defetyp, env, err, errf, expr,
+    format_with_flags, ide, is_block_component, is_do_block, mod_root, shared_map,
+    tracked, typ,
 };
-pub(crate) use graphix_types::{Restore, profile, stack};
+pub(crate) use graphix_types::{CAST_ERR, CAST_ERR_TAG, Restore, profile, stack};
 
 pub mod analysis;
 pub(crate) mod dbgenv;

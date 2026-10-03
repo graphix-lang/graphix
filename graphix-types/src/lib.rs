@@ -17,8 +17,10 @@ pub mod expr;
 pub mod ide;
 pub mod image;
 pub mod list;
+#[doc(hidden)]
 pub mod profile;
 pub mod shared_map;
+#[doc(hidden)]
 pub mod stack;
 pub mod tracked;
 pub mod typ;
@@ -64,6 +66,7 @@ pub enum CFlag {
 
 /// Sets a thread-local `Cell` for a scope and puts the previous value
 /// back when dropped, by an unwind too.
+#[doc(hidden)]
 pub struct Restore<T: Copy + 'static> {
     key: &'static LocalKey<Cell<T>>,
     prev: T,
@@ -110,8 +113,10 @@ macro_rules! errf {
 
 #[macro_export]
 macro_rules! defetyp {
-    ($vis:vis $name:ident, $tag_vis:vis $tag_name:ident, $tag:literal, $typ:expr) => {
+    ($(#[$attr:meta])* $vis:vis $name:ident, $tag_vis:vis $tag_name:ident, $tag:literal, $typ:expr) => {
+        $(#[$attr])*
         $tag_vis static $tag_name: ArcStr = ::arcstr::literal!($tag);
+        $(#[$attr])*
         $vis static $name: ::std::sync::LazyLock<$crate::typ::Type> =
             ::std::sync::LazyLock::new(|| {
                 let scope = $crate::expr::ModPath::root();
@@ -122,7 +127,7 @@ macro_rules! defetyp {
     };
 }
 
-defetyp!(pub CAST_ERR, pub CAST_ERR_TAG, "InvalidCast", "Error<`{}(string)>");
+defetyp!(#[doc(hidden)] pub CAST_ERR, pub CAST_ERR_TAG, "InvalidCast", "Error<`{}(string)>");
 
 image_id!(LambdaId);
 
@@ -162,6 +167,7 @@ thread_local! {
     static PRINT_FLAGS: Cell<BitFlags<PrintFlag>> = Cell::new(PrintFlag::ReplacePrims.into());
 }
 
+#[doc(hidden)]
 pub fn print_as_written() -> bool {
     PRINT_FLAGS.get().contains(PrintFlag::AsWritten)
 }
