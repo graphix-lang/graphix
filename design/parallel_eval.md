@@ -442,7 +442,7 @@ phase 4 mints them in parallel:
 | a reference is `Value::U64(BindId)` (C/node/bind.rs:1282) | the id's value | printing, comparison, sorting, map keys of refs |
 | `LambdaDef` `Ord`/`Hash` by `LambdaId` (C/node/lambda.rs:492) | id order | sorting fn values, maps keyed by fns |
 | watch and db subscription handles `Ord`/`Hash` by `BindId` (S/sys/watch.rs:218, S/db/subscribe.rs:47) | id order | the same for those handles |
-| `scan_watch_events` takes the first pending id of an `IntSet` (S/sys/watch.rs:501) | id value | which watch event a node outputs when several fire in a cycle |
+| a watch stream queues one cycle's events in `IntSet` order (S/sys/watch.rs, `WatchStream::update`) | id value | the order in which events of different watches arriving in one cycle are output |
 | an inferred tvar is named `'_<TVarId>` (T/typ/tvar.rs:497), synthesized names carry ids (T/expr/seq.rs, `block_component`, `#seam`, `qfn`) | id value | error text that becomes a value (a dynamic module's compile error, `QueueFnErr`) |
 | `sorted_tvars` breaks name ties by `TVarId` (T/typ/fntyp.rs:284) | id order | constraint order in diagnostics |
 | GUI windows iterated from an `IntMap<BindId, ..>` (S/gui/event_loop.rs:126, 407) | id value | the order of several windows' messages |
