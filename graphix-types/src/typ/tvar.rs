@@ -674,6 +674,24 @@ impl TVar {
         self.read().cell.read().binding.is_some()
     }
 
+    /// The open cell this var stands for: its own, or the end of a chain
+    /// of bindings to vars (a merged cell's forward link); `None` when
+    /// the chain ends bound.
+    pub fn open_cell(&self) -> Option<TVar> {
+        let mut tv = self.clone();
+        loop {
+            let next = match &tv.cell().read().binding {
+                None => None,
+                Some(Type::TVar(next)) => Some(next.clone()),
+                Some(_) => return None,
+            };
+            match next {
+                None => return Some(tv),
+                Some(next) => tv = next,
+            }
+        }
+    }
+
     /// Bind the cell, replacing any binding.
     #[doc(hidden)]
     pub fn bind(&self, t: Type) {
@@ -1279,8 +1297,10 @@ impl Type {
 
     fn swap_int(&self, known: &AHashMap<usize, TVar>) -> Option<Type> {
         ensure_sufficient(|| match self {
-            Type::TVar(tv) if tv.is_bound() => None,
-            Type::TVar(tv) => known.get(&tv.cell_addr()).map(|f| Type::TVar(f.clone())),
+            Type::TVar(tv) => tv
+                .open_cell()
+                .and_then(|o| known.get(&o.cell_addr()))
+                .map(|f| Type::TVar(f.clone())),
             Type::Fn(ft) => {
                 ft.cow_walk(|t| t.swap_int(known)).map(|f| Type::Fn(Arc::new(f)))
             }

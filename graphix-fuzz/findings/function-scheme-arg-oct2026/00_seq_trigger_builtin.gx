@@ -1,0 +1,7 @@
+// A seq whose trigger is the builtin queuefn itself passes the value
+// through core::filter, binding filter's 'a to queuefn's scheme
+// fn<'a: Function>(..). Elaboration rechecked the builtin at that
+// scheme, and the unify-back merged the scheme's quantifier into a copy,
+// whose forward link hid it from the open-quantifier tests: the build
+// refused what the check passed. Found by oct02f fuzz (aieka, ryouko).
+seq let c = queuefn { c }

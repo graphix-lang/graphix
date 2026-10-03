@@ -528,6 +528,24 @@ async fn function_bounds_admit_only_functions() -> Result<()> {
     Ok(())
 }
 
+// A function-bounded builtin passed as a value stays a scheme through the
+// call that carries it: each call of the value picks its own 'a.
+#[tokio::test(flavor = "current_thread")]
+async fn function_bounded_builtin_passed_as_a_value() -> Result<()> {
+    let src = r#"{
+        let g = filter(queuefn, |x| true);
+        let inc = g(#trigger: null, |x: i64| x + 1);
+        let n = g(#trigger: null, |s: string| str::len(s));
+        inc(40) + n("a")
+    }"#;
+    let (v, ctx) = eval(src, crate::TEST_REGISTER).await?;
+    assert_eq!(v, Value::I64(42));
+    ctx.shutdown().await;
+    let (_, ctx) = eval("filter(queuefn, |x| true)", crate::TEST_REGISTER).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
 // A generic function's signature is what its body bound: a call's types
 // follow from it, so a mismatch is refused at the call, never inside an
 // instance.

@@ -1011,12 +1011,13 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         for id in ftype.lambda_ids.ids().iter().copied() {
             recheck_builtin::<R, E>(ctx, id, &resolved, &spec)?;
         }
-        // Callbacks reachable through a fn-typed argument.
+        // Callbacks reachable through a fn-typed argument. A callback still
+        // a scheme is checked by each call that picks its quantifiers.
         let mut fts: LPooled<Vec<TArc<FnType>>> = LPooled::take();
         for arg in resolved.args.iter() {
             fts.clear();
             collect_fn_arms(&arg.typ, &mut fts);
-            for ft in fts.iter() {
+            for ft in fts.iter().filter(|ft| !ft.has_open_quantifier()) {
                 for id in ft.lambda_ids.ids().iter().copied() {
                     recheck_builtin::<R, E>(ctx, id, ft, &spec)?;
                 }

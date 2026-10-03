@@ -688,6 +688,19 @@ impl FnType {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
     }
 
+    /// A quantifier of this signature no call has picked: the type is a
+    /// scheme, not the type of a call.
+    pub fn has_open_quantifier(&self) -> bool {
+        if self.quantifiers.is_empty() {
+            return false;
+        }
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        self.collect_tvars(&mut named);
+        named
+            .iter()
+            .any(|(name, tv)| self.quantifiers.contains(name) && tv.open_cell().is_some())
+    }
+
     /// Map each of the signature's own open quantifiers to a fresh cell
     /// in `known`, its conjuncts copied through `walk`: every call picks
     /// them anew, whatever gate owns them.
@@ -701,7 +714,10 @@ impl FnType {
         }
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut named);
-        named.retain(|name, tv| self.quantifiers.contains(name) && !tv.is_bound());
+        named.retain(|name, tv| {
+            let open = self.quantifiers.contains(name).then(|| tv.open_cell()).flatten();
+            open.map(|o| *tv = o).is_some()
+        });
         for tv in named.values() {
             known
                 .entry(tv.cell_addr())
@@ -756,8 +772,10 @@ impl FnType {
                         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                         ft.collect_tvars(&mut named);
                         for (name, tv) in named.drain() {
-                            if ft.quantifiers.contains(&name) && !tv.is_bound() {
-                                out.insert(tv.cell_addr(), tv);
+                            if ft.quantifiers.contains(&name)
+                                && let Some(open) = tv.open_cell()
+                            {
+                                out.insert(open.cell_addr(), open);
                             }
                         }
                     }
