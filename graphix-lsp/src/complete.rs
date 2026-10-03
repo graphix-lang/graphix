@@ -79,7 +79,7 @@ impl<'a> Completer<'a> {
         let entries = || {
             let all = checked.iter().flat_map(|c| c.ide.scope_map.iter());
             all.filter(|e| in_file(&e.ori, file))
-                .map(|e| (zero_based(e.pos), zero_based(e.end), &e.scope.lexical))
+                .map(|e| (zero_based(e.pos), zero_based(e.end), &e.scope))
         };
         let around = entries()
             .filter(|(pos, end, _)| *pos <= cursor && cursor <= *end)
@@ -99,7 +99,7 @@ impl<'a> Completer<'a> {
     fn module_of(checked: Option<&Checked>, file: &Path) -> ModPath {
         let ide = checked.iter().map(|c| &c.ide);
         let scopes = ide.flat_map(|ide| {
-            let entries = ide.scope_map.iter().map(|e| (&e.ori, &e.scope.lexical));
+            let entries = ide.scope_map.iter().map(|e| (&e.ori, &e.scope));
             entries.chain(ide.binds.iter().map(|b| (&b.ori, &b.scope)))
         });
         let here = scopes.filter(|(ori, _)| in_file(ori, file)).map(|(_, scope)| scope);

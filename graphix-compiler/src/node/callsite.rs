@@ -1294,11 +1294,12 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if res.is_ok() {
             if let Callee::Static { apply, .. } = &self.callee {
                 if let ApplyView::Lambda(g) = apply.view() {
-                    profile::instance_signature(
-                        g.instance_id(),
-                        g.typ(),
-                        Some(&identity),
-                    );
+                    profile::instance_signature(g.instance_id(), g.typ(), || {
+                        Some(
+                            ahash::RandomState::with_seeds(0, 0, 0, 0)
+                                .hash_one(&identity),
+                        )
+                    });
                 }
             }
         }
@@ -1743,14 +1744,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             return Err(PackError::Application(image::NOT_IMAGED));
         };
         let instance = g.instance_id();
-        if image::encoding(|e| e.instance_refs.contains_key(&instance)) != Some(true) {
+        if image::encoding(|e| {
+            e.ext::<image::Compiled>().instance_refs.contains_key(&instance)
+        }) != Some(true)
+        {
             let mut refs = Refs::default();
             apply.refs(&mut refs);
             let summary = RefsSummary::of(&refs);
-            image::encoding(|e| e.instance_refs.insert(instance, summary))
-                .ok_or(PackError::Application(image::NOT_IMAGED))?;
+            image::encoding(|e| {
+                e.ext::<image::Compiled>().instance_refs.insert(instance, summary)
+            })
+            .ok_or(PackError::Application(image::NOT_IMAGED))?;
         }
-        image::encoding(|e| f(&e.instance_refs[&instance]))
+        image::encoding(|e| f(&e.ext::<image::Compiled>().instance_refs[&instance]))
             .ok_or(PackError::Application(image::NOT_IMAGED))
     }
 
@@ -1763,7 +1769,10 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             .clone()
             .ok_or_else(|| anyhow!("no image to decode instance {instance:?} from"))?;
         let mut dec = shared.lock();
-        let decoded = match dec.instance_offset(instance) {
+        let at = dec
+            .ext_ref::<image::Restored>()
+            .and_then(|r| r.instances.get(&instance).copied());
+        let decoded = match at {
             None => Err(anyhow!("instance {instance:?} is not in the image")),
             Some(at) => {
                 let image = dec.image().clone();
@@ -1864,7 +1873,9 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         match (&self.callee, mode) {
             (Callee::Static { apply, first_update }, CALLEE_INSTANCE) => {
                 encode_nodes(&self.arg_refs, buf)?;
-                let deferred = image::encoding(|e| e.defer_instances).unwrap_or(false);
+                let deferred =
+                    image::encoding(|e| e.ext::<image::Compiled>().defer_instances)
+                        .unwrap_or(false);
                 deferred.encode(buf)?;
                 if deferred {
                     let ApplyView::Lambda(g) = apply.view() else {
@@ -1879,7 +1890,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                     let body: &'static dyn Apply<R, E> =
                         unsafe { mem::transmute::<&dyn Apply<R, E>, _>(&**apply) };
                     image::encoding(|e| {
-                        e.deferred
+                        e.ext::<image::Compiled>()
+                            .deferred
                             .push((instance, Box::new(move |buf| body.image_encode(buf))))
                     });
                 } else {

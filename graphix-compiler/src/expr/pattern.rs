@@ -1,5 +1,9 @@
 use super::{Expr, ModPath, Name, WrittenAt, parser, print::Literal};
-use crate::{env::Env, node::MAX_ALIAS_DEPTH, print_as_written, typ::Type};
+use crate::{
+    env::Env,
+    print_as_written,
+    typ::{MAX_ALIAS_DEPTH, Type},
+};
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use netidx_derive::Pack;

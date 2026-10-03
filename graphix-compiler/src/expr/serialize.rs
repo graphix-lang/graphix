@@ -12,11 +12,10 @@
 use crate::{
     SourcePosition,
     expr::{
-        Decorations, Expr, ExprId, ExprKind, Origin, OriginScope, Sig, VfsEntry,
+        Decorations, Expr, ExprId, ExprKind, NOP, Origin, OriginScope, Sig, VfsEntry,
         get_origin,
     },
     image,
-    node::NOP,
     profile::{self, Phase},
 };
 use anyhow::{Result, bail};

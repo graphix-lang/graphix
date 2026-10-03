@@ -272,6 +272,10 @@ impl AbstractId {
     }
 }
 
+/// Type alias chains are followed this deep; a deeper chain is a cyclic
+/// typedef.
+pub const MAX_ALIAS_DEPTH: usize = 64;
+
 /// The identity of a trait: the low 64 bits of a v5 UUID of its
 /// canonical path, so an interface's declaration and the
 /// implementation's re-declaration name one trait.
@@ -300,6 +304,44 @@ impl TraitId {
 }
 
 impl nohash::IsEnabled for TraitId {}
+
+/// The core traits `Eq`, `Ord` and `Display`, which ride the value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreTrait {
+    Eq,
+    Ord,
+    Display,
+}
+
+static CORE_IDS: LazyLock<[TraitId; 3]> = LazyLock::new(|| {
+    let core = ModPath::from(["core"]);
+    [TraitId::of(&core, "Eq"), TraitId::of(&core, "Ord"), TraitId::of(&core, "Display")]
+});
+
+impl CoreTrait {
+    pub fn id(self) -> TraitId {
+        CORE_IDS[self as usize]
+    }
+
+    pub fn of_id(id: TraitId) -> Option<Self> {
+        [Self::Eq, Self::Ord, Self::Display].into_iter().find(|t| t.id() == id)
+    }
+
+    pub(crate) fn method(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Ord => "cmp",
+            Self::Display => "fmt",
+        }
+    }
+
+    pub(crate) fn arity(self) -> usize {
+        match self {
+            Self::Eq | Self::Ord => 2,
+            Self::Display => 1,
+        }
+    }
+}
 
 /// What a `TypeRef`'s name means: the definition [`Type::lookup_ref`]
 /// reads, held by its `TypeDef` and weakly by the ref's write-once

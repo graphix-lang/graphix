@@ -12,8 +12,8 @@ use crate::{
     BindId, Event, ExecCtx, Rt, Scope, TagValue, UserEvent,
     abstract_value::{self, GxAbstract, ValueHookDispatch},
     env::{Env, ImplDef},
-    expr::{ExprId, ModPath},
-    typ::{AbstractId, FnType, TVar, TraitId, Type},
+    expr::ExprId,
+    typ::{AbstractId, CoreTrait, FnType, TVar, Type},
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow};
@@ -22,45 +22,8 @@ use compact_str::format_compact;
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cmp::Ordering, sync::LazyLock};
+use std::cmp::Ordering;
 use triomphe::Arc;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CoreTrait {
-    Eq,
-    Ord,
-    Display,
-}
-
-static CORE_IDS: LazyLock<[TraitId; 3]> = LazyLock::new(|| {
-    let core = ModPath::from(["core"]);
-    [TraitId::of(&core, "Eq"), TraitId::of(&core, "Ord"), TraitId::of(&core, "Display")]
-});
-
-impl CoreTrait {
-    pub fn id(self) -> TraitId {
-        CORE_IDS[self as usize]
-    }
-
-    pub fn of_id(id: TraitId) -> Option<Self> {
-        [Self::Eq, Self::Ord, Self::Display].into_iter().find(|t| t.id() == id)
-    }
-
-    fn method(self) -> &'static str {
-        match self {
-            Self::Eq => "eq",
-            Self::Ord => "cmp",
-            Self::Display => "fmt",
-        }
-    }
-
-    fn arity(self) -> usize {
-        match self {
-            Self::Eq | Self::Ord => 2,
-            Self::Display => 1,
-        }
-    }
-}
 
 /// A hook: the implementation's method binding, the type it was found
 /// for (the argument type of the call site) and the method's signature

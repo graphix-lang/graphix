@@ -202,7 +202,7 @@ impl DefTable {
         image::object_encode(
             &key,
             |k| (*k, table.clone()),
-            |e| &mut e.def_tables,
+            |e| &mut e.ext::<image::Compiled>().def_tables,
             buf,
             |buf| {
                 encode_varint(table.types.len() as u64, buf);
@@ -737,7 +737,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         })();
         elab_audit::leave(ctx.def_gate_depth, "typecheck0", self.body.spec(), &res);
         res?;
-        profile::instance_signature(self.instance_id, &self.typ, None);
+        profile::instance_signature(self.instance_id, &self.typ, || None);
         Ok(())
     }
 

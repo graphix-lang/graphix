@@ -1,8 +1,9 @@
+use enumflags2::bitflags;
 use std::{
     cell::Cell,
     sync::{
         LazyLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
 };
 
@@ -73,9 +74,9 @@ pub(crate) fn budget_abort() {
     log::error!(
         "stack budget ({} bytes) exceeded by a recursion — aborting the runtime \
          (raise via GRAPHIX_STACK_BUDGET or graphix_compiler::set_stack_budget)",
-        crate::fusion::emit_helpers::current_stack_budget()
+        current_stack_budget()
     );
-    crate::fusion::emit_helpers::abort_current_control_budget();
+    abort_current_control_budget();
 }
 
 thread_local! {
@@ -94,7 +95,7 @@ pub(crate) fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
 /// Whether one more segment would put this thread over the budget of
 /// the runtime running on it.
 pub(crate) fn grow_exceeds_budget() -> bool {
-    let budget = crate::fusion::emit_helpers::current_stack_budget();
+    let budget = current_stack_budget();
     GROWN.with(|g| g.get() + SEGMENT > budget)
 }
 
@@ -124,6 +125,153 @@ pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
     }
     let _grown = Grown::enter();
     stacker::grow(SEGMENT, f)
+}
+
+/// Runtime control signals shared between a runtime handle and the
+/// running `ExecCtx`. `Interrupt` makes in-flight loops abort to bottom
+/// while the runtime keeps going; `Abort` also shuts the runtime down.
+/// Polled lock-free via [`ExecCtx::interrupted`] and `graphix_interrupted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[bitflags]
+#[repr(u32)]
+pub enum CtlFlag {
+    Interrupt = 1,
+    Abort = 2,
+    /// Set beside `Abort` when the stack budget stopped the runtime.
+    Budget = 4,
+}
+
+/// Lock-free [`CtlFlag`] set. A loop polls [`Control::interrupted`];
+/// the run loop polls [`Control::aborted`]. Also this runtime's stack
+/// budget: the grown stack a recursion may hold before
+/// [`Control::abort_budget`].
+#[derive(Debug)]
+pub struct Control {
+    flags: AtomicU32,
+    stack_budget: AtomicUsize,
+}
+
+impl Default for Control {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Control {
+    pub fn new() -> Self {
+        Control {
+            flags: AtomicU32::new(0),
+            stack_budget: AtomicUsize::new(default_budget()),
+        }
+    }
+
+    /// The bytes of grown stack segments a thread running this runtime
+    /// may hold; `usize::MAX` is unlimited.
+    pub fn stack_budget(&self) -> usize {
+        self.stack_budget.load(Ordering::Relaxed)
+    }
+
+    pub fn set_stack_budget(&self, bytes: usize) {
+        self.stack_budget.store(bytes, Ordering::Relaxed)
+    }
+
+    /// Request that in-flight loops abort this cycle; cleared at the
+    /// end of the cycle.
+    pub fn interrupt(&self) {
+        self.flags.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
+    }
+
+    /// Request shutdown: in-flight loops abort and the run loop returns
+    /// before the next cycle. Sticky.
+    pub fn abort(&self) {
+        self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
+    }
+
+    /// [`Self::abort`], marked as the stack budget's doing.
+    pub fn abort_budget(&self) {
+        self.flags
+            .fetch_or(CtlFlag::Abort as u32 | CtlFlag::Budget as u32, Ordering::Release);
+    }
+
+    /// True if the stack budget aborted this runtime.
+    pub fn budget_aborted(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & (CtlFlag::Budget as u32) != 0
+    }
+
+    /// True if any control flag is set: a loop should abort.
+    pub fn interrupted(&self) -> bool {
+        self.flags.load(Ordering::Acquire) != 0
+    }
+
+    /// True if `Abort` is set.
+    pub fn aborted(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
+    }
+
+    /// Clear the `Interrupt` bit, leaving `Abort` sticky.
+    pub fn clear_interrupt(&self) {
+        self.flags.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
+    }
+}
+
+thread_local! {
+    /// The [`Control`] of the runtime whose cycle is running on this
+    /// thread ([`InterruptScope`]); null outside a cycle.
+    static CURRENT: Cell<*const Control> = const { Cell::new(std::ptr::null()) };
+}
+
+/// Whether the runtime whose cycle this thread is running has an
+/// interrupt or an abort pending.
+pub fn interrupted() -> bool {
+    CURRENT.with(|c| {
+        let p = c.get();
+        // SAFETY: `p` is the running runtime's `Control`, which outlives
+        // the cycle; null when no cycle is running.
+        !p.is_null() && unsafe { (*p).interrupted() }
+    })
+}
+
+/// Points `graphix_interrupted` at a runtime's [`Control`] on
+/// this thread while its cycle's nodes run; dropping it restores the
+/// enclosing runtime's. Create it on the thread that runs the nodes and
+/// drop it there, before the task can migrate, while `control` lives.
+pub struct InterruptScope {
+    prev: *const Control,
+}
+
+impl InterruptScope {
+    pub fn new(control: &Control) -> Self {
+        let prev = CURRENT.with(|c| c.replace(control as *const Control));
+        Self { prev }
+    }
+}
+
+impl Drop for InterruptScope {
+    fn drop(&mut self) {
+        CURRENT.with(|c| c.set(self.prev));
+    }
+}
+
+/// The stack budget of the runtime whose cycle this thread is running;
+/// the default budget outside a cycle.
+pub(crate) fn current_stack_budget() -> usize {
+    CURRENT.with(|c| {
+        let p = c.get();
+        // SAFETY: see `graphix_interrupted`.
+        if p.is_null() { default_budget() } else { unsafe { (*p).stack_budget() } }
+    })
+}
+
+/// Abort the runtime this thread is running under (the stack budget's
+/// containment); a no-op with no runtime on this thread.
+pub(crate) fn abort_current_control_budget() {
+    CURRENT.with(|c| {
+        let p = c.get();
+        if !p.is_null() {
+            // SAFETY: see `graphix_interrupted`.
+            unsafe { (*p).abort_budget() }
+        }
+    });
 }
 
 #[cfg(test)]

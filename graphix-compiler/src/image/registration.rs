@@ -11,8 +11,8 @@
 //! anything decodes.
 
 use super::{
-    DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder,
-    SharedDecoder, defs, nodes, scope_decode, scope_encode,
+    Compiled, DecodeImage, EncodeImage, IdCounts, ImageBuf, ImageDecoder, ImageEncoder,
+    Restored, SharedDecoder, defs, nodes, scope_decode, scope_encode,
 };
 use crate::{
     BindId, BuiltinBindInfo, ExecCtx, LambdaId, LambdaInstanceId, Node, Rt, Saved, Scope,
@@ -197,7 +197,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         }
         let tables = Tables::collect(self)?;
         let mut enc = ImageEncoder::new();
-        enc.defer_instances = program.is_some();
+        enc.ext::<Compiled>().defer_instances = program.is_some();
         let isa = crate::fusion::emit::isa_description();
         let mut buf = ImageBuf::default();
         buf.put_slice(MAGIC);
@@ -229,13 +229,14 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             drop(p);
             let p = profile::phase(Phase::ImageHeap);
             loop {
-                let Some((id, body)) = image::encoding(|e| e.deferred.pop()).flatten()
+                let Some((id, body)) =
+                    image::encoding(|e| e.ext::<Compiled>().deferred.pop()).flatten()
                 else {
                     break;
                 };
                 let at = buf.len() as u64;
                 body(&mut buf)?;
-                image::encoding(|e| e.instances.insert(id, at));
+                image::encoding(|e| e.ext::<Compiled>().instances.insert(id, at));
             }
             let defs_at = buf.len();
             let offsets = image::encoding(|e| e.finish(&mut buf))
@@ -244,7 +245,8 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
             drop(p);
             let _p = profile::phase(Phase::ImageTrailer);
             let instances =
-                image::encoding(|e| std::mem::take(&mut e.instances)).unwrap_or_default();
+                image::encoding(|e| std::mem::take(&mut e.ext::<Compiled>().instances))
+                    .unwrap_or_default();
             encode_varint(instances.len() as u64, &mut buf);
             for (id, at) in instances {
                 id.encode(&mut buf)?;
@@ -334,13 +336,12 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
         let shared = ImageDecoder::new(counts)?.share();
         let mut dec = shared.lock();
         dec.set_image(image.clone());
-        dec.set_fastcalls(
-            self.registry
-                .builtins
-                .iter()
-                .filter_map(|(name, b)| b.effect.fastcall().map(|f| (*name, f)))
-                .collect(),
-        );
+        dec.ext::<Restored>().fastcalls = self
+            .registry
+            .builtins
+            .iter()
+            .filter_map(|(name, b)| b.effect.fastcall().map(|f| (*name, f)))
+            .collect();
         let (scope, program) =
             DecodeImage::with(&mut dec, || -> Result<_, PackError> {
                 let mut table = &image[table_at..counts_at];
@@ -364,7 +365,7 @@ impl<R: Rt, E: UserEvent> ExecCtx<R, E> {
                     return Err(PackError::InvalidFormat);
                 }
                 image::decoding(|d| {
-                    d.set_instances(instances);
+                    d.ext::<Restored>().instances = instances;
                     d.set_offsets(offsets);
                 });
                 let p = profile::phase(Phase::ImageEnv);

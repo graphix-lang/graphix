@@ -472,28 +472,14 @@ unsafe fn graphix_unhandled_null(msg: *const arcstr::ArcStr) {
 /// 1 if the active runtime has an `interrupt()`/`abort()` pending, else
 /// 0. Emitted at every JIT loop head.
 safe fn graphix_interrupted() -> i8 {
-    INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        if p.is_null() {
-            0
-        } else {
-            // SAFETY: `p` is the running `ExecCtx.control`, which outlives
-            // the cycle; null when no cycle is running.
-            i8::from(unsafe { (*p).interrupted() })
-        }
-    })
+    i8::from(crate::stack::interrupted())
 }
 
 /// The kernel twin of `stack::ensure_sufficient`, asked at every native
 /// self-call: 0 = interrupted (skip the call), 1 = call directly, 2 =
 /// re-enter the callee on a fresh segment via [`graphix_grow_stack`].
 safe fn graphix_stack_check() -> i8 {
-    let interrupted = INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        // SAFETY: see `graphix_interrupted`.
-        !p.is_null() && unsafe { (*p).interrupted() }
-    });
-    if interrupted {
+    if crate::stack::interrupted() {
         0
     } else if stacker::remaining_stack().unwrap_or(0) < crate::stack::RED_ZONE {
         if crate::stack::grow_exceeds_budget() {
@@ -1678,11 +1664,6 @@ thread_local! {
     /// delivers mid-run.
     static QOP_RAISES: RefCell<LPooled<Vec<QopRaise>>> = RefCell::new(LPooled::take());
 
-    /// The [`crate::Control`] of the runtime whose cycle is running on
-    /// this thread ([`InterruptScope`]); null outside a cycle.
-    static INTERRUPT_PTR: Cell<*const crate::Control> =
-        const { Cell::new(std::ptr::null()) };
-
     /// Per-thread count of JIT'd wrapper runs; the test harness's `jit`
     /// mode asserts it is nonzero.
     #[cfg(debug_assertions)]
@@ -1700,53 +1681,6 @@ pub(crate) fn resume_kernel_panic() {
     if let Some(payload) = KERNEL_PANIC.with(|p| p.borrow_mut().take()) {
         std::panic::resume_unwind(payload)
     }
-}
-
-/// Points `graphix_interrupted` at a runtime's [`crate::Control`] on
-/// this thread while its cycle's nodes run; dropping it restores the
-/// enclosing runtime's. Create it on the thread that runs the nodes and
-/// drop it there, before the task can migrate, while `control` lives.
-pub struct InterruptScope {
-    prev: *const crate::Control,
-}
-
-impl InterruptScope {
-    pub fn new(control: &crate::Control) -> Self {
-        let prev = INTERRUPT_PTR.with(|c| c.replace(control as *const crate::Control));
-        Self { prev }
-    }
-}
-
-impl Drop for InterruptScope {
-    fn drop(&mut self) {
-        INTERRUPT_PTR.with(|c| c.set(self.prev));
-    }
-}
-
-/// The stack budget of the runtime whose cycle this thread is running;
-/// the default budget outside a cycle.
-pub(crate) fn current_stack_budget() -> usize {
-    INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        // SAFETY: see `graphix_interrupted`.
-        if p.is_null() {
-            crate::stack::default_budget()
-        } else {
-            unsafe { (*p).stack_budget() }
-        }
-    })
-}
-
-/// Abort the runtime this thread is running under (the stack budget's
-/// containment); a no-op with no runtime on this thread.
-pub(crate) fn abort_current_control_budget() {
-    INTERRUPT_PTR.with(|c| {
-        let p = c.get();
-        if !p.is_null() {
-            // SAFETY: see `graphix_interrupted`.
-            unsafe { (*p).abort_budget() }
-        }
-    });
 }
 
 /// Bump the per-thread fused-kernel execution counter once a kernel

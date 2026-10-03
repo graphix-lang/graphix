@@ -87,7 +87,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
             pos: spec.pos,
             end: spec.end.0,
             ori: spec.ori.clone(),
-            scope: scope.clone(),
+            scope: scope.lexical.clone(),
         });
     }
     // Definition-asserting attribute names are compiler-reserved; any other

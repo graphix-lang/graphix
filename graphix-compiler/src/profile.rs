@@ -1,5 +1,5 @@
 use crate::{
-    FnArgIdentity, LambdaId, LambdaInstanceId,
+    LambdaId, LambdaInstanceId,
     dbgenv::{graphix_profile, graphix_profile_instances},
     expr::{Expr, ModPath},
     typ::{FnType, Type},
@@ -66,7 +66,7 @@ struct Instance {
 struct Census {
     instances: LPooled<IntMap<LambdaInstanceId, Instance>>,
     signatures: LPooled<AHashMap<Arc<FnType>, usize>>,
-    callbacks: LPooled<AHashMap<FnArgIdentity, usize>>,
+    callbacks: LPooled<AHashMap<u64, usize>>,
     /// The instances whose elaboration is running, innermost last.
     elaborating: Vec<LambdaInstanceId>,
 }
@@ -250,10 +250,11 @@ impl Drop for Elaboration {
     }
 }
 
+/// `identity` hashes the call's instantiation identity, when it has one.
 pub(crate) fn instance_signature(
     id: LambdaInstanceId,
     typ: &FnType,
-    identity: Option<&FnArgIdentity>,
+    identity: impl FnOnce() -> Option<u64>,
 ) {
     if !graphix_profile_instances() {
         return;
@@ -269,9 +270,9 @@ pub(crate) fn instance_signature(
         } else {
             0
         };
-        let callbacks = identity.map_or(0, |identity| {
+        let callbacks = identity().map_or(0, |identity| {
             let next = c.callbacks.len() + 1;
-            *c.callbacks.entry(identity.clone()).or_insert(next)
+            *c.callbacks.entry(identity).or_insert(next)
         });
         let row = c.instances.entry(id).or_default();
         row.signature = signature;

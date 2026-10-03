@@ -11,7 +11,7 @@ use super::{
     Block,
     bind::lower_over_operands,
     callsite::{ArgKey, CallSite},
-    coretraits::{CoreTrait, method_ftype},
+    coretraits::method_ftype,
     genn::SynthCall,
     lambda::LambdaDef,
 };
@@ -28,7 +28,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{FnArgKind, FnType, TVar, Type, TypeRef},
+    typ::{CoreTrait, FnArgKind, FnType, TVar, Type, TypeRef},
     wrap,
 };
 use ahash::{AHashMap, AHashSet};

@@ -471,9 +471,7 @@ impl<X: GXExt> GX<X> {
         let mut run_nodes = || {
             // On the thread that runs the nodes: the task may migrate
             // between cycles.
-            let _interrupt = graphix_compiler::fusion::emit_helpers::InterruptScope::new(
-                &self.ctx.control,
-            );
+            let _interrupt = graphix_compiler::InterruptScope::new(&self.ctx.control);
             for (id, n) in self.nodes.iter_mut() {
                 if let Some(init) = self.ctx.rt.updated.get(id) {
                     self.event.init = *init;

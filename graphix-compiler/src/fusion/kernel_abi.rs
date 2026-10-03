@@ -1060,7 +1060,7 @@ pub(crate) fn site_leaf_len(l: &Arc<SiteLeaf>) -> usize {
     crate::image::object_len(
         &(Arc::as_ptr(l) as usize),
         |k| (*k, l.clone()),
-        |e| &mut e.site_leaves,
+        |e| &mut e.ext::<crate::image::Compiled>().site_leaves,
     )
 }
 
@@ -1071,7 +1071,7 @@ pub(crate) fn site_leaf_encode(
     crate::image::object_encode(
         &(Arc::as_ptr(l) as usize),
         |k| (*k, l.clone()),
-        |e| &mut e.site_leaves,
+        |e| &mut e.ext::<crate::image::Compiled>().site_leaves,
         buf,
         |buf| {
             l.stride.encode(buf)?;
@@ -1108,7 +1108,7 @@ pub(crate) fn kernel_sig_encode(
     crate::image::object_encode(
         &(Arc::as_ptr(k) as usize),
         |_| (Arc::as_ptr(k) as usize, k.clone()),
-        |e| &mut e.kernel_sigs,
+        |e| &mut e.ext::<crate::image::Compiled>().kernel_sigs,
         buf,
         |buf| {
             k.fn_name.encode(buf)?;

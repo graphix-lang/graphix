@@ -349,7 +349,11 @@ impl Pack for RecordReloc {
 /// A fast fn resolves by the builtin's name through the decoder's
 /// registry snapshot.
 fn fastcall_of(name: &ArcStr) -> Result<FastCall, PackError> {
-    image::decoding(|d| d.fastcall(name)).flatten().ok_or(PackError::InvalidFormat)
+    image::decoding(|d| {
+        d.ext_ref::<image::Restored>()?.fastcalls.get(name.as_str()).copied()
+    })
+    .flatten()
+    .ok_or(PackError::InvalidFormat)
 }
 
 impl Pack for KernelConst {
@@ -458,7 +462,7 @@ pub(crate) fn record_encode(
     image::object_encode(
         &(Arc::as_ptr(r) as usize),
         |k| (*k, r.clone()),
-        |e| &mut e.records,
+        |e| &mut e.ext::<image::Compiled>().records,
         buf,
         |buf| {
             let BodyRecord { kind, label, bytes, align, relocs, callees, kernel } = &**r;

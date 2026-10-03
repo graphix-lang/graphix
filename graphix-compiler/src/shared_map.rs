@@ -57,11 +57,11 @@ where
     V: Clone + Send + Sync + 'static,
 {
     fn into_obj(self) -> image::Obj {
-        image::map_node_obj(self)
+        image::any_obj(self)
     }
 
     fn of(obj: &image::Obj) -> Option<&Self> {
-        image::map_node_of(obj)
+        image::any_of(obj)
     }
 }
 

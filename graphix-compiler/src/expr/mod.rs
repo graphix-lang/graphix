@@ -50,6 +50,13 @@ image_id!(ExprId);
 static DEFAULT_ORIGIN: LazyLock<Arc<Origin>> =
     LazyLock::new(|| Arc::new(Origin::default()));
 
+/// The expression a node built by the compiler, not from source, carries.
+pub(crate) static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
+    let mut nop = Expr::default();
+    nop.kind = ExprKind::Constant(Value::String(literal!("nop")));
+    Arc::new(nop)
+});
+
 thread_local! {
     static ORIGIN: RefCell<Option<Arc<Origin>>> = RefCell::new(None);
 }

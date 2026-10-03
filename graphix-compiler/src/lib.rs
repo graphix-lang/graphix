@@ -26,7 +26,9 @@ pub(crate) mod perfdbg;
 pub(crate) mod profile;
 pub mod shared_map;
 pub(crate) mod stack;
+
 pub use stack::set_stack_budget;
+pub use stack::{Control, CtlFlag, InterruptScope};
 pub mod tracked;
 pub mod tval;
 pub mod typ;
@@ -75,7 +77,7 @@ use std::{
     mem,
     sync::{
         self, LazyLock,
-        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     thread::LocalKey,
     time::Duration,
@@ -104,93 +106,6 @@ pub enum CFlag {
     /// elaboration, analysis or fusion. The nodes compiled this way are
     /// only for inspection, never for running.
     CheckOnly,
-}
-
-/// Runtime control signals shared between a runtime handle and the
-/// running `ExecCtx`. `Interrupt` makes in-flight loops abort to bottom
-/// while the runtime keeps going; `Abort` also shuts the runtime down.
-/// Polled lock-free via [`ExecCtx::interrupted`] and `graphix_interrupted`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[bitflags]
-#[repr(u32)]
-pub enum CtlFlag {
-    Interrupt = 1,
-    Abort = 2,
-    /// Set beside `Abort` when the stack budget stopped the runtime.
-    Budget = 4,
-}
-
-/// Lock-free [`CtlFlag`] set. A loop polls [`Control::interrupted`];
-/// the run loop polls [`Control::aborted`]. Also this runtime's stack
-/// budget: the grown stack a recursion may hold before
-/// [`Control::abort_budget`].
-#[derive(Debug)]
-pub struct Control {
-    flags: AtomicU32,
-    stack_budget: AtomicUsize,
-}
-
-impl Default for Control {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Control {
-    pub fn new() -> Self {
-        Control {
-            flags: AtomicU32::new(0),
-            stack_budget: AtomicUsize::new(stack::default_budget()),
-        }
-    }
-
-    /// The bytes of grown stack segments a thread running this runtime
-    /// may hold; `usize::MAX` is unlimited.
-    pub fn stack_budget(&self) -> usize {
-        self.stack_budget.load(Ordering::Relaxed)
-    }
-
-    pub fn set_stack_budget(&self, bytes: usize) {
-        self.stack_budget.store(bytes, Ordering::Relaxed)
-    }
-
-    /// Request that in-flight loops abort this cycle; cleared at the
-    /// end of the cycle.
-    pub fn interrupt(&self) {
-        self.flags.fetch_or(CtlFlag::Interrupt as u32, Ordering::Release);
-    }
-
-    /// Request shutdown: in-flight loops abort and the run loop returns
-    /// before the next cycle. Sticky.
-    pub fn abort(&self) {
-        self.flags.fetch_or(CtlFlag::Abort as u32, Ordering::Release);
-    }
-
-    /// [`Self::abort`], marked as the stack budget's doing.
-    pub fn abort_budget(&self) {
-        self.flags
-            .fetch_or(CtlFlag::Abort as u32 | CtlFlag::Budget as u32, Ordering::Release);
-    }
-
-    /// True if the stack budget aborted this runtime.
-    pub fn budget_aborted(&self) -> bool {
-        self.flags.load(Ordering::Acquire) & (CtlFlag::Budget as u32) != 0
-    }
-
-    /// True if any control flag is set: a loop should abort.
-    pub fn interrupted(&self) -> bool {
-        self.flags.load(Ordering::Acquire) != 0
-    }
-
-    /// True if `Abort` is set.
-    pub fn aborted(&self) -> bool {
-        self.flags.load(Ordering::Acquire) & (CtlFlag::Abort as u32) != 0
-    }
-
-    /// Clear the `Interrupt` bit, leaving `Abort` sticky.
-    pub fn clear_interrupt(&self) {
-        self.flags.fetch_and(!(CtlFlag::Interrupt as u32), Ordering::Release);
-    }
 }
 
 /// Sets a thread-local `Cell` for a scope and puts the previous value

@@ -19,7 +19,7 @@ use crate::{
     typ::{TVal, TVar, Type, TypeMismatch},
 };
 use anyhow::{Context, Result, anyhow, bail};
-use arcstr::{ArcStr, literal};
+use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use compiler::{compile, compile_module};
 use enumflags2::BitFlags;
@@ -28,7 +28,7 @@ use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use std::{cell::Cell, iter, mem, sync::LazyLock};
+use std::{cell::Cell, iter, mem};
 use triomphe::Arc;
 
 pub(crate) mod array;
@@ -109,10 +109,6 @@ macro_rules! bailat {
     };
 }
 
-/// Type alias chains are followed this deep; a deeper chain is a cyclic
-/// typedef.
-pub const MAX_ALIAS_DEPTH: usize = 64;
-
 #[macro_export]
 macro_rules! deref_typ {
     ($name:literal, $ctx:expr, $typ:expr, $($pat:pat => $body:expr),+) => {
@@ -125,7 +121,7 @@ macro_rules! deref_typ {
                     $($pat => break $body),+,
                     Some(rt @ $crate::typ::Type::Ref($crate::typ::TypeRef { .. })) => {
                         depth += 1;
-                        if depth > $crate::node::MAX_ALIAS_DEPTH {
+                        if depth > $crate::typ::MAX_ALIAS_DEPTH {
                             $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
                                 anyhow::bail!(
                                     "cyclic type alias while dereferencing {rt} \
@@ -157,11 +153,7 @@ macro_rules! deref_typ {
     };
 }
 
-pub(crate) static NOP: LazyLock<Arc<Expr>> = LazyLock::new(|| {
-    let mut nop = Expr::default();
-    nop.kind = ExprKind::Constant(Value::String(literal!("nop")));
-    Arc::new(nop)
-});
+pub(crate) use crate::expr::NOP;
 
 /// Set by a node's `sleep()`, taken by its next update: the first update
 /// after a sleep recomputes from the present world.

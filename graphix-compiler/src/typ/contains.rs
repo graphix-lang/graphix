@@ -3,11 +3,10 @@ use crate::{
     dbgenv::{graphix_dbg_bind, graphix_dbg_cycle_bt},
     env::Env,
     format_with_flags,
-    node::coretraits::CoreTrait,
     stack::ensure_sufficient,
     typ::{
-        AndAc, Lazy, NormKey, RefHist, RefPair, TVar, TraitId, Type, TypeRef, node_addr,
-        probe_key, setops::union_identical, tvar::would_cycle_inner,
+        AndAc, CoreTrait, Lazy, NormKey, RefHist, RefPair, TVar, TraitId, Type, TypeRef,
+        node_addr, probe_key, setops::union_identical, tvar::would_cycle_inner,
     },
 };
 use ahash::AHashMap;

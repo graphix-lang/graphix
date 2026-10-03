@@ -5,7 +5,7 @@
 //! [`Ide`] owns all of them, shared via `Env.ide`.
 
 use crate::{
-    BindId, Scope, SourcePosition,
+    BindId, SourcePosition,
     env::{Bind, Env},
     expr::{ModPath, Origin, WrittenPath},
     typ::Type,
@@ -50,13 +50,13 @@ pub struct ModuleRefSite {
 }
 
 /// The compiler compiled the `Expr` spanning `[pos, end)` in `scope`:
-/// the scope the expression stands in, not one it opens.
+/// the module the expression stands in, not one it opens.
 #[derive(Debug, Clone)]
 pub struct ScopeMapEntry {
     pub pos: SourcePosition,
     pub end: SourcePosition,
     pub ori: Arc<Origin>,
-    pub scope: Scope,
+    pub scope: ModPath,
 }
 
 /// A type-name occurrence (`Foo` in `let x: Foo`); `def_pos`/`def_ori`
