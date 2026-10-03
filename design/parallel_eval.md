@@ -21,8 +21,9 @@ Three commitments shape everything else:
   comparison. External effects are not part of this: they happen when
   they run, and independent branches' effects have no order between
   them (§6).
-- **The serial path pays nothing.** A program that never forks runs as
-  fast as today. Forking costs only where it happens.
+- **The serial path pays almost nothing.** A program that never forks
+  runs nearly as fast as before; the branch views cost about 1%
+  (§4.4). Forking costs only where it happens.
 - **Not tuned to today's corpus.** The corpus is small and was written
   for a serial engine. Parallel evaluation will change which programs
   people write and how they write them. The cost model and the
@@ -269,6 +270,15 @@ on the driver thread, as today, with no thread handoff.
   serially. Every lookup walks the parent chain, so an unbounded chain
   (a forced recursion forks at every level) made lookups linear in the
   depth.
+
+**The serial cost** of the views, measured as node-walk instructions
+over the bench corpus against the pre-phase-2 build (quick profile):
++0.2% to +0.9%, and about +4% on cycles that update thousands of
+collection slots (`stream_stats`, a 5000-element `array::iter`). The
+rest is the dispatch at each runtime, compile-state and overlay access.
+Accepted (Eric, 2026-10-03); compile-time dispatch (the branch kind as
+a type parameter) would remove it at twice the generated node-walk
+code.
 
 Fork points built: binary operands, constructor fields (`gather`), call
 arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
