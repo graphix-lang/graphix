@@ -281,10 +281,12 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         Self(std::mem::ManuallyDrop::new(Box::new(node)))
     }
 
+    #[inline]
     pub fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         stack::ensure_sufficient(|| self.0.update(ctx))
     }
 
+    #[inline]
     pub fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         stack::ensure_sufficient(|| self.0.delete(ctx))
     }
@@ -301,6 +303,7 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.refs(refs))
     }
 
+    #[inline]
     pub fn sleep(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
         stack::ensure_sufficient(|| self.0.sleep(ctx))
     }
