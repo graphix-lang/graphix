@@ -208,6 +208,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for QueueFn<R, E> {
 
     const EFFECT: Effect = Effect::Async;
     const NAME: &str = "core_queuefn";
+    const ORDERED: bool = true;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,

@@ -369,6 +369,20 @@ phase 2 audits the stdlib for it. A missed case shows as run-to-run
 nondeterminism, which the forced-parallel fuzzer pair can find in the
 stdlib.
 
+**The stdlib audit** (phase 2) found two ordered builtins:
+`core_queuefn` and, in the admin package, `netidx_admin_answer` (two
+answers to one question race for its one pending slot); both declare
+`BuiltIn::ORDERED`, which the registry records (`builtin_ordered`) for
+the fork plans. Judged external rather than ordered, though their order
+can show in a value: `sys_net_publish`/`publish_rpc` of a path already
+published (the second gets the error), `http_serve` binding one port,
+`sys_exit`. Already ordered by the log: `core_buffer_decode`'s writes
+through references, and every async builtin's spawns (the log replays
+them in serial order, so the tasks start in serial order). In phase 4
+a cycle's printed lines interleave across branches; the fuzzer sorts
+them, and a test that compares a print sink's text within one cycle
+has to as well.
+
 Async builtins spawn through `rt.spawn_var`/`set_timer`/`watch`, which
 the log carries to the root (§4.2). Their completions arrive in later
 cycles in whatever order the world delivers them, as today. A builtin

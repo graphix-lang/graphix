@@ -710,6 +710,11 @@ pub trait BuiltIn<R: Rt, E: UserEvent> {
     const NAME: &str;
     /// The builtin's classification; see [`Effect`]. Default `Async`.
     const EFFECT: Effect = Effect::Async;
+    /// Whether the builtin shares state with other nodes whose order of
+    /// access decides values (`queuefn`'s queue): two subtrees that both
+    /// call an ordered builtin never run beside each other
+    /// (`design/parallel_eval.md` §6). External effects are not ordered.
+    const ORDERED: bool = false;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,
@@ -1016,6 +1021,7 @@ struct BuiltinEntry<R: Rt, E: UserEvent> {
     init: BuiltInInitFn<R, E>,
     decode: BuiltInDecodeFn<R, E>,
     effect: Effect,
+    ordered: bool,
 }
 
 macro_rules! env_restore_methods {
@@ -1348,6 +1354,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
                     init: T::init,
                     decode: T::image_decode,
                     effect: T::EFFECT,
+                    ordered: T::ORDERED,
                 });
             }
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
@@ -1387,6 +1394,11 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
     /// A registered builtin's [`Effect`]; `Async` for unknown names.
     pub fn builtin_effect(&self, name: &str) -> Effect {
         self.registry.builtins.get(name).map(|b| b.effect).unwrap_or_default()
+    }
+
+    /// Whether a registered builtin is [`BuiltIn::ORDERED`].
+    pub fn builtin_ordered(&self, name: &str) -> bool {
+        self.registry.builtins.get(name).is_some_and(|b| b.ordered)
     }
 
     /// Wrap a `LambdaDef` into a first-class function `Value` and

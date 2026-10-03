@@ -587,6 +587,8 @@ pub trait EvalCached<R: Rt, E: UserEvent>:
     const NAME: &str;
     /// The builtin's classification — see `graphix_compiler::Effect`.
     const EFFECT: Effect = Effect::Async;
+    /// See `graphix_compiler::BuiltIn::ORDERED`.
+    const ORDERED: bool = false;
 
     fn init(
         _ctx: &mut CompileCtx<R, E>,
@@ -633,6 +635,7 @@ pub struct CachedArgs<T> {
 impl<R: Rt, E: UserEvent, T: EvalCached<R, E>> BuiltIn<R, E> for CachedArgs<T> {
     const EFFECT: Effect = T::EFFECT;
     const NAME: &str = T::NAME;
+    const ORDERED: bool = T::ORDERED;
 
     fn init<'a, 'b, 'c, 'd>(
         ctx: &'a mut CompileCtx<R, E>,
