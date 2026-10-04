@@ -2,7 +2,7 @@
 //! what a fork point measures of its children under [`ParMode::Auto`],
 //! and where it forks.
 
-use crate::{ExecCtx, Rt, UserEvent};
+use crate::{ExecCtx, Rt, UserEvent, branch::saturated};
 use graphix_types::stack::ParMode;
 use std::sync::{
     OnceLock,
@@ -70,8 +70,8 @@ pub fn calibration() -> Option<&'static Calibration> {
     None
 }
 
-/// The median latency, in ticks, from handing an idle evaluation pool a
-/// job to the job starting: the cost a fork pays when its right side is
+/// The latency, in ticks, from handing an idle evaluation pool a job to
+/// the job starting: the cost a fork pays when its right side is
 /// stolen.
 fn calibrate() -> Calibration {
     let pool = crate::branch::eval_pool();
@@ -83,7 +83,8 @@ fn calibrate() -> Calibration {
         *w = pool.install(ticks).saturating_sub(t0);
     }
     wakes.sort_unstable();
-    let t = (wakes[wakes.len() / 2] * T_PER_WAKE).max(1 << T_BUCKET);
+    // contention only adds to a wake: the lower quartile is the pool's
+    let t = (wakes[wakes.len() / 4] * T_PER_WAKE).max(1 << T_BUCKET);
     if crate::dbgenv::graphix_dbg_par() {
         eprintln!("PAR calibrated: wakes {wakes:?} ticks, T = {t}");
     }
@@ -264,6 +265,9 @@ impl ForkSite {
                 if m.sampler.due() || !m.settled {
                     return Plan::Measure(Meter::new(self, cal, n));
                 }
+                if saturated() {
+                    return Plan::Serial;
+                }
                 let Site::Measured(m) = &self.0 else { unreachable!() };
                 Plan::Fork(Splits::Weighted { prefix: &m.prefix, t: cal.t })
             }
@@ -398,14 +402,23 @@ impl Splits<'_> {
         lo: usize,
         hi: usize,
     ) -> Option<usize> {
-        if ctx.fork_mode() == ParMode::Off { None } else { self.split(lo, hi) }
+        match (ctx.fork_mode(), self) {
+            (ParMode::Off, _) => None,
+            (_, Splits::Weighted { .. }) if saturated() => None,
+            _ => self.split(lo, hi),
+        }
     }
 }
 
 /// A fork point over slots that run one body (a collection's slots):
-/// one estimate per slot.
+/// one estimate per standing slot, and a [`ProbeSite`] each for fresh
+/// slots' first updates and for building their instances.
 #[derive(Debug, Default)]
-pub struct SlotSite(Slots);
+pub struct SlotSite {
+    standing: Slots,
+    pub fresh: ProbeSite,
+    pub build: ProbeSite,
+}
 
 #[derive(Debug)]
 enum Slots {
@@ -420,6 +433,11 @@ impl Default for Slots {
     }
 }
 
+/// The ranges per worker a collection forks into at most: enough for
+/// stealing to even out the workers, few enough that the branches'
+/// forks and merges stay small beside the slots.
+const RANGES_PER_WORKER: usize = 4;
+
 /// The slots per range of a forced collection: `#[parallel(g)]`'s `g`,
 /// one range per worker under a bare `#[parallel]`, one slot each under
 /// `GRAPHIX_PAR=force`.
@@ -431,18 +449,25 @@ fn forced_grain<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, n: usize) -> usize
     }
 }
 
-/// What a collection's update does with its slots.
+/// The slots per range of `n` slots estimated at `est` ticks each.
+fn grain(cal: &Calibration, est: u64, n: usize) -> usize {
+    let workers = crate::branch::eval_pool().current_num_threads();
+    (cal.t.div_ceil(est.max(1)) as usize).max(n.div_ceil(workers * RANGES_PER_WORKER))
+}
+
+/// What a collection's update does with its standing slots.
 pub enum SlotPlan {
     Serial,
     /// Update in order and time the whole: [`SlotSite::measured`].
     Measure(u64),
-    /// Split in halves down to `grain` slots.
+    /// Fork in ranges of `grain` slots.
     Fork {
         grain: usize,
     },
 }
 
 impl SlotSite {
+    /// The plan for the `n` standing slots.
     #[inline]
     pub fn plan<R: Rt, E: UserEvent>(
         &mut self,
@@ -453,13 +478,13 @@ impl SlotSite {
             ParMode::Off => SlotPlan::Serial,
             _ if n < 2 => SlotPlan::Serial,
             ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx, n) },
-            ParMode::Auto => self.plan_auto(),
+            ParMode::Auto => self.plan_auto(n),
         }
     }
 
-    fn plan_auto(&mut self) -> SlotPlan {
+    fn plan_auto(&mut self, n: usize) -> SlotPlan {
         let Some(cal) = calibration() else { return SlotPlan::Serial };
-        match &mut self.0 {
+        match &mut self.standing {
             Slots::Probe { .. } => SlotPlan::Measure(ticks()),
             Slots::Serial { countdown } => match countdown.checked_sub(1) {
                 Some(c) => {
@@ -467,34 +492,37 @@ impl SlotSite {
                     SlotPlan::Serial
                 }
                 None => {
-                    self.0 = Slots::Probe { left: PROBES };
+                    self.standing = Slots::Probe { left: PROBES };
                     SlotPlan::Measure(ticks())
                 }
             },
             Slots::Measured { hist, sampler, est } => {
                 if sampler.due() || hist.n < SETTLE {
                     SlotPlan::Measure(ticks())
+                } else if saturated() {
+                    SlotPlan::Serial
                 } else {
-                    SlotPlan::Fork { grain: cal.t.div_ceil((*est).max(1)) as usize }
+                    SlotPlan::Fork { grain: grain(cal, *est, n) }
                 }
             }
         }
     }
 
-    /// A measured update of `n` slots that started at tick `t0` is over.
+    /// A measured update of `n` standing slots that started at tick `t0`
+    /// is over.
     pub fn measured(&mut self, t0: u64, n: usize) {
         let Some(cal) = calibration() else { return };
         let total = ticks().wrapping_sub(t0);
-        match &mut self.0 {
+        match &mut self.standing {
             Slots::Probe { left } => {
                 if total >= 2 * cal.t {
-                    self.0 = Slots::Measured {
+                    self.standing = Slots::Measured {
                         hist: Hist::default(),
                         sampler: Sampler::default(),
                         est: 0,
                     };
                 } else if *left <= 1 {
-                    self.0 = Slots::Serial { countdown: RECHECK };
+                    self.standing = Slots::Serial { countdown: RECHECK };
                 } else {
                     *left -= 1;
                 }
@@ -507,10 +535,103 @@ impl SlotSite {
                 sampler.sampled(settled, e != *est);
                 *est = e;
                 if settled && e.saturating_mul(n as u64) < 2 * cal.t {
-                    self.0 = Slots::Serial { countdown: RECHECK };
+                    self.standing = Slots::Serial { countdown: RECHECK };
                 }
             }
         }
+    }
+}
+
+/// A fork point over many like items that decides in the cycle it sees
+/// them (a collection's growth): it times its first items in order, one
+/// once its estimate has settled, and forks the rest on what they cost.
+#[derive(Debug, Default)]
+pub struct ProbeSite {
+    hist: Hist,
+}
+
+/// What a [`ProbeSite`] does with its items.
+pub enum ProbePlan {
+    Serial,
+    /// Run the first `n` in order, timing each, then decide about the
+    /// rest.
+    Probe(usize),
+    Fork {
+        grain: usize,
+    },
+}
+
+impl ProbeSite {
+    /// The plan for `n` items.
+    fn plan<R: Rt, E: UserEvent>(&self, ctx: &ExecCtx<'_, R, E>, n: usize) -> ProbePlan {
+        match ctx.fork_mode() {
+            ParMode::Off => ProbePlan::Serial,
+            _ if n < 2 => ProbePlan::Serial,
+            ParMode::Force => ProbePlan::Fork { grain: forced_grain(ctx, n) },
+            ParMode::Auto if calibration().is_none() => ProbePlan::Serial,
+            ParMode::Auto => ProbePlan::Probe(self.probes(n)),
+        }
+    }
+
+    /// How many of `n` items to time before deciding about the rest.
+    fn probes(&self, n: usize) -> usize {
+        match self.hist.n < SETTLE {
+            true => ((SETTLE - self.hist.n) as usize).min(n),
+            false => 1,
+        }
+    }
+
+    /// The range size for the `n` items a probe left, or `None` when
+    /// they run in order.
+    fn grain(&self, cal: &Calibration, n: usize) -> Option<usize> {
+        let est = cal.floor(self.hist.p75());
+        (self.hist.n >= SETTLE && est.saturating_mul(n as u64) >= 2 * cal.t)
+            .then(|| grain(cal, est, n))
+    }
+
+    /// [`Self::grain`], unless every worker already has a part.
+    fn grain_now(&self, cal: &Calibration, n: usize) -> Option<usize> {
+        if saturated() { None } else { self.grain(cal, n) }
+    }
+
+    /// Run `items`, the first at index `at`, folding their results into
+    /// `acc` with `join`: `probe` runs one item in order; `rest` runs the
+    /// items a probe left, forked in ranges of the size it is given, or
+    /// in order without one. `None` when either returns `None` (an
+    /// interrupt).
+    pub fn run<R: Rt, E: UserEvent, S, T>(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        items: &mut [S],
+        at: usize,
+        mut acc: T,
+        mut probe: impl FnMut(&mut ExecCtx<'_, R, E>, &mut S, usize) -> Option<T>,
+        rest: impl FnOnce(&mut ExecCtx<'_, R, E>, &mut [S], usize, Option<usize>) -> Option<T>,
+        join: impl Fn(T, T) -> T,
+    ) -> Option<T> {
+        let (mut items, mut at) = (items, at);
+        let grain = match self.plan(ctx, items.len()) {
+            ProbePlan::Serial => None,
+            ProbePlan::Fork { grain } => Some(grain),
+            ProbePlan::Probe(k) => {
+                let cal = calibration().expect("a probe is planned once calibrated");
+                let probed;
+                (probed, items) = items.split_at_mut(k);
+                for item in probed {
+                    let t0 = ticks();
+                    let r = probe(ctx, item, at)?;
+                    self.hist.add(cal, ticks().wrapping_sub(t0));
+                    acc = join(acc, r);
+                    at += 1;
+                }
+                self.grain_now(cal, items.len())
+            }
+        };
+        if items.is_empty() {
+            return Some(acc);
+        }
+        let r = rest(ctx, items, at, grain)?;
+        Some(join(acc, r))
     }
 }
 
@@ -529,6 +650,42 @@ mod tests {
         assert_eq!(s.split(3, 5), None);
         assert_eq!(Splits::Halves.split(2, 7), Some(4));
         assert_eq!(Splits::Halves.split(2, 3), None);
+    }
+
+    #[test]
+    fn probe_site_decides_a_growth_in_its_cycle() {
+        let cal = Calibration { t: 1 << 10, shift: 4 };
+        let workers = crate::branch::eval_pool().current_num_threads();
+        // items at 4T: four probes, then one per growth; the rest forks
+        let mut p = ProbeSite::default();
+        assert_eq!(p.probes(100), 4);
+        assert_eq!(p.probes(3), 3);
+        p.hist.add(&cal, 1 << 12);
+        assert_eq!(p.probes(100), 3);
+        assert_eq!(p.grain(&cal, 96), None, "an unsettled estimate forks nothing");
+        for _ in 0..3 {
+            p.hist.add(&cal, 1 << 12);
+        }
+        assert_eq!(p.probes(100), 1);
+        assert_eq!(
+            p.grain(&cal, 96),
+            Some(96usize.div_ceil(workers * RANGES_PER_WORKER))
+        );
+        // ranges of at least ceil(T / estimate) items
+        let mut q = ProbeSite::default();
+        for _ in 0..4 {
+            q.hist.add(&cal, 1 << 8);
+        }
+        assert_eq!(
+            q.grain(&cal, 64),
+            Some(4.max(64usize.div_ceil(workers * RANGES_PER_WORKER)))
+        );
+        // items too cheap to fork: 96 items at T/64 is under 2T
+        let mut r = ProbeSite::default();
+        for _ in 0..4 {
+            r.hist.add(&cal, 1 << 4);
+        }
+        assert_eq!(r.grain(&cal, 96), None);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-// `#[parallel]` and `#[serial]` (design/parallel_eval.md §7).
+// `#[parallel]` and `#[serial]` (design/parallel_eval.md §7), and how a
+// collection's growth runs under `Auto` (§8).
 
 use anyhow::{Result, bail};
 use graphix_compiler::{CFlag, ParMode};
@@ -7,10 +8,25 @@ use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 use tokio::sync::mpsc;
 
+/// What a run made.
+struct Ran {
+    /// The result's updates.
+    values: Vec<Value>,
+    /// Forks of evaluation.
+    forks: u64,
+    /// Runs of compile tasks building instances.
+    build_forks: u64,
+}
+
 /// Run `code` (as `let result = {code}`) node-walked under `mode` until it
-/// is quiet for 300ms: the result's updates and the forks the runtime
-/// made. A kernel does not fork.
-async fn run_par(code: &str, mode: ParMode) -> Result<(Vec<Value>, u64)> {
+/// is quiet for 300ms. A kernel does not fork. Under `Auto` the run waits
+/// for the fork threshold's calibration first: nothing forks until it.
+async fn run_par(code: &str, mode: ParMode) -> Result<Ran> {
+    if mode == ParMode::Auto {
+        while graphix_compiler::cost::calibration().is_none() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
     let (tx, mut rx) = mpsc::channel(10);
     let tbl = ahash::AHashMap::from_iter([(
         netidx_core::path::Path::from("/test.gx"),
@@ -46,9 +62,10 @@ async fn run_par(code: &str, mode: ParMode) -> Result<(Vec<Value>, u64)> {
             }
         }
     }
-    let forks = ctx.rt.control().forks();
+    let control = ctx.rt.control();
+    let (forks, build_forks) = (control.forks(), control.build_forks());
     ctx.shutdown().await;
-    Ok((values, forks))
+    Ok(Ran { values, forks, build_forks })
 }
 
 /// The compile error `code` gets.
@@ -75,14 +92,15 @@ fn ticking_map(attr: &str) -> String {
     )
 }
 
+// Whether `Auto` forks depends on timing and on the pool, which the
+// tests in this process share: `cost::tests` pins those decisions.
 #[tokio::test(flavor = "current_thread")]
-async fn parallel_forks_where_auto_would_not() -> Result<()> {
-    let (values, forks) = run_par(&ticking_map(""), ParMode::Auto).await?;
-    assert_eq!(values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
-    assert_eq!(forks, 0, "the cost model forked a cheap map");
-    let (values, forks) = run_par(&ticking_map("#[parallel]"), ParMode::Auto).await?;
-    assert_eq!(values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
-    assert!(forks > 0, "#[parallel] forked nothing");
+async fn parallel_forks_a_cheap_map() -> Result<()> {
+    let ran = run_par(&ticking_map(""), ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    let ran = run_par(&ticking_map("#[parallel]"), ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    assert!(ran.forks > 0, "#[parallel] forked nothing");
     Ok(())
 }
 
@@ -98,9 +116,9 @@ async fn parallel_on_a_definition_forks_its_instances() -> Result<()> {
         let double = |xs: Array<i64>| array::map(xs, |x| x * 2);
         array::fold(double(array::init(8, |i| i + n)), 0, |a, b| a + b)
     }"#;
-    let (values, forks) = run_par(code, ParMode::Auto).await?;
-    assert_eq!(values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
-    assert!(forks > 0, "#[parallel] on the definition forked nothing");
+    let ran = run_par(code, ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    assert!(ran.forks > 0, "#[parallel] on the definition forked nothing");
     Ok(())
 }
 
@@ -120,12 +138,55 @@ async fn serial_reaches_callees() -> Result<()> {
             }}"#
         )
     };
-    let (values, forks) = run_par(&code(""), ParMode::Auto).await?;
-    assert_eq!(values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
-    assert!(forks > 0, "the callee's #[parallel] forked nothing");
-    let (values, forks) = run_par(&code("#[serial]"), ParMode::Auto).await?;
-    assert_eq!(values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
-    assert_eq!(forks, 0, "#[serial] let a callee fork");
+    let ran = run_par(&code(""), ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    assert!(ran.forks > 0, "the callee's #[parallel] forked nothing");
+    let ran = run_par(&code("#[serial]"), ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    assert_eq!(ran.forks, 0, "#[serial] let a callee fork");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_cycle_growth_agrees() -> Result<()> {
+    let code = r#"{
+        let rec f = |d: i64, v: i64| -> i64 select d {
+            0 => v,
+            d => (f(d - 1, v + 1) + f(d - 1, v * 3)) % 1000003
+        };
+        array::fold(array::map(array::init(8, |i| i), |x| f(9, x)), 0, |a, b| a + b)
+    }"#;
+    let serial = run_par(code, ParMode::Off).await?;
+    assert_eq!(run_par(code, ParMode::Auto).await?.values, serial.values);
+    let ran = run_par(code, ParMode::Force).await?;
+    assert_eq!(ran.values, serial.values);
+    assert!(ran.forks > 0 && ran.build_forks > 0, "a forced growth ran in order");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fold_growth_builds_in_tasks() -> Result<()> {
+    let code = r#"{
+        let xs = #[serial] array::init(200, |i| i);
+        array::fold(xs, 0, |a, b| {
+            let c = select (a + b) % 4 {
+                0 => a / 2,
+                1 => b * 5 + 1,
+                n => n + a
+            };
+            let d = select (b, c) {
+                (b, c) if b > c => b - c,
+                (b, c) => c - b
+            };
+            (a + b + c + d) % 65537
+        })
+    }"#;
+    let serial = run_par(code, ParMode::Off).await?;
+    assert_eq!(serial.build_forks, 0);
+    assert_eq!(run_par(code, ParMode::Auto).await?.values, serial.values);
+    let ran = run_par(code, ParMode::Force).await?;
+    assert_eq!(ran.values, serial.values);
+    assert!(ran.build_forks > 0, "the fold built its slots in order");
     Ok(())
 }
 

@@ -219,6 +219,8 @@ pub struct Control {
     self_blocks: AtomicI64,
     /// Forks made by this runtime's cycles.
     forks: AtomicU64,
+    /// Runs of compile tasks its cycles forked to build instances.
+    build_forks: AtomicU64,
 }
 
 /// How a runtime forks the independent subtrees of a cycle
@@ -264,6 +266,7 @@ impl Control {
             jit_runs: AtomicU64::new(0),
             self_blocks: AtomicI64::new(0),
             forks: AtomicU64::new(0),
+            build_forks: AtomicU64::new(0),
         }
     }
 
@@ -280,6 +283,17 @@ impl Control {
     #[doc(hidden)]
     pub fn forked(&self) {
         self.forks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Runs of compile tasks this runtime's cycles forked to build
+    /// instances.
+    pub fn build_forks(&self) -> u64 {
+        self.build_forks.load(Ordering::Relaxed)
+    }
+
+    #[doc(hidden)]
+    pub fn build_forked(&self) {
+        self.build_forks.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Live per-activation kernel blocks.

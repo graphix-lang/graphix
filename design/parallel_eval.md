@@ -406,6 +406,69 @@ is four times the median latency of handing an idle pool a job,
 measured on a thread of its own at the first use (`Auto` forks nothing
 until then). `GRAPHIX_DBG_PAR` prints the calibration.
 
+**As built (phase 5).**
+
+- **Growth decides in its cycle.** A collection's fresh slots are
+  costed apart from its standing ones, twice: building their instances,
+  and their first updates. Each is a `ProbeSite`: it runs the first
+  slots of a growth in order, timing each (four until its estimate
+  settles, then one per growth), and forks the rest when they are
+  estimated at `2T` or more. A one-shot growth, a program's first cycle
+  included, needs no history: `array::init(20000, ..)` forks in the
+  cycle that builds it.
+- **Ranges are capped:** at most four per worker, each at least
+  `ceil(T / estimate)` slots. Each range is a branch, or a compile
+  task, whose fork and merge cost grows with the writes it carries,
+  not only its count.
+- **A saturated pool forks nothing under `Auto`.** A fork pays for its
+  branches and its merge whether or not another worker takes a part, so
+  a fork made while every worker already has a part only adds that
+  cost. The pool counts its live parts (`branch::saturated`); under
+  `Auto` a site whose plan is to fork runs in order while they number
+  the workers, and keeps measuring as it would. Without it, the
+  recursion inside `par_wide`'s 16 forked slots kept forking its
+  operator sites, by an amount that depended on `T`: 59 steady cycles
+  took 3.7 s at `T` = 150k ticks and 3.1 s at 4.8M on four P-cores;
+  with it, 2.8 s at any `T`. Disabling it costs 3.45 s against 2.83 s
+  on four cores and 2.58 s against 2.30 s on twelve. Saturating at
+  twice the workers measured the same as at once.
+- **`T` from the lower quartile.** The wake latencies are measured
+  while the cycle that first asks runs, on cores it shares; contention
+  only adds to them, so the lower quartile of nine is taken, not the
+  median. The median ranged 10x between runs of one program.
+
+- **Serial cost**, user instructions with `GRAPHIX_PAR=off` against
+  phase 4 (quick builds, pinned): `fold_sum` and `map_fold` node-walked
+  0%, `symbolic` +0.2%, `stream_stats` +0.3%, `par_wide` +0.7% (65k
+  run-time binds through the split bind), `par_growth` 0%.
+
+**Measured, not fixed (phase 5):**
+
+- **A branch's reads cost about 30%.** `par_wide` on a one-thread pool
+  forks only its top level (the pool is saturated at once) and runs its
+  steady state in 7.0 s against 5.4 s serial: every read in a branch
+  walks the layered views. This is the floor under any speedup, and
+  the reason unstolen forks are not free here as they are in rayon.
+- **A first cycle built on many threads slows the cycles after it.**
+  `par_wide` on twelve threads, P- and E-cores: its first cycle in
+  1.4 s forked against 2.8 s in order, then 59 steady cycles in 2.3 s
+  against 1.9 s. Same forks at the same depths, same allocator share
+  (1.4%), no spinning; the steady state misses more on the nodes
+  themselves (a node's first field read, its selects' tracked sets), and
+  a single malloc arena, which interleaves the threads' allocations
+  further, makes it 2.9 s. On four P-cores, and on a one-thread pool,
+  the difference is under 2%. The net is still the forked first cycle
+  (3.7 s against 4.7 s); where the nodes land is the allocator's
+  business, open.
+- **Hybrid cores make forced ranges sensitive to placement.** A bare
+  `#[parallel]` cuts one range per worker. `par_symbolic` on twelve
+  threads runs 1.40 s with the calibration started at the first fork
+  site, and 1.40 s or 1.55-1.65 s (bimodal, same instructions, more of
+  them on P-cores) when it started with the runtime: the threads' start
+  decides where the OS places them and so which ranges wait on E-cores.
+  Four ranges per worker made it 1.39 s on twelve and 2.10 s against
+  1.90 s on four. Calibration starts at the first use, as before.
+
 ## 6. Builtins and side effects
 
 **External effects happen when they happen.** Printing, logging, file
@@ -568,6 +631,27 @@ that safe: they are independent.
 - **Collection growth is chunked.** A collection growing by many slots
   builds them in tasks, one per chunk (the grain from the construction
   histogram, §5), joined in index order.
+
+  As built: a slot whose callback the prototype resolved statically
+  calls a constant definition, so its instance can be built before its
+  first update (`CallSite::prebind`, state `Callee::Prebound`). A
+  run-time bind is split in two:
+
+  - `build_bound`, on a `CompileCtx`: instantiate, check, elaborate,
+    analyze, take the slot's shared kernels;
+  - `prime_bound`, at the first dispatch: prime the outer variables
+    the compiled defaults read, and run the defaults under the init
+    view.
+
+  A growth whose builds are estimated to pay prebinds its fresh slots
+  in compile tasks (`branch::compile_each`: a `CompileCtx::fork` per
+  range on the evaluation pool, joined in order), then applies the
+  deferred references and evaluates. A growth that runs in order
+  prebinds nothing: building every slot before evaluating any cost the
+  serial engine 6% on `par_growth` (each instance cold by the time it
+  ran). A fold's chain stays serial, but its
+  instances no longer are: in `par_growth` the fold's growth had been
+  a tenth of the serial run, all of it on the runtime's thread.
 - **Hot reads are not compiles.** Select patterns and casts read types
   (C/node/select.rs:905, C/node/mod.rs:1655) and kernels borrow an env
   for typed calls (C/fusion/kernel.rs:386). They read the branch's view:
@@ -622,9 +706,11 @@ Compile-time paths sort by id for stable image bytes (C/image/registration.rs:10
 
 `branch::fork_join` (two parts, `rayon::join`) and `branch::fork_each`
 (flat, rayon over the parts) fork the branch contexts, run the parts,
-merge, and propagate a panic. Both run their parallel part through
+merge, and propagate a panic. `branch::compile_each` runs compile
+tasks the same way (§8). All three run their parallel part through
 `branch::on_pool`, which installs it into the evaluation pool when the
-fork is made off it (§4.5).
+fork is made off it (§4.5), and count their parts live until each
+returns (§5, saturation).
 
 A thread blocked in a `join` runs stolen jobs, so a stolen job sees
 whatever the thread it lands on had set when it blocked, and the job's
@@ -636,13 +722,14 @@ own thread-locals must not depend on its ancestors. As built:
 | tokio runtime context | entered beside `CURRENT` (timers, `spawn`) |
 | `VALUE_HOOKS` | no fork runs under a loan: the dispatch that updates a hook site suspends it first, so a stolen job sees none, as the joining thread does |
 | `RUNTIME_BIND`, `DESELECTING_ARM` | set only around compiling and sleeping, neither of which forks |
-| tvar `LEVEL`/`TASK` | set only under a compile, which does not fork evaluation |
+| tvar `LEVEL`/`TASK` | `LEVEL` entered from the forking thread in every compile task; `TASK` entered by each run-time bind (`with_runtime_settles`) |
 | kernel loans `KERNEL_ABORT`/`KERNEL_ENV`/`QOP_RAISES`/`KERNEL_PANIC`, `SELF_BLOCK_GEN` | saved and restored around every kernel call: a stolen job running a kernel while its thread waits inside another kernel's dynamic call is a nested call, which these already support |
 | `FastMemo`, `LPooled` pools, scratch buffers | per-thread caches: unchanged; values freed on another thread return to that thread's pool |
 
 Test instruments that counted per thread (fused kernel runs, JIT
 wrapper entries, live activation blocks) count on the runtime's
-`Control` (`Control::invocations`, `live_self_blocks`).
+`Control` (`Control::invocations`, `live_self_blocks`), and so do its
+forks (`forks`) and its runs of compile tasks (`build_forks`).
 
 **The pool.** `branch::eval_pool`: one per process, shared by every
 runtime in it, `GRAPHIX_EVAL_THREADS` workers (default: the cores),
@@ -731,6 +818,15 @@ once.
   across runtimes (the stdlib's decoded interfaces); concurrently
   starting runtimes then race on the flag. Seen on this branch, present
   on main; not investigated.
+
+- **`Env::fork` copied every key its parent's task had written.** It
+  built the fork as `{ forked maps.., ..self.clone() }`, which clones
+  the tracked maps' written-key lists before dropping them, so a task
+  that forks a task per instance (`CallSite::resolve_static`) pays for
+  every earlier instance's writes: quadratic in a task's instances.
+  The branch names the fields it clones. Main's statement compile tasks
+  fork per instance the same way. **If this branch is not merged, port
+  the fix and measure a statement that elaborates many instances.**
 
 ## 12. Deferred and declined
 

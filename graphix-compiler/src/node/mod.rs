@@ -1011,8 +1011,8 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
 /// compiler bug, logged. Binds in parallel branches run concurrently:
 /// one that changes a cell the program's compile created is a race.
 pub(crate) fn with_runtime_settles<R: Rt, E: UserEvent, T>(
-    ctx: &mut ExecCtx<'_, R, E>,
-    f: impl FnOnce(&mut ExecCtx<'_, R, E>) -> Result<T>,
+    ctx: &mut CompileCtx<R, E>,
+    f: impl FnOnce(&mut CompileCtx<R, E>) -> Result<T>,
 ) -> Result<T> {
     ctx.pending_settles.push(Vec::new());
     let names = ctx.pending_names.len();

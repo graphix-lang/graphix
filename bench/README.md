@@ -182,13 +182,20 @@ serially and under `GRAPHIX_PAR=auto`, pinned with taskset (serial and 4
 threads on the P-cores, 12 on the P- and E-cores; never the low-power
 cores), at normal priority. `par_symbolic` is `symbolic` with its seeds
 mapped under `#[parallel]`; `par_wide` is a node-walked map whose slots
-the cost model learns to fork over 60 cycles. Quick build, bench mode
-(2026-10-04):
+the cost model learns to fork, timed over its 59 cycles after the first;
+`par_growth` builds 20000 slots in one cycle, nearly all instance
+construction. Quick build, `max` mode, best of three (2026-10-04):
 
 | bench          | serial | auto P x4 | auto P+E x12 |
 |----------------|--------|-----------|--------------|
-| `par_symbolic` | 4.80 s | 2.07 s    | 1.52 s       |
-| `par_wide`     | 5.18 s | 2.94 s    | 2.12 s       |
+| `par_growth`   | 2.74 s | 1.17 s    | 0.88 s       |
+| `par_symbolic` | 4.80 s | 1.88 s    | 1.40 s       |
+| `par_wide`     | 5.29 s | 2.52 s    | 1.97 s       |
+
+Hybrid cores make these noisy: which parts land on E-cores is the OS's
+choice (`design/parallel_eval.md` §5, measured not fixed), and
+`par_symbolic` seeds itself from the clock, so each run is a different
+workload. Compare builds interleaved, several runs each.
 
 For compiler startup profiling, run a workload with `GRAPHIX_PROFILE=1`,
 capture stderr, then use `python3 bench/profile.py profile.log` (or

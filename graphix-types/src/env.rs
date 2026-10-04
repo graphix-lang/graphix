@@ -444,7 +444,11 @@ impl Env {
             poly_binds: self.poly_binds.fork(),
             package_roots: self.package_roots.fork(),
             ide: self.ide.fork(),
-            ..self.clone()
+            binds: self.binds.clone(),
+            modules: self.modules.clone(),
+            typedefs: self.typedefs.clone(),
+            traits: self.traits.clone(),
+            hidden_impls: self.hidden_impls.clone(),
         }
     }
 

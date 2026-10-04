@@ -2,7 +2,7 @@ use super::{
     NOP, WakeBit, callsite::CallSite, coretraits::with_hooks, genn, lambda::GXLambda,
     list, pattern::StructPatternNode,
 };
-use crate::cost::{SlotPlan, SlotSite};
+use crate::cost::{ProbeSite, SlotPlan, SlotSite};
 use crate::{
     ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent,
@@ -849,7 +849,7 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
     })
 }
 
-/// Update `slots`, in order or forked where the site's plan says: the
+/// Update `slots`, in order or forked where the site's plans say: the
 /// join of their triggering productions, or `None` when an interrupt
 /// stopped the loop. A slot at `old_len` or past it is fresh, and its
 /// first dispatch runs under a forced init view.
@@ -859,34 +859,108 @@ fn update_slots<R: Rt, E: UserEvent>(
     site: &mut SlotSite,
     old_len: usize,
 ) -> Option<Option<Tag>> {
-    let n = slots.len();
-    match site.plan(ctx, n) {
-        SlotPlan::Serial => update_slots_in_order(ctx, slots, 0, old_len),
+    let (standing, fresh) = slots.split_at_mut(old_len.min(slots.len()));
+    let n = standing.len();
+    let production = match site.plan(ctx, n) {
+        SlotPlan::Serial => update_slots_in_order(ctx, standing, 0, old_len)?,
         SlotPlan::Measure(t0) => {
-            let r = update_slots_in_order(ctx, slots, 0, old_len);
+            let r = update_slots_in_order(ctx, standing, 0, old_len)?;
             site.measured(t0, n);
             r
         }
-        SlotPlan::Fork { grain } => {
-            let grain = grain.max(1);
-            if n < 2 * grain {
-                return update_slots_in_order(ctx, slots, 0, old_len);
-            }
-            let ranges: LPooled<Vec<(usize, usize)>> =
-                (0..n).step_by(grain).map(|lo| (lo, (lo + grain).min(n))).collect();
-            let parts = crate::branch::cut(slots, &ranges);
-            let parts = parts.into_iter().zip(ranges.iter().map(|r| r.0));
-            let mut production = None;
-            for p in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
-                update_slots_in_order(c, p, at, old_len)
-            }) {
-                if let Some(tag) = p? {
-                    production = merge_tag(production, tag);
-                }
-            }
-            Some(production)
-        }
+        SlotPlan::Fork { grain } => update_ranges(ctx, standing, 0, old_len, grain)?,
+    };
+    site.fresh.run(
+        ctx,
+        fresh,
+        n,
+        production,
+        |ctx, slot, at| {
+            update_slots_in_order(ctx, std::slice::from_mut(slot), at, old_len)
+        },
+        |ctx, slots, at, grain| match grain {
+            None => update_slots_in_order(ctx, slots, at, old_len),
+            Some(grain) => update_ranges(ctx, slots, at, old_len, grain),
+        },
+        merge_tags,
+    )
+}
+
+fn merge_tags(a: Option<Tag>, b: Option<Tag>) -> Option<Tag> {
+    match b {
+        Some(tag) => merge_tag(a, tag),
+        None => a,
     }
+}
+
+/// Update `slots`, the first at index `at`, in sibling branches of
+/// `grain` slots each.
+fn update_ranges<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    slots: &mut [Slot<R, E>],
+    at: usize,
+    old_len: usize,
+    grain: usize,
+) -> Option<Option<Tag>> {
+    let n = slots.len();
+    let grain = grain.max(1);
+    if n < 2 * grain {
+        return update_slots_in_order(ctx, slots, at, old_len);
+    }
+    let ranges = ranges(n, grain);
+    let parts = crate::branch::cut(slots, &ranges);
+    let parts = parts.into_iter().zip(ranges.iter().map(|r| at + r.0));
+    let mut production = None;
+    for p in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
+        update_slots_in_order(c, p, at, old_len)
+    }) {
+        production = merge_tags(production, p?);
+    }
+    Some(production)
+}
+
+/// `0..n` in ranges of `grain`.
+fn ranges(n: usize, grain: usize) -> LPooled<Vec<(usize, usize)>> {
+    (0..n).step_by(grain).map(|lo| (lo, (lo + grain).min(n))).collect()
+}
+
+/// Build the instances of `fresh` slots' callbacks in compile tasks,
+/// ahead of their first updates, where `site` says the builds pay for
+/// it; a slot built in order binds at its first update. `call` is a
+/// slot's call.
+fn build_fresh<R: Rt, E: UserEvent, S: Send>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    fresh: &mut [S],
+    site: &mut ProbeSite,
+    call: fn(&mut S) -> &mut Node<R, E>,
+) {
+    let prebind = |ctx: &mut CompileCtx<R, E>, slots: &mut [S]| {
+        for slot in slots {
+            if let Some(cs) = call(slot).downcast_mut::<CallSite<R, E>>() {
+                cs.prebind(ctx)
+            }
+        }
+    };
+    site.run(
+        ctx,
+        fresh,
+        0,
+        (),
+        |ctx, slot, _| Some(prebind(ctx, std::slice::from_mut(slot))),
+        |ctx, slots, _, grain| {
+            if let Some(grain) = grain {
+                let ranges = ranges(slots.len(), grain);
+                crate::branch::compile_each(
+                    ctx,
+                    crate::branch::cut(slots, &ranges),
+                    prebind,
+                )
+            }
+            Some(())
+        },
+        |(), ()| (),
+    );
+    ctx.apply_deferred();
 }
 
 fn update_slots_in_order<R: Rt, E: UserEvent>(
@@ -972,6 +1046,10 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                             kind.clone(),
                         )
                     });
+                let fresh = old_len.min(self.slots.len());
+                build_fresh(ctx, &mut self.slots[fresh..], &mut self.fork.build, |s| {
+                    &mut s.call
+                });
                 // Elements move only on a fire, in a frame (a rebound loop
                 // variable arrives stale) or past a sleep; a fresh slot
                 // always takes its element.
@@ -1210,6 +1288,7 @@ struct FoldQ<R: Rt, E: UserEvent, C: MapCollection> {
     src_bottom: bool,
     collection: PhantomData<C>,
     resident: TagValue,
+    build: ProbeSite,
 }
 
 impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
@@ -1223,6 +1302,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> FoldQ<R, E, C> {
             src_bottom: true,
             collection: PhantomData,
             resident: TagValue::phantom(),
+            build: ProbeSite::default(),
         })
     }
 
@@ -1364,6 +1444,10 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
                         let (acc, elt) = (&self.acc_type, &self.base.element_type);
                         FoldSlot::new(ctx, &self.callback, acc, elt, kind.clone())
                     });
+                let fresh = old_len.min(self.slots.len());
+                build_fresh(ctx, &mut self.slots[fresh..], &mut self.build, |s| {
+                    &mut s.call
+                });
                 // Elements move only on a fire, in a frame or past a sleep; a
                 // fresh slot always takes its element.
                 let moved = src_trig || woke;

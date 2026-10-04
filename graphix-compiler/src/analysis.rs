@@ -7,8 +7,8 @@
 //! tail-loop predicate is `fusion::lowering::structural_tail_loop`.
 
 use crate::{
-    ApplyView, BindId, CompileCtx, DefAssertionKind, ExecCtx, LambdaId, LambdaInstanceId,
-    Node, NodeView, Refs, Rt, Update, UserEvent,
+    ApplyView, BindId, CompileCtx, DefAssertionKind, LambdaId, LambdaInstanceId, Node,
+    NodeView, Refs, Rt, Update, UserEvent,
     dbgenv::{gxdbg_effect, gxdbg_seqplan},
     effects::{EffectKind, RecursionKind},
     expr::{At, ExprKind, ModuleKind},
@@ -231,7 +231,7 @@ fn strongly_connected<R: Rt, E: UserEvent>(
 /// interior mutability on the nodes reached.
 pub fn analyze<R: Rt, E: UserEvent>(
     root: &Node<R, E>,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> Result<()> {
     let _profile = profile::phase(Phase::Analysis);
     let graph = collect_static_graph(root, None);
@@ -251,7 +251,7 @@ pub fn analyze<R: Rt, E: UserEvent>(
 pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     self_bind: Option<BindId>,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
 ) {
     let _profile = profile::phase(Phase::Analysis);
     let mut graph = collect_static_graph(g.body(), Some(g));
@@ -272,7 +272,7 @@ pub(crate) fn analyze_bound_callee<R: Rt, E: UserEvent>(
 /// first failure.
 fn check_def_assertions<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> Result<()> {
     let mut pending = ctx.def_assertions.lock();
     if pending.is_empty() {
@@ -358,7 +358,7 @@ struct BodyFacts {
 /// instance, not a better view of the definition).
 fn infer_effects<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> InstanceFacts {
     let _profile = profile::phase(Phase::Effects);
     let mut bodies: LPooled<IntMap<LambdaInstanceId, BodyFacts>> = LPooled::take();
@@ -437,7 +437,7 @@ impl LambdaFacts {
 fn body_facts<R: Rt, E: UserEvent>(
     g: &GXLambda<R, E>,
     graph: &StaticCallGraph<'_, R, E>,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> BodyFacts {
     let body = g.body();
     let local: OnceCell<LPooled<IntSet<BindId>>> = OnceCell::new();
@@ -577,7 +577,7 @@ fn node_facts<R: Rt, E: UserEvent>(
 fn callee_facts<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
     graph: Option<&StaticCallGraph<'_, R, E>>,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
     pending: &mut dyn FnMut(LambdaInstanceId),
 ) -> LambdaFacts {
     let of_def = |lid: LambdaId| -> LambdaFacts {
@@ -628,7 +628,7 @@ fn callee_facts<R: Rt, E: UserEvent>(
 fn mark_recursion<R: Rt, E: UserEvent>(
     graph: &StaticCallGraph<'_, R, E>,
     facts: &InstanceFacts,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
 ) {
     let _profile = profile::phase(Phase::Recursion);
     let components = strongly_connected(graph);
@@ -732,7 +732,7 @@ fn is_call_to<R: Rt, E: UserEvent>(
 }
 
 fn lambda_def<'a, R: Rt, E: UserEvent>(
-    ctx: &'a ExecCtx<'_, R, E>,
+    ctx: &'a CompileCtx<R, E>,
     lid: LambdaId,
 ) -> Option<&'a LambdaDef<R, E>> {
     ctx.lambda_defs.get(&lid).and_then(|v| v.downcast_ref::<LambdaDef<R, E>>())
@@ -740,7 +740,7 @@ fn lambda_def<'a, R: Rt, E: UserEvent>(
 
 fn callee_lambda<R: Rt, E: UserEvent>(
     cs: &CallSite<R, E>,
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
 ) -> Option<LambdaId> {
     if let Some(target) = cs.static_target() {
         return Some(target.definition);
@@ -763,7 +763,7 @@ fn callee_lambda<R: Rt, E: UserEvent>(
 /// recursive call has nothing to pause. Anything [`node_facts`] calls
 /// stateful or async sleeps, every `<-` in the arm included.
 pub(crate) fn arm_sleeps_on_deselect<R: Rt, E: UserEvent>(
-    ctx: &ExecCtx<'_, R, E>,
+    ctx: &CompileCtx<R, E>,
     node: &Node<R, E>,
 ) -> bool {
     let mut pure = true;

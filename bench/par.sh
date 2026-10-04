@@ -42,7 +42,7 @@ for prog in "$dir"/par_*.gx; do
     name=$(basename "$prog" .gx)
     flags=()
     # a fused map is one native loop, with nothing to fork
-    [[ "$name" == par_wide ]] && flags=(--no-fusion)
+    [[ "$name" == par_wide || "$name" == par_growth ]] && flags=(--no-fusion)
     s=$(best off 0-3 4 "$prog" "${flags[@]}")
     a4=$(best auto 0-3 4 "$prog" "${flags[@]}")
     a12=$(best auto 0-11 12 "$prog" "${flags[@]}")

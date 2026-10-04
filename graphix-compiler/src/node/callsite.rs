@@ -510,6 +510,10 @@ pub(crate) enum Callee<R: Rt, E: UserEvent> {
     /// Bound to a callee that may change cycle-to-cycle; `def` is kept
     /// for the per-cycle identity check against `fnode.update()`.
     DynamicBound { def: Value, apply: Box<dyn Apply<R, E>> },
+    /// `def`'s instance, built before the first dispatch
+    /// ([`CallSite::prebind`]), which primes `defaults`, the outer
+    /// variables the defaults it compiled read, and binds it.
+    Prebound { def: Value, apply: Box<dyn Apply<R, E>>, defaults: SmallVec<[BindId; 2]> },
     /// Binding `def` failed: the call is bottom until `fnode` yields
     /// another definition.
     Failed { def: Value },
@@ -553,9 +557,9 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
                 None
             }
-            Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
-                Some(&**apply)
-            }
+            Callee::DynamicBound { apply, .. }
+            | Callee::Prebound { apply, .. }
+            | Callee::Static { apply, .. } => Some(&**apply),
         }
     }
 
@@ -564,9 +568,9 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
                 None
             }
-            Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
-                Some(&mut **apply)
-            }
+            Callee::DynamicBound { apply, .. }
+            | Callee::Prebound { apply, .. }
+            | Callee::Static { apply, .. } => Some(&mut **apply),
         }
     }
 
@@ -580,9 +584,9 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
             Callee::DynamicUnbound | Callee::Failed { .. } | Callee::Imaged { .. } => {
                 None
             }
-            Callee::DynamicBound { apply, .. } | Callee::Static { apply, .. } => {
-                Some(apply)
-            }
+            Callee::DynamicBound { apply, .. }
+            | Callee::Prebound { apply, .. }
+            | Callee::Static { apply, .. } => Some(apply),
         }
     }
 }
@@ -919,21 +923,19 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)
     }
 
-    fn setup_dynamic_bind<F>(
+    /// The instance of `f` a run-time bind dispatches, and the outer
+    /// variables the defaults it compiled read.
+    fn setup_dynamic_bind(
         &mut self,
-        ctx: &mut ExecCtx<'_, R, E>,
+        ctx: &mut CompileCtx<R, E>,
         scope: &Scope,
         flags: BitFlags<CFlag>,
         f: &LambdaDef<R, E>,
-        prime_default_refs: F,
-    ) -> Result<Box<dyn Apply<R, E>>>
-    where
-        F: FnMut(&mut ExecCtx<'_, R, E>, &Refs),
-    {
-        let mut defaults = Refs::default();
-        let mut prime_default_refs = prime_default_refs;
-        self.prepare_bind(ctx, scope, flags, f, &mut defaults)?;
-        prime_default_refs(ctx, &defaults);
+    ) -> Result<(Box<dyn Apply<R, E>>, SmallVec<[BindId; 2]>)> {
+        let mut refs = Refs::default();
+        self.prepare_bind(ctx, scope, flags, f, &mut refs)?;
+        let mut defaults = SmallVec::new();
+        refs.with_external_refs(|id| defaults.push(id));
         // a site its check never typed sees the callee as a call would
         let view = match &self.ftype {
             Some(ft) => ft.resolve_tvars(),
@@ -944,7 +946,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
             log::error!("a run-time bind at {} did not type: {e:#}", self.spec);
         }
-        Ok(apply)
+        Ok((apply, defaults))
     }
 
     fn typecheck_static_defaults(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1097,38 +1099,74 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn bind(
         &mut self,
         ctx: &mut ExecCtx<'_, R, E>,
-        scope: Scope,
-        flags: BitFlags<CFlag>,
         fv: Value,
         f: &LambdaDef<R, E>,
         set: &mut Vec<BindId>,
     ) -> Result<()> {
+        let built = self.build_bound(ctx, fv, f);
+        ctx.apply_deferred();
+        let defaults = built?;
+        self.prime_bound(ctx, &defaults, set);
+        Ok(())
+    }
+
+    /// Build this site's instance of the slot callee its function is the
+    /// constant of, in the compile task `ctx`, ahead of its first
+    /// dispatch. A no-op for any other site.
+    pub(crate) fn prebind(&mut self, ctx: &mut CompileCtx<R, E>) {
+        if !matches!(self.callee, Callee::DynamicUnbound) {
+            return;
+        }
+        let NodeView::Constant(c) = self.fnode.view() else { return };
+        let fv = c.value.clone();
+        let Some(f) = fv.downcast_ref::<LambdaDef<R, E>>() else { return };
+        if !ctx.lambda_defs.contains_key(&f.id) {
+            return;
+        }
+        match self.build_bound(ctx, fv.clone(), f) {
+            Ok(defaults) => {
+                let Callee::DynamicBound { apply, .. } =
+                    mem::replace(&mut self.callee, Callee::DynamicUnbound)
+                else {
+                    unreachable!("a built callee is bound")
+                };
+                self.callee = Callee::Prebound { def: fv, apply, defaults }
+            }
+            Err(e) => {
+                error!("{}: binding the callee failed: {e:#}", self.spec);
+                self.clear_prepared_bind(ctx);
+                self.callee = Callee::Failed { def: fv };
+            }
+        }
+    }
+
+    /// Build, check and analyze this site's instance of `f` (the value
+    /// `fv`) as a run-time bind, a compile task of its own, leaving it
+    /// `DynamicBound`: the outer variables its compiled defaults read,
+    /// for [`Self::prime_bound`].
+    fn build_bound(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        fv: Value,
+        f: &LambdaDef<R, E>,
+    ) -> Result<SmallVec<[BindId; 2]>> {
         let _bind_span = perfdbg::span(&perfdbg::BIND_NS);
         if perfdbg::enabled() {
             perfdbg::BIND_CALLS.fetch_add(1, Relaxed);
         }
+        let (scope, flags) = (self.scope.clone(), self.flags);
         // The lazy-bound body's typecheck defers settles no statement
         // boundary will drain.
-        let restored_def = super::with_runtime_settles(ctx, |ctx| {
+        let defaults = super::with_runtime_settles(ctx, |ctx| {
             let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
-            let apply = self.setup_dynamic_bind(ctx, &scope, flags, f, |ctx, refs| {
-                refs.with_external_refs(|id| {
-                    if let Some(v) = ctx.rt.store_value(&id)
-                        && ctx.event.variables.try_insert(id, TagValue::fired(v)).is_ok()
-                    {
-                        set.push(id);
-                    }
-                });
-            })?;
+            let (apply, defaults) = self.setup_dynamic_bind(ctx, &scope, flags, f)?;
             drop(setup_span);
             // A def whose defining Lambda node was deleted has no
             // `lambda_defs` entry; restore it for this elaboration only.
-            let restored_def = if ctx.lambda_defs.contains_key(&f.id) {
-                false
-            } else {
+            let restored_def = !ctx.lambda_defs.contains_key(&f.id);
+            if restored_def {
                 ctx.lambda_defs.insert(f.id, fv.clone());
-                true
-            };
+            }
             self.callee = Callee::DynamicBound { def: fv, apply };
             // The lazy-bound body postdates the program-wide typecheck1 and
             // analysis passes: resolve its call sites and analyze it here.
@@ -1167,17 +1205,35 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                     analysis::analyze_bound_callee(g, self_bind, ctx);
                 }
             }
-            Ok(restored_def)
-        });
-        ctx.apply_deferred();
-        let restored_def = restored_def?;
+            if restored_def {
+                ctx.lambda_defs.remove(&f.id);
+            }
+            Ok(defaults)
+        })?;
         if let Some(share) = &self.share
             && let Some(apply) = self.callee.apply_mut()
         {
             share::fuse_slot(ctx, share, self.top_id, |ctx| apply.fuse(ctx));
-            ctx.apply_deferred();
         }
-        // Defaults update for the first time under the init view.
+        Ok(defaults)
+    }
+
+    /// Prime `defaults`, the outer variables a fresh bind's compiled
+    /// defaults read, with their stored values, and run the defaults for
+    /// the first time, under the init view.
+    fn prime_bound(
+        &mut self,
+        ctx: &mut ExecCtx<'_, R, E>,
+        defaults: &[BindId],
+        set: &mut Vec<BindId>,
+    ) {
+        for id in defaults {
+            if let Some(v) = ctx.rt.store_value(id)
+                && ctx.event.variables.try_insert(*id, TagValue::fired(v)).is_ok()
+            {
+                set.push(*id);
+            }
+        }
         let prev_init = mem::replace(&mut ctx.event.init, true);
         for arg in self.args.values_mut() {
             if arg.is_default
@@ -1191,10 +1247,6 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         }
         ctx.event.init = prev_init;
-        if restored_def {
-            ctx.lambda_defs.remove(&f.id);
-        }
-        Ok(())
     }
 
     /// Pre-bind this CallSite to a statically known `LambdaDef` at compile
@@ -1642,6 +1694,16 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     ) -> bool {
         let same = match &self.callee {
             Callee::DynamicBound { def, .. } | Callee::Failed { def } => def == &v,
+            Callee::Prebound { def, .. } if def == &v => {
+                let Callee::Prebound { def, apply, defaults } =
+                    mem::replace(&mut self.callee, Callee::DynamicUnbound)
+                else {
+                    unreachable!("matched above")
+                };
+                self.callee = Callee::DynamicBound { def, apply };
+                self.prime_bound(ctx, &defaults, set);
+                return true;
+            }
             _ => false,
         };
         if same {
@@ -1650,8 +1712,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let Some(lb) = v.downcast_ref::<LambdaDef<R, E>>() else {
             panic!("value {v:?} is not a function")
         };
-        let scope = self.scope.clone();
-        match self.bind(ctx, scope, self.flags, v.clone(), lb, set) {
+        match self.bind(ctx, v.clone(), lb, set) {
             Ok(()) => true,
             Err(e) => {
                 error!("{}: binding the callee failed: {e:#}", self.spec);
@@ -1715,9 +1776,9 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     fn callee_mode(&self) -> Result<u8, PackError> {
         match &self.callee {
             Callee::DynamicUnbound => Ok(CALLEE_UNBOUND),
-            Callee::DynamicBound { .. } | Callee::Failed { .. } => {
-                Err(PackError::Application(image::NOT_QUIESCENT))
-            }
+            Callee::DynamicBound { .. }
+            | Callee::Prebound { .. }
+            | Callee::Failed { .. } => Err(PackError::Application(image::NOT_QUIESCENT)),
             Callee::Static { apply, .. } => match apply.view() {
                 ApplyView::Lambda(_) => Ok(CALLEE_INSTANCE),
                 ApplyView::BuiltIn(_) => Ok(CALLEE_BUILTIN),

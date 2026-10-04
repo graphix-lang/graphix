@@ -1,0 +1,27 @@
+// A collection's growth: one cycle builds 20000 slots, each an instance
+// of a callback with a body of some size, so the cycle is nearly all
+// instance construction (design/parallel_eval.md §8). The cost model
+// has no data in that cycle. Run it --no-fusion (bench/par.sh does): a
+// fused map is one native loop.
+let t0 = sys::time::now(0);
+let seed = cast<i64>(t0)$ % 2;
+let g = |x: i64| -> i64 {
+    let a = x * 3 + seed;
+    let b = select a % 4 {
+        0 => a / 2,
+        1 => a * 5 + 1,
+        n => n + a
+    };
+    let c = (a + b) % 1009;
+    let d = select (b, c) {
+        (b, c) if b > c => b - c,
+        (b, c) => c - b
+    };
+    (a + b + c + d) % 65537
+};
+let xs = array::init(20000, |i| g(i));
+let r = array::fold(xs, 0, |a, b| a + b);
+let t1 = sys::time::now(r);
+let elapsed = cast<f64>(t1)$ - cast<f64>(t0)$;
+println("par_growth r=[r] elapsed_s=[elapsed]");
+sys::exit(elapsed ~ 0)

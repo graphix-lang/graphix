@@ -24,7 +24,10 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -624,6 +627,7 @@ where
     let (fork_depth, par, fork) = (ctx.fork_depth + 1, ctx.par, ctx.fork);
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
+    let live = Live::start(branches.len());
     on_pool(control, || {
         branches.par_iter_mut().with_max_len(1).for_each(|b| {
             // a part may run on any thread of the pool
@@ -642,6 +646,7 @@ where
                 fork,
             };
             b.out = Some(f(&mut c, b.part.take().expect("a part")));
+            live.done();
         })
     });
     if branches.first().is_some_and(|b| b.rt.reads.is_some()) {
@@ -670,6 +675,40 @@ where
         out.push(o.expect("every part ran"));
     }
     out
+}
+
+/// Run `f` over each of `parts` in a compile task of its own, every task
+/// forked from `ctx`'s compile state, on the evaluation pool, and join
+/// the tasks back in order. A task compiles; it evaluates nothing.
+pub(crate) fn compile_each<R, E, P, F>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    parts: impl IntoIterator<Item = P>,
+    f: F,
+) where
+    R: Rt,
+    E: UserEvent,
+    P: Send,
+    F: Fn(&mut CompileCtx<R, E>, P) + Sync,
+{
+    let mut tasks: Vec<(CompileCtx<R, E>, Option<P>)> =
+        parts.into_iter().map(|p| (ctx.cx.fork(), Some(p))).collect();
+    let control = ctx.control;
+    control.build_forked();
+    let level = crate::typ::tvar::current_level();
+    let tokio = tokio::runtime::Handle::try_current().ok();
+    let live = Live::start(tasks.len());
+    on_pool(control, || {
+        tasks.par_iter_mut().with_max_len(1).for_each(|(task, p)| {
+            let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
+            let _tokio = tokio.as_ref().map(|h| h.enter());
+            let _level = crate::typ::tvar::AtLevel::enter(level);
+            f(task, p.take().expect("a part"));
+            live.done();
+        })
+    });
+    for (task, _) in tasks.drain(..) {
+        ctx.cx.join(task)
+    }
 }
 
 /// Run `a` and `b` as two branches forked from `ctx` and merge them back,
@@ -705,14 +744,21 @@ where
         fork,
     };
     let tokio = tokio::runtime::Handle::try_current().ok();
+    let live = Live::start(2);
     let (ra, rb) = on_pool(control, || {
         rayon::join(
-            || a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a)),
+            || {
+                let r = a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a));
+                live.done();
+                r
+            },
             || {
                 // the stolen side runs on a thread of its own
                 let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
                 let _tokio = tokio.as_ref().map(|h| h.enter());
-                b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b))
+                let r = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
+                live.done();
+                r
             },
         )
     });
@@ -772,6 +818,31 @@ pub fn eval_pool() -> &'static rayon::ThreadPool {
             .expect("the evaluation pool")
     });
     &POOL
+}
+
+/// The parts forked onto the evaluation pool and not yet finished, over
+/// every runtime in the process.
+static LIVE_PARTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether every worker of the evaluation pool has a part to run. A
+/// fork made then only queues behind them, and a fork costs its
+/// branches and merge whether or not another worker takes a part.
+pub(crate) fn saturated() -> bool {
+    LIVE_PARTS.load(Ordering::Relaxed) >= eval_pool().current_num_threads()
+}
+
+/// `n` parts forked: each calls [`Live::done`] when it finishes.
+struct Live;
+
+impl Live {
+    fn start(n: usize) -> Self {
+        LIVE_PARTS.fetch_add(n, Ordering::Relaxed);
+        Live
+    }
+
+    fn done(&self) {
+        LIVE_PARTS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Run `f`, a fork's parallel part, on the evaluation pool: entered here
