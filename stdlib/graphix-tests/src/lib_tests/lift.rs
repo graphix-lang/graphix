@@ -91,7 +91,7 @@ async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
             if let GXEvent::Updated(id, _) = e
                 && id == eid
             {
-                blocks.push(graphix_compiler::fusion::emit_helpers::live_self_blocks());
+                blocks.push(ctx.rt.control().live_self_blocks());
             }
         }
     }

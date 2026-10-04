@@ -1179,7 +1179,7 @@ pub unsafe fn free_self_block_tree(root: u64, layout: &ActivationLayout) -> u64 
         }
         let v = unsafe { Box::from_raw(p as *mut Vec<u64>) };
         freed += 1;
-        LIVE_SELF_BLOCKS.with(|c| c.set(c.get() - 1));
+        crate::stack::record_self_blocks(-1);
         let word = |rel: u32| v.get(rel as usize).copied().unwrap_or(0);
         for a in l.anchors.iter() {
             unsafe {
@@ -1193,9 +1193,6 @@ pub unsafe fn free_self_block_tree(root: u64, layout: &ActivationLayout) -> u64 
 }
 
 thread_local! {
-    /// This thread's live per-activation blocks, a test instrument for
-    /// the reclaim: a runtime's kernels run on its task's thread.
-    static LIVE_SELF_BLOCKS: Cell<i64> = const { Cell::new(0) };
     /// The reach generation of the running kernel invocation; every
     /// activation block reached is stamped with it and the reclaim
     /// frees the rest. Saved/restored around every kernel invocation.
@@ -1203,11 +1200,6 @@ thread_local! {
     /// Activation reaches this invocation; the reclaim runs only when
     /// it is below the tree size. Saved/restored like [`SELF_BLOCK_GEN`].
     pub(crate) static SELF_BLOCK_REACHED: Cell<u64> = const { Cell::new(0) };
-}
-
-/// This thread's live per-activation block count.
-pub fn live_self_blocks() -> i64 {
-    LIVE_SELF_BLOCKS.with(|c| c.get())
 }
 
 /// Free the subtrees of the per-activation block tree at `root` not
@@ -1519,7 +1511,7 @@ unsafe fn graphix_site_child_block(
     if *word == 0 {
         // Index `words`, past the emitted layout, holds the generation stamp.
         *word = Box::into_raw(Box::new(vec![0u64; words + 1])) as u64;
-        LIVE_SELF_BLOCKS.with(|c| c.set(c.get() + 1));
+        crate::stack::record_self_blocks(1);
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     v[words] = SELF_BLOCK_GEN.get();
@@ -1633,9 +1625,10 @@ safe fn graphix_dbg_disc(tag: u64, disc: u64) {
     eprintln!("CLIF-DISC {} disc={disc:x}", CallRetTag::name(tag));
 }
 
-/// Bump `JIT_INVOCATIONS`; emitted at the start of every wrapper.
+/// Count a JIT wrapper entry against the running runtime; emitted at the
+/// start of every wrapper.
 safe fn graphix_record_jit_invocation() {
-    JIT_INVOCATIONS.with(|c| c.set(c.get().wrapping_add(1)));
+    crate::stack::record_invocation(true)
 }
 
 }
@@ -1663,16 +1656,6 @@ thread_local! {
     /// after the wrapper returns ([`with_qop_raises`]); a kernel never
     /// delivers mid-run.
     static QOP_RAISES: RefCell<LPooled<Vec<QopRaise>>> = RefCell::new(LPooled::take());
-
-    /// Per-thread count of JIT'd wrapper runs; the test harness's `jit`
-    /// mode asserts it is nonzero.
-    #[cfg(debug_assertions)]
-    pub static JIT_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
-
-    /// Per-thread count of fused-kernel executions
-    /// ([`record_fusion_invocation`]).
-    #[cfg(debug_assertions)]
-    pub static FUSION_INVOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Resume the unwind of a panic a fast fn raised in the kernel run that
@@ -1683,35 +1666,11 @@ pub(crate) fn resume_kernel_panic() {
     }
 }
 
-/// Bump the per-thread fused-kernel execution counter once a kernel
+/// Count a fused kernel run against the running runtime once a kernel
 /// commits to running.
 #[cfg(debug_assertions)]
 pub fn record_fusion_invocation() {
-    FUSION_INVOCATIONS.with(|c| c.set(c.get().wrapping_add(1)));
-}
-
-/// Read the current thread's fused-kernel execution count.
-#[cfg(debug_assertions)]
-pub fn fusion_invocations() -> u64 {
-    FUSION_INVOCATIONS.with(|c| c.get())
-}
-
-/// Reset the current thread's fused-kernel execution count to zero.
-#[cfg(debug_assertions)]
-pub fn reset_fusion_invocations() {
-    FUSION_INVOCATIONS.with(|c| c.set(0));
-}
-
-/// Read the current thread's JIT invocation count.
-#[cfg(debug_assertions)]
-pub fn jit_invocations() -> u64 {
-    JIT_INVOCATIONS.with(|c| c.get())
-}
-
-/// Reset the current thread's JIT invocation count to zero.
-#[cfg(debug_assertions)]
-pub fn reset_jit_invocations() {
-    JIT_INVOCATIONS.with(|c| c.set(0));
+    crate::stack::record_invocation(false)
 }
 
 #[cfg(test)]

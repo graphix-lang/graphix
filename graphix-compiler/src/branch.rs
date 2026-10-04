@@ -10,7 +10,7 @@ use crate::{
     expr::ExprId, node::place::Path,
 };
 use futures::channel::mpsc;
-use graphix_types::stack::ParMode;
+use graphix_types::stack::{Control, ParMode};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
@@ -18,6 +18,7 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
+    sync::LazyLock,
     time::Duration,
 };
 
@@ -58,8 +59,11 @@ pub struct ForkRt<R: Rt> {
 }
 
 // SAFETY: `parent` is only read, and only while the parent is suspended
-// in the join that forked this branch.
+// in the join that forked this branch. Its children read a `ForkRt`
+// through `&` (the store and reference-path deltas, the cycle); the log
+// is only reached through `&mut`.
 unsafe impl<R: Rt + Sync> Send for ForkRt<R> {}
+unsafe impl<R: Rt + Sync> Sync for ForkRt<R> {}
 
 impl<R: Rt> ForkRt<R> {
     /// Under `GRAPHIX_PAR_AUDIT`, note that this branch read `id`.
@@ -537,8 +541,10 @@ pub fn fork_join<R, E, A, B, RA, RB>(ctx: &mut ExecCtx<'_, R, E>, a: A, b: B) ->
 where
     R: Rt,
     E: UserEvent,
-    A: FnOnce(&mut ExecCtx<'_, R, E>) -> RA,
-    B: FnOnce(&mut ExecCtx<'_, R, E>) -> RB,
+    A: FnOnce(&mut ExecCtx<'_, R, E>) -> RA + Send,
+    B: FnOnce(&mut ExecCtx<'_, R, E>) -> RB + Send,
+    RA: Send,
+    RB: Send,
 {
     debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
     let (mut rt_a, mut rt_b) = (ForkRt::new(&ctx.rt), ForkRt::new(&ctx.rt));
@@ -558,8 +564,16 @@ where
         fork_depth,
         par,
     };
-    let ra = a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a));
-    let rb = b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b));
+    let tokio = tokio::runtime::Handle::try_current().ok();
+    let (ra, rb) = rayon::join(
+        || a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a)),
+        || {
+            // the stolen side runs on a thread of its own
+            let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
+            let _tokio = tokio.as_ref().map(|h| h.enter());
+            b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b))
+        },
+    );
     if let Some(reads) = &rt_b.reads {
         audit(&reads.lock(), &ev_a, &rt_a, &ev_b, &rt_b);
     }
@@ -600,6 +614,40 @@ fn audit<R: Rt, E: UserEvent>(
     }
 }
 
+/// The process's evaluation pool: `GRAPHIX_EVAL_THREADS` threads (default
+/// one per core), shared by every runtime in the process.
+pub fn eval_pool() -> &'static rayon::ThreadPool {
+    static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+        let threads = std::env::var("GRAPHIX_EVAL_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .stack_size(16 << 20)
+            .thread_name(|i| format!("graphix-eval-{i}"))
+            .build()
+            .expect("the evaluation pool")
+    });
+    &POOL
+}
+
+/// Run `f`, a cycle's updates, on the evaluation pool when `control`'s
+/// runtime may fork, so its joins fork onto the pool; inline otherwise.
+pub fn run_cycle<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
+    match control.par_mode() {
+        ParMode::Off => f(),
+        ParMode::Auto | ParMode::Force => {
+            let tokio = tokio::runtime::Handle::try_current().ok();
+            eval_pool().install(|| {
+                let _interrupt = graphix_types::stack::InterruptScope::new(control);
+                let _tokio = tokio.as_ref().map(|h| h.enter());
+                f()
+            })
+        }
+    }
+}
+
 /// Forks nest at most this deep: a branch this deep runs its fork
 /// points serially. Every lookup a branch makes walks at most this many
 /// layers, and binary splits this deep already outnumber any machine's
@@ -611,4 +659,16 @@ pub const MAX_FORK_DEPTH: u8 = 16;
 #[inline]
 pub fn forks<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>) -> bool {
     ctx.par == ParMode::Force && ctx.fork_depth < MAX_FORK_DEPTH
+}
+
+/// What forked branches share through their parent links is safe to read
+/// from several threads at once: the raw links bypass the compiler's own
+/// check, so it is made here.
+#[allow(dead_code)]
+fn shared_across_branches<R: Rt, E: UserEvent>() {
+    fn sync<T: Sync>() {}
+    sync::<CompileCtx<R, E>>();
+    sync::<Layered<TagValue>>();
+    sync::<RtView<'static, R>>();
+    sync::<Event<E>>();
 }

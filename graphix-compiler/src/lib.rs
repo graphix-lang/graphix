@@ -119,7 +119,7 @@ macro_rules! tdbg {
     };
 }
 
-pub trait UserEvent: Clone + Debug + Any {
+pub trait UserEvent: Clone + Debug + Any + Send + Sync {
     fn clear(&mut self);
 }
 
@@ -878,7 +878,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
     }
 }
 
-pub trait Rt: Debug + Any {
+pub trait Rt: Debug + Any + Send + Sync {
     fn clear(&mut self);
 
     /// Called whenever a bound variable (or lambda) is referenced;

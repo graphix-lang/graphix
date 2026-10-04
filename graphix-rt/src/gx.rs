@@ -364,6 +364,34 @@ impl<X: GXExt> GX<X> {
         Ok(())
     }
 
+    /// One cycle's updates of the scheduled roots; what fired goes into
+    /// `batch`.
+    fn update_nodes(&mut self, batch: &mut GPooled<Vec<GXEvent>>) {
+        for (id, n) in self.nodes.iter_mut() {
+            if let Some(init) = self.ctx.rt.updated.get(id) {
+                self.ctx.event.init = *init;
+                // Only a FIRED production becomes an event.
+                let tv = n.update(&mut self.ctx.view());
+                if tv.is_fired() {
+                    let v = tv.value_cloned();
+                    let watched = matches!(
+                        self.result_watch.as_ref(),
+                        Some((wid, _)) if wid == id
+                    );
+                    if watched {
+                        if let Some((_, tx)) = self.result_watch.take() {
+                            let _ = tx.send(Some(v.clone()));
+                        }
+                    }
+                    if let Some(tr) = self.trace.as_mut() {
+                        tr.record(self.ctx.rt.cycle, *id, &v);
+                    }
+                    batch.push(GXEvent::Updated(*id, v))
+                }
+            }
+        }
+    }
+
     async fn do_cycle(
         &mut self,
         tasks: &mut Vec<(BindId, Value)>,
@@ -465,33 +493,14 @@ impl<X: GXExt> GX<X> {
         // The interrupt bit is meaningful only to the cycle in flight when
         // it is set: one that arrived while idle must not poison this cycle.
         self.ctx.control.clear_interrupt();
+        let control = self.ctx.control.clone();
         let mut run_nodes = || {
             // On the thread that runs the nodes: the task may migrate
             // between cycles.
-            let _interrupt = graphix_compiler::InterruptScope::new(&self.ctx.control);
-            for (id, n) in self.nodes.iter_mut() {
-                if let Some(init) = self.ctx.rt.updated.get(id) {
-                    self.ctx.event.init = *init;
-                    // Only a FIRED production becomes an event.
-                    let tv = n.update(&mut self.ctx.view());
-                    if tv.is_fired() {
-                        let v = tv.value_cloned();
-                        let watched = matches!(
-                            self.result_watch.as_ref(),
-                            Some((wid, _)) if wid == id
-                        );
-                        if watched {
-                            if let Some((_, tx)) = self.result_watch.take() {
-                                let _ = tx.send(Some(v.clone()));
-                            }
-                        }
-                        if let Some(tr) = self.trace.as_mut() {
-                            tr.record(self.ctx.rt.cycle, *id, &v);
-                        }
-                        batch.push(GXEvent::Updated(*id, v))
-                    }
-                }
-            }
+            let _interrupt = graphix_compiler::InterruptScope::new(&control);
+            graphix_compiler::branch::run_cycle(&control, || {
+                self.update_nodes(&mut batch)
+            })
         };
         if matches!(
             tokio::runtime::Handle::current().runtime_flavor(),

@@ -10,6 +10,12 @@ use netidx::publisher::Value;
 use tokio::sync::mpsc;
 
 async fn load_and_await(code: &str) -> Result<Value> {
+    Ok(load_and_count(code).await?.0)
+}
+
+/// [`load_and_await`] with the runtime's (fused kernel runs, JIT wrapper
+/// entries).
+async fn load_and_count(code: &str) -> Result<(Value, (u64, u64))> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     let res = ctx.rt.load(Source::Internal(ArcStr::from(code))).await?;
@@ -29,8 +35,9 @@ async fn load_and_await(code: &str) -> Result<Value> {
                     for e in batch.drain(..) {
                         if let GXEvent::Updated(id, v) = e {
                             if id == eid {
+                                let n = ctx.rt.control().invocations();
                                 ctx.shutdown().await;
-                                return Ok(v);
+                                return Ok((v, n));
                             }
                         }
                     }
@@ -47,7 +54,7 @@ async fn load_qop_unwraps_result() -> Result<()> {
     // fires.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    ctx.rt.control().reset_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from("(i64:1 +? i64:1)? == i64:2\n")))
@@ -75,7 +82,7 @@ async fn load_qop_unwraps_result() -> Result<()> {
         }
     };
     assert_eq!(value, Value::Bool(true));
-    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
+    let inv = ctx.rt.control().invocations().1;
     assert!(inv > 0, "JIT_INVOCATIONS=0 — Qop kernel didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -87,7 +94,7 @@ async fn load_variadic_and_jits() -> Result<()> {
     // A variadic builtin call node-walks; the value is unchanged.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    ctx.rt.control().reset_invocations();
     let res =
         ctx.rt.load(Source::Internal(ArcStr::from("and(true, true, false)"))).await?;
     let eid = res.exprs[0].id;
@@ -113,7 +120,7 @@ async fn load_variadic_and_jits() -> Result<()> {
         }
     };
     assert_eq!(value, Value::Bool(false));
-    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
+    let inv = ctx.rt.control().invocations().1;
     assert!(inv == 0, "strict fusion: the variadic DynCall path must node-walk");
     ctx.shutdown().await;
     Ok(())
@@ -125,7 +132,7 @@ async fn load_array_literal_jits() -> Result<()> {
     // `[1, 2, 3]` as a program body; the counter proves the kernel ran.
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    ctx.rt.control().reset_invocations();
     let res = ctx.rt.load(Source::Internal(ArcStr::from("[1, 2, 3]"))).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -157,7 +164,7 @@ async fn load_array_literal_jits() -> Result<()> {
     assert_eq!(arr[0], Value::I64(1));
     assert_eq!(arr[1], Value::I64(2));
     assert_eq!(arr[2], Value::I64(3));
-    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
+    let inv = ctx.rt.control().invocations().1;
     assert!(inv > 0, "JIT_INVOCATIONS=0 — array literal kernel didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -178,7 +185,7 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     // Reset after init so only fixture invocations are counted.
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    ctx.rt.control().reset_invocations();
     let res = ctx
         .rt
         .load(Source::Internal(ArcStr::from("bit_and(i64:0xFF, i64:0x0F)")))
@@ -206,7 +213,7 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
         }
     };
     assert_eq!(value, Value::I64(0x0F));
-    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
+    let inv = ctx.rt.control().invocations().1;
     assert!(inv > 0, "JIT_INVOCATIONS=0 — bit_and call didn't run via JIT");
     ctx.shutdown().await;
     Ok(())
@@ -217,11 +224,8 @@ async fn load_calls_builtin_bit_and() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn jit_counter_bumps_on_load() -> Result<()> {
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
-    assert_eq!(graphix_compiler::fusion::emit_helpers::jit_invocations(), 0);
-    let v = load_and_await("3 * 4 + 5").await?;
+    let (v, (_, inv)) = load_and_count("3 * 4 + 5").await?;
     assert_eq!(v, Value::I64(17));
-    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
     assert!(
         inv > 0,
         "JIT_INVOCATIONS=0 after a kernel-spliced load — the JIT \
@@ -285,7 +289,7 @@ async fn external_string_region_param() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
     let _first = ctx.rt.compile(ArcStr::from("let s = \"hello\";")).await?;
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    ctx.rt.control().reset_invocations();
     let res = ctx.rt.compile(ArcStr::from("str::len(s)")).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -300,7 +304,7 @@ async fn external_string_region_param() -> Result<()> {
                         if id == eid {
                             assert_eq!(v, Value::I64(5));
                             assert!(
-                                graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
+                                ctx.rt.control().invocations().1 > 0,
                                 "string region-param kernel should JIT-dispatch"
                             );
                             ctx.shutdown().await;
@@ -324,7 +328,7 @@ async fn external_datetime_region_param() -> Result<()> {
         .rt
         .compile(ArcStr::from("let d = datetime:\"2024-01-01T00:00:00Z\";"))
         .await?;
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    ctx.rt.control().reset_invocations();
     let res = ctx.rt.compile(ArcStr::from("sys::time::add(d, duration:1.s)")).await?;
     let eid = res.exprs[0].id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -344,7 +348,7 @@ async fn external_datetime_region_param() -> Result<()> {
                                 "expected 2024-01-01T00:00:01Z, got {v:?}"
                             );
                             assert!(
-                                graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
+                                ctx.rt.control().invocations().1 > 0,
                                 "a datetime fastcall site fuses across a region param"
                             );
                             ctx.shutdown().await;
@@ -399,7 +403,7 @@ async fn load_uses_external_scalar() -> Result<()> {
 async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
     let (tx, mut rx) = mpsc::channel(10);
     let ctx = init(tx).await?;
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
+    ctx.rt.control().reset_invocations();
     let res = ctx.rt.load(Source::Internal(ArcStr::from(code))).await?;
     let eid = res.exprs.first().ok_or_else(|| anyhow::anyhow!("no top-level expr"))?.id;
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
@@ -421,7 +425,7 @@ async fn load_value_and_jit(code: &str) -> Result<(Value, u64)> {
             }
         }
     };
-    let inv = graphix_compiler::fusion::emit_helpers::jit_invocations();
+    let inv = ctx.rt.control().invocations().1;
     ctx.shutdown().await;
     Ok((value, inv))
 }
@@ -564,8 +568,11 @@ async fn clone_map(body: &str) -> Result<Value> {
 /// The reference path: the same `body` over the same inputs as a pure
 /// callback (no clone). `body` must be a single expression.
 async fn pure_map(body: &str) -> Result<Value> {
-    let prog = format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {body})");
-    load_and_await(&prog).await
+    load_and_await(&pure_map_program(body)).await
+}
+
+fn pure_map_program(body: &str) -> String {
+    format!("let k = 3; array::map([1, 2, 3, 4], |x: i64| {body})")
 }
 
 fn assert_i64s(v: &Value, expected: &[i64]) -> Result<()> {
@@ -919,9 +926,7 @@ async fn region_select_let_bound() -> Result<()> {
 
 #[cfg(debug_assertions)]
 async fn pure_select_value_and_fusion(body: &str) -> Result<(Value, u64)> {
-    graphix_compiler::fusion::emit_helpers::reset_fusion_invocations();
-    let v = pure_map(body).await?;
-    let f = graphix_compiler::fusion::emit_helpers::fusion_invocations();
+    let (v, (f, _)) = load_and_count(&pure_map_program(body)).await?;
     Ok((v, f))
 }
 
@@ -971,17 +976,13 @@ async fn fused_select_arith_wrapped() -> Result<()> {
 #[cfg(debug_assertions)]
 #[tokio::test(flavor = "current_thread")]
 async fn fused_select_scrutinee_evaluated_once() -> Result<()> {
-    graphix_compiler::fusion::emit_helpers::reset_fusion_invocations();
-    let v = load_and_await(
+    let (v, (fused, _)) = load_and_count(
         "select rand::rand(#start: 0, #end: 1000000, #clock: 1) \
          { n => n == n }",
     )
     .await?;
     assert_eq!(v, Value::Bool(true));
-    assert!(
-        graphix_compiler::fusion::emit_helpers::fusion_invocations() > 0,
-        "rand-scrutinee select should fuse (the dup bug was fusion-only)"
-    );
+    assert!(fused > 0, "rand-scrutinee select should fuse (the dup bug was fusion-only)");
     Ok(())
 }
 

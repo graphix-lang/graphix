@@ -30,10 +30,7 @@ pub enum FuseExpect {
 /// fixture runs, in `jit` mode only; the per-thread counters are reset
 /// after runtime init so they reflect only the fixture's own program.
 #[cfg(debug_assertions)]
-pub fn check_fuse_expectation(expect: FuseExpect) {
-    use graphix_compiler::fusion::emit_helpers::{fusion_invocations, jit_invocations};
-    let fusion = fusion_invocations();
-    let jit = jit_invocations();
+pub fn check_fuse_expectation((fusion, jit): (u64, u64), expect: FuseExpect) {
     match expect {
         FuseExpect::Jit => {
             assert!(
@@ -531,7 +528,7 @@ macro_rules! run {
                 reset_counters_after_init: bool,
                 fusion_check: bool,
                 check_shape: bool,
-            ) -> ::anyhow::Result<()> {
+            ) -> ::anyhow::Result<(u64, u64)> {
                 let pred = $pred;
                 let (tx, mut rx) = ::tokio::sync::mpsc::channel(10);
                 let tbl = ::ahash::AHashMap::from_iter([
@@ -548,11 +545,7 @@ macro_rules! run {
                 // Init compiles the stdlib root and may fuse there;
                 // only the fixture's own compile should count.
                 if reset_counters_after_init {
-                    #[cfg(debug_assertions)]
-                    {
-                        ::graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
-                        ::graphix_compiler::fusion::emit_helpers::reset_fusion_invocations();
-                    }
+                    ctx.rt.control().reset_invocations();
                 }
                 let bs = &ctx.rt;
                 match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
@@ -595,9 +588,10 @@ macro_rules! run {
                         }
                     }
                 }
+                let invocations = ctx.rt.control().invocations();
                 #[cfg(debug_assertions)]
                 if fusion_check {
-                    $crate::testing::check_fuse_expectation($fexpect);
+                    $crate::testing::check_fuse_expectation(invocations, $fexpect);
                 }
                 // The blocker list includes stdlib-root noise (stats
                 // are per-ExecCtx).
@@ -619,7 +613,7 @@ macro_rules! run {
                     }
                 }
                 ctx.shutdown().await;
-                Ok(())
+                Ok(invocations)
             }
 
             #[$interp]
@@ -631,7 +625,7 @@ macro_rules! run {
                     false,
                     false,
                     false,
-                ).await
+                ).await.map(|_| ())
             }
 
             #[$interp]
@@ -643,7 +637,7 @@ macro_rules! run {
                     false,
                     false,
                     false,
-                ).await
+                ).await.map(|_| ())
             }
 
             #[::tokio::test(flavor = "current_thread")]
@@ -652,17 +646,13 @@ macro_rules! run {
                 // GRAPHIX_FUSION_DISCOVERY: run without asserting and
                 // print the observed level (`FUSEMAP <path> <level>`).
                 if ::std::env::var("GRAPHIX_FUSION_DISCOVERY").is_ok() {
-                    run_with_flags(
+                    let (fusion, jit) = run_with_flags(
                         ::graphix_compiler::BitFlags::empty(),
                         ::graphix_compiler::ParMode::from_env(),
                         true,
                         false,
                         false,
                     ).await?;
-                    let fusion =
-                        ::graphix_compiler::fusion::emit_helpers::fusion_invocations();
-                    let jit =
-                        ::graphix_compiler::fusion::emit_helpers::jit_invocations();
                     eprintln!(
                         "FUSEMAPF\t{}\t{}",
                         module_path!(),
@@ -679,15 +669,13 @@ macro_rules! run {
                 // against the annotation (`FUSEAUDIT` lines) instead
                 // of asserting it.
                 if ::std::env::var("GRAPHIX_FUSE_AUDIT").is_ok() {
-                    run_with_flags(
+                    let (fusion, _) = run_with_flags(
                         ::graphix_compiler::BitFlags::empty(),
                         ::graphix_compiler::ParMode::from_env(),
                         true,
                         false,
                         false,
                     ).await?;
-                    let fusion =
-                        ::graphix_compiler::fusion::emit_helpers::fusion_invocations();
                     let expected = $fexpect;
                     let observed = if fusion > 0 {
                         $crate::testing::FuseExpect::Jit
@@ -709,7 +697,7 @@ macro_rules! run {
                     true,
                     true,
                     true,
-                ).await
+                ).await.map(|_| ())
             }
         }
     };

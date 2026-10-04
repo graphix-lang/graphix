@@ -284,8 +284,6 @@ async fn program_image_restores_kernels() -> Result<()> {
     assert!(stats.fused > 0, "the program must fuse something: {stats:?}");
     let cold_values = first_values(&mut cold_rx).await;
     cold.shutdown().await;
-    #[cfg(debug_assertions)]
-    graphix_compiler::fusion::emit_helpers::reset_jit_invocations();
     let (tx, mut warm_rx) = mpsc::channel(10);
     let warm = init_with_session(
         tx,
@@ -301,7 +299,7 @@ async fn program_image_restores_kernels() -> Result<()> {
     assert_eq!(cold_values, warm_values);
     #[cfg(debug_assertions)]
     assert!(
-        graphix_compiler::fusion::emit_helpers::jit_invocations() > 0,
+        warm.rt.control().invocations().1 > 0,
         "the restored program must run its kernels"
     );
     warm.shutdown().await;

@@ -305,8 +305,14 @@ The engine measures, and the measurements choose the fork points.
 **What is measured.** Each child of a fork point with a multi-member
 wave carries a coarse log2 histogram of its update cost: 16 buckets of
 saturating `u16` counts, 32 bytes, covering roughly 16 ns to 0.5 ms
-and up. A sample is two cycle-counter reads around the child's update
-and one increment of the bucket `log2(ns) - 4`, clamped to 0..15.
+and up. A sample is two tick reads around the child's update and one
+increment of the bucket `log2(ticks) - k`, clamped to 0..15. A tick is
+the cheapest monotonic counter the platform has: `rdtsc` on x86_64
+(invariant on every current CPU, constant rate across cores and
+frequency changes), `CNTVCT_EL0` on aarch64, `Instant` elsewhere.
+Nothing converts ticks to time: `T` below is calibrated in ticks too,
+and `k` is chosen at calibration so bucket 0 sits near 16 ns. The
+counter's not being serializing is lost in the log2 buckets.
 Collections keep one histogram for per-slot update cost and one for
 slot construction (a new slot builds and checks an instance: tens of
 microseconds), not one per slot. The cycle as a whole keeps one, which decides whether to enter
@@ -529,35 +535,42 @@ Compile-time paths sort by id for stable image bytes (C/image/registration.rs:10
 
 ## 9. Threads
 
-There is one helper, `par::join(ctx, a, b)`, and nothing else calls
-`rayon::join`. It forks the branch contexts, re-enters on the stolen
-side every thread-local a job inherits nothing of, joins, merges, and
-propagates a panic.
+`branch::fork_join` is the one caller of `rayon::join`. It forks the
+branch contexts, joins, merges, and propagates a panic. A cycle runs on
+the evaluation pool (`branch::run_cycle`) whenever the mode is not
+`Off`; a fork outside it would join on the global pool.
+
+A thread blocked in a `join` runs stolen jobs, so a stolen job sees
+whatever the thread it lands on had set when it blocked, and the job's
+own thread-locals must not depend on its ancestors. As built:
 
 | thread-local | treatment |
 |---|---|
-| `CURRENT` (the interrupt `Control`, T/stack.rs:222) | installed per job; null on a worker today, which would silently stop interrupt polling there |
-| `VALUE_HOOKS` | installed per job, pointing at that job's branch |
-| `RUNTIME_BIND`, `DESELECTING_ARM` (C/node/mod.rs:173) | copied into the job |
-| tvar `LEVEL`/`TASK` | only under a compile, which re-enters them already |
-| kernel loans `KERNEL_ABORT`/`KERNEL_ENV`/`QOP_RAISES`/`KERNEL_PANIC`, `SELF_BLOCK_*` | set and consumed within one kernel call on one thread: unchanged |
-| `GROWN` (stack) | per thread: correct as is |
+| `CURRENT` (the running `Control`) | installed by the stolen side of every join and by `run_cycle`; a job may land on a thread blocked in another runtime's cycle |
+| tokio runtime context | entered beside `CURRENT` (timers, `spawn`) |
+| `VALUE_HOOKS` | no fork runs under a loan: the dispatch that updates a hook site suspends it first, so a stolen job sees none, as the joining thread does |
+| `RUNTIME_BIND`, `DESELECTING_ARM` | set only around compiling and sleeping, neither of which forks |
+| tvar `LEVEL`/`TASK` | set only under a compile, which does not fork evaluation |
+| kernel loans `KERNEL_ABORT`/`KERNEL_ENV`/`QOP_RAISES`/`KERNEL_PANIC`, `SELF_BLOCK_GEN` | saved and restored around every kernel call: a stolen job running a kernel while its thread waits inside another kernel's dynamic call is a nested call, which these already support |
 | `FastMemo`, `LPooled` pools, scratch buffers | per-thread caches: unchanged; values freed on another thread return to that thread's pool |
 
-**The pool.** A dedicated evaluation pool per process, shared by every
-runtime in it. The compile pool's size is set for the fuzzer
-(`RAYON_NUM_THREADS=2`) and must not govern evaluation. Worker stacks
-are 16 MB, with `stacker` growing segments as today.
+Test instruments that counted per thread (fused kernel runs, JIT
+wrapper entries, live activation blocks) count on the runtime's
+`Control` (`Control::invocations`, `live_self_blocks`).
 
-**Stack budget.** `GRAPHIX_STACK_BUDGET` is per thread today. With N
-workers the worst case is N times the budget, and the fuzzer's children
-run under an 8 GB address-space cap. The budget becomes per cycle: the
-`Control` holds an atomic of bytes granted, every worker charges its
-growth against it, and the abort fires at the total (§13).
+**The pool.** `branch::eval_pool`: one per process, shared by every
+runtime in it, `GRAPHIX_EVAL_THREADS` workers (default: the cores),
+16 MB stacks, `stacker` growing segments as everywhere. The compile
+pool's size is set for the fuzzer (`RAYON_NUM_THREADS=2`) and does not
+govern evaluation.
 
-**Interrupt and abort.** `Control` is atomics, already shared. Every
-job polls it through its own `CURRENT`. A panic in a job (a kernel's
-resumed panic included) propagates out of `join` to the root as today.
+**Stack budget.** Per cycle: the `Control` counts the grown segments
+live in its cycle, on every thread (`Control::grown`), and a segment
+that would pass the budget aborts the runtime. Outside a cycle the
+count is per thread, as before.
+
+**Interrupt and abort.** `Control` is atomics, shared. Every job polls
+it through its own `CURRENT`.
 
 ## 10. Fused kernels
 

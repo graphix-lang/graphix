@@ -41,10 +41,12 @@ async fn acknowledgements_jit() -> Result<()> {
     acknowledgements(false).await
 }
 
+/// Steps print in order; a block's statements are issued together, so
+/// within one run its lines are unordered.
 async fn seq_printing(fusion_disabled: bool) -> Result<()> {
-    for body in [
-        r#"print("a"); println("b"); log("c"); go"#,
-        r#"{ print("a"); println("b"); log("c"); go }"#,
+    for (body, ordered) in [
+        (r#"print("a"); println("b"); log("c"); go"#, true),
+        (r#"{ println("a"); println("b"); log("c"); go }"#, false),
     ] {
         let code = format!(
             r#"{{
@@ -57,11 +59,20 @@ async fn seq_printing(fusion_disabled: bool) -> Result<()> {
         let (values, out) = run_delta(&code, fusion_disabled).await?;
         assert_eq!(as_i64s(&values), [1, 10], "{body}: {out}");
         let lines: Vec<_> = out.lines().collect();
-        assert_eq!(lines.len(), 4, "{out}");
-        assert_eq!(lines[0], "ab");
-        assert!(lines[1].ends_with(r#": "c""#), "{out}");
-        assert_eq!(lines[2], "ab");
-        assert!(lines[3].ends_with(r#": "c""#), "{out}");
+        let per_run = if ordered { 2 } else { 3 };
+        assert_eq!(lines.len(), 2 * per_run, "{out}");
+        for mut run in lines.chunks(per_run).map(|r| r.to_vec()) {
+            if !ordered {
+                run.sort();
+            }
+            let n = run.len();
+            assert_eq!(
+                &run[..n - 1],
+                if ordered { &["ab"][..] } else { &["a", "b"] },
+                "{out}"
+            );
+            assert!(run[n - 1].ends_with(r#": "c""#), "{out}");
+        }
     }
     Ok(())
 }

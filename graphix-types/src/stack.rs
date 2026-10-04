@@ -3,7 +3,7 @@ use std::{
     cell::Cell,
     sync::{
         LazyLock,
-        atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -82,7 +82,9 @@ pub fn budget_abort() {
 }
 
 thread_local! {
-    /// Bytes of grown segments currently live on this thread.
+    /// Bytes of grown segments live on this thread outside any runtime's
+    /// cycle; a cycle's are counted on its [`Control`], whatever thread
+    /// of its evaluation they grow on.
     static GROWN: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -95,28 +97,78 @@ pub fn ensure_sufficient<R>(f: impl FnOnce() -> R) -> R {
     if stacker::remaining_stack().unwrap_or(0) >= RED_ZONE { f() } else { grow(f) }
 }
 
-/// Whether one more segment would put this thread over the budget of
-/// the runtime running on it.
+/// Whether one more segment would put the runtime running on this
+/// thread over its budget.
 #[doc(hidden)]
 pub fn grow_exceeds_budget() -> bool {
-    let budget = current_stack_budget();
-    GROWN.with(|g| g.get() + SEGMENT > budget)
+    match current_control() {
+        // SAFETY: see `current_control`.
+        Some(c) => unsafe {
+            (*c).grown.load(Ordering::Relaxed) + SEGMENT > (*c).stack_budget()
+        },
+        None => GROWN.with(|g| g.get() + SEGMENT > default_budget()),
+    }
 }
 
-/// One segment's share of [`GROWN`], returned when the segment is left,
-/// by an unwind too.
-struct Grown;
+/// Count a fused kernel run (`jit` false) or a JIT wrapper entry
+/// against the runtime whose cycle runs on this thread.
+#[doc(hidden)]
+pub fn record_invocation(jit: bool) {
+    if let Some(c) = current_control() {
+        // SAFETY: see `current_control`.
+        let c = unsafe { &*c };
+        let n = if jit { &c.jit_runs } else { &c.fused_runs };
+        n.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Count `n` per-activation kernel blocks allocated (or freed, negative)
+/// against the runtime whose cycle runs on this thread.
+#[doc(hidden)]
+pub fn record_self_blocks(n: i64) {
+    if let Some(c) = current_control() {
+        // SAFETY: see `current_control`.
+        unsafe { (*c).self_blocks.fetch_add(n, Ordering::Relaxed) };
+    }
+}
+
+/// The running cycle's [`Control`] on this thread; it outlives every
+/// segment the cycle grows.
+fn current_control() -> Option<*const Control> {
+    CURRENT.with(|c| Some(c.get()).filter(|p| !p.is_null()))
+}
+
+/// One segment's share of the count it was charged to, returned when
+/// the segment is left, by an unwind too.
+struct Grown(Option<*const Control>);
 
 impl Grown {
     fn enter() -> Self {
-        GROWN.with(|g| g.set(g.get() + SEGMENT));
-        Grown
+        let control = current_control();
+        match control {
+            // SAFETY: see `current_control`.
+            Some(c) => unsafe { (*c).grown.fetch_add(SEGMENT, Ordering::Relaxed) },
+            None => GROWN.with(|g| {
+                let n = g.get();
+                g.set(n + SEGMENT);
+                n
+            }),
+        };
+        Grown(control)
     }
 }
 
 impl Drop for Grown {
     fn drop(&mut self) {
-        GROWN.with(|g| g.set(g.get() - SEGMENT));
+        match self.0 {
+            // SAFETY: see `current_control`.
+            Some(c) => unsafe { (*c).grown.fetch_sub(SEGMENT, Ordering::Relaxed) },
+            None => GROWN.with(|g| {
+                let n = g.get();
+                g.set(n - SEGMENT);
+                n
+            }),
+        };
     }
 }
 
@@ -154,7 +206,17 @@ pub enum CtlFlag {
 pub struct Control {
     flags: AtomicU32,
     stack_budget: AtomicUsize,
+    /// Bytes of grown stack segments live in this runtime's cycle, on
+    /// every thread of its evaluation.
+    grown: AtomicUsize,
     par: AtomicU8,
+    /// Fused kernel runs and JIT wrapper entries in this runtime's
+    /// cycles, for the test harness's fusion expectations.
+    fused_runs: AtomicU64,
+    jit_runs: AtomicU64,
+    /// Live per-activation kernel blocks, a test instrument for their
+    /// reclaim.
+    self_blocks: AtomicI64,
 }
 
 /// How a runtime forks the independent subtrees of a cycle
@@ -194,8 +256,27 @@ impl Control {
         Control {
             flags: AtomicU32::new(0),
             stack_budget: AtomicUsize::new(default_budget()),
+            grown: AtomicUsize::new(0),
             par: AtomicU8::new(ParMode::from_env() as u8),
+            fused_runs: AtomicU64::new(0),
+            jit_runs: AtomicU64::new(0),
+            self_blocks: AtomicI64::new(0),
         }
+    }
+
+    /// Fused kernel runs and JIT wrapper entries since the last reset.
+    pub fn invocations(&self) -> (u64, u64) {
+        (self.fused_runs.load(Ordering::Relaxed), self.jit_runs.load(Ordering::Relaxed))
+    }
+
+    /// Live per-activation kernel blocks.
+    pub fn live_self_blocks(&self) -> i64 {
+        self.self_blocks.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_invocations(&self) {
+        self.fused_runs.store(0, Ordering::Relaxed);
+        self.jit_runs.store(0, Ordering::Relaxed);
     }
 
     pub fn par_mode(&self) -> ParMode {

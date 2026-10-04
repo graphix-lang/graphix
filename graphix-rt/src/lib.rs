@@ -657,6 +657,11 @@ impl<X: GXExt> GXHandle<X> {
         self.0.control.interrupt()
     }
 
+    /// The runtime's interrupt, budget and parallel control.
+    pub fn control(&self) -> &Control {
+        &self.0.control
+    }
+
     /// True if the stack budget (`graphix_compiler::set_stack_budget`)
     /// aborted this runtime.
     pub fn budget_aborted(&self) -> bool {

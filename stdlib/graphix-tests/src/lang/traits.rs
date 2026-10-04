@@ -599,7 +599,8 @@ run!(
 
 // `println`/`dbg`/`log` print through the implementation too, on
 // both engines (the builtin formats through the hook from inside a
-// fused kernel's DynCall as well).
+// fused kernel's DynCall as well). A block's statements are unordered,
+// so are its lines.
 async fn core_display_println(fusion_disabled: bool) -> Result<()> {
     let code = r##"{
         type Color = Abstract<{r: i64, g: i64, b: i64}>;
@@ -607,18 +608,17 @@ async fn core_display_println(fusion_disabled: bool) -> Result<()> {
         let c = Color({r: 1, g: 2, b: 3});
         println(c);
         println([c, c]);
-        print("[c]");
-        println("");
+        println("[c]");
         dbg(#dest: `Stdout, {c, n: 1});
         42
     }"##;
     let (values, out) = super::dense_deltas::run_delta(code, fusion_disabled).await?;
     assert_eq!(super::dense_deltas::as_i64s(&values), vec![42]);
-    let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines[0], "#123");
-    assert_eq!(lines[1], "[#123, #123]");
-    assert_eq!(lines[2], "#123");
-    assert!(lines[3].ends_with("): {c: #123, n: 1}"), "{}", lines[3]);
+    let (dbg, mut lines): (Vec<&str>, Vec<&str>) =
+        out.lines().partition(|l| l.ends_with("): {c: #123, n: 1}"));
+    lines.sort();
+    assert_eq!(dbg.len(), 1, "{out}");
+    assert_eq!(lines, ["#123", "#123", "[#123, #123]"], "{out}");
     Ok(())
 }
 
