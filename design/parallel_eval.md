@@ -392,8 +392,10 @@ is four times the median latency of handing an idle pool a job,
 measured on a thread of its own at the first use (`Auto` forks nothing
 until then). A `CycleSite` on the runtime enters the pool only for a
 cycle whose p75 reaches `2T`, and backs off (64 cycles, doubling) after
-16 pooled cycles that forked nothing: a pooled cycle pays a worker
-wake.
+4 pooled cycles that neither forked nor promoted a site from probe to
+measured (`Control::promoted`): a pooled cycle pays a worker wake and
+runs on whichever worker takes it. `GRAPHIX_DBG_PAR` prints the
+calibration and each cycle's decision.
 
 ## 6. Builtins and side effects
 

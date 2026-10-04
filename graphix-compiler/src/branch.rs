@@ -761,7 +761,7 @@ pub fn run_cycle<T: Send>(
         ParMode::Force => true,
         ParMode::Auto => site.enter(),
     };
-    let (t0, forks) = (ticks(), control.forks());
+    let (t0, forks) = (ticks(), control.forks() + control.promoted());
     let r = if pooled {
         let tokio = tokio::runtime::Handle::try_current().ok();
         eval_pool().install(|| {
@@ -773,7 +773,8 @@ pub fn run_cycle<T: Send>(
         f()
     };
     if control.par_mode() == ParMode::Auto {
-        site.record(ticks().wrapping_sub(t0), pooled, control.forks() - forks);
+        let progress = control.forks() + control.promoted() - forks;
+        site.record(ticks().wrapping_sub(t0), pooled, progress);
     }
     r
 }

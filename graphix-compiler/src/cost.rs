@@ -3,7 +3,7 @@
 //! and where it forks.
 
 use crate::{ExecCtx, Rt, UserEvent};
-use graphix_types::stack::ParMode;
+use graphix_types::stack::{Control, ParMode};
 use std::sync::{
     OnceLock,
     atomic::{AtomicBool, Ordering},
@@ -84,6 +84,9 @@ fn calibrate() -> Calibration {
     }
     wakes.sort_unstable();
     let t = (wakes[wakes.len() / 2] * T_PER_WAKE).max(1 << T_BUCKET);
+    if crate::dbgenv::graphix_dbg_par() {
+        eprintln!("PAR calibrated: wakes {wakes:?} ticks, T = {t}");
+    }
     Calibration { t, shift: (63 - t.leading_zeros()).saturating_sub(T_BUCKET) }
 }
 
@@ -302,6 +305,7 @@ impl<'a> Meter<'a> {
         match &mut self.site.0 {
             Site::Probe { left } => {
                 if self.total >= 2 * cal.t {
+                    Control::promote_current();
                     self.site.0 = Site::Measured(Box::new(Measured {
                         hist: vec![Hist::default(); n].into(),
                         p75: vec![0; n].into(),
@@ -474,6 +478,7 @@ impl SlotSite {
         match &mut self.0 {
             Slots::Probe { left } => {
                 if total >= 2 * cal.t {
+                    Control::promote_current();
                     self.0 = Slots::Measured {
                         hist: Hist::default(),
                         sampler: Sampler::default(),
@@ -513,9 +518,9 @@ pub struct CycleSite {
     period: u8,
 }
 
-/// Idle cycles in the pool before backing off: enough for the sites to
-/// probe and settle.
-const IDLE: u16 = 16;
+/// Pooled cycles that neither fork nor find a site worth measuring
+/// before the cycle backs off.
+const IDLE: u16 = 4;
 
 impl CycleSite {
     /// Whether the next cycle enters the pool.
@@ -525,10 +530,20 @@ impl CycleSite {
             self.backoff = b;
             return false;
         }
-        self.hist.n >= SETTLE && cal.floor(self.hist.p75()) >= 2 * cal.t
+        let enter = self.hist.n >= SETTLE && cal.floor(self.hist.p75()) >= 2 * cal.t;
+        if crate::dbgenv::graphix_dbg_par() {
+            eprintln!(
+                "PAR cycle p75 >= {} ticks (T = {}): {}",
+                cal.floor(self.hist.p75()),
+                cal.t,
+                if enter { "pool" } else { "inline" }
+            );
+        }
+        enter
     }
 
-    /// A cycle took `ticks`; in the pool, it made `forks` forks.
+    /// A cycle took `ticks`; in the pool, it made `forks` forks or
+    /// promoted sites to measured.
     pub fn record(&mut self, ticks: u64, pooled: bool, forks: u64) {
         let Some(cal) = calibration() else { return };
         self.hist.add(cal, ticks);
@@ -540,6 +555,12 @@ impl CycleSite {
                     self.idle = 0;
                     self.backoff = 64 << self.period;
                     self.period = (self.period + 1).min(6);
+                    if crate::dbgenv::graphix_dbg_par() {
+                        eprintln!(
+                            "PAR cycles forked nothing: out of the pool for {}",
+                            self.backoff
+                        );
+                    }
                 }
             }
             (true, _) => {
