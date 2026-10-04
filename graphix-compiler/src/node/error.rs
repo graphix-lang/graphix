@@ -377,14 +377,35 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
-    /// The constraint and the capture bind as in the check; whether `T`
-    /// covers the region's throws was judged there.
+    /// The error bind and the capture take the types their definition's
+    /// check left them ([`Catch::aux_types`]); whether `T` covers the
+    /// region's throws was judged there.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
+        match types.aux(self.spec.id) {
+            None => self.typecheck0_with(
+                ctx,
+                &mut |n, ctx| n.typecheck0_instance(ctx, types),
+                false,
+            ),
+            Some(rows) => {
+                for (id, row) in self.bind_ids().zip(rows.iter()) {
+                    if let Some(Type::TVar(tv)) = ctx.env.by_id.get(&id).map(|b| &b.typ) {
+                        tv.bind(row.clone());
+                    }
+                }
+                wrap!(self.handler, self.handler.typecheck0_instance(ctx, types))?;
+                let Some(abort) = &mut self.seq_abort else { return Ok(()) };
+                wrap!(abort.node, abort.node.typecheck0_instance(ctx, types))?;
+                match abort.manual_mut() {
+                    Some(manual) => wrap!(manual, manual.typecheck0_instance(ctx, types)),
+                    None => Ok(()),
+                }
+            }
+        }
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1218,6 +1239,20 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Catch<R, E> {
+    /// The error bind, then a `try` arm's capture cell.
+    fn bind_ids(&self) -> impl Iterator<Item = BindId> + use<R, E> {
+        let capture = self.seq_abort.as_ref().and_then(|a| a.capture());
+        std::iter::once(self.bind_id).chain(capture)
+    }
+
+    /// What the check left the error binds ([`super::lambda::DefTable`]),
+    /// in [`Self::bind_ids`] order.
+    pub(crate) fn aux_types(&self, env: &Env) -> Box<[Type]> {
+        self.bind_ids()
+            .map(|id| env.by_id.get(&id).map_or(Type::Bottom, |b| b.typ.clone()))
+            .collect()
+    }
+
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,

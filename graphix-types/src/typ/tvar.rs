@@ -1201,6 +1201,65 @@ impl Type {
         }
     }
 
+    /// Bind each open cell of `self` to the part of `row` at its
+    /// position: `self` an expression's type as an instance compiled it,
+    /// `row` the same expression's type as its definition's check left
+    /// it, read through the instance's cell map. Where the two differ in
+    /// shape the instance's own knowledge stands. False when an open cell
+    /// of `self` found no part of `row` to take.
+    pub fn take_row(&self, row: &Type) -> bool {
+        ensure_sufficient(|| self.take_row_inner(row))
+    }
+
+    fn take_row_inner(&self, row: &Type) -> bool {
+        let each = |a: &[Type], b: &[Type]| match a.len() == b.len() {
+            true => a.iter().zip(b).fold(true, |ok, (a, b)| a.take_row(b) & ok),
+            false => !self.has_unbound(),
+        };
+        match (self, row) {
+            (Type::TVar(tv), row) => match tv.binding() {
+                Some(b) => b.take_row(row),
+                None => match row {
+                    Type::TVar(r) if r.cell_addr() == tv.cell_addr() => true,
+                    row if would_cycle_inner(tv.cell_addr(), row) => false,
+                    row => {
+                        tv.bind(row.clone());
+                        true
+                    }
+                },
+            },
+            (t, Type::TVar(r)) => match r.binding() {
+                Some(b) => t.take_row(&b),
+                None => !t.has_unbound(),
+            },
+            (Type::Set(a), Type::Set(b)) | (Type::Tuple(a), Type::Tuple(b)) => each(a, b),
+            (Type::Variant(ta, a, _), Type::Variant(tb, b, _)) if ta == tb => each(a, b),
+            (Type::Array(a), Type::Array(b))
+            | (Type::List(a), Type::List(b))
+            | (Type::Error(a), Type::Error(b))
+            | (Type::ByRef(a), Type::ByRef(b)) => a.take_row(b),
+            (Type::Struct(a), Type::Struct(b))
+                if a.len() == b.len()
+                    && a.iter().zip(b.iter()).all(|(a, b)| a.0 == b.0) =>
+            {
+                a.iter()
+                    .zip(b.iter())
+                    .fold(true, |ok, ((_, a, _), (_, b, _))| a.take_row(b) & ok)
+            }
+            (Type::Map { key: ka, value: va }, Type::Map { key: kb, value: vb }) => {
+                ka.take_row(kb) & va.take_row(vb)
+            }
+            (
+                Type::Abstract { id: ia, params: a },
+                Type::Abstract { id: ib, params: b },
+            ) if ia == ib => each(a, b),
+            (Type::Ref(a), Type::Ref(b)) if a.name == b.name => {
+                each(&a.params, &b.params)
+            }
+            (t, _) => !t.has_unbound(),
+        }
+    }
+
     /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ anywhere,
     /// bound cells judged by their bindings, open cells admitted (a bind
     /// hands them the conjunct).

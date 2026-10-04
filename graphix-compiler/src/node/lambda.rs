@@ -43,6 +43,7 @@ use netidx_value::Value;
 use nohash::IntSet;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
+use smallvec::SmallVec;
 use std::{
     fmt,
     hash::Hash,
@@ -61,6 +62,10 @@ use triomphe::Arc;
 pub struct DefTable {
     types: AHashMap<ExprId, Type>,
     ftypes: AHashMap<ExprId, FnType>,
+    /// What a node derives beside its own type, in the order the node
+    /// lists it: a select's arm predicates and pattern binds, a catch's
+    /// error binds.
+    aux: AHashMap<ExprId, Box<[Type]>>,
     /// The table of each lambda literal of the body, by its id.
     lambdas: AHashMap<ExprId, SArc<DefTable>>,
     /// The typedefs the rows name, owned here: one the body declares
@@ -82,6 +87,11 @@ pub struct Tables {
 }
 
 impl DefTable {
+    /// Every type the table's rows hold but the signatures'.
+    fn rows(&self) -> impl Iterator<Item = &Type> {
+        self.types.values().chain(self.aux.values().flat_map(|ts| ts.iter()))
+    }
+
     /// Bind to ⊥ every open cell of the table's that `owner`'s gate
     /// created, but its signature (`exempt`) does not reach: nothing
     /// bounded it, and an instance reads the table as the check left it.
@@ -92,7 +102,7 @@ impl DefTable {
         exempt: &AHashSet<usize>,
     ) -> Result<()> {
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        for t in self.types.values() {
+        for t in self.rows() {
             crate::typ::settle::position_cells(t, &mut cells);
         }
         for ft in self.ftypes.values() {
@@ -117,8 +127,9 @@ impl DefTable {
     /// The check of `body`, whose typedefs are in `env`: every type
     /// reference a row holds is resolved there now, so no instance looks
     /// a name up by a scope only this check had (an image relocates the
-    /// ids a block's scope is named by, never the names).
-    fn record<R: Rt, E: UserEvent>(body: &Node<R, E>, env: &Env) -> Self {
+    /// ids a block's scope is named by, never the names). The body's own
+    /// binds are in `checked`, the check's environment.
+    fn record<R: Rt, E: UserEvent>(body: &Node<R, E>, env: &Env, checked: &Env) -> Self {
         let mut table = Self::default();
         let mut shared: LPooled<AHashSet<ExprId>> = LPooled::take();
         fusion::for_each_node(body, &mut |n| {
@@ -138,6 +149,12 @@ impl DefTable {
                         table.lambdas.insert(id, t.table.clone());
                     }
                 }
+                NodeView::Select(s) => {
+                    table.aux.insert(id, s.aux_types(checked));
+                }
+                NodeView::Catch(c) => {
+                    table.aux.insert(id, c.aux_types(checked));
+                }
                 _ => (),
             }
         });
@@ -145,9 +162,10 @@ impl DefTable {
             table.types.remove(&id);
             table.ftypes.remove(&id);
             table.lambdas.remove(&id);
+            table.aux.remove(&id);
         }
         let mut seen: LPooled<IntSet<usize>> = LPooled::take();
-        for t in table.types.values() {
+        for t in table.rows() {
             t.seed_refs_seen(env, &mut seen);
         }
         for ft in table.ftypes.values() {
@@ -162,7 +180,7 @@ impl DefTable {
     fn own_typedefs(&mut self) {
         let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
         let mut defs: LPooled<AHashMap<usize, SArc<ResolvedRef>>> = LPooled::take();
-        for t in self.types.values() {
+        for t in self.rows() {
             t.named_defs(&mut cells, &mut defs);
         }
         for ft in self.ftypes.values() {
@@ -185,6 +203,11 @@ impl DefTable {
                 .ftypes
                 .iter()
                 .map(|(id, ft)| (*id, rename_fn(ft, &outer)))
+                .collect(),
+            aux: t
+                .aux
+                .iter()
+                .map(|(id, ts)| (*id, ts.iter().map(|t| t.rename_with(&outer)).collect()))
                 .collect(),
             lambdas: t.lambdas.clone(),
             typedefs: vec![],
@@ -213,6 +236,14 @@ impl DefTable {
                 for (id, ft) in table.ftypes.iter() {
                     id.encode(buf)?;
                     ft.encode(buf)?;
+                }
+                encode_varint(table.aux.len() as u64, buf);
+                for (id, ts) in table.aux.iter() {
+                    id.encode(buf)?;
+                    encode_varint(ts.len() as u64, buf);
+                    for t in ts.iter() {
+                        t.encode(buf)?;
+                    }
                 }
                 encode_varint(table.lambdas.len() as u64, buf);
                 for (id, l) in table.lambdas.iter() {
@@ -250,6 +281,15 @@ impl DefTable {
                     ftypes.insert(ExprId::decode(sub)?, FnType::decode(sub)?);
                 }
                 let n = len(sub)?;
+                let mut aux = AHashMap::with_capacity(n);
+                for _ in 0..n {
+                    let id = ExprId::decode(sub)?;
+                    let m = len(sub)?;
+                    let ts =
+                        (0..m).map(|_| Type::decode(sub)).collect::<Result<_, _>>()?;
+                    aux.insert(id, ts);
+                }
+                let n = len(sub)?;
                 let mut lambdas = AHashMap::with_capacity(n);
                 for _ in 0..n {
                     lambdas.insert(ExprId::decode(sub)?, Self::image_decode(sub)?);
@@ -258,7 +298,7 @@ impl DefTable {
                 let typedefs = (0..n)
                     .map(|_| image::resolved_decode(sub))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(SArc::new(DefTable { types, ftypes, lambdas, typedefs }))
+                Ok(SArc::new(DefTable { types, ftypes, aux, lambdas, typedefs }))
             },
             |b| Self::image_decode(b),
         )
@@ -379,17 +419,25 @@ impl InstanceTypes {
         Some(self.instance_of(t))
     }
 
-    /// Bind `typ`, a node's own type, to the row for `id`; false when
-    /// there is none, or when `typ` holds less than the row: a node of
-    /// an instance can be born knowing a type its definition's check
-    /// widened (`d.domain` born `string` where the check unified it with
-    /// a formal's `[Array<i64>, string]`), and the caller derives it.
-    pub(crate) fn settle(&mut self, env: &Env, id: ExprId, typ: &Type) -> Result<bool> {
-        let Some(t) = self.typ(id) else { return Ok(false) };
-        if !typ.contains_with_flags(BitFlags::empty(), env, &t)? {
-            return Ok(false);
+    /// Bind `typ`, a node's own type, to the row for `id`
+    /// ([`Type::take_row`]); false when there is none, or when an open
+    /// cell of `typ` found no part of it, and the caller derives the
+    /// type. A node of an instance can be born knowing a type its
+    /// definition's check widened (`d.domain` born `string` where the
+    /// check unified it with a formal's `[Array<i64>, string]`): the
+    /// instance's knowledge stands.
+    pub(crate) fn settle(&mut self, id: ExprId, typ: &Type) -> Result<bool> {
+        match self.typ(id) {
+            None => Ok(false),
+            Some(t) => Ok(typ.take_row(&t)),
         }
-        typ.check_contains(env, &t).map(|()| true)
+    }
+
+    /// What the node at `id` derived beside its own type, in its order
+    /// ([`DefTable::aux`]).
+    pub(crate) fn aux(&mut self, id: ExprId) -> Option<SmallVec<[Type; 8]>> {
+        let ts = self.tables.table.aux.get(&id)?;
+        Some(ts.iter().map(|t| self.instance_of(t)).collect())
     }
 
     /// The signature the definition's check settled for the call at `id`.
@@ -1746,7 +1794,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Lambda {
             if res.is_ok()
                 && let ApplyView::Lambda(g) = f.view()
             {
-                let table = SArc::new(DefTable::record(&g.body, &g.env));
+                let table = SArc::new(DefTable::record(&g.body, &g.env, &ctx.env));
                 def.table.set(Tables { table, outer: None });
             }
             // a builtin's check `Apply` is retained for `CallSite::typecheck1`;

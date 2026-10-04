@@ -458,8 +458,14 @@ only the state part of its check:
   it with no gate and no second compile of its body; its instances
   read its table through the enclosing instance's map (`Tables::outer`,
   `Type::rename_with`);
-- a select completes its predicates, narrows, and types its captures,
-  but judges no coverage, dead arm or guard;
+- a select reads each arm's completed predicate and its pattern binds'
+  types from the table (`DefTable::aux`, `Select::aux_types`), binding
+  the pattern's cells by position, realigning a struct pattern's field
+  indexes and resolving an explicit predicate's names (its run-time
+  type test reads them where the body's typedefs are gone); it narrows
+  nothing and judges no coverage, dead arm or guard;
+- a catch reads its error bind's and a `try` capture's types from the
+  table (`Catch::aux_types`);
 - an operator, a constructor, a field or tuple read, `?`, `$`, `&`, `*`
   and `any` take their own type from their row (`node::typed_by_row!`)
   and judge nothing: no operand rule, no field containment, no deferred
@@ -473,32 +479,36 @@ only the state part of its check:
   its definition's check recorded no row;
 - the instance itself checks neither its arguments nor its return.
 
+**A row binds by position** (`Type::take_row`): a node's type as the
+instance compiled it and its row, the same expression's type as the
+check left it read through the instance's map, have one shape; each
+open cell of the node's binds to the row's part at its position. A
+containment walk would not do: a slice pattern's binds share the
+union of the element binds' cells (`[a, b, rest..]` types `a` and `b`
+`['a, 'b]`), which containment binds one member of. Where the shapes
+differ, the instance knows more than the row and its knowledge stands:
+a node can be born knowing a type its definition's check widened (the
+callback's `d.domain` is born `string` where the check unified its cell
+with a formal's `[Array<i64>, string]`;
+`lang::functions::instance_node_narrower_than_its_row`, found by the
+admin TUI, not the gate). A node whose open cell found no part of its
+row derives its type as the check does.
+
 An instance judges nothing: what its definition's check accepted, it
 accepts (a refusal there is a check gap; the operators' mixed-numeric
-rule was one, closed by `Singleton`, `tvar_constraints.md`). What an
-instance still derives is what the table has no row for, or holds in a
-shape a consumer cannot use:
+rule was one, closed by `Singleton`, `tvar_constraints.md`). It still
+derives a reference's type, which copies its binding's scheme, and a
+select's own type, the union of its arms: a row's union, read through
+the instance's map, holds the definition's members bound separately
+(`[null, 'a, 'b]`, each `i64`), which only a union normalizes, and a
+fused region's freeze needs it normalized
+(`lang::collection::collection_find_map_default` de-fused).
 
-- a reference copies its binding's scheme (the default form);
-- a select's captures and narrowing, and a catch's error bind, which the
-  raises in its region join: binds, not nodes, have no rows;
-- a select's type stays the union of its arms: a row instantiated
-  through the instance's map holds the definition's union with its
-  members bound separately (`[null, 'a, 'b]`, each `i64`), which only a
-  union normalizes, and a fused region's freeze needs it normalized
-  (`lang::collection::collection_find_map_default` de-fused).
-
-A row binds a node's type only where the type holds it
-(`InstanceTypes::settle` probes first): a node of an instance can be
-born knowing a type its definition's check widened (the callback's
-`d.domain` is born `string` where the check unified its cell with a
-formal's `[Array<i64>, string]`), and the node then derives its type as
-the check does (`lang::functions::instance_node_narrower_than_its_row`;
-the admin TUI found it, the gate did not).
-
-Instance construction, serial user instructions, `par_growth` (20000
-slots, an arithmetic-heavy callback): 20.2G with the operators' rule
-re-run in every instance, 18.0G judging nothing (-11%); `par_wide` -4%.
+Instance construction, serial user instructions with the operators'
+rule re-run in every instance, then judging nothing, then with selects
+and catches read: `par_growth` (20000 slots, an arithmetic callback)
+20.2G, 18.0G, 16.7G (-17%); `symbolic` (selects over an ADT) 55.8G,
+49.5G at the last step (-11%); `par_wide` 42.4G, 39.5G (-7%).
 
 The default `typecheck0_instance` is the check: the leaves, a reference
 (which copies its binding's scheme), and declarations. `GRAPHIX_NO_SUBST=1`

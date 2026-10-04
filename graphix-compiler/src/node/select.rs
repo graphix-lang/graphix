@@ -1102,7 +1102,14 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
+        match types.aux(self.spec.id) {
+            Some(rows) => self.typecheck0_rows(ctx, types, &rows),
+            None => self.typecheck0_with(
+                ctx,
+                &mut |n, ctx| n.typecheck0_instance(ctx, types),
+                false,
+            ),
+        }
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1152,6 +1159,66 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Select<R, E> {
+    /// What the check derived for the arms ([`super::lambda::DefTable`]):
+    /// each arm's completed predicate, then the types of its pattern's
+    /// binds in [`StructPatternNode::ids`] order.
+    pub(crate) fn aux_types(&self, env: &Env) -> Box<[Type]> {
+        let mut out = Vec::new();
+        for (pat, _) in self.arms.iter() {
+            out.push(pat.type_predicate.clone());
+            pat.structure_predicate.ids(&mut |id| {
+                out.push(env.by_id.get(&id).map_or(Type::Bottom, |b| b.typ.clone()))
+            });
+        }
+        out.into_boxed_slice()
+    }
+
+    /// An instance's typecheck from the rows its definition's check
+    /// recorded: the arms' predicates and binds are read, not narrowed.
+    fn typecheck0_rows(
+        &mut self,
+        ctx: &mut CompileCtx<R, E>,
+        types: &mut super::lambda::InstanceTypes,
+        rows: &[Type],
+    ) -> Result<()> {
+        wrap!(self.arg.node, self.arg.node.typecheck0_instance(ctx, types))?;
+        let mut rows = rows.iter();
+        for (pat, n) in self.arms.iter_mut() {
+            let tp = rows.next().ok_or_else(|| anyhow!("BUG: a select row short"))?;
+            // the predicate's cells are its binds' (an inferred predicate
+            // is built from them), bound by position before it is replaced
+            pat.type_predicate.take_row(tp);
+            match pat.explicit_type_predicate {
+                // the type test reads the names it writes at run time, where
+                // the body's typedefs are gone: resolve them here
+                true => {
+                    pat.type_predicate.seed_refs(&ctx.env);
+                }
+                false => {
+                    pat.structure_predicate.realign(&ctx.env, tp).at(n.spec())?;
+                    pat.type_predicate = tp.clone();
+                }
+            }
+            let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
+            pat.structure_predicate.ids(&mut |id| ids.push(id));
+            for id in ids {
+                let row =
+                    rows.next().ok_or_else(|| anyhow!("BUG: a select row short"))?;
+                if let Some(b) = ctx.env.by_id.get(&id) {
+                    b.typ.take_row(row);
+                }
+            }
+            if let Some(guard) = &mut pat.guard {
+                wrap!(guard.node, guard.node.typecheck0_instance(ctx, types))?;
+            }
+            wrap!(n, n.typecheck0_instance(ctx, types))?;
+        }
+        let rtypes: LPooled<Vec<&Type>> =
+            self.arms.iter().map(|(_, n)| n.typ()).collect();
+        self.typ = Type::union(&ctx.env, &rtypes)?;
+        Ok(())
+    }
+
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
     fn typecheck0_with(

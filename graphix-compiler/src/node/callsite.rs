@@ -2186,7 +2186,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             }
         }
         self.raise_throws(ctx, &ftype, false)?;
-        if !wrap!(self, types.settle(&ctx.env, self.spec.id, &self.rtype))? {
+        if !wrap!(self, types.settle(self.spec.id, &self.rtype))? {
             wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         }
         self.ftype = Some(ftype);

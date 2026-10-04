@@ -484,8 +484,7 @@ macro_rules! typed_by_row {
             ctx: &mut CompileCtx<R, E>,
             types: &mut $crate::node::lambda::InstanceTypes,
         ) -> Result<()> {
-            let row =
-                $crate::wrap!(self, types.settle(&ctx.env, self.spec.id, &self.typ))?;
+            let row = $crate::wrap!(self, types.settle(self.spec.id, &self.typ))?;
             self.typecheck0_with(
                 ctx,
                 &mut |n, ctx| n.typecheck0_instance(ctx, types),

@@ -609,7 +609,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
-        match wrap!(self, types.settle(&ctx.env, self.spec.id, &self.typ))? {
+        match wrap!(self, types.settle(self.spec.id, &self.typ))? {
             true => Ok(()),
             false => self.typecheck_own(ctx),
         }
@@ -805,7 +805,7 @@ macro_rules! arith_op {
             ) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
                 wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
-                if !wrap!(self, types.settle(&ctx.env, self.spec.id, &self.typ))? {
+                if !wrap!(self, types.settle(self.spec.id, &self.typ))? {
                     self.typecheck_own(ctx)?;
                 }
                 Ok(())
