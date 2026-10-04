@@ -323,6 +323,11 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
   per cycle whether to enter the pool: a cycle-level site that did
   backed off after cycles that forked nothing and then missed the
   cycles that would have.
+- **Serial cost.** Phase 4's sites and flags, measured as user-space
+  instructions with `GRAPHIX_PAR=off` against the phase-4 threads
+  commit (quick builds, pinned): `fold_sum` and `map_fold` node-walked
+  +0.1% and +0.2%, `symbolic` +0.3%, `par_wide` node-walked +1.0% (a
+  call site per activation, each with a site to consult).
 - **A collection intrinsic is part of its call site.** Its body (the
   `array::map` wrapper's `MapQ`) runs under the caller's fork flags,
   where any other callee's body clears `#[parallel]`.
