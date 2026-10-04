@@ -696,8 +696,12 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
-        let res =
-            ctx.with_fork_flags(ctx.fork.body(), |ctx| self.body.update(ctx).clone());
+        // a collection intrinsic is part of its call site
+        let flags = match self.body.view() {
+            NodeView::MapQ(_) | NodeView::FoldQ(_) => ctx.fork,
+            _ => ctx.fork.body(),
+        };
+        let res = ctx.with_fork_flags(flags, |ctx| self.body.update(ctx).clone());
         self.resident.set(res)
     }
 

@@ -7,12 +7,12 @@
 
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Rt, TagValue, UserEvent,
-    cost::{CycleSite, ForkSite, Meter, Plan, ticks},
+    cost::{ForkSite, Meter, Plan},
     expr::ExprId,
     node::place::Path,
 };
 use futures::channel::mpsc;
-use graphix_types::stack::{Control, ParMode};
+use graphix_types::stack::Control;
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
@@ -624,23 +624,25 @@ where
     let (fork_depth, par, fork) = (ctx.fork_depth + 1, ctx.par, ctx.fork);
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
-    branches.par_iter_mut().with_max_len(1).for_each(|b| {
-        // a part may run on any thread of the pool
-        let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
-        let _tokio = tokio.as_ref().map(|h| h.enter());
-        let mut c = ExecCtx {
-            cx: CxView::Fork(&mut b.cx),
-            image_decoder: decoder,
-            libstate,
-            rt: RtView::Fork(&mut b.rt),
-            core_hook_sites: hooks,
-            control,
-            event: &mut b.event,
-            fork_depth,
-            par,
-            fork,
-        };
-        b.out = Some(f(&mut c, b.part.take().expect("a part")));
+    on_pool(control, || {
+        branches.par_iter_mut().with_max_len(1).for_each(|b| {
+            // a part may run on any thread of the pool
+            let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
+            let _tokio = tokio.as_ref().map(|h| h.enter());
+            let mut c = ExecCtx {
+                cx: CxView::Fork(&mut b.cx),
+                image_decoder: decoder,
+                libstate,
+                rt: RtView::Fork(&mut b.rt),
+                core_hook_sites: hooks,
+                control,
+                event: &mut b.event,
+                fork_depth,
+                par,
+                fork,
+            };
+            b.out = Some(f(&mut c, b.part.take().expect("a part")));
+        })
     });
     if branches.first().is_some_and(|b| b.rt.reads.is_some()) {
         for (i, b) in branches.iter().enumerate() {
@@ -703,15 +705,17 @@ where
         fork,
     };
     let tokio = tokio::runtime::Handle::try_current().ok();
-    let (ra, rb) = rayon::join(
-        || a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a)),
-        || {
-            // the stolen side runs on a thread of its own
-            let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
-            let _tokio = tokio.as_ref().map(|h| h.enter());
-            b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b))
-        },
-    );
+    let (ra, rb) = on_pool(control, || {
+        rayon::join(
+            || a(&mut branch(&mut cx_a, &mut rt_a, &mut ev_a)),
+            || {
+                // the stolen side runs on a thread of its own
+                let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
+                let _tokio = tokio.as_ref().map(|h| h.enter());
+                b(&mut branch(&mut cx_b, &mut rt_b, &mut ev_b))
+            },
+        )
+    });
     if let Some(reads) = &rt_b.reads {
         audit(&reads.lock(), &ev_a, &rt_a, &ev_b, &rt_b);
     }
@@ -770,45 +774,20 @@ pub fn eval_pool() -> &'static rayon::ThreadPool {
     &POOL
 }
 
-/// Run `f`, a cycle's updates, on the evaluation pool when the cycle may
-/// fork (always when forced, by `site` under `Auto`), so its joins fork
-/// onto the pool; inline otherwise.
-pub fn run_cycle<T: Send>(
-    control: &Control,
-    site: &mut CycleSite,
-    f: impl FnOnce() -> T + Send,
-) -> T {
-    let pooled = match control.par_mode() {
-        ParMode::Off => false,
-        ParMode::Force => true,
-        ParMode::Auto => site.enter(),
-    };
-    let (t0, forks) = (ticks(), control.forks() + control.promoted());
-    let r = if pooled {
-        let tokio = tokio::runtime::Handle::try_current().ok();
-        eval_pool().install(|| {
-            let _interrupt = graphix_types::stack::InterruptScope::new(control);
-            let _tokio = tokio.as_ref().map(|h| h.enter());
-            f()
-        })
-    } else {
+/// Run `f`, a fork's parallel part, on the evaluation pool: entered here
+/// from the runtime's own thread, so a cycle's serial work stays there,
+/// and joined in place by a fork already on the pool.
+fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
+    let pool = eval_pool();
+    if pool.current_thread_index().is_some() {
+        return f();
+    }
+    let tokio = tokio::runtime::Handle::try_current().ok();
+    pool.install(|| {
+        let _interrupt = graphix_types::stack::InterruptScope::new(control);
+        let _tokio = tokio.as_ref().map(|h| h.enter());
         f()
-    };
-    if control.par_mode() == ParMode::Auto {
-        let progress = control.forks() + control.promoted() - forks;
-        site.record(ticks().wrapping_sub(t0), pooled, progress);
-    }
-    r
-}
-
-/// Whether a view made on this thread may fork: only on the evaluation
-/// pool, where [`run_cycle`] runs a cycle that may.
-pub(crate) fn view_mode(control: &Control) -> ParMode {
-    match control.par_mode() {
-        ParMode::Off => ParMode::Off,
-        m if eval_pool().current_thread_index().is_some() => m,
-        _ => ParMode::Off,
-    }
+    })
 }
 
 /// Forks nest at most this deep: a branch this deep runs its fork

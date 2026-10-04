@@ -314,9 +314,18 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
   lookup, but put a trie walk on every serial read and write: the
   node-walk ran 2.4x slower with no fork at all (imhm `insert`/`find`
   31% of the profile, the store holding a binding per activation).
-- **Only the pool forks.** A view made off the evaluation pool forks
-  nothing (`branch::view_mode`): compile-time views, callbacks run
-  outside a cycle.
+- **The pool is entered at the fork.** A cycle runs on the runtime's
+  own thread; a fork made there installs its parallel part into the
+  evaluation pool (`branch::on_pool`), and a fork already on the pool
+  joins in place. The cycle's serial work stays on the runtime's thread
+  (the scheduler put it on a low-power core when the whole cycle ran on
+  a pooled worker), a one-shot cycle can fork, and nothing has to guess
+  per cycle whether to enter the pool: a cycle-level site that did
+  backed off after cycles that forked nothing and then missed the
+  cycles that would have.
+- **A collection intrinsic is part of its call site.** Its body (the
+  `array::map` wrapper's `MapQ`) runs under the caller's fork flags,
+  where any other callee's body clears `#[parallel]`.
 - **Seq machines are serial inside.** A machine's guards and the raises
   of its steps meet through handler counters (`DynNode`'s atomics) that
   no branch view isolates, in serial order: forked, a raise could land
@@ -390,12 +399,7 @@ schedule, and turns serial when no split reaches `T` on both sides. A
 its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
 is four times the median latency of handing an idle pool a job,
 measured on a thread of its own at the first use (`Auto` forks nothing
-until then). A `CycleSite` on the runtime enters the pool only for a
-cycle whose p75 reaches `2T`, and backs off (64 cycles, doubling) after
-4 pooled cycles that neither forked nor promoted a site from probe to
-measured (`Control::promoted`): a pooled cycle pays a worker wake and
-runs on whichever worker takes it. `GRAPHIX_DBG_PAR` prints the
-calibration and each cycle's decision.
+until then). `GRAPHIX_DBG_PAR` prints the calibration.
 
 ## 6. Builtins and side effects
 
@@ -499,8 +503,7 @@ child under `ExecCtx::fork` (`branch::ForkFlags`): `#[serial]` sets
 which a callee's body clears, and makes every fork point under it fork
 whenever the runtime may fork at all (`Auto` or `Force`; `Off` is off).
 The grain is positional, `#[parallel(4)]`: attribute arguments are
-expressions, and `grain: 4` is not one. Under `Auto`, a `#[parallel]`
-node updated off the pool asks the next cycle onto it. On a `let` the
+expressions, and `grain: 4` is not one. On a `let` the
 attribute moves onto the value, and on a definition onto its lambda's
 body, so every instance compiles the node (`compiler::fork_on_body`). The
 node is a fusion boundary: its child fuses as a region of its own, and a
@@ -612,10 +615,11 @@ Compile-time paths sort by id for stable image bytes (C/image/registration.rs:10
 
 ## 9. Threads
 
-`branch::fork_join` is the one caller of `rayon::join`. It forks the
-branch contexts, joins, merges, and propagates a panic. A cycle runs on
-the evaluation pool (`branch::run_cycle`) whenever the mode is not
-`Off`; a fork outside it would join on the global pool.
+`branch::fork_join` (two parts, `rayon::join`) and `branch::fork_each`
+(flat, rayon over the parts) fork the branch contexts, run the parts,
+merge, and propagate a panic. Both run their parallel part through
+`branch::on_pool`, which installs it into the evaluation pool when the
+fork is made off it (§4.5).
 
 A thread blocked in a `join` runs stolen jobs, so a stolen job sees
 whatever the thread it lands on had set when it blocked, and the job's
@@ -623,7 +627,7 @@ own thread-locals must not depend on its ancestors. As built:
 
 | thread-local | treatment |
 |---|---|
-| `CURRENT` (the running `Control`) | installed by the stolen side of every join and by `run_cycle`; a job may land on a thread blocked in another runtime's cycle |
+| `CURRENT` (the running `Control`) | installed by every part that may run on another thread and by `on_pool`; a job may land on a thread blocked in another runtime's cycle |
 | tokio runtime context | entered beside `CURRENT` (timers, `spawn`) |
 | `VALUE_HOOKS` | no fork runs under a loan: the dispatch that updates a hook site suspends it first, so a stolen job sees none, as the joining thread does |
 | `RUNTIME_BIND`, `DESELECTING_ARM` | set only around compiling and sleeping, neither of which forks |

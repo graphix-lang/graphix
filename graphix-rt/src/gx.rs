@@ -235,8 +235,6 @@ pub(super) struct GX<X: GXExt> {
     /// `catch(e) expr` advances it so later inputs compile under its
     /// coverage. File loads do not touch it.
     scope: Scope,
-    /// Whether a cycle enters the evaluation pool (`GRAPHIX_PAR=auto`).
-    cycle_site: graphix_compiler::cost::CycleSite,
 }
 
 impl<X: GXExt> GX<X> {
@@ -282,7 +280,6 @@ impl<X: GXExt> GX<X> {
             idle_waiters: Vec::new(),
             trace: None,
             scope: Scope::root(),
-            cycle_site: Default::default(),
             program: None,
             restored: false,
         };
@@ -497,14 +494,11 @@ impl<X: GXExt> GX<X> {
         // it is set: one that arrived while idle must not poison this cycle.
         self.ctx.control.clear_interrupt();
         let control = self.ctx.control.clone();
-        let mut site = std::mem::take(&mut self.cycle_site);
         let mut run_nodes = || {
             // On the thread that runs the nodes: the task may migrate
             // between cycles.
             let _interrupt = graphix_compiler::InterruptScope::new(&control);
-            graphix_compiler::branch::run_cycle(&control, &mut site, || {
-                self.update_nodes(&mut batch)
-            })
+            self.update_nodes(&mut batch)
         };
         if matches!(
             tokio::runtime::Handle::current().runtime_flavor(),
@@ -514,7 +508,6 @@ impl<X: GXExt> GX<X> {
         } else {
             tokio::task::block_in_place(run_nodes);
         }
-        self.cycle_site = site;
         if let Some(tr) = self.trace.as_mut() {
             tr.cycle_end(self.ctx.rt.cycle, worked);
         }

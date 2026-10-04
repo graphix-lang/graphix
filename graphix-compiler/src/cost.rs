@@ -3,7 +3,7 @@
 //! and where it forks.
 
 use crate::{ExecCtx, Rt, UserEvent};
-use graphix_types::stack::{Control, ParMode};
+use graphix_types::stack::ParMode;
 use std::sync::{
     OnceLock,
     atomic::{AtomicBool, Ordering},
@@ -305,7 +305,6 @@ impl<'a> Meter<'a> {
         match &mut self.site.0 {
             Site::Probe { left } => {
                 if self.total >= 2 * cal.t {
-                    Control::promote_current();
                     self.site.0 = Site::Measured(Box::new(Measured {
                         hist: vec![Hist::default(); n].into(),
                         p75: vec![0; n].into(),
@@ -489,7 +488,6 @@ impl SlotSite {
         match &mut self.0 {
             Slots::Probe { left } => {
                 if total >= 2 * cal.t {
-                    Control::promote_current();
                     self.0 = Slots::Measured {
                         hist: Hist::default(),
                         sampler: Sampler::default(),
@@ -511,78 +509,6 @@ impl SlotSite {
                 if settled && e.saturating_mul(n as u64) < 2 * cal.t {
                     self.0 = Slots::Serial { countdown: RECHECK };
                 }
-            }
-        }
-    }
-}
-
-/// Whether a cycle runs on the evaluation pool under `Auto`: a cycle
-/// whose p75 cost could pay for a fork does, while cycles there fork.
-/// Entering the pool wakes a worker, which a cheap cycle must not pay.
-#[derive(Debug, Default)]
-pub struct CycleSite {
-    hist: Hist,
-    /// Consecutive cycles in the pool that forked nothing.
-    idle: u16,
-    /// Cycles left out of the pool after too many idle ones.
-    backoff: u16,
-    period: u8,
-    /// A cycle off the pool found work for it (a `#[parallel]` node).
-    wanted: bool,
-}
-
-/// Pooled cycles that neither fork nor find a site worth measuring
-/// before the cycle backs off.
-const IDLE: u16 = 4;
-
-impl CycleSite {
-    /// Whether the next cycle enters the pool.
-    pub fn enter(&mut self) -> bool {
-        let Some(cal) = calibration() else { return false };
-        if std::mem::take(&mut self.wanted) {
-            return true;
-        }
-        if let Some(b) = self.backoff.checked_sub(1) {
-            self.backoff = b;
-            return false;
-        }
-        let enter = self.hist.n >= SETTLE && cal.floor(self.hist.p75()) >= 2 * cal.t;
-        if crate::dbgenv::graphix_dbg_par() {
-            eprintln!(
-                "PAR cycle p75 >= {} ticks (T = {}): {}",
-                cal.floor(self.hist.p75()),
-                cal.t,
-                if enter { "pool" } else { "inline" }
-            );
-        }
-        enter
-    }
-
-    /// A cycle took `ticks`; in the pool, it made `forks` forks or
-    /// promoted sites to measured.
-    pub fn record(&mut self, ticks: u64, pooled: bool, forks: u64) {
-        let Some(cal) = calibration() else { return };
-        self.hist.add(cal, ticks);
-        match (pooled, forks) {
-            (false, 0) => (),
-            (false, _) => self.wanted = true,
-            (true, 0) => {
-                self.idle += 1;
-                if self.idle >= IDLE {
-                    self.idle = 0;
-                    self.backoff = 64 << self.period;
-                    self.period = (self.period + 1).min(6);
-                    if crate::dbgenv::graphix_dbg_par() {
-                        eprintln!(
-                            "PAR cycles forked nothing: out of the pool for {}",
-                            self.backoff
-                        );
-                    }
-                }
-            }
-            (true, _) => {
-                self.idle = 0;
-                self.period = 0;
             }
         }
     }

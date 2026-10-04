@@ -1492,7 +1492,7 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             control,
             event,
             fork_depth: 0,
-            par: branch::view_mode(control),
+            par: control.par_mode(),
             fork: branch::ForkFlags::default(),
         }
     }

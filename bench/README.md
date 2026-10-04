@@ -175,6 +175,21 @@ came out exactly 2x under fusion — a name-keyed clone_rebind bug,
 fixed 2026-07-02; see graphix-fuzz/findings/audit-jul2026/03), which
 is exactly the kind of finding it exists to surface.
 
+## Parallel evaluation
+
+`bench/par.sh [iterations] [graphix]` runs the `par_*.gx` benches
+serially and under `GRAPHIX_PAR=auto`, pinned with taskset (serial and 4
+threads on the P-cores, 12 on the P- and E-cores; never the low-power
+cores), at normal priority. `par_symbolic` is `symbolic` with its seeds
+mapped under `#[parallel]`; `par_wide` is a node-walked map whose slots
+the cost model learns to fork over 60 cycles. Quick build, bench mode
+(2026-10-04):
+
+| bench          | serial | auto P x4 | auto P+E x12 |
+|----------------|--------|-----------|--------------|
+| `par_symbolic` | 4.80 s | 2.07 s    | 1.52 s       |
+| `par_wide`     | 5.18 s | 2.94 s    | 2.12 s       |
+
 For compiler startup profiling, run a workload with `GRAPHIX_PROFILE=1`,
 capture stderr, then use `python3 bench/profile.py profile.log` (or
 `--json`). The reader reports call counts, exclusive and inclusive phase

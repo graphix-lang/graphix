@@ -2,7 +2,7 @@
 //! that runs its child under fork flags of its own.
 
 use crate::{
-    CompileCtx, ExecCtx, Node, NodeView, ParMode, Refs, Rt, TagValue, Update, UserEvent,
+    CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, TagValue, Update, UserEvent,
     branch::ForkFlags,
     expr::Expr,
     fusion::{
@@ -18,7 +18,6 @@ use crate::{
     wrap,
 };
 use anyhow::{Result, bail};
-use graphix_types::stack::Control;
 use netidx_core::pack::{Pack, PackError};
 
 /// What the attribute asks of the code it decorates.
@@ -93,13 +92,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let flags = match self.kind {
             ForkKind::Serial => ForkFlags { inhibit: true, ..ctx.fork },
-            ForkKind::Parallel(grain) => {
-                // off the pool under `Auto`: ask the next cycle onto it
-                if ctx.par == ParMode::Off && ctx.control.par_mode() == ParMode::Auto {
-                    Control::promote_current()
-                }
-                ForkFlags { forced: Some(grain), ..ctx.fork }
-            }
+            ForkKind::Parallel(grain) => ForkFlags { forced: Some(grain), ..ctx.fork },
         };
         ctx.with_fork_flags(flags, |ctx| self.n.update(ctx))
     }
