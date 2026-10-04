@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8b64cddf.js";
+            window.path_to_searchindex_js = "../searchindex-694a203c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -263,7 +263,7 @@ impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyMinEv {
     // result depends only on the arguments; no fast call yet.
     const EFFECT: Effect = Effect::Stateless(None);
 
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -317,7 +317,7 @@ impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyLenEv {
     const NAME: &amp;str = "mylib_len";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(my_len)));
 
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         fast_eval(my_len, from)
     }
 }
@@ -359,7 +359,7 @@ state across cycles, or work with higher-order functions, implement the
 </span><span class="boring">fn main() {
 </span>use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 
@@ -372,7 +372,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
     const NAME: &amp;str = "mylib_once";
 
     fn init&lt;'a, 'b, 'c&gt;(
-        _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
         _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
@@ -386,12 +386,11 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
     fn update(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-        event: &amp;mut Event&lt;E&gt;,
     ) -&gt; Option&lt;Value&gt; {
         match from {
-            [s] =&gt; s.update(ctx, event).and_then(|v| {
+            [s] =&gt; s.update(ctx).and_then(|v| {
                 if self.val {
                     None
                 } else {
@@ -403,7 +402,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
         }
     }
 
-    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         self.val = false
     }
 }

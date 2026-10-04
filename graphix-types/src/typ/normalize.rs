@@ -78,6 +78,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Hole
         | Type::Concrete
         | Type::Function
+        | Type::Singleton
         | Type::Ref(_)
         | Type::TVar(_)
         | Type::Variant(_, _, _) => None,
@@ -221,6 +222,7 @@ impl Type {
             | Type::Primitive(_)
             | Type::Hole
             | Type::Concrete
+            | Type::Singleton
             | Type::Function => None,
             Type::App(c, a) => {
                 match (c.resolve_tvars_seen_int(cx), a.resolve_tvars_seen_int(cx)) {
@@ -263,7 +265,10 @@ impl Type {
                         let fresh = tv.fresh_copy();
                         if cx.predicates {
                             for c in tv.cell_constraints() {
-                                if matches!(c, Type::Concrete | Type::Function) {
+                                if matches!(
+                                    c,
+                                    Type::Concrete | Type::Function | Type::Singleton
+                                ) {
                                     fresh.add_cell_constraint(c);
                                 }
                             }
@@ -346,6 +351,7 @@ impl Type {
             | Type::Primitive(_)
             | Type::Hole
             | Type::Concrete
+            | Type::Singleton
             | Type::Function => None,
             Type::App(c, a) => match (c.normalize_int(cx), a.normalize_int(cx)) {
                 (None, None) => None,
@@ -469,7 +475,9 @@ impl Type {
             | (_, Type::Hole)
             | (Type::Concrete, _)
             | (Type::Function, _)
+            | (Type::Singleton, _)
             | (_, Type::Function)
+            | (_, Type::Singleton)
             | (_, Type::Concrete) => {
                 if self == t {
                     Some(self.clone())

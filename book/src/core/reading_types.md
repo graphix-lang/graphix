@@ -272,29 +272,32 @@ let f = |x, y| x + y
 Its type will be something like:
 
 ```graphix
-val f: fn<'_2067: Number>(x: '_2067, y: '_2067) -> '_2067
+val f: fn<'_2067: Number + Singleton>(x: '_2067, y: '_2067) -> '_2067
 ```
 
 The compiler has inferred two properties here,
 
 - both arguments are one type of number: arithmetic is
-  `fn('a: Number, 'a) -> 'a`, so `f(1, 2.5)` is refused (cast one side).
+  `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`, so `f(1, 2.5)` is
+  refused (cast one side).
 - the result is that same type.
 
-The operands must be exactly one type: `x + 1` over `x: [i64, null]` is
+`Singleton` says the type is one type, not a union of several. The
+operands must be exactly one type: `x + 1` over `x: [i64, null]` is
 refused (take the null off first, `x$ + 1`), and so is any arithmetic
 over a type holding two numeric types, `[i64, f64]` or `Number`, even
 `x * x`: its values would promote at runtime, so the result's type
-would not say what it is.
+would not say what it is. A call of `f` with two `[i64, f64]` values is
+refused the same way, where it is called.
 
 Comparison is `fn('a, 'a) -> bool` over exactly one type: `|x, y| x < y`
 takes two arguments of one type, and neither operand's type may merely
 contain the other's. `x == 3` over `x: [i64, null]` and `` v == `Red ``
 over `` v: [`Green, `Red] `` are refused; select on the value instead
-(`` select v { `Red => true, _ => false } ``, `opt::is_some`). A type
-holding two numeric types is refused even against itself, because its
-values would order by representation rather than by number: `x < y`
-over `x, y: [i64, f64]` or `Number` is an error.
+(`` select v { `Red => true, _ => false } ``, `opt::is_some`). Any one
+type compares, unions included: two `[`Green, `Red]` values, two
+`[string, i64]` values, and two `[i64, f64]` values, whose different
+types order by type before value (`i64:3 == f64:3.0` is false).
 
 Because unchecked arithmetic operators like `+` log errors and return
 bottom on overflow rather than throwing, there is no `throws` clause

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8b64cddf.js";
+            window.path_to_searchindex_js = "../searchindex-694a203c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -246,7 +246,7 @@ do not reset every builtin merely because it is classified asynchronous.</p>
 </span><span class="boring">fn main() {
 </span>use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 
@@ -259,7 +259,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
     const NAME: &amp;str = "core_once";
 
     fn init&lt;'a, 'b, 'c&gt;(
-        _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
         _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
@@ -273,12 +273,11 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Once {
     fn update(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-        event: &amp;mut Event&lt;E&gt;,
     ) -&gt; Option&lt;Value&gt; {
         match from {
-            [s] =&gt; s.update(ctx, event).and_then(|v| {
+            [s] =&gt; s.update(ctx).and_then(|v| {
                 if self.val {
                     None
                 } else {
@@ -290,7 +289,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Once {
         }
     }
 
-    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         self.val = false
     }
 }
@@ -324,7 +323,7 @@ use graphix_compiler::{
     genn,
     node::Node,
     typ::{FnType, Typ, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 use smallvec::{smallvec, SmallVec};
@@ -345,7 +344,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
     const NAME: &amp;str = "array_group";
 
     fn init&lt;'a, 'b, 'c&gt;(
-        ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         typ: &amp;'a FnType,
         _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         scope: &amp;'b Scope,
@@ -388,9 +387,8 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
     fn update(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-        event: &amp;mut Event&lt;E&gt;,
     ) -&gt; Option&lt;Value&gt; {
         macro_rules! set {
             ($v:expr) =&gt; {{
@@ -398,24 +396,24 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
                 ctx.cached.insert(self.nid, len.clone());
-                event.variables.insert(self.nid, len);
+                ctx.event.variables.insert(self.nid, len);
                 ctx.cached.insert(self.xid, $v.clone());
-                event.variables.insert(self.xid, $v);
+                ctx.event.variables.insert(self.xid, $v);
             }};
         }
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx) {
             self.queue.push_back(v);
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx) {
             ctx.cached.insert(self.pid, v.clone());
-            event.variables.insert(self.pid, v);
+            ctx.event.variables.insert(self.pid, v);
         }
         if self.ready &amp;&amp; self.queue.len() &gt; 0 {
             let v = self.queue.pop_front().unwrap();
             set!(v);
         }
         loop {
-            match self.pred.update(ctx, event) {
+            match self.pred.update(ctx) {
                 None =&gt; break None,
                 Some(v) =&gt; {
                     self.ready = true;
@@ -439,7 +437,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
 
     fn typecheck(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         _from: &amp;mut [Node&lt;R, E&gt;],
     ) -&gt; anyhow::Result&lt;()&gt; {
         self.pred.typecheck(ctx)
@@ -449,14 +447,14 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
         self.pred.refs(refs)
     }
 
-    fn delete(&amp;mut self, ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn delete(&amp;mut self, ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         ctx.cached.remove(&amp;self.nid);
         ctx.cached.remove(&amp;self.pid);
         ctx.cached.remove(&amp;self.xid);
         self.pred.delete(ctx);
     }
 
-    fn sleep(&amp;mut self, ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn sleep(&amp;mut self, ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         self.pred.sleep(ctx);
     }
 }

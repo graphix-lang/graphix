@@ -10,7 +10,7 @@ that using type variables and constraints in our annotations.
 ```graphix
 〉let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y
 〉f
--: fn<'a: unbound: Number>(x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
+-: fn<'a: unbound: Number + Singleton>(x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
 160
 ```
 
@@ -33,19 +33,21 @@ of,
 - constraint type
 
 ```
-fn<'a: unbound: Number>
+fn<'a: unbound: Number + Singleton>
 (x: 'a: unbound, y: 'a: unbound) -> 'a: unbound
 ```
 
 We can remove the (unbound) current values and it becomes easier to read,
 
 ```
-fn<'a: Number>
+fn<'a: Number + Singleton>
 (x: 'a, y: 'a) -> 'a
 ```
 
 We just have one variable now, `'a` representing both argument types
-and the return type. Because unchecked `+` returns bottom on overflow
+and the return type. The body's `+` added `Singleton` to the declared
+`Number`: arithmetic needs one numeric type, not a union of several
+like `[i64, f64]`. Because unchecked `+` returns bottom on overflow
 rather than throwing, there is no `throws` clause. We can
 still call this `f` with any number type,
 

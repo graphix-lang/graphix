@@ -190,7 +190,7 @@ The cost v1 does not pay: selecting the impl BINDS tvars, so typing
 depends on resolution and resolution order matters. Build it against a
 real module when one asks. The first candidate is **arithmetic as
 traits**: `datetime - datetime` is refused by design (arithmetic is
-`fn('a: Number, 'a) -> 'a`; datetime/duration arithmetic is
+`fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`; datetime/duration arithmetic is
 `sys::time` functions). The principled endgame is what `Eq`/`Ord`
 already are for `==` and `<` — the operators dispatch statically on the
 left operand's type, primitives keep the native fast path, user

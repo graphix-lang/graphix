@@ -244,13 +244,13 @@ fn numeric_members(env: &Env, t: &Type) -> Result<BitFlags<Typ>> {
     })
 }
 
-/// Operands of one type that may be two numeric types would compare by
-/// representation and compute by promotion: `what` refuses them.
-fn refuse_mixed_numeric(env: &Env, t: &Type, what: &str) -> Result<()> {
+/// Operands of one type that may be two numeric types would compute by
+/// promotion: arithmetic refuses them.
+fn refuse_mixed_numeric(env: &Env, t: &Type) -> Result<()> {
     if numeric_members(env, t)?.len() > 1 {
         crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             bail!(
-                "cannot {what} values of {t}: it holds more than one numeric type (cast to one)"
+                "cannot compute with values of {t}: it holds more than one numeric type (cast to one)"
             )
         })
     } else {
@@ -287,8 +287,7 @@ macro_rules! compare_op {
 
             fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck1(ctx))?;
-                wrap!(self.rhs, self.rhs.typecheck1(ctx))?;
-                wrap!(self, refuse_mixed_numeric(&ctx.env, self.lhs.typ(), "compare"))
+                wrap!(self.rhs, self.rhs.typecheck1(ctx))
             }
 
             fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
@@ -300,7 +299,7 @@ macro_rules! compare_op {
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
-                    Some(t) => wrap!(self, refuse_mixed_numeric(&ctx.env, t, "compare")),
+                    Some(_) => Ok(()),
                     None => wrap!(
                         self,
                         $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
@@ -744,7 +743,8 @@ pub(crate) fn arith_rule(
     // operand must be numeric at typecheck0; the def-time acceptance gate
     // for a lambda body runs only there.
     constrain_operand(env, &Type::Primitive(Typ::number()), t)?;
-    refuse_mixed_numeric(env, t, "compute with")?;
+    refuse_mixed_numeric(env, t)?;
+    t.narrow_singleton(env)?;
     match checked {
         true => out.check_contains(
             env,
@@ -788,8 +788,6 @@ macro_rules! arith_op {
                 }
             }
 
-            /// The rule holds now, and again once the check settles the
-            /// operand cells.
             fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0(ctx))?;
                 wrap!(self.rhs, self.rhs.typecheck0(ctx))?;
@@ -821,14 +819,6 @@ macro_rules! arith_op {
                 )?;
                 defer_operand(ctx, &self.lhs);
                 defer_operand(ctx, &self.rhs);
-                super::defer_settle(ctx, || crate::PendingSettle::Arith {
-                    op: BinOp::$base,
-                    checked: $checked,
-                    lhs: self.lhs.typ().clone(),
-                    rhs: self.rhs.typ().clone(),
-                    out: self.typ.clone(),
-                    spec: Arc::new(self.spec.clone()),
-                });
                 Ok(())
             }
         }

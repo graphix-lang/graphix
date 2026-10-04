@@ -1199,7 +1199,9 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         match &type_predicate {
             Type::Fn(_) => bail!("can't match on Fn type"),
             Type::App(..) | Type::Hole => bail!("can't match on a type constructor"),
-            Type::Concrete | Type::Function => bail!("can't match on a constraint"),
+            Type::Concrete | Type::Function | Type::Singleton => {
+                bail!("can't match on a constraint")
+            }
             Type::Bottom
             | Type::Abstract { .. }
             | Type::Any

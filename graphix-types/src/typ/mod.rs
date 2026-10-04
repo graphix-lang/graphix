@@ -80,6 +80,7 @@ pub(super) fn node_addr(t: &Type) -> Option<usize> {
         | Type::Hole
         | Type::Concrete
         | Type::Function
+        | Type::Singleton
         | Type::Primitive(_)
         | Type::Any
         | Type::Bottom
@@ -738,6 +739,10 @@ pub enum Type {
     /// type, so a builtin wrapping a function can read its signature.
     /// Legal only as a constraint.
     Function,
+    /// The conjunct `'a: Singleton`: whatever binds the cell is one type,
+    /// not a union of several (arithmetic is `fn<'a: Number + Singleton>`).
+    /// Legal only as a constraint.
+    Singleton,
 }
 
 mod tag {
@@ -761,6 +766,7 @@ mod tag {
     pub const HOLE: u8 = 17;
     pub const CONCRETE: u8 = 18;
     pub const FUNCTION: u8 = 19;
+    pub const SINGLETON: u8 = 20;
 }
 
 pub(super) fn key_text(s: &str, out: &mut Vec<u8>) {
@@ -817,6 +823,7 @@ impl Type {
             Type::Hole => out.put_u8(tag::HOLE),
             Type::Concrete => out.put_u8(tag::CONCRETE),
             Type::Function => out.put_u8(tag::FUNCTION),
+            Type::Singleton => out.put_u8(tag::SINGLETON),
             Type::Primitive(p) => {
                 out.put_u8(tag::PRIMITIVE);
                 out.put_u64_le(p.bits() as u64);
@@ -904,7 +911,12 @@ impl Type {
 
     fn shape_len_inner(&self) -> usize {
         1 + match self {
-            Type::Bottom | Type::Any | Type::Hole | Type::Concrete | Type::Function => 0,
+            Type::Bottom
+            | Type::Any
+            | Type::Hole
+            | Type::Concrete
+            | Type::Function
+            | Type::Singleton => 0,
             Type::Primitive(p) => p.encoded_len(),
             Type::Ref(r) => r.encoded_len(),
             Type::Fn(f) => f.encoded_len(),
@@ -932,6 +944,7 @@ impl Type {
             Type::Hole => Ok(buf.put_u8(tag::HOLE)),
             Type::Concrete => Ok(buf.put_u8(tag::CONCRETE)),
             Type::Function => Ok(buf.put_u8(tag::FUNCTION)),
+            Type::Singleton => Ok(buf.put_u8(tag::SINGLETON)),
             Type::Primitive(p) => {
                 buf.put_u8(tag::PRIMITIVE);
                 p.encode(buf)
@@ -1009,6 +1022,7 @@ impl Type {
             tag::HOLE => Type::Hole,
             tag::CONCRETE => Type::Concrete,
             tag::FUNCTION => Type::Function,
+            tag::SINGLETON => Type::Singleton,
             tag::PRIMITIVE => Type::Primitive(PackTrait::decode(buf)?),
             tag::REF => Type::Ref(PackTrait::decode(buf)?),
             tag::FN => Type::Fn(PackTrait::decode(buf)?),
@@ -1076,6 +1090,7 @@ impl PartialEq for Type {
             (Type::Hole, _) => matches!(other, Type::Hole),
             (Type::Concrete, _) => matches!(other, Type::Concrete),
             (Type::Function, _) => matches!(other, Type::Function),
+            (Type::Singleton, _) => matches!(other, Type::Singleton),
             (Type::Primitive(a), _) => matches!(other, Type::Primitive(b) if a == b),
             _ => ensure_sufficient(|| self.eq_composite(other)),
         }
@@ -1098,6 +1113,7 @@ impl Type {
             Type::Hole => matches!(other, Type::Hole),
             Type::Concrete => matches!(other, Type::Concrete),
             Type::Function => matches!(other, Type::Function),
+            Type::Singleton => matches!(other, Type::Singleton),
             Type::Primitive(a) => matches!(other, Type::Primitive(b) if a == b),
             Type::Ref(a) => matches!(other, Type::Ref(b) if a == b),
             Type::Fn(a) => {
@@ -1155,6 +1171,7 @@ impl Type {
             Type::Hole => tag::HOLE,
             Type::Concrete => tag::CONCRETE,
             Type::Function => tag::FUNCTION,
+            Type::Singleton => tag::SINGLETON,
         }
     }
 
@@ -1201,6 +1218,7 @@ impl Ord for Type {
             | Type::Hole
             | Type::Concrete
             | Type::Function
+            | Type::Singleton
             | Type::Primitive(_) => self.cmp_fields(other),
             _ => ensure_sufficient(|| self.cmp_fields(other)),
         })
@@ -1211,7 +1229,12 @@ impl Hash for Type {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.rank().hash(state);
         match self {
-            Type::Bottom | Type::Any | Type::Hole | Type::Concrete | Type::Function => (),
+            Type::Bottom
+            | Type::Any
+            | Type::Hole
+            | Type::Concrete
+            | Type::Function
+            | Type::Singleton => (),
             Type::Primitive(p) => p.hash(state),
             t => ensure_sufficient(|| match t {
                 Type::Ref(r) => r.hash(state),
@@ -1244,6 +1267,7 @@ impl Hash for Type {
                 | Type::Hole
                 | Type::Concrete
                 | Type::Function
+                | Type::Singleton
                 | Type::Primitive(_) => (),
             }),
         }
@@ -1275,6 +1299,7 @@ impl Drop for Type {
             | Type::Hole
             | Type::Concrete
             | Type::Function
+            | Type::Singleton
             | Type::Primitive(_)
             | Type::TVar(_) => false,
             Type::Ref(tr) => tr.params.is_unique() || tr.resolved.is_unique(),
@@ -1301,6 +1326,7 @@ impl Drop for Type {
                 | Type::Hole
                 | Type::Concrete
                 | Type::Function
+                | Type::Singleton
                 | Type::Primitive(_) => (),
                 Type::Ref(r) => drop(ptr::read(r)),
                 Type::Fn(f) => drop(ptr::read(f)),
@@ -1359,6 +1385,7 @@ impl Type {
             | Type::TVar(_)
             | Type::Hole
             | Type::Concrete
+            | Type::Singleton
             | Type::Function => ControlFlow::Continue(()),
             Type::App(c, a) => {
                 f(c)?;
@@ -1458,6 +1485,7 @@ impl Type {
             | Type::TVar(_)
             | Type::Hole
             | Type::Concrete
+            | Type::Singleton
             | Type::Function => None,
             Type::App(c, a) => match (f(c), f(a)) {
                 (None, None) => None,
@@ -2046,7 +2074,9 @@ impl Type {
                 Some(filled) => ensure_sufficient(|| filled.with_deref(f)),
                 None => f(Some(self)),
             },
-            Self::Hole | Self::Concrete | Self::Function => f(Some(self)),
+            Self::Hole | Self::Concrete | Self::Function | Self::Singleton => {
+                f(Some(self))
+            }
             Self::Bottom
             | Self::Abstract { .. }
             | Self::Any

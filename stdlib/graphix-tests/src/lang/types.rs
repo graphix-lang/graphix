@@ -1525,9 +1525,10 @@ const PRINTED_BOUNDS: &str = r#"{
 
 #[tokio::test(flavor = "current_thread")]
 async fn declared_bounds_print_in_the_header() -> Result<()> {
-    for (src, header) in
-        [(PRINTED_BOUND, "fn<'a: Number>("), (PRINTED_BOUNDS, "fn<'a: Eq + Ord>(")]
-    {
+    for (src, header) in [
+        (PRINTED_BOUND, "fn<'a: Number + Singleton>("),
+        (PRINTED_BOUNDS, "fn<'a: Eq + Ord>("),
+    ] {
         let msg = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => format!("{e:#}"),
             Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
@@ -1539,17 +1540,13 @@ async fn declared_bounds_print_in_the_header() -> Result<()> {
 }
 
 // Comparison is `fn('a, 'a) -> bool` over exactly one type: neither
-// operand's type may merely contain the other's, and a type holding two
-// numeric types is refused even against itself.
+// operand's type may merely contain the other's.
 #[tokio::test(flavor = "current_thread")]
 async fn comparison_operands_are_one_type() -> Result<()> {
     for src in [
         "{ let x: [i64, null] = 3; x == 3 }",
         "{ let v: [`Green, `Red] = `Red; v == `Red }",
         "{ let r: [string, Error<`E>] = \"a\"; r != \"a\" }",
-        "{ let x: [i64, f64] = 3; let y: [i64, f64] = 2.5; x < y }",
-        "{ let f = |a: Number, b: Number| a >= b; f(3, 2.5) }",
-        "{ type N = [i64, u8]; let x: N = 3; x <= x }",
     ] {
         match eval(src, crate::TEST_REGISTER).await {
             Err(e) => {
@@ -1584,8 +1581,31 @@ run!(comparison_one_type, COMPARISON_ONE_TYPE, |v: Result<&Value>| match v {
     _ => false,
 });
 
-// Arithmetic is `fn('a: Number, 'a) -> 'a` over exactly one type, and a
-// type holding two numeric types is refused even against itself.
+// Mixed sets compare like any union, numeric ones included.
+const COMPARISON_MIXED: &str = r#"{
+  let x: [i64, f64] = 3;
+  let y: [i64, f64] = 2.5;
+  let f = |a: Number, b: Number| a >= b;
+  type N = [i64, u8];
+  let n: N = 3;
+  [x == y, x == x, n <= n, f(2.5, 1.5)]
+}"#;
+
+run!(comparison_mixed_numeric, COMPARISON_MIXED, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => {
+        &**a == &[
+            Value::Bool(false),
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Bool(true),
+        ]
+    }
+    _ => false,
+});
+
+// Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a` over
+// exactly one type: a type holding two numeric types is refused even
+// against itself.
 #[tokio::test(flavor = "current_thread")]
 async fn arithmetic_operands_are_one_type() -> Result<()> {
     for src in [

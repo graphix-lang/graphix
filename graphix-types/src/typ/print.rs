@@ -162,6 +162,7 @@ impl Type {
             Self::Hole => write!(f, "'_"),
             Self::Concrete => write!(f, "Concrete"),
             Self::Function => write!(f, "Function"),
+            Self::Singleton => write!(f, "Singleton"),
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref(TypeRef { scope: _, name, params, .. }) => {
@@ -240,6 +241,7 @@ fn opens_with_bracket(t: &Type) -> bool {
         | Type::App(..)
         | Type::Hole
         | Type::Concrete
+        | Type::Singleton
         | Type::Function => false,
     }
 }
@@ -271,6 +273,7 @@ impl PrettyDisplay for Type {
             | Self::App(..)
             | Self::Hole
             | Self::Concrete
+            | Self::Singleton
             | Self::Function => {
                 writeln!(buf, "{self}")
             }

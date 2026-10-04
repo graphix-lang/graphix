@@ -1113,11 +1113,38 @@ impl FnType {
                 bail!("missing constraint {sig_tv}: {sig_tc} in implementation")
             }
         }
-        // Every conjunct of every impl cell must admit the
-        // signature's concrete choice.
+        let mut param_bounds = LPooled::take();
+        self.for_each_part(&mut |t, _| param_bounds_of(env, t, &mut param_bounds));
+        // A call through the signature is checked by the signature alone:
+        // every conjunct of every impl cell must admit the signature's
+        // concrete choice, or follow from the conjuncts of the signature
+        // variable it stands for.
         for (_, tv) in impl_tvs.iter() {
             match tvar_map.get(&tv.cell_addr()) {
-                None | Some(Type::TVar(_)) => (),
+                None => (),
+                Some(Type::TVar(sig_tv)) => {
+                    let mut sig_tcs = sig_tv.cell_constraints();
+                    if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
+                        sig_tcs.extend(bounds.iter().cloned());
+                    }
+                    for impl_tc in tv.cell_constraints() {
+                        let mut implied = false;
+                        for s in sig_tcs.iter() {
+                            if s == &impl_tc
+                                || impl_tc.contains_with_flags(probe, env, s)?
+                            {
+                                implied = true;
+                                break;
+                            }
+                        }
+                        if !implied {
+                            bail!(
+                                "the implementation requires {sig_tv}: {impl_tc}, which \
+                                 the signature does not declare"
+                            )
+                        }
+                    }
+                }
                 Some(sig_type) => {
                     for impl_tc in tv.cell_constraints() {
                         let ok = impl_tc
@@ -1493,4 +1520,36 @@ impl Pack for FnType {
             Self::shape_decode(buf, None)
         }
     }
+}
+
+/// The bounds the type references in `t` give the open variables passed
+/// as their parameters, by cell: a call checks them where it expands the
+/// reference, as it checks a variable's own conjuncts.
+fn param_bounds_of(env: &Env, t: &Type, out: &mut IntMap<usize, SmallVec<[Type; 1]>>) {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::Ref(tr) => {
+            if let Some(resolved) = tr.resolve_in(env) {
+                let def_params = resolved.params();
+                let known: AHashMap<ArcStr, Type> = def_params
+                    .iter()
+                    .zip(tr.params.iter())
+                    .map(|((tv, _), arg)| (tv.name.clone(), arg.clone()))
+                    .collect();
+                for ((_, bound), arg) in def_params.iter().zip(tr.params.iter()) {
+                    if let (Some(bound), Type::TVar(tv)) = (bound, arg)
+                        && !tv.is_bound()
+                    {
+                        out.entry(tv.cell_addr())
+                            .or_default()
+                            .push(bound.replace_tvars(&known))
+                    }
+                }
+            }
+            for p in tr.params.iter() {
+                param_bounds_of(env, p, out)
+            }
+        }
+        Type::Fn(ft) => ft.for_each_part(&mut |t, _| param_bounds_of(env, t, out)),
+        t => t.for_each_child(&mut |c| param_bounds_of(env, c, out)),
+    })
 }

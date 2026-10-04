@@ -71,7 +71,7 @@ const DYNAMIC_MODULE2: &str = r#"
     let status = mod foo dynamic {
         sandbox whitelist [core];
         sig {
-            val add: fn<'a: Number>(x: 'a) -> 'a
+            val add: fn<'a: Number + Singleton>(x: 'a) -> 'a
         };
         source sys::net::subscribe("/local/foo")?
     };

@@ -144,6 +144,7 @@ impl<'a> TVal<'a> {
                 | Type::Hole
                 | Type::Concrete
                 | Type::Function
+                | Type::Singleton
                 | Type::Bottom
                 | Type::Any
                 | Type::Error(_),

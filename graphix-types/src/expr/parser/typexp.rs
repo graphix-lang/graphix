@@ -79,7 +79,12 @@ where
         .map(|_| Type::Concrete);
     let function = attempt(spaces().with(string("Function")).skip(not_prefix()))
         .map(|_| Type::Function);
-    sep_by1(choice((concrete, function, typ())), attempt(spaces().with(token('+'))))
+    let singleton = attempt(spaces().with(string("Singleton")).skip(not_prefix()))
+        .map(|_| Type::Singleton);
+    sep_by1(
+        choice((concrete, function, singleton, typ())),
+        attempt(spaces().with(token('+'))),
+    )
 }
 
 /// Flatten `(tvar, bounds)` pairs into one `(tvar, type)` pair per

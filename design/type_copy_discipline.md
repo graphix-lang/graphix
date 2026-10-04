@@ -76,7 +76,7 @@ instantiating call site.
    structured artifact class still swallowed.
 3. **The cell merge** makes the facts collide so (2) actually fires.
 
-Arithmetic is homogeneous (`fn('a: Number, 'a) -> 'a`): `i64 + f64`
+Arithmetic is homogeneous (`fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`): `i64 + f64`
 is a type error, not a `[i64, f64]` union that the runtime silently
 promotes — the union was a static lie in the conservative direction and
 the direct cause of the mixed-accumulator witnesses surviving the copy

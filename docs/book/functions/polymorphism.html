@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8b64cddf.js";
+            window.path_to_searchindex_js = "../searchindex-694a203c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -183,7 +183,7 @@ and the return type will be the same as the argument type. We can say
 that using type variables and constraints in our annotations.</p>
 <pre><code class="language-graphix">〉let f = 'a: Number |x: 'a, y: 'a| -&gt; 'a x + y
 〉f
--: fn&lt;'a: unbound: Number&gt;(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
+-: fn&lt;'a: unbound: Number + Singleton&gt;(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 160
 </code></pre>
 <p>In type annotations of lambda expressions,</p>
@@ -204,15 +204,17 @@ of,</p>
 <li>current value, or unbound if there is no current value</li>
 <li>constraint type</li>
 </ul>
-<pre><code>fn&lt;'a: unbound: Number&gt;
+<pre><code>fn&lt;'a: unbound: Number + Singleton&gt;
 (x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 </code></pre>
 <p>We can remove the (unbound) current values and it becomes easier to read,</p>
-<pre><code>fn&lt;'a: Number&gt;
+<pre><code>fn&lt;'a: Number + Singleton&gt;
 (x: 'a, y: 'a) -&gt; 'a
 </code></pre>
 <p>We just have one variable now, <code>'a</code> representing both argument types
-and the return type. Because unchecked <code>+</code> returns bottom on overflow
+and the return type. The body’s <code>+</code> added <code>Singleton</code> to the declared
+<code>Number</code>: arithmetic needs one numeric type, not a union of several
+like <code>[i64, f64]</code>. Because unchecked <code>+</code> returns bottom on overflow
 rather than throwing, there is no <code>throws</code> clause. We can
 still call this <code>f</code> with any number type,</p>
 <pre><code class="language-graphix">〉f(1.212, 2.0)

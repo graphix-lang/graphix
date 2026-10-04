@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8b64cddf.js";
+            window.path_to_searchindex_js = "../searchindex-694a203c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-ca61ab31.js"></script>
@@ -192,12 +192,11 @@ further into internals, the details can change more often, but in general
 getting a Graphix runtime going involves the following:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_compiler::ExecCtx;
-use graphix_rt::{GXConfig, GXRt, NoExt};
+</span>use graphix_rt::{GXConfig, GXRt, NoExt};
 use tokio::sync::mpsc;
 
 // set up an execution context using the generic runtime with no customization
-let mut ctx = ExecCtx::new(GXRt::&lt;NoExt&gt;::new())?;
+let mut ctx = GXRt::&lt;NoExt&gt;::new_state()?;
 // ... use the context to register all your built-ins, etc
 
 // set up a channel to receive events from the RT

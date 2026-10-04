@@ -698,6 +698,9 @@ impl TVar {
         if self.requires_concrete() {
             t.require_concrete();
         }
+        if self.requires_singleton() {
+            t.require_singleton();
+        }
         lower(&t, self.level());
         let cell = self.cell();
         let mut c = cell.write();
@@ -902,6 +905,11 @@ impl TVar {
         self.cell().read().constraints.iter().any(|c| matches!(c, Type::Function))
     }
 
+    /// Whether the cell holds the `Singleton` conjunct.
+    fn requires_singleton(&self) -> bool {
+        self.cell().read().constraints.iter().any(|c| matches!(c, Type::Singleton))
+    }
+
     /// Bind self to `binding` (other's, read by the caller), merging
     /// other's constraints into self's cell.
     pub(super) fn copy(&self, other: &Self, binding: Type) {
@@ -941,17 +949,21 @@ impl TVar {
         for c in to_add.iter() {
             lower(c, level)
         }
-        let concrete = {
+        let (concrete, singleton) = {
             let mut sc = s_cell.write();
             if !decided(&sc) {
                 return;
             }
             sc.binding = Some(binding.clone());
             sc.constraints.extend(to_add.drain(..));
-            sc.constraints.iter().any(|c| matches!(c, Type::Concrete))
+            let has = |p: fn(&Type) -> bool| sc.constraints.iter().any(p);
+            (has(|c| matches!(c, Type::Concrete)), has(|c| matches!(c, Type::Singleton)))
         };
         if concrete {
             binding.require_concrete();
+        }
+        if singleton {
+            binding.require_singleton();
         }
     }
 
@@ -1120,6 +1132,73 @@ impl Type {
             },
             _ => Ok(false),
         })
+    }
+
+    /// Whether `Singleton ⊇ self` holds as the type stands: one type, not
+    /// a union of several, a primitive set of several included; bound
+    /// cells judged by their bindings, type references by their
+    /// expansions. An open cell, alone or a member of a union, is
+    /// admitted: a bind of a `Singleton` cell narrows the open members of
+    /// its binding ([`Self::require_singleton`]).
+    pub(crate) fn singleton_holds(&self, env: &Env, commit: bool) -> Result<bool> {
+        let mut parts = UnionParts::default();
+        self.union_parts(Some((env, commit)), &mut parts)?;
+        Ok(parts.known <= 1)
+    }
+
+    /// The members of `self` read as a union into `parts`; a type
+    /// reference counts as one member without `env`.
+    fn union_parts(
+        &self,
+        env: Option<(&Env, bool)>,
+        parts: &mut UnionParts,
+    ) -> Result<()> {
+        ensure_sufficient(|| match self {
+            Type::Bottom => Ok(()),
+            Type::Set(ts) => ts.iter().try_for_each(|t| t.union_parts(env, parts)),
+            Type::TVar(tv) => match tv.binding() {
+                None => Ok(parts.open.push(tv.clone())),
+                Some(b) => b.union_parts(env, parts),
+            },
+            Type::Ref(_) if let Some((env, commit)) = env => {
+                match self.lookup_ref_with(env, commit)? {
+                    Some(t) => t.union_parts(Some((env, commit)), parts),
+                    None => Ok(parts.member(self, 1)),
+                }
+            }
+            Type::Primitive(p) => Ok(parts.member(self, p.len())),
+            Type::Any => Ok(parts.member(self, 2)),
+            t => Ok(parts.member(t, 1)),
+        })
+    }
+
+    /// Narrow the open members of a `Singleton` cell's binding: beside one
+    /// known member each must be within it; with none, each is a
+    /// `Singleton` itself (two open members may still differ).
+    pub(crate) fn require_singleton(&self) {
+        let mut parts = UnionParts::default();
+        if self.union_parts(None, &mut parts).is_err() {
+            return;
+        }
+        if let Some(narrow) = parts.narrowing() {
+            for tv in parts.open.drain(..) {
+                tv.add_cell_constraint(narrow.clone())
+            }
+        }
+    }
+
+    /// [`Self::require_singleton`] for an operand whose type must be one
+    /// type: an open cell's existing conjuncts may already say so.
+    pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
+        let mut parts = UnionParts::default();
+        self.union_parts(Some((env, false)), &mut parts)?;
+        match parts.narrowing() {
+            None => Ok(()),
+            Some(narrow) => parts
+                .open
+                .drain(..)
+                .try_for_each(|tv| tv.narrow_cell(env, narrow.clone())),
+        }
     }
 
     /// Whether `Concrete ⊇ self` holds as the type stands: no ⊥ anywhere,
@@ -1498,5 +1577,33 @@ impl Pack for TVar {
             }
         }
         Ok(tv)
+    }
+}
+
+/// A type read as a union ([`Type::union_parts`]): how many known members
+/// it has, the first of them, and its open cells.
+#[derive(Default)]
+struct UnionParts {
+    known: usize,
+    first: Option<Type>,
+    open: SmallVec<[TVar; 2]>,
+}
+
+impl UnionParts {
+    /// What each open member is narrowed to for the union to be one
+    /// type: `None` when it has several known members already.
+    fn narrowing(&self) -> Option<Type> {
+        match (&self.first, self.known) {
+            (Some(k), 1) => Some(k.clone()),
+            (_, 0) => Some(Type::Singleton),
+            _ => None,
+        }
+    }
+
+    fn member(&mut self, t: &Type, n: usize) {
+        self.known += n;
+        if n > 0 && self.first.is_none() {
+            self.first = Some(t.clone())
+        }
     }
 }

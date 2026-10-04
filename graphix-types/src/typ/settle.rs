@@ -42,7 +42,7 @@ impl TVar {
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
             // conjunct reaching this cell has no finite witness.
-            if matches!(c, Type::Concrete | Type::Function)
+            if matches!(c, Type::Concrete | Type::Function | Type::Singleton)
                 || c.is_trait_ref(env)
                 || would_cycle_inner(addr, c)
             {

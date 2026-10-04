@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8b64cddf.js";
+            window.path_to_searchindex_js = "searchindex-694a203c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -1286,27 +1286,30 @@ itself during the type inference process.</p>
 <pre><code class="language-graphix">let f = |x, y| x + y
 </code></pre>
 <p>Its type will be something like:</p>
-<pre><code class="language-graphix">val f: fn&lt;'_2067: Number&gt;(x: '_2067, y: '_2067) -&gt; '_2067
+<pre><code class="language-graphix">val f: fn&lt;'_2067: Number + Singleton&gt;(x: '_2067, y: '_2067) -&gt; '_2067
 </code></pre>
 <p>The compiler has inferred two properties here,</p>
 <ul>
 <li>both arguments are one type of number: arithmetic is
-<code>fn('a: Number, 'a) -&gt; 'a</code>, so <code>f(1, 2.5)</code> is refused (cast one side).</li>
+<code>fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a</code>, so <code>f(1, 2.5)</code> is
+refused (cast one side).</li>
 <li>the result is that same type.</li>
 </ul>
-<p>The operands must be exactly one type: <code>x + 1</code> over <code>x: [i64, null]</code> is
+<p><code>Singleton</code> says the type is one type, not a union of several. The
+operands must be exactly one type: <code>x + 1</code> over <code>x: [i64, null]</code> is
 refused (take the null off first, <code>x$ + 1</code>), and so is any arithmetic
 over a type holding two numeric types, <code>[i64, f64]</code> or <code>Number</code>, even
 <code>x * x</code>: its values would promote at runtime, so the result’s type
-would not say what it is.</p>
+would not say what it is. A call of <code>f</code> with two <code>[i64, f64]</code> values is
+refused the same way, where it is called.</p>
 <p>Comparison is <code>fn('a, 'a) -&gt; bool</code> over exactly one type: <code>|x, y| x &lt; y</code>
 takes two arguments of one type, and neither operand’s type may merely
 contain the other’s. <code>x == 3</code> over <code>x: [i64, null]</code> and <code>v == `Red</code>
 over <code>v: [`Green, `Red]</code> are refused; select on the value instead
-(<code>select v { `Red =&gt; true, _ =&gt; false }</code>, <code>opt::is_some</code>). A type
-holding two numeric types is refused even against itself, because its
-values would order by representation rather than by number: <code>x &lt; y</code>
-over <code>x, y: [i64, f64]</code> or <code>Number</code> is an error.</p>
+(<code>select v { `Red =&gt; true, _ =&gt; false }</code>, <code>opt::is_some</code>). Any one
+type compares, unions included: two <code>[</code>Green, <code>Red]</code> values, two
+<code>[string, i64]</code> values, and two <code>[i64, f64]</code> values, whose different
+types order by type before value (<code>i64:3 == f64:3.0</code> is false).</p>
 <p>Because unchecked arithmetic operators like <code>+</code> log errors and return
 bottom on overflow rather than throwing, there is no <code>throws</code> clause
 in the type signature. (The log message is an interpreter debugging
@@ -2696,7 +2699,7 @@ and the return type will be the same as the argument type. We can say
 that using type variables and constraints in our annotations.</p>
 <pre><code class="language-graphix">〉let f = 'a: Number |x: 'a, y: 'a| -&gt; 'a x + y
 〉f
--: fn&lt;'a: unbound: Number&gt;(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
+-: fn&lt;'a: unbound: Number + Singleton&gt;(x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 160
 </code></pre>
 <p>In type annotations of lambda expressions,</p>
@@ -2717,15 +2720,17 @@ of,</p>
 <li>current value, or unbound if there is no current value</li>
 <li>constraint type</li>
 </ul>
-<pre><code>fn&lt;'a: unbound: Number&gt;
+<pre><code>fn&lt;'a: unbound: Number + Singleton&gt;
 (x: 'a: unbound, y: 'a: unbound) -&gt; 'a: unbound
 </code></pre>
 <p>We can remove the (unbound) current values and it becomes easier to read,</p>
-<pre><code>fn&lt;'a: Number&gt;
+<pre><code>fn&lt;'a: Number + Singleton&gt;
 (x: 'a, y: 'a) -&gt; 'a
 </code></pre>
 <p>We just have one variable now, <code>'a</code> representing both argument types
-and the return type. Because unchecked <code>+</code> returns bottom on overflow
+and the return type. The body’s <code>+</code> added <code>Singleton</code> to the declared
+<code>Number</code>: arithmetic needs one numeric type, not a union of several
+like <code>[i64, f64]</code>. Because unchecked <code>+</code> returns bottom on overflow
 rather than throwing, there is no <code>throws</code> clause. We can
 still call this <code>f</code> with any number type,</p>
 <pre><code class="language-graphix">〉f(1.212, 2.0)
@@ -14602,7 +14607,7 @@ impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyMinEv {
     // result depends only on the arguments; no fast call yet.
     const EFFECT: Effect = Effect::Stateless(None);
 
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         let mut res = None;
         for v in from.flat_iter() {
             match (res, v) {
@@ -14656,7 +14661,7 @@ impl&lt;R: Rt, E: UserEvent&gt; EvalCached&lt;R, E&gt; for MyLenEv {
     const NAME: &amp;str = "mylib_len";
     const EFFECT: Effect = Effect::Stateless(Some(FastCall::Plain(my_len)));
 
-    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
+    fn eval(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;, from: &amp;CachedVals) -&gt; Option&lt;Value&gt; {
         fast_eval(my_len, from)
     }
 }
@@ -14698,7 +14703,7 @@ state across cycles, or work with higher-order functions, implement the
 </span><span class="boring">fn main() {
 </span>use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 
@@ -14711,7 +14716,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
     const NAME: &amp;str = "mylib_once";
 
     fn init&lt;'a, 'b, 'c&gt;(
-        _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
         _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
@@ -14725,12 +14730,11 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for MyOnce {
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
     fn update(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-        event: &amp;mut Event&lt;E&gt;,
     ) -&gt; Option&lt;Value&gt; {
         match from {
-            [s] =&gt; s.update(ctx, event).and_then(|v| {
+            [s] =&gt; s.update(ctx).and_then(|v| {
                 if self.val {
                     None
                 } else {
@@ -14742,7 +14746,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for MyOnce {
         }
     }
 
-    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         self.val = false
     }
 }
@@ -15051,7 +15055,7 @@ do not reset every builtin merely because it is classified asynchronous.</p>
 </span><span class="boring">fn main() {
 </span>use anyhow::Result;
 use graphix_compiler::{
-    expr::ExprId, typ::FnType, Apply, BuiltIn, Event, ExecCtx, Node, Rt, Scope, UserEvent,
+    expr::ExprId, typ::FnType, Apply, BuiltIn, CompileCtx, ExecCtx, Node, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 
@@ -15064,7 +15068,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
     const NAME: &amp;str = "core_once";
 
     fn init&lt;'a, 'b, 'c&gt;(
-        _ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        _ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         _typ: &amp;'a FnType,
         _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         _scope: &amp;'b Scope,
@@ -15078,12 +15082,11 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Once {
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Once {
     fn update(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-        event: &amp;mut Event&lt;E&gt;,
     ) -&gt; Option&lt;Value&gt; {
         match from {
-            [s] =&gt; s.update(ctx, event).and_then(|v| {
+            [s] =&gt; s.update(ctx).and_then(|v| {
                 if self.val {
                     None
                 } else {
@@ -15095,7 +15098,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Once {
         }
     }
 
-    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn sleep(&amp;mut self, _ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         self.val = false
     }
 }
@@ -15129,7 +15132,7 @@ use graphix_compiler::{
     genn,
     node::Node,
     typ::{FnType, Typ, Type},
-    Apply, BindId, BuiltIn, Event, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
+    Apply, BindId, BuiltIn, CompileCtx, ExecCtx, LambdaId, Refs, Rt, Scope, UserEvent,
 };
 use netidx_value::Value;
 use smallvec::{smallvec, SmallVec};
@@ -15150,7 +15153,7 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
     const NAME: &amp;str = "array_group";
 
     fn init&lt;'a, 'b, 'c&gt;(
-        ctx: &amp;'a mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;'a mut CompileCtx&lt;R, E&gt;,
         typ: &amp;'a FnType,
         _resolved_typ: Option&lt;&amp;'a FnType&gt;,
         scope: &amp;'b Scope,
@@ -15193,9 +15196,8 @@ impl&lt;R: Rt, E: UserEvent&gt; BuiltIn&lt;R, E&gt; for Group&lt;R, E&gt; {
 impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
     fn update(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         from: &amp;mut [Node&lt;R, E&gt;],
-        event: &amp;mut Event&lt;E&gt;,
     ) -&gt; Option&lt;Value&gt; {
         macro_rules! set {
             ($v:expr) =&gt; {{
@@ -15203,24 +15205,24 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
                 self.buf.push($v.clone());
                 let len = Value::I64(self.buf.len() as i64);
                 ctx.cached.insert(self.nid, len.clone());
-                event.variables.insert(self.nid, len);
+                ctx.event.variables.insert(self.nid, len);
                 ctx.cached.insert(self.xid, $v.clone());
-                event.variables.insert(self.xid, $v);
+                ctx.event.variables.insert(self.xid, $v);
             }};
         }
-        if let Some(v) = from[0].update(ctx, event) {
+        if let Some(v) = from[0].update(ctx) {
             self.queue.push_back(v);
         }
-        if let Some(v) = from[1].update(ctx, event) {
+        if let Some(v) = from[1].update(ctx) {
             ctx.cached.insert(self.pid, v.clone());
-            event.variables.insert(self.pid, v);
+            ctx.event.variables.insert(self.pid, v);
         }
         if self.ready &amp;&amp; self.queue.len() &gt; 0 {
             let v = self.queue.pop_front().unwrap();
             set!(v);
         }
         loop {
-            match self.pred.update(ctx, event) {
+            match self.pred.update(ctx) {
                 None =&gt; break None,
                 Some(v) =&gt; {
                     self.ready = true;
@@ -15244,7 +15246,7 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
 
     fn typecheck(
         &amp;mut self,
-        ctx: &amp;mut ExecCtx&lt;R, E&gt;,
+        ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;,
         _from: &amp;mut [Node&lt;R, E&gt;],
     ) -&gt; anyhow::Result&lt;()&gt; {
         self.pred.typecheck(ctx)
@@ -15254,14 +15256,14 @@ impl&lt;R: Rt, E: UserEvent&gt; Apply&lt;R, E&gt; for Group&lt;R, E&gt; {
         self.pred.refs(refs)
     }
 
-    fn delete(&amp;mut self, ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn delete(&amp;mut self, ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         ctx.cached.remove(&amp;self.nid);
         ctx.cached.remove(&amp;self.pid);
         ctx.cached.remove(&amp;self.xid);
         self.pred.delete(ctx);
     }
 
-    fn sleep(&amp;mut self, ctx: &amp;mut ExecCtx&lt;R, E&gt;) {
+    fn sleep(&amp;mut self, ctx: &amp;mut ExecCtx&lt;'_, R, E&gt;) {
         self.pred.sleep(ctx);
     }
 }
@@ -15519,12 +15521,11 @@ further into internals, the details can change more often, but in general
 getting a Graphix runtime going involves the following:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use graphix_compiler::ExecCtx;
-use graphix_rt::{GXConfig, GXRt, NoExt};
+</span>use graphix_rt::{GXConfig, GXRt, NoExt};
 use tokio::sync::mpsc;
 
 // set up an execution context using the generic runtime with no customization
-let mut ctx = ExecCtx::new(GXRt::&lt;NoExt&gt;::new())?;
+let mut ctx = GXRt::&lt;NoExt&gt;::new_state()?;
 // ... use the context to register all your built-ins, etc
 
 // set up a channel to receive events from the RT

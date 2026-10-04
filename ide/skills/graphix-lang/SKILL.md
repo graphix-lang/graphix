@@ -173,10 +173,15 @@ returns `[T, Error<`ArithError(string)>]`. `&&`/`||` are strict
 side). Comparison is exact: `x == 3` over `x: [i64, null]` and `` v ==
 `Red `` over `` [`Green, `Red] `` are refused — `opt::is_some`,
 `opt::contains(x, 3)`, `` select v { `Red => true, _ => false } ``,
-`r$ == "a"` on a Result; `[i64, f64]` or `Number` operands are refused
-even against themselves, for arithmetic too (`x$ + 1`, not `x + 1`, on a
-nullable; `|a: Number, b: Number| a + b` is refused, write `'a: Number
-|a: 'a, b: 'a|`). Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
+`r$ == "a"` on a Result. Two values of one union type compare, mixed
+numerics included (`[i64, f64]`: `i64:3 == f64:3.0` is false).
+Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`: a type
+holding two numeric types (`[i64, f64]`, `Number`) is refused even
+against itself, and a generic function called with one is refused at
+the call (`x$ + 1`, not `x + 1`, on a nullable; `|a: Number, b: Number|
+a + b` is refused, write `'a: Number |a: 'a, b: 'a|`). A `.gxi` declares
+a generic arithmetic function's `'a: Number + Singleton`: an interface
+must declare every bound its implementation needs. Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
 `x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
 chain (`(k ~ sel)$.name`). On an untyped parameter they read as the

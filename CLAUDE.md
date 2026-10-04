@@ -721,14 +721,19 @@ not a gap count.
 - **Operators**: `* / %` (and checked forms) bind tightest, then `+ -`,
   comparisons, `== !=`, `&&`, `||`, `~ ~!`; every binary operator is
   left-associative (`8 / 2 * 2` is 8). `BinOp` (`expr/binop.rs`) is the
-  one table. Arithmetic (`fn('a: Number, 'a) -> 'a`) and comparison
-  (`fn('a, 'a) -> bool`) take operands of EXACTLY one type, each
-  containing the other's (`node/op.rs::operand_type`): `[i64, null] ==
-  3`, `` [`A, `B] == `A `` and `[i64, f64] + 1` are refused; a ⊥ operand,
-  or one only ⊥ was produced into (`TCell::bottom_fed`), takes the
-  other's type. A type holding two numeric types (`[i64,
-  f64]`, `Number`) is refused even against itself
-  (`refuse_mixed_numeric`).
+  one table. Arithmetic (`fn<'a: Number + Singleton>(x: 'a, y: 'a) ->
+  'a`) and comparison (`fn('a, 'a) -> bool`) take operands of EXACTLY
+  one type, each containing the other's (`node/op.rs::operand_type`):
+  `[i64, null] == 3`, `` [`A, `B] == `A `` and `[i64, f64] + 1` are
+  refused; a ⊥ operand, or one only ⊥ was produced into
+  (`TCell::bottom_fed`), takes the other's type. `Singleton` is a bound
+  like `Concrete`: whatever binds the variable is no union, a primitive
+  set of two or more included, so arithmetic over a type holding two
+  numeric types is refused even against itself, and a generic
+  definition's at the call, by the check. Comparison takes any one
+  type, unions and mixed numerics included. An interface declares every
+  bound its implementation's variables carry, a typedef parameter's
+  bound counting (`FnType::sig_matches`).
 
 ## Stack discipline
 

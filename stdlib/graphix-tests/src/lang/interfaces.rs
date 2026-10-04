@@ -419,6 +419,53 @@ run!(
     "#
 ; graphix_package_core::testing::FuseExpect::None);
 
+// An interface declares every bound its implementation's variables
+// carry: a call through it is checked by it alone.
+run!(
+    interface_declares_the_arithmetic_bound,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(4))),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::add(2, 2)
+    "#,
+    "/test/inner.gxi" => r#"
+        val add: fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
+    "#,
+    "/test/inner.gx" => r#"
+        let add = |x, y| x + y
+    "#
+);
+
+run!(
+    interface_omits_singleton,
+    |v: Result<&Value>| v.is_err_and(|e| format!("{e:#}").contains("'a: Singleton")),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::add(2, 2)
+    "#,
+    "/test/inner.gxi" => r#"
+        val add: fn<'a: Number>(x: 'a, y: 'a) -> 'a
+    "#,
+    "/test/inner.gx" => r#"
+        let add = |x, y| x + y
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
+run!(
+    interface_omits_number,
+    |v: Result<&Value>| v.is_err_and(|e| format!("{e:#}").contains("'a: Number")),
+    "/test.gx" => r#"
+        mod inner;
+        let result = inner::double(2)
+    "#,
+    "/test/inner.gxi" => r#"
+        val double: fn(x: 'a) -> 'a
+    "#,
+    "/test/inner.gx" => r#"
+        let double = |x| x + x
+    "#
+; graphix_package_core::testing::FuseExpect::None);
+
 // Error: extra type parameter in the implementation.
 run!(
     abstract_type_extra_param,

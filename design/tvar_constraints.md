@@ -67,12 +67,12 @@ u8:1)` returns at most `('x, u8)`; `(i64, [u8, null]) ⊇` it holds).
   def-time binding is a fact, never erased by instantiation.
 - Arith and `Neg` constrain instead of binding: an unbound operand
   cell gets a `Primitive(Typ::number())` conjunct (`node/op.rs`).
-  Same-cell operands (`a + a`) alias the result to the operand cell, so
-  `|a| a + a` infers `fn(a: 'a) -> 'a, 'a: Number`, identical to the
-  explicit form. Distinct-cell operands get a fresh number-constrained
-  result cell, and the rule (`op.rs::arith_rule`) is judged again in
-  the check's settle after the operand cells settle
-  (`PendingSettle::Operand`, then `PendingSettle::Arith`).
+  Arithmetic adds `Singleton` beside it (below). Same-cell operands
+  (`a + a`) alias the result to the operand cell, so `|a| a + a` infers
+  `fn<'a: Number + Singleton>(a: 'a) -> 'a`, identical to the explicit
+  form. Distinct-cell operands get a fresh constrained result cell; the
+  operand cells settle with the check (`PendingSettle::Operand`), and
+  the rule's bounds are their conjuncts, so no settle judges it again.
 - An array index or slice bound constrains the same way: an unbound
   index cell gets a `Primitive(Typ::integer())` conjunct
   (`node/array.rs::check_index`), so `|x| a[-x]` keeps `[Real, Sint] &
@@ -83,7 +83,7 @@ Rejected for the distinct-operand case: unifying the operand cells
 (a semantic tightening — mixed-type calls that passed would reject),
 and keeping the result wide (leaves two-param bare lambdas with the
 annotation-reject behaviour). Arithmetic has since been made
-homogeneous (`fn('a: Number, 'a) -> 'a`), which resolves the question
+homogeneous (`fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`), which resolves the question
 from the other side.
 
 ### Instantiation
@@ -268,6 +268,39 @@ signature through type references and never refuses.
   no cell, so `queuefn(#trigger: t, never())` is refused there.
 - The checked-types snapshot tooling reads (`Type::snapshot`) keeps an
   open cell's `Concrete` and `Function` conjuncts.
+
+### `Singleton`: a conjunct that is a predicate
+
+`'a: Singleton` (`Type::Singleton`, parsed only as a bound) says
+whatever binds the cell is one type, not a union of several; a
+primitive set of two or more (`[i64, f64]`, `Number`) is a union.
+Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`: an
+operand's open cell takes both conjuncts (`op.rs::arith_rule`,
+`Type::narrow_singleton`), so a generic definition called with
+`[i64, f64]` is refused at the call, by the check. Before it, only the
+instance's own re-check refused it, at elaboration.
+
+- `Singleton ⊇ t` (`Type::singleton_holds`) counts `t`'s members as a
+  union through bindings and type references; ⊥ adds none, `Any` is
+  several. An open cell, alone or a member of a union, is admitted.
+- A bind of a `Singleton` cell narrows the open members of its binding
+  (`Type::require_singleton`): beside one known member each must lie
+  within it, so `[i64, 'x]` cannot become `[i64, f64]`; with none, each
+  is a `Singleton` (two open members may still differ).
+- Like `Concrete`, it is never a witness and travels as a conjunct. It
+  refuses no open or ⊥ cell at the terminal settle: an operand cell
+  left open there has `Number` for its only witness, which the
+  conjunct refuses.
+- Comparison carries no such bound: it takes any one type, unions and
+  mixed numerics included (Eric, 2026-10-04).
+
+An interface must declare what its implementation requires: every
+conjunct of an implementation variable the signature leaves generic
+must follow from the signature variable's conjuncts, or from the bound
+of a typedef parameter it is passed as (`FnType::sig_matches`). A call
+through the interface is checked by the signature alone; before this
+rule, `val f: fn(x: 'a) -> 'a` over `|x| x + x` passed the check and
+refused `f("s")` at elaboration.
 
 ### `FnType` derives its constraint list from the cells
 

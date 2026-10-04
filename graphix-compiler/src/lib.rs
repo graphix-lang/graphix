@@ -1639,16 +1639,6 @@ pub(crate) enum PendingSettle {
     },
     /// `outer ⊇ inner`, judged once the frame's cells have settled.
     Contains { outer: Type, inner: Type, spec: Arc<Expr> },
-    /// An arithmetic operator's rule, judged again once its operands
-    /// settled ([`node::op::arith_rule`]).
-    Arith {
-        op: node::op::BinOp,
-        checked: bool,
-        lhs: Type,
-        rhs: Type,
-        out: Type,
-        spec: Arc<Expr>,
-    },
 }
 
 impl PendingSettle {
@@ -1702,9 +1692,6 @@ impl PendingSettle {
             let res = match s {
                 PendingSettle::Contains { outer, inner, spec } => {
                     (outer.check_contains(env, inner), spec)
-                }
-                PendingSettle::Arith { op, checked, lhs, rhs, out, spec } => {
-                    (node::op::arith_rule(env, *op, *checked, lhs, rhs, out), spec)
                 }
                 _ => continue,
             };
