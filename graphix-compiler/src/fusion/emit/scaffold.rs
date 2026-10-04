@@ -368,7 +368,6 @@ pub struct SlotFlags {
     /// The source's element count, for the resize and empty-source terms.
     len: ClifValue,
     kind: LoopKind,
-    src_invariant: bool,
     /// The collection callsite this loop lowers: the key a nested loop's
     /// prev-length word is chained under in the enclosing frame.
     site_id: Option<ExprId>,
@@ -382,20 +381,7 @@ impl SlotFlags {
         let stale = cx.b.declare_var(types::I64);
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags {
-            taint,
-            stale,
-            len,
-            kind,
-            src_invariant: false,
-            site_id: cx.collection_site(),
-        }
-    }
-
-    /// The source is loop-invariant, so one prev-length word is exact
-    /// across enclosing iterations.
-    pub fn set_src_invariant(&mut self) {
-        self.src_invariant = true;
+        SlotFlags { taint, stale, len, kind, site_id: cx.collection_site() }
     }
 
     /// Fold one slot's disc into the accumulators.
@@ -418,8 +404,8 @@ impl SlotFlags {
 
     /// Fold the accumulated flags and the source disc `src` into `r`'s
     /// disc. Uses the exact firing rule when a prev-length word is
-    /// available (a state word, a chain word, or a call-site word); a
-    /// nested loop over a variant-length source without a chain word
+    /// available (a state word, a call-site word, or in a loop the
+    /// enclosing slot's chain word); a nested loop without a chain word
     /// falls back to the conservative source-or-slot rule.
     pub fn apply(
         &self,
@@ -445,23 +431,13 @@ impl SlotFlags {
             Chain(SelWord),
             Site(i32),
         }
-        let state = if self.src_invariant {
-            cx.claim_state_word_loop_invariant()
-        } else {
-            cx.claim_state_word()
-        };
-        let claim = match state {
+        let claim = match cx.claim_state_word() {
             Some(off) => Some(PrevLen::State(off)),
             // Nested loop: a per-enclosing-slot word from the enclosing
             // frame's chain.
             None => match self.site_id.and_then(|id| cx.slot_select_word(id)) {
                 Some(w) => Some(PrevLen::Chain(w)),
-                // A call-site word is exact only when the length is
-                // per-instance; a variant length under enclosing loops
-                // would alias iterations.
-                None if cx.env.loop_depth == 0 || self.src_invariant => {
-                    cx.claim_site_word().map(PrevLen::Site)
-                }
+                None if cx.env.loop_depth == 0 => cx.claim_site_word().map(PrevLen::Site),
                 None => None,
             },
         };
@@ -1159,20 +1135,26 @@ where
 }
 
 /// Collect the per-slot state sites in a scaffold-loop body: the
-/// callsite `ExprId` of every nested collection HOF call, each of which
-/// claims one per-slot state chain (see [`BodyCx::open_slot_tables`]).
-/// A nested callback body lives behind its own lambda def and anchors
-/// its sites in the chain its own loop opens.
+/// callsite `ExprId` of every nested collection HOF call (its
+/// prev-length word) and of every cross-kernel lambda call (its
+/// first-call word), each of which claims one per-slot state chain (see
+/// [`BodyCx::open_slot_tables`]). A nested callback body lives behind
+/// its own lambda def and anchors its sites in the chain its own loop
+/// opens.
 pub(crate) fn slot_state_sites<R: Rt, E: UserEvent>(
+    cx: &BodyCx,
     node: &Node<R, E>,
 ) -> LPooled<Vec<ExprId>> {
     let mut ids: LPooled<Vec<ExprId>> = LPooled::take();
     fusion::for_each_node(node, &mut |n| match n.view() {
         NodeView::CallSite(cs) => {
-            if let Some(ApplyView::Lambda(l)) = cs.resolved_apply()
-                && l.inline_callback_body().is_some()
-            {
-                ids.push(n.spec().id);
+            let id = n.spec().id;
+            let collection = matches!(
+                cs.resolved_apply(),
+                Some(ApplyView::Lambda(l)) if l.inline_callback_body().is_some()
+            );
+            if collection || cx.ctx.lambda_call_sites.contains_key(&id) {
+                ids.push(id);
             }
         }
         _ => {}

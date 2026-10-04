@@ -57,10 +57,10 @@ touching the init flag:
   `SlotFlags` (`emit/scaffold.rs`). A TAINTED source skips the logical
   resize — the node-walk saw no event — and the word is untouched.
 - *first-call word*: a cross-kernel call site forces the callee's init
-  flag when its word reads 0, records, and never again (the word is
-  shared across loop iterations at one site, exactly like the shared
-  instance). With no word available the callee sees the plain kernel
-  init flag.
+  flag when its word reads 0, records, and never again. In a loop the
+  word is the slot's (the call site is one of the loop's per-slot
+  sites, below), since each slot calls an instance of its own. With no
+  word available the callee sees the plain kernel init flag.
 
 ## The three identity coordinates
 
@@ -90,7 +90,9 @@ stateless approximation.
 
 A nested collection loop inside a scaffold loop is one HOF instance PER
 OUTER SLOT in the node-walk, so its prev-length word needs one word per
-ordinal. The table lives behind an ordinary claimed word: the enclosing
+ordinal, whatever its source (a source bound outside the loop is still
+observed fresh by a new slot); so does a cross-kernel call site's
+first-call word. No word in a loop is shared across its iterations. The table lives behind an ordinary claimed word: the enclosing
 loop's PREHEADER (which runs at `loop_depth == 0`, where a static claim
 is legal) claims one word per nested-loop site in its body and hands it
 to `graphix_slot_state_table(word, len, valid, own_levels, leaf)`. The
@@ -101,7 +103,7 @@ resize and grows only as an in-bounds guard.
 
 The trick RECURSES for arbitrary nesting: a directory table's entry is
 itself an owning word for the next level. A site at depth D gets one
-static anchor word (`claim_state_word_loop_invariant`: a directory word
+static anchor word (`claim_state_anchor`: a directory word
 is per-instance, its per-slot content lives in the heap structure), and
 each enclosing frame contributes one directory ensure sized by that
 frame's `len`, gated by that frame's source taint, indexed by that

@@ -307,12 +307,10 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// [`claim_state_word`](Self::claim_state_word) without the
-    /// in-loop refusal, for a word that is exact across iterations:
-    /// the observed quantity is loop-invariant
-    /// ([`node_loop_invariant_ref`]) or the word anchors a per-slot
-    /// heap chain ([`open_slot_tables`](Self::open_slot_tables)).
-    /// Callee bodies still refuse.
-    pub fn claim_state_word_loop_invariant(&self) -> Option<i32> {
+    /// in-loop refusal, for the word anchoring a per-slot heap chain
+    /// ([`open_slot_tables`](Self::open_slot_tables)): every iteration
+    /// reaches its own slot through it. Callee bodies still refuse.
+    pub fn claim_state_anchor(&self) -> Option<i32> {
         if self.ctx.claims != Channel::State {
             return None;
         }
@@ -363,7 +361,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
             let anchor = if n_dirs == 0 {
                 self.claim_state_word()
             } else {
-                self.claim_state_word_loop_invariant()
+                self.claim_state_anchor()
             };
             let entry = match anchor {
                 Some(off) => {
@@ -693,8 +691,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     }
 
     /// Bracket scaffold-loop body emission, including the loop's own
-    /// element/index/acc binds (their `Local::depth` stamp is what
-    /// [`node_loop_invariant_ref`] keys on).
+    /// element/index/acc binds.
     pub fn enter_loop(&mut self) {
         self.env.loop_depth += 1;
     }
@@ -796,34 +793,6 @@ pub fn node_composite_source<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Composit
 /// signature type, so gate on the node itself and de-fuse.
 pub fn node_is_bottom<R: Rt, E: UserEvent>(node: &Node<R, E>) -> bool {
     node.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
-}
-
-/// True iff `node` is a plain `Ref` whose binding is loop-invariant
-/// at this emission point: a kernel input or a local bound outside
-/// every open scaffold loop (`Local::loop_depth` 0). Everything else is
-/// conservatively variant. Transparent through parens and blocks.
-pub fn node_loop_invariant_ref<R: Rt, E: UserEvent>(
-    cx: &BodyCx,
-    node: &Node<R, E>,
-) -> bool {
-    let mut n: &dyn Update<R, E> = &**node;
-    loop {
-        match n.view() {
-            NodeView::Ref(r) => {
-                let l = match ref_local_name(n.spec()) {
-                    Some(name) => cx.env.lookup(r.id, name),
-                    None => cx.env.lookup_id(r.id),
-                };
-                return l.is_some_and(|l| l.loop_depth == 0);
-            }
-            NodeView::ExplicitParens(p) => n = &*p.n,
-            NodeView::Block(blk) => match blk.children.last() {
-                Some(tail) => n = &**tail,
-                None => return false,
-            },
-            _ => return false,
-        }
-    }
 }
 
 /// Clone a borrowed composite pointer so the result is owned; pass an

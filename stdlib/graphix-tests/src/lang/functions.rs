@@ -962,6 +962,53 @@ run!(hof_const_body_prev_len, HOF_CONST_BODY_PREV_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// Each slot of a growing map calls `g` as an instance of its own, whose
+// first call is an init view: its constant error raises once per new
+// slot, three by the cycle the fourth slot arrives.
+const HOF_SLOT_CALLEE_FIRST_CALL: &str = r#"
+{
+  let n = array::iter([1, 2, 3, 4]);
+  let raised = 0;
+  let out = {
+    catch(e) raised <- e ~ raised + 1;
+    let g = |x: i64| -> i64 {
+      let e: [i64, Error<`E>] = error(`E);
+      e? + x
+    };
+    array::map(array::init(n, |i| i), |x| g(x))
+  };
+  select count(n) { 4 => raised, _ => never() }
+}
+"#;
+
+run!(hof_slot_callee_first_call, HOF_SLOT_CALLEE_FIRST_CALL, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
+// A nested map over a source outside the loop is an instance per outer
+// slot: a new slot's inner map fires on its first observation of `ys`,
+// and the error derived from it raises once per new slot.
+const HOF_SLOT_NESTED_PREV_LEN: &str = r#"
+{
+  let n = array::iter([1, 2, 3, 4]);
+  let raised = 0;
+  let out = {
+    catch(e) raised <- e ~ raised + 1;
+    let ys = [1, 2, 3];
+    array::map(array::init(n, |i| i), |x| {
+      let k = array::len(array::map(ys, |y| y * 2));
+      let e: [i64, Error<`E>] = select k { 0 => 0, _ => error(`E) };
+      e? + x
+    })
+  };
+  select count(n) { 4 => raised, _ => never() }
+}
+"#;
+
+run!(hof_slot_nested_prev_len, HOF_SLOT_NESTED_PREV_LEN, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // Non-tail recursion depth is bounded by memory, not a counter: depth
 // 1000 completes on both engines.
 const DEEP_NONTAIL_RECURSION_COMPLETES: &str = r#"

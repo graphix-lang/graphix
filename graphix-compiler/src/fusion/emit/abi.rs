@@ -232,17 +232,14 @@ pub(super) struct Local {
     /// shadowing. `None` for a local nothing names (an adopted select
     /// scrutinee, a find loop's result), whose `name` goes unread.
     pub(super) bind_id: Option<BindId>,
-    /// Scaffold-loop depth at bind time; 0 means loop-invariant.
-    pub(super) loop_depth: u32,
 }
 
 pub(crate) struct JitEnv {
     /// In binding order; lookups walk back to front so an inner binding
     /// shadows an outer one.
     pub(super) locals: Vec<Local>,
-    /// Current scaffold-loop depth, stamped on each `Local` at bind time.
-    /// State claims are refused inside loops: one static word cannot
-    /// hold per-slot memory.
+    /// Current scaffold-loop depth. State claims are refused inside
+    /// loops: one static word cannot hold per-slot memory.
     pub(super) loop_depth: u32,
 }
 
@@ -258,8 +255,7 @@ impl JitEnv {
         kind: LocalKind,
         bind_id: Option<BindId>,
     ) {
-        let loop_depth = self.loop_depth;
-        self.locals.push(Local { name, words: vv, kind, bind_id, loop_depth });
+        self.locals.push(Local { name, words: vv, kind, bind_id });
     }
 
     /// The kind and words of every local bound above `mark`, for dropping.

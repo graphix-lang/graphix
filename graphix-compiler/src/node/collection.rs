@@ -607,13 +607,9 @@ fn frozen_may_be_null(t: &Type) -> bool {
 fn finish_loop_result(
     cx: &mut BodyCx,
     result: CompiledExpr,
-    mut flags: scaffold::SlotFlags,
+    flags: scaffold::SlotFlags,
     source: &CompiledExpr,
-    source_invariant: bool,
 ) -> CompiledExpr {
-    if source_invariant {
-        flags.set_src_invariant();
-    }
     flags.apply(cx, result, source.disc)
 }
 
@@ -1709,9 +1705,8 @@ fn emit_loop<'a, 'f, 'c, R: Rt, E: UserEvent>(
     ) -> Result<(CompiledExpr, scaffold::SlotFlags)>,
 ) -> Result<Option<CompiledExpr>> {
     let (value, src) = flavor.emit_source(cx, source)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
     let (result, flags) = emit(cx, src)?;
-    Ok(Some(finish_loop_result(cx, result, flags, &value, source_invariant)))
+    Ok(Some(finish_loop_result(cx, result, flags, &value)))
 }
 
 fn emit_init_kind<R: Rt, E: UserEvent>(
@@ -1738,8 +1733,8 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     let count = source.emit_clif(cx)?;
-    let source_invariant = emit::node_loop_invariant_ref(cx, source);
     let output_source = emit::node_composite_source(body);
+    let sites = emit::slot_state_sites(cx, body);
     let (ptr, flags, count_disc) = scaffold::emit_init_loop(
         cx,
         count.payload,
@@ -1749,13 +1744,13 @@ fn emit_init_kind<R: Rt, E: UserEvent>(
         param.id,
         &output_type,
         output_source,
-        &emit::slot_state_sites(body),
+        &sites,
         |cx| body.emit_clif(cx),
     )?;
     let result = flavor.emit_result(cx, ptr)?;
     // The firing wrap must see an over-limit count as a tainted source.
     let count = CompiledExpr::new(count_disc, count.payload);
-    Ok(Some(finish_loop_result(cx, result, flags, &count, source_invariant)))
+    Ok(Some(finish_loop_result(cx, result, flags, &count)))
 }
 
 fn emit_map_kind<R: Rt, E: UserEvent>(
@@ -1778,13 +1773,14 @@ fn emit_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let output_source = emit::node_composite_source(body);
+        let sites = emit::slot_state_sites(cx, body);
         let (ptr, flags) = scaffold::emit_map_loop(
             cx,
             src,
             &param.elem(&element_type, &leaves),
             &output_type,
             output_source,
-            &emit::slot_state_sites(body),
+            &sites,
             |cx| body.emit_clif(cx),
         )?;
         Ok((flavor.emit_result(cx, ptr)?, flags))
@@ -1807,11 +1803,12 @@ fn emit_filter_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     emit_loop(cx, source, flavor, |cx, src| {
+        let sites = emit::slot_state_sites(cx, body);
         let (ptr, flags) = scaffold::emit_filter_loop(
             cx,
             src,
             &param.elem(&element_type, &leaves),
-            &emit::slot_state_sites(body),
+            &sites,
             |cx| body.emit_clif(cx),
         )?;
         Ok((flavor.emit_result(cx, ptr)?, flags))
@@ -1845,13 +1842,14 @@ fn emit_filter_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let output_source = emit::node_composite_source(body);
+        let sites = emit::slot_state_sites(cx, body);
         let (ptr, flags) = scaffold::emit_filter_map_loop(
             cx,
             src,
             &param.elem(&element_type, &leaves),
             &output_element,
             output_source,
-            &emit::slot_state_sites(body),
+            &sites,
             |cx| body.emit_clif(cx),
         )?;
         Ok((flavor.emit_result(cx, ptr)?, flags))
@@ -1882,12 +1880,13 @@ fn emit_flat_map_kind<R: Rt, E: UserEvent>(
     };
     emit_loop(cx, source, flavor, |cx, src| {
         let body_source = emit::node_composite_source(body);
+        let sites = emit::slot_state_sites(cx, body);
         let (ptr, flags) = scaffold::emit_flat_map_loop(
             cx,
             src,
             &param.elem(&element_type, &leaves),
             extend,
-            &emit::slot_state_sites(body),
+            &sites,
             |cx| {
                 let value = body.emit_clif(cx)?;
                 match extend {
@@ -1931,11 +1930,12 @@ fn emit_find_kind<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     emit_loop(cx, source, flavor, |cx, src| {
+        let sites = emit::slot_state_sites(cx, body);
         let ((disc, payload), flags) = scaffold::emit_find_loop(
             cx,
             src,
             &param.elem(&element_type, &leaves),
-            &emit::slot_state_sites(body),
+            &sites,
             |cx| body.emit_clif(cx),
         )?;
         Ok((CompiledExpr::new(disc, payload), flags))
@@ -1965,11 +1965,12 @@ fn emit_find_map_kind<R: Rt, E: UserEvent>(
     }
     emit_loop(cx, source, flavor, |cx, src| {
         let body_source = emit::node_composite_source(body);
+        let sites = emit::slot_state_sites(cx, body);
         let ((disc, payload), flags) = scaffold::emit_find_map_loop(
             cx,
             src,
             &param.elem(&element_type, &leaves),
-            &emit::slot_state_sites(body),
+            &sites,
             |cx| {
                 let value = body.emit_clif(cx)?;
                 emit::ensure_owned_value_src(cx, body_source, value.disc, value.payload)
@@ -2055,6 +2056,7 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
         }
     };
     emit_loop(cx, source, flavor, |cx, src| {
+        let sites = emit::slot_state_sites(cx, body);
         scaffold::emit_fold_loop(
             cx,
             src,
@@ -2062,7 +2064,7 @@ fn emit_fold_kind<R: Rt, E: UserEvent>(
             &acc.name,
             acc.id,
             &element.elem(&element_type, &element_leaves),
-            &emit::slot_state_sites(body),
+            &sites,
             |cx| operand(cx, init),
             |cx| operand(cx, body),
         )

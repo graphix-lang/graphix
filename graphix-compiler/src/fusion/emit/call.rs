@@ -4,6 +4,7 @@
 
 use crate::{
     Node, Rt, Update, UserEvent,
+    expr::ExprId,
     fusion::{
         LambdaCallInfo,
         kernel_abi::{self, AbiKind},
@@ -332,20 +333,42 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 
 /// The callee's context word: our init view, forced on this site's
 /// first call ever (the node-walk primes an instance's first dispatch
-/// the same way).
-fn emit_callee_context_word(cx: &mut BodyCx) -> ClifValue {
-    match cx.claim_state_word_loop_invariant() {
-        Some(off) => {
+/// the same way). In a loop each slot is an instance with a first call
+/// of its own.
+fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
+    let word = match cx.env.loop_depth {
+        0 => cx.claim_state_word().map(|off| {
             let sp = cx.state_ptr();
-            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), sp, off);
-            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
-            let one = cx.b.ins().iconst(types::I64, 1);
-            cx.b.ins().store(MemFlags::trusted(), one, sp, off);
-            let init = cx.init_flag();
-            let first_i = cx.b.ins().uextend(types::I64, first);
-            cx.b.ins().bor(init, first_i)
+            SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64))
+        }),
+        _ => cx.slot_select_word(site),
+    };
+    let init = cx.init_flag();
+    let first_call = |cx: &mut BodyCx, addr: ClifValue| {
+        let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+        let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
+        let one = cx.b.ins().iconst(types::I64, 1);
+        cx.b.ins().store(MemFlags::trusted(), one, addr, 0);
+        let first = cx.b.ins().uextend(types::I64, first);
+        cx.b.ins().bor(init, first)
+    };
+    match word {
+        None => init,
+        Some(SelWord::Sure(addr)) => first_call(cx, addr),
+        Some(SelWord::Guarded { base, addr }) => {
+            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+            let word_bl = cx.b.create_block();
+            let merge = cx.b.create_block();
+            cx.b.append_block_param(merge, types::I64);
+            cx.b.ins().brif(has, word_bl, &[], merge, &[BlockArg::Value(init)]);
+            cx.b.switch_to_block(word_bl);
+            cx.b.seal_block(word_bl);
+            let w = first_call(cx, addr);
+            cx.b.ins().jump(merge, &[BlockArg::Value(w)]);
+            cx.b.switch_to_block(merge);
+            cx.b.seal_block(merge);
+            cx.b.block_params(merge)[0]
         }
-        None => cx.init_flag(),
     }
 }
 
@@ -488,7 +511,7 @@ fn emit_site_block(
             Some(l) => TruncLeaf::Blocks(l.clone()),
         },
     };
-    let anchor = match cx.claim_state_word_loop_invariant() {
+    let anchor = match cx.claim_state_anchor() {
         Some(off) => {
             cx.ctx.state.anchors.borrow_mut().push(kernel_abi::SiteAnchor {
                 rel: (off / 8) as u32,
@@ -815,7 +838,7 @@ pub(crate) fn emit_lambda_call_node<R: Rt, E: UserEvent>(
     let (slot_cvs, drops) = marshal_args(cx, &slots, fn_name)?;
     let mut clif_args: SmallVec<[ClifValue; 24]> =
         SmallVec::with_capacity(slot_cvs.len() * 2 + 3);
-    clif_args.push(emit_callee_context_word(cx));
+    clif_args.push(emit_callee_context_word(cx, cs.spec().id));
     clif_args.push(cx.state_ptr());
     let site_block = emit_site_block(cx, info, is_self)?;
     clif_args.push(site_block);
