@@ -6,6 +6,7 @@ use super::{
     callsite::CallSite,
     data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
     error::{Qop, SeqAbortEvent, SeqGuard},
+    fork_control::{ForkControl, ForkKind},
     lambda::Lambda,
     module::Module,
     op::{Add, And, Div, Eq, Gt, Gte, Lt, Lte, Mod, Mul, Ne, Neg, Not, Or, Sub},
@@ -16,8 +17,8 @@ use crate::{
     CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, Rt, Scope,
     UserEvent, bailat,
     expr::{
-        ApplyExpr, Expr, ExprId, ExprKind, ModuleKind, Name, SelectExpr, StructExpr,
-        StructWithExpr, print::PrettyDisplay,
+        ApplyExpr, Decorations, Expr, ExprId, ExprKind, LambdaBody, ModuleKind, Name,
+        SelectExpr, StructExpr, StructWithExpr, print::PrettyDisplay,
     },
     ide::{ModuleRefSite, ScopeMapEntry},
     node::{
@@ -31,8 +32,9 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use enumflags2::BitFlags;
-use netidx_value::Typ;
+use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
+use triomphe::Arc;
 
 /// Every per-kind `compile` recurses back through here or through
 /// [`compile_module`], so these two are where graph construction
@@ -74,6 +76,71 @@ fn annotated_lambda<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option<crate::Lam
     }
 }
 
+/// The fork control `attr` asks for, if it is `#[parallel]`,
+/// `#[parallel(grain)]` or `#[serial]`.
+fn fork_kind(spec: &Expr, attr: &crate::expr::Attr) -> Result<Option<ForkKind>> {
+    let grain = match &*attr.args {
+        [] => None,
+        [g] if attr.name == "parallel" => match &g.kind {
+            ExprKind::Constant(Value::I64(n)) if *n > 0 && *n <= u32::MAX as i64 => {
+                Some(*n as u32)
+            }
+            _ => bailat!(spec, "#[parallel(grain)] takes a positive integer literal"),
+        },
+        _ if ForkKind::of(&attr.name, None).is_some() => {
+            bailat!(spec, "#[{}] takes no arguments here", attr.name)
+        }
+        _ => None,
+    };
+    Ok(ForkKind::of(&attr.name, grain))
+}
+
+/// `spec`, a `let` carrying a fork-control attribute, with the attribute
+/// moved onto its value, or onto the body of the lambda it defines;
+/// `None` if it is no `let`.
+fn fork_on_body(spec: &Expr) -> Option<Expr> {
+    let ExprKind::Bind(b) = &spec.kind else { return None };
+    let dec = spec.dec.as_ref()?;
+    let (moved, kept): (SmallVec<[_; 2]>, SmallVec<[_; 2]>) =
+        dec.attrs.iter().cloned().partition(|a| ForkKind::of(&a.name, None).is_some());
+    let decorate = |e: &Expr| {
+        let mut e = e.clone();
+        let mut dec = e.dec.as_deref().cloned().unwrap_or_else(|| Decorations {
+            comments: Arc::from_iter([]),
+            attrs: Arc::from_iter([]),
+        });
+        dec.attrs = dec.attrs.iter().cloned().chain(moved.iter().cloned()).collect();
+        e.dec = Some(Arc::new(dec));
+        e
+    };
+    let mut lambda = &b.value;
+    while let ExprKind::ExplicitParens(inner) = &lambda.kind {
+        lambda = inner;
+    }
+    let value = match &lambda.kind {
+        ExprKind::Lambda(l) => match &l.body {
+            LambdaBody::Expr(body) => {
+                let mut l = (**l).clone();
+                l.body = LambdaBody::Expr(decorate(body));
+                let mut value = lambda.clone();
+                value.kind = ExprKind::Lambda(Arc::new(l));
+                value
+            }
+            LambdaBody::Builtin(_) => decorate(&b.value),
+        },
+        _ => decorate(&b.value),
+    };
+    let mut bind = (**b).clone();
+    bind.value = value;
+    let mut spec = spec.clone();
+    spec.kind = ExprKind::Bind(Arc::new(bind));
+    spec.dec = Some(Arc::new(Decorations {
+        comments: dec.comments.clone(),
+        attrs: kept.into_iter().collect(),
+    }));
+    Some(spec)
+}
+
 fn compile_inner<R: Rt, E: UserEvent>(
     ctx: &mut CompileCtx<R, E>,
     flags: BitFlags<CFlag>,
@@ -90,11 +157,19 @@ fn compile_inner<R: Rt, E: UserEvent>(
             scope: scope.lexical.clone(),
         });
     }
-    // Definition-asserting attribute names are compiler-reserved; any other
-    // attribute must be registered or it is an error.
+    // Definition-asserting and fork-control attribute names are
+    // compiler-reserved; any other attribute must be registered or it is
+    // an error.
     let mut def_asserts: SmallVec<[DefAssertionKind; 2]> = SmallVec::new();
+    let mut fork: Option<ForkKind> = None;
     if let Some(dec) = &spec.dec {
         for attr in dec.attrs.iter() {
+            if let Some(k) = fork_kind(&spec, attr)? {
+                if fork.replace(k).is_some() {
+                    bailat!(spec, "at most one of #[parallel] and #[serial]");
+                }
+                continue;
+            }
             match DefAssertionKind::from_name(&attr.name) {
                 Some(k) => def_asserts.push(k),
                 None => {
@@ -110,6 +185,14 @@ fn compile_inner<R: Rt, E: UserEvent>(
                 }
             }
         }
+    }
+    if let Some(kind) = fork {
+        // on a definition it applies to the body of every instance
+        if let Some(spec) = fork_on_body(&spec) {
+            return compile_inner(ctx, flags, spec, scope, top_id, statement);
+        }
+        let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;
+        return Ok(ForkControl::new(spec, kind, node));
     }
     if !def_asserts.is_empty() {
         let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;

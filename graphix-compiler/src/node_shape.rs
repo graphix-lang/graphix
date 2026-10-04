@@ -276,25 +276,11 @@ fn node_children<'a, R: Rt, E: UserEvent>(
 ) -> SmallVec<[&'a Node<R, E>; 4]> {
     use NodeView as V;
     let mut kids: SmallVec<[&'a Node<R, E>; 4]> = SmallVec::new();
+    if let Some((l, r)) = binary_operands(view) {
+        kids.extend([l, r]);
+        return kids;
+    }
     match view {
-        V::Add(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Sub(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Mul(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Div(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Mod(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::CheckedAdd(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::CheckedSub(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::CheckedMul(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::CheckedDiv(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::CheckedMod(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Eq(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Ne(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Lt(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Gt(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Lte(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Gte(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::And(n) => kids.extend([&n.lhs, &n.rhs]),
-        V::Or(n) => kids.extend([&n.lhs, &n.rhs]),
         V::Block(b) => kids.extend(b.children.iter()),
         V::Bind(b) => kids.push(&b.node),
         V::MapQ(m) => kids.extend([&m.source, &m.prototype]),
@@ -316,6 +302,7 @@ fn node_children<'a, R: Rt, E: UserEvent>(
             kids.extend(s.arms.iter().map(|(_, c)| c));
         }
         V::ExplicitParens(n) => kids.push(&n.n),
+        V::ForkControl(n) => kids.push(&n.n),
         V::TypeCast(n) => kids.push(&n.n),
         V::Qop(n) => kids.push(&n.n),
         V::SeqGuard(n) => kids.push(&n.n),
@@ -369,8 +356,56 @@ fn node_children<'a, R: Rt, E: UserEvent>(
         V::FusedKernel(fk) => kids.extend(fk.feeders().iter()),
         V::Impl(i) => kids.push(&i.body),
         V::Ref(_) | V::Constant(_) | V::TypeDef(_) | V::Nop(_) | V::Lambda(_) => {}
+        V::Add(_)
+        | V::Sub(_)
+        | V::Mul(_)
+        | V::Div(_)
+        | V::Mod(_)
+        | V::CheckedAdd(_)
+        | V::CheckedSub(_)
+        | V::CheckedMul(_)
+        | V::CheckedDiv(_)
+        | V::CheckedMod(_)
+        | V::Eq(_)
+        | V::Ne(_)
+        | V::Lt(_)
+        | V::Gt(_)
+        | V::Lte(_)
+        | V::Gte(_)
+        | V::And(_)
+        | V::Or(_) => {
+            unreachable!("binary operands")
+        }
     }
     kids
+}
+
+/// A binary operator's operands.
+pub(crate) fn binary_operands<'a, R: Rt, E: UserEvent>(
+    view: &NodeView<'a, R, E>,
+) -> Option<(&'a Node<R, E>, &'a Node<R, E>)> {
+    use NodeView as V;
+    Some(match view {
+        V::Add(n) => (&n.lhs, &n.rhs),
+        V::Sub(n) => (&n.lhs, &n.rhs),
+        V::Mul(n) => (&n.lhs, &n.rhs),
+        V::Div(n) => (&n.lhs, &n.rhs),
+        V::Mod(n) => (&n.lhs, &n.rhs),
+        V::CheckedAdd(n) => (&n.lhs, &n.rhs),
+        V::CheckedSub(n) => (&n.lhs, &n.rhs),
+        V::CheckedMul(n) => (&n.lhs, &n.rhs),
+        V::CheckedDiv(n) => (&n.lhs, &n.rhs),
+        V::CheckedMod(n) => (&n.lhs, &n.rhs),
+        V::Eq(n) => (&n.lhs, &n.rhs),
+        V::Ne(n) => (&n.lhs, &n.rhs),
+        V::Lt(n) => (&n.lhs, &n.rhs),
+        V::Gt(n) => (&n.lhs, &n.rhs),
+        V::Lte(n) => (&n.lhs, &n.rhs),
+        V::Gte(n) => (&n.lhs, &n.rhs),
+        V::And(n) => (&n.lhs, &n.rhs),
+        V::Or(n) => (&n.lhs, &n.rhs),
+        _ => return None,
+    })
 }
 
 /// The name a [`NodeShape::Node`] kind matches: the `NodeView` variant
@@ -395,6 +430,7 @@ pub fn kind_name<R: Rt, E: UserEvent>(view: &NodeView<'_, R, E>) -> &'static str
         V::Qop(_) => "Qop",
         V::OrNever(_) => "OrNever",
         V::ExplicitParens(_) => "ExplicitParens",
+        V::ForkControl(_) => "ForkControl",
         V::TypeCast(_) => "TypeCast",
         V::Connect(_) => "Connect",
         V::ConnectDeref(_) => "ConnectDeref",

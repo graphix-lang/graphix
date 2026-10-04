@@ -493,6 +493,27 @@ fork in every callee would fork tiny library functions everywhere.
 `#[serial]` is dynamic: "run this serially" means the whole
 computation, wherever it calls.
 
+**As built.** `node/fork_control.rs`: a `ForkControl` node runs its
+child under `ExecCtx::fork` (`branch::ForkFlags`): `#[serial]` sets
+`inhibit`, which a callee's body keeps; `#[parallel]` sets `forced`,
+which a callee's body clears, and makes every fork point under it fork
+whenever the runtime may fork at all (`Auto` or `Force`; `Off` is off).
+The grain is positional, `#[parallel(4)]`: attribute arguments are
+expressions, and `grain: 4` is not one. Under `Auto`, a `#[parallel]`
+node updated off the pool asks the next cycle onto it. On a `let` the
+attribute moves onto the value, and on a definition onto its lambda's
+body, so every instance compiles the node (`compiler::fork_on_body`). The
+node is a fusion boundary: its child fuses as a region of its own, and a
+kernel forks nothing until phase 6, so `#[parallel]` over an expression
+that fuses whole has no effect. The assertion runs at the node's
+`typecheck1` (`analysis::check_parallel`): a block needs a run of two
+statements and is otherwise refused naming its first break
+(`plan_block_explained`: the variable read, an ordered call, a module,
+a catch); anything else needs a fork point with two children that are
+more than a constant or a variable read, or a call into a mapping
+collection. Pins: `lang::par_attrs`, `lang::image::
+program_image_restores_fork_control`.
+
 Process-level control: `GXConfig::parallel: Off | Auto | Force` and
 `GRAPHIX_PAR=off|auto|force`. `Force` treats every fork point as
 `#[parallel]` (for the fuzzer and tests). `GRAPHIX_EVAL_THREADS` sizes

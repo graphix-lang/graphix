@@ -343,7 +343,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        ctx.with_serial(true, |ctx| self.update_serial(ctx))
+        let flags = crate::branch::ForkFlags { seq: true, ..ctx.fork };
+        ctx.with_fork_flags(flags, |ctx| self.update_serial(ctx))
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {

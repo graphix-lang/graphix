@@ -523,6 +523,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::FoldQ(_)
         | NodeView::Select(_)
         | NodeView::ExplicitParens(_)
+        | NodeView::ForkControl(_)
         | NodeView::TypeCast(_)
         | NodeView::Not(_)
         | NodeView::Neg(_)
@@ -820,6 +821,23 @@ impl Vars {
         refs || self.ids.len() != n
     }
 
+    /// Where `self` and `other` meet: `Some(None)` when either is a
+    /// reference or an unknown, else the id they share.
+    fn meeting(&self, other: &Vars) -> Option<Option<BindId>> {
+        match (self.unknown(), other.unknown()) {
+            (true, _) => (!other.is_empty()).then_some(None),
+            (_, true) => (!self.is_empty()).then_some(None),
+            _ => {
+                let (small, large) = if self.ids.len() <= other.ids.len() {
+                    (&self.ids, &other.ids)
+                } else {
+                    (&other.ids, &self.ids)
+                };
+                small.iter().find(|id| large.contains(id)).map(|id| Some(*id))
+            }
+        }
+    }
+
     fn meets(&self, other: &Vars) -> bool {
         match (self.unknown(), other.unknown()) {
             (true, _) => !other.is_empty(),
@@ -1010,6 +1028,31 @@ pub(crate) fn plan_block<R: Rt, E: UserEvent>(
     catches: &[usize],
     ctx: &CompileCtx<R, E>,
 ) -> Box<[(u32, u32)]> {
+    plan_block_explained(children, catches, ctx, &mut |_, _| ())
+}
+
+/// Why a block plan starts a new run at a statement.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RunBreak {
+    /// A catch, which runs after what it covers.
+    Catch,
+    /// A module, trait or impl statement, or the statement after one.
+    Module,
+    /// It reads what an earlier statement of the run publishes: that
+    /// variable, or `None` through a reference or an unresolved call.
+    Reads(Option<BindId>),
+    /// It and an earlier statement of the run both make ordered calls.
+    Ordered,
+}
+
+/// [`plan_block`], telling `explain` each statement that starts a run
+/// after another, and why.
+pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
+    children: &[Node<R, E>],
+    catches: &[usize],
+    ctx: &CompileCtx<R, E>,
+    explain: &mut dyn FnMut(usize, RunBreak),
+) -> Box<[(u32, u32)]> {
     let graph = collect_static_graph_of(children.iter());
     let ordered = |name: &str| ctx.builtin_ordered(name);
     let locals: LPooled<Vec<(Summary, SmallVec<[LambdaInstanceId; 4]>)>> = children
@@ -1035,6 +1078,7 @@ pub(crate) fn plan_block<R: Rt, E: UserEvent>(
         if catches.contains(&i) {
             if let Some(a) = start.take() {
                 runs.push((a as u32, i as u32));
+                explain(i, RunBreak::Catch);
             }
             continue;
         }
@@ -1050,14 +1094,21 @@ pub(crate) fn plan_block<R: Rt, E: UserEvent>(
         );
         access.ordered |=
             matches!(n.view(), NodeView::SeqAbort(_) | NodeView::SeqMachine(_));
-        let joins = start.is_some()
-            && !module
-            && !after_module
-            && !access.reads.meets(&published)
-            && !(access.ordered && run_ordered);
+        let met = access.reads.meeting(&published);
+        let why = if module || after_module {
+            Some(RunBreak::Module)
+        } else if let Some(id) = met {
+            Some(RunBreak::Reads(id))
+        } else if access.ordered && run_ordered {
+            Some(RunBreak::Ordered)
+        } else {
+            None
+        };
+        let joins = start.is_some() && why.is_none();
         if !joins {
             if let Some(a) = start.replace(i) {
                 runs.push((a as u32, i as u32));
+                explain(i, why.expect("a break has a reason"));
             }
             published = Vars::default();
             run_ordered = false;
@@ -1186,4 +1237,92 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
             }
         }
     }
+}
+
+/// `#[parallel]`'s assertion: something within `node`, callees excluded,
+/// can run beside something else. A block (the decorated expression, or
+/// a `let`'s value) needs a run of two statements, and the error names
+/// why its first break was made; anything else needs a fork point with
+/// two children that are more than a constant or a variable read.
+pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
+    spec: &crate::expr::Expr,
+    node: &Node<R, E>,
+    ctx: &CompileCtx<R, E>,
+) -> Result<()> {
+    let mut target = node;
+    loop {
+        target = match target.view() {
+            NodeView::Bind(b) => &b.node,
+            NodeView::ExplicitParens(p) => &p.n,
+            _ => break,
+        }
+    }
+    if let NodeView::Block(b) = target.view() {
+        let mut first: Option<(usize, RunBreak)> = None;
+        let runs = plan_block_explained(&b.children, &b.catches, ctx, &mut |i, why| {
+            first.get_or_insert((i, why));
+        });
+        if runs.iter().any(|(a, b)| b - a >= 2) {
+            return Ok(());
+        }
+        let Some((i, why)) = first else {
+            crate::bailat!(
+                spec,
+                "#[parallel] has nothing to run in parallel: one statement"
+            )
+        };
+        let reason: compact_str::CompactString = match why {
+            RunBreak::Reads(Some(id)) => {
+                let name = ctx.env.by_id.get(&id).map(|b| b.name.clone());
+                let name = name.as_deref().unwrap_or("a variable");
+                compact_str::format_compact!(
+                    "reads `{name}`, which an earlier statement publishes"
+                )
+            }
+            RunBreak::Reads(None) => {
+                "reads through a reference or a call the compiler cannot resolve".into()
+            }
+            RunBreak::Ordered => "makes an ordered call after another one".into(),
+            RunBreak::Module => "is, or follows, a module, trait or impl".into(),
+            RunBreak::Catch => "is a catch, which runs after what it covers".into(),
+        };
+        crate::bailat!(
+            spec,
+            "#[parallel] has nothing to run in parallel: statement {} {reason}",
+            i + 1
+        )
+    }
+    let work =
+        |n: &Node<R, E>| !matches!(n.view(), NodeView::Constant(_) | NodeView::Ref(_));
+    let two =
+        |ns: &mut dyn Iterator<Item = &Node<R, E>>| ns.filter(|n| work(n)).count() >= 2;
+    let mut forks = false;
+    fusion::for_each_node(target, &mut |n| {
+        forks = forks
+            || match n.view() {
+                NodeView::MapQ(_) => true,
+                NodeView::Block(b) => plan_block(&b.children, &b.catches, ctx)
+                    .iter()
+                    .any(|(a, b)| b - a >= 2),
+                NodeView::CallSite(cs) => {
+                    let slots = matches!(
+                        cs.resolved_apply(),
+                        Some(ApplyView::Lambda(g)) if matches!(g.body().view(), NodeView::MapQ(_))
+                    );
+                    slots || two(&mut cs.args.values().filter_map(|a| a.node.as_ref()))
+                }
+                NodeView::Struct(c) => two(&mut c.n.iter()),
+                NodeView::Tuple(c) => two(&mut c.n.iter()),
+                NodeView::Variant(c) => two(&mut c.n.iter()),
+                NodeView::Array(c) => two(&mut c.n.iter()),
+                NodeView::ListLit(c) => two(&mut c.n.iter()),
+                NodeView::StringInterpolate(c) => two(&mut c.args.iter()),
+                v => crate::node_shape::binary_operands(&v)
+                    .is_some_and(|(l, r)| work(l) && work(r)),
+            }
+    });
+    if !forks {
+        crate::bailat!(spec, "#[parallel] has nothing to run in parallel")
+    }
+    Ok(())
 }

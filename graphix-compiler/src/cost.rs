@@ -421,6 +421,17 @@ impl Default for Slots {
     }
 }
 
+/// The slots per range of a forced collection: `#[parallel(g)]`'s `g`,
+/// one range per worker under a bare `#[parallel]`, one slot each under
+/// `GRAPHIX_PAR=force`.
+fn forced_grain<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, n: usize) -> usize {
+    match ctx.fork.forced {
+        None => 1,
+        Some(0) => n.div_ceil(crate::branch::eval_pool().current_num_threads()),
+        Some(g) => g as usize,
+    }
+}
+
 /// What a collection's update does with its slots.
 pub enum SlotPlan {
     Serial,
@@ -442,7 +453,7 @@ impl SlotSite {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
             _ if n < 2 => SlotPlan::Serial,
-            ParMode::Force => SlotPlan::Fork { grain: 1 },
+            ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx, n) },
             ParMode::Auto => self.plan_auto(),
         }
     }
@@ -516,6 +527,8 @@ pub struct CycleSite {
     /// Cycles left out of the pool after too many idle ones.
     backoff: u16,
     period: u8,
+    /// A cycle off the pool found work for it (a `#[parallel]` node).
+    wanted: bool,
 }
 
 /// Pooled cycles that neither fork nor find a site worth measuring
@@ -526,6 +539,9 @@ impl CycleSite {
     /// Whether the next cycle enters the pool.
     pub fn enter(&mut self) -> bool {
         let Some(cal) = calibration() else { return false };
+        if std::mem::take(&mut self.wanted) {
+            return true;
+        }
         if let Some(b) = self.backoff.checked_sub(1) {
             self.backoff = b;
             return false;
@@ -548,7 +564,8 @@ impl CycleSite {
         let Some(cal) = calibration() else { return };
         self.hist.add(cal, ticks);
         match (pooled, forks) {
-            (false, _) => (),
+            (false, 0) => (),
+            (false, _) => self.wanted = true,
             (true, 0) => {
                 self.idle += 1;
                 if self.idle >= IDLE {

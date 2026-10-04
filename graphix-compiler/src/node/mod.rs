@@ -43,6 +43,7 @@ pub(crate) mod compiler;
 pub mod coretraits;
 pub(crate) mod data;
 pub(crate) mod error;
+pub(crate) mod fork_control;
 pub mod genn;
 pub mod lambda;
 pub use graphix_types::list;

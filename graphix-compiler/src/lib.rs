@@ -537,6 +537,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
     Qop(&'a node::error::Qop<R, E>),
     OrNever(&'a node::error::OrNever<R, E>),
     ExplicitParens(&'a node::ExplicitParens<R, E>),
+    ForkControl(&'a node::fork_control::ForkControl<R, E>),
     TypeCast(&'a node::TypeCast<R, E>),
     Connect(&'a node::Connect<R, E>),
     ConnectDeref(&'a node::ConnectDeref<R, E>),
@@ -1202,10 +1203,8 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
     pub(crate) fork_depth: u8,
     /// The runtime's parallel mode when the view was made.
     pub(crate) par: graphix_types::stack::ParMode,
-    /// Inside a seq machine, outside any callee body: nothing forks. Its
-    /// guards and raises meet through handler state no branch view
-    /// isolates, in the order serial evaluation gives them.
-    pub(crate) serial: bool,
+    /// What the code around the node being updated says about forking.
+    pub(crate) fork: branch::ForkFlags,
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
@@ -1494,33 +1493,36 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             event,
             fork_depth: 0,
             par: branch::view_mode(control),
-            serial: false,
+            fork: branch::ForkFlags::default(),
         }
     }
 }
 
 impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
-    /// How this view may fork: `Off` past the depth limit or inside a seq
-    /// machine.
+    /// How this view may fork: `Off` past the depth limit, inside a seq
+    /// machine or under `#[serial]`; `Force` under `#[parallel]`.
     #[inline]
     pub(crate) fn fork_mode(&self) -> ParMode {
-        if self.serial || self.fork_depth >= branch::MAX_FORK_DEPTH {
+        let f = self.fork;
+        if f.seq || f.inhibit || self.fork_depth >= branch::MAX_FORK_DEPTH {
             ParMode::Off
+        } else if f.forced.is_some() && self.par != ParMode::Off {
+            ParMode::Force
         } else {
             self.par
         }
     }
 
-    /// Run `f` with [`ExecCtx::serial`] set to `serial`.
+    /// Run `f` under the fork flags `flags`.
     #[inline]
-    pub(crate) fn with_serial<T>(
+    pub(crate) fn with_fork_flags<T>(
         &mut self,
-        serial: bool,
+        flags: branch::ForkFlags,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let saved = std::mem::replace(&mut self.serial, serial);
+        let saved = std::mem::replace(&mut self.fork, flags);
         let r = f(self);
-        self.serial = saved;
+        self.fork = saved;
         r
     }
 
@@ -1536,7 +1538,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             event,
             fork_depth: self.fork_depth,
             par: self.par,
-            serial: self.serial,
+            fork: self.fork,
         }
     }
 

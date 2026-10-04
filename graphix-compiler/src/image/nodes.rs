@@ -36,7 +36,7 @@ node_tags! {
     ConnectDeref, TypeCast, Any, Sample, ArrayRef, ArraySlice, StructWith,
     StructRef, Construct, TupleRef, ByRef, Deref, Map, MapRef, Catch, Qop,
     SeqGuard, OrNever, CallSite, Select, Collection, Fused, SeqAbort, SeqMachine,
-    SeqCapture,
+    SeqCapture, ForkControl,
 }
 
 pub(crate) fn put_tag(tag: NodeTag, buf: &mut ImageBuf) {
@@ -172,6 +172,9 @@ fn decode_tagged<R: Rt, E: UserEvent>(
         NodeTag::Tuple => Tuple::image_decode(ctx, buf),
         NodeTag::Variant => Variant::image_decode(ctx, buf),
         NodeTag::ExplicitParens => ExplicitParens::image_decode(ctx, buf),
+        NodeTag::ForkControl => {
+            crate::node::fork_control::ForkControl::image_decode(ctx, buf)
+        }
         NodeTag::StringInterpolate => StringInterpolate::image_decode(ctx, buf),
         NodeTag::Connect => Connect::image_decode(ctx, buf),
         NodeTag::ConnectDeref => ConnectDeref::image_decode(ctx, buf),

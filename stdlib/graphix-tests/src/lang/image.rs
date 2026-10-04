@@ -396,6 +396,27 @@ async fn program_image_restores() -> Result<()> {
     Ok(())
 }
 
+/// `#[parallel]` and `#[serial]` restore with the program, on an
+/// expression, a `let` and a definition alike.
+#[tokio::test]
+async fn program_image_restores_fork_control() -> Result<()> {
+    let program = r#"
+        let double = |xs: Array<i64>| #[parallel] array::map(xs, |x| x * 2);
+        #[parallel]
+        let triple = |xs: Array<i64>| array::map(xs, |x| x * 3);
+        #[serial]
+        let s = array::fold(double([1, 2, 3]), 0, |a, b| a + b);
+        #[parallel] (double([s]), triple([4, 5]))
+    "#;
+    let ((cold_program, cold_values), (warm_program, warm_values)) =
+        cold_and_warm(program).await?;
+    let last = cold_values.last().expect("the program produced its tuple");
+    assert_eq!(format!("{last}"), "[[i64:24], [i64:12, i64:15]]");
+    assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
+    assert_eq!(cold_values, warm_values);
+    Ok(())
+}
+
 /// An image whose instance table points outside its heap is refused when
 /// it is read, so the session runs cold rather than fail a first call.
 #[tokio::test]

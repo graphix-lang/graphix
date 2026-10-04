@@ -667,6 +667,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
         }
         NodeView::OrNever(o) => rec!(&o.n),
         NodeView::ExplicitParens(p) => rec!(&p.n),
+        NodeView::ForkControl(p) => rec!(&p.n),
         NodeView::TypeCast(t) => rec!(&t.n),
         NodeView::Not(n) => rec!(&n.n),
         NodeView::Neg(n) => rec!(&n.n),
@@ -1410,6 +1411,9 @@ pub(crate) fn effect_blocker<R: Rt, E: UserEvent>(
         NodeView::SeqAbort(_) => Some("sequence abort fails a run"),
         NodeView::SeqMachine(_) => Some("a seq machine sequences across cycles"),
         NodeView::SeqCapture(_) => Some("a seqq capture is chosen by the analysis"),
+        NodeView::ForkControl(_) => {
+            Some("fork control runs its child under flags of its own")
+        }
         NodeView::Module(_) => Some("module statement is structure, not computation"),
         NodeView::Block(b) if b.module => {
             Some("module statement is structure, not computation")

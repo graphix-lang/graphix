@@ -560,6 +560,28 @@ pub(crate) fn cut<'a, T>(
         .collect()
 }
 
+/// What the code around a node says about forking it.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ForkFlags {
+    /// Inside a seq machine, outside any callee body. Its guards and
+    /// raises meet through handler state no branch view isolates, in
+    /// the order serial evaluation gives them.
+    pub(crate) seq: bool,
+    /// Under `#[serial]`, callees included.
+    pub(crate) inhibit: bool,
+    /// Under `#[parallel]`, outside any callee body: every fork point
+    /// forks, a collection in ranges of this many slots (0: one range
+    /// per worker).
+    pub(crate) forced: Option<u32>,
+}
+
+impl ForkFlags {
+    /// What a callee's body runs under: only `#[serial]` reaches it.
+    pub(crate) fn body(self) -> Self {
+        Self { seq: false, inhibit: self.inhibit, forced: None }
+    }
+}
+
 /// One part of a [`fork_each`]: its branch's views and its result.
 struct Part<R: Rt, E: UserEvent, P, T> {
     cx: ForkCx<R, E>,
@@ -599,7 +621,7 @@ where
         .collect();
     let (libstate, hooks, control, decoder) =
         (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
-    let (fork_depth, par) = (ctx.fork_depth + 1, ctx.par);
+    let (fork_depth, par, fork) = (ctx.fork_depth + 1, ctx.par, ctx.fork);
     control.forked();
     let tokio = tokio::runtime::Handle::try_current().ok();
     branches.par_iter_mut().with_max_len(1).for_each(|b| {
@@ -616,7 +638,7 @@ where
             event: &mut b.event,
             fork_depth,
             par,
-            serial: false,
+            fork,
         };
         b.out = Some(f(&mut c, b.part.take().expect("a part")));
     });
@@ -666,7 +688,7 @@ where
     let (mut ev_a, mut ev_b) = (ctx.event.fork(), ctx.event.fork());
     let (libstate, hooks, control, decoder) =
         (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
-    let (fork_depth, par) = (ctx.fork_depth + 1, ctx.par);
+    let (fork_depth, par, fork) = (ctx.fork_depth + 1, ctx.par, ctx.fork);
     control.forked();
     let branch = |cx, rt, event| ExecCtx {
         cx: CxView::Fork(cx),
@@ -678,7 +700,7 @@ where
         event,
         fork_depth,
         par,
-        serial: false,
+        fork,
     };
     let tokio = tokio::runtime::Handle::try_current().ok();
     let (ra, rb) = rayon::join(
