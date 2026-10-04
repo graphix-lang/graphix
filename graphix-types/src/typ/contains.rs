@@ -530,6 +530,8 @@ impl Type {
             (_, Self::Function) => Ok(false),
             (Self::Singleton, t) => t.singleton_holds(env, commit),
             (_, Self::Singleton) => Ok(false),
+            (Self::OneNumber, t) => t.one_number_holds(env, commit),
+            (_, Self::OneNumber) => Ok(false),
             (Self::Hole, Self::Hole) => Ok(true),
             (Self::Hole, Self::TVar(tv)) => match tv.binding() {
                 Some(b) => Self::Hole.contains_int(flags, env, hist, &b),

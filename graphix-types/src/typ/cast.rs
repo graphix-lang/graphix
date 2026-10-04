@@ -286,7 +286,7 @@ impl Type {
                 None => Ok(None),
             },
             Type::Hole => Err(self.cast_fail("a type constructor", v)),
-            Type::Concrete | Type::Function | Type::Singleton => {
+            Type::Concrete | Type::Function | Type::Singleton | Type::OneNumber => {
                 Err(self.cast_fail("a constraint", v))
             }
             Type::Bottom | Type::Any => Ok(None),
@@ -646,7 +646,11 @@ impl Type {
                 Some(t) => t.is_a_int(env, hist, flags, v),
                 None => !flags.contains(IsAFlags::Strict),
             },
-            Type::Hole | Type::Concrete | Type::Function | Type::Singleton => false,
+            Type::Hole
+            | Type::Concrete
+            | Type::Function
+            | Type::Singleton
+            | Type::OneNumber => false,
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
             // structure; a repeat off the path is union backtracking.
@@ -920,6 +924,7 @@ fn member_facts(t: &Type) -> MemberFacts {
         | Type::Hole
         | Type::Concrete
         | Type::Singleton
+        | Type::OneNumber
         | Type::Function => MemberFacts::EXACT,
     }
 }

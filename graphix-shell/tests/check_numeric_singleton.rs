@@ -30,3 +30,23 @@ async fn check_refuses_generic_arithmetic_over_a_mixed_union() -> Result<()> {
     }
     Ok(())
 }
+
+/// `'a: [Number, null] + OneNumber` takes a nullable number of one
+/// numeric type, and the check refuses a type holding two.
+#[tokio::test(flavor = "multi_thread")]
+async fn check_refuses_two_numbers_under_one_number() -> Result<()> {
+    const F: &str = "let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x;\n";
+    for ok in ["let a: [i64, null] = null;\nf(a)\n", "f(u8:3)\n"] {
+        check(&format!("{F}{ok}")).await?;
+    }
+    for src in ["let a: [i64, f64, null] = 1;\nf(a)\n", "let a: [i64, f64] = 1;\nf(a)\n"]
+    {
+        let src = format!("{F}{src}");
+        let e = match check(&src).await {
+            Ok(()) => panic!("--check accepted {src}"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(e.contains("OneNumber"), "{src}: {e}");
+    }
+    Ok(())
+}

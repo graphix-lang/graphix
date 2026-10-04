@@ -731,9 +731,11 @@ not a gap count.
   set of two or more included, so arithmetic over a type holding two
   numeric types is refused even against itself, and a generic
   definition's at the call, by the check. Comparison takes any one
-  type, unions and mixed numerics included. An interface declares every
-  bound its implementation's variables carry, a typedef parameter's
-  bound counting (`FnType::sig_matches`).
+  type, unions and mixed numerics included. `OneNumber`, a written
+  bound only, holds a type to at most one numeric type (`'a: [Number,
+  null] + OneNumber`). An interface declares every bound its
+  implementation's variables carry, a typedef parameter's bound counting
+  (`FnType::sig_matches`).
 
 ## Stack discipline
 

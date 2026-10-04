@@ -47,7 +47,18 @@ fn<'a: Number + Singleton>
 We just have one variable now, `'a` representing both argument types
 and the return type. The body's `+` added `Singleton` to the declared
 `Number`: arithmetic needs one numeric type, not a union of several
-like `[i64, f64]`. Because unchecked `+` returns bottom on overflow
+like `[i64, f64]`.
+
+Two bounds say how many types a variable may stand for. `Singleton`
+says one type, not a union of several. `OneNumber` says at most one
+numeric type, so a nullable number of one numeric type is
+
+```graphix
+let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x
+```
+
+which takes an `[i64, null]` or an `[f64, null]`, and refuses an
+`[i64, f64, null]`. Because unchecked `+` returns bottom on overflow
 rather than throwing, there is no `throws` clause. We can
 still call this `f` with any number type,
 

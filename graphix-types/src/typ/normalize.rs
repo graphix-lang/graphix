@@ -79,6 +79,7 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
         | Type::Concrete
         | Type::Function
         | Type::Singleton
+        | Type::OneNumber
         | Type::Ref(_)
         | Type::TVar(_)
         | Type::Variant(_, _, _) => None,
@@ -223,6 +224,7 @@ impl Type {
             | Type::Hole
             | Type::Concrete
             | Type::Singleton
+            | Type::OneNumber
             | Type::Function => None,
             Type::App(c, a) => {
                 match (c.resolve_tvars_seen_int(cx), a.resolve_tvars_seen_int(cx)) {
@@ -267,7 +269,10 @@ impl Type {
                             for c in tv.cell_constraints() {
                                 if matches!(
                                     c,
-                                    Type::Concrete | Type::Function | Type::Singleton
+                                    Type::Concrete
+                                        | Type::Function
+                                        | Type::Singleton
+                                        | Type::OneNumber
                                 ) {
                                     fresh.add_cell_constraint(c);
                                 }
@@ -352,6 +357,7 @@ impl Type {
             | Type::Hole
             | Type::Concrete
             | Type::Singleton
+            | Type::OneNumber
             | Type::Function => None,
             Type::App(c, a) => match (c.normalize_int(cx), a.normalize_int(cx)) {
                 (None, None) => None,
@@ -476,8 +482,10 @@ impl Type {
             | (Type::Concrete, _)
             | (Type::Function, _)
             | (Type::Singleton, _)
+            | (Type::OneNumber, _)
             | (_, Type::Function)
             | (_, Type::Singleton)
+            | (_, Type::OneNumber)
             | (_, Type::Concrete) => {
                 if self == t {
                     Some(self.clone())

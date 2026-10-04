@@ -181,7 +181,8 @@ against itself, and a generic function called with one is refused at
 the call (`x$ + 1`, not `x + 1`, on a nullable; `|a: Number, b: Number|
 a + b` is refused, write `'a: Number |a: 'a, b: 'a|`). A `.gxi` declares
 a generic arithmetic function's `'a: Number + Singleton`: an interface
-must declare every bound its implementation needs. Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
+must declare every bound its implementation needs. `'a: [Number, null] +
+OneNumber` is a nullable number of one numeric type. Unary `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
 `x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
 chain (`(k ~ sel)$.name`). On an untyped parameter they read as the

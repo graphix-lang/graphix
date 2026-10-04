@@ -1603,6 +1603,19 @@ run!(comparison_mixed_numeric, COMPARISON_MIXED, |v: Result<&Value>| match v {
     _ => false,
 });
 
+// `OneNumber` admits a nullable number of one numeric type.
+const ONE_NUMBER: &str = r#"{
+  let f = 'a: [Number, null] + OneNumber |x: 'a| -> 'a x;
+  let a: [i64, null] = 3;
+  let b: [f64, null] = null;
+  (f(a), f(b), f(u8:7))
+}"#;
+
+run!(one_number_bound, ONE_NUMBER, |v: Result<&Value>| match v {
+    Ok(Value::Array(a)) => &**a == &[Value::I64(3), Value::Null, Value::U8(7)],
+    _ => false,
+});
+
 // Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a` over
 // exactly one type: a type holding two numeric types is refused even
 // against itself.

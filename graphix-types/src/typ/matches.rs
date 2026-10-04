@@ -102,8 +102,10 @@ impl Type {
             | (Type::Concrete, _)
             | (Type::Function, _)
             | (Type::Singleton, _)
+            | (Type::OneNumber, _)
             | (_, Type::Function)
             | (_, Type::Singleton)
+            | (_, Type::OneNumber)
             | (_, Type::Concrete) => Ok(self == t),
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
@@ -345,6 +347,7 @@ impl Type {
             (Self::Hole, Self::Hole)
             | (Self::Concrete, Self::Concrete)
             | (Self::Function, Self::Function)
+            | (Self::OneNumber, Self::OneNumber)
             | (Self::Singleton, Self::Singleton) => Ok(()),
             // A bound signature var is its binding.
             (Self::TVar(sig_tv), impl_type) if let Some(b) = sig_tv.binding() => {

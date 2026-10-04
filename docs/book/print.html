@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-694a203c.js";
+            window.path_to_searchindex_js = "searchindex-5f387cde.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-ca61ab31.js"></script>
@@ -2730,7 +2730,14 @@ of,</p>
 <p>We just have one variable now, <code>'a</code> representing both argument types
 and the return type. The body’s <code>+</code> added <code>Singleton</code> to the declared
 <code>Number</code>: arithmetic needs one numeric type, not a union of several
-like <code>[i64, f64]</code>. Because unchecked <code>+</code> returns bottom on overflow
+like <code>[i64, f64]</code>.</p>
+<p>Two bounds say how many types a variable may stand for. <code>Singleton</code>
+says one type, not a union of several. <code>OneNumber</code> says at most one
+numeric type, so a nullable number of one numeric type is</p>
+<pre><code class="language-graphix">let f = 'a: [Number, null] + OneNumber |x: 'a| -&gt; 'a x
+</code></pre>
+<p>which takes an <code>[i64, null]</code> or an <code>[f64, null]</code>, and refuses an
+<code>[i64, f64, null]</code>. Because unchecked <code>+</code> returns bottom on overflow
 rather than throwing, there is no <code>throws</code> clause. We can
 still call this <code>f</code> with any number type,</p>
 <pre><code class="language-graphix">〉f(1.212, 2.0)

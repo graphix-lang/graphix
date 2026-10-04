@@ -294,6 +294,25 @@ instance's own re-check refused it, at elaboration.
 - Comparison carries no such bound: it takes any one type, unions and
   mixed numerics included (Eric, 2026-10-04).
 
+### `OneNumber`: a conjunct that is a predicate
+
+`'a: OneNumber` (`Type::OneNumber`, parsed only as a bound) says
+whatever binds the cell holds at most one numeric type: `[i64, null]`
+and `[string, u8]` do, `[i64, f64, null]` and `Number` do not. Nothing
+adds it; it is written, for a nullable number of one numeric type:
+`'a: [Number, null] + OneNumber`.
+
+- `OneNumber ⊇ t` (`Type::one_number_holds`) counts `t`'s numeric
+  members the way `Singleton` counts its members; open cells are
+  admitted.
+- A bind of a `OneNumber` cell hands the conjunct to its binding's open
+  members while none of its members is numeric
+  (`Type::require_one_number`). Beside a numeric member an open one may
+  still bind another numeric type: no upper bound says "not a number,
+  or this one".
+- Like `Singleton`, it is never a witness and refuses no open or ⊥ cell
+  at the terminal settle.
+
 An interface must declare what its implementation requires: every
 conjunct of an implementation variable the signature leaves generic
 must follow from the signature variable's conjuncts, or from the bound

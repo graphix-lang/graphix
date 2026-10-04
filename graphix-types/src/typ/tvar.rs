@@ -701,6 +701,9 @@ impl TVar {
         if self.requires_singleton() {
             t.require_singleton();
         }
+        if self.requires_one_number() {
+            t.require_one_number();
+        }
         lower(&t, self.level());
         let cell = self.cell();
         let mut c = cell.write();
@@ -910,6 +913,11 @@ impl TVar {
         self.cell().read().constraints.iter().any(|c| matches!(c, Type::Singleton))
     }
 
+    /// Whether the cell holds the `OneNumber` conjunct.
+    fn requires_one_number(&self) -> bool {
+        self.cell().read().constraints.iter().any(|c| matches!(c, Type::OneNumber))
+    }
+
     /// Bind self to `binding` (other's, read by the caller), merging
     /// other's constraints into self's cell.
     pub(super) fn copy(&self, other: &Self, binding: Type) {
@@ -949,7 +957,7 @@ impl TVar {
         for c in to_add.iter() {
             lower(c, level)
         }
-        let (concrete, singleton) = {
+        let (concrete, singleton, one_number) = {
             let mut sc = s_cell.write();
             if !decided(&sc) {
                 return;
@@ -957,13 +965,20 @@ impl TVar {
             sc.binding = Some(binding.clone());
             sc.constraints.extend(to_add.drain(..));
             let has = |p: fn(&Type) -> bool| sc.constraints.iter().any(p);
-            (has(|c| matches!(c, Type::Concrete)), has(|c| matches!(c, Type::Singleton)))
+            (
+                has(|c| matches!(c, Type::Concrete)),
+                has(|c| matches!(c, Type::Singleton)),
+                has(|c| matches!(c, Type::OneNumber)),
+            )
         };
         if concrete {
             binding.require_concrete();
         }
         if singleton {
             binding.require_singleton();
+        }
+        if one_number {
+            binding.require_one_number();
         }
     }
 
@@ -1141,7 +1156,16 @@ impl Type {
     /// admitted: a bind of a `Singleton` cell narrows the open members of
     /// its binding ([`Self::require_singleton`]).
     pub(crate) fn singleton_holds(&self, env: &Env, commit: bool) -> Result<bool> {
-        let mut parts = UnionParts::default();
+        let mut parts = UnionParts::new(Measure::Members);
+        self.union_parts(Some((env, commit)), &mut parts)?;
+        Ok(parts.known <= 1)
+    }
+
+    /// Whether `OneNumber ⊇ self` holds as the type stands: at most one
+    /// numeric type among its members, read as [`Self::singleton_holds`]
+    /// reads them.
+    pub(crate) fn one_number_holds(&self, env: &Env, commit: bool) -> Result<bool> {
+        let mut parts = UnionParts::new(Measure::Numbers);
         self.union_parts(Some((env, commit)), &mut parts)?;
         Ok(parts.known <= 1)
     }
@@ -1163,12 +1187,10 @@ impl Type {
             Type::Ref(_) if let Some((env, commit)) = env => {
                 match self.lookup_ref_with(env, commit)? {
                     Some(t) => t.union_parts(Some((env, commit)), parts),
-                    None => Ok(parts.member(self, 1)),
+                    None => Ok(parts.member(self)),
                 }
             }
-            Type::Primitive(p) => Ok(parts.member(self, p.len())),
-            Type::Any => Ok(parts.member(self, 2)),
-            t => Ok(parts.member(t, 1)),
+            t => Ok(parts.member(t)),
         })
     }
 
@@ -1176,7 +1198,7 @@ impl Type {
     /// known member each must be within it; with none, each is a
     /// `Singleton` itself (two open members may still differ).
     pub(crate) fn require_singleton(&self) {
-        let mut parts = UnionParts::default();
+        let mut parts = UnionParts::new(Measure::Members);
         if self.union_parts(None, &mut parts).is_err() {
             return;
         }
@@ -1187,10 +1209,24 @@ impl Type {
         }
     }
 
+    /// The open members of a `OneNumber` cell's binding are each
+    /// `OneNumber` where no member is numeric yet; beside a numeric
+    /// member, one may still bind another numeric type (no upper bound
+    /// says "not numeric, or this number").
+    pub(crate) fn require_one_number(&self) {
+        let mut parts = UnionParts::new(Measure::Numbers);
+        if self.union_parts(None, &mut parts).is_err() || parts.known > 0 {
+            return;
+        }
+        for tv in parts.open.drain(..) {
+            tv.add_cell_constraint(Type::OneNumber)
+        }
+    }
+
     /// [`Self::require_singleton`] for an operand whose type must be one
     /// type: an open cell's existing conjuncts may already say so.
     pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
-        let mut parts = UnionParts::default();
+        let mut parts = UnionParts::new(Measure::Members);
         self.union_parts(Some((env, false)), &mut parts)?;
         match parts.narrowing() {
             None => Ok(()),
@@ -1639,16 +1675,30 @@ impl Pack for TVar {
     }
 }
 
+/// What a type read as a union counts of its members.
+#[derive(Clone, Copy)]
+enum Measure {
+    /// Every member; a primitive set by its flags, `Any` as several.
+    Members,
+    /// The numeric members; a primitive set by its numeric flags, `Any`
+    /// as several.
+    Numbers,
+}
+
 /// A type read as a union ([`Type::union_parts`]): how many known members
-/// it has, the first of them, and its open cells.
-#[derive(Default)]
+/// it has by its measure, the first of them, and its open cells.
 struct UnionParts {
+    measure: Measure,
     known: usize,
     first: Option<Type>,
     open: SmallVec<[TVar; 2]>,
 }
 
 impl UnionParts {
+    fn new(measure: Measure) -> Self {
+        Self { measure, known: 0, first: None, open: SmallVec::new() }
+    }
+
     /// What each open member is narrowed to for the union to be one
     /// type: `None` when it has several known members already.
     fn narrowing(&self) -> Option<Type> {
@@ -1659,7 +1709,16 @@ impl UnionParts {
         }
     }
 
-    fn member(&mut self, t: &Type, n: usize) {
+    fn member(&mut self, t: &Type) {
+        let n = match (self.measure, t) {
+            (Measure::Members, Type::Primitive(p)) => p.len(),
+            (Measure::Numbers, Type::Primitive(p)) => {
+                (*p & netidx_value::Typ::number()).len()
+            }
+            (_, Type::Any) => 2,
+            (Measure::Members, _) => 1,
+            (Measure::Numbers, _) => 0,
+        };
         self.known += n;
         if n > 0 && self.first.is_none() {
             self.first = Some(t.clone())

@@ -222,6 +222,7 @@ fn identity(t: &Type) -> Option<(Identity, Type)> {
         | Type::Hole
         | Type::Concrete
         | Type::Singleton
+        | Type::OneNumber
         | Type::Function => return None,
     };
     Some(((std::mem::discriminant(t), x, y), t.clone()))
