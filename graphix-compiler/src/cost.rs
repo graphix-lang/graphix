@@ -104,8 +104,9 @@ impl Calibration {
 }
 
 /// A log2 histogram of tick counts. Old samples fade: the counts halve
-/// whenever their total reaches [`Hist::DECAY`].
+/// whenever their total reaches [`Hist::DECAY`]. All zeros is empty.
 #[derive(Debug, Default, Clone)]
+#[repr(C)]
 struct Hist {
     counts: [u16; 16],
     n: u16,
@@ -438,21 +439,27 @@ impl Default for Slots {
 /// forks and merges stay small beside the slots.
 const RANGES_PER_WORKER: usize = 4;
 
+/// The ranges per worker a kernel loop forks into at most: a chunk
+/// costs a call and a buffer, so more ranges even out slots of uneven
+/// cost.
+pub(crate) const CHUNKS_PER_WORKER: usize = 16;
+
 /// The slots per range of a forced collection: `#[parallel(g)]`'s `g`,
 /// one range per worker under a bare `#[parallel]`, one slot each under
 /// `GRAPHIX_PAR=force`.
-fn forced_grain<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>, n: usize) -> usize {
-    match ctx.fork.forced {
+pub(crate) fn forced_grain(forced: Option<u32>, n: usize) -> usize {
+    match forced {
         None => 1,
         Some(0) => n.div_ceil(crate::branch::eval_pool().current_num_threads()),
         Some(g) => g as usize,
     }
 }
 
-/// The slots per range of `n` slots estimated at `est` ticks each.
-fn grain(cal: &Calibration, est: u64, n: usize) -> usize {
+/// The slots per range of `n` slots estimated at `est` ticks each, in
+/// at most `per_worker` ranges per worker.
+fn grain(cal: &Calibration, est: u64, n: usize, per_worker: usize) -> usize {
     let workers = crate::branch::eval_pool().current_num_threads();
-    (cal.t.div_ceil(est.max(1)) as usize).max(n.div_ceil(workers * RANGES_PER_WORKER))
+    (cal.t.div_ceil(est.max(1)) as usize).max(n.div_ceil(workers * per_worker))
 }
 
 /// What a collection's update does with its standing slots.
@@ -477,7 +484,7 @@ impl SlotSite {
         match ctx.fork_mode() {
             ParMode::Off => SlotPlan::Serial,
             _ if n < 2 => SlotPlan::Serial,
-            ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx, n) },
+            ParMode::Force => SlotPlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
             ParMode::Auto => self.plan_auto(n),
         }
     }
@@ -502,7 +509,7 @@ impl SlotSite {
                 } else if saturated() {
                     SlotPlan::Serial
                 } else {
-                    SlotPlan::Fork { grain: grain(cal, *est, n) }
+                    SlotPlan::Fork { grain: grain(cal, *est, n, RANGES_PER_WORKER) }
                 }
             }
         }
@@ -543,9 +550,12 @@ impl SlotSite {
 }
 
 /// A fork point over many like items that decides in the cycle it sees
-/// them (a collection's growth): it times its first items in order, one
-/// once its estimate has settled, and forks the rest on what they cost.
+/// them (a collection's growth, a kernel's loop): it times its first
+/// items in order, one once its estimate has settled, and forks the rest
+/// on what they cost. All zeros is a fresh site, so a kernel keeps one
+/// in [`ProbeSite::WORDS`] of its zeroed state.
 #[derive(Debug, Default)]
+#[repr(C)]
 pub struct ProbeSite {
     hist: Hist,
 }
@@ -562,36 +572,49 @@ pub enum ProbePlan {
 }
 
 impl ProbeSite {
+    /// The `u64` words a site occupies.
+    pub(crate) const WORDS: usize = 5;
+
     /// The plan for `n` items.
     fn plan<R: Rt, E: UserEvent>(&self, ctx: &ExecCtx<'_, R, E>, n: usize) -> ProbePlan {
         match ctx.fork_mode() {
             ParMode::Off => ProbePlan::Serial,
             _ if n < 2 => ProbePlan::Serial,
-            ParMode::Force => ProbePlan::Fork { grain: forced_grain(ctx, n) },
+            ParMode::Force => ProbePlan::Fork { grain: forced_grain(ctx.fork.forced, n) },
             ParMode::Auto if calibration().is_none() => ProbePlan::Serial,
             ParMode::Auto => ProbePlan::Probe(self.probes(n)),
         }
     }
 
     /// How many of `n` items to time before deciding about the rest.
-    fn probes(&self, n: usize) -> usize {
+    pub(crate) fn probes(&self, n: usize) -> usize {
         match self.hist.n < SETTLE {
             true => ((SETTLE - self.hist.n) as usize).min(n),
             false => 1,
         }
     }
 
-    /// The range size for the `n` items a probe left, or `None` when
-    /// they run in order.
-    fn grain(&self, cal: &Calibration, n: usize) -> Option<usize> {
+    /// The range size for the `n` items a probe left, at most
+    /// `per_worker` ranges per worker, or `None` when they run in order.
+    fn grain(&self, cal: &Calibration, n: usize, per_worker: usize) -> Option<usize> {
         let est = cal.floor(self.hist.p75());
         (self.hist.n >= SETTLE && est.saturating_mul(n as u64) >= 2 * cal.t)
-            .then(|| grain(cal, est, n))
+            .then(|| grain(cal, est, n, per_worker))
     }
 
     /// [`Self::grain`], unless every worker already has a part.
-    fn grain_now(&self, cal: &Calibration, n: usize) -> Option<usize> {
-        if saturated() { None } else { self.grain(cal, n) }
+    pub(crate) fn grain_now(
+        &self,
+        cal: &Calibration,
+        n: usize,
+        per_worker: usize,
+    ) -> Option<usize> {
+        if saturated() { None } else { self.grain(cal, n, per_worker) }
+    }
+
+    /// One probe of `ticks` ticks.
+    pub(crate) fn probed(&mut self, cal: &Calibration, ticks: u64) {
+        self.hist.add(cal, ticks)
     }
 
     /// Run `items`, the first at index `at`, folding their results into
@@ -620,11 +643,11 @@ impl ProbeSite {
                 for item in probed {
                     let t0 = ticks();
                     let r = probe(ctx, item, at)?;
-                    self.hist.add(cal, ticks().wrapping_sub(t0));
+                    self.probed(cal, ticks().wrapping_sub(t0));
                     acc = join(acc, r);
                     at += 1;
                 }
-                self.grain_now(cal, items.len())
+                self.grain_now(cal, items.len(), RANGES_PER_WORKER)
             }
         };
         if items.is_empty() {
@@ -634,6 +657,11 @@ impl ProbeSite {
         Some(join(acc, r))
     }
 }
+
+const _: () = assert!(
+    std::mem::size_of::<ProbeSite>() <= 8 * ProbeSite::WORDS
+        && std::mem::align_of::<ProbeSite>() <= 8
+);
 
 #[cfg(test)]
 mod tests {
@@ -662,13 +690,17 @@ mod tests {
         assert_eq!(p.probes(3), 3);
         p.hist.add(&cal, 1 << 12);
         assert_eq!(p.probes(100), 3);
-        assert_eq!(p.grain(&cal, 96), None, "an unsettled estimate forks nothing");
+        assert_eq!(
+            p.grain(&cal, 96, RANGES_PER_WORKER),
+            None,
+            "an unsettled estimate forks nothing"
+        );
         for _ in 0..3 {
             p.hist.add(&cal, 1 << 12);
         }
         assert_eq!(p.probes(100), 1);
         assert_eq!(
-            p.grain(&cal, 96),
+            p.grain(&cal, 96, RANGES_PER_WORKER),
             Some(96usize.div_ceil(workers * RANGES_PER_WORKER))
         );
         // ranges of at least ceil(T / estimate) items
@@ -677,7 +709,7 @@ mod tests {
             q.hist.add(&cal, 1 << 8);
         }
         assert_eq!(
-            q.grain(&cal, 64),
+            q.grain(&cal, 64, RANGES_PER_WORKER),
             Some(4.max(64usize.div_ceil(workers * RANGES_PER_WORKER)))
         );
         // items too cheap to fork: 96 items at T/64 is under 2T
@@ -685,7 +717,7 @@ mod tests {
         for _ in 0..4 {
             r.hist.add(&cal, 1 << 4);
         }
-        assert_eq!(r.grain(&cal, 96), None);
+        assert_eq!(r.grain(&cal, 96, RANGES_PER_WORKER), None);
     }
 
     #[test]

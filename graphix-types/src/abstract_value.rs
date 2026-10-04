@@ -52,6 +52,12 @@ pub fn with_value_hooks<T>(h: &ValueHookDispatch, f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Whether this thread runs under a value-hook loan, which no other
+/// thread can share.
+pub fn value_hooks_loaned() -> bool {
+    VALUE_HOOKS.with(|c| !c.get().is_null())
+}
+
 struct Restore(*const ValueHookDispatch);
 
 impl Drop for Restore {

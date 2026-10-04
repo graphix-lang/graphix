@@ -832,15 +832,15 @@ pub(crate) fn saturated() -> bool {
 }
 
 /// `n` parts forked: each calls [`Live::done`] when it finishes.
-struct Live;
+pub(crate) struct Live;
 
 impl Live {
-    fn start(n: usize) -> Self {
+    pub(crate) fn start(n: usize) -> Self {
         LIVE_PARTS.fetch_add(n, Ordering::Relaxed);
         Live
     }
 
-    fn done(&self) {
+    pub(crate) fn done(&self) {
         LIVE_PARTS.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -848,7 +848,7 @@ impl Live {
 /// Run `f`, a fork's parallel part, on the evaluation pool: entered here
 /// from the runtime's own thread, so a cycle's serial work stays there,
 /// and joined in place by a fork already on the pool.
-fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
+pub(crate) fn on_pool<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
     let pool = eval_pool();
     if pool.current_thread_index().is_some() {
         return f();

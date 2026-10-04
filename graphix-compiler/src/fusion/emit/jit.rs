@@ -27,7 +27,7 @@ use cranelift_codegen::{
         GlobalValueData, InstBuilder, MemFlags, Signature, UserExternalName,
         UserExternalNameRef, UserFuncName, Value as ClifValue, immediates::Imm64, types,
     },
-    isa::{OwnedTargetIsa, TargetIsa},
+    isa::{CallConv, OwnedTargetIsa, TargetIsa},
     settings::{self, Configurable},
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -50,7 +50,7 @@ use triomphe::Arc;
 
 use super::{
     body::{BodyRole, BodySource, BodySpec, NodeBodyEmitter},
-    lower::{EmittedBody, HelperFuncIds, SiteLayout, compile_into_function},
+    lower::{Callees, EmittedBody, HelperFuncIds, SiteLayout, compile_into_function},
     record::{BodyRecord, EmitConst, RecordKind, RecordReloc, RelocTarget, SymbolTable},
     scalar::prim_to_clif,
 };
@@ -134,6 +134,24 @@ fn trampoline_signature(isa: &dyn TargetIsa) -> Signature {
     sig
 }
 
+/// The `(frame, lo, hi, out)` signature of an outlined loop's chunk
+/// (`fusion::par_loop`).
+pub(super) fn chunk_signature(call_conv: CallConv) -> Signature {
+    let mut sig = Signature::new(call_conv);
+    for _ in 0..4 {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig
+}
+
+/// An outlined loop of a body being emitted: its function and the
+/// constants its code names.
+pub(super) struct ChunkFn {
+    pub(super) id: FuncId,
+    pub(super) func: Function,
+    pub(super) consts: Vec<EmitConst>,
+}
+
 /// What a body's CLIF names (kernel bodies, thunks, wrappers, the
 /// runtime helpers and constants) by ids of this table alone. Nothing
 /// named here is ever defined: a record names its targets symbolically,
@@ -178,7 +196,7 @@ impl Names {
     }
 
     /// A function the module defines: a body, a thunk or a wrapper.
-    fn local(&mut self, sig: &Signature) -> FuncId {
+    pub(super) fn local(&mut self, sig: &Signature) -> FuncId {
         self.func(sig, true)
     }
 
@@ -242,13 +260,14 @@ impl EmitShared {
     }
 
     /// Name every relocation target symbolically: a helper, a recorded
-    /// callee (entered in `callees`), the owner, the thunk, a libcall
-    /// or one of the body's constants.
+    /// callee (entered in `callees`), the owner, the thunk, one of the
+    /// owner's chunks, a libcall or one of the function's constants.
     fn record_relocs(
         &self,
         relocs: &[ModuleReloc],
         owner: FuncId,
         thunk: Option<FuncId>,
+        chunks: &[FuncId],
         consts: &[EmitConst],
         records: &BTreeMap<FuncId, Arc<BodyRecord>>,
         callees: &mut Vec<Arc<BodyRecord>>,
@@ -263,6 +282,8 @@ impl EmitShared {
                             RelocTarget::Owner
                         } else if Some(fid) == thunk {
                             RelocTarget::Thunk
+                        } else if let Some(i) = chunks.iter().position(|c| *c == fid) {
+                            RelocTarget::Chunk(i as u32)
                         } else if let Some(name) = self.helper_names.get(&fid) {
                             RelocTarget::Helper((*name).into())
                         } else if let Some(rec) = records.get(&fid) {
@@ -327,14 +348,19 @@ fn backend(
     Ok(Compiled { bytes, align, relocs })
 }
 
-/// Every function of `pending`, its spill thunks included, in order;
-/// `pending` keeps the rest of each.
+/// Every function of `pending`, its spill thunks and chunks included,
+/// in order; `pending` keeps the rest of each.
 fn take_functions(pending: &mut [Pending]) -> Vec<(FuncId, Function)> {
     let mut work = Vec::with_capacity(pending.len());
     for p in pending.iter_mut() {
         work.push((p.id, std::mem::replace(&mut p.func, Function::new())));
-        if let PendingOf::Body { thunk: Some((tid, t)), .. } = &mut p.of {
-            work.push((*tid, std::mem::replace(t, Function::new())));
+        if let PendingOf::Body { thunk, chunks, .. } = &mut p.of {
+            if let Some((tid, t)) = thunk {
+                work.push((*tid, std::mem::replace(t, Function::new())));
+            }
+            for c in chunks.iter_mut() {
+                work.push((c.id, std::mem::replace(&mut c.func, Function::new())));
+            }
         }
     }
     work
@@ -480,8 +506,8 @@ impl Generation {
         Ok(ids.iter().map(|id| self.module.get_finalized_function(*id)).collect())
     }
 
-    /// Install a record's function, its thunk and its callees (once per
-    /// record) and return the function's id.
+    /// Install a record's function, its thunk, its chunks and its
+    /// callees (once per record) and return the function's id.
     fn load(&mut self, rec: &Arc<BodyRecord>) -> Result<FuncId> {
         let key = Arc::as_ptr(rec) as usize;
         if let Some((id, _)) = self.loaded.get(&key) {
@@ -495,9 +521,17 @@ impl Generation {
             None => None,
         };
         if let (Some(t), Some(tid)) = (rec.thunk(), thunk_id) {
-            self.define_record(t, tid, None, id, &[])?;
+            self.define_record(t, tid, None, &[], id, &[])?;
         }
-        self.define_record(rec, id, thunk_id, id, &callees)?;
+        let mut chunks: SmallVec<[FuncId; 2]> = SmallVec::new();
+        for c in rec.chunks() {
+            let callees: SmallVec<[FuncId; 8]> =
+                c.callees.iter().map(|c| self.load(c)).collect::<Result<_>>()?;
+            let cid = self.declare_record(c)?;
+            self.define_record(c, cid, thunk_id, &[], id, &callees)?;
+            chunks.push(cid);
+        }
+        self.define_record(rec, id, thunk_id, &chunks, id, &callees)?;
         self.loaded.insert(key, (id, rec.clone()));
         Ok(id)
     }
@@ -506,6 +540,7 @@ impl Generation {
         let isa = self.module.isa();
         let sig = match rec.kind {
             RecordKind::Kernel { .. } => kernel_signature(isa, &rec.kernel)?,
+            RecordKind::Chunk { .. } => chunk_signature(isa.default_call_conv()),
             RecordKind::Thunk | RecordKind::Wrapper => trampoline_signature(isa),
         };
         let symbol = self.next_symbol(&rec.label);
@@ -514,12 +549,14 @@ impl Generation {
 
     /// Define `id` from the record's bytes: its constants become imports
     /// resolving to their pointers, its relocations name the module's
-    /// ids. `owner` is the body a thunk serves (itself for a body).
+    /// ids. `owner` is the body a thunk or chunk serves (itself for a
+    /// body).
     fn define_record(
         &mut self,
         rec: &BodyRecord,
         id: FuncId,
         thunk: Option<FuncId>,
+        chunks: &[FuncId],
         owner: FuncId,
         callees: &[FuncId],
     ) -> Result<()> {
@@ -558,6 +595,12 @@ impl Generation {
                 RelocTarget::Thunk => {
                     let tid = thunk.ok_or_else(|| anyhow!("a relocation to no thunk"))?;
                     ModuleRelocTarget::user(0, tid.as_u32())
+                }
+                RelocTarget::Chunk(i) => {
+                    let cid = chunks
+                        .get(*i as usize)
+                        .ok_or_else(|| anyhow!("a relocation to a missing chunk"))?;
+                    ModuleRelocTarget::user(0, cid.as_u32())
                 }
                 RelocTarget::LibCall(lc) => ModuleRelocTarget::LibCall(*lc),
                 RelocTarget::Const(i) => {
@@ -708,8 +751,13 @@ pub(crate) struct Pending {
 }
 
 enum PendingOf {
-    /// A kernel body: the constants its code names and its spill thunk.
-    Body { consts: Vec<EmitConst>, thunk: Option<(FuncId, Function)> },
+    /// A kernel body: the constants its code names, its spill thunk and
+    /// its outlined loops.
+    Body {
+        consts: Vec<EmitConst>,
+        thunk: Option<(FuncId, Function)>,
+        chunks: Vec<ChunkFn>,
+    },
     /// A region's wrapper, and where its entry goes.
     Wrapper { entry: Arc<OnceLock<Entry>> },
 }
@@ -948,9 +996,15 @@ impl Emission {
             }
             p.id = renumber(p.id);
             renumber_function(&mut p.func, &renumber);
-            if let PendingOf::Body { thunk: Some((tid, t)), .. } = &mut p.of {
-                *tid = renumber(*tid);
-                renumber_function(t, &renumber);
+            if let PendingOf::Body { thunk, chunks, .. } = &mut p.of {
+                if let Some((tid, t)) = thunk {
+                    *tid = renumber(*tid);
+                    renumber_function(t, &renumber);
+                }
+                for c in chunks.iter_mut() {
+                    c.id = renumber(c.id);
+                    renumber_function(&mut c.func, &renumber);
+                }
             }
             self.pending.push(p);
         }
@@ -1146,15 +1200,50 @@ impl Jit {
             let c = next()?;
             let mut callees = Vec::new();
             match p.of {
-                PendingOf::Body { consts, thunk } => {
+                PendingOf::Body { consts, thunk, chunks } => {
                     let thunk = match thunk {
                         None => None,
                         Some((tid, _)) => Some((tid, next()?)),
                     };
+                    let tid = thunk.as_ref().map(|(tid, _)| *tid);
+                    let chunk_ids: SmallVec<[FuncId; 2]> =
+                        chunks.iter().map(|c| c.id).collect();
+                    let mut chunk_records = Vec::with_capacity(chunks.len());
+                    for (i, chunk) in chunks.into_iter().enumerate() {
+                        let cc = next()?;
+                        let mut callees = Vec::new();
+                        let relocs = self.shared.record_relocs(
+                            &cc.relocs,
+                            p.id,
+                            tid,
+                            &[],
+                            &chunk.consts,
+                            &self.records,
+                            &mut callees,
+                        )?;
+                        chunk_records.push(Arc::new(BodyRecord {
+                            kind: RecordKind::Chunk {
+                                consts: chunk
+                                    .consts
+                                    .into_iter()
+                                    .map(|c| c.recipe)
+                                    .collect(),
+                            },
+                            label: format_compact!("{}__chunk{i}", p.kernel.fn_name)
+                                .as_str()
+                                .into(),
+                            bytes: cc.bytes,
+                            align: cc.align,
+                            relocs,
+                            callees,
+                            kernel: p.kernel.clone(),
+                        }));
+                    }
                     let relocs = self.shared.record_relocs(
                         &c.relocs,
                         p.id,
-                        thunk.as_ref().map(|(tid, _)| *tid),
+                        tid,
+                        &chunk_ids,
                         &consts,
                         &self.records,
                         &mut callees,
@@ -1166,6 +1255,7 @@ impl Jit {
                                 &t.relocs,
                                 p.id,
                                 None,
+                                &[],
                                 &[],
                                 &BTreeMap::new(),
                                 &mut Vec::new(),
@@ -1187,6 +1277,7 @@ impl Jit {
                         kind: RecordKind::Kernel {
                             consts: consts.into_iter().map(|c| c.recipe).collect(),
                             thunk,
+                            chunks: chunk_records,
                         },
                         label: p.kernel.fn_name.clone(),
                         bytes: c.bytes,
@@ -1202,6 +1293,7 @@ impl Jit {
                         &c.relocs,
                         p.id,
                         None,
+                        &[],
                         &[],
                         &self.records,
                         &mut callees,
@@ -1565,13 +1657,16 @@ fn emit_kernel_body(
         em.names.local(&tsig)
     });
     let consts: RefCell<Vec<EmitConst>> = RefCell::new(Vec::new());
+    let chunks: RefCell<Vec<ChunkFn>> = RefCell::new(Vec::new());
     let mut emitted = None;
     let func = em.build(func_id, sig.clone(), |names, helpers, b| {
         // Import in `funcids` order so the funcref numbering is deterministic.
         let mut callee_refs: BTreeMap<KernelKey, FuncRef> = BTreeMap::new();
+        let mut callee_ids: BTreeMap<KernelKey, FuncId> = BTreeMap::new();
         for (key, (fid, _)) in funcids {
             if callee_keys.contains(key) {
                 callee_refs.insert(*key, names.import_func(*fid, b.func));
+                callee_ids.insert(*key, *fid);
             }
         }
         if callee_refs.len() != callee_keys.len() {
@@ -1585,10 +1680,15 @@ fn emit_kernel_body(
         emitted = Some(compile_into_function(
             b,
             kernel,
-            &callee_refs,
-            self_thunk,
+            Callees {
+                refs: &callee_refs,
+                ids: &callee_ids,
+                thunk: self_thunk,
+                thunk_id: self_thunk_id,
+            },
             helpers,
             &consts,
+            &chunks,
             &names,
             body_emitter,
             callee_layouts,
@@ -1604,6 +1704,10 @@ fn emit_kernel_body(
     };
     let emitted: EmittedBody = emitted.expect("emitted on success");
     maybe_dump_clif(&func, &kernel.fn_name);
+    let chunks = chunks.into_inner();
+    for c in chunks.iter() {
+        maybe_dump_clif(&c.func, &format_compact!("{} chunk", kernel.fn_name));
+    }
     let thunk = match self_thunk_id {
         None => None,
         Some(tid) => Some((tid, emit_trampoline(em, tid, func_id, &sig, false)?)),
@@ -1621,7 +1725,7 @@ fn emit_kernel_body(
         id: func_id,
         func,
         kernel: kernel.clone(),
-        of: PendingOf::Body { consts: consts.into_inner(), thunk },
+        of: PendingOf::Body { consts: consts.into_inner(), thunk, chunks },
     };
     Ok((emitted, pending))
 }

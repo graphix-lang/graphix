@@ -35,6 +35,7 @@ use super::{
     },
     call::{CompositeSource, emit_drop_local, finalize_valarray, open_value_buf},
     lower::SelWord,
+    outline,
     scalar::{prim_to_clif, scalar_to_payload_i64, valarray_get_helper, widen_to_i64},
 };
 
@@ -225,11 +226,11 @@ fn input_len(cx: &mut BodyCx, arr_ptr: ClifValue) -> Result<ClifValue> {
     Ok(cx.b.inst_results(call)[0])
 }
 
-/// An open scaffold loop over `len` slots: the counter, the header,
-/// body and exit blocks and the slot-table frame. [`LoopFrame::run`]
-/// emits one iteration's binds and body in the body block;
-/// [`LoopFrame::close`] ends the loop in the exit block.
-struct LoopFrame {
+/// An open scaffold loop over a range of slots: the counter, the
+/// header, body and exit blocks and the slot-table frame.
+/// [`LoopFrame::run`] emits one iteration's binds and body in the body
+/// block; [`LoopFrame::close`] ends the loop in the exit block.
+pub(super) struct LoopFrame {
     i_var: Variable,
     /// The iteration's slot ordinal.
     i: ClifValue,
@@ -252,17 +253,25 @@ fn open_loop(
     let zero = cx.b.ins().iconst(types::I64, 0);
     cx.b.def_var(i_var, zero);
     cx.open_slot_tables(sel_sites, len, src_disc, i_var)?;
-    let header = cx.b.create_block();
-    let body = cx.b.create_block();
-    let exit = cx.b.create_block();
-    cx.b.ins().jump(header, &[]);
-    cx.b.switch_to_block(header);
-    let i_cur = cx.b.use_var(i_var);
-    let cond = cx.b.ins().icmp(IntCC::SignedLessThan, i_cur, len);
-    cx.b.ins().brif(cond, body, &[], exit, &[]);
-    cx.b.switch_to_block(body);
-    let i = cx.b.use_var(i_var);
-    Ok(LoopFrame { i_var, i, header, body, exit, mark: cx.env.mark() })
+    Ok(LoopFrame::blocks(cx, i_var, len))
+}
+
+impl LoopFrame {
+    /// The loop's blocks over slots `i_var..hi`, its slot-table frame
+    /// already open; the builder ends in the loop body.
+    pub(super) fn blocks(cx: &mut BodyCx, i_var: Variable, hi: ClifValue) -> Self {
+        let header = cx.b.create_block();
+        let body = cx.b.create_block();
+        let exit = cx.b.create_block();
+        cx.b.ins().jump(header, &[]);
+        cx.b.switch_to_block(header);
+        let i_cur = cx.b.use_var(i_var);
+        let cond = cx.b.ins().icmp(IntCC::SignedLessThan, i_cur, hi);
+        cx.b.ins().brif(cond, body, &[], exit, &[]);
+        cx.b.switch_to_block(body);
+        let i = cx.b.use_var(i_var);
+        LoopFrame { i_var, i, header, body, exit, mark: cx.env.mark() }
+    }
 }
 
 impl LoopFrame {
@@ -285,9 +294,15 @@ impl LoopFrame {
         r
     }
 
-    /// `i += 1` back to the header from the current block, then end the
-    /// loop in its exit block, where the slot truncates run.
+    /// End the loop, then run the slot truncates in its exit block.
     fn close(self, cx: &mut BodyCx) -> Result<()> {
+        self.end(cx);
+        cx.emit_slot_truncates()
+    }
+
+    /// `i += 1` back to the header from the current block, then end the
+    /// loop in its exit block.
+    pub(super) fn end(self, cx: &mut BodyCx) {
         let one = cx.b.ins().iconst(types::I64, 1);
         let next = cx.b.ins().iadd(self.i, one);
         cx.b.def_var(self.i_var, next);
@@ -296,7 +311,6 @@ impl LoopFrame {
         cx.b.seal_block(self.header);
         cx.b.switch_to_block(self.exit);
         cx.b.seal_block(self.exit);
-        cx.emit_slot_truncates()
     }
 }
 
@@ -357,31 +371,23 @@ enum LoopKind {
     Fold,
 }
 
-/// Loop-carried slot-flags accumulator: per-slot TAINT is OR-reduced
-/// and per-slot STALE is AND-reduced across the loop. A tainted slot
-/// taints the whole HOF result but never the kernel. The loop fires
-/// iff a loop input fired and the evaluation produced an event
-/// ([`Self::apply`]).
-pub struct SlotFlags {
-    taint: Variable,
-    stale: Variable,
-    /// The source's element count, for the resize and empty-source terms.
-    len: ClifValue,
-    kind: LoopKind,
-    /// The collection callsite this loop lowers: the key a nested loop's
-    /// prev-length word is chained under in the enclosing frame.
-    site_id: Option<ExprId>,
+/// Loop-carried slot-flags accumulators: per-slot TAINT is OR-reduced
+/// and per-slot STALE is AND-reduced across the loop's slots.
+#[derive(Clone, Copy)]
+pub(super) struct Accs {
+    pub(super) taint: Variable,
+    pub(super) stale: Variable,
 }
 
-impl SlotFlags {
-    fn new(cx: &mut BodyCx, len: ClifValue, kind: LoopKind) -> Self {
+impl Accs {
+    pub(super) fn new(cx: &mut BodyCx) -> Self {
         let taint = cx.b.declare_var(types::I64);
         let z = cx.b.ins().iconst(types::I64, 0);
         cx.b.def_var(taint, z);
         let stale = cx.b.declare_var(types::I64);
         let st = cx.b.ins().iconst(types::I64, STALE);
         cx.b.def_var(stale, st);
-        SlotFlags { taint, stale, len, kind, site_id: cx.collection_site() }
+        Accs { taint, stale }
     }
 
     /// Fold one slot's disc into the accumulators.
@@ -401,6 +407,26 @@ impl SlotFlags {
         let n = cx.b.ins().band(cur, sb);
         cx.b.def_var(self.stale, n);
     }
+}
+
+/// A loop's slot flags ([`Accs`]). A tainted slot taints the whole HOF
+/// result but never the kernel. The loop fires iff a loop input fired
+/// and the evaluation produced an event ([`Self::apply`]).
+pub struct SlotFlags {
+    accs: Accs,
+    /// The source's element count, for the resize and empty-source terms.
+    len: ClifValue,
+    kind: LoopKind,
+    /// The collection callsite this loop lowers: the key a nested loop's
+    /// prev-length word is chained under in the enclosing frame.
+    site_id: Option<ExprId>,
+}
+
+impl SlotFlags {
+    fn new(cx: &mut BodyCx, len: ClifValue, kind: LoopKind) -> Self {
+        let accs = Accs::new(cx);
+        SlotFlags { accs, len, kind, site_id: cx.collection_site() }
+    }
 
     /// Fold the accumulated flags and the source disc `src` into `r`'s
     /// disc. Uses the exact firing rule when a prev-length word is
@@ -413,9 +439,9 @@ impl SlotFlags {
         mut r: CompiledExpr,
         src: ClifValue,
     ) -> CompiledExpr {
-        let t = cx.b.use_var(self.taint);
+        let t = cx.b.use_var(self.accs.taint);
         r.disc = cx.b.ins().bor(r.disc, t);
-        let slots_word = cx.b.use_var(self.stale);
+        let slots_word = cx.b.use_var(self.accs.stale);
         let src_word = cx.b.ins().band_imm(src, STALE);
         let src_taint = cx.b.ins().band_imm(src, TAINT);
         r.disc = cx.b.ins().bor(r.disc, src_taint);
@@ -556,8 +582,130 @@ impl SlotFlags {
     }
 }
 
-pub(crate) fn emit_init_loop<'a, 'f, 'c, F>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
+/// Where a loop's slots put their results.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SinkKind {
+    /// A value buf, in slot order.
+    Buf,
+    /// A find's first taken value.
+    Find,
+}
+
+/// The sink of a loop open in the function being emitted.
+#[derive(Clone, Copy)]
+pub(super) enum Sink {
+    Buf(ClifValue),
+    /// The taken flag and value, bound as an env local above `mark`.
+    Find {
+        found: Variable,
+        disc: Variable,
+        payload: Variable,
+        mark: usize,
+    },
+}
+
+/// What one iteration of a loop works with, in the function it is
+/// emitted in: the source, the sink and the slot flags' accumulators.
+pub(super) struct Slots {
+    pub(super) src: ClifValue,
+    pub(super) src_disc: ClifValue,
+    pub(super) sink: Sink,
+    pub(super) accs: Accs,
+}
+
+impl Slots {
+    fn buf(&self) -> ClifValue {
+        match self.sink {
+            Sink::Buf(buf) => buf,
+            Sink::Find { .. } => unreachable!("a buf loop's sink"),
+        }
+    }
+
+    fn found(&self) -> (Variable, Variable, Variable) {
+        match self.sink {
+            Sink::Find { found, disc, payload, .. } => (found, disc, payload),
+            Sink::Buf(_) => unreachable!("a find loop's sink"),
+        }
+    }
+}
+
+/// A finished loop's result: owned ValArray bits, or a find's
+/// `(disc, payload)`.
+pub(super) enum Sunk {
+    Buf(ClifValue),
+    Find(ClifValue, ClifValue),
+}
+
+impl Sunk {
+    fn array(self) -> ClifValue {
+        match self {
+            Sunk::Buf(ptr) => ptr,
+            Sunk::Find(..) => unreachable!("a buf loop's result"),
+        }
+    }
+
+    fn taken(self) -> (ClifValue, ClifValue) {
+        match self {
+            Sunk::Find(disc, payload) => (disc, payload),
+            Sunk::Buf(_) => unreachable!("a find loop's result"),
+        }
+    }
+}
+
+/// Open a sink for `cap` slots: a registered value buf, or a find's
+/// result bound so an abort in a later slot drops a taken value.
+pub(super) fn open_sink(cx: &mut BodyCx, kind: SinkKind, cap: ClifValue) -> Result<Sink> {
+    Ok(match kind {
+        SinkKind::Buf => Sink::Buf(open_value_buf(cx, cap)?),
+        SinkKind::Find => {
+            let (found, disc, payload) = found_vars(cx);
+            let mark = bind_taken(cx, disc, payload);
+            Sink::Find { found, disc, payload, mark }
+        }
+    })
+}
+
+/// One iteration of a loop, emitted in whichever function runs it.
+pub(super) trait Iteration:
+    for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>, &LoopFrame, &Slots) -> Result<()>
+{
+}
+
+impl<I> Iteration for I where
+    I: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>, &LoopFrame, &Slots) -> Result<()>
+{
+}
+
+/// Run `iteration` over `len` slots of a source with disc `src_disc`,
+/// folding them into `accs` and `kind`'s sink: inline, or outlined into
+/// a chunk at a body's top level, where its slots may fork.
+fn emit_slots(
+    cx: &mut BodyCx,
+    accs: Accs,
+    kind: SinkKind,
+    (src, src_disc, len): (ClifValue, ClifValue, ClifValue),
+    sel_sites: &[ExprId],
+    iteration: impl Iteration,
+) -> Result<Sunk> {
+    if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
+        let lp = outline::Loop { kind, src, src_disc, len, sel_sites };
+        return outline::emit_outlined(cx, lp, accs, iteration);
+    }
+    let sink = open_sink(cx, kind, len)?;
+    let lp = open_loop(cx, len, src_disc, sel_sites)?;
+    iteration(cx, &lp, &Slots { src, src_disc, sink, accs })?;
+    lp.close(cx)?;
+    Ok(match sink {
+        Sink::Buf(buf) => Sunk::Buf(finalize_valarray(cx, buf)?),
+        Sink::Find { disc, payload, mark, .. } => {
+            cx.env.truncate(mark);
+            Sunk::Find(cx.b.use_var(disc), cx.b.use_var(payload))
+        }
+    })
+}
+
+pub(crate) fn emit_init_loop<F>(
+    cx: &mut BodyCx,
     n_raw: ClifValue,
     n_disc: ClifValue,
     n_prim: PrimType,
@@ -569,7 +717,7 @@ pub(crate) fn emit_init_loop<'a, 'f, 'c, F>(
     body: F,
 ) -> Result<(ClifValue, SlotFlags, ClifValue)>
 where
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
     let n_widened = widen_to_i64(cx.b, n_raw, n_prim)?;
     let zero = cx.b.ins().iconst(types::I64, 0);
@@ -602,38 +750,41 @@ where
     let stale = cx.b.ins().iconst(types::I64, STALE);
     let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
     let disc = cx.b.ins().select(oversize, tainted, stale);
-    flags.fold(cx, disc);
-    let buf = open_value_buf(cx, n)?;
-    let lp = open_loop(cx, n, n_disc, sel_sites)?;
-    let ((), value) = lp.run(
-        cx,
-        |cx, _| {
-            let idx_disc = scalar_disc(cx.b, PrimType::I64);
-            let idx_disc = elem_disc(cx, idx_disc, n_disc);
-            let idx_disc_var = cx.b.declare_var(types::I64);
-            cx.b.def_var(idx_disc_var, idx_disc);
-            let (name, i_var) = (idx_name.clone(), lp.i_var);
-            bind_scalar_var_with_disc(
-                cx,
-                name,
-                PrimType::I64,
-                i_var,
-                idx_disc_var,
-                idx_id,
-            );
-            Ok(())
-        },
-        body,
-    )?;
-    flags.fold(cx, value.disc);
-    push_field(cx, buf, value, out_typ, out_src)?;
-    cx.env.truncate(lp.mark);
-    lp.close(cx)?;
-    Ok((finalize_valarray(cx, buf)?, flags, n_disc))
+    flags.accs.fold(cx, disc);
+    let sunk =
+        emit_slots(cx, flags.accs, SinkKind::Buf, (zero, n_disc, n), sel_sites, {
+            |cx, lp, s| {
+                let ((), value) = lp.run(
+                    cx,
+                    |cx, _| {
+                        let idx_disc = scalar_disc(cx.b, PrimType::I64);
+                        let idx_disc = elem_disc(cx, idx_disc, s.src_disc);
+                        let idx_disc_var = cx.b.declare_var(types::I64);
+                        cx.b.def_var(idx_disc_var, idx_disc);
+                        let (name, i_var) = (idx_name.clone(), lp.i_var);
+                        bind_scalar_var_with_disc(
+                            cx,
+                            name,
+                            PrimType::I64,
+                            i_var,
+                            idx_disc_var,
+                            idx_id,
+                        );
+                        Ok(())
+                    },
+                    body,
+                )?;
+                s.accs.fold(cx, value.disc);
+                push_field(cx, s.buf(), value, out_typ, out_src)?;
+                cx.env.truncate(lp.mark);
+                Ok(())
+            }
+        })?;
+    Ok((sunk.array(), flags, n_disc))
 }
 
-pub(crate) fn emit_map_loop<'a, 'f, 'c, F>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
+pub(crate) fn emit_map_loop<F>(
+    cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
     out_typ: &Type,
@@ -642,71 +793,75 @@ pub(crate) fn emit_map_loop<'a, 'f, 'c, F>(
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let buf = open_value_buf(cx, len)?;
-    let lp = open_loop(cx, len, arr.disc, sel_sites)?;
-    let (bound, value) =
-        lp.run(cx, |cx, i| bind_elem(cx, arr.disc, arr.ptr, i, elem), body)?;
-    flags.fold(cx, value.disc);
-    push_field(cx, buf, value, out_typ, out_src)?;
-    bound.drop_leaves(cx)?;
-    bound.drop_elem(cx)?;
-    cx.env.truncate(lp.mark);
-    lp.close(cx)?;
-    let result = finalize_valarray(cx, buf)?;
+    let source = (arr.ptr, arr.disc, len);
+    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+        |cx, lp, s| {
+            let (bound, value) =
+                lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
+            s.accs.fold(cx, value.disc);
+            push_field(cx, s.buf(), value, out_typ, out_src)?;
+            bound.drop_leaves(cx)?;
+            bound.drop_elem(cx)?;
+            cx.env.truncate(lp.mark);
+            Ok(())
+        }
+    })?;
     drop_owned_src(cx, &arr)?;
-    Ok((result, flags))
+    Ok((sunk.array(), flags))
 }
 
-pub(crate) fn emit_filter_loop<'a, 'f, 'c, F>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
+pub(crate) fn emit_filter_loop<F>(
+    cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
     sel_sites: &[ExprId],
     predicate: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
-    let buf = open_value_buf(cx, len)?;
-    let lp = open_loop(cx, len, arr.disc, sel_sites)?;
-    let (bound, keep) =
-        lp.run(cx, |cx, i| bind_elem(cx, arr.disc, arr.ptr, i, elem), predicate)?;
-    flags.fold(cx, keep.disc);
-    bound.drop_leaves(cx)?;
-    cx.env.truncate(lp.mark);
-    let push_block = cx.b.create_block();
-    let drop_block = cx.b.create_block();
-    let advance = cx.b.create_block();
-    cx.b.ins().brif(keep.payload, push_block, &[], drop_block, &[]);
-    cx.b.switch_to_block(push_block);
-    cx.b.seal_block(push_block);
-    // A kept element moves into the result.
-    let (_, vv) = bound.elem;
-    let cv = CompiledExpr::new(cx.b.use_var(vv.disc), cx.b.use_var(vv.payload));
-    push_field(cx, buf, cv, elem.typ, CompositeSource::Owned)?;
-    cx.b.ins().jump(advance, &[]);
-    cx.b.switch_to_block(drop_block);
-    cx.b.seal_block(drop_block);
-    bound.drop_elem(cx)?;
-    cx.b.ins().jump(advance, &[]);
-    cx.b.switch_to_block(advance);
-    cx.b.seal_block(advance);
-    lp.close(cx)?;
-    let result = finalize_valarray(cx, buf)?;
+    let source = (arr.ptr, arr.disc, len);
+    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+        |cx, lp, s| {
+            let (bound, keep) =
+                lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
+            s.accs.fold(cx, keep.disc);
+            bound.drop_leaves(cx)?;
+            cx.env.truncate(lp.mark);
+            let push_block = cx.b.create_block();
+            let drop_block = cx.b.create_block();
+            let advance = cx.b.create_block();
+            cx.b.ins().brif(keep.payload, push_block, &[], drop_block, &[]);
+            cx.b.switch_to_block(push_block);
+            cx.b.seal_block(push_block);
+            // A kept element moves into the result.
+            let (_, vv) = bound.elem;
+            let cv = CompiledExpr::new(cx.b.use_var(vv.disc), cx.b.use_var(vv.payload));
+            push_field(cx, s.buf(), cv, elem.typ, CompositeSource::Owned)?;
+            cx.b.ins().jump(advance, &[]);
+            cx.b.switch_to_block(drop_block);
+            cx.b.seal_block(drop_block);
+            bound.drop_elem(cx)?;
+            cx.b.ins().jump(advance, &[]);
+            cx.b.switch_to_block(advance);
+            cx.b.seal_block(advance);
+            Ok(())
+        }
+    })?;
     drop_owned_src(cx, &arr)?;
-    Ok((result, flags))
+    Ok((sunk.array(), flags))
 }
 
-pub(crate) fn emit_filter_map_loop<'a, 'f, 'c, F>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
+pub(crate) fn emit_filter_map_loop<F>(
+    cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
     out_elem: &Type,
@@ -715,7 +870,7 @@ pub(crate) fn emit_filter_map_loop<'a, 'f, 'c, F>(
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
     if matches!(
         kernel_abi::abi_kind(out_elem),
@@ -726,36 +881,39 @@ where
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let buf = open_value_buf(cx, len)?;
-    let lp = open_loop(cx, len, arr.disc, sel_sites)?;
-    let (bound, value) =
-        lp.run(cx, |cx, i| bind_elem(cx, arr.disc, arr.ptr, i, elem), body)?;
-    cx.env.truncate(lp.mark);
-    flags.fold(cx, value.disc);
-    let disc = clean_disc(cx.b, value.disc);
-    let is_null = cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
-    let push_block = cx.b.create_block();
-    let advance = cx.b.create_block();
-    cx.b.ins().brif(is_null, advance, &[], push_block, &[]);
-    cx.b.switch_to_block(push_block);
-    cx.b.seal_block(push_block);
-    // The result is always the callback's 2-word Nullable-shaped Value,
-    // never an unwrapped element (a `[T, Error]` result may hold an
-    // Error where the arm expects T): push it as a value, bit-for-bit.
-    let helper = match out_src {
-        CompositeSource::Owned => "graphix_value_buf_push_value",
-        CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
-    };
-    cx.call_helper(helper, &[buf, value.disc, value.payload])?;
-    cx.b.ins().jump(advance, &[]);
-    cx.b.switch_to_block(advance);
-    cx.b.seal_block(advance);
-    bound.drop_leaves(cx)?;
-    bound.drop_elem(cx)?;
-    lp.close(cx)?;
-    let result = finalize_valarray(cx, buf)?;
+    let source = (arr.ptr, arr.disc, len);
+    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+        |cx, lp, s| {
+            let (bound, value) =
+                lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
+            cx.env.truncate(lp.mark);
+            s.accs.fold(cx, value.disc);
+            let disc = clean_disc(cx.b, value.disc);
+            let is_null = cx.b.ins().icmp_imm(IntCC::Equal, disc, value_disc::NULL);
+            let push_block = cx.b.create_block();
+            let advance = cx.b.create_block();
+            cx.b.ins().brif(is_null, advance, &[], push_block, &[]);
+            cx.b.switch_to_block(push_block);
+            cx.b.seal_block(push_block);
+            // The result is always the callback's 2-word Nullable-shaped
+            // Value, never an unwrapped element (a `[T, Error]` result may
+            // hold an Error where the arm expects T): push it as a value,
+            // bit-for-bit.
+            let helper = match out_src {
+                CompositeSource::Owned => "graphix_value_buf_push_value",
+                CompositeSource::Borrowed => "graphix_value_buf_push_value_borrowed",
+            };
+            cx.call_helper(helper, &[s.buf(), value.disc, value.payload])?;
+            cx.b.ins().jump(advance, &[]);
+            cx.b.switch_to_block(advance);
+            cx.b.seal_block(advance);
+            bound.drop_leaves(cx)?;
+            bound.drop_elem(cx)?;
+            Ok(())
+        }
+    })?;
     drop_owned_src(cx, &arr)?;
-    Ok((result, flags))
+    Ok((sunk.array(), flags))
 }
 
 /// How a flat_map body result splices into the output buf: an array
@@ -767,8 +925,8 @@ pub enum FlatMapExtend {
     List,
 }
 
-pub(crate) fn emit_flat_map_loop<'a, 'f, 'c, F>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
+pub(crate) fn emit_flat_map_loop<F>(
+    cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
     extend_kind: FlatMapExtend,
@@ -776,32 +934,35 @@ pub(crate) fn emit_flat_map_loop<'a, 'f, 'c, F>(
     body: F,
 ) -> Result<(ClifValue, SlotFlags)>
 where
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let buf = open_value_buf(cx, len)?;
-    let lp = open_loop(cx, len, arr.disc, sel_sites)?;
-    let (bound, value) =
-        lp.run(cx, |cx, i| bind_elem(cx, arr.disc, arr.ptr, i, elem), body)?;
-    flags.fold(cx, value.disc);
-    bound.drop_leaves(cx)?;
-    bound.drop_elem(cx)?;
-    cx.env.truncate(lp.mark);
-    match extend_kind {
-        FlatMapExtend::Array => {
-            cx.call_helper("graphix_value_buf_extend_from_array", &[buf, value.payload])?
+    let source = (arr.ptr, arr.disc, len);
+    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+        |cx, lp, s| {
+            let (bound, value) =
+                lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
+            s.accs.fold(cx, value.disc);
+            bound.drop_leaves(cx)?;
+            bound.drop_elem(cx)?;
+            cx.env.truncate(lp.mark);
+            match extend_kind {
+                FlatMapExtend::Array => cx.call_helper(
+                    "graphix_value_buf_extend_from_array",
+                    &[s.buf(), value.payload],
+                )?,
+                FlatMapExtend::List => cx.call_helper(
+                    "graphix_value_buf_extend_from_list",
+                    &[s.buf(), value.disc, value.payload],
+                )?,
+            };
+            Ok(())
         }
-        FlatMapExtend::List => cx.call_helper(
-            "graphix_value_buf_extend_from_list",
-            &[buf, value.disc, value.payload],
-        )?,
-    };
-    lp.close(cx)?;
-    let result = finalize_valarray(cx, buf)?;
+    })?;
     drop_owned_src(cx, &arr)?;
-    Ok((result, flags))
+    Ok((sunk.array(), flags))
 }
 
 /// Destructure leaves for a `|(k, v)|`-style pattern over a tuple-typed
@@ -982,7 +1143,7 @@ where
     // Each body evaluation's STALE folds into the firing flags (a
     // mid-chain body that consumed a fired acc fires the fold even if
     // the final carry is stale); TAINT travels only the acc carry.
-    flags.fold_stale(cx, new_disc);
+    flags.accs.fold_stale(cx, new_disc);
     cx.b.def_var(acc_var, new_pay);
     let d = acc.carry_disc(cx, new_disc);
     cx.b.def_var(acc_disc_var, d);
@@ -1034,104 +1195,108 @@ fn branch_take(cx: &mut BodyCx, cond: ClifValue, found: Variable) -> (Block, Blo
     (discard, advance)
 }
 
-pub(crate) fn emit_find_loop<'a, 'f, 'c, F>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
+pub(crate) fn emit_find_loop<F>(
+    cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
     sel_sites: &[ExprId],
     predicate: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<CompiledExpr>,
+    F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<CompiledExpr>,
 {
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
-    let (found_var, result_disc_var, result_payload_var) = found_vars(cx);
-    let result_mark = bind_taken(cx, result_disc_var, result_payload_var);
-    let lp = open_loop(cx, len, arr.disc, sel_sites)?;
-    let (bound, keep) =
-        lp.run(cx, |cx, i| bind_elem(cx, arr.disc, arr.ptr, i, elem), predicate)?;
-    flags.fold(cx, keep.disc);
-    bound.drop_leaves(cx)?;
-    cx.env.truncate(lp.mark);
-    let (discard, advance) = branch_take(cx, keep.payload, found_var);
-    // The taken element moves into the result, in its Value encoding.
-    let (disc, payload) = match bound.elem {
-        (LocalKind::Scalar(p), vv) => {
-            let value = cx.b.use_var(vv.payload);
-            let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p));
-            (disc, scalar_to_payload_i64(cx.b, p, value))
+    let source = (arr.ptr, arr.disc, len);
+    let sunk = emit_slots(cx, flags.accs, SinkKind::Find, source, sel_sites, {
+        |cx, lp, s| {
+            let (found_var, result_disc_var, result_payload_var) = s.found();
+            let (bound, keep) =
+                lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
+            s.accs.fold(cx, keep.disc);
+            bound.drop_leaves(cx)?;
+            cx.env.truncate(lp.mark);
+            let (discard, advance) = branch_take(cx, keep.payload, found_var);
+            // The taken element moves into the result, in its Value encoding.
+            let (disc, payload) = match bound.elem {
+                (LocalKind::Scalar(p), vv) => {
+                    let value = cx.b.use_var(vv.payload);
+                    let disc = cx.b.ins().iconst(types::I64, prim_to_value_disc(p));
+                    (disc, scalar_to_payload_i64(cx.b, p, value))
+                }
+                (LocalKind::Composite, vv) => (
+                    cx.b.ins().iconst(types::I64, value_disc::ARRAY),
+                    cx.b.use_var(vv.payload),
+                ),
+                (LocalKind::String, vv) => (
+                    cx.b.ins().iconst(types::I64, value_disc::STRING),
+                    cx.b.use_var(vv.payload),
+                ),
+                (LocalKind::Value, vv) => {
+                    (cx.b.use_var(vv.disc), cx.b.use_var(vv.payload))
+                }
+            };
+            cx.b.def_var(result_disc_var, disc);
+            cx.b.def_var(result_payload_var, payload);
+            let one = cx.b.ins().iconst(types::I8, 1);
+            cx.b.def_var(found_var, one);
+            cx.b.ins().jump(advance, &[]);
+            cx.b.switch_to_block(discard);
+            cx.b.seal_block(discard);
+            bound.drop_elem(cx)?;
+            cx.b.ins().jump(advance, &[]);
+            cx.b.switch_to_block(advance);
+            cx.b.seal_block(advance);
+            Ok(())
         }
-        (LocalKind::Composite, vv) => {
-            (cx.b.ins().iconst(types::I64, value_disc::ARRAY), cx.b.use_var(vv.payload))
-        }
-        (LocalKind::String, vv) => {
-            (cx.b.ins().iconst(types::I64, value_disc::STRING), cx.b.use_var(vv.payload))
-        }
-        (LocalKind::Value, vv) => (cx.b.use_var(vv.disc), cx.b.use_var(vv.payload)),
-    };
-    cx.b.def_var(result_disc_var, disc);
-    cx.b.def_var(result_payload_var, payload);
-    let one = cx.b.ins().iconst(types::I8, 1);
-    cx.b.def_var(found_var, one);
-    cx.b.ins().jump(advance, &[]);
-    cx.b.switch_to_block(discard);
-    cx.b.seal_block(discard);
-    bound.drop_elem(cx)?;
-    cx.b.ins().jump(advance, &[]);
-    cx.b.switch_to_block(advance);
-    cx.b.seal_block(advance);
-    lp.close(cx)?;
-    cx.env.truncate(result_mark);
-    let disc = cx.b.use_var(result_disc_var);
-    let payload = cx.b.use_var(result_payload_var);
+    })?;
     drop_owned_src(cx, &arr)?;
-    Ok(((disc, payload), flags))
+    Ok((sunk.taken(), flags))
 }
 
-pub(crate) fn emit_find_map_loop<'a, 'f, 'c, F>(
-    cx: &mut BodyCx<'a, 'f, 'c>,
+pub(crate) fn emit_find_map_loop<F>(
+    cx: &mut BodyCx,
     arr: ArraySrc,
     elem: &HofElem,
     sel_sites: &[ExprId],
     body: F,
 ) -> Result<((ClifValue, ClifValue), SlotFlags)>
 where
-    F: FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<(ClifValue, ClifValue)>,
+    F: for<'x, 'y, 'z> FnOnce(&mut BodyCx<'x, 'y, 'z>) -> Result<(ClifValue, ClifValue)>,
 {
     adopt_owned_src(cx, &arr);
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
-    let (found_var, result_disc_var, result_payload_var) = found_vars(cx);
-    let result_mark = bind_taken(cx, result_disc_var, result_payload_var);
-    let lp = open_loop(cx, len, arr.disc, sel_sites)?;
-    let (bound, (disc, payload)) =
-        lp.run(cx, |cx, i| bind_elem(cx, arr.disc, arr.ptr, i, elem), body)?;
-    bound.drop_leaves(cx)?;
-    bound.drop_elem(cx)?;
-    cx.env.truncate(lp.mark);
-    flags.fold(cx, disc);
-    let clean = clean_disc(cx.b, disc);
-    let non_null = cx.b.ins().icmp_imm(IntCC::NotEqual, clean, value_disc::NULL);
-    let (discard, advance) = branch_take(cx, non_null, found_var);
-    cx.b.def_var(result_disc_var, clean);
-    cx.b.def_var(result_payload_var, payload);
-    let one = cx.b.ins().iconst(types::I8, 1);
-    cx.b.def_var(found_var, one);
-    cx.b.ins().jump(advance, &[]);
-    cx.b.switch_to_block(discard);
-    cx.b.seal_block(discard);
-    cx.call_helper("graphix_value_drop", &[disc, payload])?;
-    cx.b.ins().jump(advance, &[]);
-    cx.b.switch_to_block(advance);
-    cx.b.seal_block(advance);
-    lp.close(cx)?;
-    cx.env.truncate(result_mark);
-    let disc = cx.b.use_var(result_disc_var);
-    let payload = cx.b.use_var(result_payload_var);
+    let source = (arr.ptr, arr.disc, len);
+    let sunk = emit_slots(cx, flags.accs, SinkKind::Find, source, sel_sites, {
+        |cx, lp, s| {
+            let (found_var, result_disc_var, result_payload_var) = s.found();
+            let (bound, (disc, payload)) =
+                lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
+            bound.drop_leaves(cx)?;
+            bound.drop_elem(cx)?;
+            cx.env.truncate(lp.mark);
+            s.accs.fold(cx, disc);
+            let clean = clean_disc(cx.b, disc);
+            let non_null = cx.b.ins().icmp_imm(IntCC::NotEqual, clean, value_disc::NULL);
+            let (discard, advance) = branch_take(cx, non_null, found_var);
+            cx.b.def_var(result_disc_var, clean);
+            cx.b.def_var(result_payload_var, payload);
+            let one = cx.b.ins().iconst(types::I8, 1);
+            cx.b.def_var(found_var, one);
+            cx.b.ins().jump(advance, &[]);
+            cx.b.switch_to_block(discard);
+            cx.b.seal_block(discard);
+            cx.call_helper("graphix_value_drop", &[disc, payload])?;
+            cx.b.ins().jump(advance, &[]);
+            cx.b.switch_to_block(advance);
+            cx.b.seal_block(advance);
+            Ok(())
+        }
+    })?;
     drop_owned_src(cx, &arr)?;
-    Ok(((disc, payload), flags))
+    Ok((sunk.taken(), flags))
 }
 
 /// Collect the per-slot state sites in a scaffold-loop body: the

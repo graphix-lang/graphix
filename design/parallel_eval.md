@@ -404,7 +404,7 @@ schedule, and turns serial when no split reaches `T` on both sides. A
 its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
 is four times the median latency of handing an idle pool a job,
 measured on a thread of its own at the first use (`Auto` forks nothing
-until then). `GRAPHIX_DBG_PAR` prints the calibration.
+until then). `GRAPHIX_DBG_PAR` prints the calibration and each kernel loop it forks.
 
 **As built (phase 5).**
 
@@ -574,9 +574,8 @@ The grain is positional, `#[parallel(4)]`: attribute arguments are
 expressions, and `grain: 4` is not one. On a `let` the
 attribute moves onto the value, and on a definition onto its lambda's
 body, so every instance compiles the node (`compiler::fork_on_body`). The
-node is a fusion boundary: its child fuses as a region of its own, and a
-kernel forks nothing until phase 6, so `#[parallel]` over an expression
-that fuses whole has no effect. The assertion runs at the node's
+node is a fusion boundary: its child fuses as a region of its own, whose
+depth-0 loops take the forced grain (§10). The assertion runs at the node's
 `typecheck1` (`analysis::check_parallel`): a block needs a run of two
 statements and is otherwise refused naming its first break
 (`plan_block_explained`: the variable read, an ordered call, a module,
@@ -751,25 +750,79 @@ A kernel invocation is a leaf. Its state is node-owned (`state`/`site`
 blocks), its loans are per call, and its feeders are a fork point. So
 kernels need nothing for the node-level design.
 
-Parallel loops inside kernels (§11 phase 6) are the second half. The
-eight native collection loops (`fusion/emit/scaffold.rs`) keep
-per-slot state in per-slot words (`kernel_instance_state.md`). The map
-family (init, map, filter, filter_map, flat_map, find, find_map) can
-outline the loop body into a function and call a helper,
-`graphix_par_for(lo, hi, grain, body, env)`, which runs chunks under
-the same `par::join`:
+Parallel loops inside kernels (§11 phase 6) are the second half.
 
-- The firing word (`SlotFlags`) is an OR over slots: each chunk folds
-  its own word and the helper ORs them.
-- Results are written by index; filter-family results concatenate
-  chunks in order.
-- `?` raises (`QOP_RAISES`) collect per chunk and are delivered in index
-  order.
-- `find` takes the lowest matching index.
-- The grain comes from a per-call-site histogram, as for node-walk
-  collections.
+**What forks.** A map-family loop (`init`, `map`, `filter`,
+`filter_map`, `flat_map`, `find`, `find_map`, over arrays, lists and
+maps) emitted at loop depth 0 of a kernel body, parent or callee. Its
+iterations are independent by construction: a kernel is pure, and the
+only memory an iteration touches is its own slot's (per-slot chains,
+per-slot call-site blocks, `kernel_instance_state.md`). `fold` stays
+serial (§12). A loop nested in another loop stays inline in its
+enclosing loop's code.
 
-`fold` stays serial (§12).
+**Outlining.** Such a loop is emitted as a function of its own, a
+CHUNK, `chunk(frame, lo, hi, out)`, which runs slots `lo..hi`: the
+element binds, the callback body and the push, exactly the serial
+loop's iteration. The kernel keeps the loop's preheader (the source,
+its length, the slot-table frame, the firing flags) and replaces the
+loop with a call to `graphix_par_loop(chunk, frame, len, site, out)`.
+`frame` is a stack record the kernel fills: its context word, state and
+site pointers, the source and its disc, the slot tables' bases, and
+every local in scope as a `(disc, payload)` pair. A chunk borrows those
+locals (its abort path drops only what it bound itself). Each chunk
+fills an out record: its own result buf (unfinalized) or its first
+match, its TAINT (OR) and STALE (AND) accumulators. The helper merges
+the records in index order: bufs concatenate, a find takes the lowest
+chunk's match, flags fold. The chunk is a second function of the
+kernel's record (`RecordKind::Chunk`, with its own constants;
+`RelocTarget::Chunk` from the kernel), installed and imaged with it.
+
+**Shared memory.** Everything a chunk writes outside its own frame is
+indexed by its slot: no state word in a loop is shared across its
+iterations (`kernel_instance_state.md`; a nested loop's prev-length
+word and a call's first-call word are per slot whatever their source,
+which is also the node-walk's multiplicity). What iterations share is
+the chain levels at the loop's own depth, the directories its nested
+loops and in-loop call sites anchor. The kernel resizes those in the
+preheader, so an in-body ensure finds its level sized and only reads it
+(the ensure helpers take a read-only path when nothing changes): the
+loop's exit truncates are those same ensures, run once before the fork.
+
+**Thread-local loans.** A chunk on a worker runs under the invoking
+kernel's loans: `KERNEL_ENV`, the interrupt scope, the self-block
+generation (reach counts sum back), and a `?` queue of its own,
+appended to the kernel's in chunk order; an abort or a fast fn's panic
+in any chunk aborts the kernel. A core-trait value hook loan is
+exclusive to the invoking thread, so a kernel running under one does
+not fork.
+
+**The decision.** `FusedKernel::update` loans the runtime's fork mode
+and forced grain (`ctx.fork_mode()`, `ctx.fork.forced`) to the run; a
+callee body ignores the forced grain (`#[parallel]` excludes callees).
+`Off` and runs outside a loan call the chunk once over the whole loop.
+Under `Auto` the loop is a `ProbeSite` (phase 5): it runs its first
+slots in order, timing each, and forks the rest in ranges of the grain
+the estimate gives, at most `CHUNKS_PER_WORKER` (16) per worker: a
+chunk costs a call and a buffer, so ranges are cheaper than a node-walk
+fork's and more of them even out slots of uneven cost. The site's
+histogram lives in five words of the kernel's state (a parent) or
+call-site block (a callee); a null block (a recursive back-edge) probes
+with no history. `Force` forks every loop of two or more slots in
+ranges of the forced grain.
+
+**Testing.** Every `run!` fixture has a `jit_par` twin (fused, `Force`:
+each slot a chunk); `lang::par_loops` pins raise order and a find's
+lowest slot across chunks; `lang::par_attrs` the attributes over fused
+loops. The fuzzer's `Par` pair runs the fused JIT forced
+(`Mode::JitPar`) beside the forced node-walk, each against the serial
+node-walk. `GRAPHIX_NO_OUTLINE=1` emits every loop inline (A/B: the
+outlined loop costs nothing measurable serially).
+
+**Measured** (`bench/par_mandel.gx`, 480000 fused pixels a cycle, quick
+build): 1.51 s serial, 0.45 s on four P-cores, 0.23 s on four P- and
+eight E-cores. The rest of the cycle (the fold, building and dropping
+the array) is serial; the pixels run at about 92% of four cores.
 
 ## 11. Phases
 
@@ -819,6 +872,14 @@ once.
   starting runtimes then race on the flag. Seen on this branch, present
   on main; not investigated.
 
+- **A loop's iterations shared two kernel state words.** A nested
+  loop over a source bound outside the loop kept one prev-length word
+  for every iteration of the enclosing loop, and a cross-kernel call in
+  a loop one first-call word; the node-walk builds an instance per
+  slot, so a growing loop's new slots fired (and raised) where the JIT
+  did not. Phase 6 needed every iteration's memory to be its slot's and
+  found it (5d342b87, pins `lang::functions::hof_slot_*`). Present on
+  main; **port it if this branch is not merged.**
 - **`Env::fork` copied every key its parent's task had written.** It
   built the fork as `{ forked maps.., ..self.clone() }`, which clones
   the tracked maps' written-key lists before dropping them, so a task

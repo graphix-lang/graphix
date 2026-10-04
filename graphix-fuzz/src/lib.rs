@@ -54,19 +54,22 @@ pub enum Mode {
     /// The node-walk with every fork point forked
     /// (`design/parallel_eval.md`): what serial evaluation computes.
     Par,
+    /// Fusion + JIT with every fork point forked, kernel loops' slots
+    /// included.
+    JitPar,
 }
 
 impl Mode {
     pub fn flags(self) -> BitFlags<CFlag> {
         match self {
             Mode::Interp | Mode::Par => CFlag::FusionDisabled.into(),
-            Mode::Jit => BitFlags::empty(),
+            Mode::Jit | Mode::JitPar => BitFlags::empty(),
         }
     }
 
     pub fn par(self) -> ParMode {
         match self {
-            Mode::Par => ParMode::Force,
+            Mode::Par | Mode::JitPar => ParMode::Force,
             Mode::Interp | Mode::Jit => ParMode::Off,
         }
     }
@@ -1246,9 +1249,11 @@ pub enum Pair {
     /// program both engines' builds refused (`jit` holds the refusal):
     /// elaboration refused what the check accepted, a type-system bug.
     Check,
-    /// Serial node-walk vs the node-walk with every fork forced
-    /// (`interp` holds the serial outcome, `jit` the forked one).
-    Par,
+    /// Serial node-walk vs a run with every fork forced: the node-walk
+    /// (`Mode::Par`) or the fused JIT, kernel loops included
+    /// (`Mode::JitPar`); `interp` holds the serial outcome, `jit` the
+    /// forked one.
+    Par(Mode),
 }
 
 /// The label of one session run, for a finding's outcome fields.
@@ -1268,6 +1273,7 @@ fn session_label(mode: Mode, route: Route, session: Session) -> &'static str {
         (Jit, Dispatch, Cold) => "jit/dispatch/cold",
         (Jit, Dispatch, Warm) => "jit/dispatch/warm",
         (Par, _, _) => "par",
+        (JitPar, _, _) => "jit-par",
     }
 }
 
@@ -1298,8 +1304,11 @@ impl Divergence {
                      a program the definition and call-site checks passed: a \
                      type-system bug)"
                 }
-                (Pair::Par, _) => {
+                (Pair::Par(Mode::Par), _) => {
                     "parallel evaluation bug (forked node-walk != serial node-walk)"
+                }
+                (Pair::Par(_), _) => {
+                    "parallel evaluation bug (forked fused/JIT != serial node-walk)"
                 }
                 (Pair::Route, _) => {
                     "route bug (in-language call != embedder-callable dispatch, interp)"
@@ -1317,13 +1326,13 @@ impl Divergence {
                 (Pair::Cold(Mode::Interp | Mode::Par, _), _) => {
                     "image bug: writing the program image changed the program (interp)"
                 }
-                (Pair::Cold(Mode::Jit, _), _) => {
+                (Pair::Cold(Mode::Jit | Mode::JitPar, _), _) => {
                     "image bug: writing the program image changed the program (jit)"
                 }
                 (Pair::Warm(Mode::Interp | Mode::Par, _), _) => {
                     "image bug: the restored program differs from the cold one (interp)"
                 }
-                (Pair::Warm(Mode::Jit, _), _) => {
+                (Pair::Warm(Mode::Jit | Mode::JitPar, _), _) => {
                     "image bug: the restored program differs from the cold one (jit)"
                 }
             },
@@ -1339,7 +1348,8 @@ impl Divergence {
             Pair::Twin => ("trace", "trace"),
             Pair::Rejected => ("interp", "jit"),
             Pair::Check => ("check", "build"),
-            Pair::Par => ("interp", "interp/par"),
+            Pair::Par(Mode::Par) => ("interp", "interp/par"),
+            Pair::Par(_) => ("interp", "jit/par"),
             Pair::Cold(m, r) => (
                 session_label(m, r, Session::NoCache),
                 session_label(m, r, Session::Cold),
@@ -1546,9 +1556,11 @@ pub async fn check_verdict(
     )
 }
 
-/// The forked node-walk against the serial one, whose outcome is
-/// `interp`. A one-sided timeout retries the forked side at the slow
-/// budget; a serial run that disagrees with itself is nondeterminism.
+/// The forked node-walk and the forked JIT against the serial
+/// node-walk, whose outcome is `interp` (and which the serial JIT
+/// agreed with). A one-sided timeout retries the forked side at the
+/// slow budget; a serial run that disagrees with itself is
+/// nondeterminism.
 async fn check_par(
     code: &str,
     interp: &Outcome,
@@ -1558,27 +1570,33 @@ async fn check_par(
     if !par_enabled() {
         return None;
     }
-    let mut par = run_program(code, Mode::Par, timeout).await;
-    if interp.agrees_with_at(&par, tier) {
-        return None;
-    }
-    if matches!(&par, Outcome::Timeout(_)) && interp.has_events() {
-        par = retry_one_sided_timeout(code, Mode::Par, timeout).await.outcome;
-        if interp.agrees_with_at(&par, tier) {
+    let (par, jit_par) = tokio::join!(
+        run_program(code, Mode::Par, timeout),
+        run_program(code, Mode::JitPar, timeout),
+    );
+    for (mode, mut forked) in [(Mode::Par, par), (Mode::JitPar, jit_par)] {
+        if interp.agrees_with_at(&forked, tier) {
+            continue;
+        }
+        if matches!(&forked, Outcome::Timeout(_)) && interp.has_events() {
+            forked = retry_one_sided_timeout(code, mode, timeout).await.outcome;
+            if interp.agrees_with_at(&forked, tier) {
+                continue;
+            }
+        }
+        let interp2 = run_program(code, Mode::Interp, timeout).await;
+        if !interp.agrees_with_at(&interp2, tier) {
             return None;
         }
+        return Some(Divergence {
+            code: code.to_string(),
+            interp: interp.clone(),
+            jit: forked,
+            tier,
+            pair: Pair::Par(mode),
+        });
     }
-    let interp2 = run_program(code, Mode::Interp, timeout).await;
-    if !interp.agrees_with_at(&interp2, tier) {
-        return None;
-    }
-    Some(Divergence {
-        code: code.to_string(),
-        interp: interp.clone(),
-        jit: par,
-        tier,
-        pair: Pair::Par,
-    })
+    None
 }
 
 struct SlowRetry {
@@ -4089,6 +4107,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
                 (Mode::Interp, Route::Dispatch) => "interp-dispatch",
                 (Mode::Jit, Route::Dispatch) => "jit-dispatch",
                 (Mode::Par, _) => "par",
+                (Mode::JitPar, _) => "jit-par",
             });
         }
     }

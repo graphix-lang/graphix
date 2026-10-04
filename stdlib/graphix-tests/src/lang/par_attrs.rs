@@ -2,7 +2,7 @@
 // collection's growth runs under `Auto` (§8).
 
 use anyhow::{Result, bail};
-use graphix_compiler::{CFlag, ParMode};
+use graphix_compiler::{BitFlags, CFlag, ParMode};
 use graphix_package_core::testing::init_with_flags_and_setup;
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
@@ -19,9 +19,20 @@ struct Ran {
 }
 
 /// Run `code` (as `let result = {code}`) node-walked under `mode` until it
-/// is quiet for 300ms. A kernel does not fork. Under `Auto` the run waits
-/// for the fork threshold's calibration first: nothing forks until it.
+/// is quiet for 300ms.
 async fn run_par(code: &str, mode: ParMode) -> Result<Ran> {
+    run_with(code, mode, CFlag::FusionDisabled.into()).await
+}
+
+/// [`run_par`] fused: a kernel's loops fork as chunks of its slots.
+async fn run_fused(code: &str, mode: ParMode) -> Result<Ran> {
+    run_with(code, mode, BitFlags::empty()).await
+}
+
+/// Run `code` compiled with `flags` under `mode` until it is quiet for
+/// 300ms. Under `Auto` the run waits for the fork threshold's
+/// calibration first: nothing forks until it.
+async fn run_with(code: &str, mode: ParMode, flags: BitFlags<CFlag>) -> Result<Ran> {
     if mode == ParMode::Auto {
         while graphix_compiler::cost::calibration().is_none() {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -38,7 +49,7 @@ async fn run_par(code: &str, mode: ParMode) -> Result<Ran> {
         tx,
         &crate::TEST_REGISTER,
         vec![graphix_compiler::expr::VfsResolver::new(tbl)],
-        CFlag::FusionDisabled.into(),
+        flags,
         move |ctx| ctx.control.set_par_mode(mode),
     )
     .await?;
@@ -105,6 +116,14 @@ async fn parallel_forks_a_cheap_map() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn parallel_forks_a_fused_map() -> Result<()> {
+    let ran = run_fused(&ticking_map("#[parallel]"), ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    assert!(ran.forks > 0, "#[parallel] forked no kernel loop");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn parallel_on_a_definition_forks_its_instances() -> Result<()> {
     let code = r#"{
         let n = 0;
@@ -144,6 +163,12 @@ async fn serial_reaches_callees() -> Result<()> {
     let ran = run_par(&code("#[serial]"), ParMode::Auto).await?;
     assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
     assert_eq!(ran.forks, 0, "#[serial] let a callee fork");
+    let ran = run_fused(&code(""), ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    assert!(ran.forks > 0, "the callee's #[parallel] forked no kernel loop");
+    let ran = run_fused(&code("#[serial]"), ParMode::Auto).await?;
+    assert_eq!(ran.values.last(), Some(&Value::I64(2 * (28 + 8 * 30))));
+    assert_eq!(ran.forks, 0, "#[serial] let a callee's kernel loop fork");
     Ok(())
 }
 

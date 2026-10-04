@@ -143,6 +143,8 @@ pub enum RelocTarget {
     Owner,
     /// The body's own spill thunk.
     Thunk,
+    /// One of the body's outlined loops, by its index in `chunks`.
+    Chunk(u32),
     LibCall(LibCall),
     /// A record in the body's `consts`.
     Const(u32),
@@ -160,10 +162,17 @@ pub enum RecordKind {
     /// A kernel body; its signature derives from its `KernelSig`. Its
     /// constants are what its code refers to by address; its thunk, a
     /// [`RecordKind::Thunk`], is the one a self-recursive body
-    /// re-enters through.
-    Kernel { consts: Vec<KernelConst>, thunk: Option<Arc<BodyRecord>> },
+    /// re-enters through; its chunks are its outlined loops.
+    Kernel {
+        consts: Vec<KernelConst>,
+        thunk: Option<Arc<BodyRecord>>,
+        chunks: Vec<Arc<BodyRecord>>,
+    },
     /// The `(args, out)` thunk a self-recursive body re-enters through.
     Thunk,
+    /// An outlined loop of a kernel body, `(frame, lo, hi, out)`; its
+    /// owner is that body.
+    Chunk { consts: Vec<KernelConst> },
     /// A region's `(args, out)` wrapper.
     Wrapper,
 }
@@ -188,7 +197,7 @@ impl BodyRecord {
     /// The constants the code refers to by address.
     pub fn consts(&self) -> &[KernelConst] {
         match &self.kind {
-            RecordKind::Kernel { consts, .. } => consts,
+            RecordKind::Kernel { consts, .. } | RecordKind::Chunk { consts } => consts,
             RecordKind::Thunk | RecordKind::Wrapper => &[],
         }
     }
@@ -196,7 +205,14 @@ impl BodyRecord {
     pub fn thunk(&self) -> Option<&Arc<BodyRecord>> {
         match &self.kind {
             RecordKind::Kernel { thunk, .. } => thunk.as_ref(),
-            RecordKind::Thunk | RecordKind::Wrapper => None,
+            RecordKind::Thunk | RecordKind::Chunk { .. } | RecordKind::Wrapper => None,
+        }
+    }
+
+    pub fn chunks(&self) -> &[Arc<BodyRecord>] {
+        match &self.kind {
+            RecordKind::Kernel { chunks, .. } => chunks,
+            RecordKind::Thunk | RecordKind::Chunk { .. } | RecordKind::Wrapper => &[],
         }
     }
 }
@@ -206,6 +222,7 @@ impl std::fmt::Debug for BodyRecord {
         let kind = match self.kind {
             RecordKind::Kernel { .. } => "kernel",
             RecordKind::Thunk => "thunk",
+            RecordKind::Chunk { .. } => "chunk",
             RecordKind::Wrapper => "wrapper",
         };
         f.debug_struct("BodyRecord")
@@ -236,10 +253,12 @@ mod tag {
     pub const THUNK: u8 = 3;
     pub const LIBCALL: u8 = 4;
     pub const CONST: u8 = 5;
+    pub const CHUNK: u8 = 6;
 
     pub const KERNEL: u8 = 0;
     pub const THUNK_KIND: u8 = 1;
     pub const WRAPPER: u8 = 2;
+    pub const CHUNK_KIND: u8 = 3;
 }
 
 /// The relocation kinds a host emits; any other fails the record.
@@ -295,7 +314,9 @@ impl Pack for RecordReloc {
         let RecordReloc { offset, kind: _, target, addend } = self;
         let target = match target {
             RelocTarget::Helper(n) => n.encoded_len(),
-            RelocTarget::Callee(i) | RelocTarget::Const(i) => i.encoded_len(),
+            RelocTarget::Callee(i) | RelocTarget::Const(i) | RelocTarget::Chunk(i) => {
+                i.encoded_len()
+            }
             RelocTarget::Owner | RelocTarget::Thunk => 0,
             RelocTarget::LibCall(_) => 1,
         };
@@ -317,6 +338,10 @@ impl Pack for RecordReloc {
             }
             RelocTarget::Owner => buf.put_u8(tag::OWNER),
             RelocTarget::Thunk => buf.put_u8(tag::THUNK),
+            RelocTarget::Chunk(i) => {
+                buf.put_u8(tag::CHUNK);
+                i.encode(buf)?;
+            }
             RelocTarget::LibCall(lc) => {
                 buf.put_u8(tag::LIBCALL);
                 buf.put_u8(libcall_tag(*lc)?);
@@ -337,6 +362,7 @@ impl Pack for RecordReloc {
             tag::CALLEE => RelocTarget::Callee(u32::decode(buf)?),
             tag::OWNER => RelocTarget::Owner,
             tag::THUNK => RelocTarget::Thunk,
+            tag::CHUNK => RelocTarget::Chunk(u32::decode(buf)?),
             tag::LIBCALL => RelocTarget::LibCall(libcall_of(u8::decode(buf)?)?),
             tag::CONST => RelocTarget::Const(u32::decode(buf)?),
             _ => return Err(PackError::UnknownTag),
@@ -449,6 +475,7 @@ fn kind_tag(k: &RecordKind) -> u8 {
     match k {
         RecordKind::Kernel { .. } => tag::KERNEL,
         RecordKind::Thunk => tag::THUNK_KIND,
+        RecordKind::Chunk { .. } => tag::CHUNK_KIND,
         RecordKind::Wrapper => tag::WRAPPER,
     }
 }
@@ -478,16 +505,22 @@ pub(crate) fn record_encode(
             }
             kernel_abi::kernel_sig_encode(kernel, buf)?;
             match kind {
-                RecordKind::Kernel { consts, thunk } => {
+                RecordKind::Kernel { consts, thunk, chunks } => {
                     image::slice_encode(consts, buf)?;
                     match thunk {
-                        None => Ok(buf.put_u8(0)),
+                        None => buf.put_u8(0),
                         Some(t) => {
                             buf.put_u8(1);
-                            record_encode(t, buf)
+                            record_encode(t, buf)?
                         }
                     }
+                    encode_varint(chunks.len() as u64, buf);
+                    for c in chunks {
+                        record_encode(c, buf)?;
+                    }
+                    Ok(())
                 }
+                RecordKind::Chunk { consts } => image::slice_encode(consts, buf),
                 RecordKind::Thunk | RecordKind::Wrapper => Ok(()),
             }
         },
@@ -528,8 +561,18 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
                         }
                         _ => return Err(PackError::UnknownTag),
                     };
-                    RecordKind::Kernel { consts, thunk }
+                    let n = decode_varint(buf)? as usize;
+                    let mut chunks = Vec::with_capacity(n.min(16));
+                    for _ in 0..n {
+                        let c = record_decode(buf)?;
+                        if !matches!(c.kind, RecordKind::Chunk { .. }) {
+                            return Err(PackError::InvalidFormat);
+                        }
+                        chunks.push(c);
+                    }
+                    RecordKind::Kernel { consts, thunk, chunks }
                 }
+                tag::CHUNK_KIND => RecordKind::Chunk { consts: Pack::decode(buf)? },
                 tag::THUNK_KIND => RecordKind::Thunk,
                 tag::WRAPPER => RecordKind::Wrapper,
                 _ => return Err(PackError::UnknownTag),

@@ -699,6 +699,19 @@ macro_rules! run {
                     true,
                 ).await.map(|_| ())
             }
+
+            /// Fused, with every fork point forked, kernel loops' slots
+            /// included.
+            #[::tokio::test(flavor = "current_thread")]
+            async fn jit_par() -> ::anyhow::Result<()> {
+                run_with_flags(
+                    ::graphix_compiler::BitFlags::empty(),
+                    ::graphix_compiler::ParMode::Force,
+                    false,
+                    false,
+                    false,
+                ).await.map(|_| ())
+            }
         }
     };
 }

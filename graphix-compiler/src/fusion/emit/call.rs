@@ -1050,5 +1050,5 @@ pub(super) fn emit_pending_cleanup(
         let ptr = b.use_var(*arr_var);
         b.ins().call(f, &[ptr]);
     }
-    emit_scope_drops(&mut BodyCx { b, env, ctx }, 0)
+    emit_scope_drops(&mut BodyCx { b, env, ctx }, ctx.owned_floor)
 }

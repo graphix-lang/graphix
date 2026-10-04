@@ -24,6 +24,7 @@ mod flow;
 mod jit;
 mod lower;
 mod nodes;
+mod outline;
 mod record;
 /// The HOF loop scaffolds (`emit_map_loop` & co.) shared by the node
 /// HOF emitters.

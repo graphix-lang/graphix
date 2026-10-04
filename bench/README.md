@@ -184,13 +184,21 @@ cores), at normal priority. `par_symbolic` is `symbolic` with its seeds
 mapped under `#[parallel]`; `par_wide` is a node-walked map whose slots
 the cost model learns to fork, timed over its 59 cycles after the first;
 `par_growth` builds 20000 slots in one cycle, nearly all instance
-construction. Quick build, `max` mode, best of three (2026-10-04):
+construction (both run `--no-fusion`: fused, each takes milliseconds);
+`par_mandel` is a fused `array::init` over 480000 pixels whose kernel
+loop forks as chunks, timed over the 9 cycles after the first. Quick
+build, `max` mode, best of three (2026-10-04):
 
 | bench          | serial | auto P x4 | auto P+E x12 |
 |----------------|--------|-----------|--------------|
-| `par_growth`   | 2.74 s | 1.17 s    | 0.88 s       |
-| `par_symbolic` | 4.80 s | 1.88 s    | 1.40 s       |
-| `par_wide`     | 5.29 s | 2.52 s    | 1.97 s       |
+| `par_growth`   | 2.13 s | 0.99 s    | 0.80 s       |
+| `par_mandel`   | 1.51 s | 0.45 s    | 0.23 s       |
+| `par_symbolic` | 4.14 s | 1.63 s    | 1.25 s       |
+| `par_wide`     | 5.29 s | 2.47 s    | 1.89 s       |
+
+Of `par_mandel`'s cycle, the fold over the grid, building its array and
+dropping the last one stay serial (8 ms of the 4-thread cycle's 50); the
+pixels run at about 92% of four cores.
 
 Hybrid cores make these noisy: which parts land on E-cores is the OS's
 choice (`design/parallel_eval.md` §5, measured not fixed), and

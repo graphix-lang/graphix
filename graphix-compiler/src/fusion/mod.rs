@@ -14,6 +14,7 @@ pub mod emit_helpers;
 pub mod kernel;
 pub mod kernel_abi;
 pub mod lowering;
+pub(crate) mod par_loop;
 pub(crate) mod share;
 
 pub use kernel::FusedKernel;

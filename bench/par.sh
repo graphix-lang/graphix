@@ -41,7 +41,7 @@ printf '%-14s %10s %12s %14s\n' "bench" "serial(s)" "auto P x4" "auto P+E x12"
 for prog in "$dir"/par_*.gx; do
     name=$(basename "$prog" .gx)
     flags=()
-    # a fused map is one native loop, with nothing to fork
+    # node-walk benches: fused, each is a few milliseconds in all
     [[ "$name" == par_wide || "$name" == par_growth ]] && flags=(--no-fusion)
     s=$(best off 0-3 4 "$prog" "${flags[@]}")
     a4=$(best auto 0-3 4 "$prog" "${flags[@]}")

@@ -1,0 +1,35 @@
+// Fused data parallelism: a mandelbrot grid (800x600, 256 max
+// iterations) recomputed 10 times, the window shifting each cycle, so
+// the fused array::init's loop reruns. Each pixel's escape count is a
+// tail-recursive kernel called from the init callback: the loop's
+// chunks fork across the pool. Prints the first cycle and the 9 that
+// follow separately.
+let t0 = sys::time::now(0);
+let w = 800;
+let h = 600;
+let max_iter = 256;
+let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
+  select i {
+    0 => 0,
+    _ if zr * zr + zi * zi > 4.0 => i,
+    _ => iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
+  };
+let k = 0;
+let shift = cast<f64>(k)$ * 0.001;
+let xmin = -2.5 + shift;
+let dx = 3.5 / cast<f64>(w)$;
+let dy = 2.625 / cast<f64>(h)$;
+let counts = array::init(w * h, |idx| {
+  let cr = xmin + cast<f64>(idx % w)$ * dx;
+  let ci = -1.3125 + cast<f64>(idx / w)$ * dy;
+  iterate(0.0, 0.0, cr, ci, max_iter)
+});
+let r = array::fold(counts, 0, |acc, n| acc + n);
+k <- r ~ select k { k if k < 10 => k + 1, _ => never() };
+let first = sys::time::now(select k { 0 => r, _ => never() });
+let done = select k { 10 => r, _ => never() };
+let t1 = sys::time::now(done);
+let build = cast<f64>(first)$ - cast<f64>(t0)$;
+let steady = cast<f64>(t1)$ - cast<f64>(first)$;
+println("par_mandel r=[done] build_s=[build] steady_s=[steady] elapsed_s=[steady]");
+sys::exit(steady ~ 0)

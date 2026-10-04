@@ -36,17 +36,27 @@ use super::{
     abi::{JitEnv, LocalKind, STALE, ValueVar, local_payload_ty},
     body::{BodyRole, BodySource, emit_interrupt_check},
     call::BufKind,
-    jit::Names,
+    jit::{ChunkFn, Names},
     record::EmitConst,
 };
+
+/// The kernels a body calls, as the function being built names them,
+/// and by their ids, for another function of the body to import.
+pub(super) struct Callees<'a> {
+    pub(super) refs: &'a BTreeMap<KernelKey, FuncRef>,
+    pub(super) ids: &'a BTreeMap<KernelKey, FuncId>,
+    /// The spill thunk of a self-recursive body.
+    pub(super) thunk: Option<FuncRef>,
+    pub(super) thunk_id: Option<FuncId>,
+}
 
 pub(super) fn compile_into_function<'a>(
     b: &mut FunctionBuilder,
     kernel: &'a KernelSig,
-    callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
-    self_thunk: Option<FuncRef>,
+    callees: Callees<'a>,
     helper_ids: &'a HelperFuncIds,
     consts: &'a RefCell<Vec<EmitConst>>,
+    chunks: &'a RefCell<Vec<ChunkFn>>,
     names: &'a RefCell<&'a mut Names>,
     body: &'a BodySource<'a>,
     callee_layouts: &'a ahash::AHashMap<KernelKey, SiteLayout>,
@@ -152,9 +162,14 @@ pub(super) fn compile_into_function<'a>(
         },
         init_flag,
         wake_flag,
-        callee_refs,
-        self_thunk,
+        callee_refs: callees.refs,
+        callee_ids: callees.ids,
+        self_thunk: callees.thunk,
+        self_thunk_id: callees.thunk_id,
+        helper_ids,
         helper_refs,
+        chunks,
+        owned_floor: 0,
         in_flight_bufs: RefCell::new(Vec::new()),
         owned_input_stack: RefCell::new(Vec::new()),
         collection_site: Cell::new(None),
@@ -375,7 +390,7 @@ pub(super) struct StateChannel {
 }
 
 impl StateChannel {
-    fn new(ptr: ClifValue) -> Self {
+    pub(super) fn new(ptr: ClifValue) -> Self {
         Self {
             ptr,
             next: Cell::new(0),
@@ -434,11 +449,20 @@ pub(crate) struct LowerCtx<'a> {
     /// Callee kernel identity (`kernel_key`) → `FuncRef`, declared in
     /// the current function before the FunctionBuilder is built.
     pub(super) callee_refs: &'a BTreeMap<KernelKey, FuncRef>,
+    /// The callees by id, for a chunk to import.
+    pub(super) callee_ids: &'a BTreeMap<KernelKey, FuncId>,
     /// The spill thunk a self-call takes when the remaining stack is
     /// inside the red zone.
     pub(super) self_thunk: Option<FuncRef>,
+    pub(super) self_thunk_id: Option<FuncId>,
+    pub(super) helper_ids: &'a HelperFuncIds,
     /// `FuncRef`s for the runtime helpers, by helper name.
     pub(super) helper_refs: HelperRefs<'a>,
+    /// The body's outlined loops, emitted so far.
+    pub(super) chunks: &'a RefCell<Vec<ChunkFn>>,
+    /// The env's first locals, below this mark, are borrowed from the
+    /// body a chunk was outlined from: an abort drops only those above.
+    pub(super) owned_floor: usize,
     /// In-flight bufs between their `_new` and finalize, innermost
     /// last; a whole-kernel abort drops them ([`emit_pending_cleanup`]).
     pub(super) in_flight_bufs: RefCell<Vec<(BufKind, Variable)>>,
@@ -509,7 +533,7 @@ pub(super) struct HelperRefs<'a> {
 }
 
 impl<'a> HelperRefs<'a> {
-    fn new(ids: &'a HelperFuncIds, names: &'a RefCell<&'a mut Names>) -> Self {
+    pub(super) fn new(ids: &'a HelperFuncIds, names: &'a RefCell<&'a mut Names>) -> Self {
         Self { ids, names, refs: RefCell::new(BTreeMap::new()) }
     }
 

@@ -415,6 +415,20 @@ safe fn graphix_abort_set() {
     KERNEL_ABORT.with(|c| c.set(true))
 }
 
+/// Run an outlined loop's `len` slots through its `chunk` over `frame`,
+/// in order or forked (`fusion::par_loop`), filling `out`; 1 when a
+/// chunk aborted the kernel.
+unsafe fn graphix_par_loop(
+    chunk: u64,
+    frame: u64,
+    len: u64,
+    site: *mut u64,
+    kind: u64,
+    out: *mut u64,
+) -> i8 {
+    unsafe { super::par_loop::run(chunk, frame, len, site, kind, out) }
+}
+
 /// A `$` or handler-less `?` site swallowing a fresh error: the same
 /// diagnostic the node-walk emits. `site` is the interned "origin at
 /// position" string; `(disc, payload)` is the error Value, borrowed.
@@ -1433,6 +1447,23 @@ unsafe fn graphix_string_buf_push_bool(buf: *mut StringBuf, v: u8) {
 
 }
 
+/// The table at `word` when an ensure of `len` words would leave it as
+/// it is, read without a write: an outlined loop's chunks ensure a
+/// level the kernel sized before forking them, all at once.
+unsafe fn sized_table(
+    word: *const u64,
+    len: usize,
+    source_present: u64,
+) -> Option<*mut u64> {
+    let table = unsafe { *word } as *const Vec<u64>;
+    if table.is_null() {
+        return None;
+    }
+    let v = unsafe { &*table };
+    let unchanged = v.len() == len || (v.len() > len && source_present == 0);
+    unchanged.then(|| v.as_ptr() as *mut u64)
+}
+
 jit_helpers! { registry = elem_helpers;
 
 unsafe fn graphix_valarray_len(bits: u64) -> usize {
@@ -1470,13 +1501,16 @@ unsafe fn graphix_slot_state_table(
     own_levels: u64,
     leaf: *const SiteLeaf,
 ) -> *mut u64 {
+    let len = len as usize;
+    if let Some(table) = unsafe { sized_table(word, len, source_present) } {
+        return table;
+    }
     let leaf = unsafe { leaf.as_ref() };
     let word = unsafe { &mut *word };
     if *word == 0 {
         *word = Box::into_raw(Box::new(Vec::<u64>::new())) as u64;
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
-    let len = len as usize;
     if source_present != 0 && len < v.len() {
         if own_levels > 0 {
             for e in v[len..].iter() {
@@ -1529,12 +1563,15 @@ unsafe fn graphix_slot_state_blocks(
     leaf: *const SiteLeaf,
 ) -> *mut u64 {
     let leaf_ref = unsafe { &*leaf };
+    let len = (slots as usize) * (leaf_ref.stride as usize);
+    if let Some(table) = unsafe { sized_table(word, len, source_present) } {
+        return table;
+    }
     let word = unsafe { &mut *word };
     if *word == 0 {
         *word = Box::into_raw(Box::new(Vec::<u64>::new())) as u64;
     }
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
-    let len = (slots as usize) * (leaf_ref.stride as usize);
     if source_present != 0 && len < v.len() {
         unsafe { free_blocks(&v[len..], leaf_ref) };
         v.truncate(len)
@@ -1657,6 +1694,66 @@ thread_local! {
     /// delivers mid-run.
     static QOP_RAISES: RefCell<LPooled<Vec<QopRaise>>> = RefCell::new(LPooled::take());
 }
+
+/// Take the panic a fast fn raised in a chunk run on this thread.
+pub(crate) fn take_kernel_panic() -> Option<Box<dyn Any + Send>> {
+    KERNEL_PANIC.with(|p| p.borrow_mut().take())
+}
+
+/// Report `p` as the running kernel's panic.
+pub(crate) fn set_kernel_panic(p: Box<dyn Any + Send>) {
+    KERNEL_PANIC.with(|q| *q.borrow_mut() = Some(p))
+}
+
+/// Append raises a chunk run queued to this thread's delivery queue.
+pub(crate) fn queue_qop_raises(raises: &mut LPooled<Vec<QopRaise>>) {
+    QOP_RAISES.with(|q| q.borrow_mut().extend(raises.drain(..)))
+}
+
+/// Drop a chunk's value buf whose slots are not taken.
+pub(crate) unsafe fn value_buf_discard(buf: u64) {
+    unsafe { buf_give(buf as *mut ValueBuf) }
+}
+
+/// One chunk's value buf as owned `ValArray` bits.
+pub(crate) unsafe fn value_buf_finalize(buf: u64) -> u64 {
+    unsafe { graphix_valarray_finalize(buf as *mut ValueBuf) }
+}
+
+/// Concatenate chunks' value bufs, in order, into owned `ValArray`
+/// bits, consuming the bufs.
+pub(crate) unsafe fn value_bufs_finalize(bufs: impl Iterator<Item = u64>) -> u64 {
+    let bufs: LPooled<Vec<*mut ValueBuf>> = bufs.map(|b| b as *mut ValueBuf).collect();
+    let left = bufs.iter().map(|b| unsafe { (**b).len() }).sum();
+    let values = bufs.iter().flat_map(|b| unsafe { (**b).drain(..) });
+    let bits = va_bits(ValArray::from_iter_exact(Counted { values, left }));
+    for b in bufs.iter() {
+        unsafe { buf_give(*b) }
+    }
+    bits
+}
+
+/// An iterator that knows how many items it has left.
+struct Counted<I> {
+    values: I,
+    left: usize,
+}
+
+impl<I: Iterator<Item = Value>> Iterator for Counted<I> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Value> {
+        let v = self.values.next()?;
+        self.left -= 1;
+        Some(v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left, Some(self.left))
+    }
+}
+
+impl<I: Iterator<Item = Value>> ExactSizeIterator for Counted<I> {}
 
 /// Resume the unwind of a panic a fast fn raised in the kernel run that
 /// just returned.

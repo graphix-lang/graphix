@@ -382,10 +382,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         // snapshot when a hook can fire) and delivers its raises after.
         // SAFETY: `slots` is laid out by the kernel's ABI (asserted above)
         // and `out` is two words the wrapper fills.
+        let loan = super::par_loop::ParLoan {
+            mode: ctx.fork_mode(),
+            forced: ctx.fork.forced,
+            control: &**ctx.control,
+        };
         let ((), mut raises) = crate::node::coretraits::with_display_hooks(ctx, |env| {
             emit_helpers::with_qop_raises(|| {
-                emit_helpers::with_kernel_env(env, || unsafe {
-                    f(slots.as_ptr(), out.as_mut_ptr());
+                emit_helpers::with_kernel_env(env, || {
+                    super::par_loop::with_par_loan(Some(loan), || unsafe {
+                        f(slots.as_ptr(), out.as_mut_ptr());
+                    })
                 })
             })
         });

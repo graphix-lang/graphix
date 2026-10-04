@@ -19,6 +19,7 @@ mod maps;
 mod modules;
 mod organic_deltas;
 mod par_attrs;
+mod par_loops;
 mod printing;
 mod select;
 mod seq;
