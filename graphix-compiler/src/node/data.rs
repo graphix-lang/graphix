@@ -171,17 +171,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Struct<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_struct_new_node(cx, &self.names, &self.n)
@@ -352,17 +342,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructWith<R, E> {
         self.replace.iter().for_each(|r| r.n.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
@@ -497,17 +477,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StructRef<R, E> {
         &self.spec
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
@@ -596,17 +566,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Tuple<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_tuple_new_node(cx, &self.n)
@@ -692,17 +652,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Variant<R, E> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_variant_new_node(cx, &self.tag, &self.n)
@@ -847,17 +797,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Construct<R, E> {
         fusion::fuse_parts([&mut self.arg], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.arg, self.arg.typecheck1(ctx))
@@ -1044,17 +984,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for TupleRef<R, E> {
         fusion::fuse_parts([&mut self.source], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
@@ -1081,9 +1011,13 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, child(n, ctx))?
+        }
+        if !check {
+            return Ok(());
         }
         match &self.typ {
             Type::Struct(typs) => {
@@ -1105,16 +1039,18 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> StructWith<R, E> {
+    /// Each replacement's field index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         // Clone the type out of `with_deref` before unifying: the closure
         // holds TVar read guards that the writes below would deadlock on.
         let styp = self.source.typ().deref_cloned();
-        let mut check = || -> Result<()> {
+        let mut fields = || -> Result<()> {
             match &styp {
                 Some(Type::Struct(flds)) => {
                     for rep in self.replace.iter_mut() {
@@ -1126,7 +1062,12 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
                             None => bail!("struct has no field named {}", rep.name),
                             Some((i, typ)) => {
                                 wrap!(rep.n, child(&mut rep.n, ctx))?;
-                                wrap!(rep.n, typ.check_contains(&ctx.env, &rep.n.typ()))?;
+                                if check {
+                                    wrap!(
+                                        rep.n,
+                                        typ.check_contains(&ctx.env, &rep.n.typ())
+                                    )?;
+                                }
                                 rep.index = Some(i);
                             }
                         }
@@ -1137,16 +1078,21 @@ impl<R: Rt, E: UserEvent> StructWith<R, E> {
                 _ => bail!("expected a struct"),
             }
         };
-        wrap!(self, check())?;
-        wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ()))
+        wrap!(self, fields())?;
+        match check {
+            true => wrap!(self, self.typ.check_contains(&ctx.env, self.source.typ())),
+            false => Ok(()),
+        }
     }
 }
 
 impl<R: Rt, E: UserEvent> StructRef<R, E> {
+    /// The field's index is state: an instance finds it too.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
@@ -1162,7 +1108,10 @@ impl<R: Rt, E: UserEvent> StructRef<R, E> {
                 typ: typ.clone(),
             });
         }
-        wrap!(self, self.typ.check_contains(&ctx.env, &typ))
+        match check {
+            true => wrap!(self, self.typ.check_contains(&ctx.env, &typ)),
+            false => Ok(()),
+        }
     }
 }
 
@@ -1171,9 +1120,13 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, child(n, ctx))?
+        }
+        if !check {
+            return Ok(());
         }
         match &self.typ {
             Type::Tuple(typs) => {
@@ -1195,9 +1148,13 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, child(n, ctx))?
+        }
+        if !check {
+            return Ok(());
         }
         match &self.typ {
             Type::Variant(ttag, typs, _) => {
@@ -1222,9 +1179,13 @@ impl<R: Rt, E: UserEvent> Construct<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.arg, child(&mut self.arg, ctx))?;
-        wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ()))
+        match check {
+            true => wrap!(self.arg, self.rep.check_contains(&ctx.env, &self.arg.typ())),
+            false => Ok(()),
+        }
     }
 }
 
@@ -1233,8 +1194,12 @@ impl<R: Rt, E: UserEvent> TupleRef<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
+        if !check {
+            return Ok(());
+        }
         let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
         let etyp = wrap!(self, etyp)?;
         wrap!(self, self.typ.check_contains(&ctx.env, &etyp))

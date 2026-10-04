@@ -202,15 +202,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArrayRef<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
+    /// The element cell binds from the source as in the check; the
+    /// index needs no judging.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -348,15 +350,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ArraySlice<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
+    /// The element cell binds from the source as in the check; the
+    /// index needs no judging.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -609,17 +613,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         self.n.iter().for_each(|n| n.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in &mut self.n {
@@ -642,6 +636,7 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.i, child(&mut self.i, ctx))?;
@@ -653,7 +648,10 @@ impl<R: Rt, E: UserEvent> ArrayRef<R, E> {
             let at = Type::Array(Arc::new(self.etyp.clone()));
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
-        check_index(&ctx.env, &self.i)
+        match check {
+            true => check_index(&ctx.env, &self.i),
+            false => Ok(()),
+        }
     }
 }
 
@@ -662,10 +660,11 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         let source_typ = self.source.typ();
-        if !known_bytes(&ctx.env, source_typ)? {
+        if check && !known_bytes(&ctx.env, source_typ)? {
             let at = Type::Array(Arc::new(Type::empty_tvar()));
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
@@ -673,13 +672,11 @@ impl<R: Rt, E: UserEvent> ArraySlice<R, E> {
         // is decided in its typecheck0 (a select) is related here
         let Type::Set(members) = &self.typ else { unreachable!() };
         wrap!(self, members[0].check_contains(&ctx.env, source_typ))?;
-        if let Some(start) = self.start.as_mut() {
-            wrap!(start, child(start, ctx))?;
-            check_index(&ctx.env, start)?;
-        }
-        if let Some(end) = self.end.as_mut() {
-            wrap!(end, child(end, ctx))?;
-            check_index(&ctx.env, end)?;
+        for i in [self.start.as_mut(), self.end.as_mut()].into_iter().flatten() {
+            wrap!(i, child(i, ctx))?;
+            if check {
+                check_index(&ctx.env, i)?;
+            }
         }
         Ok(())
     }
@@ -690,9 +687,13 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         for n in &mut self.n {
             wrap!(n, child(n, ctx))?
+        }
+        if !check {
+            return Ok(());
         }
         let bottom = Type::Bottom;
         let mut ts: LPooled<Vec<&Type>> = LPooled::take();

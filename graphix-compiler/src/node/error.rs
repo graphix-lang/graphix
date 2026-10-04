@@ -374,15 +374,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
+    /// The constraint and the capture bind as in the check; whether `T`
+    /// covers the region's throws was judged there.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -792,17 +794,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Qop<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
@@ -1202,17 +1194,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for OrNever<R, E> {
         fusion::fuse_parts([&mut self.n], ctx)
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
@@ -1240,6 +1222,7 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         // siblings typecheck first, so the region's throws are already
         // unioned into the bind: snapshot them, then ascribe `T`
@@ -1262,12 +1245,14 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
             tv.bind(t.clone());
             // `T` must cover every error the region throws, judged with
             // the check's settle
-            let inner = self.thrown.clone().unwrap_or(Type::Bottom);
-            let spec = Arc::new(self.spec.clone());
-            ctx.pending_settles
-                .last_mut()
-                .expect("settle frame")
-                .push(crate::PendingSettle::Contains { outer: t, inner, spec });
+            if check {
+                let inner = self.thrown.clone().unwrap_or(Type::Bottom);
+                let spec = Arc::new(self.spec.clone());
+                ctx.pending_settles
+                    .last_mut()
+                    .expect("settle frame")
+                    .push(crate::PendingSettle::Contains { outer: t, inner, spec });
+            }
         }
         wrap!(self.handler, child(&mut self.handler, ctx))?;
         let Some(abort) = &mut self.seq_abort else { return Ok(()) };
@@ -1308,18 +1293,24 @@ impl<R: Rt, E: UserEvent> Catch<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> Qop<R, E> {
+    /// The strip and the raise joined into the handler's bind are state:
+    /// an instance computes them too.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.n, child(&mut self.n, ctx))?;
         let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
         if rethrow {
             if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
-                return self.typ.check_contains(&ctx.env, &Type::Bottom);
+                return match check {
+                    true => self.typ.check_contains(&ctx.env, &Type::Bottom),
+                    false => Ok(()),
+                };
             }
-            if self.handler.is_none() {
+            if check && self.handler.is_none() {
                 Self::check_unhandled(
                     &ctx.env,
                     self.flags,
@@ -1330,7 +1321,9 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
         }
         let (strip, rtyp) = wrap!(self, strip_typ(ctx, '?', self.n.typ()))?;
         self.strip = strip;
-        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
+        if check {
+            wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
+        }
         if let Some(handler) = &self.handler {
             let (id, _) = handler.id();
             let etyp = match self.strip {
@@ -1366,14 +1359,19 @@ impl<R: Rt, E: UserEvent> SeqAbortEvent<R, E> {
 }
 
 impl<R: Rt, E: UserEvent> OrNever<R, E> {
+    /// The strip is state: an instance computes it too.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.n, child(&mut self.n, ctx))?;
         let (strip, rtyp) = wrap!(self, strip_typ(ctx, '$', self.n.typ()))?;
         self.strip = strip;
-        wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))
+        match check {
+            true => wrap!(self, self.typ.check_contains(&ctx.env, &rtyp)),
+            false => Ok(()),
+        }
     }
 }

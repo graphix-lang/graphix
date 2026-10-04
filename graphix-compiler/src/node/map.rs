@@ -165,17 +165,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         self.entries.iter().for_each(|(_, v)| v.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         self.each(|n| wrap!(n, n.typecheck1(ctx)))
@@ -195,8 +185,12 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         self.each(|n| wrap!(n, child(n, ctx)))?;
+        if !check {
+            return Ok(());
+        }
         let bottom = Type::Bottom;
         let mut kts: LPooled<Vec<&Type>> = LPooled::take();
         let mut vts: LPooled<Vec<&Type>> = LPooled::take();
@@ -243,6 +237,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        _check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.key, child(&mut self.key, ctx))?;
@@ -322,15 +317,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for MapRef<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
+    /// The element cell binds from the source as in the check; the
+    /// index needs no judging.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {

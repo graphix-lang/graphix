@@ -468,6 +468,34 @@ macro_rules! dense_gate {
 }
 pub(crate) use dense_gate;
 
+/// `typecheck0` and `typecheck0_instance` for a node whose
+/// `typecheck0_with(ctx, child, check)` visits its children with `child`
+/// and judges its own type only when `check`: an instance takes the type
+/// from its row and judges it only where its definition's check recorded
+/// none (an id two nodes share).
+macro_rules! typed_by_row {
+    () => {
+        fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
+            self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
+        }
+
+        fn typecheck0_instance(
+            &mut self,
+            ctx: &mut CompileCtx<R, E>,
+            types: &mut $crate::node::lambda::InstanceTypes,
+        ) -> Result<()> {
+            let row =
+                $crate::wrap!(self, types.settle(&ctx.env, self.spec.id, &self.typ))?;
+            self.typecheck0_with(
+                ctx,
+                &mut |n, ctx| n.typecheck0_instance(ctx, types),
+                !row,
+            )
+        }
+    };
+}
+pub(crate) use typed_by_row;
+
 #[derive(Debug)]
 pub struct TypeDef {
     spec: Expr,
@@ -1473,15 +1501,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Connect<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
+    /// The target's type is its binding's row: the write was judged in
+    /// the check.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -1674,15 +1704,17 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
+    /// The target's type is its binding's row: the write was judged in
+    /// the check.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         types: &mut lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types), false)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -2040,17 +2072,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         self.n.iter().for_each(|n| n.refs(refs))
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         for n in self.n.iter_mut() {
@@ -2297,8 +2319,12 @@ impl<R: Rt, E: UserEvent> Connect<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.node, child(&mut self.node, ctx))?;
+        if !check {
+            return Ok(());
+        }
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
@@ -2323,8 +2349,12 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.rhs, child(&mut self.rhs, ctx))?;
+        if !check {
+            return Ok(());
+        }
         let bind = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind,
@@ -2362,9 +2392,13 @@ impl<R: Rt, E: UserEvent> Any<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         for n in self.n.iter_mut() {
             wrap!(n, child(n, ctx))?
+        }
+        if !check {
+            return Ok(());
         }
         let bottom = Type::Bottom;
         let mut ts: LPooled<Vec<&Type>> = LPooled::take();

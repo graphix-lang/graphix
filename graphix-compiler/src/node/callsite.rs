@@ -851,13 +851,18 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     }
 
     /// What the call raises joins the enclosing catch's type; with no
-    /// catch, it is an unhandled error.
-    fn raise_throws(&self, ctx: &CompileCtx<R, E>, ftype: &FnType) -> Result<()> {
+    /// catch, `check` judges it an unhandled error.
+    fn raise_throws(
+        &self,
+        ctx: &CompileCtx<R, E>,
+        ftype: &FnType,
+        check: bool,
+    ) -> Result<()> {
         let Some(t) = ftype.throws.deref_cloned() else { return Ok(()) };
         match self.scope.dynamic.catch() {
             Some((id, _)) => join_raised(&ctx.env, id, &t),
             // it doesn't throw any errors
-            None if t == Type::Bottom => Ok(()),
+            None if t == Type::Bottom || !check => Ok(()),
             None => Qop::<R, E>::check_unhandled(
                 &ctx.env,
                 self.flags,
@@ -2141,7 +2146,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        self.raise_throws(ctx, ftype)?;
+        self.raise_throws(ctx, ftype, true)?;
         wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         // the check settles before elaboration (typecheck1) runs; a
         // definition's check runs no typecheck1, its gate's frame hands the
@@ -2180,7 +2185,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
                 }
             }
         }
-        self.raise_throws(ctx, &ftype)?;
+        self.raise_throws(ctx, &ftype, false)?;
         if !wrap!(self, types.settle(&ctx.env, self.spec.id, &self.rtype))? {
             wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         }

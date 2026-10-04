@@ -2440,3 +2440,17 @@ const LET_IN_VALUE_POSITION: &str = r#"
 run!(let_in_value_position, LET_IN_VALUE_POSITION, |v: Result<&Value>| {
     matches!(v, Err(e) if format!("{e:#}").contains("a let binding is not an expression"))
 }; graphix_package_core::testing::FuseExpect::None);
+
+// An instance's node can be born knowing a type its definition's check
+// widened: the callback's `d.domain` is `string` in the instance, where
+// the check unified its cell with `f`'s formal. The instance takes the
+// narrower type; it refuses nothing its definition's check accepted.
+run!(
+    instance_node_narrower_than_its_row,
+    r#"{
+        let f = |x: [Array<i64>, string]| "ok";
+        let rows = [{domain: "a"}, {domain: "b"}];
+        array::map(rows, |d| f(d.domain))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if a.len() == 2)
+);

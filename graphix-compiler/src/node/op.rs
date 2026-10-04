@@ -281,8 +281,7 @@ macro_rules! compare_op {
                 types: &mut super::lambda::InstanceTypes,
             ) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
-                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
-                self.typecheck_own(ctx)
+                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))
             }
 
             fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -352,8 +351,7 @@ macro_rules! bool_op {
                 types: &mut super::lambda::InstanceTypes,
             ) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
-                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
-                self.typecheck_own(ctx)
+                wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))
             }
 
             fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -470,7 +468,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        wrap!(self.n, self.n.typecheck0(ctx))?;
+        wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
     }
 
     fn typecheck0_instance(
@@ -478,7 +477,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Not<R, E> {
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        wrap!(self.n, self.n.typecheck0_instance(ctx, types))
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -600,7 +599,8 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
 
     /// The operand is negatable once the check settles its cell.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
+        wrap!(self.n, self.n.typecheck0(ctx))?;
+        self.typecheck_own(ctx)
     }
 
     fn typecheck0_instance(
@@ -608,7 +608,11 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Neg<R, E> {
         ctx: &mut CompileCtx<R, E>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
+        wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
+        match wrap!(self, types.settle(&ctx.env, self.spec.id, &self.typ))? {
+            true => Ok(()),
+            false => self.typecheck_own(ctx),
+        }
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -801,7 +805,10 @@ macro_rules! arith_op {
             ) -> Result<()> {
                 wrap!(self.lhs, self.lhs.typecheck0_instance(ctx, types))?;
                 wrap!(self.rhs, self.rhs.typecheck0_instance(ctx, types))?;
-                self.typecheck_own(ctx)
+                if !wrap!(self, types.settle(&ctx.env, self.spec.id, &self.typ))? {
+                    self.typecheck_own(ctx)?;
+                }
+                Ok(())
             }
 
             fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
@@ -836,24 +843,8 @@ arith_op!(CheckedMul, true, Mul);
 arith_op!(CheckedDiv, true, Div);
 arith_op!(CheckedMod, true, Mod);
 
-impl<R: Rt, E: UserEvent> Not<R, E> {
-    fn typecheck0_with(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
-    ) -> Result<()> {
-        wrap!(self.n, child(&mut self.n, ctx))?;
-        wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
-    }
-}
-
 impl<R: Rt, E: UserEvent> Neg<R, E> {
-    fn typecheck0_with(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        child: &mut super::Child<'_, R, E>,
-    ) -> Result<()> {
-        wrap!(self.n, child(&mut self.n, ctx))?;
+    fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, constrain_operand(&ctx.env, &Self::negatable(), self.n.typ()))?;
         wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
         defer_operand(ctx, &self.n);

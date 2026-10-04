@@ -1307,17 +1307,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
         self.referent.each_ref(&mut |n| n.refs(refs));
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         let mut res = Ok(());
@@ -1508,17 +1498,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Deref<R, E> {
         }
     }
 
-    fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx))
-    }
-
-    fn typecheck0_instance(
-        &mut self,
-        ctx: &mut CompileCtx<R, E>,
-        types: &mut super::lambda::InstanceTypes,
-    ) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0_instance(ctx, types))
-    }
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.child, self.child.typecheck1(ctx))?;
@@ -1535,6 +1515,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         let mut res = Ok(());
         self.referent.each(&mut |n| {
@@ -1543,6 +1524,9 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
             }
         });
         res?;
+        if !check {
+            return Ok(());
+        }
         let t = match &self.referent {
             Referent::Channel(n) => n.typ().clone(),
             Referent::Place(p) => wrap!(self, p.elem_type(ctx, &self.spec))?,
@@ -1556,8 +1540,12 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         &mut self,
         ctx: &mut CompileCtx<R, E>,
         child: &mut super::Child<'_, R, E>,
+        check: bool,
     ) -> Result<()> {
         wrap!(self.child, child(&mut self.child, ctx))?;
+        if !check {
+            return Ok(());
+        }
         // A container read's type is a TVar bound to `&T`, not a bare
         // `Type::ByRef`.
         let typ = self.child.typ().with_deref(|t| match t {

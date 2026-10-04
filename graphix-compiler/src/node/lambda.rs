@@ -380,12 +380,16 @@ impl InstanceTypes {
     }
 
     /// Bind `typ`, a node's own type, to the row for `id`; false when
-    /// there is none.
+    /// there is none, or when `typ` holds less than the row: a node of
+    /// an instance can be born knowing a type its definition's check
+    /// widened (`d.domain` born `string` where the check unified it with
+    /// a formal's `[Array<i64>, string]`), and the caller derives it.
     pub(crate) fn settle(&mut self, env: &Env, id: ExprId, typ: &Type) -> Result<bool> {
-        match self.typ(id) {
-            None => Ok(false),
-            Some(t) => typ.check_contains(env, &t).map(|()| true),
+        let Some(t) = self.typ(id) else { return Ok(false) };
+        if !typ.contains_with_flags(BitFlags::empty(), env, &t)? {
+            return Ok(false);
         }
+        typ.check_contains(env, &t).map(|()| true)
     }
 
     /// The signature the definition's check settled for the call at `id`.
