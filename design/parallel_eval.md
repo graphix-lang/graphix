@@ -411,6 +411,14 @@ builds its callee through `CallSite::bind`, which is §8's concern.
 `rand` uses the thread-local RNG. Its values are not reproducible today
 either, so nothing changes.
 
+**Shared state is created atomically.** Two branches may ask for a
+library state at once, so a builtin that creates one on first use
+creates it inside `LibState::get_or_else`, which holds the lock across
+the creation; a `get` followed by a `set` creates two. `NetState` did,
+and under real threads a publish and a subscribe on two branches each
+built a pump: the subscription delivered its first value twice
+(`lib_tests::net::net_write1::par`, about one run in eight).
+
 ## 7. Control attributes
 
 The cost model chooses by default. Two attributes override it. Both are
@@ -477,9 +485,11 @@ serial order, as compile tasks join in evaluation order today. Two
 branches never see each other's compiles before the join, and §3 makes
 that safe: they are independent.
 
-- **Ownership checks turn on at run time.** Runtime code runs with
-  `TASK = 0` today, so no cell-ownership check applies to a runtime
-  bind. In tasks it does, and `GRAPHIX_TASK_AUDIT` covers runtime binds.
+- **Ownership checks turn on at run time.** A runtime bind runs as a
+  fresh compile task (`with_runtime_settles`), so the cell-ownership
+  checks apply to it and `GRAPHIX_TASK_AUDIT` covers it. Phase 4's
+  audited gate (every fixture's forced run included) found no runtime
+  bind writing a cell it did not create.
 - **Collection growth is chunked.** A collection growing by many slots
   builds them in tasks, one per chunk (the grain from the construction
   histogram, §5), joined in index order.
@@ -637,6 +647,14 @@ once.
   in one run (`lang::select::select_guard_after_tainted_init` under
   `GRAPHIX_PAR_AUDIT`); the branch records the read. Owed to main on
   the same terms.
+- **Startup freezes shared type variables.** `GRAPHIX_TASK_AUDIT`
+  reports a module check during registration (`Module::compile_static`
+  → `bind_sig` → `Env::deftype` → `alias_tvars` → `TVar::freeze`)
+  writing vars of task 0, once per process: the first runtime to start
+  freezes them and later ones find them frozen. The vars look shared
+  across runtimes (the stdlib's decoded interfaces); concurrently
+  starting runtimes then race on the flag. Seen on this branch, present
+  on main; not investigated.
 
 ## 12. Deferred and declined
 

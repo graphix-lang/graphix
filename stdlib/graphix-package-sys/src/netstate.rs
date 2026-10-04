@@ -6,7 +6,9 @@
 use anyhow::{Error, Result, anyhow};
 use arcstr::literal;
 use futures::{StreamExt, channel::mpsc};
-use graphix_compiler::{BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent};
+use graphix_compiler::{
+    BindId, CustomBuiltinType, ExecCtx, Rt, UserEvent, branch::RtView,
+};
 use graphix_package_core::{NetConfig, NetTimeouts};
 use netidx::{
     path::Path,
@@ -231,12 +233,23 @@ impl NetState {
     /// Get (or create) the net state for this runtime. On creation the
     /// pump/flusher/graveyard tasks spawn and their delivery channels
     /// register with the runtime — which is why this needs `ctx`.
+    /// Branches of a cycle may ask at once: one creates it.
     pub fn get<R: Rt, E: UserEvent>(ctx: &mut ExecCtx<'_, R, E>) -> NetState {
         if let Some(st) = ctx.libstate.get::<NetState>() {
-            return st.clone();
+            return st;
         }
         let timeouts =
             ctx.libstate.get::<NetTimeouts>().unwrap_or(NetTimeouts { publish: None });
+        let handles = ctx.libstate.get_or_default::<NetHandles>();
+        let rt = &mut ctx.rt;
+        ctx.libstate.get_or_else(|| Self::create(rt, timeouts, handles))
+    }
+
+    fn create<R: Rt>(
+        rt: &mut RtView<'_, R>,
+        timeouts: NetTimeouts,
+        handles: NetHandles,
+    ) -> Self {
         let (updates_tx, mut updates_rx) = mpsc::channel(100);
         let (writes_tx, mut writes_rx) = mpsc::channel(100);
         let (rpcs_tx, mut rpcs_rx) = mpsc::channel(100);
@@ -246,9 +259,8 @@ impl NetState {
         // the graph-facing delivery channels
         let (mut var_tx, var_rx) = mpsc::channel(100);
         let (mut custom_tx, custom_rx) = mpsc::channel(100);
-        ctx.rt.watch_var(var_rx);
-        ctx.rt.watch(custom_rx);
-        let handles = ctx.libstate.get_or_default::<NetHandles>().clone();
+        rt.watch_var(var_rx);
+        rt.watch(custom_rx);
         let st = NetState(Arc::new(Inner {
             handles,
             routes: routes.clone(),
@@ -371,7 +383,6 @@ impl NetState {
                 });
             }
         });
-        ctx.libstate.set(st.clone());
         st
     }
 
