@@ -1002,7 +1002,9 @@ fn instance_summaries<R: Rt, E: UserEvent>(
 /// an earlier statement of the run publishes, nor shares an ordered
 /// call with one. A module, trait or impl statement is a run of its own:
 /// what a later statement reads of it (a core-trait method a comparison
-/// dispatches to) no summary sees.
+/// dispatches to) no summary sees. A seq's abort and its machine are
+/// ordered: the abort fails the machine's guards through its handler,
+/// which no summary sees either.
 pub(crate) fn plan_block<R: Rt, E: UserEvent>(
     children: &[Node<R, E>],
     catches: &[usize],
@@ -1046,6 +1048,8 @@ pub(crate) fn plan_block<R: Rt, E: UserEvent>(
             n.spec().kind,
             ExprKind::Module { .. } | ExprKind::Trait(_) | ExprKind::Impl(_)
         );
+        access.ordered |=
+            matches!(n.view(), NodeView::SeqAbort(_) | NodeView::SeqMachine(_));
         let joins = start.is_some()
             && !module
             && !after_module

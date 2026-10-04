@@ -524,6 +524,7 @@ pub struct SeqLit<R: Rt, E: UserEvent, K: SeqKind> {
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
     kind: PhantomData<K>,
+    fork: crate::cost::ForkSite,
 }
 
 impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
@@ -535,6 +536,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> SeqLit<R, E, K> {
             n,
             resident: TagValue::phantom(),
             kind: PhantomData,
+            fork: Default::default(),
         })
     }
 
@@ -576,7 +578,7 @@ impl<R: Rt, E: UserEvent, K: SeqKind> Update<R, E> for SeqLit<R, E, K> {
         if self.n.is_empty() {
             return produce_constant(ctx.event, &mut self.resident, K::empty);
         }
-        let (tag, prods) = gather(ctx, &mut self.n);
+        let (tag, prods) = gather(ctx, &mut self.n, &mut self.fork);
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let v = K::build(prods.into_iter().map(|tv| tv.value_cloned()));
         self.resident.set(TagValue::tagged(v, tag))

@@ -1,6 +1,9 @@
 use crate::{
     BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
-    PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update, UserEvent, env, errf,
+    ParMode, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update, UserEvent,
+    branch::{cut, fork_each, timed},
+    cost::{ForkSite, Meter, Plan},
+    env, errf,
     expr::{At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody},
     format_with_flags,
     fusion::{
@@ -400,19 +403,45 @@ impl<R: Rt, E: UserEvent> Held<R, E> {
 pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
+    site: &mut ForkSite,
 ) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
-    if nodes.len() > 1 && crate::branch::forks(ctx) {
-        let (l, r) = nodes.split_at_mut(nodes.len() / 2);
-        let ((lt, mut lp), (rt, rp)) =
-            crate::branch::fork_join(ctx, |c| gather(c, l), |c| gather(c, r));
-        lp.extend(rp);
-        return (lt.join(rt), lp);
+    let n = nodes.len();
+    match site.plan(ctx, n) {
+        Plan::Serial => gather_in_order(ctx, nodes, None),
+        Plan::Measure(mut m) => {
+            let r = gather_in_order(ctx, nodes, Some(&mut m));
+            m.done(n);
+            r
+        }
+        Plan::Fork(s) => {
+            let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
+            s.ranges(0, n, &mut ranges);
+            if ranges.len() < 2 {
+                return gather_in_order(ctx, nodes, None);
+            }
+            let parts = cut(nodes, &ranges);
+            let mut tag = Tag::STALE;
+            let mut prods = SmallVec::new();
+            for (t, p) in fork_each(ctx, parts, |c, p| gather_in_order(c, p, None)) {
+                tag = tag.join(t);
+                prods.extend(p);
+            }
+            (tag, prods)
+        }
     }
+}
+
+fn gather_in_order<'a, R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    nodes: &'a mut [Node<R, E>],
+    mut meter: Option<&mut Meter<'_>>,
+) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
     let mut tag = Tag::STALE;
     let prods = nodes
         .iter_mut()
-        .map(|c| {
-            let tv = c.update(ctx);
+        .enumerate()
+        .map(|(i, c)| {
+            let tv = timed(&mut meter, i, || c.update(ctx));
             tag = tag.join(tv.tag());
             tv
         })
@@ -622,7 +651,7 @@ pub struct Block<R: Rt, E: UserEvent> {
     resident: TagValue,
     /// The statements as runs for forking (`analysis::plan_block`), made
     /// at the first update that may fork.
-    plan: Option<Box<[(u32, u32)]>>,
+    plan: Option<Box<[(u32, u32, ForkSite)]>>,
 }
 
 impl<R: Rt, E: UserEvent> Block<R, E> {
@@ -630,11 +659,15 @@ impl<R: Rt, E: UserEvent> Block<R, E> {
     fn update_forking(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
         let plan = self.plan.get_or_insert_with(|| {
             crate::analysis::plan_block(&self.children, &self.catches, ctx)
+                .iter()
+                .map(|&(a, b)| (a, b, ForkSite::default()))
+                .collect()
         });
         let last = self.children.len();
         let mut res: Option<TagValue> = None;
-        for &(a, b) in plan.iter() {
-            let tv = update_run(ctx, &mut self.children[a as usize..b as usize]);
+        for (a, b, site) in plan.iter_mut() {
+            let (a, b) = (*a, *b);
+            let tv = update_run(ctx, &mut self.children[a as usize..b as usize], site);
             if b as usize == last {
                 res = Some(tv.clone());
             }
@@ -808,18 +841,44 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
     Ok((node, scope.clone()))
 }
 
-/// Update a run of independent statements, forking halves where the
-/// runtime forks: the last statement's production.
+/// Update a run of independent statements in order, or forked where
+/// its site's plan says: the last statement's production.
 fn update_run<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
+    site: &mut ForkSite,
 ) -> &'a TagValue {
-    if nodes.len() > 1 && crate::branch::forks(ctx) {
-        let (l, r) = nodes.split_at_mut(nodes.len() / 2);
-        return crate::branch::fork_join(ctx, |c| update_run(c, l), |c| update_run(c, r))
-            .1;
+    let n = nodes.len();
+    match site.plan(ctx, n) {
+        Plan::Serial => update_in_order(ctx, nodes, None),
+        Plan::Measure(mut m) => {
+            let r = update_in_order(ctx, nodes, Some(&mut m));
+            m.done(n);
+            r
+        }
+        Plan::Fork(s) => {
+            let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
+            s.ranges(0, n, &mut ranges);
+            if ranges.len() < 2 {
+                return update_in_order(ctx, nodes, None);
+            }
+            let parts = cut(nodes, &ranges);
+            fork_each(ctx, parts, |c, p| update_in_order(c, p, None))
+                .pop()
+                .expect("a part")
+        }
     }
-    nodes.iter_mut().fold(TagValue::phantom_ref(), |_, n| n.update(ctx))
+}
+
+fn update_in_order<'a, R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    nodes: &'a mut [Node<R, E>],
+    mut meter: Option<&mut Meter<'_>>,
+) -> &'a TagValue {
+    nodes
+        .iter_mut()
+        .enumerate()
+        .fold(TagValue::phantom_ref(), |_, (i, n)| timed(&mut meter, i, || n.update(ctx)))
 }
 
 /// A block's children in evaluation order: those a `catch` covers in
@@ -1073,7 +1132,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Block<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        if self.children.len() > 1 && crate::branch::forks(ctx) {
+        if self.children.len() > 1 && ctx.fork_mode() != ParMode::Off {
             return self.update_forking(ctx);
         }
         if self.catches.is_empty() {
@@ -1175,6 +1234,7 @@ pub struct StringInterpolate<R: Rt, E: UserEvent> {
     pub(crate) typs: Box<[Type]>,
     pub args: Box<[Node<R, E>]>,
     resident: TagValue,
+    fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
@@ -1193,6 +1253,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             args,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 
@@ -1217,6 +1278,7 @@ impl<R: Rt, E: UserEvent> StringInterpolate<R, E> {
             args,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 }
@@ -1234,7 +1296,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for StringInterpolate<R, E> {
         use std::fmt::Write;
         // rendered under the value-hook loan so a core `Display` impl on
         // an abstract part applies (`coretraits::with_display_hooks`)
-        let (tag, prods) = gather(ctx, &mut self.args);
+        let (tag, prods) = gather(ctx, &mut self.args, &mut self.fork);
         dense_gate!(self, tag.triggers(), tag.is_bottom());
         let mut buf: LPooled<String> = LPooled::take();
         coretraits::with_display_hooks(ctx, |env| {

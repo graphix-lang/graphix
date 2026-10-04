@@ -2,6 +2,7 @@ use super::{
     NOP, WakeBit, callsite::CallSite, coretraits::with_hooks, genn, lambda::GXLambda,
     list, pattern::StructPatternNode,
 };
+use crate::cost::{SlotPlan, SlotSite};
 use crate::{
     ApplyView, BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag,
     TagValue, Update, UserEvent,
@@ -749,6 +750,7 @@ struct MapQ<R: Rt, E: UserEvent, C: MapCollection> {
     /// so its return changes the result.
     src_bottom: bool,
     resident: TagValue,
+    fork: SlotSite,
 }
 
 impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
@@ -761,6 +763,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> MapQ<R, E, C> {
             current: C::default(),
             src_bottom: true,
             resident: TagValue::phantom(),
+            fork: SlotSite::default(),
         })
     }
 
@@ -846,30 +849,52 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
     })
 }
 
-/// Update `slots`, the slots from index `at` on, forking halves where the
-/// runtime forks: the join of their triggering productions, or `None`
-/// when an interrupt stopped the loop. A slot at `old_len` or past it is
-/// fresh, and its first dispatch runs under a forced init view.
+/// Update `slots`, in order or forked where the site's plan says: the
+/// join of their triggering productions, or `None` when an interrupt
+/// stopped the loop. A slot at `old_len` or past it is fresh, and its
+/// first dispatch runs under a forced init view.
 fn update_slots<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    slots: &mut [Slot<R, E>],
+    site: &mut SlotSite,
+    old_len: usize,
+) -> Option<Option<Tag>> {
+    let n = slots.len();
+    match site.plan(ctx, n) {
+        SlotPlan::Serial => update_slots_in_order(ctx, slots, 0, old_len),
+        SlotPlan::Measure(t0) => {
+            let r = update_slots_in_order(ctx, slots, 0, old_len);
+            site.measured(t0, n);
+            r
+        }
+        SlotPlan::Fork { grain } => {
+            let grain = grain.max(1);
+            if n < 2 * grain {
+                return update_slots_in_order(ctx, slots, 0, old_len);
+            }
+            let ranges: LPooled<Vec<(usize, usize)>> =
+                (0..n).step_by(grain).map(|lo| (lo, (lo + grain).min(n))).collect();
+            let parts = crate::branch::cut(slots, &ranges);
+            let parts = parts.into_iter().zip(ranges.iter().map(|r| r.0));
+            let mut production = None;
+            for p in crate::branch::fork_each(ctx, parts, |c, (p, at)| {
+                update_slots_in_order(c, p, at, old_len)
+            }) {
+                if let Some(tag) = p? {
+                    production = merge_tag(production, tag);
+                }
+            }
+            Some(production)
+        }
+    }
+}
+
+fn update_slots_in_order<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     slots: &mut [Slot<R, E>],
     at: usize,
     old_len: usize,
 ) -> Option<Option<Tag>> {
-    if slots.len() > 1 && crate::branch::forks(ctx) {
-        let mid = slots.len() / 2;
-        let (l, r) = slots.split_at_mut(mid);
-        let (lp, rp) = crate::branch::fork_join(
-            ctx,
-            |c| update_slots(c, l, at, old_len),
-            |c| update_slots(c, r, at + mid, old_len),
-        );
-        let (lp, rp) = (lp?, rp?);
-        return Some(match rp {
-            Some(tag) => merge_tag(lp, tag),
-            None => lp,
-        });
-    }
     let mut production = None;
     for (j, slot) in slots.iter_mut().enumerate() {
         let i = at + j;
@@ -972,7 +997,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
             }
         }
         let saved_init = ctx.event.init;
-        let slots = update_slots(ctx, &mut self.slots, 0, old_len);
+        let slots = update_slots(ctx, &mut self.slots, &mut self.fork, old_len);
         ctx.event.init = saved_init;
         match slots {
             None => return self.resident.ride(),

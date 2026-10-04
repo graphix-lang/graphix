@@ -217,6 +217,8 @@ pub struct Control {
     /// Live per-activation kernel blocks, a test instrument for their
     /// reclaim.
     self_blocks: AtomicI64,
+    /// Forks made by this runtime's cycles.
+    forks: AtomicU64,
 }
 
 /// How a runtime forks the independent subtrees of a cycle
@@ -261,12 +263,23 @@ impl Control {
             fused_runs: AtomicU64::new(0),
             jit_runs: AtomicU64::new(0),
             self_blocks: AtomicI64::new(0),
+            forks: AtomicU64::new(0),
         }
     }
 
     /// Fused kernel runs and JIT wrapper entries since the last reset.
     pub fn invocations(&self) -> (u64, u64) {
         (self.fused_runs.load(Ordering::Relaxed), self.jit_runs.load(Ordering::Relaxed))
+    }
+
+    /// Forks made by this runtime's cycles.
+    pub fn forks(&self) -> u64 {
+        self.forks.load(Ordering::Relaxed)
+    }
+
+    #[doc(hidden)]
+    pub fn forked(&self) {
+        self.forks.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Live per-activation kernel blocks.

@@ -1,4 +1,5 @@
 use super::{WakeBit, compiler::compile, dense_gate, gather};
+use crate::cost::ForkSite;
 use crate::{
     CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
     UserEvent, abstract_value, bailat, deref_typ,
@@ -78,7 +79,7 @@ macro_rules! gathered {
         if $self.n.is_empty() {
             return super::produce_constant($ctx.event, &mut $self.resident, || $empty);
         }
-        let (tag, prods) = gather($ctx, &mut $self.n);
+        let (tag, prods) = gather($ctx, &mut $self.n, &mut $self.fork);
         dense_gate!($self, tag.triggers(), tag.is_bottom());
         (prods.into_iter().map(|tv| tv.value_cloned()), tag)
     }};
@@ -93,6 +94,7 @@ pub struct Struct<R: Rt, E: UserEvent> {
     pub names: Box<[ArcStr]>,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
+    fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Struct<R, E> {
@@ -121,6 +123,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 }
@@ -142,6 +145,7 @@ impl<R: Rt, E: UserEvent> Struct<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 }
@@ -530,6 +534,7 @@ pub struct Tuple<R: Rt, E: UserEvent> {
     pub typ: Type,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
+    fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Tuple<R, E> {
@@ -552,6 +557,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 }
@@ -570,6 +576,7 @@ impl<R: Rt, E: UserEvent> Tuple<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 }
@@ -615,6 +622,7 @@ pub struct Variant<R: Rt, E: UserEvent> {
     pub tag: ArcStr,
     pub n: Box<[Node<R, E>]>,
     resident: TagValue,
+    fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> Variant<R, E> {
@@ -641,6 +649,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 }
@@ -661,6 +670,7 @@ impl<R: Rt, E: UserEvent> Variant<R, E> {
             n,
             resident: TagValue::phantom(),
             slept: WakeBit::default(),
+            fork: Default::default(),
         }))
     }
 }

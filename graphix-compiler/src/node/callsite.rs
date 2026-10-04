@@ -34,6 +34,10 @@ use crate::{
     typ::{ContainsFlags, FnArgKind, FnArgType, FnType, TVar, Type, tvar::RigidGate},
     wrap,
 };
+use crate::{
+    branch::timed,
+    cost::{ForkSite, Meter, Plan},
+};
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
@@ -608,6 +612,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     /// The check did not see every default this site omits: the cells
     /// they reach stay open for the bind.
     defaults_open: bool,
+    fork: ForkSite,
 }
 
 impl<R: Rt, E: UserEvent> CallSite<R, E> {
@@ -641,6 +646,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             resident: TagValue::phantom(),
             share: None,
             defaults_open: true,
+            fork: ForkSite::default(),
         }
     }
 
@@ -1536,7 +1542,14 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         let mut out = ArgsOut::default();
-        update_args(ctx, self.args.as_mut_slice(), may_bind, root, &mut out);
+        update_args(
+            ctx,
+            self.args.as_mut_slice(),
+            &mut self.fork,
+            may_bind,
+            root,
+            &mut out,
+        );
         let ArgsOut { fired: arg_fired, prods, mut set } = out;
         // `fnode.update` runs every cycle for its effects; a `Static`
         // callee discards the value.
@@ -2289,30 +2302,62 @@ struct ArgsOut {
 }
 
 /// Update `args` and publish each production on its argument's id into
-/// `out`, forking halves where the runtime forks.
+/// `out`, in order or forked where the site's plan says.
 fn update_args<R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
+    site: &mut ForkSite,
     may_bind: bool,
     root: QuietAtRoot,
     out: &mut ArgsOut,
 ) {
-    if args.len() > 1 && crate::branch::forks(ctx) {
-        let (l, r) = args.split_at_mut(args.len() / 2);
-        let mut ro = ArgsOut::default();
-        crate::branch::fork_join(
-            ctx,
-            |c| update_args(c, l, may_bind, root, out),
-            |c| update_args(c, r, may_bind, root, &mut ro),
-        );
-        out.fired |= ro.fired;
-        out.prods.extend(ro.prods);
-        out.set.extend(ro.set.iter().copied());
-        return;
+    let n = args.len();
+    match site.plan(ctx, n) {
+        Plan::Serial => update_args_in_order(ctx, args, None, may_bind, root, out),
+        Plan::Measure(mut m) => {
+            update_args_in_order(ctx, args, Some(&mut m), may_bind, root, out);
+            m.done(n)
+        }
+        Plan::Fork(s) => {
+            let mut ranges: LPooled<Vec<(usize, usize)>> = LPooled::take();
+            s.ranges(0, n, &mut ranges);
+            if ranges.len() < 2 {
+                return update_args_in_order(ctx, args, None, may_bind, root, out);
+            }
+            let mut rest = args;
+            let parts: SmallVec<[_; 16]> = ranges
+                .iter()
+                .map(|&(lo, hi)| {
+                    let (part, r) = std::mem::take(&mut rest).split_at_mut(hi - lo);
+                    rest = r;
+                    part
+                })
+                .collect();
+            let outs = crate::branch::fork_each(ctx, parts, |c, p| {
+                let mut o = ArgsOut::default();
+                update_args_in_order(c, p, None, may_bind, root, &mut o);
+                o
+            });
+            for o in outs {
+                out.fired |= o.fired;
+                out.prods.extend(o.prods);
+                out.set.extend(o.set.iter().copied());
+            }
+        }
     }
-    for arg in args.values_mut() {
+}
+
+fn update_args_in_order<R: Rt, E: UserEvent>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    args: &mut indexmap::map::Slice<ArgKey, Arg<R, E>>,
+    mut meter: Option<&mut Meter<'_>>,
+    may_bind: bool,
+    root: QuietAtRoot,
+    out: &mut ArgsOut,
+) {
+    for (i, arg) in args.values_mut().enumerate() {
         let Some(node) = &mut arg.node else { continue };
-        let tv = node.update(ctx);
+        let tv = timed(&mut meter, i, || node.update(ctx));
         let fired = tv.tag().triggers();
         out.fired |= fired;
         if may_bind && !fired {

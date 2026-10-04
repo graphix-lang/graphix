@@ -7,13 +7,19 @@
 
 use crate::{
     BindId, CompileCtx, CustomBuiltinType, Event, ExecCtx, Rt, TagValue, UserEvent,
-    expr::ExprId, node::place::Path,
+    cost::{CycleSite, ForkSite, Meter, Plan, ticks},
+    expr::ExprId,
+    node::place::Path,
 };
 use futures::channel::mpsc;
 use graphix_types::stack::{Control, ParMode};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::{global::GPooled, local::LPooled};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
+use smallvec::SmallVec;
 use std::{
     future::Future,
     ops::{Deref, DerefMut},
@@ -404,6 +410,11 @@ impl<V: Clone> Layered<V> {
         own.or(from_parent)
     }
 
+    /// The ids this layer delivered itself.
+    pub(crate) fn own_ids(&self) -> impl Iterator<Item = BindId> + '_ {
+        self.map.keys().copied()
+    }
+
     /// The ids this layer and `other` both delivered themselves.
     pub(crate) fn delivered_in_both(&self, other: &Self) -> LPooled<Vec<BindId>> {
         self.map.keys().filter(|id| other.map.contains_key(*id)).copied().collect()
@@ -534,6 +545,109 @@ impl<'a, R: Rt, E: UserEvent> DerefMut for CxView<'a, R, E> {
     }
 }
 
+/// `xs` cut at `ranges`, which cover it in order.
+pub(crate) fn cut<'a, T>(
+    mut xs: &'a mut [T],
+    ranges: &[(usize, usize)],
+) -> SmallVec<[&'a mut [T]; 16]> {
+    ranges
+        .iter()
+        .map(|&(lo, hi)| {
+            let (part, rest) = std::mem::take(&mut xs).split_at_mut(hi - lo);
+            xs = rest;
+            part
+        })
+        .collect()
+}
+
+/// One part of a [`fork_each`]: its branch's views and its result.
+struct Part<R: Rt, E: UserEvent, P, T> {
+    cx: ForkCx<R, E>,
+    rt: ForkRt<R>,
+    event: Event<E>,
+    part: Option<P>,
+    out: Option<T>,
+}
+
+/// Run `f` over each of `parts` on a branch of its own, every branch
+/// forked from `ctx` (siblings, one level down), and merge them back in
+/// order: no part sees what another did, and `ctx` ends as the serial
+/// evaluation of the parts in order would leave it. The results, in
+/// order.
+pub fn fork_each<R, E, P, T, F>(
+    ctx: &mut ExecCtx<'_, R, E>,
+    parts: impl IntoIterator<Item = P>,
+    f: F,
+) -> Vec<T>
+where
+    R: Rt,
+    E: UserEvent,
+    P: Send,
+    T: Send,
+    F: Fn(&mut ExecCtx<'_, R, E>, P) -> T + Sync,
+{
+    debug_assert!(!ctx.deferred_pending(), "a fork over unapplied compile work");
+    let mut branches: Vec<Part<R, E, P, T>> = parts
+        .into_iter()
+        .map(|p| Part {
+            cx: ForkCx::new(&ctx.cx),
+            rt: ForkRt::new(&ctx.rt),
+            event: ctx.event.fork(),
+            part: Some(p),
+            out: None,
+        })
+        .collect();
+    let (libstate, hooks, control, decoder) =
+        (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
+    let (fork_depth, par) = (ctx.fork_depth + 1, ctx.par);
+    control.forked();
+    let tokio = tokio::runtime::Handle::try_current().ok();
+    branches.par_iter_mut().with_max_len(1).for_each(|b| {
+        // a part may run on any thread of the pool
+        let _interrupt = graphix_types::stack::InterruptScope::new(&**control);
+        let _tokio = tokio.as_ref().map(|h| h.enter());
+        let mut c = ExecCtx {
+            cx: CxView::Fork(&mut b.cx),
+            image_decoder: decoder,
+            libstate,
+            rt: RtView::Fork(&mut b.rt),
+            core_hook_sites: hooks,
+            control,
+            event: &mut b.event,
+            fork_depth,
+            par,
+            serial: false,
+        };
+        b.out = Some(f(&mut c, b.part.take().expect("a part")));
+    });
+    if branches.first().is_some_and(|b| b.rt.reads.is_some()) {
+        for (i, b) in branches.iter().enumerate() {
+            let reads = b.rt.reads.as_ref().expect("audited").lock();
+            for a in &branches[..i] {
+                audit(&reads, &a.event, &a.rt, &b.event, &b.rt);
+            }
+        }
+    }
+    // what an earlier part delivered first: a later part's delivery of
+    // it waits a cycle, queued where serial evaluation would queue it
+    let mut delivered: LPooled<IntSet<BindId>> = LPooled::take();
+    let mut out = Vec::with_capacity(branches.len());
+    for Part { cx, mut rt, mut event, part: _, out: o } in branches.drain(..) {
+        let again: LPooled<Vec<BindId>> =
+            event.variables.own_ids().filter(|id| delivered.contains(id)).collect();
+        for id in again.iter() {
+            let tv = event.variables.take_own(id).expect("delivered");
+            rt.queue_first(*id, tv.value());
+        }
+        delivered.extend(event.variables.own_ids());
+        ctx.cx.merge(cx);
+        ctx.rt.merge(rt);
+        ctx.event.merge(event);
+        out.push(o.expect("every part ran"));
+    }
+    out
+}
+
 /// Run `a` and `b` as two branches forked from `ctx` and merge them back,
 /// `a`'s first: neither sees what the other did, and `ctx` ends as the
 /// serial evaluation of `a` then `b` would leave it.
@@ -553,6 +667,7 @@ where
     let (libstate, hooks, control, decoder) =
         (ctx.libstate, ctx.core_hook_sites, ctx.control, ctx.image_decoder);
     let (fork_depth, par) = (ctx.fork_depth + 1, ctx.par);
+    control.forked();
     let branch = |cx, rt, event| ExecCtx {
         cx: CxView::Fork(cx),
         image_decoder: decoder,
@@ -563,6 +678,7 @@ where
         event,
         fork_depth,
         par,
+        serial: false,
     };
     let tokio = tokio::runtime::Handle::try_current().ok();
     let (ra, rb) = rayon::join(
@@ -632,19 +748,43 @@ pub fn eval_pool() -> &'static rayon::ThreadPool {
     &POOL
 }
 
-/// Run `f`, a cycle's updates, on the evaluation pool when `control`'s
-/// runtime may fork, so its joins fork onto the pool; inline otherwise.
-pub fn run_cycle<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T {
+/// Run `f`, a cycle's updates, on the evaluation pool when the cycle may
+/// fork (always when forced, by `site` under `Auto`), so its joins fork
+/// onto the pool; inline otherwise.
+pub fn run_cycle<T: Send>(
+    control: &Control,
+    site: &mut CycleSite,
+    f: impl FnOnce() -> T + Send,
+) -> T {
+    let pooled = match control.par_mode() {
+        ParMode::Off => false,
+        ParMode::Force => true,
+        ParMode::Auto => site.enter(),
+    };
+    let (t0, forks) = (ticks(), control.forks());
+    let r = if pooled {
+        let tokio = tokio::runtime::Handle::try_current().ok();
+        eval_pool().install(|| {
+            let _interrupt = graphix_types::stack::InterruptScope::new(control);
+            let _tokio = tokio.as_ref().map(|h| h.enter());
+            f()
+        })
+    } else {
+        f()
+    };
+    if control.par_mode() == ParMode::Auto {
+        site.record(ticks().wrapping_sub(t0), pooled, control.forks() - forks);
+    }
+    r
+}
+
+/// Whether a view made on this thread may fork: only on the evaluation
+/// pool, where [`run_cycle`] runs a cycle that may.
+pub(crate) fn view_mode(control: &Control) -> ParMode {
     match control.par_mode() {
-        ParMode::Off => f(),
-        ParMode::Auto | ParMode::Force => {
-            let tokio = tokio::runtime::Handle::try_current().ok();
-            eval_pool().install(|| {
-                let _interrupt = graphix_types::stack::InterruptScope::new(control);
-                let _tokio = tokio.as_ref().map(|h| h.enter());
-                f()
-            })
-        }
+        ParMode::Off => ParMode::Off,
+        m if eval_pool().current_thread_index().is_some() => m,
+        _ => ParMode::Off,
     }
 }
 
@@ -654,11 +794,49 @@ pub fn run_cycle<T: Send>(control: &Control, f: impl FnOnce() -> T + Send) -> T 
 /// cores many times over.
 pub const MAX_FORK_DEPTH: u8 = 16;
 
-/// Whether a fork point forks. Until the cost model, only a forced
-/// runtime does.
+/// Run `a` then `b`, the two children of `site`, or fork them where the
+/// site's plan says.
 #[inline]
-pub fn forks<R: Rt, E: UserEvent>(ctx: &ExecCtx<'_, R, E>) -> bool {
-    ctx.par == ParMode::Force && ctx.fork_depth < MAX_FORK_DEPTH
+pub fn join2<R, E, A, B, RA, RB>(
+    site: &mut ForkSite,
+    ctx: &mut ExecCtx<'_, R, E>,
+    a: A,
+    b: B,
+) -> (RA, RB)
+where
+    R: Rt,
+    E: UserEvent,
+    A: FnOnce(&mut ExecCtx<'_, R, E>) -> RA + Send,
+    B: FnOnce(&mut ExecCtx<'_, R, E>) -> RB + Send,
+    RA: Send,
+    RB: Send,
+{
+    match site.plan(ctx, 2) {
+        Plan::Serial => (a(ctx), b(ctx)),
+        Plan::Measure(mut m) => {
+            let ra = m.time(0, || a(ctx));
+            let rb = m.time(1, || b(ctx));
+            m.done(2);
+            (ra, rb)
+        }
+        Plan::Fork(s) => match s.fork(ctx, 0, 2) {
+            Some(_) => fork_join(ctx, a, b),
+            None => (a(ctx), b(ctx)),
+        },
+    }
+}
+
+/// Run `f` timed as child `i` when measuring.
+#[inline]
+pub fn timed<T>(
+    meter: &mut Option<&mut Meter<'_>>,
+    i: usize,
+    f: impl FnOnce() -> T,
+) -> T {
+    match meter {
+        Some(m) => m.time(i, f),
+        None => f(),
+    }
 }
 
 /// What forked branches share through their parent links is safe to read

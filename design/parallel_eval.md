@@ -298,6 +298,35 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
 `Control`, defaulting from `GRAPHIX_PAR`; until the cost model only
 `Force` forks.
 
+### 4.5 As built (phase 4)
+
+- **Flat forks.** A fork point cuts its children into ranges up front
+  (`cost::Splits::ranges`, a slot site's grain) and runs every range as
+  a sibling branch one level below it (`branch::fork_each`, rayon over
+  the parts), merging them in order. Binary splits nested a branch per
+  level: a read walked every layer and each join copied a write one
+  more time, which doubled the work of a slot-heavy cycle on one
+  thread. A collision is a delivery an earlier sibling made: the later
+  one is queued, as between two joined branches. `fork_join` remains
+  for an operator's two operands.
+- **Maps stay hash maps.** A persistent map (imhm) for the store and
+  the event's deliveries made a fork an O(1) clone and every read one
+  lookup, but put a trie walk on every serial read and write: the
+  node-walk ran 2.4x slower with no fork at all (imhm `insert`/`find`
+  31% of the profile, the store holding a binding per activation).
+- **Only the pool forks.** A view made off the evaluation pool forks
+  nothing (`branch::view_mode`): compile-time views, callbacks run
+  outside a cycle.
+- **Seq machines are serial inside.** A machine's guards and the raises
+  of its steps meet through handler counters (`DynNode`'s atomics) that
+  no branch view isolates, in serial order: forked, a raise could land
+  after a sibling's guard had read the generation
+  (`lang::seq_errors::continuations` lost a block's write). A machine
+  updates with `ExecCtx::serial` set; a lambda body clears it, so a
+  callee forks again. Beside the machine, its `SeqAbort` and the
+  machine itself are ordered in the block plan: the abort must fail the
+  guards before the machine updates.
+
 ## 5. The cost model
 
 The engine measures, and the measurements choose the fork points.
@@ -350,6 +379,21 @@ them. Fork plans (§3.3), which are static, are imaged.
 
 **Before there is data,** a fork point runs serially, unless an
 attribute forces it.
+
+**As built** (`graphix-compiler/src/cost.rs`). A `ForkSite` starts as
+a probe: its first two updates time the children's total, and only a
+site whose total reaches `2T` allocates histograms; any other turns
+serial and probes again after 1024 updates. A measured site samples
+every update until each child has four samples, then on the doubling
+schedule, and turns serial when no split reaches `T` on both sides. A
+`SlotSite` keeps one per-slot histogram (the measured loop's total over
+its slot count) and forks in ranges of `ceil(T / estimate)` slots. `T`
+is four times the median latency of handing an idle pool a job,
+measured on a thread of its own at the first use (`Auto` forks nothing
+until then). A `CycleSite` on the runtime enters the pool only for a
+cycle whose p75 reaches `2T`, and backs off (64 cycles, doubling) after
+16 pooled cycles that forked nothing: a pooled cycle pays a worker
+wake.
 
 ## 6. Builtins and side effects
 

@@ -105,6 +105,7 @@ async fn print_const_once_jit() -> Result<()> {
 }
 
 // A callback's print fires once per element, not per kernel invocation.
+// The slots print unordered.
 const PRINT_HOF_ONCE: &str = r#"{
   let n = 0;
   select n { x if x < 3 => n <- (x ~ n) + 1, _ => never() };
@@ -117,7 +118,13 @@ const PRINT_HOF_ONCE: &str = r#"{
 async fn print_hof_once(fusion_disabled: bool) -> Result<()> {
     let (values, out) = run_delta(PRINT_HOF_ONCE, fusion_disabled).await?;
     assert_eq!(as_i64s(&values), vec![0]);
-    assert_eq!(out, "@P1\n@P2\n@R(0, 2)\n@R(1, 2)\n@R(2, 2)\n@R(3, 2)\n");
+    let mut lines: Vec<&str> = out.lines().collect();
+    lines[..2].sort();
+    assert_eq!(
+        lines,
+        ["@P1", "@P2", "@R(0, 2)", "@R(1, 2)", "@R(2, 2)", "@R(3, 2)"],
+        "{out}"
+    );
     Ok(())
 }
 

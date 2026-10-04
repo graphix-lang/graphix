@@ -113,6 +113,71 @@ fn pc_id<R: Rt, E: UserEvent>(pc: &Node<R, E>) -> Result<BindId> {
 }
 
 impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
+    fn update_serial(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
+        let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
+        let (tracked, lets) = tracked.get_or_insert_with(|| {
+            let tracked =
+                TrackedFires::new(&ctx.env, steps.len(), |i, r| steps[i].refs(r));
+            let mut lets = IntSet::default();
+            for n in steps.iter().flat_map(|s| s.nodes.iter()) {
+                if let NodeView::Bind(b) = n.view() {
+                    b.pattern.ids(&mut |id| {
+                        lets.insert(ctx.env.facet_of(id));
+                    });
+                }
+            }
+            (tracked, lets)
+        });
+        let at = pc.update(ctx);
+        let target = match at.is_fired().then(|| at.value_cloned()) {
+            Some(Value::String(l)) if l == "Idle" => Some(None),
+            Some(Value::String(l)) => steps.iter().position(|s| s.label == l).map(Some),
+            _ => None,
+        };
+        tracked.observe(ctx);
+        let mut entered = false;
+        match target {
+            Some(None) => {
+                if let Some(j) = current.take() {
+                    deselect(ctx, tracked, j, &mut steps[j]);
+                }
+            }
+            Some(Some(k)) if *current == Some(k) => (),
+            Some(Some(k)) => {
+                if let Some(j) = current.replace(k) {
+                    deselect(ctx, tracked, j, &mut steps[j]);
+                }
+                entered = true;
+            }
+            None => (),
+        }
+        let mut evaluated: SmallVec<[usize; 4]> = SmallVec::new();
+        while let Some(k) = *current {
+            evaluated.push(k);
+            if !evaluate(ctx, tracked, k, &mut steps[k], entered) {
+                break;
+            }
+            deselect(ctx, tracked, k, &mut steps[k]);
+            *current = None;
+            let Some(n) = steps[k].next else {
+                ctx.rt.set_var(*pc_id, Value::String(literal!("Idle")));
+                break;
+            };
+            let at = Value::String(steps[n].label.clone());
+            if !steps[k].same_cycle.load(Relaxed) {
+                ctx.rt.set_var(*pc_id, at);
+                break;
+            }
+            ctx.event.variables.insert(*pc_id, TagValue::fired(at.clone()));
+            ctx.rt.store_insert(*pc_id, TagValue::fired(at));
+            ctx.rt.notify_set(*pc_id);
+            *current = Some(n);
+            entered = true;
+        }
+        tracked.observe_except(ctx, &evaluated, Some(lets));
+        TagValue::phantom_ref()
+    }
+
     pub(crate) fn compile(
         ctx: &mut CompileCtx<R, E>,
         flags: BitFlags<CFlag>,
@@ -278,68 +343,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for SeqMachine<R, E> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R, E>) -> &TagValue {
-        let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
-        let (tracked, lets) = tracked.get_or_insert_with(|| {
-            let tracked =
-                TrackedFires::new(&ctx.env, steps.len(), |i, r| steps[i].refs(r));
-            let mut lets = IntSet::default();
-            for n in steps.iter().flat_map(|s| s.nodes.iter()) {
-                if let NodeView::Bind(b) = n.view() {
-                    b.pattern.ids(&mut |id| {
-                        lets.insert(ctx.env.facet_of(id));
-                    });
-                }
-            }
-            (tracked, lets)
-        });
-        let at = pc.update(ctx);
-        let target = match at.is_fired().then(|| at.value_cloned()) {
-            Some(Value::String(l)) if l == "Idle" => Some(None),
-            Some(Value::String(l)) => steps.iter().position(|s| s.label == l).map(Some),
-            _ => None,
-        };
-        tracked.observe(ctx);
-        let mut entered = false;
-        match target {
-            Some(None) => {
-                if let Some(j) = current.take() {
-                    deselect(ctx, tracked, j, &mut steps[j]);
-                }
-            }
-            Some(Some(k)) if *current == Some(k) => (),
-            Some(Some(k)) => {
-                if let Some(j) = current.replace(k) {
-                    deselect(ctx, tracked, j, &mut steps[j]);
-                }
-                entered = true;
-            }
-            None => (),
-        }
-        let mut evaluated: SmallVec<[usize; 4]> = SmallVec::new();
-        while let Some(k) = *current {
-            evaluated.push(k);
-            if !evaluate(ctx, tracked, k, &mut steps[k], entered) {
-                break;
-            }
-            deselect(ctx, tracked, k, &mut steps[k]);
-            *current = None;
-            let Some(n) = steps[k].next else {
-                ctx.rt.set_var(*pc_id, Value::String(literal!("Idle")));
-                break;
-            };
-            let at = Value::String(steps[n].label.clone());
-            if !steps[k].same_cycle.load(Relaxed) {
-                ctx.rt.set_var(*pc_id, at);
-                break;
-            }
-            ctx.event.variables.insert(*pc_id, TagValue::fired(at.clone()));
-            ctx.rt.store_insert(*pc_id, TagValue::fired(at));
-            ctx.rt.notify_set(*pc_id);
-            *current = Some(n);
-            entered = true;
-        }
-        tracked.observe_except(ctx, &evaluated, Some(lets));
-        TagValue::phantom_ref()
+        ctx.with_serial(true, |ctx| self.update_serial(ctx))
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {

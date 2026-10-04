@@ -80,6 +80,7 @@ macro_rules! binary_node {
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
             slept: WakeBit,
+            fork: crate::cost::ForkSite,
         }
 
         impl<R: Rt, E: UserEvent> $name<R, E> {
@@ -116,6 +117,7 @@ macro_rules! binary_node {
                     rhs,
                     resident: TagValue::phantom(),
                     slept: WakeBit::default(),
+                    fork: Default::default(),
                 })
             }
         }
@@ -174,11 +176,12 @@ macro_rules! gated_operands {
     ($self:ident, $ctx:ident) => {{
         let woke = $self.slept.take();
         let (lhs, rhs) = (&mut $self.lhs, &mut $self.rhs);
-        let (l, r) = if $crate::branch::forks($ctx) {
-            $crate::branch::fork_join($ctx, |c| lhs.update(c), |c| rhs.update(c))
-        } else {
-            (lhs.update($ctx), rhs.update($ctx))
-        };
+        let (l, r) = $crate::branch::join2(
+            &mut $self.fork,
+            $ctx,
+            |c| lhs.update(c),
+            |c| rhs.update(c),
+        );
         let (lt, rt) = (l.tag(), r.tag());
         let trig = lt.triggers() || rt.triggers();
         dense_gate!($self.resident, trig, lt.is_bottom() || rt.is_bottom(), woke);

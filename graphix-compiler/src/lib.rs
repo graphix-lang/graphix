@@ -13,6 +13,7 @@ pub(crate) use graphix_types::{CAST_ERR, CAST_ERR_TAG, Restore, profile, stack};
 
 pub mod analysis;
 pub mod branch;
+pub mod cost;
 pub(crate) mod dbgenv;
 pub mod effects;
 pub use effects::Effect;
@@ -1201,6 +1202,10 @@ pub struct ExecCtx<'a, R: Rt, E: UserEvent> {
     pub(crate) fork_depth: u8,
     /// The runtime's parallel mode when the view was made.
     pub(crate) par: graphix_types::stack::ParMode,
+    /// Inside a seq machine, outside any callee body: nothing forks. Its
+    /// guards and raises meet through handler state no branch view
+    /// isolates, in the order serial evaluation gives them.
+    pub(crate) serial: bool,
 }
 
 impl<'a, R: Rt, E: UserEvent> std::ops::Deref for ExecCtx<'a, R, E> {
@@ -1488,12 +1493,37 @@ impl<R: Rt, E: UserEvent> ExecState<R, E> {
             control,
             event,
             fork_depth: 0,
-            par: control.par_mode(),
+            par: branch::view_mode(control),
+            serial: false,
         }
     }
 }
 
 impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
+    /// How this view may fork: `Off` past the depth limit or inside a seq
+    /// machine.
+    #[inline]
+    pub(crate) fn fork_mode(&self) -> ParMode {
+        if self.serial || self.fork_depth >= branch::MAX_FORK_DEPTH {
+            ParMode::Off
+        } else {
+            self.par
+        }
+    }
+
+    /// Run `f` with [`ExecCtx::serial`] set to `serial`.
+    #[inline]
+    pub(crate) fn with_serial<T>(
+        &mut self,
+        serial: bool,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let saved = std::mem::replace(&mut self.serial, serial);
+        let r = f(self);
+        self.serial = saved;
+        r
+    }
+
     /// The same view, borrowed for a shorter time, over `event`.
     pub fn with_event<'b>(&'b mut self, event: &'b mut Event<E>) -> ExecCtx<'b, R, E> {
         ExecCtx {
@@ -1506,6 +1536,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
             event,
             fork_depth: self.fork_depth,
             par: self.par,
+            serial: self.serial,
         }
     }
 

@@ -696,7 +696,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for GXLambda<R, E> {
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
-        let res = self.body.update(ctx).clone();
+        let res = ctx.with_serial(false, |ctx| self.body.update(ctx).clone());
         self.resident.set(res)
     }
 
