@@ -54,8 +54,13 @@ touching the init flag:
   (the first arrival counts as resized, which is also what makes
   "source fires while empty" emit). The exact rule is `fires :=
   resized ∨ any_slot_fired`, folded into the loop's STALE bit by
-  `SlotFlags` (`emit/scaffold.rs`). A TAINTED source skips the logical
-  resize — the node-walk saw no event — and the word is untouched.
+  `SlotFlags` (`emit/scaffold.rs`). A TAINTED source is never a
+  resize and forgets the length (the word takes the `FORGOT` bit, so the
+  source's return is one) but not the slots. The word is read before the
+  loop as the slots the instance had ENTERED: a slot at or past that
+  count is new, and its iteration runs under an init view (the node-walk
+  builds a new slot's instance fresh, its first update an init view), so
+  a constant in the loop body fires in each new slot.
 - *first-call word*: a cross-kernel call site forces the callee's init
   flag when its word reads 0, records, and never again. In a loop the
   word is the slot's (the call site is one of the loop's per-slot

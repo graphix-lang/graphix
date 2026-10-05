@@ -17,8 +17,8 @@ use crate::{
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
-    Block, BlockArg, FuncRef, Inst, InstBuilder, Value as ClifValue, condcodes::IntCC,
-    types,
+    Block, BlockArg, FuncRef, Inst, InstBuilder, MemFlags, Value as ClifValue,
+    condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use netidx_value::Value;
@@ -277,10 +277,44 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         Ok(self.b.ins().call(f, args))
     }
 
-    /// The `event.init` word from wire slot 0 (`I64`, nonzero on an
-    /// init view; see [`kernel_abi::CTX_WIRE_SLOTS`]).
+    /// Nonzero on an init view (`I64`): the `event.init` word from wire
+    /// slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]), or in a loop body that
+    /// or the slot's first iteration, as a new slot is a new instance.
     pub fn init_flag(&self) -> ClifValue {
-        self.ctx.init_flag
+        self.env.slot_init.unwrap_or(self.ctx.init_flag)
+    }
+
+    /// The init view of an instance whose first use `word` records: the
+    /// init flag, or set while the word reads 0, which this use records.
+    /// No word, or a null guarded base, is the plain init flag.
+    pub(crate) fn first_use(&mut self, word: Option<SelWord>) -> ClifValue {
+        let init = self.init_flag();
+        let first = |cx: &mut BodyCx, addr: ClifValue| {
+            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+            let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
+            let one = cx.b.ins().iconst(types::I64, 1);
+            cx.b.ins().store(MemFlags::trusted(), one, addr, 0);
+            let first = cx.b.ins().uextend(types::I64, first);
+            cx.b.ins().bor(init, first)
+        };
+        match word {
+            None => init,
+            Some(SelWord::Sure(addr)) => first(self, addr),
+            Some(SelWord::Guarded { base, addr }) => {
+                let has = self.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+                let word_bl = self.b.create_block();
+                let merge = self.b.create_block();
+                self.b.append_block_param(merge, types::I64);
+                self.b.ins().brif(has, word_bl, &[], merge, &[BlockArg::Value(init)]);
+                self.b.switch_to_block(word_bl);
+                self.b.seal_block(word_bl);
+                let w = first(self, addr);
+                self.b.ins().jump(merge, &[BlockArg::Value(w)]);
+                self.b.switch_to_block(merge);
+                self.b.seal_block(merge);
+                self.b.block_params(merge)[0]
+            }
+        }
     }
 
     /// The per-instance state-buffer pointer (`I64`), loaded from wire

@@ -148,7 +148,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
             let bit = cx.b.ins().ishl_imm(s64, i as i64);
             stale_mask = cx.b.ins().bor(stale_mask, bit);
         }
-        let (init, wake) = (cx.ctx.init_flag, cx.ctx.wake_flag);
+        let (init, wake) = (cx.init_flag(), cx.ctx.wake_flag);
         let init_b = cx.b.ins().icmp_imm(IntCC::NotEqual, init, 0);
         let no_wake = cx.b.ins().icmp_imm(IntCC::Equal, wake, 0);
         let genuine = cx.b.ins().band(init_b, no_wake);
@@ -343,33 +343,7 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
         }),
         _ => cx.slot_select_word(site),
     };
-    let init = cx.init_flag();
-    let first_call = |cx: &mut BodyCx, addr: ClifValue| {
-        let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
-        let first = cx.b.ins().icmp_imm(IntCC::Equal, stored, 0);
-        let one = cx.b.ins().iconst(types::I64, 1);
-        cx.b.ins().store(MemFlags::trusted(), one, addr, 0);
-        let first = cx.b.ins().uextend(types::I64, first);
-        cx.b.ins().bor(init, first)
-    };
-    match word {
-        None => init,
-        Some(SelWord::Sure(addr)) => first_call(cx, addr),
-        Some(SelWord::Guarded { base, addr }) => {
-            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-            let word_bl = cx.b.create_block();
-            let merge = cx.b.create_block();
-            cx.b.append_block_param(merge, types::I64);
-            cx.b.ins().brif(has, word_bl, &[], merge, &[BlockArg::Value(init)]);
-            cx.b.switch_to_block(word_bl);
-            cx.b.seal_block(word_bl);
-            let w = first_call(cx, addr);
-            cx.b.ins().jump(merge, &[BlockArg::Value(w)]);
-            cx.b.switch_to_block(merge);
-            cx.b.seal_block(merge);
-            cx.b.block_params(merge)[0]
-        }
-    }
+    cx.first_use(word)
 }
 
 /// Claim a contiguous run of `layout.words` words from this body's own

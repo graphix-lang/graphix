@@ -1009,6 +1009,28 @@ run!(hof_slot_nested_prev_len, HOF_SLOT_NESTED_PREV_LEN, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(3)))
 }; graphix_package_core::testing::FuseExpect::Jit);
 
+// A new slot is a new instance, whose first update is an init view: a
+// constant in the callback body fires in each new slot, and its error
+// raises once per slot.
+const HOF_SLOT_CONSTANT_FIRES: &str = r#"
+{
+  let n = array::iter([1, 2, 3, 4]);
+  let raised = 0;
+  let out = {
+    catch(e) raised <- e ~ raised + 1;
+    array::map(array::init(n, |i| i), |x| {
+      let e: [i64, Error<`E>] = error(`E);
+      e? + x
+    })
+  };
+  select count(n) { 4 => raised, _ => never() }
+}
+"#;
+
+run!(hof_slot_constant_fires, HOF_SLOT_CONSTANT_FIRES, |v: Result<&Value>| {
+    matches!(v, Ok(Value::I64(3)))
+}; graphix_package_core::testing::FuseExpect::Jit);
+
 // Non-tail recursion depth is bounded by memory, not a counter: depth
 // 1000 completes on both engines.
 const DEEP_NONTAIL_RECURSION_COMPLETES: &str = r#"

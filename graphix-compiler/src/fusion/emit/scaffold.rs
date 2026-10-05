@@ -239,27 +239,37 @@ pub(super) struct LoopFrame {
     exit: Block,
     /// The env mark the iteration's binds truncate back to.
     mark: usize,
+    /// The slots the loop instance entered before this run
+    /// ([`SlotFlags`]): a slot at or past it is new.
+    entered: ClifValue,
 }
 
-/// Open a loop over `len` slots of a source with disc `src_disc`; the
-/// builder ends in the loop body.
+/// Open a loop over `len` slots of a source with disc `src_disc`, of an
+/// instance that `entered` slots before; the builder ends in the loop
+/// body.
 fn open_loop(
     cx: &mut BodyCx,
     len: ClifValue,
     src_disc: ClifValue,
     sel_sites: &[ExprId],
+    entered: ClifValue,
 ) -> Result<LoopFrame> {
     let i_var = cx.b.declare_var(types::I64);
     let zero = cx.b.ins().iconst(types::I64, 0);
     cx.b.def_var(i_var, zero);
     cx.open_slot_tables(sel_sites, len, src_disc, i_var)?;
-    Ok(LoopFrame::blocks(cx, i_var, len))
+    Ok(LoopFrame::blocks(cx, i_var, len, entered))
 }
 
 impl LoopFrame {
     /// The loop's blocks over slots `i_var..hi`, its slot-table frame
     /// already open; the builder ends in the loop body.
-    pub(super) fn blocks(cx: &mut BodyCx, i_var: Variable, hi: ClifValue) -> Self {
+    pub(super) fn blocks(
+        cx: &mut BodyCx,
+        i_var: Variable,
+        hi: ClifValue,
+        entered: ClifValue,
+    ) -> Self {
         let header = cx.b.create_block();
         let body = cx.b.create_block();
         let exit = cx.b.create_block();
@@ -270,14 +280,16 @@ impl LoopFrame {
         cx.b.ins().brif(cond, body, &[], exit, &[]);
         cx.b.switch_to_block(body);
         let i = cx.b.use_var(i_var);
-        LoopFrame { i_var, i, header, body, exit, mark: cx.env.mark() }
+        LoopFrame { i_var, i, header, body, exit, mark: cx.env.mark(), entered }
     }
 }
 
 impl LoopFrame {
     /// Bind the iteration's names, poll the interrupt (its abort drops
-    /// them) and emit the body, all in the loop's scope; the scope and
-    /// the slot-table frame close before an error propagates.
+    /// them) and emit the body, all in the loop's scope, under the slot's
+    /// init view (its first iteration is one: the slot is a new
+    /// instance); the scope and the slot-table frame close before an
+    /// error propagates.
     fn run<'a, 'f, 'c, B, T>(
         &self,
         cx: &mut BodyCx<'a, 'f, 'c>,
@@ -285,10 +297,17 @@ impl LoopFrame {
         body: impl FnOnce(&mut BodyCx<'a, 'f, 'c>) -> Result<T>,
     ) -> Result<(B, T)> {
         cx.enter_loop();
+        let outer = cx.env.slot_init;
+        let new =
+            cx.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, self.i, self.entered);
+        let new = cx.b.ins().uextend(types::I64, new);
+        let init = cx.init_flag();
+        cx.env.slot_init = Some(cx.b.ins().bor(init, new));
         let r = bind(cx, self.i).and_then(|bound| {
             emit_interrupt_check(cx.b, cx.env, cx.ctx)?;
             Ok((bound, body(cx)?))
         });
+        cx.env.slot_init = outer;
         cx.exit_loop();
         cx.close_slot_tables();
         r
@@ -417,15 +436,67 @@ pub struct SlotFlags {
     /// The source's element count, for the resize and empty-source terms.
     len: ClifValue,
     kind: LoopKind,
-    /// The collection callsite this loop lowers: the key a nested loop's
-    /// prev-length word is chained under in the enclosing frame.
-    site_id: Option<ExprId>,
+    /// The loop instance's prev-length word: `len + 1` after a run over
+    /// a source, 0 before any; a bottom source sets [`FORGOT`] over it,
+    /// forgetting the length (its return is a resize) but not the slots.
+    word: Option<SelWord>,
+    /// The slots the instance entered before this run (all, `u64::MAX`,
+    /// without a word): a slot at or past it is new.
+    entered: ClifValue,
 }
 
+/// A prev-length word's mark of a bottom source.
+const FORGOT: i64 = i64::MIN;
+
 impl SlotFlags {
+    /// Emit in the loop's preheader: the instance's word is claimed
+    /// (its state, its call-site block, or in a loop the enclosing
+    /// slot's chain word) and read.
     fn new(cx: &mut BodyCx, len: ClifValue, kind: LoopKind) -> Self {
         let accs = Accs::new(cx);
-        SlotFlags { accs, len, kind, site_id: cx.collection_site() }
+        let word = match cx.claim_state_word() {
+            Some(off) => {
+                let sp = cx.state_ptr();
+                Some(SelWord::Sure(cx.b.ins().iadd_imm(sp, off as i64)))
+            }
+            None => match cx.collection_site().and_then(|id| cx.slot_select_word(id)) {
+                Some(w) => Some(w),
+                // The site block base may be 0 on a recursive back-edge.
+                None if cx.env.loop_depth == 0 => cx.claim_site_word().map(|off| {
+                    let base = cx.site_ptr();
+                    SelWord::Guarded { base, addr: cx.b.ins().iadd_imm(base, off as i64) }
+                }),
+                None => None,
+            },
+        };
+        let entered = |cx: &mut BodyCx, addr: ClifValue| {
+            let stored = cx.b.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+            let lenp1 = cx.b.ins().band_imm(stored, !FORGOT);
+            let none = cx.b.ins().icmp_imm(IntCC::Equal, lenp1, 0);
+            let len = cx.b.ins().iadd_imm(lenp1, -1);
+            let zero = cx.b.ins().iconst(types::I64, 0);
+            cx.b.ins().select(none, zero, len)
+        };
+        let all = cx.b.ins().iconst(types::I64, -1);
+        let entered = match word {
+            None => all,
+            Some(SelWord::Sure(addr)) => entered(cx, addr),
+            Some(SelWord::Guarded { base, addr }) => {
+                let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
+                let read = cx.b.create_block();
+                let merge = cx.b.create_block();
+                cx.b.append_block_param(merge, types::I64);
+                cx.b.ins().brif(has, read, &[], merge, &[BlockArg::Value(all)]);
+                cx.b.switch_to_block(read);
+                cx.b.seal_block(read);
+                let e = entered(cx, addr);
+                cx.b.ins().jump(merge, &[BlockArg::Value(e)]);
+                cx.b.switch_to_block(merge);
+                cx.b.seal_block(merge);
+                cx.b.block_params(merge)[0]
+            }
+        };
+        SlotFlags { accs, len, kind, word, entered }
     }
 
     /// Fold the accumulated flags and the source disc `src` into `r`'s
@@ -452,38 +523,12 @@ impl SlotFlags {
             slots_word
         };
         r.disc = cx.b.ins().band_imm(r.disc, !STALE);
-        enum PrevLen {
-            State(i32),
-            Chain(SelWord),
-            Site(i32),
-        }
-        let claim = match cx.claim_state_word() {
-            Some(off) => Some(PrevLen::State(off)),
-            // Nested loop: a per-enclosing-slot word from the enclosing
-            // frame's chain.
-            None => match self.site_id.and_then(|id| cx.slot_select_word(id)) {
-                Some(w) => Some(PrevLen::Chain(w)),
-                None if cx.env.loop_depth == 0 => cx.claim_site_word().map(PrevLen::Site),
-                None => None,
-            },
-        };
-        let stale = match claim {
+        let stale = match self.word {
             None => self.conservative_stale(cx, fired_word, src_word),
-            Some(PrevLen::State(off)) => {
-                let sp = cx.state_ptr();
-                let addr = cx.b.ins().iadd_imm(sp, off as i64);
+            Some(SelWord::Sure(addr)) => {
                 self.exact_stale(cx, addr, fired_word, src_word, src_taint)
             }
-            Some(PrevLen::Chain(SelWord::Sure(addr))) => {
-                self.exact_stale(cx, addr, fired_word, src_word, src_taint)
-            }
-            Some(PrevLen::Chain(SelWord::Guarded { base, addr })) => {
-                self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
-            }
-            // The site block base may be 0 on a recursive back-edge.
-            Some(PrevLen::Site(off)) => {
-                let base = cx.site_ptr();
-                let addr = cx.b.ins().iadd_imm(base, off as i64);
+            Some(SelWord::Guarded { base, addr }) => {
                 self.guarded_exact_stale(cx, base, addr, fired_word, src_word, src_taint)
             }
         };
@@ -544,11 +589,12 @@ impl SlotFlags {
         let lenp1 = cx.b.ins().iadd_imm(len, 1);
         let valid = cx.b.ins().icmp_imm(IntCC::Equal, src_taint, 0);
         // A tainted source is never a resize and forgets the length: the
-        // source's return is one, whether or not a slot fires.
+        // source's return is one, whether or not a slot fires. Its slots
+        // stay entered.
         let resized = cx.b.ins().icmp(IntCC::NotEqual, stored, lenp1);
         let resized = cx.b.ins().band(resized, valid);
-        let unobserved = cx.b.ins().iconst(types::I64, 0);
-        let recorded = cx.b.ins().select(valid, lenp1, unobserved);
+        let forgot = cx.b.ins().bor_imm(stored, FORGOT);
+        let recorded = cx.b.ins().select(valid, lenp1, forgot);
         cx.b.ins().store(MemFlags::trusted(), recorded, addr, 0);
         let slot_fired = cx.b.ins().icmp_imm(IntCC::Equal, fired_word, 0);
         let src_fired = cx.b.ins().icmp_imm(IntCC::Equal, src_word, 0);
@@ -681,18 +727,19 @@ impl<I> Iteration for I where
 /// a chunk at a body's top level, where its slots may fork.
 fn emit_slots(
     cx: &mut BodyCx,
-    accs: Accs,
+    flags: &SlotFlags,
     kind: SinkKind,
     (src, src_disc, len): (ClifValue, ClifValue, ClifValue),
     sel_sites: &[ExprId],
     iteration: impl Iteration,
 ) -> Result<Sunk> {
+    let (accs, entered) = (flags.accs, flags.entered);
     if cx.env.loop_depth == 0 && !crate::dbgenv::graphix_no_outline() {
-        let lp = outline::Loop { kind, src, src_disc, len, sel_sites };
+        let lp = outline::Loop { kind, src, src_disc, len, entered, sel_sites };
         return outline::emit_outlined(cx, lp, accs, iteration);
     }
     let sink = open_sink(cx, kind, len)?;
-    let lp = open_loop(cx, len, src_disc, sel_sites)?;
+    let lp = open_loop(cx, len, src_disc, sel_sites, entered)?;
     iteration(cx, &lp, &Slots { src, src_disc, sink, accs })?;
     lp.close(cx)?;
     Ok(match sink {
@@ -751,35 +798,34 @@ where
     let tainted = cx.b.ins().iconst(types::I64, TAINT | STALE);
     let disc = cx.b.ins().select(oversize, tainted, stale);
     flags.accs.fold(cx, disc);
-    let sunk =
-        emit_slots(cx, flags.accs, SinkKind::Buf, (zero, n_disc, n), sel_sites, {
-            |cx, lp, s| {
-                let ((), value) = lp.run(
-                    cx,
-                    |cx, _| {
-                        let idx_disc = scalar_disc(cx.b, PrimType::I64);
-                        let idx_disc = elem_disc(cx, idx_disc, s.src_disc);
-                        let idx_disc_var = cx.b.declare_var(types::I64);
-                        cx.b.def_var(idx_disc_var, idx_disc);
-                        let (name, i_var) = (idx_name.clone(), lp.i_var);
-                        bind_scalar_var_with_disc(
-                            cx,
-                            name,
-                            PrimType::I64,
-                            i_var,
-                            idx_disc_var,
-                            idx_id,
-                        );
-                        Ok(())
-                    },
-                    body,
-                )?;
-                s.accs.fold(cx, value.disc);
-                push_field(cx, s.buf(), value, out_typ, out_src)?;
-                cx.env.truncate(lp.mark);
-                Ok(())
-            }
-        })?;
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, (zero, n_disc, n), sel_sites, {
+        |cx, lp, s| {
+            let ((), value) = lp.run(
+                cx,
+                |cx, _| {
+                    let idx_disc = scalar_disc(cx.b, PrimType::I64);
+                    let idx_disc = elem_disc(cx, idx_disc, s.src_disc);
+                    let idx_disc_var = cx.b.declare_var(types::I64);
+                    cx.b.def_var(idx_disc_var, idx_disc);
+                    let (name, i_var) = (idx_name.clone(), lp.i_var);
+                    bind_scalar_var_with_disc(
+                        cx,
+                        name,
+                        PrimType::I64,
+                        i_var,
+                        idx_disc_var,
+                        idx_id,
+                    );
+                    Ok(())
+                },
+                body,
+            )?;
+            s.accs.fold(cx, value.disc);
+            push_field(cx, s.buf(), value, out_typ, out_src)?;
+            cx.env.truncate(lp.mark);
+            Ok(())
+        }
+    })?;
     Ok((sunk.array(), flags, n_disc))
 }
 
@@ -799,7 +845,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
         |cx, lp, s| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -829,7 +875,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
         |cx, lp, s| {
             let (bound, keep) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), predicate)?;
@@ -882,7 +928,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
         |cx, lp, s| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -940,7 +986,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, flags.accs, SinkKind::Buf, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Buf, source, sel_sites, {
         |cx, lp, s| {
             let (bound, value) =
                 lp.run(cx, |cx, i| bind_elem(cx, s.src_disc, s.src, i, elem), body)?;
@@ -1111,7 +1157,7 @@ where
     cx.b.def_var(acc_var, init_pay);
     let d0 = acc.carry_disc(cx, init_disc);
     cx.b.def_var(acc_disc_var, d0);
-    let lp = open_loop(cx, len, arr.disc, sel_sites)?;
+    let lp = open_loop(cx, len, arr.disc, sel_sites, flags.entered)?;
     // The acc binds before the interrupt poll so the poll's abort cleanup
     // drops an owned acc. Acc leaves carry the acc's loop-carried
     // TAINT|STALE; unlike an element, the acc can be tainted.
@@ -1209,7 +1255,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::PassThrough);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, flags.accs, SinkKind::Find, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, sel_sites, {
         |cx, lp, s| {
             let (found_var, result_disc_var, result_payload_var) = s.found();
             let (bound, keep) =
@@ -1269,7 +1315,7 @@ where
     let len = input_len(cx, arr.ptr)?;
     let flags = SlotFlags::new(cx, len, LoopKind::Slots);
     let source = (arr.ptr, arr.disc, len);
-    let sunk = emit_slots(cx, flags.accs, SinkKind::Find, source, sel_sites, {
+    let sunk = emit_slots(cx, &flags, SinkKind::Find, source, sel_sites, {
         |cx, lp, s| {
             let (found_var, result_disc_var, result_payload_var) = s.found();
             let (bound, (disc, payload)) =

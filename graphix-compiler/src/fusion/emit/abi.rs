@@ -241,11 +241,13 @@ pub(crate) struct JitEnv {
     /// Current scaffold-loop depth. State claims are refused inside
     /// loops: one static word cannot hold per-slot memory.
     pub(super) loop_depth: u32,
+    /// In a loop body, the slot's init view (`BodyCx::init_flag`).
+    pub(super) slot_init: Option<ClifValue>,
 }
 
 impl JitEnv {
     pub(super) fn new() -> Self {
-        Self { locals: Vec::with_capacity(8), loop_depth: 0 }
+        Self { locals: Vec::with_capacity(8), loop_depth: 0, slot_init: None }
     }
 
     pub(super) fn bind(

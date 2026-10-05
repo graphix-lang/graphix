@@ -493,8 +493,8 @@ node graph IS the IR — there is no parallel typed IR
   (`GXHandle::interrupt`, Ctrl-C, `GRAPHIX_STACK_BUDGET`). Kernel
   interior memory (`design/kernel_instance_state.md`) gives one compiled
   body the interp's per-slot/per-activation multiplicity for exactly the
-  state that decides firing; only a site's first-ever dispatch is an
-  init view.
+  state that decides firing; only a site's first-ever dispatch, and a
+  loop slot's first iteration, is an init view.
 - **`let rec` is monomorphic-recursive**; a def's declared tvars are
   rigid in its body check: none binds to a concrete type and no two
   unify (`contains.rs` Distinct), while a call instantiates them

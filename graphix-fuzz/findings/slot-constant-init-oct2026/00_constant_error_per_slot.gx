@@ -1,0 +1,5 @@
+// A constant in a loop body fires in each new slot: the node-walk builds
+// a slot's instance fresh, its first update an init view, so the error
+// raises once per slot; the JIT saw only the kernel's init (oct04c,
+// aieka + ryouko: interp 3, jit 0).
+{ let n = array::iter([1, 2, 3, 4]); let raised = 0; let out = { catch(e) raised <- e ~ raised + 1; array::map(array::init(n, |i| i), |x| { let k = 100; let e: [i64, Error<`E>] = error(`E); e? + x }) }; select count(n) { 4 => raised, _ => never() } }

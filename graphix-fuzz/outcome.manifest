@@ -376,6 +376,7 @@ trace	sleep-restart-gate-aug2026/03_count_root_gain.gx
 trace	slice-pattern-tuple-type-aug2026/00_union_tuple_member.gx
 trace	slice-pattern-tuple-type-aug2026/01_prefix_pattern_tuple.gx
 trace	slice-pattern-tuple-type-aug2026/02_abstract_in_tuple_still_matches.gx
+trace	slot-constant-init-oct2026/00_constant_error_per_slot.gx
 trace	slot-raise-count-sep2026/00_seq_step_over_slot_catches.gx
 trace	slot-shrink-truncate-aug2026/00_shrink_to_zero_dyncall_pairs.gx
 trace	slot-shrink-truncate-aug2026/01_outer_shrink_kills_inner.gx

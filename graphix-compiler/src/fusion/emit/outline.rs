@@ -44,19 +44,23 @@ pub(super) struct Loop<'s> {
     pub(super) src: ClifValue,
     pub(super) src_disc: ClifValue,
     pub(super) len: ClifValue,
+    /// The slots the loop instance entered before this run.
+    pub(super) entered: ClifValue,
     pub(super) sel_sites: &'s [ExprId],
 }
 
 /// The frame a chunk reads: the context word, the state and site
-/// pointers, the source, its disc and the slot count, then the loop's
-/// slot-table bases, then a `(disc, payload)` pair per local in scope.
+/// pointers, the source, its disc, the slot count and the slots entered
+/// before, then the loop's slot-table bases, then a `(disc, payload)`
+/// pair per local in scope.
 const CTX: usize = 0;
 const STATE: usize = 1;
 const SITE: usize = 2;
 const SRC: usize = 3;
 const SRC_DISC: usize = 4;
 const LEN: usize = 5;
-const HEADER: usize = 6;
+const ENTERED: usize = 6;
+const HEADER: usize = 7;
 
 fn word(i: usize) -> i32 {
     (8 * i) as i32
@@ -86,7 +90,15 @@ pub(super) fn emit_outlined(
     let fbase = stack_record(cx, HEADER + frame.tables.len() + 2 * locals.len());
     let wake = cx.b.ins().ishl_imm(cx.ctx.wake_flag, 1);
     let ctx_word = cx.b.ins().bor(cx.ctx.init_flag, wake);
-    let header = [ctx_word, cx.state_ptr(), cx.site_ptr(), lp.src, lp.src_disc, lp.len];
+    let header = [
+        ctx_word,
+        cx.state_ptr(),
+        cx.site_ptr(),
+        lp.src,
+        lp.src_disc,
+        lp.len,
+        lp.entered,
+    ];
     let tables = frame.tables.iter().map(|t| t.base);
     for (i, v) in header.into_iter().chain(tables).enumerate() {
         cx.b.ins().store(MemFlags::trusted(), v, fbase, word(i));
@@ -195,6 +207,7 @@ fn emit_chunk(
     let src = load(&mut b, types::I64, SRC);
     let src_disc = load(&mut b, types::I64, SRC_DISC);
     let len = load(&mut b, types::I64, LEN);
+    let entered = load(&mut b, types::I64, ENTERED);
     let tables: Vec<SlotTable> = tables
         .iter()
         .enumerate()
@@ -270,7 +283,7 @@ fn emit_chunk(
         type_env: p.type_env,
     };
     let mut ccx = BodyCx { b: &mut b, env: &mut env, ctx: &ctx };
-    let slots = Range { lo, hi, out, src, src_disc, len };
+    let slots = Range { lo, hi, out, src, src_disc, len, entered };
     let r = emit_range(&mut ccx, lp.kind, slots, tables, pending, iteration);
     let LowerCtx { state, site, self_call_roots, pending_exit, .. } = ctx;
     give_back(&p.state, state);
@@ -296,6 +309,7 @@ struct Range {
     src: ClifValue,
     src_disc: ClifValue,
     len: ClifValue,
+    entered: ClifValue,
 }
 
 /// The chunk's loop over its range and its out record; the frame's
@@ -321,7 +335,7 @@ fn emit_range(
         tables,
         pending,
     });
-    let frame = LoopFrame::blocks(cx, i_var, r.hi);
+    let frame = LoopFrame::blocks(cx, i_var, r.hi, r.entered);
     iteration(cx, &frame, &Slots { src: r.src, src_disc: r.src_disc, sink, accs })?;
     frame.end(cx);
     let closed =

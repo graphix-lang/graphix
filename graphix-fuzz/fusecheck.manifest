@@ -376,6 +376,7 @@ abort	recursion-fires-like-chain-aug2026/03_soak_trip_adjacent.gx
 1	slice-pattern-tuple-type-aug2026/00_union_tuple_member.gx
 0	slice-pattern-tuple-type-aug2026/01_prefix_pattern_tuple.gx
 3	slice-pattern-tuple-type-aug2026/02_abstract_in_tuple_still_matches.gx
+2	slot-constant-init-oct2026/00_constant_error_per_slot.gx
 5	slot-raise-count-sep2026/00_seq_step_over_slot_catches.gx
 1	slot-shrink-truncate-aug2026/00_shrink_to_zero_dyncall_pairs.gx
 2	slot-shrink-truncate-aug2026/01_outer_shrink_kills_inner.gx
