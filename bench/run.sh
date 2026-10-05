@@ -6,7 +6,8 @@
 # Each program self-times the computation with sys::time::now (excluding
 # startup/compile) and prints "elapsed_s=<f>". We run each program a few
 # times per mode and keep the best (min) time to cut scheduler noise,
-# then report the node-walk / JIT ratio.
+# then report the node-walk / JIT ratio. Both run under the default fork
+# mode, `auto`; `GRAPHIX_PAR=off` for one thread.
 #
 # Usage: bench/run.sh [iterations] [graphix-binary]
 #   iterations  number of runs per mode (default 3)

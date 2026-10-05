@@ -580,6 +580,32 @@ node absorbed into a larger kernel still has its target checked
 (`Attribute::check_target`). `FusionStats.failed` is a blocker profile,
 not a gap count.
 
+## Parallel evaluation
+
+`design/parallel_eval.md`. A cycle's update pass forks independent
+subtrees onto the process's evaluation pool (`branch::eval_pool`,
+`GRAPHIX_EVAL_THREADS` workers): a block's runs, a call's arguments, a
+constructor's fields, an operator's operands, a collection's slots and a
+kernel's top-level map-family loops (chunks, `fusion/par_loop.rs`).
+Branches see the runtime through branch views (`RtView`/`ForkRt`,
+`Layered`, `CxView`) and merge back in program order, so a forked cycle
+computes what the serial node-walk does. Siblings are independent iff
+no later one reads what an earlier one publishes (`analysis::
+plan_block`; a module, trait or impl statement is a run of its own and
+a catch runs last) and they do not both reach an `ORDERED` builtin
+(in-language state shared across nodes, `queuefn`). External effects in
+parallel branches happen when they run, unordered. A seq machine runs
+serially inside; runtime compiles run in compile tasks
+(`branch::compile_each`). The mode is the runtime `Control`'s
+(`set_par_mode`), from `GRAPHIX_PAR=off|auto|force`, `auto` by
+default: `Auto` forks where `cost.rs`'s tick histograms say a side
+costs the calibrated threshold (4x the pool's wake latency) and not
+while every worker has a part; `Force` forks at every fork point (tests,
+the fuzzer). `#[parallel]`/`#[parallel(g)]` forces the fork points
+under it (a compile error where nothing forks; callees excluded),
+`#[serial]` inhibits them, callees included. The stack budget is per
+cycle, across workers; the compiler never pins threads.
+
 ## Testing is differential
 
 - `run!` (`graphix-package-core/src/testing.rs`) runs a fixture in
@@ -783,6 +809,9 @@ compile, so unscoped prints are gigabytes.
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal |
 | `GRAPHIX_NO_SUBST=1` | every instance checks its body again instead of taking its definition's types (A/B for instances by substitution) |
 | `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
+| `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |
+| `GRAPHIX_DBG_PAR=1` | the fork threshold's calibration and each kernel loop forked |
+| `GRAPHIX_NO_OUTLINE=1` | kernel loops emitted inline, never as chunks (A/B for the outlining) |
 | `GRAPHIX_TASK_AUDIT=1` | a backtrace at every write by a compile task to a cell or var an earlier task created (statement elaboration must write none) |
 | `GXDBG_EFFECT=1` | why a lambda classified Async |
 | `GXDBG_INSTANCE_FUSION=1` | per-instance region fusion passes |

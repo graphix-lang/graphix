@@ -237,13 +237,13 @@ pub enum ParMode {
 }
 
 impl ParMode {
-    /// `GRAPHIX_PAR` (`off`, `auto` or `force`), else `Off`.
+    /// `GRAPHIX_PAR` (`off`, `auto` or `force`), else `Auto`.
     pub fn from_env() -> Self {
         static MODE: LazyLock<ParMode> =
             LazyLock::new(|| match std::env::var("GRAPHIX_PAR").as_deref() {
                 Ok("force") => ParMode::Force,
-                Ok("auto") => ParMode::Auto,
-                _ => ParMode::Off,
+                Ok("off") => ParMode::Off,
+                _ => ParMode::Auto,
             });
         *MODE
     }

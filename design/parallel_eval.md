@@ -1,8 +1,9 @@
 # Parallel evaluation
 
-Status: PROPOSED on branch `parallel-eval` (2026-10-03). Nothing is
-built. The rules below are the plan; the decisions taken are in §13.
-Pins: none yet (§11 lists the ones each phase adds).
+Status: built (phases 1-6, §11); the book chapter (phase 7) is
+deferred. `Auto` is the default mode. The decisions taken are in §13.
+Pins: `lang::par_attrs`, `lang::par_loops`, every `run!` fixture's
+`par` and `jit_par`, `cost::tests`, the fuzzer's `Pair::Par`.
 
 ## 1. Goal
 
@@ -584,10 +585,10 @@ more than a constant or a variable read, or a call into a mapping
 collection. Pins: `lang::par_attrs`, `lang::image::
 program_image_restores_fork_control`.
 
-Process-level control: `GXConfig::parallel: Off | Auto | Force` and
-`GRAPHIX_PAR=off|auto|force`. `Force` treats every fork point as
-`#[parallel]` (for the fuzzer and tests). `GRAPHIX_EVAL_THREADS` sizes
-the pool.
+Process-level control: a runtime's mode is its `Control`'s
+(`set_par_mode`), which starts from `GRAPHIX_PAR=off|auto|force`,
+`auto` by default. `Force` treats every fork point as `#[parallel]`
+(for the fuzzer and tests). `GRAPHIX_EVAL_THREADS` sizes the pool.
 
 ## 8. Compiling at run time
 
@@ -722,7 +723,7 @@ own thread-locals must not depend on its ancestors. As built:
 | `VALUE_HOOKS` | no fork runs under a loan: the dispatch that updates a hook site suspends it first, so a stolen job sees none, as the joining thread does |
 | `RUNTIME_BIND`, `DESELECTING_ARM` | set only around compiling and sleeping, neither of which forks |
 | tvar `LEVEL`/`TASK` | `LEVEL` entered from the forking thread in every compile task; `TASK` entered by each run-time bind (`with_runtime_settles`) |
-| kernel loans `KERNEL_ABORT`/`KERNEL_ENV`/`QOP_RAISES`/`KERNEL_PANIC`, `SELF_BLOCK_GEN` | saved and restored around every kernel call: a stolen job running a kernel while its thread waits inside another kernel's dynamic call is a nested call, which these already support |
+| kernel loans `KERNEL_ABORT`/`KERNEL_ENV`/`QOP_RAISES`/`KERNEL_PANIC`, `SELF_BLOCK_GEN`/`_REACHED`, the fork mode (`ParLoan`) | saved and restored around every kernel call: a stolen job running a kernel while its thread waits inside another kernel's dynamic call is a nested call, which these already support; a kernel loop's chunk on a worker runs under the invoking run's loans and hands back what it reported (§10) |
 | `FastMemo`, `LPooled` pools, scratch buffers | per-thread caches: unchanged; values freed on another thread return to that thread's pool |
 
 Test instruments that counted per thread (fused kernel runs, JIT
