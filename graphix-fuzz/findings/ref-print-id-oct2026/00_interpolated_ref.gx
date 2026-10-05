@@ -1,0 +1,4 @@
+// A reference interpolated into a string printed its bind id, which a
+// warm start relocates: cold 38, warm 14 (oct03b, katana). References
+// print as `&ref`.
+{ let f = |x: i64| x; let g = |x: i64| -> i64 x; let q = 0; g({ let tick = array::iter([1, 2, 3, 4]); let acc = ""; acc <- tick ~ "[&(1, 2)]x"; let s = select str::len(acc) { 0 => never(), _ => acc }; let l = str::len(s) * 2; select count(l) { 4 => l, _ => never() } }) - f(2) }

@@ -516,3 +516,18 @@ async fn place_root_bottom_mirror() -> Result<()> {
     assert_eq!(mirror, None);
     Ok(())
 }
+
+// A reference prints as an opaque token: its id is the session's (a warm
+// start relocates it), never something a program can read.
+const BYREF_PRINTS_OPAQUE: &str = r#"
+{
+  let x = 1;
+  let r = &x;
+  let s = {a: 2, r: r};
+  "[r] [s]"
+}
+"#;
+
+run!(byref_prints_opaque, BYREF_PRINTS_OPAQUE, |v: Result<&Value>| {
+    matches!(v, Ok(Value::String(s)) if s == "&ref {a: 2, r: &ref}")
+}; graphix_package_core::testing::FuseExpect::Jit);

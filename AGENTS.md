@@ -538,8 +538,9 @@ at `Env::deftype`), which is what makes the coinductive ref-pair memos
 sound.
 A reference is not a number: a cast whose source can hold one is
 refused (`Type::holds_ref`), and where only an instance knows the
-source, the cast yields its `InvalidCast` error; a reference widened to
-`Any` is the program's own business.
+source, the cast yields its `InvalidCast` error; a reference prints as
+`&ref` (its id is the session's: a warm start relocates it); a
+reference widened to `Any` is the program's own business.
 Format type variables with `format_with_flags(PrintFlag::DerefTVars, ..)`.
 
 **Two-phase typecheck knot.** While an instance body typechecks, its

@@ -214,7 +214,8 @@ impl<'a> TVal<'a> {
                 write!(f, "}}")
             }
             (Type::Map { .. }, v) => fmt_naked(f, v),
-            (Type::ByRef(_), v) => fmt_naked(f, v),
+            // a reference's id is the session's, never the program's
+            (Type::ByRef(_), _) => write!(f, "&ref"),
             (Type::Struct(flds), Value::Array(a)) => {
                 write!(f, "{{")?;
                 for (i, ((n, et, _), v)) in flds.iter().zip(a.iter()).enumerate() {
