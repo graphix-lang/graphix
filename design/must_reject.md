@@ -112,7 +112,9 @@ whose parent is one of:
 - a select scrutinee with no catch-all arm (a bind or `_` at the top,
   or a type-test arm that `U` fits), the coverage rule;
 - a struct field read (a union with a non-struct member is refused);
-- a call argument with a concrete parameter type;
+- a call argument with a concrete parameter type, the callee no lambda
+  with an unannotated parameter (which may be a cell shared with the
+  environment, `|y| z <- y` over `let z = never()`, that the call widens);
 - the value of a writer to a binding typed by its initializer or an
   annotation.
 

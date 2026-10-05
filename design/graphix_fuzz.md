@@ -415,7 +415,8 @@ accepts, apply an acceptance-preserving `Expr → Expr` transform, print
 it back, check again; accept→reject is a flip. Transforms are graded,
 and the grade is the triage default: parens-wrap is SOUND (a flip is a
 compiler bug); block-wrap (`e` → `{ let __t = e; __t }`, not on direct
-lambda-literal arguments nor on `never()`: a `let` over ⊥ is an open
+or parenthesized lambda literals (a `let rec` takes only a lambda) nor
+on `never()`: a `let` over ⊥ is an open
 cell its writers type, where the bare `never()` is ⊥), let-extract (`f(.., |x| body)` → `let __c =
 |x| body; f(.., __c)` — THE order probe: declared-param push vs
 body-first inference; not on a callback whose body selects over a

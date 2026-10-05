@@ -123,7 +123,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 !under_ref(i)
                     && value_pos(&pre[i].kind)
                     && !matches!(
-                        pre[i].kind,
+                        unparen(&pre[i]).kind,
                         ExprKind::Lambda(_)
                             | ExprKind::Block { .. }
                             | ExprKind::Never { .. }
@@ -490,6 +490,14 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
 /// checks: a select over a value the parameter's type decides (a type
 /// test binds it, coverage reads it), or a field read or a `with` update
 /// on it. Only the call supplies that type, so a `let` of the
+/// `e` under any parentheses.
+pub(crate) fn unparen(mut e: &Expr) -> &Expr {
+    while let ExprKind::ExplicitParens(inner) = &e.kind {
+        e = inner;
+    }
+    e
+}
+
 /// lambda is refused by language rule, not by an ordering bug.
 fn reads_param_type(l: &LambdaExpr) -> bool {
     let mut untyped: HashSet<&str> = HashSet::new();
@@ -499,13 +507,7 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
         });
     }
     let LambdaBody::Expr(body) = &l.body else { return false };
-    let is_param = |e: &Expr| {
-        let mut e = e;
-        while let ExprKind::ExplicitParens(inner) = &e.kind {
-            e = inner;
-        }
-        matches!(&e.kind, ExprKind::Ref { name } if untyped.contains(name.to_string().as_str()))
-    };
+    let is_param = |e: &Expr| matches!(&unparen(e).kind, ExprKind::Ref { name } if untyped.contains(name.to_string().as_str()));
     let mentions_param = |e: &Expr| e.fold(false, &mut |found, n| found || is_param(n));
     body.fold(false, &mut |found, n| {
         found

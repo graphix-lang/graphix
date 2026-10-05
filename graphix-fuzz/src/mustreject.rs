@@ -7,7 +7,7 @@
 //! (a function bound).
 
 use crate::{mutate, typemorph};
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use graphix_compiler::{
     SourcePosition,
@@ -606,8 +606,8 @@ fn labels_default(
 /// literal of a type its own does not relate to: an arithmetic operand
 /// or a comparison operand opposite a literal (exactly one type, each
 /// containing the other), a field read's source (a union with a non-struct is refused), or an
-/// argument whose parameter is concretely typed (containment), by a
-/// literal outside the parameter's type.
+/// argument whose parameter is concretely typed (containment) and not
+/// inferred, by a literal outside the parameter's type.
 fn widen_consumer(
     root: &Expr,
     pre: &[Expr],
@@ -616,6 +616,23 @@ fn widen_consumer(
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
+    // a lambda with an unannotated parameter: the parameter may be a cell
+    // shared with the environment (`|y| z <- y` over `let z = never()`),
+    // which a call widens rather than refuses
+    let inferred: AHashSet<&str> = pre
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ExprKind::Bind(b) => match (&b.pattern, &typemorph::unparen(&b.value).kind) {
+                (StructurePattern::Bind(f), ExprKind::Lambda(l))
+                    if l.args.iter().any(|a| a.constraint.is_none()) =>
+                {
+                    Some(f.as_str())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
     let mut taken = 0usize;
     for (i, e) in pre.iter().enumerate() {
         if taken >= cap {
@@ -643,6 +660,12 @@ fn widen_consumer(
             // a callee whose type its uses decided (a monomorphic value's
             // cell) has the parameter this very call gave it
             ExprKind::Apply(ap) if types.cell(&ap.function) => None,
+            ExprKind::Apply(ap)
+                if matches!(&typemorph::unparen(&ap.function).kind,
+                    ExprKind::Ref { name } if inferred.contains(name.to_string().as_str())) =>
+            {
+                None
+            }
             ExprKind::Apply(ap) => {
                 // the first argument whose parameter is a concrete primitive
                 let ft = types.of(&ap.function).first().and_then(|t| {
