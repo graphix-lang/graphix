@@ -6,6 +6,7 @@
 
 use crate::{
     FastCall, FastFn, TypedFastFn,
+    cost::LoopSite,
     expr::{Expr, ExprId},
     fusion::{
         kernel_abi::{self, KernelSig, SiteLeaf},
@@ -75,6 +76,8 @@ pub enum KernelConst {
     SiteLeaf(Arc<SiteLeaf>),
     /// The owning kernel's `site_block_words` cell.
     SiteBlockWords,
+    /// An outlined loop's fork point, whatever runs the code.
+    LoopSite(Arc<LoopSite>),
 }
 
 impl KernelConst {
@@ -91,6 +94,7 @@ impl KernelConst {
             KernelConst::SiteBlockWords => {
                 &kernel.site_block_words as *const std::sync::atomic::AtomicU64 as usize
             }
+            KernelConst::LoopSite(l) => Arc::as_ptr(l) as usize,
         }
     }
 
@@ -108,6 +112,7 @@ impl KernelConst {
             | (KernelConst::Cast(a), KernelConst::Cast(b)) => *a as usize == *b as usize,
             (KernelConst::SiteLeaf(a), KernelConst::SiteLeaf(b)) => Arc::ptr_eq(a, b),
             (KernelConst::SiteBlockWords, KernelConst::SiteBlockWords) => true,
+            (KernelConst::LoopSite(a), KernelConst::LoopSite(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -246,6 +251,7 @@ mod tag {
     pub const CAST: u8 = 6;
     pub const SITE_LEAF: u8 = 7;
     pub const SITE_BLOCK_WORDS: u8 = 8;
+    pub const LOOP_SITE: u8 = 9;
 
     pub const HELPER: u8 = 0;
     pub const CALLEE: u8 = 1;
@@ -396,7 +402,9 @@ impl Pack for KernelConst {
             KernelConst::FastFn { name, .. } | KernelConst::TypedFn { name, .. } => {
                 name.encoded_len()
             }
-            KernelConst::Cast(_) | KernelConst::SiteBlockWords => 0,
+            KernelConst::Cast(_)
+            | KernelConst::SiteBlockWords
+            | KernelConst::LoopSite(_) => 0,
             KernelConst::SiteLeaf(l) => kernel_abi::site_leaf_len(l),
         }
     }
@@ -435,6 +443,7 @@ impl Pack for KernelConst {
                 kernel_abi::site_leaf_encode(l, buf)
             }
             KernelConst::SiteBlockWords => Ok(buf.put_u8(tag::SITE_BLOCK_WORDS)),
+            KernelConst::LoopSite(_) => Ok(buf.put_u8(tag::LOOP_SITE)),
         }
     }
 
@@ -466,6 +475,7 @@ impl Pack for KernelConst {
             tag::CAST => KernelConst::Cast(cast_typed),
             tag::SITE_LEAF => KernelConst::SiteLeaf(kernel_abi::site_leaf_decode(buf)?),
             tag::SITE_BLOCK_WORDS => KernelConst::SiteBlockWords,
+            tag::LOOP_SITE => KernelConst::LoopSite(Arc::new(LoopSite::default())),
             _ => return Err(PackError::UnknownTag),
         })
     }

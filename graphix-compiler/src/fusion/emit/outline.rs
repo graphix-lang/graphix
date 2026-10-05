@@ -12,10 +12,11 @@ use super::{
         Channel, ClosedFrame, HelperRefs, LowerCtx, SlotTable, SlotTableFrame,
         StateChannel, TailCtx, TruncRec,
     },
+    record::KernelConst,
     scaffold::{Accs, Iteration, LoopFrame, Sink, SinkKind, Slots, Sunk, open_sink},
 };
 use crate::{
-    cost::ProbeSite,
+    cost::LoopSite,
     expr::ExprId,
     fusion::{
         kernel_abi::KernelKey,
@@ -25,7 +26,7 @@ use crate::{
 use anyhow::Result;
 use cranelift_codegen::ir::{
     FuncRef, Function, InstBuilder, MemFlags, StackSlotData, StackSlotKind, UserFuncName,
-    Value as ClifValue, condcodes::IntCC, types,
+    Value as ClifValue, types,
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::FuncId;
@@ -34,6 +35,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
 };
+use triomphe::Arc;
 
 /// The loop to outline: its sink, its source and disc, its slot count
 /// and the sites in its body that keep per-slot state.
@@ -72,7 +74,7 @@ pub(super) fn emit_outlined(
     let unused = cx.b.declare_var(types::I64);
     cx.open_slot_tables(lp.sel_sites, lp.len, lp.src_disc, unused)?;
     let frame = cx.ctx.slot_tables.borrow_mut().pop().expect("opened above");
-    let site = claim_probe_site(cx);
+    let site = cx.const_ptr(KernelConst::LoopSite(Arc::new(LoopSite::default())))?;
     let (id, pending) = emit_chunk(cx, &lp, &frame.tables, frame.pending, iteration)?;
     // The chain levels at the loop's own depth are sized before any
     // chunk runs, so a chunk's ensure of one only reads it.
@@ -140,31 +142,6 @@ fn stack_record(cx: &mut BodyCx, words: usize) -> ClifValue {
     let data = StackSlotData::new(StackSlotKind::ExplicitSlot, (8 * words) as u32, 3);
     let slot = cx.b.create_sized_stack_slot(data);
     cx.b.ins().stack_addr(types::I64, slot, 0)
-}
-
-/// The loop's [`ProbeSite`]: words of the body's own state, or 0 where
-/// it has none (a callee's block on a recursive back-edge).
-fn claim_probe_site(cx: &mut BodyCx) -> ClifValue {
-    let claim = |cx: &BodyCx| match cx.ctx.claims {
-        Channel::State => cx.claim_state_word(),
-        Channel::Site => cx.claim_site_word(),
-    };
-    let Some(first) = claim(cx) else {
-        return cx.b.ins().iconst(types::I64, 0);
-    };
-    for _ in 1..ProbeSite::WORDS {
-        claim(cx).expect("contiguous claims can't fail mid-run");
-    }
-    let base = cx.ctx.claims_channel().ptr;
-    let addr = cx.b.ins().iadd_imm(base, first as i64);
-    match cx.ctx.claims {
-        Channel::State => addr,
-        Channel::Site => {
-            let has = cx.b.ins().icmp_imm(IntCC::NotEqual, base, 0);
-            let zero = cx.b.ins().iconst(types::I64, 0);
-            cx.b.ins().select(has, addr, zero)
-        }
-    }
 }
 
 /// A state channel of the body continued in its chunk: the chunk claims

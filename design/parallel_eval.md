@@ -805,19 +805,25 @@ Under `Auto` the loop is a `ProbeSite` (phase 5): it runs its first
 slots in order, timing each, and forks the rest in ranges of the grain
 the estimate gives, at most `CHUNKS_PER_WORKER` (16) per worker: a
 chunk costs a call and a buffer, so ranges are cheaper than a node-walk
-fork's and more of them even out slots of uneven cost. The site's
-histogram lives in five words of the kernel's state (a parent) or
-call-site block (a callee); a null block (a recursive back-edge) probes
-with no history. `Force` forks every loop of two or more slots in
-ranges of the forced grain.
+fork's and more of them even out slots of uneven cost. A loop's cost is
+its code's, so the site (`cost::LoopSite`) is one per compiled loop, a
+constant of the kernel's record shared by every instance and thread
+running it: a callee's loop called from another loop's slots would
+otherwise probe afresh in every slot. Once its estimate says a loop
+shorter than some length cannot pay for a fork, such loops run untimed
+for `RECHECK` fork thresholds of time, which costs a hot loop two
+atomic reads; a run that finds the site being decided runs in order.
+`Force` forks every loop of two or more slots in ranges of the forced
+grain.
 
 **Testing.** Every `run!` fixture has a `jit_par` twin (fused, `Force`:
 each slot a chunk); `lang::par_loops` pins raise order and a find's
 lowest slot across chunks; `lang::par_attrs` the attributes over fused
 loops. The fuzzer's `Par` pair runs the fused JIT forced
 (`Mode::JitPar`) beside the forced node-walk, each against the serial
-node-walk. `GRAPHIX_NO_OUTLINE=1` emits every loop inline (A/B: the
-outlined loop costs nothing measurable serially).
+node-walk. `GRAPHIX_NO_OUTLINE=1` emits every loop inline (A/B: a
+3-slot loop in a callee called 2M times costs 3% outlined under `Off`
+and 10% under `Auto`).
 
 **Measured** (`bench/par_mandel.gx`, 480000 fused pixels a cycle, quick
 build): 1.51 s serial, 0.45 s on four P-cores, 0.23 s on four P- and

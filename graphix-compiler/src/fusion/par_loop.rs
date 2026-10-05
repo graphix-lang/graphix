@@ -7,7 +7,7 @@ use super::emit_helpers::{
 };
 use crate::{
     branch::{self, Live},
-    cost::{self, ProbeSite},
+    cost::{self, LoopSite, Probes},
     tval::TagValue,
 };
 use graphix_types::{
@@ -126,7 +126,7 @@ pub(crate) unsafe fn run(
     chunk: u64,
     frame: u64,
     len: u64,
-    site: *mut u64,
+    site: *const LoopSite,
     kind: u64,
     out: *mut u64,
 ) -> i8 {
@@ -137,44 +137,37 @@ pub(crate) unsafe fn run(
         l.mode != ParMode::Off && len >= 2 && !abstract_value::value_hooks_loaned()
     });
     let Some(loan) = loan else {
-        unsafe { chunk(frame, 0, len as u64, out) };
-        if KERNEL_ABORT.with(|c| c.get()) {
-            return 1;
-        }
-        if !find {
-            unsafe { *out.add(2) = emit_helpers::value_buf_finalize(*out.add(2)) };
-        }
-        return 0;
+        return unsafe { in_order(chunk, frame, len, find, out) };
     };
     let mut runs: LPooled<Vec<Run>> = LPooled::take();
-    let mut fresh = ProbeSite::default();
-    let site = match site.is_null() {
-        true => &mut fresh,
-        false => unsafe { &mut *(site as *mut ProbeSite) },
-    };
+    // SAFETY: the site is a constant of the running code's record.
+    let site = unsafe { &*site };
     let (at, grain) = match loan.mode {
         ParMode::Off => unreachable!("an Off loan is filtered"),
         ParMode::Force => {
             let forced = if kind & ROOT != 0 { loan.forced } else { None };
             (0, Some(cost::forced_grain(forced, len)))
         }
-        ParMode::Auto => match cost::calibration() {
-            None => (0, None),
-            Some(cal) => {
-                let k = site.probes(len);
+        ParMode::Auto => match (cost::calibration(), site.untimed(len)) {
+            (Some(cal), false) => {
+                let Some(k) = site.probes(len) else {
+                    return unsafe { in_order(chunk, frame, len, find, out) };
+                };
+                let mut probes = Probes::new();
                 for i in 0..k {
                     let mut r = Run::new(i, i + 1);
                     let t0 = cost::ticks();
                     unsafe { run_here(chunk, frame, &mut r) };
-                    site.probed(cal, cost::ticks().wrapping_sub(t0));
+                    probes.push(cost::ticks().wrapping_sub(t0));
                     let aborted = r.aborted;
                     runs.push(r);
                     if aborted {
                         return unsafe { finish(&mut runs, find, out) };
                     }
                 }
-                (k, site.grain_now(cal, len - k, cost::CHUNKS_PER_WORKER))
+                (k, site.grain(cal, &probes, len - k))
             }
+            _ => return unsafe { in_order(chunk, frame, len, find, out) },
         },
     };
     match grain {
@@ -220,6 +213,24 @@ pub(crate) unsafe fn run(
         }
     }
     unsafe { finish(&mut runs, find, out) }
+}
+
+/// Run all `len` slots in one chunk on this thread, under its own loans.
+unsafe fn in_order(
+    chunk: Chunk,
+    frame: u64,
+    len: usize,
+    find: bool,
+    out: *mut u64,
+) -> i8 {
+    unsafe { chunk(frame, 0, len as u64, out) };
+    if KERNEL_ABORT.with(|c| c.get()) {
+        return 1;
+    }
+    if !find {
+        unsafe { *out.add(2) = emit_helpers::value_buf_finalize(*out.add(2)) };
+    }
+    0
 }
 
 /// Merge `runs`, in slot order, into `out`, and report through this

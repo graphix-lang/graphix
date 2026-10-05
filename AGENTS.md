@@ -608,9 +608,14 @@ node graph IS the IR — there is no parallel typed IR
   bottom-typed arm body runs; everything else — stateful/effectful builtins, `connect`,
   `~`, `Any`, `Catch` — node-walks, transitively. A kernel's only
   cross-invocation memory is the firing boundary (prev-length words,
-  first-call words, per-site/per-activation blocks); no replay caches,
-  no selection memory. The runtime loans a kernel exactly `KERNEL_ABORT`,
-  `KERNEL_ENV`, `QOP_RAISES` and the core-trait value hooks.
+  first-call words, per-site/per-activation blocks; in a loop each is
+  the slot's, never shared by its iterations) and its loops' cost sites,
+  which decide nothing a program sees; no replay caches, no selection
+  memory. The runtime loans a kernel exactly `KERNEL_ABORT`,
+  `KERNEL_ENV`, `QOP_RAISES`, the core-trait value hooks and the fork
+  mode (`par_loop::ParLoan`): a map-family loop at a kernel's top level
+  runs as chunks of its slots, in order or forked
+  (`design/parallel_eval.md` §10).
   `#[native]` asserts zero node-walk residue at a source location and is
   THE advertised performance model; `#[sync]`/`#[async]`/
   `#[tail_recursive]` assert analysis facts.
@@ -762,12 +767,14 @@ not a gap count.
 ## Testing is differential
 
 - `run!` (`graphix-package-core/src/testing.rs`) runs a fixture in
-  `interp` and `jit` modes asserting equal values; `FuseExpect::{Jit,
+  `interp` and `jit` modes asserting equal values, and each again with
+  every fork point forked (`par`, `jit_par`); `FuseExpect::{Jit,
   None}` asserts WHETHER it fuses, bidirectionally.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit.
 - **graphix-fuzz** (`design/graphix_fuzz.md`): node-walk vs JIT with a
   per-cycle trace oracle, each engine also no-cache vs cold-image vs
-  warm-image (`GRAPHIX_FUZZ_SESSIONS`), and a program both builds refuse
+  warm-image (`GRAPHIX_FUZZ_SESSIONS`) and forked against the serial
+  node-walk (`Pair::Par`), and a program both builds refuse
   also against the check alone (`Pair::Check`: elaboration refused what
   the check passed); every run on the shell's script
   path (`GXConfig::program`), never the REPL's `rt.compile`; a corpus

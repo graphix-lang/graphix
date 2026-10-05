@@ -422,7 +422,7 @@ unsafe fn graphix_par_loop(
     chunk: u64,
     frame: u64,
     len: u64,
-    site: *mut u64,
+    site: *const crate::cost::LoopSite,
     kind: u64,
     out: *mut u64,
 ) -> i8 {

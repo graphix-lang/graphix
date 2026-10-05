@@ -4,9 +4,11 @@
 
 use crate::{ExecCtx, Rt, UserEvent, branch::saturated};
 use graphix_types::stack::ParMode;
+use parking_lot::Mutex;
+use smallvec::SmallVec;
 use std::sync::{
     OnceLock,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 /// The platform's cheapest monotonic counter. Ticks are never converted
@@ -104,9 +106,8 @@ impl Calibration {
 }
 
 /// A log2 histogram of tick counts. Old samples fade: the counts halve
-/// whenever their total reaches [`Hist::DECAY`]. All zeros is empty.
+/// whenever their total reaches [`Hist::DECAY`].
 #[derive(Debug, Default, Clone)]
-#[repr(C)]
 struct Hist {
     counts: [u16; 16],
     n: u16,
@@ -552,10 +553,8 @@ impl SlotSite {
 /// A fork point over many like items that decides in the cycle it sees
 /// them (a collection's growth, a kernel's loop): it times its first
 /// items in order, one once its estimate has settled, and forks the rest
-/// on what they cost. All zeros is a fresh site, so a kernel keeps one
-/// in [`ProbeSite::WORDS`] of its zeroed state.
+/// on what they cost.
 #[derive(Debug, Default)]
-#[repr(C)]
 pub struct ProbeSite {
     hist: Hist,
 }
@@ -572,9 +571,6 @@ pub enum ProbePlan {
 }
 
 impl ProbeSite {
-    /// The `u64` words a site occupies.
-    pub(crate) const WORDS: usize = 5;
-
     /// The plan for `n` items.
     fn plan<R: Rt, E: UserEvent>(&self, ctx: &ExecCtx<'_, R, E>, n: usize) -> ProbePlan {
         match ctx.fork_mode() {
@@ -587,7 +583,7 @@ impl ProbeSite {
     }
 
     /// How many of `n` items to time before deciding about the rest.
-    pub(crate) fn probes(&self, n: usize) -> usize {
+    fn probes(&self, n: usize) -> usize {
         match self.hist.n < SETTLE {
             true => ((SETTLE - self.hist.n) as usize).min(n),
             false => 1,
@@ -603,17 +599,12 @@ impl ProbeSite {
     }
 
     /// [`Self::grain`], unless every worker already has a part.
-    pub(crate) fn grain_now(
-        &self,
-        cal: &Calibration,
-        n: usize,
-        per_worker: usize,
-    ) -> Option<usize> {
+    fn grain_now(&self, cal: &Calibration, n: usize, per_worker: usize) -> Option<usize> {
         if saturated() { None } else { self.grain(cal, n, per_worker) }
     }
 
     /// One probe of `ticks` ticks.
-    pub(crate) fn probed(&mut self, cal: &Calibration, ticks: u64) {
+    fn probed(&mut self, cal: &Calibration, ticks: u64) {
         self.hist.add(cal, ticks)
     }
 
@@ -658,10 +649,63 @@ impl ProbeSite {
     }
 }
 
-const _: () = assert!(
-    std::mem::size_of::<ProbeSite>() <= 8 * ProbeSite::WORDS
-        && std::mem::align_of::<ProbeSite>() <= 8
-);
+/// A kernel loop's fork point (`design/parallel_eval.md` §10), one per
+/// compiled loop, shared by every instance and thread running it: a
+/// [`ProbeSite`] that, once its estimate says a loop shorter than some
+/// length cannot pay for a fork, lets such loops run untimed for
+/// [`RECHECK`] fork thresholds of time.
+#[derive(Debug, Default)]
+pub struct LoopSite {
+    probe: Mutex<ProbeSite>,
+    /// The slot count below which a loop runs untimed.
+    below: AtomicU32,
+    /// The tick the untimed stretch ends.
+    until: AtomicU64,
+}
+
+/// A loop's probes: their count, then their ticks.
+pub(crate) type Probes = SmallVec<[u64; SETTLE as usize]>;
+
+impl LoopSite {
+    /// Whether a loop of `n` slots runs in order, untimed.
+    pub(crate) fn untimed(&self, n: usize) -> bool {
+        n < self.below.load(Ordering::Relaxed) as usize
+            && ticks() < self.until.load(Ordering::Relaxed)
+    }
+
+    /// How many of `n` slots to time before deciding about the rest;
+    /// `None` while another run is deciding, when this one runs in order.
+    pub(crate) fn probes(&self, n: usize) -> Option<usize> {
+        self.probe.try_lock().map(|p| p.probes(n))
+    }
+
+    /// The range size for the `n` slots that `probes` left, or `None`
+    /// when they run in order. A settled estimate that no fork pays at
+    /// starts a stretch of untimed runs.
+    pub(crate) fn grain(
+        &self,
+        cal: &Calibration,
+        probes: &Probes,
+        n: usize,
+    ) -> Option<usize> {
+        let mut p = self.probe.lock();
+        for t in probes.iter() {
+            p.probed(cal, *t);
+        }
+        match p.grain(cal, n, CHUNKS_PER_WORKER) {
+            None if p.hist.n >= SETTLE => {
+                let est = cal.floor(p.hist.p75()).max(1);
+                let below = ((2 * cal.t) / est).min(u32::MAX as u64) as u32;
+                self.below.store(below, Ordering::Relaxed);
+                let until = ticks().saturating_add(RECHECK as u64 * cal.t);
+                self.until.store(until, Ordering::Relaxed);
+                None
+            }
+            Some(_) if saturated() => None,
+            g => g,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -718,6 +762,24 @@ mod tests {
             r.hist.add(&cal, 1 << 4);
         }
         assert_eq!(r.grain(&cal, 96, RANGES_PER_WORKER), None);
+    }
+
+    #[test]
+    fn loop_site_runs_cheap_loops_untimed() {
+        let cal = Calibration { t: 1 << 10, shift: 4 };
+        let l = LoopSite::default();
+        assert!(!l.untimed(3), "a fresh site times its loops");
+        assert_eq!(l.probes(3), Some(3));
+        // slots at T/64: loops under 128 slots cannot pay for a fork
+        let probes: Probes = [1 << 4; 4].into_iter().collect();
+        assert_eq!(l.grain(&cal, &probes, 0), None);
+        assert!(l.untimed(127));
+        assert!(!l.untimed(128), "a long enough loop is timed");
+        let guard = l.probe.lock();
+        assert_eq!(l.probes(3), None, "a site being decided is not probed again");
+        drop(guard);
+        l.until.store(ticks(), Ordering::Relaxed);
+        assert!(!l.untimed(3), "a stretch over, the site probes again");
     }
 
     #[test]
