@@ -79,7 +79,7 @@ pub(super) fn call_args(
 /// a tuple index, a bounds-checked array index / slice, a map lookup, or
 /// a numeric cast, each fallible one consumed by `$`. Misses are kept to
 /// a small fraction because a bottom program burns the campaign timeout.
-// CR claude for eric: [doc-drift] Stale rationale: the doc above says misses are kept
+// CR claude for claude: [doc-drift] Stale rationale: the doc above says misses are kept
 // small because a bottom program burns the campaign timeout, and lines 531-532 say a
 // `/0` is slow to check. In fact a bottom program is an instant empty-trace agreement:
 // `{ let v0 = [i64:1, i64:2][5]$; let v1 = (i64:3 / i64:0); (v0, v1) }` agrees in about
@@ -356,7 +356,7 @@ fn try_hof(ctx: &GenCtx, rng: &mut Rng, ty: &GenType, depth: usize) -> Option<St
             // flat_map's callback returns ['b, Array<'b>] and the checker
             // binds 'b to the body without backtracking, so only a scalar
             // element body is unambiguous
-            // CR claude for eric: [test-gap] This arm is the only flat_map the
+            // CR claude for claude: [test-gap] This arm is the only flat_map the
             // generator draws, and its callback returns a scalar, so the splice is
             // never generated. try_hof never draws array::filter_map or find_map (two
             // of the eight native-loop HOFs) or the list twins, and try_map_builtin

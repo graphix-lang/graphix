@@ -271,7 +271,7 @@ fn describe_at<R: Rt, E: UserEvent>(node: &Node<R, E>, depth: usize, out: &mut S
 
 /// The child nodes of a view in a deterministic order; a kernel's are
 /// its input feeders.
-// CR claude for eric: [structure] node_children is a second exhaustive NodeView child
+// CR claude for claude: [structure] node_children is a second exhaustive NodeView child
 // walk beside fusion::for_each_node_inner (fusion/mod.rs:602-780), and the two have
 // drifted. This one skips a static module's statements (m.nodes; source() is None for
 // Body::Static), select guards and impl prototype sites. So NodeShape::contains(..)

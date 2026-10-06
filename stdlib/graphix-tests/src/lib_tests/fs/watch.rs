@@ -36,7 +36,7 @@ macro_rules! watch_test {
                 }
             },
             verify: {
-                // CR claude for eric: [test-gap] For expect: false this passes when
+                // CR claude for claude: [test-gap] For expect: false this passes when
                 // nothing arrives at all. If the watch never establishes, or fails (the
                 // `?` and the String filter at line 85 drop its error), _event_count
                 // stays at 0, the action never runs, and (0 > 1) == false holds. Assert
@@ -431,7 +431,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
                             event_count += 1;
                             eprintln!("Event #{event_count}: {v}");
 
-                            // CR claude for eric: [test-gap] Any event after the first
+                            // CR claude for claude: [test-gap] Any event after the first
                             // sets got_create, and the second watch's own Established
                             // event is one. Two watches on files that never appear
                             // deliver two `Established events through one stream

@@ -118,7 +118,7 @@
     return {
       name: "Graphix",
       aliases: ["gx"],
-      // CR claude for eric: [doc-drift] The keyword list lacks seq, seqq, until, abort,
+      // CR claude for claude: [doc-drift] The keyword list lacks seq, seqq, until, abort,
       // flush, try, catch, cast, never, any, rec, pub, trait and impl. The book's code
       // uses most of them, and they render as plain text. built_in lists String, Bool,
       // DateTime and Duration, which are not Graphix types, and lacks List. STRING
@@ -182,7 +182,7 @@
 
         // Type annotations in patterns
         {
-          // CR claude for eric: [bug] This mode opens at every `:` and ends at the next
+          // CR claude for claude: [bug] This mode opens at every `:` and ends at the next
           // `,`, `)`, `}`, `]`, `=` or `>`, coloring only type names inside, so
           // struct-literal values and typed literals lose their colors: `{name:
           // "hello", age: 3}` and `i64:3` render with no spans. The keywords (123) lack

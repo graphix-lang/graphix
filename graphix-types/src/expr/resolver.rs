@@ -235,7 +235,7 @@ fn resolve_from_vfs(
         },
         packed: e.packed.clone(),
     };
-    // CR claude for eric: [bug] A script's top-level `mod str;` is looked up here at
+    // CR claude for claude: [bug] A script's top-level `mod str;` is looked up here at
     // scope `/`, because resolve_modules_in_scope gives a root file's own statements no
     // prepend and the shell and the LSP put this VFS first. Every package root sits
     // here as `/<pkg>/mod.gx`, so the stdlib str source is compiled as the user's
@@ -289,7 +289,7 @@ async fn resolve_from_files(
     let dir = file.clone();
     file.set_extension("gx");
     let mod_file = dir.join("mod.gx");
-    // CR claude for eric: [risk] An interface pairs only with the implementation beside
+    // CR claude for claude: [risk] An interface pairs only with the implementation beside
     // it, and nothing reports an interface left beside the other layout. With foo.gxi
     // next to foo/mod.gx, or foo/mod.gxi next to foo.gx, the interface is dropped
     // without a word and every item it leaves out is public: `mod foo; foo::secret`
@@ -441,7 +441,7 @@ pub fn add_interface_modules(
     let mut last: Option<&SigItem> = None;
     for si in sig.items.iter() {
         if let Some(key) = SpliceKey::of_sig(&si.kind) {
-            // CR claude for eric: [bug] A gxi-only `type` or `trait` is anchored after
+            // CR claude for claude: [bug] A gxi-only `type` or `trait` is anchored after
             // the .gx statement that binds the `val` listed before it in the .gxi. The
             // body compiles under an env cloned before `bind_sig`, so only statements
             // below that point can name it. If the .gx binds its vals in a different
@@ -573,7 +573,7 @@ impl RootFile {
             Some(text) => text,
             None => read_to_arcstr(&file).await?,
         };
-        // CR claude for eric: [bug] Only this reader strips a leading `#!` line.
+        // CR claude for claude: [bug] Only this reader strips a leading `#!` line.
         // workspace::extract_mod_decls (graphix-lsp/src/workspace.rs:106),
         // symbols::declared (graphix-lsp/src/symbols.rs:53) and format_source (`graphix
         // fmt`, LSP formatting) parse the raw text and fail at the `#`, while running
@@ -619,7 +619,7 @@ impl RootFile {
 }
 
 /// `e` with `kind` in place of its own.
-// CR claude for eric: [structure] This is Expr::with_kind
+// CR claude for claude: [structure] This is Expr::with_kind
 // (graphix-types/src/expr/mod.rs:1364) with the old id kept, and
 // graphix-types/src/expr/format.rs:217-219 spells it a third way (Expr::new, then id
 // and ori by hand). One Expr method beside with_kind that keeps the id, with with_kind
@@ -651,7 +651,7 @@ async fn resolve(
     let ts = Instant::now();
     let name = Path::from(module.name.clone());
     let mut errors: LPooled<Vec<anyhow::Error>> = LPooled::take();
-    // CR claude for eric: [bug] When a nested `mod x;` has no file beside its parent,
+    // CR claude for claude: [bug] When a nested `mod x;` has no file beside its parent,
     // resolution falls through to the global chain. Those FilesResolvers ignore
     // `scope`, so `x.gx` is loaded by its leaf name from the script's directory, the
     // data dir or GRAPHIX_MODPATH. That contradicts the rule at line 728 and the LSP's
@@ -747,7 +747,7 @@ impl Expr {
 
     /// `Some` iff a module under `self` was resolved: the tree with it
     /// resolved; an unchanged subtree is neither rebuilt nor cloned.
-    // CR claude for eric: [bug] Module resolution recurses through these boxed futures
+    // CR claude for claude: [bug] Module resolution recurses through these boxed futures
     // with no stack guard. Every nested `mod`, and every expression level above one,
     // adds four or five poll frames (resolve_children -> TryJoinAll -> TryMaybeDone ->
     // here) on the tokio worker's 2 MiB stack. Each file is parsed on its own, so the
@@ -781,7 +781,7 @@ impl Expr {
                     *from_interface,
                 )
                 .await
-                // CR claude for eric: [bug] This marks every failure of `resolve` as
+                // CR claude for claude: [bug] This marks every failure of `resolve` as
                 // CouldNotResolve, not just "could not be found": a parse error in the
                 // module file and a Broken read get the marker too, and through line
                 // 704 a failing nested `mod` carries its own. The REPL
@@ -795,7 +795,7 @@ impl Expr {
                 // missing root `init`; --check then stops headlining a submodule's
                 // parse error as "could not resolve module bad". probe:
                 // design/review-2026-10-05/repro/x-errors-03.py (x-errors-03)
-                // CR claude for eric: [bug] An unresolvable module (none found, or a
+                // CR claude for claude: [bug] An unresolvable module (none found, or a
                 // Broken read at 602) and an import cycle (LoadChain::push at 720)
                 // leave with no `.at()`. The only context is the positionless
                 // CouldNotResolve, though the `mod` statement is `self`. So `graphix
@@ -815,7 +815,7 @@ impl Expr {
                 value: ModuleKind::Resolved { exprs, sig, from_interface },
                 name,
             } => Box::pin(async move {
-                // CR claude for eric: [bug] The body's source is taken from its first
+                // CR claude for claude: [bug] The body's source is taken from its first
                 // expression, but add_interface_modules puts a .gxi's leading use,
                 // type, mod or trait that the .gx does not repeat ahead of every
                 // implementation statement, with the interface's origin. Then the load
@@ -968,7 +968,7 @@ pub async fn read_optional(path: impl AsRef<std::path::Path>) -> Result<Option<A
     let path = path.as_ref();
     let mut f = match tokio::fs::File::open(path).await {
         Ok(f) => f,
-        // CR claude for eric: [bug] Only NotFound reads as absent. For `mod util;`
+        // CR claude for claude: [bug] Only NotFound reads as absent. For `mod util;`
         // beside a regular file `util` (a script or a binary), opening `util/mod.gx`
         // fails with NotADirectory, resolve_from_files returns Broken, and the `util`
         // module in GRAPHIX_MODPATH or the data dir is never tried, although that path

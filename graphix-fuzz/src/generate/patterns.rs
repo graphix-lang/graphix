@@ -42,7 +42,7 @@ fn bind_name(inner: &mut GenCtx, rng: &mut Rng, mark: usize) -> String {
     n
 }
 
-// CR claude for eric: [test-gap] gen_pattern never emits a `name@ pattern` capture, a
+// CR claude for claude: [test-gap] gen_pattern never emits a `name@ pattern` capture, a
 // partial struct `{f, ..}`, a slice suffix `[init.., x]` or a fixed multi-element slice
 // `[a, b]`. full_coverage_select's or-arms bind nothing, and the only binding or-arm is
 // general_select's integer pair `(l, x) | (x, l)`. The JIT lowers these forms natively
@@ -355,7 +355,7 @@ fn general_select(
     // a bound or-alternation over an equal-typed integer pair: both
     // alternatives bind the same name at the same type; structurally
     // distinct and refutable
-    // CR claude for eric: [doc-drift] This unguarded or-arm can come before the
+    // CR claude for claude: [doc-drift] This unguarded or-arm can come before the
     // unguarded refutable arm, which the module doc's layout (line 8) says has nothing
     // unguarded before it. It can also cover that arm completely: `(i64:1, v1) | (v1,
     // i64:2)` followed by `(i64:1, _)` passes `--check`, because dead arms are found by

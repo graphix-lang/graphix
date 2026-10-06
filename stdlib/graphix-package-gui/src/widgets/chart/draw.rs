@@ -121,7 +121,7 @@ macro_rules! draw_chart_body {
     ($chart:expr, $self:expr, $chart_style:expr, $xy_variant:path,
      $ohlc_variant:path, $eb_variant:path, $label_sz:expr) => {{
         let chart_style: Option<&ChartStyleV> = $chart_style;
-        // CR claude for eric: [bug] Every sample is handed to plotters whatever the
+        // CR claude for claude: [bug] Every sample is handed to plotters whatever the
         // visible range, and plotters clamps each mapped point into the plot rect
         // (Rect::truncate). So with an x_range/y_range narrower than the data, or after
         // any pan or zoom, out-of-view scatter points are drawn on the border, and line
@@ -374,7 +374,7 @@ macro_rules! configure_mesh {
                 mesh_cfg.label_style(style.clone());
                 mesh_cfg.axis_desc_style(style);
             }
-            // CR claude for eric: [bug] These mesh counts are unchecked i64 values cast
+            // CR claude for claude: [bug] These mesh counts are unchecked i64 values cast
             // to usize, here and in the 3D axes at 865-882. Two values cause a panic on
             // the first draw. `x_light_lines: 0` (the book calls it "bold lines only")
             // or `x_labels: 0` panics any time-series chart: plotters' datetime key
@@ -500,7 +500,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     let (x_min, x_max) = state.x_view.unwrap_or(base_x);
                     let (y_min, y_max) = state.y_view.unwrap_or(base_y);
 
-                    // CR claude for eric: [structure] The Numeric, TimeSeries and Bar
+                    // CR claude for claude: [structure] The Numeric, TimeSeries and Bar
                     // arms repeat the label-area sizing (480-500, 558-578, 646-666; the
                     // copies differ only in the x padding constants) and the PlotInfo
                     // construction (508-518, 586-596, 676-686). The draw_series match
@@ -776,7 +776,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
 
                     let center_x = (w / 2) as i32;
                     let center_y = ((h + title_h) / 2) as i32;
-                    // CR claude for eric: [bug] title_h is the estimated title height
+                    // CR claude for claude: [bug] title_h is the estimated title height
                     // plus the margin (29 px at the defaults), and `h - title_h` is
                     // u32. A titled pie chart shorter than that (#height:
                     // &`Fixed(20.0), or a window resized small) panics a debug build
@@ -789,7 +789,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
 
                     let pie_labels: Vec<String> =
                         pie_data.0.iter().map(|(l, _)| l.clone()).collect();
-                    // CR claude for eric: [bug] These values reach plotters' Pie
+                    // CR claude for claude: [bug] These values reach plotters' Pie
                     // unchecked, and Pie::draw loops `while offset_theta <=
                     // theta_final` with theta_final = slice / total * 2π + offset. When
                     // the values sum to zero and the first nonzero one is positive,
@@ -804,7 +804,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     // draws chart(&[pie(&[("in", 100.0), ("out", -100.0)])])
                     // headlessly. (gui-chart-03)
                     let sizes: Vec<f64> = pie_data.0.iter().map(|(_, v)| *v).collect();
-                    // CR claude for eric: [bug] A #colors array shorter than the data
+                    // CR claude for claude: [bug] A #colors array shorter than the data
                     // goes to plotters' Pie unchanged. Pie::draw returns LengthMismatch
                     // at the first slice without a colour (logged as "chart draw pie"),
                     // so only the slices before it are drawn: #colors: [red] over three
@@ -842,7 +842,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                     if let Some(angle) = pie_style.start_angle {
                         pie.start_angle(angle);
                     }
-                    // CR claude for eric: [bug] The book (chart.md, PieStyle) documents
+                    // CR claude for claude: [bug] The book (chart.md, PieStyle) documents
                     // `donut` as the inner radius as a fraction of the outer radius
                     // (0.0-1.0). Plotters' `donut_hole` takes a hole radius in pixels
                     // and ignores anything not strictly between 0 and `radius`. So
@@ -1073,7 +1073,7 @@ impl<X: GXExt> iced_canvas::Program<crate::widgets::Message, crate::theme::Graph
                                         .filter(|row| !row.is_empty())
                                         .flat_map(|row| row.iter().map(|&(_, _, z)| z))
                                         .collect();
-                                    // CR claude for eric: [bug] z_lookup finds a
+                                    // CR claude for claude: [bug] z_lookup finds a
                                     // point's row and column by binary search over
                                     // x_vals (each row's first x) and y_vals (row 0's
                                     // ys). That is only right when both axes ascend,

@@ -41,7 +41,7 @@ run!(process_stdout_pipe, PROCESS_STDOUT_PIPE, |v: Result<&Value>| {
     matches!(v, Ok(Value::String(s)) if &**s == "hello")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// CR claude for eric: [doc-drift] CLAUDE.md (Stdlib notes) says the shell tests are
+// CR claude for claude: [doc-drift] CLAUDE.md (Stdlib notes) says the shell tests are
 // Unix-gated with cmd.exe twins, but only PROCESS_STDOUT_PIPE and PROCESS_WAIT_STATUS
 // have one. stdin_pipe, concurrent_wait, kill_during_wait, stdin_eof, env,
 // graceful_kill, io_lines and io_lines_batched run on Unix only. Every fixture sets
@@ -202,7 +202,7 @@ run!(process_env, PROCESS_ENV, |v: Result<&Value>| {
 }; graphix_package_core::testing::FuseExpect::Jit);
 
 #[cfg(unix)]
-// CR claude for eric: [risk] The kill fires 100 ms after init, and `~` banks that fire
+// CR claude for claude: [risk] The kill fires 100 ms after init, and `~` banks that fire
 // until child.proc arrives. So whenever the spawn plus sh's startup take longer than
 // 100 ms, SIGTERM lands before sh has run `trap 'exit 0' TERM`, sh dies by the signal,
 // and status.success is false. Under a loaded `cargo test` this makes the test flaky.
@@ -246,7 +246,7 @@ run!(process_spawn_fail, PROCESS_SPAWN_FAIL, |v: Result<&Value>| {
 // `Lines::lines` frames at the byte level: a line split across two
 // reads, a CRLF line, and a trailing fragment with no newline.
 #[cfg(unix)]
-// CR claude for eric: [test-gap] The comment above says this pins the dropped trailing
+// CR claude for claude: [test-gap] The comment above says this pins the dropped trailing
 // fragment (io.gxi: the final line is dropped if the stream ends without a newline).
 // But the fixture produces as soon as seen holds four lines, and the harness checks
 // only that first update, so a fifth line emitted at EOF would arrive after the

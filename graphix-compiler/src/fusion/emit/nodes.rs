@@ -349,7 +349,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         .and_then(|t| kernel_abi::scalar_prim(t));
     // Mixed scalar types take the Value path below: the node-walk orders
     // them by `Typ` first.
-    // CR claude for eric: [doc-drift] The comment above says mixed scalar types take
+    // CR claude for claude: [doc-drift] The comment above says mixed scalar types take
     // the Value path, but operand_type (node/op.rs:197) makes both operands one type:
     // `|x: i32, y: i64| x < y` is a check error, so lp != rp never reaches here. The
     // error texts at 363 and 371 cite a kernel_abi::cmp that does not exist, and
@@ -365,7 +365,7 @@ pub(crate) fn emit_cmp_node<R: Rt, E: UserEvent>(
         let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
         return Ok(CompiledExpr::new(disc, value));
     }
-    // CR claude for eric: [perf] Ordering (<, >, <=, >=) lowers only for register
+    // CR claude for claude: [perf] Ordering (<, >, <=, >=) lowers only for register
     // scalars, so comparing strings, nullables or other Value-shaped operands de-fuses
     // the whole region: `array::filter(names, |n| n < "m")` node-walks its loop.
     // Unchecked arithmetic on decimal, z32/z64 and v32/v64 de-fuses the same way at 239
@@ -645,7 +645,7 @@ fn emit_push_field_node<R: Rt, E: UserEvent>(
     buf: ClifValue,
     field: &Node<R, E>,
 ) -> Result<ClifValue> {
-    // CR claude for eric: [perf] This classifies the field by its raw abi_kind, which
+    // CR claude for claude: [perf] This classifies the field by its raw abi_kind, which
     // answers None for an un-flattened union, while arith (239), interpolation (494),
     // owned operands (534) and widen_to_declared_repr (190) classify the normalized
     // freeze. So with `let pick = |b, x, y| select b { true => x, false => y }`,
@@ -1050,7 +1050,7 @@ pub(crate) fn emit_construct_node<R: Rt, E: UserEvent>(
 ) -> Result<CompiledExpr> {
     let cv = emit_owned_value_operand_node(cx, arg)?;
     let wrap = cx.helper("graphix_abstract_wrap")?;
-    // CR claude for eric: [bug] This interns the abstract type with its params still
+    // CR claude for claude: [bug] This interns the abstract type with its params still
     // type variables, because resolve_node_typ leaves Abstract params alone.
     // graphix_abstract_wrap then stores params like [TVar _N -> string], where
     // Construct::update stores typ.resolve_tvars(), which is [string]. A kernel-built
@@ -1126,7 +1126,7 @@ pub(crate) fn emit_abstract_ref_node<R: Rt, E: UserEvent>(
 }
 
 /// `t.<idx>`: a statically-valid index read through `compile_element_read`.
-// CR claude for eric: [structure] This and emit_struct_ref_node (1115) are one body
+// CR claude for claude: [structure] This and emit_struct_ref_node (1115) are one body
 // apart from (AbiKind::Tuple, ElementRead::ArrayIndex) vs (AbiKind::Struct,
 // ElementRead::StructField). emit_abstract_ref_node (1038) repeats
 // emit_guarded_element_read's taint-guarded three-block read (981) line for line, only
@@ -1204,7 +1204,7 @@ pub(crate) fn emit_array_ref_node<R: Rt, E: UserEvent>(
         // and the source's taint folds into the result below.
         let AccessorSrc { ptr: arr_ptr, ownership: src, disc: src_disc } =
             emit_accessor_source_node(cx, source, AbiKind::Array)?;
-        // CR claude for eric: [bug] While the index is emitted, an owned source array
+        // CR claude for claude: [bug] While the index is emitted, an owned source array
         // (an array::map result, say) lives only in the SSA value arr_ptr. When the
         // index runs a loop or lambda call whose abort check fires (an interrupt),
         // emit_pending_cleanup drops in-flight bufs, owned_input_stack and env locals

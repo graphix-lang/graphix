@@ -147,7 +147,7 @@ impl TxnCtx<'_> {
         let prev = self.trees[tree_idx].insert(key, value)?;
         Ok(match prev {
             None => Value::Null,
-            // CR claude for eric: [bug] An undecodable previous value becomes null here
+            // CR claude for claude: [bug] An undecodable previous value becomes null here
             // and at 161, which tells the program the key was absent, although it held
             // a value that is now gone. db::insert and db::remove (tree.rs:600-603,
             // 632-635) and TxnCtx::get report DbErr for the same bytes. probe:
@@ -209,7 +209,7 @@ impl TxnCtx<'_> {
                 TxnCommand::Batch { tree_idx, ref batch } => {
                     self.apply_batch(tree_idx, batch)
                 }
-                // CR claude for eric: [bug] Commit replies null but never calls
+                // CR claude for claude: [bug] Commit replies null but never calls
                 // self.trees[0].flush(), so sled leaves the commit in its in-memory log
                 // until the 500 ms flusher runs. A program that commits and then calls
                 // sys::exit (std::process::exit, so no Drop runs) or crashes loses the
@@ -331,7 +331,7 @@ impl BeginTxnCtx {
         }
         // Read-only check for early mismatch detection
         let meta = self.db.open_tree(&META_TREE)?;
-        // CR claude for eric: [structure] This re-implements check_or_store_meta's
+        // CR claude for claude: [structure] This re-implements check_or_store_meta's
         // comparison (tree.rs:139-147) with its own message ('Tree<{sk}, {sv}>, but was
         // opened as' here, no comma there), and read_meta repeats check_or_store_meta's
         // splitn parse with its '?' fallbacks (tree.rs:120-123 and 139-142). One parse
@@ -361,7 +361,7 @@ impl BeginTxnCtx {
                 }
             },
         }
-        // CR claude for eric: [bug] Every db::txn::tree call pushes a new slot here,
+        // CR claude for claude: [bug] Every db::txn::tree call pushes a new slot here,
         // even for a name this transaction already opened. sled gives each slot its own
         // overlay (writes map and read cache) and commits the slots in slot order. So a
         // handle does not see a write made through another handle to the same tree, and

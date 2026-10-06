@@ -140,7 +140,7 @@ impl NumTy {
                 ["0", "1", "-1", "42", "100000", "-100000", "2147483647", "-2147483648"]
                     [rng.below(8)]
             }
-            // CR claude for eric: [doc-drift] The doc on `literal` says every pool
+            // CR claude for claude: [doc-drift] The doc on `literal` says every pool
             // includes the boundary values. This i64 pool has no MIN/MAX, and neither
             // do the f32, f64, v64, z32 and z64 pools, which also have no infinities or
             // -0.0. The mutation lane's try_perturb_literal does put i64 and float
@@ -212,7 +212,7 @@ pub enum GenType {
     },
     /// An explicitly-polymorphic numeric lambda, callable with all args
     /// at any one numeric type; the result type follows the argument type.
-    // CR claude for eric: [structure] PolyFn and Opaque are vocabulary entries, never
+    // CR claude for claude: [structure] PolyFn and Opaque are vocabulary entries, never
     // value types: nothing renders one, generates one, or nests one in a composite. So
     // render (line 281), literal (line 517) and gen_typed (exprs.rs:684) carry
     // unreachable arms for them, and contains_nullable, infers_exact, try_accessor and
@@ -430,7 +430,7 @@ pub(super) fn random_variant(rng: &mut Rng, depth: usize) -> GenType {
     GenType::Variant(tags)
 }
 
-// CR claude for eric: [test-gap] random_type draws only scalars, tuples, structs,
+// CR claude for claude: [test-gap] random_type draws only scalars, tuples, structs,
 // Map<string, _>, List, Array and `[scalar, null]`. random_variant feeds slot lets and
 // interface types, never a field, an element or a payload. So no generated program has
 // a primitive union (`[i64, string]`), an option of a composite, a variant inside a

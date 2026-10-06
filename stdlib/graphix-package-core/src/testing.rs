@@ -30,7 +30,7 @@ pub enum FuseExpect {
 /// fixture runs, in `jit` mode only; the per-thread counters are reset
 /// after runtime init so they reflect only the fixture's own program.
 #[cfg(debug_assertions)]
-// CR claude for eric: [test-gap] FuseExpect::Jit, run!'s default, passes when any
+// CR claude for claude: [test-gap] FuseExpect::Jit, run!'s default, passes when any
 // region of the program fused. A let-bound array literal is a region of its own, so the
 // check holds even while the construct under test node-walks. array_iterq
 // (array.rs:380) is annotated Jit, yet `array::iterq` and `filter` both fail to fuse
@@ -263,7 +263,7 @@ where
     init_inner(sub, register, resolvers, flags, true, None, None, None, None, setup).await
 }
 
-// CR claude for eric: [test-gap] Only init_with_flags_and_setup and
+// CR claude for claude: [test-gap] Only init_with_flags_and_setup and
 // init_session_with_setup apply the 1 GiB GRAPHIX_STACK_BUDGET default.
 // init_with_session (and so init_with_registration), init_lsp_with_registration and
 // init_lsp_mode do not. set_stack_budget is process-global, so the image, leak and lsp
@@ -297,7 +297,7 @@ where
     let _ = env_logger::try_init();
     // Nothing seeds NetConfig, so tests that touch sys::net share one
     // process-internal netidx materialized on demand.
-    // CR claude for eric: [doc-drift] The comment above is wrong. NetHandles is
+    // CR claude for claude: [doc-drift] The comment above is wrong. NetHandles is
     // per-runtime libstate, and NetConfig::Internal builds a fresh netidx::InternalOnly
     // for each runtime, with its own resolver on 127.0.0.1:0
     // (graphix-package-sys/src/netstate.rs:113-150), so tests do not share a netidx and
@@ -495,7 +495,7 @@ pub fn escape_path(path: std::path::Display) -> LPooled<String> {
     res
 }
 
-// CR claude for eric: [doc-drift] This doc says two modes, lists three, and says the
+// CR claude for claude: [doc-drift] This doc says two modes, lists three, and says the
 // macro expands to three tests; the standard form generates four (interp, par, jit,
 // jit_par), and jit_par is not listed. check_fuse_expectation's doc (line 30) says
 // per-thread counters, but they are per-runtime atomics on Control
@@ -590,7 +590,7 @@ macro_rules! run {
                 }
                 let bs = &ctx.rt;
                 match bs.compile(::arcstr::literal!("{ mod test; test::result }")).await {
-                    // CR claude for eric: [test-gap] A panic while compiling the
+                    // CR claude for claude: [test-gap] A panic while compiling the
                     // fixture kills the runtime task, and tokio swallows the panic.
                     // exec then returns 'runtime did not respond', and this arm passes
                     // that to the predicate as if it were a refusal. So every fixture
@@ -602,7 +602,7 @@ macro_rules! run {
                     // today. Before calling pred, check that the runtime still answers
                     // (bs.get_env().await is Ok), then tighten those fixtures to match
                     // their error messages. (tests-lang-d-05)
-                    // CR claude for eric: [test-gap] Every compile error reaches `pred`
+                    // CR claude for claude: [test-gap] Every compile error reaches `pred`
                     // here, a parse error included. 35 run! fixtures in graphix-tests'
                     // types.rs and traits.rs accept any error with `Err(_)` or
                     // `is_err()`, which is why SIMPLE_TYPECHECK and RECTYPES2 pass
@@ -682,7 +682,7 @@ macro_rules! run {
                 Ok(invocations)
             }
 
-            // CR claude for eric: [test-gap] interp and jit pass ParMode::from_env(),
+            // CR claude for claude: [test-gap] interp and jit pass ParMode::from_env(),
             // which returns Auto when GRAPHIX_PAR is unset. So these two serial
             // baselines fork any loop whose probes say a fork pays, and which path a
             // fixture takes depends on timing; graphix-fuzz pins its Interp and Jit

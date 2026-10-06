@@ -1,4 +1,4 @@
-// CR claude for eric: [test-gap] These pins, and the other sys::net uses under
+// CR claude for claude: [test-gap] These pins, and the other sys::net uses under
 // stdlib/graphix-tests, cover successful deliveries only. No test fails if any of these
 // breaks: a write's select arm sleeping and waking, a publisher going away under a
 // subscriber, an rpc server failing or its path missing, a written value or call
@@ -48,7 +48,7 @@ run!(net_write0, NET_WRITE0, |v: Result<&Value>| {
     }
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// CR claude for eric: [test-gap] NET_WRITE1 is said to pin that on_write casts the
+// CR claude for claude: [test-gap] NET_WRITE1 is said to pin that on_write casts the
 // written i64 to the callback's `string` type. But `cast<i64>(v)?` gives 43 whether v
 // is the cast string ("i64:43" today) or the raw i64, so the cast is never observed.
 // publish_typed_onwrite (typecheck.rs:244) casts i64 to i64, and no fixture writes a

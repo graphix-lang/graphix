@@ -80,7 +80,7 @@ impl<X: GXExt> GuiWidget<X> for ContextMenuW<X> {
                 .context("context_menu items recompile")?;
             changed = true;
         }
-        // CR claude for eric: [structure] This per-item loop (label, shortcut and
+        // CR claude for claude: [structure] This per-item loop (label, shortcut and
         // disabled updates, plus the on_click recompile) is menu_bar.rs:194-225 with
         // only the context strings changed, and the items_ref recompile above it
         // repeats menu_bar.rs:187-193. Move it into a MenuItemKind::handle_update in

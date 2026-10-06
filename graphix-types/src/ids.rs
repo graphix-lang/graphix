@@ -85,7 +85,7 @@ pub(crate) fn reserve_above(
     spans: IdSpans,
 ) -> Option<IdRelocation> {
     use std::sync::atomic::Ordering::Relaxed;
-    // CR claude for eric: [bug] A failed read has a side effect: this line lifts the
+    // CR claude for claude: [bug] A failed read has a side effect: this line lifts the
     // process-wide minted counter to whatever minted extent the image's trailer claims,
     // before the fit check below can refuse the block. IdCounts::decode
     // (image/mod.rs:95) also accepts any floor and extent, so len (:55) can overflow
@@ -183,7 +183,7 @@ macro_rules! image_id {
             /// typed value (e.g. a JIT'd kernel emitting `inner()` as a
             /// constant and reconstructing it on the other side). Do not
             /// use it to forge ids.
-            // CR claude for eric: [doc-drift] The doc above gives this function's use
+            // CR claude for claude: [doc-drift] The doc above gives this function's use
             // as a JIT kernel that emits `inner()` as a constant. No kernel does that,
             // and one that did would break on a warm start: a record's machine code
             // installs verbatim and only `Pack` relocates ids (kernels take ids through

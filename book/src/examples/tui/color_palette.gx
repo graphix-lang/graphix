@@ -7,7 +7,7 @@ let span: Array<Span> = select range(0, 256)$ {
         span(#style:style(#fg:`Indexed(i)), "██")
     ]
 };
-// CR claude for eric: [bug] range(0, 256) delivers 256 values (0..255), and
+// CR claude for claude: [bug] range(0, 256) delivers 256 values (0..255), and
 // array::group passes f the buffer length after the push. So `n == 255` emits colors
 // 0..254, and color 255 starts a buffer that never emits: the palette never shows index
 // 255. Use `n == 256`. The binding `span` also shadows the imported `span` that its own

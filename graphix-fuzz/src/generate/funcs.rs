@@ -22,7 +22,7 @@ fn distinct_numeric_pair(rng: &mut Rng) -> (GenType, GenType) {
 
 /// Distinct parameter names, collision-pool-biased but unique within
 /// one param list (`|x, x|` is an error).
-// CR claude for eric: [structure] param_names is param_names_excluding (line 147) with
+// CR claude for claude: [structure] param_names is param_names_excluding (line 147) with
 // an empty `taken`, drawing the same random numbers: delete it and call
 // param_names_excluding(.., &[]). callback_param (exprs.rs:219) and bind_name
 // (patterns.rs:33) are the same collision-pool-or-fresh draw and differ only in the
@@ -293,7 +293,7 @@ pub(super) fn gen_bare_lambda(
     let mut stmts = vec![format!("let {f} = |{}| {body}", names.join(", "))];
     // f stays out of the callable vocabulary but must mask whatever it
     // shadowed
-    // CR claude for eric: [test-gap] The premise here and in the doc comments at lines
+    // CR claude for claude: [test-gap] The premise here and in the doc comments at lines
     // 231-234 and 273-276 is stale: a bare lambda's call result has its arguments'
     // exact type, not a Number-wide one. `let f = |a, b| ((a * b) - (b + a)); let c: u8
     // = f(u8:2, u8:2)` and `let g = |a| ((a * a) - a); let m: Array<v32> =
@@ -460,7 +460,7 @@ pub(super) fn gen_ref_stmts(
     let rty = GenType::Ref(Box::new(inner.clone()));
     let mut stmts = Vec::new();
     let tgts = ctx.vars_of(&inner);
-    // CR claude for eric: [test-gap] No lane generates a place reference. This takes
+    // CR claude for claude: [test-gap] No lane generates a place reference. This takes
     // `&` of a whole scalar binding or of a literal only, so `&v.f`, `&v.0`, `&v[i]`
     // and `&m{k}` with write-through patching (design/place_references.md) reach the
     // oracle only through corpus mutation. The generators also never emit `$`/`?` on an
@@ -523,7 +523,7 @@ pub(super) fn gen_rec_lambda(
     let m = ctx.fresh();
     let mark = ctx.mark();
     ctx.push(m.clone(), I64);
-    // CR claude for eric: [test-gap] `base` is generated before arm 1 creates `acc`
+    // CR claude for claude: [test-gap] `base` is generated before arm 1 creates `acc`
     // (line 507), so the accumulator tail loop always returns `base` and its carried
     // `acc + m` is dead in every instance. The fold callback's let rec (exprs.rs:436)
     // is multiplied by `i64:0`, which erases its value the same way. A JIT tail loop

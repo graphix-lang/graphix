@@ -67,7 +67,7 @@ impl Mode {
         }
     }
 
-    // CR claude for eric: [test-gap] Mode::par runs the parallel pairs at Force and the
+    // CR claude for claude: [test-gap] Mode::par runs the parallel pairs at Force and the
     // serial ones at Off, so no oracle ever runs Auto, the default mode. Auto's own
     // fork shapes are compared against nothing: a ProbeSite running its first k items
     // in the parent and forking the rest, a ForkSite's weighted multi-child ranges
@@ -89,7 +89,7 @@ impl Mode {
 }
 
 /// `GRAPHIX_FUZZ_PAR=0` disables the forced-fork run (default on).
-// CR claude for eric: [risk] `GRAPHIX_FUZZ_PAR` means two unrelated things. Here, '0'
+// CR claude for claude: [risk] `GRAPHIX_FUZZ_PAR` means two unrelated things. Here, '0'
 // turns the forced-fork runs off and any other value leaves them on. `parallelism()`
 // (lib.rs:3832-3841) reads the same variable as the number of checks in flight, and
 // soak.sh:124 sets it to the worker count. So concurrency cannot be capped while the
@@ -98,7 +98,7 @@ impl Mode {
 // extra runs. Give the fork switch its own name and document both knobs in
 // design/graphix_fuzz.md. (x-doc-drift-15)
 fn par_enabled() -> bool {
-    // CR claude for eric: [risk] GRAPHIX_FUZZ_PAR means two things: here a switch (0
+    // CR claude for claude: [risk] GRAPHIX_FUZZ_PAR means two things: here a switch (0
     // turns the forced-fork Par/JitPar runs off), in parallelism() (line 3834) the
     // number of checks in flight, where 0 is ignored and falls back to 8 x cores.
     // soak.sh sets it to the memory-sized worker count and every child inherits it, so
@@ -220,7 +220,7 @@ impl Outcome {
             (CompileErr(a), CompileErr(b)) => normalize_diag(a) == normalize_diag(b),
             (RuntimeErr(_), RuntimeErr(_)) => true,
             (Timeout(_), Timeout(_)) => true,
-            // CR claude for eric: [bug] A Timeout beside a trace with no events agrees
+            // CR claude for claude: [bug] A Timeout beside a trace with no events agrees
             // here in both directions. So a JIT, forked or warm run that never finishes
             // is AGREE when the node-walk's result is bottom or the program only prints
             // (has_events ignores stdout). check_verdict returns before its JIT-side
@@ -765,7 +765,7 @@ async fn drive_inner(
         let end = segs.last().map_or(0, |s| s.end_cycle);
         let mut lines: Vec<String> =
             sink.take_through(end).lines().map(|l| l.to_string()).collect();
-        // CR claude for eric: [test-gap] The Exact-tier stdout is every line printed
+        // CR claude for claude: [test-gap] The Exact-tier stdout is every line printed
         // through the last segment, sorted as one multiset. A print that lands in
         // another cycle or another epoch with the same text therefore still agrees,
         // while the stated reason (within-cycle emission order) only justifies sorting
@@ -885,7 +885,7 @@ pub fn oracle_tier(code: &str) -> OracleTier {
     {
         return OracleTier::Excluded;
     }
-    // CR claude for eric: [test-gap] Only programs naming `sys::` or `http::` reach
+    // CR claude for claude: [test-gap] Only programs naming `sys::` or `http::` reach
     // FinalValues. json::read, toml::read, pack::read, xls::, db:: and sqlite:: are
     // EvalCachedAsync tasks too, so their reply lands in whichever cycle the scheduler
     // allows, and the Exact tier compares that cycle. `let m = {"a" => 1, "b" => 2};
@@ -1076,7 +1076,7 @@ async fn run_subject(
         }
         SessionImage::None => (registration_image_source().await, program, None, None),
     };
-    // CR claude for eric: [risk] The per-run `timeout` is armed only in drive_inner,
+    // CR claude for claude: [risk] The per-run `timeout` is armed only in drive_inner,
     // after this await, but the program compiles (or a warm image restores) inside this
     // call, in GX::new. compile_with_stats (418) has the same gap, and its doc's claim
     // that the first update cycle runs inside `compile` no longer describes the code. A
@@ -1239,7 +1239,7 @@ async fn check_sessions(
     tier: OracleTier,
     timeout: Duration,
 ) -> Option<Divergence> {
-    // CR claude for eric: [test-gap] Excluded subjects never run the sessions. This
+    // CR claude for claude: [test-gap] Excluded subjects never run the sessions. This
     // return skips them, and so do check_verdict (1469), check_callable (1649) and
     // run_batch's `comparable` gate (1897). So no campaign writes or restores an image
     // of a program that uses sys::time, sys::net, process spawn, rand or throttle: 120
@@ -1303,7 +1303,7 @@ fn program_scope(env: &Env) -> Scope {
 #[derive(Debug, Clone)]
 pub struct Divergence {
     pub code: String,
-    // CR claude for eric: [readability] These fields hold whichever two runs `pair`
+    // CR claude for claude: [readability] These fields hold whichever two runs `pair`
     // compares (nocache/cold, cold/warm, check/build, serial/forked,
     // in-language/dispatch). They are not the node-walk and the JIT, as their names and
     // the doc above say. Only `check` (main.rs:1064) and Corpus::record print through
@@ -1644,7 +1644,7 @@ pub async fn check_verdict(
     }
     // Rule out nondeterminism: re-run interp at the same tier; if it
     // disagrees with itself, the program is nondeterministic there.
-    // CR claude for eric: [bug] After a slow-budget retry, this self-check and the
+    // CR claude for claude: [bug] After a slow-budget retry, this self-check and the
     // Divergence below still use the first, timed-out outcome, and the jit branch above
     // records its stale Timeout the same way. So a JIT divergence whose node-walk needs
     // 1x-8x the budget is recorded as interp=Timeout under the 'interp exceeded 8x
@@ -1806,7 +1806,7 @@ async fn check_callable(
             if agrees(&a2, &b2) {
                 return None;
             }
-            // CR claude for eric: [bug] For all three callable pairs, a
+            // CR claude for claude: [bug] For all three callable pairs, a
             // timeout-involved disagreement still open at 4x is dropped here. None of
             // check_verdict's ladder applies: an interp StackBudget beside a JIT value
             // is not marked CONTAINED, there is no one-sided slow retry or CPU-progress
@@ -1963,7 +1963,7 @@ pub enum BatchVerdict {
 /// fresh runtimes that restore the registration image built once per
 /// child, so the stdlib compiles at most once per process. `report` is
 /// called after each subject.
-// CR claude for eric: [structure] This is one of five hand-written copies of the
+// CR claude for claude: [structure] This is one of five hand-written copies of the
 // comparison matrix, beside check_verdict, check_par, session_divergence and
 // check_callable. Its finals and route_agrees closures at 1881-1887 repeat
 // check_callable's verbatim. The copies have drifted: this one runs neither JitPar nor
@@ -2053,7 +2053,7 @@ pub async fn run_batch(
         }
         // A forked run that disagrees goes back through the individual
         // path too.
-        // CR claude for eric: [test-gap] The batch path accepts agreements that
+        // CR claude for claude: [test-gap] The batch path accepts agreements that
         // check_verdict would still examine. It runs only Mode::Par here, never
         // Mode::JitPar. A subject that both builds refuse with one diagnostic counts as
         // agreed without the check_only run that decides Pair::Check. Every soak
@@ -2295,7 +2295,7 @@ pub async fn run_work_order(
         let _ = out.flush();
     })
     .await;
-    // CR claude for eric: [bug] When a gen-batch child dies mid-order, the soak records
+    // CR claude for claude: [bug] When a gen-batch child dies mid-order, the soak records
     // nothing. The causes include a compiler or JIT-link panic aborting it, a JIT
     // SIGSEGV, the AS cap and a stall kill. These P lines are written only after the
     // whole batch, the subject that killed the child never leaves it, and
@@ -2584,7 +2584,7 @@ async fn run_batch_child(
 /// Coarse "same bug" key: the bisection class, the outcome kinds and
 /// the trace-difference class (final-strength for final-tier and route
 /// divergences). The minimizer requires a reduction to keep the bucket.
-// CR claude for eric: [bug] The key has no pair in it. bisect's first arm (1287) labels
+// CR claude for claude: [bug] The key has no pair in it. bisect's first arm (1287) labels
 // every (Timeout, Trace-with-events) divergence 'asymmetric timeout (interp exceeded 8x
 // budget; JIT produced a value ...)' before it looks at the pair. So a Par, Cold or
 // Warm divergence of that shape prints the engine label (on the console and in the
@@ -3116,7 +3116,7 @@ async fn must_reject(
     use graphix_compiler::expr::ErrorSite;
     let (tx, _rx) = mpsc::channel(64);
     let sink = graphix_package_core::PrintSink::default();
-    // CR claude for eric: [structure] The doc comment's reason for this runtime is
+    // CR claude for claude: [structure] The doc comment's reason for this runtime is
     // false: every check goes through GXRt::check_inner, which adds CFlag::CheckOnly
     // (graphix-rt/src/gx.rs:837-840), and check_and_fuse_inner returns before fusion
     // under it (graphix-compiler/src/lib.rs:1958), so typemorph_subject's runtime never
@@ -3169,7 +3169,7 @@ async fn must_reject(
         for p in mustreject::probes(body, &types, cap) {
             let verdict = match check(compose(&p.body), false).await {
                 None => continue,
-                // CR claude for eric: [test-gap] Every LEAK gets this one head, so its
+                // CR claude for claude: [test-gap] Every LEAK gets this one head, so its
                 // typeflip class is `TYPEFLIP:<family>: LEAK: accepted`
                 // (typeflip_class, line 3698), and record_typeflip files one LEAK per
                 // family per campaign: every later LEAK of that family, a real
@@ -3224,7 +3224,7 @@ pub async fn typemorph_child(prog: &str, per_check: Duration) -> Result<String, 
         stdin.write_all(prog.as_bytes()).await.map_err(|e| format!("stdin: {e}"))?;
     }
     // base + 6 kinds × the per-kind cap, one warmed init, plus slack
-    // CR claude for eric: [risk] This deadline, and the batch stall window at line 2282
+    // CR claude for claude: [risk] This deadline, and the batch stall window at line 2282
     // (`1 + 6 * TM_CAP` checks), still count six transform kinds and no must-reject
     // checks; a subject now runs up to 65 checks (base + 9 kinds x 3, then a typed base
     // and up to 36 mutants) and two runtime inits. In the soak the confirm path passes
@@ -3413,7 +3413,7 @@ pub async fn run_regression(timeout: Duration, bless: bool) -> Regression {
                 Verdict::Unsure => false,
             };
             match d {
-                // CR claude for eric: [bug] A pin that regresses gets no verdict here
+                // CR claude for claude: [bug] A pin that regresses gets no verdict here
                 // (nor at the 4x retry below), so outcome_mismatches also lists its
                 // manifest row as 'stale manifest row: X — bless to drop' and
                 // print_regression counts the pin twice. regress --bless writes the
@@ -3567,7 +3567,7 @@ pub async fn run_fusecheck(
     use tokio::task::JoinSet;
     let par = parallelism();
     let entries = corpus::REGRESSION_CORPUS;
-    // CR claude for eric: [structure] This spawn_one, fill, join_next, refill window is
+    // CR claude for claude: [structure] This spawn_one, fill, join_next, refill window is
     // written seven times: typemorph_scan, run_regression, here, selfcheck, detcheck,
     // and main.rs gen-check and reactive-check. The copies have drifted: typemorph_scan
     // awaits its confirm child inside the loop, so the window drains during every
@@ -3852,7 +3852,7 @@ impl Corpus {
             }
         }
         let (la, lb) = d.labels();
-        // CR claude for eric: [risk] The outcome lines use the derived Debug of netidx
+        // CR claude for claude: [risk] The outcome lines use the derived Debug of netidx
         // `Value`, which recurses about 18 frames per nesting level (a `List` of N
         // elements is N levels deep) and prints pool and ThinArc internals. The clip
         // runs only after the whole string is built, and the campaigns' `println!` of
@@ -4213,7 +4213,7 @@ const CHILD_COMPILE_THREADS: &str = "2";
 
 /// A child of this binary, its compile threads capped unless the
 /// caller set them.
-// CR claude for eric: [structure] Seven runners repeat this setup: run_order_child,
+// CR claude for claude: [structure] Seven runners repeat this setup: run_order_child,
 // run_batch_child, typemorph_child, selfcheck_isolated, detcheck's compile_child,
 // check_isolated_in and minimize_isolated. Each repeats this function, sandbox_cwd, the
 // TOKIO_WORKER_THREADS env, stdio, spawn, the stdin feed and the wait, and their
@@ -4352,7 +4352,7 @@ pub async fn selfcheck_one(prog: &str, timeout: Duration) -> Vec<&'static str> {
             run_program_routed(prog, mode, route, timeout),
             run_program_routed(prog, mode, route, timeout),
         );
-        // CR claude for eric: [risk] Any disagreement in the concurrent pair is retried
+        // CR claude for claude: [risk] Any disagreement in the concurrent pair is retried
         // by a sequential pair and dropped if that pair agrees. So a flake must show up
         // twice, and one that needs the two runs to overlap (state shared between
         // contexts in one process) can never show up in the sequential retry. Two
@@ -4573,7 +4573,7 @@ pub async fn detcheck_one_pair(prog: &str, timeout: Duration) -> Option<String> 
             if ca != cb {
                 return Some(format!("verdicts differ: {ca:?} vs {cb:?}"));
             }
-            // CR claude for eric: [bug] This compares the two dumps in print order.
+            // CR claude for claude: [bug] This compares the two dumps in print order.
             // fusion::fuse_each emits disjoint parts in rayon tasks (the children get
             // RAYON_NUM_THREADS=2), and maybe_dump_clif prints each kernel as its task
             // emits it, so the blocks come out in scheduling order and normalize_clif's
@@ -4673,7 +4673,7 @@ async fn check_isolated_in(
     // outer deadline only catches a wedged child and must cover the
     // child's whole legitimate worst case: the concurrent first runs,
     // `check()`'s 60s-floored escalation retry and the nondeterminism re-run.
-    // CR claude for eric: [bug] This 102 s bound (at the 3 s campaign budget) does not
+    // CR claude for claude: [bug] This 102 s bound (at the 3 s campaign budget) does not
     // cover what check-one legitimately runs. check_callable's settle reruns the
     // node-walk at the 60 s slow budget once per route, one after the other.
     // check_sessions adds three sequential runs per route, and on a one-sided timeout
@@ -4693,7 +4693,7 @@ async fn check_isolated_in(
     };
     // the verdict is the exit code (0 = agree, 7 = agree and both ran,
     // 10 = diverge): stdout is corruptible by the program under test
-    // CR claude for eric: [risk] The subject can set this status itself. sys::exit
+    // CR claude for claude: [risk] The subject can set this status itself. sys::exit
     // calls std::process::exit in the process running it
     // (graphix-package-sys/src/lib.rs:596), and nothing screens subjects for it, so the
     // comment's reason for not trusting stdout applies to the exit code too. A
@@ -4711,7 +4711,7 @@ async fn check_isolated_in(
         Some(7) => PoolResult::Agree { ran: true },
         // the child proved the program diverges without dying, so an
         // in-process re-check for the full Divergence is safe
-        // CR claude for eric: [risk] On exit 10 the parent re-runs the whole check
+        // CR claude for claude: [risk] On exit 10 the parent re-runs the whole check
         // in-process only to rebuild a Divergence the child already computed, and
         // minimize-one's first check() runs it a third time. The soak parent has no
         // RLIMIT_AS (apply_mem_limit skips unsandboxed processes), no abort-on-panic
@@ -4743,7 +4743,7 @@ async fn check_isolated_in(
             let stderr = String::from_utf8_lossy(&out.stderr);
             // the child's address-space cap stopped a runaway subject:
             // containment, as the stack budget's abort is
-            // CR claude for eric: [risk] Any 'memory allocation of N bytes failed' line
+            // CR claude for claude: [risk] Any 'memory allocation of N bytes failed' line
             // counts as address-space containment whatever N is. A runaway fails on a
             // request below the 8 GB cap (a 20 GB-width str::sprintf under check-one
             // dies on 4294967296 bytes), so a single request above the cap is a corrupt
@@ -4751,7 +4751,7 @@ async fn check_isolated_in(
             // as an agreement instead of a crash. Parse N and treat the line as
             // containment only below the child's RLIMIT_AS (GRAPHIX_FUZZ_MEM_LIMIT);
             // record a crash otherwise. (fuzz-lib-b-11)
-            // CR claude for eric: [bug] This reads an address-space abort as agreement
+            // CR claude for claude: [bug] This reads an address-space abort as agreement
             // without knowing which engine allocated. check-one runs the node-walk and
             // the JIT (and the session and forked modes) in one process, the abort line
             // names no engine, and nothing is logged. So a JIT-side runaway beside a
@@ -4802,7 +4802,7 @@ async fn minimize_isolated(prog: &str, timeout: Duration) -> Option<String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
-    // CR claude for eric: [bug] A spawn error here returns None and the caller records
+    // CR claude for claude: [bug] A spawn error here returns None and the caller records
     // the raw mutant, while design §4 and every other spawn site (check_isolated_in,
     // run_order_child, run_batch_child, selfcheck_isolated) exit FATAL: under fd or
     // process exhaustion every divergence lands unminimized, keyed on its raw text.
@@ -5055,7 +5055,7 @@ pub async fn run_aggregator(
             let order = WorkOrder {
                 kind: KINDS[si],
                 // distinct per (source, order) without a shared counter
-                // CR claude for eric: [bug] `soak` parses a base seed (main.rs:942) but
+                // CR claude for claude: [bug] `soak` parses a base seed (main.rs:942) but
                 // never passes it to run_aggregator, so this order seed depends only on
                 // the source and the order count. Every fleet host and every relaunch
                 // therefore checks the same Generate and Reactive programs, and
@@ -5156,7 +5156,7 @@ pub async fn run_aggregator(
                             }
                             PoolResult::Diverge(d) => {
                                 found.divergences[si].fetch_add(1, Relaxed);
-                                // CR claude for eric: [risk] Every confirmed divergence
+                                // CR claude for claude: [risk] Every confirmed divergence
                                 // is minimized before any dedup, though
                                 // design/graphix_fuzz.md §7 says to dedup first on the
                                 // coarse key; bucket() (line 2418) is used only inside
@@ -5239,7 +5239,7 @@ async fn confirm_typeflip(corpus: &Corpus, prog: &str, timeout: Duration) -> boo
 /// unless `GRAPHIX_FUZZ_INPROC=1`. A divergence is minimized, deduped
 /// against `corpus` and written without stalling the pool; a crash
 /// records immediately. `iters = None` runs forever.
-// CR claude for eric: [structure] This is a second campaign engine beside
+// CR claude for claude: [structure] This is a second campaign engine beside
 // run_aggregator, and the two have drifted: here BreakageWindow counts subjects that
 // are findings (design §4), there it counts unclean orders, so a soak never trips on a
 // divergence flood from a broken build; here inflight balances, there it leaks count -
@@ -5828,7 +5828,7 @@ mod tests {
             run_program(code, Mode::Interp, t),
             run_program_with_stats(code, Mode::Jit, t),
         );
-        // CR claude for eric: [test-gap] With Fuse::No (the 46 agree() probes) this is
+        // CR claude for claude: [test-gap] With Fuse::No (the 46 agree() probes) this is
         // the only assertion, and two CompileErrs with equal diagnostics, any two
         // RuntimeErrs and two Timeouts all agree, so a probe that stops compiling or
         // running still passes and the coverage it names is gone. Assert that interp is

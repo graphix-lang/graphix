@@ -85,7 +85,7 @@ impl Effect {
 /// instances in declaration order (a later variant dominates). Read by
 /// `#[tail_recursive]` and the arm-sleep rule; the operational gate is
 /// `GXLambda::tail_loop` plus the per-call-site `is_self_tail_call`.
-// CR claude for eric: [doc-drift] These docs name things that do not exist. Lines 86-87
+// CR claude for claude: [doc-drift] These docs name things that do not exist. Lines 86-87
 // and analysis.rs:5 cite `CallSite::is_self_tail_call`, which is not in the tree.
 // `TailRecursive` (97-99) says the recursion runs as a constant-space loop, but only a
 // fused kernel loops: the node-walk dispatches an activation per call

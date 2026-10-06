@@ -75,7 +75,7 @@ pub(super) fn emit_outlined(
     iteration: impl Iteration,
 ) -> Result<Sunk> {
     // The loop's slot tables are made here, where every chunk finds them.
-    // CR claude for eric: [structure] open_slot_tables is called here only for its
+    // CR claude for claude: [structure] open_slot_tables is called here only for its
     // claims. It pushes a frame whose index variable is this never-defined `unused`,
     // the next line pops that frame, and emit_range pushes the real frame by hand
     // (outline.rs:330-337). Nothing reads `unused` today; if something did, cranelift
@@ -239,7 +239,7 @@ fn emit_chunk(
         b.def_var(words.payload, payload);
         env.bind(l.name.clone(), words, l.kind, l.bind_id);
     }
-    // CR claude for eric: [structure] The context word's layout (bit 0 init, bit 1
+    // CR claude for claude: [structure] The context word's layout (bit 0 init, bit 1
     // wake) is written out by hand at every site. It is decoded here and at
     // lower.rs:72-79, encoded at outline.rs:91-92 and kernel.rs:349, and built at
     // call.rs:338-347 from the init view alone, which is how callees lost the wake bit

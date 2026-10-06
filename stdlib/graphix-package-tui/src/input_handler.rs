@@ -408,7 +408,7 @@ impl<X: GXExt> InputHandlerW<X> {
         Ok(())
     }
 
-    // CR claude for eric: [bug] When the handler lambda changes, update_callable drops
+    // CR claude for claude: [bug] When the handler lambda changes, update_callable drops
     // the old Callable and compiles a new one, but `pending` stays true if a call is
     // still out. That call's reply comes back, if at all, under the old callable's
     // expr, which the `id == h.expr` test in handle_update no longer matches. So
@@ -428,7 +428,7 @@ impl<X: GXExt> InputHandlerW<X> {
 
 #[async_trait]
 impl<X: GXExt> TuiWidget for InputHandlerW<X> {
-    // CR claude for eric: [bug] Events go to the handler one at a time, and `pending`
+    // CR claude for claude: [bug] Events go to the handler one at a time, and `pending`
     // is cleared only by a reply (451) or by `#enabled` going false (442). So one call
     // whose reply never fires stops this handler for good: a raise in the reply, which
     // the `throws 'e` signature allows, or a bottom such as `(k ~ mode)$` over a null.
@@ -467,7 +467,7 @@ impl<X: GXExt> TuiWidget for InputHandlerW<X> {
         if id == child_ref.id {
             *child = compile(self.gx.clone(), v.clone()).await?;
         }
-        // CR claude for eric: [bug] Every update of the handler's call site is taken as
+        // CR claude for claude: [bug] Every update of the handler's call site is taken as
         // the reply to queued.front(), but the call site also fires when no call was
         // made. A select emits when a consulted guard's input fires, so the canonical
         // `kk@ `Up if sel > 0 => { sel <- (kk ~ sel) - 1; `Stop }` answers Stop a

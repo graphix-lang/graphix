@@ -12,7 +12,7 @@ use poolshark::local::LPooled;
 pub struct ChartColor(pub f32, pub f32, pub f32, pub f32);
 
 impl ChartColor {
-    // CR claude for eric: [bug] to_plotters_rgb drops the alpha channel, and every
+    // CR claude for claude: [bug] to_plotters_rgb drops the alpha channel, and every
     // chart colour goes through it. So color(#r: 1.0, #g: 0.0, #b: 0.0, #a: 0.3) draws
     // an opaque (255, 0, 0) line even though IcedBackend honours alpha (an area fill
     // made with mix(0.3) comes out pale); return plotters' RGBAColor instead. The
@@ -381,7 +381,7 @@ impl FromValue for OptXAxisRange {
         if v == Value::Null {
             return Ok(Self(None));
         }
-        // CR claude for eric: [bug] A datetime range never reaches the DateTime branch
+        // CR claude for claude: [bug] A datetime range never reaches the DateTime branch
         // below. f64::from_value casts a DateTime to epoch seconds, so `{min: datetime,
         // max: datetime}` decodes here as XAxisRange::Numeric. The TimeSeries draw
         // (draw.rs:534-537) honours only XAxisRange::DateTime, so it silently falls

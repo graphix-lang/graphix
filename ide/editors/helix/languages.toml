@@ -38,7 +38,7 @@ args = ["lsp"]
 # --- Option B: build from the published git repo ---
 [[grammar]]
 name = "graphix"
-# CR claude for eric: [bug] `rev = "main"` never moves past the first fetch. `helix
+# CR claude for claude: [bug] `rev = "main"` never moves past the first fetch. `helix
 # --grammar fetch` runs `git fetch --depth 1 origin main` and then `git checkout main`,
 # and after the first install the local `main` already exists, so the checkout stays on
 # the first-fetched commit while helix prints "graphix now on main". install.sh links

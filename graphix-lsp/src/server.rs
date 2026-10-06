@@ -94,7 +94,7 @@ where
         init.capabilities.text_document.as_ref().and_then(|td| {
             td.completion.as_ref()?.completion_item.as_ref()?.snippet_support
         });
-    // CR claude for eric: [bug] ServerState::new (the workspace scan) and every handler
+    // CR claude for claude: [bug] ServerState::new (the workspace scan) and every handler
     // in the loop below run on this thread with no panic guard. Any panic in the parser
     // or formatter therefore ends the server with exit 101, while a check's panic only
     // becomes a "task N panicked" diagnostic. Today `duration:-1.s` (x-panics-01) in
@@ -178,7 +178,7 @@ fn respond<P: DeserializeOwned, R: Serialize>(
     }
 }
 
-// CR claude for eric: [structure] Six of the seven handlers (completion, definition,
+// CR claude for claude: [structure] Six of the seven handlers (completion, definition,
 // document_symbol, hover, references, workspace_symbol) only unpack the lsp-types
 // params and call a ServerState method, four of them also turning an empty Vec into
 // None, so each request is spread over this route, a handler file and the method. Let
@@ -235,7 +235,7 @@ fn handle_notification(state: &mut ServerState, not: Notification) -> Diagnostic
                 return state.close_document(&p.text_document.uri);
             }
         }
-        // CR claude for eric: [risk] workspace/didChangeWatchedFiles, which the VS Code
+        // CR claude for claude: [risk] workspace/didChangeWatchedFiles, which the VS Code
         // client sends for every **/*.gx change
         // (ide/editors/vscode/src/extension.ts:22), falls to the unhandled arm below,
         // so the project graph is rescanned only on a didSave. A `mod` line that a git

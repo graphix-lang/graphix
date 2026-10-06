@@ -61,7 +61,7 @@ pub(crate) type IsNone = CachedArgs<IsNoneEv>;
 pub(crate) struct ContainsEv;
 crate::unit_image_state!(ContainsEv);
 
-// CR claude for eric: [perf] opt::contains, or_default, or, and, zip and ok_or (lines
+// CR claude for claude: [perf] opt::contains, or_default, or, and, zip and ok_or (lines
 // 65-219) and core::divide (lib.rs:1332) are pure but declared `Stateless(None)`, so a
 // kernel that calls one de-fuses ("builtin has no fast-call entry") and `#[native]
 // array::map(xs, |x| opt::or_default(x, 0) + 1)` is refused. Their exemption, producing
@@ -333,7 +333,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
             }
             None => None,
         };
-        // CR claude for eric: [bug] While the input is null, `x` keeps the last
+        // CR claude for claude: [bug] While the input is null, `x` keeps the last
         // non-null value, yet `inner_out` is still emitted whenever the callback fires
         // on its own: a captured variable changes, the `f` argument changes, or an
         // async callback answers after the null arrived. So opt::map and flat_map emit
@@ -345,7 +345,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
         // it was, would match the select. Both engines run this builtin, so
         // graphix-fuzz agrees. probe: design/review-2026-10-05/repro/core-aux-01.gx
         // (prints `n=2 v=null offset=10 map=15`). (core-aux-01)
-        // CR claude for eric: [bug] A STALE callback production is dropped here, and a
+        // CR claude for claude: [bug] A STALE callback production is dropped here, and a
         // stale null is dropped at line 316. So when an arm is entered or woken with
         // this input STALE (a sibling arm read it and spent the fire bit), the HOF
         // rides `out`: bottom at a first entry, the pre-sleep value at a wake. The same
@@ -382,7 +382,7 @@ impl<R: Rt, E: UserEvent> HofState<R, E> {
     }
 }
 
-// CR claude for eric: [structure] OptMap, OptFlatMap, OptIsSomeAnd and OptIsNoneOr are
+// CR claude for claude: [structure] OptMap, OptFlatMap, OptIsSomeAnd and OptIsNoneOr are
 // four 74-line copies of the same BuiltIn and Apply delegation to HofState. They differ
 // only in NAME and the on_null value (Null, Null, false, true). OptOrElse and
 // OptOkOrElse (854-1027) differ only in wrapping the fallback in an error, and

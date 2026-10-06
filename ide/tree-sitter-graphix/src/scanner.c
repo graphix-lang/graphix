@@ -275,7 +275,7 @@ bool tree_sitter_graphix_external_scanner_scan(
     }
 
     // Pattern 3: starts with ident char, must contain = + / somewhere
-    // CR claude for eric: [structure] After its first advance, this pattern (283-302)
+    // CR claude for claude: [structure] After its first advance, this pattern (283-302)
     // is scan_bare_ident_tail (67-84) line for line, so a change to one, such as
     // limiting bare values to `bytes:`, misses the other and the raw-string fallback
     // (215) lexes differently; the body can be `lexer->advance(lexer, false); return

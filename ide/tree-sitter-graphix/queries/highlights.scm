@@ -128,7 +128,7 @@
 ; remain @variable / @function from the rules above. use_path is the
 ; use-tree twin of module_path (its `::` chain is inlined so the
 ; parser never forks per segment).
-; CR claude for eric: [bug] The `.` anchor only requires the first named child, so this
+; CR claude for claude: [bug] The `.` anchor only requires the first named child, so this
 ; also matches the only identifier of every one-segment path. Under this file's
 ; later-wins order (tree-sitter 0.24.7 and Helix 25.07 both use it), every plain
 ; reference and every unqualified call is colored @namespace. The @function rule at line

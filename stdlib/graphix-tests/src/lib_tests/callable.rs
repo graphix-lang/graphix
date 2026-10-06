@@ -26,7 +26,7 @@ let handle = |tag: string| -> null poke(&mut ed, tag);
 let result = ed.value
 "#;
 
-// CR claude for eric: [structure] find_bind_id is copied byte for byte in
+// CR claude for claude: [structure] find_bind_id is copied byte for byte in
 // stdlib/graphix-package-gui/src/test/mod.rs:317 and
 // stdlib/graphix-package-tui/src/testing.rs:368. All three crates depend on
 // graphix-package-core, and its pub `testing` module can hold the one copy. This file
@@ -152,7 +152,7 @@ async fn arm_wake_delivers_standing_args_stale() -> Result<()> {
     set_active.call(ValArray::from_iter_exact([Value::Bool(false)].into_iter())).await?;
     handle_l.call(ValArray::from_iter_exact(["x".into()].into_iter())).await?;
     set_active.call(ValArray::from_iter_exact([Value::Bool(true)].into_iter())).await?;
-    // CR claude for eric: [test-gap] This settle (three `compile("i64:0")` round trips)
+    // CR claude for claude: [test-gap] This settle (three `compile("i64:0")` round trips)
     // does not guarantee that the `B arm's wake ran before the legitimate event, and
     // nothing asserts the count was still 0 before that event. So a final 1 is accepted
     // even when it came from a phantom fire at the wake, either in the same cycle as
@@ -360,7 +360,7 @@ async fn callable_body_flip_reads_standing_key_stale() -> Result<()> {
 /// the callee the move woke. The woken callee reads its formal stale
 /// (`opened <- e ~ ..` stays quiet), but a select arm that binds that
 /// stale formal delivers the binding fresh, and `kk ~ ..` fires.
-// CR claude for eric: [doc-drift] The doc's last sentence ('but a select arm that binds
+// CR claude for claude: [doc-drift] The doc's last sentence ('but a select arm that binds
 // that stale formal delivers the binding fresh, and `kk ~ ..` fires') says the opposite
 // of what the test below asserts:
 // arm_wake_does_not_redeliver_the_key_to_the_woken_callee fails if pan_handle's `kk ~

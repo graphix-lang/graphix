@@ -53,7 +53,7 @@ let browser = |
         }
     };
     let content_widths: Array<i64> = [];
-    // CR claude for eric: [bug] get_width is bottom, not 0, when content_widths fires
+    // CR claude for claude: [bug] get_width is bottom, not 0, when content_widths fires
     // without `i` and `i` is past its end: the `?` raises a fresh bottom and `i ~ 0`
     // does not fire. An empty listing (Enter on a leaf) sets content_widths to [], so
     // get_width(0) and name_width (line 59) go bottom and the column fold keeps the
@@ -91,7 +91,7 @@ let browser = |
         })
     };
     let visible_columns: Array<string> = uniq(visible_columns);
-    // CR claude for eric: [bug] selected_path is built by reading *selected_row back
+    // CR claude for claude: [bug] selected_path is built by reading *selected_row back
     // (lines 82-85). A caller that omits #selected_row gets the default &never(), a
     // reference with nowhere to write, so selected_path never fires;
     // book/src/examples/tui/browser_basic.gx calls it that way. With both passed,
@@ -113,7 +113,7 @@ let browser = |
             row(#style:header_style, array::push_front(cols, cell(line("Name"))))
         }
     };
-    // CR claude for eric: [bug] These slots are screen positions, so a one-row scroll
+    // CR claude for claude: [bug] These slots are screen positions, so a one-row scroll
     // gives every slot a new path: each visible cell's net::subscribe unsubscribes and
     // resubscribes, and uniq(path) ~ "#SUB" blanks it, including rows that stay on
     // screen. The 4-char #SUB feeds content_widths, so columns whose header and values

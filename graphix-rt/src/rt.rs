@@ -31,7 +31,7 @@ pub struct GXRt<X: GXExt> {
     /// Bumped once at the top of each `do_cycle`; also the trace
     /// recorder's cycle number.
     pub(super) cycle: u64,
-    // CR claude for eric: [perf] Every referenced variable gets an inner hash table of
+    // CR claude for claude: [perf] Every referenced variable gets an inner hash table of
     // its own. ref_var's first insert allocates a minimum-size table and unref_var
     // frees it when the last reference goes. Yet under a script every reference comes
     // from the one root expression, so the table holds a single key. For 6000 trivial

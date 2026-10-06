@@ -47,7 +47,7 @@ pub use uuid::Uuid;
 #[repr(u64)]
 pub enum CFlag {
     WarnUnhandled,
-    // CR claude for eric: [dead] Nothing reads WarnUnused: no unused-binding warning
+    // CR claude for claude: [dead] Nothing reads WarnUnused: no unused-binding warning
     // exists in the workspace or ../netidx. Yet the shell sets it by default for
     // scripts and --check (graphix-shell/src/lib.rs:260), the LSP sets it
     // (lsp_backend.rs:62), `-W unused`/`-W no-unused` toggle it (main.rs:58-59, help at

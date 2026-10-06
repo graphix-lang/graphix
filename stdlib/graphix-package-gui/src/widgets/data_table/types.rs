@@ -68,7 +68,7 @@ pub(super) fn truncate_to_width(text: &str, max_px: f32) -> Cow<'_, str> {
     }
     let mut lo = 0usize;
     let mut hi = text.len();
-    // CR claude for eric: [bug] This search never ends when [lo, hi] narrows to one
+    // CR claude for claude: [bug] This search never ends when [lo, hi] narrows to one
     // multi-byte character: mid rounds down to lo, that prefix fits, `lo = mid` changes
     // nothing, and the same state repeats forever. It runs in layout (render_with_size
     // inside responsive) on the GUI thread, so the window freezes at 100% CPU. An
@@ -244,7 +244,7 @@ fn parse_column_type(v: Value) -> (ColumnType, Option<Value>) {
         Ok(Repr::Progress) => (ColumnType::Progress, None),
         Ok(Repr::Button { on_click }) => (ColumnType::Button, on_click),
         Ok(Repr::Sparkline { history_seconds, min, max }) => {
-            // CR claude for eric: [bug] Any finite positive history_seconds is kept
+            // CR claude for claude: [bug] Any finite positive history_seconds is kept
             // here. Both cutoffs compute `now - Duration::from_secs_f64(hs)`
             // (subscriptions.rs:207 in the dispatch task, subscriptions.rs:665 in
             // push_defaults_to_sparklines), which panics above about 9.2e18 s on Linux
@@ -483,7 +483,7 @@ impl std::fmt::Display for NakedValue<'_> {
     }
 }
 
-// CR claude for eric: [structure] format_value is value_to_display (types.rs:246) line
+// CR claude for claude: [structure] format_value is value_to_display (types.rs:246) line
 // for line. ROW_NAME_SENTINEL_KEY and ROW_NAME_SENTINEL_KEY_ARC (mod.rs:67-68) spell
 // one literal twice where one const ArcStr would do, as VALUE_COL_KEY does, and
 // render.rs:299 re-spells ROW_NAME_HEADER_LABEL. displayed_columns,
@@ -533,7 +533,7 @@ pub(crate) fn decimate_sparkline(history: &mut VecDeque<(Instant, f64)>) {
         if i + 1 < points.len() {
             let a = &points[i];
             let b = &points[i + 1];
-            // CR claude for eric: [bug] Both points of a pair are |a - b| / 2 from the
+            // CR claude for claude: [bug] Both points of a pair are |a - b| / 2 from the
             // pair's mean, so `da >= db` is a tie that keeps the first point; the
             // second wins only by rounding. This is plain 2:1 subsampling, not the
             // peak-preserving rule the doc states. A one-sample spike or valley in the

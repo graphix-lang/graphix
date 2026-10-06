@@ -138,7 +138,7 @@ impl<X: GXExt> DataTableW<X> {
     /// The column width if set by user drag or ref; `None` means
     /// auto-size from content.
     pub(super) fn explicit_col_width(&self, col_name: &str) -> Option<f32> {
-        // CR claude for eric: [bug] Drags (events.rs:358) and the double-click auto-fit
+        // CR claude for claude: [bug] Drags (events.rs:358) and the double-click auto-fit
         // write user_widths, nothing ever removes an entry, and this lookup prefers
         // that entry to the width ref. So once the user has touched a column that has a
         // width ref and on_resize, the program no longer controls its width. With an
@@ -235,7 +235,7 @@ impl<X: GXExt> DataTableW<X> {
                     let vis =
                         self.actual_visible_cols(self.first_col, metrics.viewport_width);
                     if ci >= self.first_col + vis {
-                        // CR claude for eric: [bug] Scrolling right counts the columns
+                        // CR claude for claude: [bug] Scrolling right counts the columns
                         // that fit starting at ci - cols_in_view, when it should walk
                         // back from ci over the real widths. cols_in_view (ceil(width /
                         // MIN_COL_WIDTH) minus the name column, render.rs:149,
@@ -271,7 +271,7 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         if changed {
-            // CR claude for eric: [bug] scroll_to_cell (keyboard navigation,
+            // CR claude for claude: [bug] scroll_to_cell (keyboard navigation,
             // ensure_selection_visible) moves first_row/first_col, and apply_table_sync
             // resets them to 0 (subscriptions.rs:283). Nothing moves the overlay
             // scrollable built at render.rs:438 (it has no Id, and the crate has no
@@ -302,7 +302,7 @@ impl<X: GXExt> DataTableW<X> {
         selection.extend(self.selection.iter().cloned());
         // A selected path is a row (the name column) or `<row>/<col>`.
         let mut target: Option<(usize, ArcStr)> = None;
-        // CR claude for eric: [bug] This scrolls to the first selected path in AHashSet
+        // CR claude for claude: [bug] This scrolls to the first selected path in AHashSet
         // order even when another selected cell is already on screen. With a
         // multi-select on_select, which the book supports, clicking a cell far from an
         // earlier selection jumped the view back to the old cell in 8 of 12 trials.

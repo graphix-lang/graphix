@@ -86,7 +86,7 @@ fn would_cycle_seen_inner(addr: usize, t: &Type, seen: &mut IntSet<usize>) -> bo
 /// (`design/tvar_constraints.md`, Generalization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
-// CR claude for eric: [structure] Level has three shapes (top `{0, None}`, a definition
+// CR claude for claude: [structure] Level has three shapes (top `{0, None}`, a definition
 // `{d >= 1, Some(id)}`, generic `{u32::MAX, None}`) but admits any pair: generic is a
 // depth sentinel that `claim` relies on to sort deepest, and `Pack::decode` accepts
 // `{3, None}` or `{u32::MAX, Some(id)}`. The doc comment above says in prose what `enum
@@ -475,7 +475,7 @@ impl fmt::Display for TVar {
                 return write!(f, "'{}: …", self.name);
             }
             let r = (|| {
-                // CR claude for eric: [readability] Every inferred cell prints here as
+                // CR claude for claude: [readability] Every inferred cell prints here as
                 // `'<name>: binding`, and an inferred cell's name is its raw id
                 // (`_4611686018427394559`, TVar::default below). So the most common
                 // type errors carry a 19-digit internal number: `let f = |x| x + 1;
@@ -728,7 +728,7 @@ impl TVar {
     /// Bind the cell, replacing any binding.
     #[doc(hidden)]
     pub fn bind(&self, t: Type) {
-        // CR claude for eric: [structure] The four predicate conjuncts (Concrete,
+        // CR claude for claude: [structure] The four predicate conjuncts (Concrete,
         // Function, Singleton, OneNumber) are tested one by one at each site that needs
         // them: the four requires_* getters (900-919), this sequence, copy's own list
         // of the same three (960-982), settle.rs:45-48, 120-125, 154-161 and 296,
@@ -824,7 +824,7 @@ impl TVar {
         let (s_cell, o_cell) = (self.cell(), other.cell());
         let earlier = (earlier_task(&s_cell.read()), earlier_task(&o_cell.read()));
         match earlier {
-            // CR claude for eric: [bug] In a module check, two open cells created
+            // CR claude for claude: [bug] In a module check, two open cells created
             // outside the module land here when the check must unify them, e.g.
             // `super::x <- super::y` or `super::x == super::y` over two unannotated
             // outer lets. This arm returns without calling decided_of, so nothing is
@@ -1024,7 +1024,7 @@ impl TVar {
             && let Some(t) = self.binding()
             && let Some(n) = t.normalize_int(cx)
         {
-            // CR claude for eric: [bug] Normalizing re-binds the cell through `bind`,
+            // CR claude for claude: [bug] Normalizing re-binds the cell through `bind`,
             // and `decided()` counts that as a foreign decision. So a module with an
             // interface that only reads a parent's settled binding is refused with "the
             // check decides a type the code around the module left open". Trigger: the
@@ -1404,7 +1404,7 @@ impl Type {
                     e.insert(tv.clone());
                 }
             },
-            // CR claude for eric: [bug] This arm hands a nested function type the
+            // CR claude for claude: [bug] This arm hands a nested function type the
             // enclosing signature's name map, so a quantifier the nested type declares
             // itself (`fn<'a: Number>`) is merged with a same-named variable of the
             // enclosing signature; Lambda::compile and .gxi vals both reach it. In `|x:
@@ -1629,7 +1629,7 @@ impl Type {
     pub fn unbind_vacuous_tvars(&self) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                // CR claude for eric: [bug] This reopens every cell bound to ⊥,
+                // CR claude for claude: [bug] This reopens every cell bound to ⊥,
                 // including a ⊥ the body required. A `⊥ ⊇ 'x` from a `_` annotation, a
                 // `-> _` return, or a callback formal like publish's `#on_write` is a
                 // fact, not a vacuous observation, so the signature drops it even

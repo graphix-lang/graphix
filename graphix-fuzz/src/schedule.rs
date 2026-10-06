@@ -25,7 +25,7 @@ pub struct Schedule {
     /// One entry per injection epoch (after the compile burst): the
     /// simultaneous `(input name, value)` set delivered before that
     /// epoch's quiescence wait.
-    // CR claude for eric: [structure] Schedule and CallSpec hold injections as netidx
+    // CR claude for claude: [structure] Schedule and CallSpec hold injections as netidx
     // Values, although only i64, f64 and bool are legal. So other kinds are
     // representable and are answered by panics (render_value, canonical,
     // Schedule::decls, CallSpec::decls), and value_kind encodes the kind as magic u8s.
@@ -125,7 +125,7 @@ impl Schedule {
     /// header is an error, never silently a comment.
     pub fn parse(text: &str) -> Result<(Schedule, &str), String> {
         let mut cursor = text;
-        // CR claude for eric: [bug] This loop skips leading `//` lines to reach the
+        // CR claude for claude: [bug] This loop skips leading `//` lines to reach the
         // schedule header, and the parse returns only the text after that header, so a
         // `// callable-v1:` line above it is dropped. CallSpec::render writes exactly
         // that order, and so do mutate_wrapper, minimize's reattach and typemorph's
@@ -205,7 +205,7 @@ impl Schedule {
                 max_cycles: max_cycles.unwrap_or(trace::MAX_CYCLES),
                 max_events: max_events.unwrap_or(trace::MAX_EVENTS),
             },
-            // CR claude for eric: [bug] This returns only the text after the schedule
+            // CR claude for claude: [bug] This returns only the text after the schedule
             // header, so every `//` line the scan skipped above it is dropped, a `//
             // callable-v1:` header included (CallSpec::parse keeps its `pre`, this does
             // not). CallSpec::render documents the callable line first and either order

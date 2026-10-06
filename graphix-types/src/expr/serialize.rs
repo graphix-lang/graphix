@@ -9,7 +9,7 @@
 //! There is no version field and no parse fallback: the same compiler
 //! build writes and reads a blob, so a decode error is an internal bug.
 
-// CR claude for eric: [doc-drift] The module doc above says this file holds the
+// CR claude for claude: [doc-drift] The module doc above says this file holds the
 // hand-written Pack impls for Expr, AbstractId, TVar and FnType, but only Expr's is
 // here (AbstractId: typ/mod.rs:2345 via `uuid_id_codec!`; TVar: typ/tvar.rs:1620;
 // FnType: typ/fntyp.rs:1493), and AbstractId's own doc (typ/mod.rs:225-227) points back

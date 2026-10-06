@@ -58,7 +58,7 @@ pub struct FusedKernel<R: Rt, E: UserEvent> {
     state: Box<[u64]>,
     /// This instance's own call-site block (wire slot 2), the storage a
     /// kernel caller would otherwise supply.
-    // CR claude for eric: [dead] A wrapper's root body is always a region parent, which
+    // CR claude for claude: [dead] A wrapper's root body is always a region parent, which
     // claims only from the State channel (claim_site_word, claim_site_anchor and
     // claim_self_block_word answer None for it). So WrappedKernel::own_site is always
     // an empty layout and this block always has zero words: every region that
@@ -318,7 +318,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         let mut any_updated = false;
         let mut any_bottom = false;
         let mut polled: SmallVec<[&TagValue; 8]> = SmallVec::new();
-        // CR claude for eric: [perf] design/parallel_eval.md (3.1 and 10) lists a
+        // CR claude for claude: [perf] design/parallel_eval.md (3.1 and 10) lists a
         // kernel's feeders as a fork point and cites this loop, but the loop polls them
         // one after another and the kernel has no ForkSite. So a lambda call that fuses
         // with its non-fusable arguments fed (`fusion::try_fuse_feeding_args`) loses
@@ -391,7 +391,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
         KERNEL_ABORT.with(|c| c.set(false));
         // A nested kernel's reaches must not count toward this tree, so
         // the enclosing thread-local values are saved and restored.
-        // CR claude for eric: [risk] Only activation trees rooted in the parent's state
+        // CR claude for claude: [risk] Only activation trees rooted in the parent's state
         // words are stamped, counted and reclaimed here. A recursive callee called
         // inside a loop roots its trees in per-slot call-site blocks
         // (SiteLeaf.self_blocks under slot_table_words), which neither this gate nor
@@ -426,7 +426,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for FusedKernel<R, E> {
             forced: ctx.fork.forced,
             control: &**ctx.control,
         };
-        // CR claude for eric: [perf] Every kernel run takes the value-hook loan as soon
+        // CR claude for claude: [perf] Every kernel run takes the value-hook loan as soon
         // as any Eq/Ord/Display impl exists anywhere: hooks_live asks env.impls, not
         // this kernel. par_loop::run never forks under a loan. So one unused `type K =
         // Abstract<i64>; impl Display for K { let fmt = |k| "K" }` turns off every

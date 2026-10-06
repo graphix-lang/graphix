@@ -164,7 +164,7 @@ module's own business when the body is instance-elaborated elsewhere.
 ### The table
 
 `Env.names: Map<ModPath, ScopeNames>`, where a `ScopeNames` is
-<!-- CR claude for eric: [doc-drift] Out of date with the code. In this file: the field
+<!-- CR claude for claude: [doc-drift] Out of date with the code. In this file: the field
 is keyword_anchored, not chain (here and at line 215); restore_lexical_env is now
 Env::swap_lexical (line 170, and also design/program_image.md:169); predeclared_mods no
 longer exists (line 226; compile_statement now passes a predeclared flag); and the Pins

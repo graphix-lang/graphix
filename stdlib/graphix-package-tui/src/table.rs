@@ -33,7 +33,7 @@ struct CellV {
 #[derive(FromValue)]
 struct RowV {
     cells: Vec<CellV>,
-    // CR claude for eric: [bug] This field, top_margin, bottom_margin and
+    // CR claude for claude: [bug] This field, top_margin, bottom_margin and
     // column_spacing (line 72) are read as u16, but the gxi types them i64. A negative
     // or >65535 value therefore fails the cast, which fails the table's compile and,
     // through the `?` in layout/block/overlay, the root's compile: the whole screen
@@ -305,7 +305,7 @@ impl<X: GXExt> TuiWidget for TableW<X> {
             table = table.flex(f.0);
         }
         if let Some(Some(widths)) = &widths.t {
-            // CR claude for eric: [bug] These widths reach ratatui's Table::widths
+            // CR claude for claude: [bug] These widths reach ratatui's Table::widths
             // unclamped, and it asserts that every Percentage is at most 100 (an
             // assert!, so release builds too). ConstraintV's `p as u16` (layout.rs:35)
             // also turns a negative percentage into 65535. A written or computed
@@ -338,7 +338,7 @@ impl<X: GXExt> TuiWidget for TableW<X> {
         if let Some(Some(s)) = &style.t {
             table = table.style(s.0);
         }
-        // CR claude for eric: [bug] Setting a selection ref back to null never
+        // CR claude for claude: [bug] Setting a selection ref back to null never
         // deselects. The three blocks below copy selected_cell, selected_column and
         // selected into the persistent TableState only when they hold a value, so after
         // `sel <- null` the old row, column or cell stays highlighted. ListW applies

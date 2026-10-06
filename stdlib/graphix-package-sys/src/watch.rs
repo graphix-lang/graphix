@@ -295,7 +295,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for CreateWatcher {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for eric: [bug] The config args are read through seam_value (fired
+        // CR claude for claude: [bug] The config args are read through seam_value (fired
         // or stale) and checked on every update. An invalid poll_interval or
         // poll_batch_size returns TagValue::fired(error) whether or not any input
         // fired, so the error re-fires on every cycle of the enclosing statement:
@@ -642,7 +642,7 @@ impl<R: Rt, E: UserEvent, K: WatchKind> Apply<R, E> for WatchStream<K> {
             }
         }
         for bid in &self.bind_ids {
-            // CR claude for eric: [bug] take_custom removes the Watch's event from the
+            // CR claude for claude: [bug] take_custom removes the Watch's event from the
             // cycle's shared custom map, but every path()/events() over one Watch refs
             // this same bind id, so the first reader to update takes each event and the
             // rest never fire. With `let p = path(h); let e = events(h)`, `e` never

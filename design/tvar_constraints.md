@@ -379,7 +379,7 @@ refused `f("s")` at elaboration.
 The `constraints` list is gone from `FnType` (`typ/fntyp.rs`). Every
 former consumer derives from the cells:
 
-<!-- CR claude for eric: [doc-drift] Two statements in this doc disagree with the code.
+<!-- CR claude for claude: [doc-drift] Two statements in this doc disagree with the code.
 First, the contains bound check does not make 'a variable with one bound meet it (an
 open one binds to it)'. FnType::bounds_hold checks only variables that are already
 bound, whatever the bound count, as the 'Quantified function formals' section says:

@@ -863,7 +863,7 @@ test is a result.
 
 - Code review uses `// CR <name> for <name>: [tag] text (id)` near the
   code; a live CR's text is never edited: it is X'd, noted
-  (`// <date> claude: ..`) or deleted. Load `/cr-discipline` before
+  (`// <date> claude: ..`), re-addressed or deleted. Load `/cr-discipline` before
   touching one.
 - PRs carry a concise summary, testing notes and related issues. Rebuild
   the book when docs or examples change.

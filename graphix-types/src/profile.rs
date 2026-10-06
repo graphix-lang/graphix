@@ -170,7 +170,7 @@ pub fn module(path: &ModPath) -> Option<ModuleSpan> {
         return None;
     }
     PROFILE.with_borrow_mut(|p| {
-        // CR claude for eric: [bug] Compile tasks run on rayon workers with no open
+        // CR claude for claude: [bug] Compile tasks run on rayon workers with no open
         // span, so module() returns None here and the task's first span opens a root of
         // its own (line 137). Each interface module of a parallel run
         // (graphix-compiler/src/node/mod.rs:996-1037) prints as an anonymous

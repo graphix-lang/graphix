@@ -70,7 +70,7 @@ impl FromValue for AxisV {
         }
         let Fields { bounds, labels, labels_alignment, style, title } = v.cast_to()?;
         let mut axis = Axis::default().bounds([bounds.min, bounds.max]);
-        // CR claude for eric: [bug] A y axis with exactly one label panics the display.
+        // CR claude for claude: [bug] A y axis with exactly one label panics the display.
         // The locked ratatui-widgets 0.3.0 divides by `labels_len - 1` in
         // render_y_labels (its chart.rs:956) with no guard, which is an integer
         // division by zero in every build profile. The display task dies on its first
@@ -155,7 +155,7 @@ impl<X: GXExt> DatasetW<X> {
                         .clone()
                         .cast_to::<(f64, f64)>()
                         .context("invalid dataset pair")?;
-                    // CR claude for eric: [bug] This keeps non-finite points, and
+                    // CR claude for claude: [bug] This keeps non-finite points, and
                     // ratatui-widgets 0.3.0 paints NaN at the edge: Painter::get_point
                     // lets NaN through its bounds test and `NaN as usize` is 0, so a
                     // NaN x lands in column 0 and a NaN y in row 0, and line-clipping

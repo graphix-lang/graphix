@@ -130,7 +130,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         });
         let at = pc.update(ctx);
         let target = match at.is_fired().then(|| at.value_cloned()) {
-            // CR claude for eric: [structure] The idle label is spelled four times
+            // CR claude for claude: [structure] The idle label is spelled four times
             // across two crates: the desugar's private IDLE
             // (graphix-types/src/expr/seq.rs:35), this match, the write at :163 and
             // Catch::sleep's reset (error.rs:371). Renaming it in the desugar still
@@ -200,7 +200,7 @@ impl<R: Rt, E: UserEvent> SeqMachine<R, E> {
         for (i, parent) in m.scopes.iter().enumerate() {
             let s = match i {
                 0 => scope.clone(),
-                // CR claude for eric: [bug] Each try or with body scope gets a fresh
+                // CR claude for claude: [bug] Each try or with body scope gets a fresh
                 // ExprId on every compile. So the lowered_seqs key (seq id, lexical
                 // scope) misses for a seq nested there, and every compile of the
                 // enclosing definition lowers it again with new expression ids. Each

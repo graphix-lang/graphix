@@ -15,7 +15,7 @@ use tokio::{sync::mpsc, time::Duration};
 
 /// An unbounded sync tail loop: `v + 1` wraps, so it spins forever
 /// within one cycle. Native in jit mode, node-walked in interp mode.
-// CR claude for eric: [doc-drift] The module doc (lines 4-5) says this loop wedges with
+// CR claude for claude: [doc-drift] The module doc (lines 4-5) says this loop wedges with
 // constant stack and bounded memory, which holds only for the fused native loop. In the
 // node-walk every call is a retained activation, so interrupt_recovers_tail_loop_interp
 // grows about 0.5 GB/s until the interrupt lands. Probe: this program with --no-fusion

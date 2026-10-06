@@ -126,7 +126,7 @@ async fn seq_io(fusion_disabled: bool) -> Result<()> {
     Ok(())
 }
 
-// CR claude for eric: [test-gap] Every fixture here re-issues its builtin through an
+// CR claude for claude: [test-gap] Every fixture here re-issues its builtin through an
 // argument that fires at the wake, a constant or the `tick`/`go` the woken arm reads;
 // line_reader_rewake's stream stands at the wake, but its reader never stopped, so
 // nothing restarts there. No fixture wakes a builtin whose arguments all stand, the

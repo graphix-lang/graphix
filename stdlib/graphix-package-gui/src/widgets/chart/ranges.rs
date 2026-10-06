@@ -189,7 +189,7 @@ pub fn compute_3d_ranges<X: GXExt>(
     (pad_range(x_min, x_max), pad_range(y_min, y_max), pad_range(z_min, z_max))
 }
 
-// CR claude for eric: [bug] The range code lets ±inf through. The extent loops here and
+// CR claude for claude: [bug] The range code lets ±inf through. The extent loops here and
 // in draw.rs's Bar arm skip NaN but keep inf, and pad_range turns an infinite end or a
 // span wider than f64::MAX into (-inf, inf) and an all-inf series into (NaN, NaN). User
 // x/y/z ranges and the drag/zoom views also reach build_cartesian_2d/3d unchecked; on a
@@ -223,7 +223,7 @@ pub fn tick_precision(range: f64) -> usize {
     }
 }
 
-// CR claude for eric: [bug] chrono implements DateTime ± TimeDelta with expect(), so a
+// CR claude for claude: [bug] chrono implements DateTime ± TimeDelta with expect(), so a
 // time series whose padded x range leaves chrono's range panics the draw and takes the
 // window down. One point at datetime:"+262142-12-31T23:59:59Z" overflows `max + 1h`
 // (224), and points at 2026-01-01 and that date overflow `max + pad` (228). Graphix

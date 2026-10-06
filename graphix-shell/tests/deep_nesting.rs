@@ -35,7 +35,7 @@ const DEPTH_VAR: &str = "GRAPHIX_DEEP_DEPTH";
 
 /// `(name, source)` — one per construct whose nesting recurses somewhere
 /// in the pipeline. Add a case here when you add a recursive construct.
-// CR claude for eric: [bug] No shape here puts a postfix or operator run inside parens.
+// CR claude for claude: [bug] No shape here puts a postfix or operator run inside parens.
 // So the pin cannot see that the parser caps each run (arithexp.rs:195, :270) and the
 // paren depth separately, but never the depth of the AST: 100 paren levels around runs
 // of 999 `$` parse into an AST about 100k deep. That program's type error then aborts
@@ -93,7 +93,7 @@ fn program(shape: &str, d: usize) -> String {
         "qop" => format!("let a = [1];\nlet x = a[0]{}", "$".repeat(d)),
         "neg" => format!("let x = {}1", "-".repeat(d)),
         "not" => format!("let x = {}true", "!".repeat(d)),
-        // CR claude for eric: [test-gap] `mod m{i} { .. }` is an inline module, which
+        // CR claude for claude: [test-gap] `mod m{i} { .. }` is an inline module, which
         // the parser has never had (a parse error at the first `{`), and run_child
         // counts any error but the nesting refusal as success (lines 181-185), so this
         // shape passes at both depths without building an AST. No shape nests an
@@ -190,7 +190,7 @@ fn run_child(shape: &str, depth: usize) {
     let r = rt.block_on(async {
         ShellBuilder::<NoExt>::default()
             .module_resolvers(vec![FilesResolver::new(dir.clone(), None)])
-            // CR claude for eric: [test-gap] Every shape runs through Mode::Check. That
+            // CR claude for claude: [test-gap] Every shape runs through Mode::Check. That
             // is the check alone (CFlag::CheckOnly: no instance typing, elaboration,
             // fusion, image, cycle or formatter), at max_nesting()/8 = 125 levels. No
             // shape nests an operator or postfix chain inside parens, which is how a

@@ -52,7 +52,7 @@ type Concat = CachedArgs<ConcatEv>;
 fn fc_push_back(args: &[Value]) -> Option<Value> {
     match args {
         [Value::Array(a), tl @ ..] => {
-            // CR claude for eric: [perf] fc_push_back, like fc_push_front, fc_concat,
+            // CR claude for claude: [perf] fc_push_back, like fc_push_front, fc_concat,
             // fc_flatten and fc_dedup, copies its result through an unpooled
             // SmallVec<[Value; 32]> and then again into ValArray::from_iter_exact. Past
             // 32 elements, each call mallocs and frees a buffer the size of the result
@@ -117,7 +117,7 @@ struct WindowEv(SmallVec<[Value; 32]>);
 graphix_package_core::pack_image_state!(WindowEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
-    // CR claude for eric: [bug] array::window is a pure function of its arguments (the
+    // CR claude for claude: [bug] array::window is a pure function of its arguments (the
     // SmallVec is scratch that every eval drains or clears), but it is declared
     // Effect::Sync, which effects.rs reserves for cross-invocation state or a result
     // that depends on which arguments arrived. At a wake CachedArgs re-runs eval only
@@ -139,7 +139,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for WindowEv {
             [Some(Value::I64(window)), Some(Value::Array(a)), tl @ ..]
                 if tl.iter().all(|v| v.is_some()) =>
             {
-                // CR claude for eric: [bug] A negative #n casts to a huge usize, so
+                // CR claude for claude: [bug] A negative #n casts to a huge usize, so
                 // total <= window always holds and the window keeps every element ever
                 // pushed. array::window(#n: -1, ..) is therefore an unbounded buffer,
                 // though mod.gxi promises an array no larger than #n. Convert with
@@ -228,7 +228,7 @@ type Sort = CachedArgs<SortEv>;
 fn fc_dedup(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::Array(a) => {
-            // CR claude for eric: [bug] This set misses keys that == calls equal.
+            // CR claude for claude: [bug] This set misses keys that == calls equal.
             // netidx-value's Hash for F32/F64 (../netidx/netidx-value/src/op.rs:59-72)
             // hashes -0.0 by its raw bits and keeps the sign bit in its NaN mask, while
             // its PartialEq says -0.0 == 0.0 and every NaN is equal. So dedup keeps
@@ -478,7 +478,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
             if ctx.interrupted() {
                 break None;
             }
-            // CR claude for eric: [bug] seam_tick reads a bottom answer from the
+            // CR claude for claude: [bug] seam_tick reads a bottom answer from the
             // predicate as "not answered yet", so `ready` stays false. A bottom answer
             // is a FreshBottom: a `?` raise (which `throws 'e` allows), a div0, or a
             // `$` on a bad index. When that bottom depends only on n and x, nothing
@@ -526,7 +526,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Group<R, E> {
         self.pred.refs(refs)
     }
 
-    // CR claude for eric: [bug] delete never unbinds the `n` and `x` bindings that init
+    // CR claude for claude: [bug] delete never unbinds the `n` and `x` bindings that init
     // made with genn::bind, so each deleted Group leaves two Binds in the global
     // env.by_id for the rest of the session, and both keep its fresh `#fn` scope path
     // alive. Collection-slot churn or a dynamic rebind over array::group therefore

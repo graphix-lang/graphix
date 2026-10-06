@@ -228,7 +228,7 @@ async fn parallel_names_the_dependency() {
     assert!(e.contains("statement 2 reads `a`"), "{e}");
 }
 
-// CR claude for eric: [test-gap] Only the #[serial] half of the callee rule is pinned
+// CR claude for claude: [test-gap] Only the #[serial] half of the callee rule is pinned
 // (serial_reaches_callees). Nothing pins that #[parallel]'s check stops at a callee
 // (CLAUDE.md: 'callees excluded'), so a change that let it count fork points inside
 // callee bodies would pass the gate. Add a refusal case next to this one: `{ let double

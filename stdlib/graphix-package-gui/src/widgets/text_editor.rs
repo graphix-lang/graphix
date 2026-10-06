@@ -100,7 +100,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
         if let Some(new_text) =
             self.content_ref.update(id, v).context("text_editor update content")?
         {
-            // CR claude for eric: [bug] `last_set_text` holds only the last text pushed
+            // CR claude for claude: [bug] `last_set_text` holds only the last text pushed
             // through on_edit, and the next content update of any kind takes it, so
             // every other update rebuilds `Content` with the cursor at (0,0). With
             // `#on_edit: |s| c <- s`, two keys handled before the first echo arrives
@@ -148,7 +148,7 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
 
     fn view(&self) -> IcedElement<'_> {
         let mut te = widget::TextEditor::new(&self.content);
-        // CR claude for eric: [bug] `on_edit_callable` is always Some because
+        // CR claude for claude: [bug] `on_edit_callable` is always Some because
         // text_editor.gx defaults #on_edit to `|_| null`, so every enabled editor is
         // editable, against the doc on line 11. Without #on_edit, what the user types
         // changes the local Content but never `content`, and the next `content` update

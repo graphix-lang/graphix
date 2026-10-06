@@ -119,7 +119,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ForkControl<R, E> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
-        // CR claude for eric: [bug] check_parallel only looks for static fork points.
+        // CR claude for claude: [bug] check_parallel only looks for static fork points.
         // Inside a seq body, outside lambda literals, the machine sets ForkFlags::seq,
         // so fork_mode() is Off, and a #[parallel] map there builds and never forks, in
         // the default mode and under GRAPHIX_PAR=force. CLAUDE.md makes #[parallel] a

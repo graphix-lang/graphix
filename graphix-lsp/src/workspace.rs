@@ -122,7 +122,7 @@ pub fn extract_mod_decls(
 
 /// Collect external module declarations from an `ExprKind` tree,
 /// descending into nested `Resolved` modules.
-// CR claude for eric: [bug] This walk sees only the file's top-level `mod` statements,
+// CR claude for claude: [bug] This walk sees only the file's top-level `mod` statements,
 // but the resolver (`resolve_modules_int`, resolver.rs:681) loads a `mod foo;` at any
 // depth, for example in a block or a lambda body. A file reached that way becomes a
 // project root of its own: the server checks it standalone (a `super::` in it reports
@@ -136,7 +136,7 @@ pub fn extract_mod_decls(
 fn walk_expr_for_mods(kind: &ExprKind, out: &mut Vec<ArcStr>) {
     if let ExprKind::Module { name, value } = kind {
         match value {
-            // CR claude for eric: [bug] A bare top-level `mod foo dynamic { .. }` is
+            // CR claude for claude: [bug] A bare top-level `mod foo dynamic { .. }` is
             // recorded like `mod foo;`, so bfs_from_root links an unrelated foo.gx
             // beside the script into its project: foo.gx is then no root and its own
             // errors never show, since the script's check never loads it. The walk also

@@ -196,7 +196,7 @@ impl<X: GXExt> TuiWidget for TabsW<X> {
             child_rect.y = child_rect.y.saturating_add(1);
             child_rect.height = child_rect.height.saturating_sub(1);
         }
-        // CR claude for eric: [bug] The selected index reaches the body here, the title
+        // CR claude for claude: [bug] The selected index reaches the body here, the title
         // highlight (line 187) and event routing (line 119) without being clamped to
         // the tab count. Its `Option<u32>` decode also wraps the i64: -1 becomes
         // 4294967295 and 4294967296 becomes 0. An index at or past the end draws no

@@ -2,7 +2,7 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// CR claude for eric: [test-gap] This test cannot fail. The block's value is the
+// CR claude for claude: [test-gap] This test cannot fail. The block's value is the
 // constant `true`, which fires at init whatever open and close do, and a failing `?`
 // with no catch is only logged. It is the only test of sqlite::close.
 // tcp_connect_accept (tcp.rs:9) has the same shape, and stdin_create (sys.rs:69) checks

@@ -9,7 +9,7 @@ type MoveCursor = [
     `Down(i64)
 ];
 
-// CR claude for eric: [doc-drift] book/src/ui/tui/browser.md misstates this signature
+// CR claude for claude: [doc-drift] book/src/ui/tui/browser.md misstates this signature
 // in four places. The positional is `path`, not `s` (line 25). #selected_row is the
 // selected row's full path (/t/r1), not its display name. #selected_path is optional,
 // not required. #size is an input the viewport is sized from, not an output (lines

@@ -405,7 +405,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     ctx: &mut ExecCtx<'_, R, E>,
     nodes: &'a mut [Node<R, E>],
     site: &mut ForkSite,
-    // CR claude for eric: [perf] gather collects every child's production into a SmallVec
+    // CR claude for claude: [perf] gather collects every child's production into a SmallVec
     // of 8. So a struct, tuple, variant or array literal, or an interpolation with more
     // than 8 parts, mallocs and frees on every update, quiet cycles included, before the
     // dense gate can ride. Select::update's guard tags (select.rs:890) and the map
@@ -414,7 +414,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     // realistic literals and selects on the stack. (x-alloc-08)
 ) -> (Tag, SmallVec<[&'a TagValue; 8]>) {
     let n = nodes.len();
-    // CR claude for eric: [structure] This Serial/Measure/Fork dispatch (the ranges,
+    // CR claude for claude: [structure] This Serial/Measure/Fork dispatch (the ranges,
     // the `ranges.len() < 2` fallback, cut, fork_each and the merge) is written out
     // again in update_run (line 880) and update_args (node/callsite.rs:2381).
     // update_args also cuts its IndexMap slice by hand (callsite.rs:2393-2401) instead
@@ -424,7 +424,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
     // passing its in-order update and its merge, would leave one place to change it,
     // for example to add the independence check that field, argument and operand forks
     // lack. (c-analysis-branch-09)
-    // CR claude for eric: [bug] This fork point decides on cost alone, and so do
+    // CR claude for claude: [bug] This fork point decides on cost alone, and so do
     // update_args (callsite.rs:2381) and join2 (branch.rs:887, a binary operator's
     // operands). Only plan_block applies the rule that two children reaching an ordered
     // call keep their serial order (design/parallel_eval.md §3.2, §6). So two calls of
@@ -446,7 +446,7 @@ pub(crate) fn gather<'a, R: Rt, E: UserEvent>(
             m.done(n);
             r
         }
-        // CR claude for eric: [bug] These fields fork with no independence check, and
+        // CR claude for claude: [bug] These fields fork with no independence check, and
         // so do call arguments (callsite.rs:2387), binary operands (op.rs:179) and
         // collection slots (collection.rs:867); only a block's runs consult
         // analysis::plan_block. A sibling can still read what an earlier one publishes
@@ -656,7 +656,7 @@ impl Constant {
 
 /// A constant's production: fired at an init view, standing otherwise.
 /// Every argument-less literal is a constant.
-// CR claude for eric: [risk] Off an init view this re-delivers the caller's stored
+// CR claude for claude: [risk] Off an init view this re-delivers the caller's stored
 // resident, and callers start that resident two ways. Constant and Lambda start it
 // stale with their value (:597, lambda.rs:1552). A no-argument Variant, `{}` and `[]`
 // start it phantom, a standing bottom (data.rs:610, map.rs:51, array.rs:541). A fresh
@@ -728,7 +728,7 @@ pub struct Block<R: Rt, E: UserEvent> {
     pub(crate) catches: Box<[usize]>,
     /// Production slot for the catch-bearing path: the last covered
     /// child's borrow can't be held across the catches pass.
-    // CR claude for eric: [doc-drift] This doc is stale. Under the default
+    // CR claude for claude: [doc-drift] This doc is stale. Under the default
     // GRAPHIX_PAR=auto every block of two or more statements updates through
     // update_forking, which stores each production here (708), not only the
     // catch-bearing path. Say it holds the block's production when the block cannot
@@ -895,7 +895,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
     at: StmtAt,
 ) -> Result<(Node<R, E>, Scope)> {
     let predeclared = matches!(at, StmtAt::Block { .. });
-    // CR claude for eric: [bug] Catch, use, mod, type, trait and impl statements
+    // CR claude for claude: [bug] Catch, use, mod, type, trait and impl statements
     // compile here without passing through compile_inner (compiler.rs:160). That is the
     // only place that refuses an unknown attribute or applies a fork or definition
     // attribute, so every such attribute on these statements is silently ignored.
@@ -906,7 +906,7 @@ pub(crate) fn compile_statement<R: Rt, E: UserEvent>(
     // attribute that means nothing on a declaration. probe:
     // design/review-2026-10-05/repro/c-data-map-04.gx (c-data-map-04)
     let node = match &e.kind {
-        // CR claude for eric: [bug] A `catch` in a block's value slot matches here,
+        // CR claude for claude: [bug] A `catch` in a block's value slot matches here,
         // before the value-slot guard below. So it is accepted, although the doc above
         // says a declaration other than `let` is refused there, as `use` and `type`
         // are. The handler covers nothing and the block never produces: in `let x = {
@@ -1008,7 +1008,7 @@ pub(crate) type Child<'a, R, E> =
 
 /// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
 /// body's errors also carry each statement's origin, the file it is in.
-// CR claude for eric: [structure] The statement walkers repeat two rules by hand.
+// CR claude for claude: [structure] The statement walkers repeat two rules by hand.
 // Wrapping a statement's error with its spec, plus its origin when the body is a
 // module's, is written four times (942-946, 984-988, 1022-1026, 1115-1119).
 // typecheck0_modules (1000-1033) and typecheck1_statements (1099-1125) both fork a
@@ -1060,7 +1060,7 @@ pub(crate) fn typecheck0_statements<R: Rt, E: UserEvent>(
     while at < order.len() {
         let run =
             order[at..].iter().take_while(|i| is_static_module(&slots[**i])).count();
-        // CR claude for eric: [bug] Undeclared impls are hidden only among the members
+        // CR claude for claude: [bug] Undeclared impls are hidden only among the members
         // of one run of adjacent static modules. A module checked alone takes the else
         // branch with nothing hidden, and impls register at compile time, so it sees
         // every sibling's undeclared impl, a later sibling's included. Whether b may
@@ -1114,7 +1114,7 @@ fn typecheck0_modules<'a, R: Rt, E: UserEvent>(
         );
         task.env.hidden_impls = Arc::new(hidden);
     }
-    // CR claude for eric: [style] `crate::typ::tvar::{current_level, AtLevel, InTask,
+    // CR claude for claude: [style] `crate::typ::tvar::{current_level, AtLevel, InTask,
     // new_task}` is spelled out on seven lines (1017, 1021, 1046, 1105, 1109, 1113,
     // 1114). `crate::PendingSettle` is spelled out on two (1054, 1066), and so is
     // `crate::defer_unresolved_names` (812, 1955). `anyhow::anyhow!` (768, 1526) and
@@ -1652,7 +1652,7 @@ fn write_mismatch(bind: &env::Bind, written: &Type, at: &Arc<Origin>) -> anyhow:
     let deref = |t: &Type| t.deref_cloned().unwrap_or_else(|| t.clone());
     let (held, written) = (deref(&bind.typ), deref(written));
     let both = Type::Set(Arc::from_iter([held.clone(), written.clone()])).normalize();
-    // CR claude for eric: [readability] `inferred` is decided by `bind.typ` being a
+    // CR claude for claude: [readability] `inferred` is decided by `bind.typ` being a
     // TVar. That is also true of a `let` typed by its initializer and of a declared
     // parameter `x: 'a`, not only of a `let` over ⊥ that takes its type from its first
     // use. `let y = 1; let x = y + 1; x <- "s"` reports "x is i64, inferred from an
@@ -1749,7 +1749,7 @@ impl<R: Rt, E: UserEvent> ConnectDeref<R, E> {
         if let Some((root, path)) = ctx.rt.ref_path(&cell) {
             return Some(WriteTarget::Place(*root, path.clone()));
         }
-        // CR claude for eric: [bug] A reference to anything but a name or a place
+        // CR claude for claude: [bug] A reference to anything but a name or a place
         // (`&"top"`, `&never()`, `&f(x)`) has no byref_chain entry, so this returns
         // None. `*r <- v` through it is then dropped with no log and no diagnostic. The
         // book (udt/references.md:116-123) says `&(a + b)` is exactly `let tmp = a + b;
@@ -1787,7 +1787,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             (t.is_fired(), if t.is_bottom() { None } else { Some(tv.value_cloned()) })
         };
         let mut up = rhs_fired;
-        // CR claude for eric: [bug] `target` survives the arm's sleep and is
+        // CR claude for claude: [bug] `target` survives the arm's sleep and is
         // re-resolved only when the reference is on the overlay. So if the reference
         // moves while this arm sleeps and a sibling arm that reads it consumes the
         // fire, the woken write keeps landing in the old place: an edit arm over
@@ -1804,7 +1804,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ConnectDeref<R, E> {
             // a reference delivered without a target (a place whose
             // address is undetermined) has nowhere to write
             let t = Self::resolve(ctx, tv);
-            // CR claude for eric: [bug] A retarget sets `up` and writes the RHS's
+            // CR claude for claude: [bug] A retarget sets `up` and writes the RHS's
             // standing value even when that value already landed at the old target and
             // the RHS has not fired since, so one write lands in every place a moving
             // reference visits. `edit(&vals[focus], e)` with `*st <- e ~ ..` copies
@@ -2117,7 +2117,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Never<R, E> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
-        // CR claude for eric: [bug] Only T's names are deferred here; nothing checks
+        // CR claude for claude: [bug] Only T's names are deferred here; nothing checks
         // T's typedef applications against their parameter bounds, which every other
         // site that writes a type gets when a contains expands the Ref
         // (Type::lookup_ref_with). `type Num<'a: Number> = 'a; never<Num<string>>()`
@@ -2217,7 +2217,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Any<R, E> {
         match winner {
             Some(tv) => self.resident.set(tv),
             None if bottomed => self.resident.set_bottom(true),
-            // CR claude for eric: [bug] At a wake this rides the value held from before
+            // CR claude for claude: [bug] At a wake this rides the value held from before
             // the sleep, even when the input that produced it went bottom while the arm
             // slept. That bottom is not a tracked fire (wake.rs observe skips bottoms),
             // and the standing bottom seen at the wake is ignored. `let v0 = 10 / in1;

@@ -244,7 +244,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let mut ok = true;
             // a later binder of the name shadows the use; a later binder
             // of a name the value references, at any depth, captures it
-            // CR claude for eric: [bug] let-inline moves the value's check from its
+            // CR claude for claude: [bug] let-inline moves the value's check from its
             // `let` to its one use, past every read in between. But a let over ⊥ takes
             // its type from its first reader, the rule stmt-permute's `open` set
             // encodes. When the value and another reader of such a let are checked in a
@@ -279,7 +279,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 (0..gi).any(|j| k(&pre[j].kind) && gi < j + sizes[j])
             };
             // a name under `&` may be a place root; a seq body refuses a `catch`
-            // CR claude for eric: [bug] let-inline can move a value that raises (`x?`,
+            // CR claude for claude: [bug] let-inline can move a value that raises (`x?`,
             // or a call whose callee raises) to a use that sits after a `catch` in an
             // enclosing block, so the raise reaches that handler instead of its old
             // one; a handler typed for other errors then refuses the mutant by language
@@ -315,7 +315,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     {
         // a let over ⊥ takes its type from its first use, so two
         // readers of one do not commute
-        // CR claude for eric: [bug] `open` only holds lets whose value is a bare
+        // CR claude for claude: [bug] `open` only holds lets whose value is a bare
         // `never()`. The first reader also decides the type of a let over `(never())`,
         // a block ending in `never()`, or a select whose only arm is `never()`, and
         // `let xs = []` flips the same way through its element cell. stmt-permute still
@@ -525,7 +525,7 @@ fn find_lambda_args(e: &Expr, idx: &mut usize, blocked: bool, f: &mut impl FnMut
 /// test binds it, coverage reads it), or a field read or a `with` update
 /// on it. Only the call supplies that type, so a `let` of the
 /// `e` under any parentheses.
-// CR claude for eric: [readability] The doc above (489-493) is the head of
+// CR claude for claude: [readability] The doc above (489-493) is the head of
 // reads_param_type's doc spliced onto the tail of unparen's own, and reads_param_type
 // keeps only its last line (501); mustreject.rs:197-198 is widen's doc sitting on
 // binds_outward, and widen (mustreject.rs:214) has none. Move each block back above its
@@ -559,7 +559,7 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
                 ExprKind::StructRef { source, .. }
                 | ExprKind::TupleRef { source, .. } => is_param(source),
                 ExprKind::StructWith(w) => is_param(&w.source),
-                // CR claude for eric: [bug] Like the field read above, a call through
+                // CR claude for claude: [bug] Like the field read above, a call through
                 // an unannotated parameter (`|g| g(2)`) or a deref of one (`|r| *r +
                 // 1`) needs the parameter's type before the body checks. A `let` of
                 // either lambda is refused at its definition ("type must be known,

@@ -42,7 +42,7 @@ run!(error, ERROR, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// CR claude for eric: [test-gap] run! checks only the first batch that updates the
+// CR claude for claude: [test-gap] run! checks only the first batch that updates the
 // result, and array::iter delivers one element per cycle. So this fixture, TAKE (103),
 // UNIQ (658) and HOLD_MULTIPLE (782) all pass with the builtin replaced by the
 // identity: `once(array::iter(x))` and `array::iter(x)` both start with 1, the group
@@ -463,7 +463,7 @@ run!(queuefn_count_ref, QUEUEFN_COUNT_REF, |v: Result<&Value>| {
 
 // A queuefn passed as a HOF callback must not be statically resolved
 // (that would bypass the queue): the callback stays dynamic, `qf(7) -> 70`.
-// CR claude for eric: [test-gap] queuefn's pop_count starts at 1, so the first
+// CR claude for claude: [test-gap] queuefn's pop_count starts at 1, so the first
 // invocation dispatches at once with or without the queue. Mapping over the single
 // element [7] therefore gives [70] whether or not the HOF callback bypasses the queue:
 // using the plain lambda `|x: i64| -> i64 x * 10` in place of qf also gives [70]. This

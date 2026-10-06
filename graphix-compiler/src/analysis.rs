@@ -387,7 +387,7 @@ fn infer_effects<R: Rt, E: UserEvent>(
     }
     for (iid, b) in bodies.iter() {
         if let Some(d) = lambda_def(ctx, b.lambda) {
-            // CR claude for eric: [bug] This read-join-write of a definition's facts
+            // CR claude for claude: [bug] This read-join-write of a definition's facts
             // holds no lock across it: def_facts reads intrinsic_effect and stateless,
             // and the two stores below happen later. Run-time binds in forked branches
             // (build_bound -> analyze_bound_callee) run this loop at the same time on
@@ -522,7 +522,7 @@ fn node_facts<R: Rt, E: UserEvent>(
         | NodeView::SeqCapture(_)
         | NodeView::Any(_)
         | NodeView::Never(_)
-        // CR claude for eric: [bug] A fused arm body is a FusedKernel. This line calls
+        // CR claude for claude: [bug] A fused arm body is a FusedKernel. This line calls
         // it ASYNC and for_each_node does not look inside it, so under fusion
         // arm_sleeps_on_deselect puts a pure arm to sleep that the node-walk never
         // sleeps. At re-entry the node-walk runs that arm as a birth (standing reads
@@ -603,7 +603,7 @@ fn node_facts<R: Rt, E: UserEvent>(
 /// being inferred, so it goes to `pending` and contributes nothing here;
 /// an instance outside the analysis contributes its definition's stored
 /// facts, a builtin its declared `EFFECT`, anything else `Async`.
-// CR claude for eric: [bug] A builtin call contributes only its declared EFFECT, and a
+// CR claude for claude: [bug] A builtin call contributes only its declared EFFECT, and a
 // lambda passed to it counts as a PURE literal, so the effect of a callback the builtin
 // calls (filter's predicate, opt::map's f, array::group's f) never reaches the caller's
 // facts. `#[sync] let g = |v: i64| filter(v, |x| sys::time::after_idle(duration:10.ms,
@@ -634,7 +634,7 @@ fn callee_facts<R: Rt, E: UserEvent>(
     if let Some(ApplyView::Lambda(g)) = cs.resolved_apply() {
         return instance(g.instance_id(), g.id());
     }
-    // CR claude for eric: [bug] A call to a builtin contributes only the builtin's
+    // CR claude for claude: [bug] A call to a builtin contributes only the builtin's
     // declared EFFECT, either through the builtin-bodied def that bind_to_lambda names
     // (opt::map takes this branch) or through builtin_bindings below. The functions
     // handed to the builtin are never consulted, and a lambda literal argument counts
@@ -939,7 +939,7 @@ fn local_summary<R: Rt, E: UserEvent>(
     s: &mut Summary,
     callees: &mut SmallVec<[LambdaInstanceId; 4]>,
 ) {
-    // CR claude for eric: [bug] local_summary does not see a core-trait dispatch. `==`,
+    // CR claude for claude: [bug] local_summary does not see a core-trait dispatch. `==`,
     // `<` or `"[x]"` on an abstract value with an `impl Eq/Ord/Display` runs the method
     // through coretraits::call_hook, and no summary includes what the method reads. So
     // a seq step that compares or prints such a value after a step that writes a
@@ -985,7 +985,7 @@ fn local_summary<R: Rt, E: UserEvent>(
                 }
                 Some(ApplyView::BuiltIn(name)) => {
                     s.ordered |= ordered(name);
-                    // CR claude for eric: [bug] A builtin is made opaque only when an
+                    // CR claude for claude: [bug] A builtin is made opaque only when an
                     // argument's top-level type is &T, fn or Any. So
                     // `buffer::decode(buf, spec)` summarizes as touching nothing,
                     // although it writes (set_var) and reads lengths (store_value)
@@ -1130,7 +1130,7 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
     ctx: &CompileCtx<R, E>,
     explain: &mut dyn FnMut(usize, RunBreak),
 ) -> Box<[(u32, u32)]> {
-    // CR claude for eric: [perf] A block's plan is made at its first update from a call
+    // CR claude for claude: [perf] A block's plan is made at its first update from a call
     // graph collected from its own children, and local_summary makes every call whose
     // target that graph lacks opaque (reads and writes everything, ordered), so the
     // statement after a `let` starts a new run. A self-call targets the enclosing
@@ -1208,7 +1208,7 @@ pub(crate) fn plan_block_explained<R: Rt, E: UserEvent>(
             published = Vars::default();
             run_ordered = false;
         }
-        // CR claude for eric: [bug] `published` holds only the ids a statement binds,
+        // CR claude for claude: [bug] `published` holds only the ids a statement binds,
         // but a reference publishes too. A chainless `&(e)` writes its own cell
         // (`ByRef::publish`), and a place `&a[i]` with a moving key sets its path
         // (`set_ref_path`). Neither id is bound, and a later `*r` meets `published`
@@ -1282,7 +1282,7 @@ fn plan_machines<R: Rt, E: UserEvent>(graph: &StaticCallGraph<'_, R, E>) {
                 s
             })
             .collect();
-        // CR claude for eric: [bug] `captures` is keyed by the seq's expression id
+        // CR claude for claude: [bug] `captures` is keyed by the seq's expression id
         // (analysis.rs:116), and every instance of the enclosing definition shares it.
         // So this lookup returns every instance's captures, the store below writes this
         // machine's verdict into all of them, and the machine planned last decides
@@ -1381,7 +1381,7 @@ pub(crate) fn check_parallel<R: Rt, E: UserEvent>(
         let runs = plan_block_explained(&b.children, &b.catches, ctx, &mut |i, why| {
             first.get_or_insert((i, why));
         });
-        // CR claude for eric: [bug] A block passes on any run of two statements, even
+        // CR claude for claude: [bug] A block passes on any run of two statements, even
         // when one is a constant `let` or a typedef. `#[parallel] { let k = 1; let a =
         // g(n); a + k }` builds, and its only fork puts the constant beside the call,
         // while `#[parallel] (1, g(n))` is refused, because every other fork point

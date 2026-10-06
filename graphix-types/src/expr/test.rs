@@ -35,7 +35,7 @@ fn pbytes() -> impl Strategy<Value = PBytes> {
 }
 
 fn arcstr() -> impl Strategy<Value = ArcStr> {
-    // CR claude for eric: [test-gap] proptest's `any::<String>()` draws from `\PC*`,
+    // CR claude for claude: [test-gap] proptest's `any::<String>()` draws from `\PC*`,
     // which excludes every control character, `\n`, `\r`, `\t` and `\0` included. So
     // expr_round_trip and expr_pp_round_trip never print a multi-line string, a
     // control-character escape or a doc that spans lines. A strategy that mixes those
@@ -1189,7 +1189,7 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
     ]
 }
 
-// CR claude for eric: [test-gap] check_trait and check_module_sig (1672) never compare
+// CR claude for claude: [test-gap] check_trait and check_module_sig (1672) never compare
 // `comments`, and Comments' PartialEq is always true. Yet trait_decl! and
 // module_sigitem() generate comments and both printers write them. A printer that
 // dropped the `//` lines above a trait method or a dynamic module's interface item
@@ -1299,7 +1299,7 @@ fn loose_needs_parens(child: &ExprKind, parent_prec: u8) -> Option<bool> {
         | ExprKind::Impl(_)
         | ExprKind::Catch(_)
         | ExprKind::TryWith(_) => Some(true),
-        // CR claude for eric: [test-gap] A prefix operator's operand is an arith_term
+        // CR claude for claude: [test-gap] A prefix operator's operand is an arith_term
         // that takes the postfix operators (parser/arithexp.rs:26), so `*x?` is
         // `*(x?)`, not `(*x)?` as the doc comment on loose_needs_parens says. Over `x:
         // [i64, Error<`E>]`, `let y: i64 = -x$` checks and `(-x)$` is refused. This arm
@@ -1418,7 +1418,7 @@ fn expr() -> impl Strategy<Value = Expr> {
     decorated(undecorated_expr())
 }
 
-// CR claude for eric: [test-gap] The round-trip generators never draw several forms the
+// CR claude for claude: [test-gap] The round-trip generators never draw several forms the
 // printer must reproduce. No generator builds StringInterpolate (every `"..[x].."`), so
 // the proptests never reach write_interpolation. typexp() (327) has no `Error<T>`,
 // `Map<K, V>` or applied constructor (`'c<i64>`), and nothing draws `'_` in an impl
@@ -1542,7 +1542,7 @@ fn check_type_opt(t0: &Option<Type>, t1: &Option<Type>) -> bool {
 
 fn check_structure_pattern(pat0: &StructurePattern, pat1: &StructurePattern) -> bool {
     match (pat0, pat1) {
-        // CR claude for eric: [dead] This arm and its mirror (Literal(Array) against
+        // CR claude for claude: [dead] This arm and its mirror (Literal(Array) against
         // Slice) cannot match. value() never builds an array, and the pattern parser
         // tries slice_pattern, which commits on `[`, before literal_pattern
         // (patternexp.rs:279-286), so neither side ever holds an array literal. The 23
@@ -1792,7 +1792,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
     }
     match (&s0.kind, &s1.kind) {
         (ExprKind::ExplicitParens(e0), ExprKind::ExplicitParens(e1)) => check(e0, e1),
-        // CR claude for eric: [test-gap] `check` compares constants (and pattern
+        // CR claude for claude: [test-gap] `check` compares constants (and pattern
         // literals at 1529) with netidx `approx_eq`. It treats U32/V32, I32/Z32,
         // U64/V64 and I64/Z64 as equal, compares any other numeric pair as f64 (`i16:5`
         // equals `5`), treats floats within an absolute f64::EPSILON as equal (`1e-300`
@@ -2234,7 +2234,7 @@ proptest! {
     /// `map_children` rebuilds from exactly the children `for_each_child`
     /// visits, in the same order, at every node.
     #[test]
-    // CR claude for eric: [test-gap] `expr()` draws only parseable syntax, so this test
+    // CR claude for claude: [test-gap] `expr()` draws only parseable syntax, so this test
     // never sees Rethrow, SeqGuard, SeqAbort, SeqMachine, SeqCapture, a Catch with the
     // Machine or Try role, or a resolved Module. Seq lowering and module resolution
     // build those kinds, and seq lowering rewrites its output through `map_children`
@@ -2455,7 +2455,7 @@ mod tree_sitter_compat {
         assert!(sexp.contains("attribute"), "no attribute node in {sexp}");
     }
 
-    // CR claude for eric: [test-gap] These proptests and assert_ts_parses only check
+    // CR claude for claude: [test-gap] These proptests and assert_ts_parses only check
     // that a printed expression has no ERROR or MISSING node, so a wrong tree passes:
     // the generator emits `~!` through BinOp::ALL and tree-sitter reads `a ~! b` as `a
     // ~ (!b)`. The type generator never builds Type::App and trait_method_sig always

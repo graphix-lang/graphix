@@ -2,7 +2,7 @@
 //! flags. Each flag is read once per process because several gate
 //! prints on hot paths; set them at launch.
 
-// CR claude for eric: [structure] This dbg_flag! and its module doc are a copy of
+// CR claude for claude: [structure] This dbg_flag! and its module doc are a copy of
 // graphix-types/src/dbgenv.rs:1-14. graphix-rt (rt.rs:20-24, GRAPHIX_DBG_VARS) and
 // graphix-package-sys (netstate.rs:37-40, GXDBG_RPC) hand-roll the same LazyLock flag,
 // and one #[macro_export] #[doc(hidden)] macro in graphix-types would serve all four.

@@ -9,7 +9,7 @@
 - graphix struct fields are stored as arrays of pairs sorted by the
   field name, keep that in mind when using them in rust bindings.
   
-<!-- CR claude for eric: [doc-drift] This hand-written file has not changed since the
+<!-- CR claude for claude: [doc-drift] This hand-written file has not changed since the
 initial commit. Agents that honor nested AGENTS.md files still read it, and this rule is
 false: a trailing `;` parses in a block and at the top level, because the parser fills
 the empty last position with a NoOp (graphix-types/src/expr/parser/mod.rs:806-807,

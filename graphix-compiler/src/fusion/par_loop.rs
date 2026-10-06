@@ -145,7 +145,7 @@ pub(crate) unsafe fn run(
     let (at, grain) = match loan.mode {
         ParMode::Off => unreachable!("an Off loan is filtered"),
         ParMode::Force => {
-            // CR claude for eric: [perf] Under #[parallel] the loaned mode is Force.
+            // CR claude for claude: [perf] Under #[parallel] the loaned mode is Force.
             // For a callee's loop (no ROOT bit) this line keeps Force and drops only
             // the grain, so cost::forced_grain(None, len) gives every slot a pool job
             // of its own. That is GRAPHIX_PAR=force behaviour, while the node-walk runs
@@ -167,7 +167,7 @@ pub(crate) unsafe fn run(
                     return unsafe { in_order(chunk, frame, len, find, out) };
                 };
                 let mut probes = Probes::new();
-                // CR claude for eric: [perf] Once its site has settled, each run times
+                // CR claude for claude: [perf] Once its site has settled, each run times
                 // one slot, slot 0, as a one-slot chunk run. Every sample after the
                 // first four therefore carries the run's fixed costs (the loan swaps,
                 // with_qop_raises, the chunk's own buffer) and, after an idle gap, the
@@ -292,7 +292,7 @@ unsafe fn finish(runs: &mut [Run], find: bool, out: *mut u64) -> i8 {
     match find {
         false => {
             let bufs = runs.iter().map(|r| r.out[2]);
-            // CR claude for eric: [perf] A forked chunk opens its value buf on a pool
+            // CR claude for claude: [perf] A forked chunk opens its value buf on a pool
             // worker: emit/outline.rs:328-329 takes a VALUE_SHELLS box and an
             // LPooled<Vec<Value>> from the worker's pools. This call gives both back to
             // the invoking thread's pools. Nothing flows the other way, so the workers'

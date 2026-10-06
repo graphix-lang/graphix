@@ -204,7 +204,7 @@ impl StructurePattern {
         list: bool,
         elems: &[Self],
     ) -> Result<Type> {
-        // CR claude for eric: [bug] The slice's element type is the union of what its
+        // CR claude for claude: [bug] The slice's element type is the union of what its
         // element patterns infer, so `[0, rest..]` over Array<[i64, null]> infers
         // Array<i64>, and the select's narrowing (select.rs:1260) never widens it to
         // the scrutinee's element type. bind_captures then types `rest` and `all@` as
@@ -438,7 +438,7 @@ pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Resu
         depth: usize,
         out: &mut SmallVec<[Type; 8]>,
     ) -> Result<()> {
-        // CR claude for eric: [bug] Past MAX_ALIAS_DEPTH this returns Ok with the
+        // CR claude for claude: [bug] Past MAX_ALIAS_DEPTH this returns Ok with the
         // members found so far, and select's coverage takes the partial list for the
         // whole scrutinee: heads() (select.rs:623) hands it to the literal pool as a
         // closed domain. Each level of `type W<'a> = [`L, 'a]` costs two hops. So with

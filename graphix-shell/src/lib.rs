@@ -107,7 +107,7 @@ impl<X: GXExt> Output<X> {
             Self::Custom(cdc) => cdc.custom.process_update(env, id, v).await,
             Self::Text(e) => {
                 if e.id == id {
-                    // CR claude for eric: [bug] println! panics on EPIPE, so piping a
+                    // CR claude for claude: [bug] println! panics on EPIPE, so piping a
                     // program whose value keeps updating into `head -2` ends in "thread
                     // 'graphix-tokio' panicked … failed printing to stdout: Broken
                     // pipe" and "Error: tokio thread panicked", exit 1. The print
@@ -163,7 +163,7 @@ pub struct Shell<X: GXExt> {
     no_init: bool,
     /// Neither read nor write the registration image cache.
     #[builder(default = "false")]
-    // CR claude for eric: [structure] `no_cache` and `warm` are independent bools, so
+    // CR claude for claude: [structure] `no_cache` and `warm` are independent bools, so
     // `--warm --no-cache` is accepted: init builds no cache and run returns Ok at line
     // 444, exiting 0 with nothing written (probe: `XDG_CACHE_HOME=$tmp graphix --warm
     // --no-cache warm.gx; find $tmp -type f` prints nothing, while `--warm` alone
@@ -303,7 +303,7 @@ impl<X: GXExt> Shell<X> {
         let registration = match cache.as_ref() {
             None => None,
             Some(c) => {
-                // CR claude for eric: [bug] An entry that fails to read is never
+                // CR claude for claude: [bug] An entry that fails to read is never
                 // replaced. A loaded entry arms no save, and `program_loaded` keeps
                 // `program_image` unarmed, so when the restore fails
                 // (graphix-rt/src/gx.rs:296) the runtime compiles cold and never
@@ -408,7 +408,7 @@ impl<X: GXExt> Shell<X> {
                     .program()
                     .await?
                     .ok_or_else(|| anyhow!("the runtime has no program"))?;
-                // CR claude for eric: [bug] --fusion-stats prints the fusion counters
+                // CR claude for claude: [bug] --fusion-stats prints the fusion counters
                 // of this process's own compile. A warm start restores the program
                 // entry and fuses nothing, so the second run of a program prints
                 // 'fusion: 0 of 0 attempted regions fused' where the cold run printed
@@ -484,7 +484,7 @@ impl<X: GXExt> Shell<X> {
     pub async fn run(mut self, run_on_main: MainThreadHandle) -> Result<()> {
         let (tx, mut from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
-        // CR claude for eric: [bug] --warm returns here without asking for the
+        // CR claude for claude: [bug] --warm returns here without asking for the
         // program's result. GX::new keeps a program compile error in `program`, and
         // only load_env's gx.program() reports it. So `graphix --warm broken.gx` writes
         // only the registration entry, prints nothing and exits 0. With --log-dir the
@@ -540,7 +540,7 @@ impl<X: GXExt> Shell<X> {
                 input = input.read_line(&mut output, &mut newenv) => {
                     match input {
                         Err(e) if script => break Err(e),
-                        // CR claude for eric: [bug] In REPL mode this arm prints any
+                        // CR claude for claude: [bug] In REPL mode this arm prints any
                         // error from read_line and goes round again. It was written for
                         // a failed display, but reedline's errors land here too. With
                         // no controlling terminal (ssh without -t, CI, cron, a systemd

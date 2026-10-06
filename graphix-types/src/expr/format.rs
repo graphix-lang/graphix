@@ -37,7 +37,7 @@ pub struct FormatConfig {
     /// the line width to fit
     pub width: usize,
     /// the spaces one level of nesting indents by
-    // CR claude for eric: [bug] `indent` accepts any usize, from graphixfmt.json and
+    // CR claude for claude: [bug] `indent` accepts any usize, from graphixfmt.json and
     // from `graphix fmt --indent`. `PrettyBuf::push_indent` (print.rs:390) writes
     // indent times depth spaces at the start of every nested line. An indent of 2^64-1
     // panics with capacity overflow, 2^40 aborts on a failed allocation, and 1e9 takes
@@ -139,7 +139,7 @@ fn merge_uses<T: Clone>(
     fn depends(run: &[(bool, UseItem)], names: &[UseItem]) -> bool {
         names.iter().any(|n| {
             run.iter().any(|(_, m)| {
-                // CR claude for eric: [bug] A glob is treated as independent of every
+                // CR claude for claude: [bug] A glob is treated as independent of every
                 // item with its own root. But compile_use_item resolves each item's
                 // prefix through the imports and globs made before it, and the merged
                 // statement's sort reorders the two: when module a holds a module a, `{
@@ -375,7 +375,7 @@ enum Ornament<'a> {
     Delimiters(StrForm),
 }
 
-// CR claude for eric: [bug] The guard compares ornaments as one flat preorder list and
+// CR claude for claude: [bug] The guard compares ornaments as one flat preorder list and
 // Expr equality ignores `dec`, so a decoration that moves to the neighbouring node
 // passes. The parser keeps no ExplicitParens around a postfix base
 // (graphix-types/src/expr/parser/arithexp.rs:200-206) and the printer writes a
@@ -445,7 +445,7 @@ pub fn format_source_unchecked(
 
 /// `text` laid out canonically. The result is reparsed and refused unless
 /// it says exactly what `text` said, comments and attributes included.
-// CR claude for eric: [bug] RootFile::load strips a leading `#!` line
+// CR claude for claude: [bug] RootFile::load strips a leading `#!` line
 // (graphix-types/src/expr/resolver.rs:537-540) but this parses the raw text, so
 // `graphix fmt` fails with 'Unexpected `#`' at 1:1 on every script with a shebang that
 // `graphix` runs and `--check` accepts, and the LSP formatting handler returns no edit

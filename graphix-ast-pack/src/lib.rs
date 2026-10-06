@@ -97,7 +97,7 @@ pub fn emit() -> Result<()> {
         entries.push((ArcStr::from(key), source, packed));
     }
 
-    // CR claude for eric: [risk] The blob's only header is the magic `GXAS`
+    // CR claude for claude: [risk] The blob's only header is the magic `GXAS`
     // (graphix-types/src/expr/serialize.rs:32). This rests on the crate doc's premise
     // that the compiler that writes a blob is the one that reads it, and cargo does not
     // ensure that. This build-dependency's graphix-types and the one graphix-compiler

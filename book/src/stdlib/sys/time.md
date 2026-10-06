@@ -1,6 +1,6 @@
 # sys::time - Timers
 
-<!-- CR claude for eric: [doc-drift] This page is a hand copy of time.gxi and lacks 6 of
+<!-- CR claude for claude: [doc-drift] This page is a hand copy of time.gxi and lacks 6 of
 its 9 vals (add, sub, add_dur, sub_dur, diff, scale), and nothing else in the book
 documents them. Meanwhile book/src/core/fundamental_types.md:139-166 teaches `duration +
 duration`, `duration:1.0s * 50` and `datetime + duration`, all refused by the checker,

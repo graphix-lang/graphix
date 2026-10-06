@@ -250,7 +250,7 @@ pub(crate) fn fuse_slot<R: Rt, E: UserEvent>(
 }
 
 impl SlotShare {
-    // CR claude for eric: [structure] This codec and image_decode below repeat
+    // CR claude for claude: [structure] This codec and image_decode below repeat
     // FusedKernel's codec (fusion/kernel.rs:299-303 and 191-214) at lines 264-268,
     // 294-298 and 306-324. Both write and read state_words, slot_table_words, own_site,
     // state_self_blocks and the wrapper record, then make the same load_wrapped call

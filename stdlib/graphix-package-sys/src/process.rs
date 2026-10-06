@@ -298,7 +298,7 @@ pub(crate) struct ProcessWaitEv;
 
 impl EvalCachedAsync for ProcessWaitEv {
     const NAME: &str = "sys_process_wait";
-    // CR claude for eric: [bug] The wait future owns the ProcValue. While a wait is
+    // CR claude for claude: [bug] The wait future owns the ProcValue. While a wait is
     // pending, `ctl` stays open and own_child never sees the last handle drop, so a
     // kill_on_drop child that is being waited on is not killed when the program drops
     // it (process.gxi:69-71). For example, a respawn's old child runs until it exits on

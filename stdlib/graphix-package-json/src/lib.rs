@@ -55,7 +55,7 @@ fn json_to_value(json: serde_json::Value) -> Value {
     }
 }
 
-// CR claude for eric: [bug] value_to_json recurses once per nesting level with no depth
+// CR claude for claude: [bug] value_to_json recurses once per nesting level with no depth
 // bound and no ensure_sufficient. A native List is one nesting level per element
 // (design/list_native.md keeps that shape on the wire), so
 // `json::write_str(list::init(1000, |i| i))` aborts the whole process with a stack
@@ -100,7 +100,7 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         }
         Value::Decimal(d) => Ok(serde_json::Value::String(d.to_string())),
         Value::String(s) => Ok(serde_json::Value::String(s.to_string())),
-        // CR claude for eric: [bug] json::write_str writes bytes as an array of numbers
+        // CR claude for claude: [bug] json::write_str writes bytes as an array of numbers
         // (here) and a datetime as an RFC3339 string (line 96), but json::read's cast
         // (line 180) takes neither back: reading the output into the type it was
         // written from raises InvalidCast (the reader takes a datetime only as epoch
@@ -118,7 +118,7 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         }
         Value::DateTime(dt) => Ok(serde_json::Value::String(dt.to_rfc3339())),
         Value::Duration(d) => Ok(serde_json::Value::from(d.as_secs_f64())),
-        // CR claude for eric: [bug] A List reaches this arm as its private
+        // CR claude for claude: [bug] A List reaches this arm as its private
         // representation (cons cells of two-slot arrays). It is written as nested
         // pairs, `[0,[1,[2,[]]]]`, one nesting level per element; design/list_native.md
         // records this shape. Because of that, json::read refuses this function's own
@@ -151,7 +151,7 @@ pub fn value_to_json(value: &Value) -> Result<serde_json::Value, String> {
         Value::Map(m) => {
             let mut map = serde_json::Map::with_capacity(m.len());
             for (k, v) in m.into_iter() {
-                // CR claude for eric: [bug] A Map key is written through Value's
+                // CR claude for claude: [bug] A Map key is written through Value's
                 // Display, which is netidx's typed-literal syntax. A string key keeps
                 // its quotes and escapes: `{"a" => 1}` writes `{"\"a\"":1}`, and
                 // json::read turns that back into a different map. Any other key gets a
@@ -226,7 +226,7 @@ impl EvalCachedAsync for JsonReadEv {
         v: Value,
     ) -> Option<Value> {
         match self.cast_typ.as_ref() {
-            // CR claude for eric: [bug] This casts the JsonErr that eval returns for
+            // CR claude for claude: [bug] This casts the JsonErr that eval returns for
             // malformed input as if it were data. netidx's Value::cast turns an Error
             // into Bool(false).cast(typ), so `let n: i64 = json::read("garbage")?`
             // gives 0 and nothing raises: bool gives false, [string, null] gives null,

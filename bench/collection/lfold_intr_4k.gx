@@ -1,5 +1,5 @@
 // P2b: list fold intrinsic at n=10k — the fair twin for lfold_rec (quadratic arm consults cap its n).
-// CR claude for eric: [doc-drift] The header says n=10k above `let n = 4000`, and it
+// CR claude for claude: [doc-drift] The header says n=10k above `let n = 4000`, and it
 // carries the P2b campaign tag like every bench/collection header. Other bench prose is
 // stale or narrates history. flatmap_cons.gx:4-5 calls flatmap_list 'the nested-HOF
 // quadratic witness' while flatmap_list.gx:3 says O(n) total. lfold_rec.gx:2-5,
@@ -10,7 +10,7 @@
 // now(once(null)) and exit(printed ~ 0) hang, yet both exit 0 in both engines today.
 // State the current fact in each header (its size, what it is the twin of), drop the
 // tags and dates, and delete the two README gotchas. (examples.r2-16)
-// CR claude for eric: [doc-drift] This header says n=10k, but n is 4000. It also says
+// CR claude for claude: [doc-drift] This header says n=10k, but n is 4000. It also says
 // quadratic arm consults cap lfold_rec's n, which bench/collection/README.md:111-117
 // records as fixed. lfold_rec.gx:1-5 calls its input a transparent Cons/Nil union,
 // though it matches native List patterns over List<i64>, and lfold_rec.gx and

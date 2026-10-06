@@ -51,7 +51,7 @@ fn build_id() -> String {
         .and_then(|p| elf_build_id(&p).or_else(|| pe_build_id(&p)))
     {
         Some(id) => id,
-        // CR claude for eric: [bug] Every Mach-O executable lands here (its magic is
+        // CR claude for claude: [bug] Every Mach-O executable lands here (its magic is
         // neither "\x7fELF" nor "MZ"), and aarch64-apple-darwin is a release target, so
         // on macOS every build of one graphix-shell version shares one cache directory.
         // The registration key is only the image format plus the package names, and the
@@ -146,7 +146,7 @@ impl RegistrationCache {
         let format = [image::REGISTRATION_FORMAT];
         let flags = flags.to_le_bytes();
         let registration = hex(&make_sha3_token([&format[..], root.as_bytes()])[..16]);
-        // CR claude for eric: [bug] The program entry is keyed by the root file's bytes
+        // CR claude for claude: [bug] The program entry is keyed by the root file's bytes
         // alone. The modules the compile read (`mod m;` files beside the script,
         // GRAPHIX_MODPATH, netidx) and the script's path are not in the key, and
         // nothing re-checks them on load. A warm start therefore runs stale module code
@@ -215,7 +215,7 @@ impl RegistrationCache {
         let dir = self.dir();
         fs::create_dir_all(&dir)
             .with_context(|| format!("creating {}", dir.display()))?;
-        // CR claude for eric: [risk] The temp name is `{key}.img.{pid}`. Two Shells in
+        // CR claude for claude: [risk] The temp name is `{key}.img.{pid}`. Two Shells in
         // one process that store one entry at once open, truncate and write the same
         // file, and the first rename installs whatever interleaving landed; the
         // parallel #[test]s of check_whole_script.rs and check_numeric_singleton.rs do
@@ -232,7 +232,7 @@ impl RegistrationCache {
         ));
         fs::write(&tmp, image).with_context(|| format!("writing {}", tmp.display()))?;
         fs::rename(&tmp, &path).with_context(|| format!("renaming {}", tmp.display()))?;
-        // CR claude for eric: [perf] Every cold write deletes every other build id's
+        // CR claude for claude: [perf] Every cold write deletes every other build id's
         // directory, so executables that share the cache evict each other and
         // alternating runs always start cold. That covers a dev and a quick graphix,
         // two standalone package builds, and every `cargo test`: its ShellBuilder tests

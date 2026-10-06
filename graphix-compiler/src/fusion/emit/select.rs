@@ -66,7 +66,7 @@ impl SelectMerge {
 /// and pattern bind reuses these SSA values. `Opaque` (string) supports
 /// only Ignore / guard arms. `disc` carries the scrutinee's taint,
 /// OR-ed into every arm's result so a bottom scrutinee bottoms the select.
-// CR claude for eric: [structure] SelectScrut::Value does not say whether it holds a
+// CR claude for claude: [structure] SelectScrut::Value does not say whether it holds a
 // variant, an option or a primitive union, so classify_select_scrutinee returns the
 // AbiKind beside it and five functions take (scrut, scrut_kind, scrut_typ). Every test
 // of scrut_kind refines a SelectScrut::Value, and pairs that cannot occur still need
@@ -376,7 +376,7 @@ pub(super) fn classify_select_scrutinee<R: Rt, E: UserEvent>(
 /// test and every leaf's own test, in one block. `@` bindings, rest
 /// bindings, non-scalar leaves and nested variant leaves refuse (the
 /// select de-fuses).
-// CR claude for eric: [doc-drift] Stale docs in this file. This doc says `@` bindings,
+// CR claude for claude: [doc-drift] Stale docs in this file. This doc says `@` bindings,
 // rest bindings and non-scalar leaves refuse, but array `@` and rest binds lower as
 // Subslice and non-scalar leaves as ElemValue; only tuple and struct `@` and nested
 // variant, or- and abstract leaves refuse. The or-leaf error at :619 cites
@@ -798,7 +798,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
         let or_fail = matches!(&pat.structure_predicate, StructPatternNode::Or { .. })
             .then(|| cx.b.create_block());
         let mut binds: SmallVec<[SelectArmBind; 8]> = SmallVec::new();
-        // CR claude for eric: [perf] For an arm whose guard is not pure of its binds,
+        // CR claude for claude: [perf] For an arm whose guard is not pure of its binds,
         // the prologue (:740-751) already emitted this pattern condition and cloned the
         // arm's owned binds. This emits both again, so the arm pays two tag tests or
         // list walks and two clones per invocation (a Subslice bind takes a pooled Arc
@@ -851,7 +851,7 @@ pub(super) fn emit_select_arms<R: Rt, E: UserEvent>(
                 }
                 // Schedule-free: pure and never bottom, so no
                 // undetermined case and no fold.
-                // CR claude for eric: [bug] A lazily emitted guard's STALE bit never
+                // CR claude for claude: [bug] A lazily emitted guard's STALE bit never
                 // reaches `acc`, yet a constant in it fires at an init or wake view on
                 // its own, so a consulted guard such as `n if n > 0` or `_ if true`
                 // fires while the scrutinee is stale. The node-walk emits the select
@@ -962,14 +962,14 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
     binds: &mut SmallVec<[SelectArmBind; 8]>,
 ) -> Result<(Option<ClifValue>, Option<ClifValue>)> {
     // The node-walk tests the type predicate only when it is explicit.
-    // CR claude for eric: [doc-drift] The comment above is false: the node-walk checks
+    // CR claude for claude: [doc-drift] The comment above is false: the node-walk checks
     // the type predicate whether written or inferred (PatternNode::shape_matches,
     // node/pattern.rs:1316-1325). Skipping an inferred one here is sound only because
     // an inferred predicate rejects nothing beyond what the arm's own structure rejects
     // and what earlier unguarded arms took, and the chain decides both before it
     // reaches this arm. State that invariant instead, since it is what a new narrowing
     // source must keep. (f-select-09)
-    // CR claude for eric: [doc-drift] The comment above is false: the node-walk also
+    // CR claude for claude: [doc-drift] The comment above is false: the node-walk also
     // tests an inferred predicate (PatternNode::shape_matches, node/pattern.rs:1310),
     // shallowly through Type::shallow_discriminant and deeply where two scrutinee
     // members share a runtime shape. Someone who trusts it will take the kernel and the
@@ -1060,7 +1060,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                     {
                         None
                     }
-                    // CR claude for eric: [bug] This guard compares
+                    // CR claude for claude: [bug] This guard compares
                     // `scalar_prim(inner)` with `PrimType::from_typ(pt)`. Both are None
                     // whenever neither the tested type nor the option's inner type is a
                     // register scalar, so `string as s` over `[Array<i64>, null]` or
@@ -1105,7 +1105,7 @@ fn emit_arm_cond<R: Rt, E: UserEvent>(
                                         value_disc::STRING,
                                     ))
                                 }
-                                // CR claude for eric: [perf] Over a result union this
+                                // CR claude for claude: [perf] Over a result union this
                                 // Error test is reached only when the success type has
                                 // no register form: the gate at :1006-1011 compares
                                 // scalar_prim(nullable_inner) with
@@ -1271,7 +1271,7 @@ fn payload_local_kind(t: &Type) -> Option<LocalKind> {
 /// `mask` is the arm's pattern condition when the caller has NOT
 /// branched on it (the guard prologue); the take chain installs
 /// inside the matched block and passes `None`.
-// CR claude for eric: [structure] NullableValue, PayloadValue, ListHead and ElemValue
+// CR claude for claude: [structure] NullableValue, PayloadValue, ListHead and ElemValue
 // (:1212-1338) each repeat one mapping from LocalKind to helper and (disc, payload):
 // Composite gives (ARRAY, r0), String (STRING, r0), Value (r0, r1); scaffold.rs:125
 // (read_elem) is another copy. One function from (kind, helper family) to the owned
@@ -1650,7 +1650,7 @@ fn emit_structure_cond(
                 binds.push(bind);
                 None
             }
-            // CR claude for eric: [perf] A whole-value bind refuses here for a variant
+            // CR claude for claude: [perf] A whole-value bind refuses here for a variant
             // or other Value-kind scrutinee (list, map), any composite and a string. So
             // `` `A => 0, other => f(other) `` and `[] => 0, all => array::len(all)`
             // node-walk their whole select, and `x@` refuses the same way on a tuple
@@ -1670,7 +1670,7 @@ fn emit_structure_cond(
                 ));
             }
         },
-        // CR claude for eric: [perf] String literal patterns never lower: this path and
+        // CR claude for claude: [perf] String literal patterns never lower: this path and
         // the variant payload literal (:1702) require a register scalar, and a string
         // scrutinee classifies Opaque (:347-353), which keeps only `_` and guard arms.
         // So `select s { "a" => .., _ => .. }` and `` `Char("q") => .. `` node-walk
@@ -1915,7 +1915,7 @@ fn emit_or_chain(
 ) -> Result<ClifValue> {
     // Each alternative tests against its own member of the arm's
     // inferred Set; a non-Set predicate applies whole.
-    // CR claude for eric: [structure] This is node::pattern::alt_types
+    // CR claude for claude: [structure] This is node::pattern::alt_types
     // (node/pattern.rs:174) copied: the rule pairing each or-alternative with one
     // member of the inferred Set, which the node-walk binds by. Make that pub(crate)
     // and call it, so the engines cannot drift apart. Two names in this file also

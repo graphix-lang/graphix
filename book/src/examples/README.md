@@ -4,7 +4,7 @@ This directory contains executable code examples from the Graphix book.
 
 ## Structure
 
-<!-- CR claude for eric: [doc-drift] This README is stale. It lists only tui/ (gui/,
+<!-- CR claude for claude: [doc-drift] This README is stale. It lists only tui/ (gui/,
 net/ and collection/ also exist) and says examples may reference undefined names and
 need only stay syntactically valid, but graphix-shell/tests/examples_compile.rs
 typechecks every example in the plain cargo test gate; CLAUDE.md:839-842 (and so

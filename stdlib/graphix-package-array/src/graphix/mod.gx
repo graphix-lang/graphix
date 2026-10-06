@@ -1,5 +1,5 @@
 let group = |v: 'a, f: fn(len: i64, x: 'a) -> bool throws 'e| -> Array<'a> throws 'e 'array_group;
-// CR claude for eric: [dead] `iota` is dead. mod.gxi does not declare it (`array::iota`
+// CR claude for claude: [dead] `iota` is dead. mod.gxi does not declare it (`array::iota`
 // is 'not defined'), nothing in mod.gx calls it (`init` is the `'array_init`
 // intrinsic), and nothing in the workspace or ../netidx names `array_iota`. Delete it
 // together with its builtin in lib.rs: `fc_iota`, `IotaEv`, `type Iota` (lines 666-698)

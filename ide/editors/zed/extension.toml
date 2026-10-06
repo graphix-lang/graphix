@@ -12,7 +12,7 @@ repository = "https://github.com/graphix-lang/graphix"
 # (or a release tag SHA) when cutting a release.
 [grammars.graphix]
 repository = "https://github.com/graphix-lang/graphix"
-# CR claude for eric: [bug] Zed builds the grammar at this rev, which is 32 grammar.js
+# CR claude for claude: [bug] Zed builds the grammar at this rev, which is 32 grammar.js
 # commits behind HEAD. But languages/graphix/*.scm are symlinks to HEAD's queries, and
 # highlights.scm and indents.scm name nodes this grammar lacks (`attribute`,
 # `catch_stmt`, `use_path`, `seq_block`, ...). Zed fails the whole language load on a

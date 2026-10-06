@@ -15,7 +15,7 @@ async fn load_and_await(code: &str) -> Result<Value> {
 
 /// [`load_and_await`] with the runtime's (fused kernel runs, JIT wrapper
 /// entries).
-// CR claude for eric: [structure] This wait-for-the-first-update loop (a 5 s timeout,
+// CR claude for claude: [structure] This wait-for-the-first-update loop (a 5 s timeout,
 // recv, drain, match Updated(eid)) is written out 14 times in this file: here, in
 // load_value_and_jit and await_map_len, and inline in eleven tests. testing.rs's
 // eval_with_setup has one more. load_qop_unwraps_result, load_variadic_and_jits,
@@ -97,7 +97,7 @@ async fn load_qop_unwraps_result() -> Result<()> {
     Ok(())
 }
 
-// CR claude for eric: [readability] load_variadic_and_jits asserts `inv == 0`: the
+// CR claude for claude: [readability] load_variadic_and_jits asserts `inv == 0`: the
 // variadic call node-walks, as its own comment says, so `_and_jits` names the opposite.
 // `closure_tuple_capture_falls_back` (446) fuses whole (graphix-fuzz run: fused=1) yet
 // asserts nothing about fusion. `closure_nested_capture` (455) reads the JIT counter
@@ -574,7 +574,7 @@ async fn impure_hof_builtin_in_residue() -> Result<()> {
 
 /// Map `body` (an expr over element `x: i64` and captured `k: i64 = 3`)
 /// over `[1,2,3,4]` through the clone path.
-// CR claude for eric: [doc-drift] The compiler has no `clone_rebind` and no per-slot
+// CR claude for claude: [doc-drift] The compiler has no `clone_rebind` and no per-slot
 // clone path. Yet this helper, its doc, the comments at 554, 900 and 1296,
 // `clone_matches_reference` and the env_accounting bail text at 1173 still name them,
 // so a failure points at code that does not exist. What these tests compare is an
@@ -1900,7 +1900,7 @@ run!(local_lambda_in_a_loop_body, LOCAL_LAMBDA_IN_A_LOOP_BODY, |v: Result<&Value
 // A lambda call whose arguments do not all fuse (an effect, a stateful
 // builtin) fuses with each such argument as a feeder: the node-walk runs
 // it and the kernel reads its production as an input.
-// CR claude for eric: [test-gap] run! checks only the first update, (55, 56). This
+// CR claude for claude: [test-gap] run! checks only the first update, (55, 56). This
 // fixture therefore never sees the kernel run again when the feeder `{ let s = 0; s <-
 // 1; s }` produces its second value, so a feeder read once at init instead of wired in
 // as an input would pass. Both engines emit (55, 56) and then (56, 57). End the fixture

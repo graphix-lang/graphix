@@ -249,7 +249,7 @@ fails silently (a segfault) past it. Containment otherwise is
 
 ## 5. The cost of an activation
 
-<!-- CR claude for eric: [doc-drift] Every call is a retained activation, so node-walk
+<!-- CR claude for claude: [doc-drift] Every call is a retained activation, so node-walk
 memory is ~15 KB times the whole call tree, not the depth: naive fib(22) peaks at 937 MB
 under --no-fusion (debug build, 57313 calls), fib(25) would need ~3.7 GB and fib(26) ~6
 GB, while the fused fib(25) peaks at 74 MB. This section and

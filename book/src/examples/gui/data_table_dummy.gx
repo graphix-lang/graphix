@@ -5,7 +5,7 @@ use sys::time;
 mod icon;
 
 let publish_host = |#name, #status, #cpu, #mem| {
-    // CR claude for eric: [bug] Copied from data_table_basic.gx and never renamed:
+    // CR claude for claude: [bug] Copied from data_table_basic.gx and never renamed:
     // lines 8-10, 24 and 26 publish and list under /local/graphix/data_table_basic, and
     // line 43 titles the window 'Data Table — Basic'. The shell joins the configured
     // netidx resolver (graphix-shell/src/main.rs:359-365), so running this beside

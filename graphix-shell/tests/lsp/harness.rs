@@ -89,7 +89,7 @@ impl Client {
         self.root.join(file)
     }
 
-    // CR claude for eric: [test-gap] The harness spells every URI with the server's own
+    // CR claude for claude: [test-gap] The harness spells every URI with the server's own
     // path_to_uri, so client and server agree by construction: a client spelling that
     // differs (VS Code percent-encodes `[ ] ( ) ! $ & ' + , ; = @`) never reaches the
     // server, and a root holding `[` cannot start here (path_to_uri gives None and the
@@ -177,7 +177,7 @@ impl Client {
     }
 
     /// A request with arbitrary params: the error message, if refused.
-    // CR claude for eric: [structure] raw_request repeats request's receive loop but
+    // CR claude for claude: [structure] raw_request repeats request's receive loop but
     // drops publishDiagnostics. The server flushes dirty roots before answering a
     // request, so a raw_request after an edit swallows that check's diagnostics and a
     // later files_with_diagnostics() reads stale state. warnings() and underlined()

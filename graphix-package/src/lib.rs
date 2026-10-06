@@ -141,7 +141,7 @@ pub trait Package<X: GXExt>: Send + Sync {
 /// Build the root-module prelude from the registered package names:
 /// `mod <name>` for each package, joined by `;\n`. Core needs no `use`;
 /// the compiler's core prelude makes its root items visible everywhere.
-// CR claude for eric: [structure] root_module_source is only ever called right after
+// CR claude for claude: [structure] root_module_source is only ever called right after
 // the same register-every-package loop, which is written out at
 // graphix-shell/src/lib.rs:238-244, graphix-shell/src/lsp_backend.rs:47-54 and
 // stdlib/graphix-package-core/src/testing.rs:280-288. So a registration rule has to
@@ -186,7 +186,7 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     if !fs::metadata(base).await?.is_dir() {
         bail!("base path {base:?} does not exist, or is not a directory")
     }
-    // CR claude for eric: [bug] This admits any [A-Za-z0-9-] short name and refuses
+    // CR claude for claude: [bug] This admits any [A-Za-z0-9-] short name and refuses
     // `_`, but line 197 renders the raw short name into identifiers: skel/lib.rs NAME
     // "{{name}}_example" and skel/mod.gx '{{name}}_example. `graphix package create
     // my-pkg` exits 0 and writes 'my-pkg_example, which the parser refuses, so the
@@ -305,7 +305,7 @@ impl Packages {
     /// Derive the inputs to a shell build: the stdlib Cargo feature list
     /// (installed stdlib packages minus `core`, always compiled) and the
     /// external packages (compiled as regular deps).
-    // CR claude for eric: [bug] build_plan sends every recorded [stdlib].installed name
+    // CR claude for claude: [bug] build_plan sends every recorded [stdlib].installed name
     // to `cargo install --features` without checking it against the source being built.
     // Only update filters (1674-1675), and it writes the unfiltered set back (1679), so
     // add, remove and rebuild never reconcile. After an update across a release that
@@ -504,7 +504,7 @@ async fn write_packages(p: &Packages) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    // CR claude for eric: [risk] write_packages truncates and rewrites packages.toml in
+    // CR claude for claude: [risk] write_packages truncates and rewrites packages.toml in
     // place, and read_packages also writes it (migration, first creation) from list(),
     // which holds no lock. An interrupted write leaves an empty file, after which every
     // package command fails with 'packages.toml missing [packages] table'. A write cut
@@ -524,7 +524,7 @@ async fn write_packages(p: &Packages) -> Result<()> {
 /// excludes the `graphix-package` crate itself; the value shape is ignored, so
 /// the `optional` gui entry is included).
 fn stdlib_packages_in_cargo_toml(content: &str) -> Result<BTreeSet<String>> {
-    // CR claude for eric: [style] toml_edit::DocumentMut is imported inside three
+    // CR claude for claude: [style] toml_edit::DocumentMut is imported inside three
     // functions (here, 506 and 1148) where one top-level import belongs, and line 1245
     // writes std::time::Duration though Duration is imported at the top. Package names
     // and versions are String throughout (Packages, PackageEntry::Version, UpdatePlan,
@@ -792,7 +792,7 @@ impl PackageId {
 
 /// The set of changes `update` discovered as available.
 #[derive(Debug, Clone, PartialEq, Eq)]
-// CR claude for eric: [structure] UpdatePlan can hold new_stdlib entries with shell =
+// CR claude for claude: [structure] UpdatePlan can hold new_stdlib entries with shell =
 // None, a state update never builds (stdlib_latest is empty without a bump, 1607-1613).
 // apply_selection still guards against it through its `build_version == latest_shell`
 // proxy, and apply_no_shell_item_allows_new_optin pins the unreachable state. Nesting
@@ -1359,7 +1359,7 @@ impl GraphixPM {
                 println!("Adding stdlib package {name}");
                 installed.stdlib_removed.remove(name);
                 installed.stdlib_installed.insert(name.to_string());
-                // CR claude for eric: [perf] add sets changed for every stdlib name and
+                // CR claude for claude: [perf] add sets changed for every stdlib name and
                 // every external entry, even one already installed at the same version.
                 // So `graphix package add array` with array installed unpacks the shell
                 // source, backs up the binary and runs a full LTO cargo install with
@@ -1459,7 +1459,7 @@ impl GraphixPM {
                         "Removing {name} also removes packages that depend on it: {}",
                         dependents.join(", ")
                     );
-                    // CR claude for eric: [bug] Without a TTY confirm_yn answers no.
+                    // CR claude for claude: [bug] Without a TTY confirm_yn answers no.
                     // `graphix package remove sys </dev/null` then prints "Skipping
                     // sys", then "No changes needed.", and exits 0 with sys still
                     // installed, so a script cannot tell a refused removal from a done
@@ -1536,7 +1536,7 @@ impl GraphixPM {
     /// List installed packages
     pub async fn list(&self) -> Result<()> {
         let packages = read_packages().await?;
-        // CR claude for eric: [dead] read_packages always returns core installed
+        // CR claude for claude: [dead] read_packages always returns core installed
         // (enforce_invariants runs on every path), so this 'No packages installed'
         // branch and the stdlib_installed.is_empty() guard at 1459 never fire.
         // graphix-package/Cargo.toml:36 declares nohash, which nothing in this crate or
@@ -1603,7 +1603,7 @@ impl GraphixPM {
         // pulls their closure and `core` is always compiled.
         let mut external = BTreeMap::new();
         external.insert(short_name.to_string(), PackageEntry::Path(package_dir.clone()));
-        // CR claude for eric: [bug] stdlib_packages_in_cargo_toml keeps every
+        // CR claude for claude: [bug] stdlib_packages_in_cargo_toml keeps every
         // graphix-package-* key of the package's [dependencies], so a third-party dep
         // becomes a shell feature. A package that depends on graphix-package-widgets
         // builds with `--features "sys widgets graphix-package-mypkg/standalone"`, and
@@ -1627,7 +1627,7 @@ impl GraphixPM {
             .map(|l| l.write().context("waiting for package lock"))
             .transpose()?;
         let source_dir = if let Some(dir) = source_override {
-            // CR claude for eric: [bug] The override is used as given, but package_dir
+            // CR claude for claude: [bug] The override is used as given, but package_dir
             // is canonicalized. Cargo then runs with current_dir(override) and the
             // relative --target-dir override/target, so it builds into
             // <cwd>/<override>/<override>/target. The copy below reads
@@ -1641,7 +1641,7 @@ impl GraphixPM {
             // design/review-2026-10-05/repro/package-02.sh (package-02)
             dir.to_path_buf()
         } else {
-            // CR claude for eric: [structure] This block repeats prepare_source
+            // CR claude for claude: [structure] This block repeats prepare_source
             // (1175-1181) line for line, and 1536-1540 repeat install_from_source's
             // read, update_cargo_toml and write of the shell manifest (1193-1198). Call
             // prepare_source and share one manifest-rewrite function. update_cargo_toml
@@ -1663,7 +1663,7 @@ impl GraphixPM {
         let shell_cargo_toml_path = source_dir.join("Cargo.toml");
         let shell_cargo_toml = fs::read_to_string(&shell_cargo_toml_path).await?;
         let updated = self.update_cargo_toml(&shell_cargo_toml, &external)?;
-        // CR claude for eric: [bug] With --source-override, source_dir is the caller's
+        // CR claude for claude: [bug] With --source-override, source_dir is the caller's
         // own tree. The help at graphix-shell/src/main.rs:109-112 suggests the
         // workspace, which only works as graphix-shell/. This write leaves
         // `graphix-package-<pkg> = { path = .. }` in that Cargo.toml for good, whether
@@ -1718,7 +1718,7 @@ impl GraphixPM {
             .get_crate(crate_name)
             .await
             .with_context(|| format!("querying crates.io for {crate_name}"))?;
-        // CR claude for eric: [risk] crates.io's max_version is the highest version
+        // CR claude for claude: [risk] crates.io's max_version is the highest version
         // including pre-releases (crates_io_api also exposes max_stable_version), and
         // version_gt ranks 0.10.0-rc.1 above 0.9.0. Once a graphix-shell or package
         // pre-release is published, `graphix package update --yes` moves every user

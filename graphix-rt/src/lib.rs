@@ -180,7 +180,7 @@ impl<X: GXExt> Ref<X> {
     /// This will cause all nodes dependent on *id to update. This is the same
     /// as the `*r <-` operator in Graphix. This does the same thing as
     /// `GXHandle::set` using the target id.
-    // CR claude for eric: [bug] set_deref is not dead: the tui size refs call it
+    // CR claude for claude: [bug] set_deref is not dead: the tui size refs call it
     // (block.rs:343, layout.rs:260, overlay.rs:127, scrollbar.rs:354, tabs.rs:203). Its
     // only target is the byref_chain entry compile_ref found (gx.rs:976), so for a
     // place reference it writes nothing and returns Ok(()). As a result, `block(#size:
@@ -389,7 +389,7 @@ impl<X: GXExt> NamedCallable<X> {
     ///
     /// While a late bound function is unresolved calls will queue internally in
     /// the NamedCallsite and will happen when the function is resolved.
-    // CR claude for eric: [bug] Before the name resolves, call parks a oneshot in
+    // CR claude for claude: [bug] Before the name resolves, call parks a oneshot in
     // self.deferred and awaits it while its future still borrows &mut self. Only
     // update(&mut self) completes that oneshot, so the documented 'keep calling update
     // while waiting' cannot be written, and an early call never returns.
@@ -846,7 +846,7 @@ impl<X: GXExt> GXHandle<X> {
         match root {
             None => Ok(None),
             Some(Err(e)) => Err(anyhow!("{e}")),
-            // CR claude for eric: [risk] Every call mints another owning CompExp for
+            // CR claude for claude: [risk] Every call mints another owning CompExp for
             // the one program root (ToGX::Program clones the stored ProgramRoot), and
             // dropping any of them sends Delete and stops the program for everyone. The
             // image tests already drop one at once

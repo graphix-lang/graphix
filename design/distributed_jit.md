@@ -169,7 +169,7 @@ each was obvious in hindsight and invisible in advance.
    first fired by an async input.
 
 4. **Runtime wake-ups key on `(BindId, top_id)`.** Feeders register
-   <!-- CR claude for eric: [doc-drift] `ExecCtx::fuse_top_id` is now
+   <!-- CR claude for claude: [doc-drift] `ExecCtx::fuse_top_id` is now
    `FusionCtx::top_id` (fusion/mod.rs:349), and the `quiet_flag` this doc lists among
    BodyCx's words is gone. Other design docs also cite names the tree no longer has as
    if they were current: the `Arc<Mutex<Option<Arc<ResolvedRef>>>>` cell and

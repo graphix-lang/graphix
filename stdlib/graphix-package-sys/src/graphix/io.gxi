@@ -23,7 +23,7 @@ trait Read {
         let chunk = read(s, want);
         select chunk {
             error as _ => filter_err(chunk),
-            // CR claude for eric: [bug] This completion test reads `acc`, so it fires
+            // CR claude for claude: [bug] This completion test reads `acc`, so it fires
             // again when the false arm's `acc <-` lands. At that point the next read is
             // still in flight and `b` still holds the previous chunk, so over an
             // asynchronous `read` that returns 4 of 6 bytes, read_exact answers the
@@ -58,7 +58,7 @@ trait Read {
     /// produces.
     val read_all: fn(self) -> Result<bytes, `IOError(string)> = |s| {
         let want: u64 = u64:65536;
-        // CR claude for eric: [bug] acc's initializer is a constant, so acc is set
+        // CR claude for claude: [bug] acc's initializer is a constant, so acc is set
         // once, when the call site is built, and nothing clears it when `s` fires
         // again. Any second request at the same site (a new file, the next accepted
         // connection, a seq re-run, a file seeked back to 0) returns everything read
@@ -77,7 +77,7 @@ trait Read {
                 true => acc,
                 false => {
                     // gated on the chunk: see `read_exact`
-                    // CR claude for eric: [perf] Each 64 KiB chunk copies the whole
+                    // CR claude for claude: [perf] Each 64 KiB chunk copies the whole
                     // accumulator (core_bytes_concat builds a fresh buffer), so
                     // read_all is quadratic in the stream's length. No system stream
                     // overrides it: io.gx, fs.gx, tcp.gx, tls.gx and process.gx bind

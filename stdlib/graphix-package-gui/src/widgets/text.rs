@@ -80,7 +80,7 @@ impl<X: GXExt> super::GuiWidget<X> for TextW<X> {
         let content = self.content.t.as_deref().unwrap_or("");
         let mut t = widget::Text::new(content);
         if let Some(Some(sz)) = self.size.t {
-            // CR claude for eric: [bug] A `#size` of 0.0 reaches iced unchecked and
+            // CR claude for claude: [bug] A `#size` of 0.0 reaches iced unchecked and
             // panics cosmic-text in layout ("line height cannot be 0").
             // text_input.rs:172, text_editor.rs:156, the checked checkbox at
             // toggle.rs:113 and markdown's `#text_size` (markdown.rs:97) do the same.

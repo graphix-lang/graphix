@@ -24,7 +24,7 @@ trait Eq {
     val eq: fn(self, other: self) -> bool
 };
 
-// CR claude for eric: [doc-drift] This says `array::sort`, `min`/`max` and map keys
+// CR claude for claude: [doc-drift] This says `array::sort`, `min`/`max` and map keys
 // stay structural, but they consult the implementation exactly as `<` does
 // (design/traits.md "THE VALUE SEAM", book/src/udt/traits.md). With a reversed `impl
 // Ord for Rev`, `min(Rev(1), Rev(2))` is `Rev(2)`, `array::sort([Rev(1), Rev(2)])` is
@@ -73,7 +73,7 @@ trait Collection {
         = |c, f| {
             let init: Option<'a> = null;
             fold(c, init, |acc, x| select acc {
-                // CR claude for eric: [bug] The defaults use null to mean "no element".
+                // CR claude for claude: [bug] The defaults use null to mean "no element".
                 // map and filter (lines 61, 64) go through filter_map, whose Option<'b>
                 // collapses when the element type holds null. This arm also can't tell
                 // a null match from "not found yet". So over nullable elements, map and
@@ -129,7 +129,7 @@ type ErrChain<'a> = {
     pos: Pos
 };
 
-// CR claude for eric: [structure] Three signatures here are looser than their builtins.
+// CR claude for claude: [structure] Three signatures here are looser than their builtins.
 // `all` returns one of its equal arguments but is typed `fn(@args: Any) -> Any`, so
 // `all(x, x) + 1` is refused; `fn(a: 'a, @args: 'a) -> 'a`, as max/min have, gives it a
 // real type. take/skip (151, 154) take `#n: Any` and cast it to usize: `take(#n: count
@@ -189,7 +189,7 @@ val range: fn(i: i64, j: i64) -> Result<i64, `RangeError(string)>;
 /// return true if any argument is true
 val or: fn(@args: bool) -> bool;
 
-// CR claude for eric: [bug] bit_and, bit_or, bit_xor, shl and shr below are `fn<'a:
+// CR claude for claude: [bug] bit_and, bit_or, bit_xor, shl and shr below are `fn<'a:
 // Int>`, so 'a can settle to a union such as [i64, u8]. int_binop!/int_shift!
 // (lib.rs:1456-1494) return None when the two values are different integer types. Such
 // a call passes --check and never produces anything: no value, no error, no log. The

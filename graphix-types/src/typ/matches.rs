@@ -369,7 +369,7 @@ impl Type {
                     Some(prev_sig_type) => {
                         let matches = match (sig_type, prev_sig_type) {
                             (Type::TVar(tv0), Type::TVar(tv1)) => tv0.same_cell(tv1),
-                            // CR claude for eric: [bug] `==` compares type variables by
+                            // CR claude for claude: [bug] `==` compares type variables by
                             // binding, so two distinct unbound signature variables
                             // inside a type count as equal (`Array<'a>` ==
                             // `Array<'b>`). That lets an implementation less general

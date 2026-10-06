@@ -142,7 +142,7 @@ impl<X: GXExt> GuiWidget<X> for TextInputW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        // CR claude for eric: [bug] view gives iced the last value the runtime
+        // CR claude for claude: [bug] view gives iced the last value the runtime
         // delivered, and the event loop rebuilds the UI from it for every batch of
         // window events while on_input goes to the runtime without waiting. So a key
         // pressed before the echo of the previous on_input arrives edits the old

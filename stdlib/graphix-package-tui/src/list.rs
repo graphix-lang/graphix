@@ -118,7 +118,7 @@ impl<X: GXExt> TuiWidget for ListW<X> {
         repeat_highlight_symbol
             .update(id, &v)
             .context("list update repeat_highlight_symbol")?;
-        // CR claude for eric: [bug] `selected` and `scroll` reach the ListState only
+        // CR claude for claude: [bug] `selected` and `scroll` reach the ListState only
         // here and at compile, but ratatui's List render rewrites that state on every
         // draw. An empty list sets the selection to None and the offset to 0, and a
         // selection past the end is clamped to the last item. Nothing restores them
@@ -167,7 +167,7 @@ impl<X: GXExt> TuiWidget for ListW<X> {
         if let Some(Some(s)) = &style.t {
             list = list.style(s.0);
         }
-        // CR claude for eric: [bug] `state` keeps whatever ratatui's previous render
+        // CR claude for claude: [bug] `state` keeps whatever ratatui's previous render
         // wrote into it. An empty list sets the selection to None and the offset to 0,
         // a selection past the end is clamped to the last item, and both persist,
         // because `selected` and `scroll` are written into the state only when their

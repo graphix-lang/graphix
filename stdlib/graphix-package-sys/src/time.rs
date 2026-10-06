@@ -106,7 +106,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for AfterIdle {
         if let Some(secs) = &self.timeout_v
             && (timeout_up || val_up)
         {
-            // CR claude for eric: [bug] Both arms drop an armed `self.id` without
+            // CR claude for claude: [bug] Both arms drop an armed `self.id` without
             // `release`. Its `by_ref` entry stays for good, and when its timer fires
             // the runtime stores the dead id and updates this statement (for a script,
             // the whole program) for nothing. That is about 200 bytes and one stray
@@ -187,7 +187,7 @@ impl SubAssign<u64> for Repeat {
     fn sub_assign(&mut self, rhs: u64) {
         match self {
             Repeat::Yes | Repeat::No => (),
-            // CR claude for eric: [bug] This subtraction underflows on N(0).
+            // CR claude for claude: [bug] This subtraction underflows on N(0).
             // Timer::update's (Some(timeout), Some(repeat)) arm (line 343) schedules
             // without checking will_repeat(), so timer(d, 0) arms a timer. A count that
             // drops to 0 while a fire is pending (line 325) also keeps its armed timer,
@@ -347,7 +347,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
                 Ok(repeat) => {
                     self.repeat = repeat;
                     if let Some(dur) = self.timeout {
-                        // CR claude for eric: [bug] A one-shot timer whose repeat arg
+                        // CR claude for claude: [bug] A one-shot timer whose repeat arg
                         // arrives after its timeout never fires. The `(Some(s), None,
                         // _)` arm only stores the timeout, and this arm arms the timer
                         // only when `will_repeat()`, which is false for Repeat::No. In
@@ -407,7 +407,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Timer {
         }
     }
 
-    // CR claude for eric: [bug] Sleep drops the timer's timeout and repeat, and update
+    // CR claude for claude: [bug] Sleep drops the timer's timeout and repeat, and update
     // rebuilds them only from a fired timeout. At an arm's wake, a binding or parameter
     // argument arrives stale, so `timer(interval, true)` in a re-selected arm never
     // fires again, while `timer(duration:3.ms, true)` restarts because constants fire

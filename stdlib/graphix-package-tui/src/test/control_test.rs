@@ -28,7 +28,7 @@ let result = paragraph(&status)
     loop {
         h.drain().await?;
         let lines = h.render_lines()?;
-        // CR claude for eric: [test-gap] This check also accepts the regression the
+        // CR claude for claude: [test-gap] This check also accepts the regression the
         // module doc describes. If suspend(false) asked for a display (say the
         // suspend_rx check in SuspendEv::eval, lib.rs:540, moved above `if
         // !suspended`), status becomes `idle errored: error:["TerminalError", "no

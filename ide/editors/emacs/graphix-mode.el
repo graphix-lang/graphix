@@ -326,7 +326,7 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
                                   "tuple" "reference" "number" "string"
                                   "boolean" "null"))))))
 
-    ;; CR claude for eric: [bug] Nothing in graphix-ts-mode calls (treesit-parser-create
+    ;; CR claude for claude: [bug] Nothing in graphix-ts-mode calls (treesit-parser-create
     ;; 'graphix), and treesit-major-mode-setup does not create a parser. So once the
     ;; grammar is installed (line 332 then remaps every .gx buffer here), Emacs 31.1
     ;; shows no highlighting: font-lock signals (wrong-type-argument treesit-parser-p

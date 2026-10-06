@@ -6,7 +6,7 @@ val is_match: fn(#pat: string, s: string) -> Result<bool, `ReError(string)>;
 /// invalid.
 val find: fn(#pat: string, s: string) -> Result<Array<string>, `ReError(string)>;
 
-// CR claude for eric: [doc-drift] This doc has the nesting backwards. captures returns
+// CR claude for claude: [doc-drift] This doc has the nesting backwards. captures returns
 // one element per match, each [whole match, group 1, ...] with null for a group that
 // did not take part (lib.rs:51-63); `re::captures(#pat: r"(\d)(x)?", "1 2x")` is [["1",
 // "1", null], ["2x", "2", "x"]]. Other interface docs also disagree with their code.

@@ -106,7 +106,7 @@ impl TrackedFires {
             if !pending.contains(id)
                 && (carried.is_some_and(|c| c.contains(id))
                     || !evaluated.iter().any(|i| per_arm[*i].contains_key(id)))
-                // CR claude for eric: [bug] A wake phantom is recorded here as a sound
+                // CR claude for claude: [bug] A wake phantom is recorded here as a sound
                 // fire. That is a let in ctx.event.wake_phantoms, republished at a wake
                 // from its constants alone. deliver later injects it as a plain FIRED
                 // catch-up in a cycle whose wake_phantoms no longer holds it, and
@@ -153,7 +153,7 @@ impl TrackedFires {
             self.pending.remove(&key);
             for id in set[&key].iter().copied() {
                 let standing = match read_var(ctx, &id) {
-                    // CR claude for eric: [bug] This arm counts a STALE overlay entry
+                    // CR claude for claude: [bug] This arm counts a STALE overlay entry
                     // as a live delivery, so the pending bit is spent and no catch-up
                     // fire is injected. A `let` inside a woken arm always leaves such
                     // an entry, because Bind::update's wake refresh republishes quietly

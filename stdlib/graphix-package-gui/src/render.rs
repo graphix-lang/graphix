@@ -37,7 +37,7 @@ impl GpuState {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .context("failed to create GPU device")?;
-        // CR claude for eric: [bug] This takes the first format the backend lists, but
+        // CR claude for claude: [bug] This takes the first format the backend lists, but
         // iced packs colors as linear values (GAMMA_CORRECTION, no web-colors feature)
         // and needs an sRGB target. iced_wgpu's own compositor picks an is_srgb format
         // for exactly this reason. wgpu-hal lists Bgra8Unorm first on Metal and
@@ -63,7 +63,7 @@ impl GpuState {
             self.queue.clone(),
             self.format,
             None,
-            // CR claude for eric: [bug] This shell's notifier does nothing, but
+            // CR claude for claude: [bug] This shell's notifier does nothing, but
             // iced_wgpu decodes a path or bytes image on a worker thread and announces
             // the finished load only through this shell (invalidate_layout, or
             // request_redraw for a large upload). The frame that starts a load cannot

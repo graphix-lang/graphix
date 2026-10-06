@@ -68,7 +68,7 @@ else
     echo "  (edit the [[grammar]] block to point at the right source)"
 fi
 
-# CR claude for eric: [bug] Upstream Helix installs its binary as `hx`; `helix` is the
+# CR claude for claude: [bug] Upstream Helix installs its binary as `hx`; `helix` is the
 # Arch-family rename. On most systems this check exits 1 after the queries and
 # languages.toml have already been written, and no grammar is built. The appended
 # languages.toml also makes the published repo's git main the grammar source

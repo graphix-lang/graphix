@@ -74,7 +74,7 @@ async fn compile_columns<X: GXExt>(
 async fn compile_rows<X: GXExt>(gx: &GXHandle<X>, v: Value) -> Result<Vec<Vec<GuiW<X>>>> {
     let rows = v.cast_to::<SmallVec<[Value; 8]>>()?;
     let mut result = Vec::with_capacity(rows.len());
-    // CR claude for eric: [perf] Rows are compiled one after another, and so are
+    // CR claude for claude: [perf] Rows are compiled one after another, and so are
     // columns (line 44), menu groups and menu items (menu_bar.rs:123 and 87). Each
     // element's compile_ref and compile_callable requests wait for the previous
     // element's, one pass of the runtime loop apiece, all inside `rt.block_on` on the
@@ -179,7 +179,7 @@ impl<X: GXExt> GuiWidget<X> for TableW<X> {
         Ok(changed)
     }
 
-    // CR claude for eric: [bug] TableW forwards on_message to its headers and cells by
+    // CR claude for claude: [bug] TableW forwards on_message to its headers and cells by
     // hand but not before_view. It also keeps the default empty children_mut, so the
     // event loop's before_view (event_loop.rs:317) never reaches a widget inside a
     // table. TooltipW (tooltip.rs:53) lists only child, so its tip gets neither

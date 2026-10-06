@@ -42,7 +42,7 @@ struct Cell {
     pos: SourcePosition,
 }
 
-// CR claude for eric: [structure] CarriedBinds, Cell and collect_step_binds (line 1047)
+// CR claude for claude: [structure] CarriedBinds, Cell and collect_step_binds (line 1047)
 // are left from the carried-cell lowering; dependency_summaries.md §3 says there are no
 // carried cells. The pre-pass now only names each try's `e` cell: its three arms
 // restate try_of's 'bare, or a let's or a connect's value' rule, the key's name half is
@@ -204,7 +204,7 @@ fn trigger_snapshot(
             let single = matches!(b.pattern, StructurePattern::Bind(_));
             let mut body: LPooled<Vec<Expr>> = LPooled::take();
             if !single {
-                // CR claude for eric: [bug] This destructuring let drops the trigger's
+                // CR claude for claude: [bug] This destructuring let drops the trigger's
                 // annotation: `b.typ` reaches only the `seqtv` value let. So `seq let
                 // {x, ..}: P = t { x + 1 }` is refused with "non exhaustive struct
                 // matches require type annotations" at the generated `let { x, .. } =
@@ -335,7 +335,7 @@ fn desugar_plain(seq: &Parts, queue: Option<&Queue>) -> Result<Expr> {
     if manual {
         exprs.push(ExprKind::SeqAbort(Arc::new(r#ref(pos, &aborted))).to_expr(pos));
     }
-    // CR claude for eric: [bug] The trigger is filtered after `catch_node` (line 313),
+    // CR claude for claude: [bug] The trigger is filtered after `catch_node` (line 313),
     // so it runs under the machine's handler. An error raised by the trigger, or by a
     // function it calls, aborts the run in progress. Under `seqq` (trigger bound in
     // desugar_queued's prelude), and for this seq's own `abort(..)` event (bound before
@@ -406,7 +406,7 @@ fn abort_event(
         let flushed = format_compact!("seqfl{id}");
         let event = run_event(&rewrite(e, visible), &edge, &armed);
         out.push(let_bind(e.pos, &flushed, None, event));
-        // CR claude for eric: [bug] The flush reaches core::queue's #flush through this
+        // CR claude for claude: [bug] The flush reaches core::queue's #flush through this
         // connect, so the queue clears one cycle after the flush event fires. A request
         // that fires in the event's own cycle was already pushed that cycle, so it is
         // cleared along with the old ones. The book (core/seq.md: "A request that
@@ -483,7 +483,7 @@ fn find_outside_lambdas(e: &Expr, pred: impl Fn(&Expr) -> bool) -> Option<Expr> 
 }
 
 /// The variable a place expression is rooted at, if it names one.
-// CR claude for eric: [bug] place_root is a second copy of the compiler's place walk
+// CR claude for claude: [bug] place_root is a second copy of the compiler's place walk
 // (graphix-compiler/src/node/bind.rs Place::of and ByRef::compile) and gives different
 // answers. It stops at ExplicitParens, which the compiler unwraps at every step, and it
 // follows ArraySlice, which the compiler does not treat as a place. So in a seqq body,
@@ -631,7 +631,7 @@ impl Machine<'_> {
         Ok(tails)
     }
 
-    // CR claude for eric: [bug] The statement's own attributes (stmt.dec) are dropped
+    // CR claude for claude: [bug] The statement's own attributes (stmt.dec) are dropped
     // here for until, try-let, let and connect statements: the rebuilt guard, sink
     // write, let_pat and connect_path carry no dec. lower_block drops them the same way
     // for a block's lets and connects. Only an expression statement keeps its
@@ -651,7 +651,7 @@ impl Machine<'_> {
                 )
                 .at(stmt));
             }
-            // CR claude for eric: [bug] An until condition is never typed bool.
+            // CR claude for claude: [bug] An until condition is never typed bool.
             // Machine::step binds the step's value let with no type, and the machine
             // completes an until step only on a fired Value::Bool(true)
             // (node/seq_machine.rs:313). So `until n + 1`, `until "ready"` and `let f =
@@ -740,7 +740,7 @@ impl Machine<'_> {
         let e_cell = self.cells[&(spec.id, t.bind.name.clone())].name.clone();
         let join = (!sink.is_empty()).then(|| {
             let cell = ArcStr::from(format_compact!("seqj{}", spec.id.inner()).as_str());
-            // CR claude for eric: [bug] The join cell takes the let's annotation only
+            // CR claude for claude: [bug] The join cell takes the let's annotation only
             // when the pattern is a single name, but the annotation types the whole
             // value whatever the pattern. So `let (v, n): ([i64, null], i64) = try {
             // (f(1)?, 1) } with(_) { (null, 0) }`, the struct form, and `let _: [i64,
@@ -865,7 +865,7 @@ impl Machine<'_> {
                         sample(s.pos, r#ref(s.pos, self.pc), r#ref(s.pos, &v)),
                     ));
                 }
-                // CR claude for eric: [bug] A declaration (`use`, `type`, `trait`,
+                // CR claude for claude: [bug] A declaration (`use`, `type`, `trait`,
                 // `impl`, or a static `mod`) lands in this arm and is bound as a value.
                 // lower_stmt's `_` arm (line 635) does the same at the seq level and in
                 // try and with bodies. The compiler then refuses it with "a use
@@ -937,7 +937,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     let activation = format_compact!("seqqactivation{id}");
     let input = format_compact!("seqqinput{id}");
     let result = format_compact!("seqqresult{id}");
-    // CR claude for eric: [bug] The trigger's names here are this one simple name. For
+    // CR claude for claude: [bug] The trigger's names here are this one simple name. For
     // `seqq let (a, b) = t` that name is desugar_let's synthetic `seqbindN`, which the
     // body never reads. So an `until` reads a and b live (the latest t), and a and b
     // become SeqCaptures that any opaque call in the body turns live in every read. The
@@ -1114,7 +1114,7 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             prelude.push(let_bind(pos, &dequeued, None, request));
         }
     }
-    // CR claude for eric: [perf] The machine trigger is the bare name `seqqinput{id}`,
+    // CR claude for claude: [perf] The machine trigger is the bare name `seqqinput{id}`,
     // so trigger_snapshot (line 184) gives every seqq a `seqt{id}_seqqinput{id}` cell
     // and a connect that writes it at each run start, and nothing reads it; a plain
     // `seq go {..}` whose steps never read `go` gets the same dead cell. When the body
@@ -1344,7 +1344,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     args.reserve(call.args.len() + 1);
     args.push(r#ref(pos, pc));
     call.args = Arc::from_iter(call.args.iter().map(|(label, arg)| {
-        // CR claude for eric: [bug] Only an inline lambda stays at the call site. A
+        // CR claude for claude: [bug] Only an inline lambda stays at the call site. A
         // named function argument (`array::map(xs, inc)`, `apply(inc, 1)`) goes into
         // the snapshot tuple, and the callee receives `seqissued.k`, which nothing
         // resolves statically. The step's summary is then opaque (reads and writes
@@ -1393,7 +1393,7 @@ fn issue_call(spec: &Expr, mut call: ApplyExpr, pc: &str) -> Expr {
     )
 }
 
-// CR claude for eric: [bug] shadow_step only knows `let`, so a block-local `use` does
+// CR claude for claude: [bug] shadow_step only knows `let`, so a block-local `use` does
 // not shadow a redirected name. Example: with outer `let y = 7; let x = 100`, `seqq t {
 // select t { _ => { use package::y as x; x + 1 } } }` reads the outer x's capture and
 // yields 101. The same select outside the seqq, or under `seq t`, yields 8. A seq
@@ -1492,7 +1492,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let body = rewrite_stmts(body, &inner, mode.deferred());
             ExprKind::Seq { kind, trigger, abort, body }
         }
-        // CR claude for eric: [bug] In a seq step this arm replaces the `?`'s operand
+        // CR claude for claude: [bug] In a seq step this arm replaces the `?`'s operand
         // with lowered code: `seqpc<id> ~! x`, a seqq capture `seqqcap<id>_0`, or a
         // call's whole issue block. null_error (graphix-compiler/src/node/error.rs:544)
         // prints that operand into the program-visible `NullError` string. So `try { x?

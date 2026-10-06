@@ -295,7 +295,7 @@ impl TypeMemo {
         if let Some(v) = tb.by_id.get(&id).map(|e| e.1.clone()) {
             return v;
         }
-        // CR claude for eric: [perf] These walks treat a type as a tree and never share
+        // CR claude for claude: [perf] These walks treat a type as a tree and never share
         // by allocation: resolutions(), the Hash of the by_content key (lines 296-301),
         // and the freeze this memoizes (kernel_abi.rs:374), which also rebuilds its
         // result unshared. A type built by sharing, such as `let x1 = (x0, x0); .. let
@@ -639,7 +639,7 @@ fn for_each_node_inner<'a, R: Rt, E: UserEvent>(
                 rec!(child)
             }
         }
-        // CR claude for eric: [readability] The comment below is wrong. `ArgMap` is an
+        // CR claude for claude: [readability] The comment below is wrong. `ArgMap` is an
         // IndexMap that iterates in source order (callsite.rs:146-149), not a hash map.
         // The ArgKey sort it justifies puts positional args before named ones and
         // orders names alphabetically, which is not source order. The sort costs a
@@ -1031,7 +1031,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
         return Ok(None);
     }
     let mut fed: LPooled<Vec<(BindId, Node<R, E>)>> = LPooled::take();
-    // CR claude for eric: [bug] A fed argument runs in the kernel's feeder poll, before
+    // CR claude for claude: [bug] A fed argument runs in the kernel's feeder poll, before
     // the kernel, so its handler-ful `?` delivers ahead of the queued raises of the
     // fused arguments to its left, while the node-walk evaluates arguments left to
     // right. Two raises to one handler in one cycle then reach it in the opposite order
@@ -1048,7 +1048,7 @@ fn try_fuse_feeding_args<R: Rt, E: UserEvent>(
             continue;
         }
         let typ = node.typ().clone();
-        // CR claude for eric: [bug] This `#fed` binding is never unbound. It survives
+        // CR claude for claude: [bug] This `#fed` binding is never unbound. It survives
         // the free_var_input refusal, the failed attempt that puts the originals back,
         // and `feed` replacing the read, and FusedKernel::delete deletes only feeders.
         // A collection slot's instance repeats this walk at every bind
@@ -1155,7 +1155,7 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a, E: UserEvent + 'a>(
     let (mut heavy, light): (LPooled<Vec<_>>, LPooled<Vec<_>>) =
         parts.drain(..).partition(|p| calls_a_function(p));
     let mut light = light;
-    // CR claude for eric: [bug] Every light part is visited before any heavy one, and
+    // CR claude for claude: [bug] Every light part is visited before any heavy one, and
     // the first light error returns before the heavy parts run. So the error returned
     // is not "the first error in order" that the doc above promises, nor the serial
     // walk's error, which CLAUDE.md says the task walk reproduces. With `#[native]
@@ -1265,7 +1265,7 @@ fn check_attribute_targets<R: Rt, E: UserEvent>(
 /// `Ok(None)`: the root type has no kernel representation, the subtree
 /// is an identity passthrough, or some node does not emit CLIF.
 /// Discovery rejects known effects; emission validates the remaining shapes.
-// CR claude for eric: [perf] A pure subtree of any size becomes one CLIF function.
+// CR claude for claude: [perf] A pure subtree of any size becomes one CLIF function.
 // Cranelift's backtracking register allocator (regalloc2, reached from Jit::link) is
 // superlinear in function size, so cold-start compile time grows roughly quadratically
 // with region size while the node-walk stays linear. Debug build, fused vs --no-fusion:
@@ -1320,7 +1320,7 @@ fn build_region<R: Rt, E: UserEvent>(
     let inputs = collect_region_inputs(&**node, ctx);
     drop(phase);
     let phase = profile::phase(Phase::Callees);
-    // CR claude for eric: [bug] If the JIT cannot be built, `emission()` errs, and this
+    // CR claude for claude: [bug] If the JIT cannot be built, `emission()` errs, and this
     // `?` turns that into a compile error (so do 1292 here and 1122/1141 in
     // `fuse_each`). The JIT fails to build when the arena reservation is refused under
     // an address-space limit, when cranelift has no ISA for the host, or when
@@ -1363,7 +1363,7 @@ fn build_region<R: Rt, E: UserEvent>(
         Err(e) => {
             ctx.fusion.emission()?.forget_attempt();
             log::trace!("fusion::try_fuse: region {source_id:?} doesn't fuse: {e:#}");
-            // CR claude for eric: [bug] Each refused callee's reason is recorded here,
+            // CR claude for claude: [bug] Each refused callee's reason is recorded here,
             // then `refuse` records the generic emission error for the same call-site
             // spec. `failure_for_source` returns the last failure for a spec, so
             // `#[native] g(a)` on a lambda with no kernel reports only "lambda call
@@ -1393,7 +1393,7 @@ fn build_region<R: Rt, E: UserEvent>(
         .iter()
         .map(|fv| genn::reference::<R, E>(ctx, fv.bind_id, fv.typ.clone(), feeder_top))
         .collect();
-    // CR claude for eric: [bug] The kernel takes the region's type, which may name a
+    // CR claude for claude: [bug] The kernel takes the region's type, which may name a
     // typedef declared inside the region. fuse then discards the replaced region
     // (:978), and deleting it runs TypeDef::delete, which undefines that name while the
     // kernel and the shell's root type (graphix-rt/src/gx.rs:916) still reach it
@@ -1449,7 +1449,7 @@ fn build_region<R: Rt, E: UserEvent>(
 
 /// De-fuse the region, recording the reason so `attempted` and
 /// `failed` agree.
-// CR claude for eric: [dead] Lines 1354-1355 are the doc comment of `arena_exhausted`,
+// CR claude for claude: [dead] Lines 1354-1355 are the doc comment of `arena_exhausted`,
 // which no longer exists (arena exhaustion is now `ArenaExhausted` in emit/jit.rs). A
 // doc comment attaches to the next item across the blank line, so `refuse`'s rustdoc
 // opens with "Whether a build failed for want of JIT code memory". Delete the two

@@ -70,7 +70,7 @@ impl syn::parse::Parse for BuiltinEntry {
     }
 }
 
-// CR claude for eric: [risk] is_custom and init_custom are independent Options, so
+// CR claude for claude: [risk] is_custom and init_custom are independent Options, so
 // defpackage! accepts either one alone. With is_custom alone, __init_custom's body is
 // `unreachable!()` (line 344): the first value the predicate claims panics the shell at
 // display time instead of failing the package's build. With init_custom alone,
@@ -154,7 +154,7 @@ fn collect_package_deps(
 
 /// Collect graphix-package-* deps from [dependencies] only; register()
 /// must compile without dev-dependencies.
-// CR claude for eric: [structure] runtime_deps, package_deps and graphix_deps_ordered
+// CR claude for claude: [structure] runtime_deps, package_deps and graphix_deps_ordered
 // each read and parse Cargo.toml again. One defpackage! expansion parses it three times
 // (cargo_toml at line 21, plus toml_edit in package_deps and runtime_deps).
 // graphix_deps_ordered also repeats collect_package_deps' loop just to read `optional`.

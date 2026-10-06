@@ -34,7 +34,7 @@ where
 {
     (
         spaces().with(path_root()),
-        // CR claude for eric: [bug] typath reads its segments with fname(), which notes
+        // CR claude for claude: [bug] typath reads its segments with fname(), which notes
         // "`true` is a reserved word and cannot be used as a name" for any reserved
         // word (mod.rs:411-424). Pattern heads run typath as a probe (pattern()'s
         // type-predicate attempt in a select arm, abstract_pattern in every structure
@@ -444,7 +444,7 @@ parser! {
             attempt(string("Abstract").skip(not_prefix())).then(|_| {
                 unexpected_any("Abstract<..> is legal only as the whole body of a type definition")
             }),
-            // CR claude for eric: [bug] typeprim takes any lowercase name Typ::from_str
+            // CR claude for claude: [bug] typeprim takes any lowercase name Typ::from_str
             // knows (array, error, string, decimal, bool, i64, ...) without looking at
             // what follows. So in every type position `array::Direction` parses as the
             // primitive `array` and leaves `::Direction` unparsed: `let d:

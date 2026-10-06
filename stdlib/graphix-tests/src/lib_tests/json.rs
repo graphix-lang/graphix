@@ -36,7 +36,7 @@ run!(json_array, r#"{
     }
 }; graphix_package_core::testing::FuseExpect::None);
 
-// CR claude for eric: [test-gap] The predicate accepts any two-element array and never
+// CR claude for claude: [test-gap] The predicate accepts any two-element array and never
 // looks at x = 42 or y = "hi"; json_struct_cast's x + y would not notice swapped fields
 // either. Compare the decoded value exactly: [["x", 42], ["y", "hi"]]. json_nested
 // (line 80) accepts any array and json_no_concrete_type (line 146) any compile error.
@@ -87,7 +87,7 @@ run!(json_nested, r#"{
 }; graphix_package_core::testing::FuseExpect::None);
 
 // json over a tcp stream, read back from the other end.
-// CR claude for eric: [risk] write_exact and shutdown both fire when `client` fires and
+// CR claude for claude: [risk] write_exact and shutdown both fire when `client` fires and
 // run as two spawned tasks with nothing ordering them, so the shutdown can lock the
 // stream first: the write fails with EPIPE and the server reads EOF. run! passes only
 // because tokio's current_thread runtime polls tasks in spawn order; the same program

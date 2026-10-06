@@ -46,7 +46,7 @@ use triomphe::Arc;
 /// module, with `self` a trait-bounded quantifier (rigid while a
 /// default body is checked).
 pub(crate) fn method_sig(parsed: &FnType, tref: &Type, scope: &ModPath) -> FnType {
-    // CR claude for eric: [bug] The declared method type is scoped but never passed
+    // CR claude for claude: [bug] The declared method type is scoped but never passed
     // through Type::rewrite_trait_args, which Lambda::compile, let annotations and .gxi
     // vals all run. So a trait as a parameter's type (`fn(self, c: Display)`) or a
     // quantifier bounded by a constructor trait (`fn<'c: Collection>(self, c: 'c)`)
@@ -182,7 +182,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
         ctx.env.import_glob(&dscope.lexical, def.path.clone());
         let mut exprs: LPooled<Vec<Expr>> = LPooled::take();
         for (m, d) in t.methods.iter().zip(def.methods.iter()) {
-            // CR claude for eric: [bug] Each default is bound as `let <method>` in one
+            // CR claude for claude: [bug] Each default is bound as `let <method>` in one
             // block under dscope, and that binding beats the glob-imported dispatcher.
             // So a default that calls an earlier default bare (`twice(s)`) runs the
             // default body directly instead of dispatching. An implementation's
@@ -220,7 +220,7 @@ impl<R: Rt, E: UserEvent> Trait<R, E> {
                 defaults_by_name.push((n.clone(), *id));
             }
         }
-        // CR claude for eric: [bug] This stores the definition of record as the node's
+        // CR claude for claude: [bug] This stores the definition of record as the node's
         // def. A re-declaration therefore holds the signature's dispatchers, not the
         // ones its own deftrait minted, and every interface or dynamic-sig trait is a
         // re-declaration because add_interface_modules splices one into the body. When
@@ -395,7 +395,7 @@ pub(crate) fn check_target(
                 )
             }
         }
-        // CR claude for eric: [bug] An inline union of primitives (`[i64, string]`,
+        // CR claude for claude: [bug] An inline union of primitives (`[i64, string]`,
         // `[i64, null]`) normalizes to one Type::Primitive with several flags. It
         // misses this arm, and the `_` arm accepts it as a target in the trait's own
         // package, while `Number` and `[`A, `B]` are refused here. The impl is never
@@ -594,7 +594,7 @@ impl<R: Rt, E: UserEvent> Impl<R, E> {
             pos: spec.pos,
             ori: spec.ori.clone(),
         });
-        // CR claude for eric: [bug] An impl in a lambda body registers here once for
+        // CR claude for claude: [bug] An impl in a lambda body registers here once for
         // the definition's check, whose discarded body is deleted only at
         // apply_deferred, and again for every instance. So the lambda's first call
         // fails the build with "conflicting implementation ... at" the impl's own line,
@@ -691,7 +691,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Impl<R, E> {
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
             let expected =
                 Type::Fn(Arc::new(method_sig_at(&d.typ.reset_tvars(), &self.def.target)));
-            // CR claude for eric: [bug] This compares an impl method with the trait's
+            // CR claude for claude: [bug] This compares an impl method with the trait's
             // signature by containment only. A method whose body adds a bound the trait
             // does not declare is accepted: `|c, x| x + x` under `fn(self, x: 'a) ->
             // 'a` gives 'a the bounds Number + Singleton. A default body
@@ -818,7 +818,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         if let Some(core) = CoreTrait::of_id(def.id) {
             return self.lower_core_call(ctx, core);
         }
-        // CR claude for eric: [bug] A union of primitives (`[i64, string]`, `[i64,
+        // CR claude for claude: [bug] A union of primitives (`[i64, string]`, `[i64,
         // null]`) normalizes to one multi-flag `Type::Primitive`, not a `Type::Set`, so
         // it skips this lowering and `find_impl` is asked for the whole union, while
         // `trait_contains` (contains.rs:1407) accepts it member by member. `--check`

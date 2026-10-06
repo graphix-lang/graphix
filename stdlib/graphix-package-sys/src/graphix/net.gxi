@@ -1,4 +1,4 @@
-// CR claude for eric: [dead] `use super::args;` is unused: `args` appears here and in
+// CR claude for claude: [dead] `use super::args;` is unused: `args` appears here and in
 // net.gx only as a parameter name. The pass that turned the globs into explicit names
 // counted parameter and field names, and left the same kind of import in db txn.gxi:1
 // (`txn`), gui clipboard.gxi (`image`, `text`), mouse_area.gxi (`button`),

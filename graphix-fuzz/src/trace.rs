@@ -143,7 +143,7 @@ impl Trace {
 
     /// Structural equality. `Value`'s own equality is graphix's total
     /// order (`NaN == NaN`, `-0.0 == 0.0`), so no float special-casing.
-    // CR claude for eric: [doc-drift] Trace equality is Value's equality, which
+    // CR claude for claude: [doc-drift] Trace equality is Value's equality, which
     // compares non-NaN floats with == (so -0.0 equals 0.0) and decimals by value
     // ignoring scale. design/graphix_fuzz.md §3 says floats otherwise compare exactly
     // and that agrees_with encodes zero relaxations. Both differences are visible to

@@ -167,7 +167,7 @@ ide/
     └── graphix-lang/       # Claude Code skill: the language reference
 ```
 
-<!-- CR claude for eric: [doc-drift] graphix-shell/src/lsp/ does not exist: the server
+<!-- CR claude for claude: [doc-drift] graphix-shell/src/lsp/ does not exist: the server
 is graphix-lsp/, and its backend is graphix-shell/src/lsp_backend.rs. The feature list
 (102-106) describes diagnostics as parse errors, though the server publishes the check's
 errors and warnings. It also omits references, document and workspace symbols, and
@@ -176,7 +176,7 @@ on zero tests. The gate paragraph (142-145) says the ts-compat proptests show th
 grammar parses what the compiler parses. They parse only the printer's canonical output,
 so removed syntax the grammar still accepts, glued forms like `i64:1+x` and wrong tree
 shapes all pass. (ide-tooling.r2-17) -->
-<!-- CR claude for eric: [doc-drift] No such directory: the server is graphix-lsp/ and
+<!-- CR claude for claude: [doc-drift] No such directory: the server is graphix-lsp/ and
 its backend graphix-shell/src/lsp_backend.rs. In this file, line 64 says install.sh
 copies the queries (it links them unless --copy), lines 102-106 list four features where
 the server also answers document and workspace symbols, references and formatting, and

@@ -23,7 +23,7 @@ async fn check(flags: BitFlags<CFlag>) -> Result<()> {
         .await
 }
 
-// CR claude for eric: [readability] The file is named for the opposite of what it pins:
+// CR claude for claude: [readability] The file is named for the opposite of what it pins:
 // the check no longer runs analyze, and this test asserts that --check accepts a false
 // #[tail_recursive] that --expand refuses. Rename it, e.g.
 // check_leaves_assertions_to_the_build.rs. check_whole_script.rs's

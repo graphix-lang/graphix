@@ -93,7 +93,7 @@ pub struct AbstractRep {
 impl AbstractRep {
     /// A fresh instance of the type: `(T<'a..>, rep['a..])` with the
     /// formals replaced by fresh type variables shared between the two.
-    // CR claude for eric: [bug] `instantiate` types `T(v)` and the pattern `T(p)` over
+    // CR claude for claude: [bug] `instantiate` types `T(v)` and the pattern `T(p)` over
     // fresh variables with no bound, and deftype (line 1465) drops each parameter's
     // constraint from `AbstractRep::params`. So `type T<'a: Number> = Abstract<'a>;
     // T("hello")` checks and runs as a `T<string>`, while `let t: T<string> =
@@ -238,7 +238,7 @@ pub struct TraitMethodDef {
     pub self_index: usize,
     /// The declaration supplies a default body (an implementor may
     /// omit the method).
-    // CR claude for eric: [dead] `has_default` is written here and never read, in this
+    // CR claude for claude: [dead] `has_default` is written here and never read, in this
     // workspace or in ../netidx: every decision reads `default` (traits.rs:520, 770,
     // 895; module.rs:527; coretraits.rs:58). It rides Pack and the image, and it can
     // disagree with `default` (an interface's declaration sets it while `default` is
@@ -644,7 +644,7 @@ impl Env {
                         names.entry(dir).or_default().insert(n);
                     }
                 }
-                // CR claude for eric: [bug] `kept` keeps a scope only when it is
+                // CR claude for claude: [bug] `kept` keeps a scope only when it is
                 // exactly a listed module, so a whitelisted module loses its submodules
                 // and trait scopes, while the blacklist arm removes a listed module's
                 // whole subtree. Under `whitelist [core]` a loaded source cannot call
@@ -659,7 +659,7 @@ impl Env {
                 // design/review-2026-10-05/repro/t-env-05.gx (t-env-05)
                 let kept = |k: &ModPath| modules.contains(k) || names.contains_key(k);
                 let mut t = self.clone();
-                // CR claude for eric: [bug] The whitelist filters typedefs, modules and
+                // CR claude for claude: [bug] The whitelist filters typedefs, modules and
                 // binds but leaves `t.traits` whole, unlike the blacklist
                 // (unbind_lexical_under drops traits). A `whitelist [core]` module can
                 // name any trait in its enclosing scope (`super::Secret`,
@@ -690,7 +690,7 @@ impl Env {
     /// component is one; else `/` (the program is the package).
     pub fn package_root<'a>(&self, scope: &'a str) -> &'a str {
         match Path::parts(scope).next() {
-            // CR claude for eric: [bug] This takes any first-level `#do` component for
+            // CR claude for claude: [bug] This takes any first-level `#do` component for
             // a loaded script's top level. That holds for the build (load_program
             // compiles the script as a block, its names under `/#doN`) but not for
             // --check and the LSP: compile_script (graphix-compiler/src/lib.rs:2087)
@@ -967,7 +967,7 @@ impl Env {
         if tr.resolved().is_some() {
             return None;
         }
-        // CR claude for eric: [bug] trait_of_ref searches the trait tables alone and
+        // CR claude for claude: [bug] trait_of_ref searches the trait tables alone and
         // TypeRef::resolve_pure searches the typedef tables alone, so a closer type
         // never shadows a farther trait of the same name, and a closer trait never
         // shadows a farther type. Parameter, return and typedef-body types named Ord,
@@ -1019,7 +1019,7 @@ impl Env {
                      way throughout"
                 )
             }
-            // CR claude for eric: [bug] Every method's dispatcher is bound at `pos`,
+            // CR claude for claude: [bug] Every method's dispatcher is bound at `pos`,
             // the trait's name (graphix-compiler/src/node/traits.rs:166 passes
             // t.name.pos_or(spec.pos)), not at its own `val` name, and
             // graphix-lsp/src/query.rs has no target for a trait name. So
@@ -1532,7 +1532,7 @@ impl Env {
                 t.check_tvars_declared(&mut declared)?;
             }
         }
-        // CR claude for eric: [bug] A typedef body (or abstract rep) may use a type
+        // CR claude for claude: [bug] A typedef body (or abstract rep) may use a type
         // variable it never declares. This loop refuses declared-but-unused only, and
         // lookup_ref_with's replace_tvars gives the stray variable a fresh cell at
         // every expansion, so a value stored at one type reads back at any other.
@@ -1688,7 +1688,7 @@ impl Env {
     /// there (bindings the lexical maps no longer name included).
     /// Returns the number of bind, typedef and trait names removed.
     pub fn unbind_scope_subtree(&mut self, scope: &ModPath) -> usize {
-        // CR claude for eric: [structure] This function reaches each registry by field
+        // CR claude for claude: [structure] This function reaches each registry by field
         // access, so a registry added to Env compiles without being cleared here,
         // although CLAUDE.md requires it for the LSP's package-root recheck. join,
         // swap_lexical and the image codec list every field of Self, so a new field is

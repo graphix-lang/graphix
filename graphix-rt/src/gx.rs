@@ -150,7 +150,7 @@ fn is_output<X: GXExt>(n: &Node<GXRt<X>, X::UserEvent>) -> bool {
 
 fn is_output_kind(kind: &ExprKind) -> bool {
     match kind {
-        // CR claude for eric: [bug] Trait and Impl are missing from the non-output
+        // CR claude for claude: [bug] Trait and Impl are missing from the non-output
         // kinds, so a REPL `trait`/`impl` line compiles as output. The shell prints `-:
         // _`, moves the CompExp into its output and waits for Ctrl-C, swallowing
         // whatever is typed. The Ctrl-C that ends the wait drops the CompExp, which
@@ -173,7 +173,7 @@ fn is_output_kind(kind: &ExprKind) -> bool {
 /// compiler produces one Node and fusion sees the whole file at once.
 /// `Do` rather than `Module` because the last expression's value must
 /// propagate out as the runtime output.
-// CR claude for eric: [doc-drift] ExprKind::Do no longer exists: this builds an
+// CR claude for claude: [doc-drift] ExprKind::Do no longer exists: this builds an
 // ExprKind::Block, but its name and the doc above (`Do` rather than `Module`) still say
 // Do. Rename it wrap_file_in_block and say Block in the doc. The same dead term is in
 // graphix-fuzz/src/typemorph.rs:601, graphix-fuzz/src/mutate.rs:459 and 467, and
@@ -273,7 +273,7 @@ impl<X: GXExt> GX<X> {
                 match parse_modpath(&cfg.resolver_factories, &mut cfg.ctx.libstate, &mp) {
                     Ok(r) => cfg.resolvers.extend(r),
                     Err(e) => {
-                        // CR claude for eric: [bug] When parse_modpath refuses one
+                        // CR claude for claude: [bug] When parse_modpath refuses one
                         // entry (graphix-types/src/expr/resolver.rs:170: no scheme, an
                         // unknown scheme, or the empty entry a trailing comma leaves),
                         // this replaces the whole list with the data dir and logs where
@@ -337,7 +337,7 @@ impl<X: GXExt> GX<X> {
             if let Some(root) = cfg.root {
                 // The root declares packages; fusing their constants
                 // buys nothing and would put kernels in the image.
-                // CR claude for eric: [risk] The package root compiles under the
+                // CR claude for claude: [risk] The package root compiles under the
                 // session's flags, and every definition in it keeps them for its
                 // instances (DefOrigin::Source { flags }, imaged). The registration
                 // key, however, is format + root only (graphix-shell/src/cache.rs:135).
@@ -493,7 +493,7 @@ impl<X: GXExt> GX<X> {
                         },
                     };
                     if let Some(v) = v {
-                        // CR claude for eric: [bug] Every task and watch delivery is
+                        // CR claude for claude: [bug] Every task and watch delivery is
                         // stored here even when no node references its id any more, and
                         // nothing removes it later. CachedArgsAsync::sleep/delete
                         // (graphix-package-core/src/lib.rs:930-943) remint or unref the
@@ -527,7 +527,7 @@ impl<X: GXExt> GX<X> {
                 }
             };
         }
-        // CR claude for eric: [perf] Each cycle this loop pops every queued write and
+        // CR claude for claude: [perf] Each cycle this loop pops every queued write and
         // pushes back each one whose variable was already delivered this cycle, so N
         // writes queued to one variable cost O(N) per cycle for N cycles. range and
         // array::iter queue all their elements at once, so their delivery is O(N^2): in
@@ -542,7 +542,7 @@ impl<X: GXExt> GX<X> {
             let (id, v) = self.ctx.rt.var_updates.pop_front().unwrap();
             push_var_event!(id, v)
         }
-        // CR claude for eric: [bug] Task entries are delivered one at a time, and an
+        // CR claude for claude: [bug] Task entries are delivered one at a time, and an
         // entry whose variable already has a delivery this cycle is re-queued on its
         // own. A set_many entry that meets another write to its variable (a program
         // write queued from the last cycle, or a set in the same input batch) therefore
@@ -610,7 +610,7 @@ impl<X: GXExt> GX<X> {
                 }
             }
         }
-        // CR claude for eric: [bug] While the subscriber is full, the send loop above
+        // CR claude for claude: [bug] While the subscriber is full, the send loop above
         // handles input every 100 ms. A Compile or Load handled there puts its roots
         // into `updated` with init = true, and these two clears then erase them. The
         // reply reports success, but the new roots never get their init update:
@@ -800,7 +800,7 @@ impl<X: GXExt> GX<X> {
         self.ctx.batch_connect_targets.clear();
         let mut nodes: LPooled<Vec<_>> = LPooled::take();
         for e in exprs.iter() {
-            // CR claude for eric: [bug] When a later statement fails, this `?` returns
+            // CR claude for claude: [bug] When a later statement fails, this `?` returns
             // after the earlier statements of the same input passed their checks. Their
             // names stay in the env, their lambdas in lambda_defs and bind_to_lambda,
             // their refs in by_ref and a top-level catch in self.scope, while `nodes`
@@ -846,7 +846,7 @@ impl<X: GXExt> GX<X> {
             Source::File(file) => {
                 let overrides = resolvers.iter().find_map(|r| r.overrides());
                 let root = RootFile::load(file, overrides.as_ref()).await?;
-                // CR claude for eric: [bug] A script root's .gxi is only half applied.
+                // CR claude for claude: [bug] A script root's .gxi is only half applied.
                 // RootFile::load splices its types, uses, mods and traits into the
                 // script, but this line drops root.sig, so the vals are never checked.
                 // `graphix --check foo.gx` and the LSP check a lone module (one that no
@@ -907,7 +907,7 @@ impl<X: GXExt> GX<X> {
         // executes a kernel; without a reset each file's kernels accumulate
         // in the persistent JIT module until finalize fails.
         let env = self.ctx.env.clone();
-        // CR claude for eric: [doc-drift] A check runs CheckOnly, which never fuses, so
+        // CR claude for claude: [doc-drift] A check runs CheckOnly, which never fuses, so
         // the comment above is stale and reset_jit_for_check here only clears
         // fusion.stats. Line 804 logs a 'parse time' measured from an Instant created
         // on the line before. Other runtime docs are stale too: rt.rs:31 says the cycle
@@ -923,7 +923,7 @@ impl<X: GXExt> GX<X> {
         // event.variables reaches neither the store nor rt.updated, and no reader is
         // scheduled. (rt-18)
         if let IdeMode::Lsp(sink) = &mut self.ctx.cx.env.ide {
-            // CR claude for eric: [dead] This reset clears nothing. Every check here
+            // CR claude for claude: [dead] This reset clears nothing. Every check here
             // runs CFlag::CheckOnly (lines 837-841; the LSP never sets ExpandSeq),
             // which returns before typecheck1 and fusion
             // (graphix-compiler/src/lib.rs:1958), and the LSP's root compiles with
@@ -998,7 +998,7 @@ impl<X: GXExt> GX<X> {
                 None => {
                     let stmts = Arc::from_iter(exprs.iter().cloned());
                     let spec = wrap_file_in_do(stmts.clone(), Arc::new(ori.clone()));
-                    // CR claude for eric: [bug] The check compiles a script with its
+                    // CR claude for claude: [bug] The check compiles a script with its
                     // names at `/` (compile_script at Scope::root()). load_program, the
                     // run, compiles the same file as a Block that compile() scopes at
                     // `/#do<id>`, so any verdict that depends on the scope can differ.
@@ -1082,7 +1082,7 @@ impl<X: GXExt> GX<X> {
         let args = lb.typ.args.iter();
         let args = args
             .map(|a| {
-                // CR claude for eric: [bug] This refuses every lambda with a defaulted
+                // CR claude for claude: [bug] This refuses every lambda with a defaulted
                 // labeled argument. The checker accepts such a lambda wherever a
                 // callback type like `fn(e: null) -> Any` is expected (fntyp.rs::align
                 // lets the default be omitted), and an in-language call through that
@@ -1106,7 +1106,7 @@ impl<X: GXExt> GX<X> {
         let argn = lb.typ.args.iter().zip(args.iter());
         let argn = argn
             .map(|(arg, id)| {
-                // CR claude for eric: [bug] The argument references are typed with the
+                // CR claude for claude: [bug] The argument references are typed with the
                 // definition's own cells (arg.typ from lb.typ), while genn::apply
                 // checks the call against an instantiated copy. This site's check
                 // therefore merges the copy into the definition's cells, and its settle
@@ -1127,7 +1127,7 @@ impl<X: GXExt> GX<X> {
         let mut n = genn::apply(fnode, Scope::root(), argn, &lb.typ, eid);
         self.ctx.view().begin_runtime_node(eid);
         graphix_compiler::check_and_fuse(&mut self.ctx.view(), self.flags, &mut n)?;
-        // CR claude for eric: [bug] The callable's init runs here, between cycles. The
+        // CR claude for claude: [bug] The callable's init runs here, between cycles. The
         // cycle counter was already advanced at the end of the last do_cycle (line
         // 514), so every let the body publishes is stamped with the next cycle, and its
         // notify_set leaves this root in rt.updated. That next cycle updates the root
@@ -1197,7 +1197,7 @@ impl<X: GXExt> GX<X> {
 
     fn delete_callable(&mut self, id: CallableId) {
         if let Some(c) = self.callables.remove(&id) {
-            // CR claude for eric: [bug] Call delivers each argument through
+            // CR claude for claude: [bug] Call delivers each argument through
             // push_var_event, which stores it under the callable's argument id, and
             // nothing removes those entries when the callable goes. Twenty rounds of
             // compile_callable + call + drop raise store_len by 20; the same rounds
@@ -1278,7 +1278,7 @@ impl<X: GXExt> GX<X> {
                 let waiter = self.result_watch.is_some()
                     || self.trace.is_some()
                     || !self.idle_waiters.is_empty();
-                // CR claude for eric: [risk] idle_passes returns to 0 only when a pass
+                // CR claude for claude: [risk] idle_passes returns to 0 only when a pass
                 // finds work ready at the top of the loop. Suppose a pass arms the
                 // grace, but a task completion or a message wakes the select first. The
                 // cycle that handles it can spawn the next task, and the very next idle
@@ -1353,7 +1353,7 @@ impl<X: GXExt> GX<X> {
                     peek!(watches, tasks, var_watches, custom_tasks, input);
                 },
             }
-            // CR claude for eric: [bug] The loop checks control.aborted() only at its
+            // CR claude for claude: [bug] The loop checks control.aborted() only at its
             // top. An abort that lands while select! waits or a cycle runs still runs
             // process_input_batch and do_cycle, and the send to a receiver the embedder
             // already dropped logs "could not send batch" at ERROR (line 519);

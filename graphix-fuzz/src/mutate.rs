@@ -74,7 +74,7 @@ fn replace_at(e: &Expr, target: usize, ctr: &mut usize, repl: &Expr) -> Expr {
     e.map_children(&mut |c| replace_at(c, target, ctr, repl))
 }
 
-// CR claude for eric: [structure] binop_kind and try_swap_binop restate the BinOp table
+// CR claude for claude: [structure] binop_kind and try_swap_binop restate the BinOp table
 // (graphix-types/src/expr/binop.rs), once as strings and once as a variant list;
 // mustreject.rs in this crate already uses BinOp::of. An added or renamed operator is
 // no compile error here, and a typo in a class array panics at the unreachable!()
@@ -146,7 +146,7 @@ fn try_perturb_literal(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
         ExprKind::Constant(v) => v,
         _ => return None,
     };
-    // CR claude for eric: [test-gap] Edge perturbation covers only i64, u64, i32, u8,
+    // CR claude for claude: [test-gap] Edge perturbation covers only i64, u64, i32, u8,
     // f64, f32 and bool, so the corpus's i8, i16, u16, u32, v32, v64, z32, z64 and
     // duration literals never move in the fuzz lane. The generators' literal pools
     // (generate/types.rs:131-155) carry most narrow-width edges themselves, but z32 and
@@ -391,7 +391,7 @@ fn mutate_schedule(s: &mut crate::schedule::Schedule, rng: &mut Rng) {
             };
         }
         1 => {
-            // CR claude for eric: [bug] Removing an epoch can drop the only epoch that
+            // CR claude for claude: [bug] Removing an epoch can drop the only epoch that
             // carries an input, or the sole epoch of a one-epoch schedule (about a
             // quarter of generated ones). The driver declares inputs from the epochs
             // (Schedule::inputs), so the mutant reads an undeclared input and fails to
@@ -453,7 +453,7 @@ pub fn shape_stats(prog: &str) -> Option<(u64, usize, bool)> {
         }
         let mut arity = 0usize;
         e.for_each_child(&mut |_| arity += 1);
-        // CR claude for eric: [bug] AHasher::default() uses keys that ahash draws from
+        // CR claude for claude: [bug] AHasher::default() uses keys that ahash draws from
         // getrandom once per process, so shape_stats gives the same shape a different
         // signature in every process. In a soak, each work order's gen-batch child
         // computes the signatures on its N lines, and run_aggregator's ring_sigs in the

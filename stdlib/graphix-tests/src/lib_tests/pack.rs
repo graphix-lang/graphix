@@ -46,7 +46,7 @@ run!(pack_struct, r#"{
     let obj: S = pack::read(pack::write_bytes({x: 42, y: "hi"})$)?;
     obj
 }"#, |v: Result<&Value>| {
-    // CR claude for eric: [test-gap] pack_struct accepts any two-element array, so a
+    // CR claude for claude: [test-gap] pack_struct accepts any two-element array, so a
     // decode that swaps or zeroes the fields of {x: 42, y: "hi"} still passes. Have the
     // fixture return `obj.x == 42 && obj.y == "hi"`, or match the exact Value.
     // sqlite_exec_params (sqlite.rs:48) has the same weakness: it binds [1, 3.14] and
@@ -63,7 +63,7 @@ run!(pack_bytes, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "abc")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// CR claude for eric: [risk] The write_exact and the shutdown below (lines 69-70) both
+// CR claude for claude: [risk] The write_exact and the shutdown below (lines 69-70) both
 // fire when `client` fires, and nothing orders the shutdown after the write: their two
 // tasks race for the stream's lock. run! passes only because its current_thread runtime
 // polls tasks in spawn order; under the shell's multi-thread runtime the shutdown wins
@@ -87,7 +87,7 @@ run!(pack_stream_tcp, r#"{
     matches!(v, Ok(Value::String(s)) if &**s == "alice")
 }; graphix_package_core::testing::FuseExpect::Jit);
 
-// CR claude for eric: [test-gap] pack_invalid, json_invalid (json.rs:68) and
+// CR claude for claude: [test-gap] pack_invalid, json_invalid (json.rs:68) and
 // toml_invalid (toml.rs:84) annotate the whole `Result<i64, [..]>`. That is the one
 // target type under which the reader's cast keeps its decode error. The usual spelling,
 // `let v: i64 = pack::read(garbage)?` (or `$`), casts the PackErr/JsonErr/TomlErr

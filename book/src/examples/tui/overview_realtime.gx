@@ -15,7 +15,7 @@ let temp_source = 50.0;
 temp_source <- tick ~ 50.0 + 25.0 * math::sin(t / 5.0);
 sys::net::publish("/local/graphix/overview_realtime/temperature", temp_source);
 
-// CR claude for eric: [style] This `?` and four others with no catch
+// CR claude for claude: [style] This `?` and four others with no catch
 // (gauge_threshold.gx:11, linegauge_colored.gx:11, paragraph_log_viewer.gx:21,
 // sparkline_rolling.gx:15) make each of these examples print 'error raised by ? will
 // not be caught' when checked or run. They are the only warnings in the example and

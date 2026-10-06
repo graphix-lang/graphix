@@ -204,7 +204,7 @@ impl<X: GXExt> DataTableW<X> {
 
     pub(crate) fn handle_cell_click(&mut self, row: usize, col: ArcStr) -> bool {
         // The display label is accepted as a synonym for the row-name key.
-        // CR claude for eric: [bug] A data cell's click carries its real column key
+        // CR claude for claude: [bug] A data cell's click carries its real column key
         // (render.rs:556). So in a table with a column named "name", this synonym
         // treats every click on that column as a click on the row-name cell. With
         // #on_activate set it fires on_activate(row) and returns, and on_select never

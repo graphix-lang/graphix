@@ -228,7 +228,7 @@ fn build_site<R: Rt, E: UserEvent>(
     let top_id = ExprId::new();
     let prefix = format_compact!("#seam{}", top_id.inner());
     let types = (0..t.arity()).map(|_| h.typ.clone());
-    // CR claude for eric: [risk] This builds the hook site's call, and through it the
+    // CR claude for claude: [risk] This builds the hook site's call, and through it the
     // impl's instance, during a cycle without node::with_runtime_settles, unlike
     // CallSite::build_bound (callsite.rs:1165): its site settles go onto the root
     // frame, which nothing drains until the next compile_top clears them unjudged, its

@@ -228,7 +228,7 @@ type Replace = CachedArgs<ReplaceEv>;
 fn fc_dirname(args: &[Value]) -> Option<Value> {
     match &args[0] {
         Value::String(path) => match Path::dirname(path) {
-            // CR claude for eric: [bug] Path::dirname is None for "foo" and "" as well
+            // CR claude for claude: [bug] Path::dirname is None for "foo" and "" as well
             // as for "/foo", so this arm answers "/" for a relative or empty path where
             // str/mod.gxi:34 promises null ("null if s does not have a parent path"):
             // str::dirname("foo") and str::dirname("") are "/" in both engines, and a
@@ -321,7 +321,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for RowColEv {
 
 type RowCol = CachedArgs<RowColEv>;
 
-// CR claude for eric: [bug] `buf.is_empty()` stands in for "first part", so the parts
+// CR claude for claude: [bug] `buf.is_empty()` stands in for "first part", so the parts
 // after a run of leading empty strings lose their separators: str::join(#sep: ",", "",
 // "a") is "a", not ",a", and str::join(#sep: ",", ["", "", "b"]) is "b" (probe:
 // design/review-2026-10-05/repro/x-builtin-effects-19.gx). The scratch buffer here, in
@@ -347,7 +347,7 @@ fn fc_join(args: &[Value]) -> Option<Value> {
             BUF.with_borrow_mut(|buf| {
                 macro_rules! push {
                     ($c:expr) => {
-                        // CR claude for eric: [bug] `buf.is_empty()` is used to mean
+                        // CR claude for claude: [bug] `buf.is_empty()` is used to mean
                         // "no part pushed yet", so a leading empty part leaves the
                         // buffer empty and the next part goes in without its separator.
                         // `str::join(#sep: ",", "", "b", "c")` is "b,c" instead of
@@ -519,7 +519,7 @@ macro_rules! escape_fn {
 escape_fn!(StringEscapeEv, StringEscape, "str_escape", fc_escape, escape);
 escape_fn!(StringUnescapeEv, StringUnescape, "str_unescape", fc_unescape, unescape);
 
-// CR claude for eric: [structure] split_fn! is the generic Stateless fast-builtin shell
+// CR claude for claude: [structure] split_fn! is the generic Stateless fast-builtin shell
 // (unit Ev, EvalCached with EFFECT Plain(fc) and eval = fast_eval(ctx, fc, from), the
 // CachedArgs alias, unit_image_state!) under a split-only name; the same 15 lines are
 // written out 23 more times in this file and again in escape_fn!, 11 times in array, 21
@@ -596,7 +596,7 @@ macro_rules! string_splitn {
 string_splitn!(StringSplitNEv, StringSplitN, "str_splitn", fc_splitn, splitn);
 string_splitn!(StringRSplitNEv, StringRSplitN, "str_rsplitn", fc_rsplitn, rsplitn);
 
-// CR claude for eric: [bug] "One character" is tested as one byte (`s.len() == 1` at
+// CR claude for claude: [bug] "One character" is tested as one byte (`s.len() == 1` at
 // 558 and 562, and at 594 and 598 in fc_splitn_escaped), so a single non-ASCII escape
 // or separator is refused: str::split_escaped(#esc: "§", #sep: ",", "a,b§,c") is
 // SplitEscError("split_escaped: invalid escape char") and #sep: "→" is "invalid
@@ -606,7 +606,7 @@ string_splitn!(StringRSplitNEv, StringRSplitN, "str_rsplitn", fc_rsplitn, rsplit
 // s.chars(); matches!((cs.next(), cs.next()), (Some(_), None))`). fc_splitn_escaped's
 // errors also say "split_escaped:". probe:
 // design/review-2026-10-05/repro/x-builtin-effects-14.gx (x-builtin-effects-14)
-// CR claude for eric: [bug] This function, fc_splitn_escaped and parse_modpath all
+// CR claude for claude: [bug] This function, fc_splitn_escaped and parse_modpath all
 // split with escaping 0.2.3's is_sep, which never clears its escape flag on a
 // separator. So after an escaped separator, the next separator does not split, and the
 // escape char after it reads as escaped: `a\,,b` gives the one field `a\,,b` instead of
@@ -883,7 +883,7 @@ fn fc_parse(env: &Env, rtype: &Type, args: &[Value]) -> Option<Value> {
         _ => return None,
     };
     Some(match cast_target(rtype) {
-        // CR claude for eric: [bug] When the cast fails, this line returns an
+        // CR claude for claude: [bug] When the cast fails, this line returns an
         // `InvalidCast` error, but str::parse declares only `ParseError(string)`
         // (graphix/mod.gxi:110, mod.gx:35). So text that parses as a value of another
         // type, such as "\"abc\"" for an i64, yields an error outside its checked type.

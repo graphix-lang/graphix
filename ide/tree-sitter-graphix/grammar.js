@@ -208,7 +208,7 @@ module.exports = grammar({
     ),
 
     // Module and use
-    // CR claude for eric: [dead] The grammar still accepts syntax the parser rejects:
+    // CR claude for claude: [dead] The grammar still accepts syntax the parser rejects:
     // inline module bodies and signatures (`mod m { .. }`, `mod m: { .. } { .. }`,
     // 214-220, 238-245, 264-269), `where` clauses (540-543), `ok` as null (1053), `?T`
     // (567), fn types without `-> T` (504), `?#` and `#foo x` lambda params (735-756),
@@ -222,7 +222,7 @@ module.exports = grammar({
       // Bodyless module declaration: mod name
       seq('mod', field('name', $._binding_name)),
       // Static module: mod name { ... }
-      // CR claude for eric: [dead] This branch, with module_body (238) and signature
+      // CR claude for claude: [dead] This branch, with module_body (238) and signature
       // (264), accepts inline `mod m { .. }` and `mod m: {..} {..}`, which the parser
       // refuses, and so do fn-type `where` clauses (constraints_clause 540, plus the
       // `where` captures in highlights.scm and graphix-mode.el), `?T` (abstract_type
@@ -490,7 +490,7 @@ module.exports = grammar({
       'Any',
     ),
 
-    // CR claude for eric: [bug] The grammar has no type application. The real parser
+    // CR claude for claude: [bug] The grammar has no type application. The real parser
     // accepts `self<T>` as a fn-type receiver and in a type, and `'a<T>` in a type
     // (graphix-types/src/expr/parser/typexp.rs fnpositional() and typ()), but here
     // type_variable, self_type and the self_param receiver (line 525) take no argument.
@@ -749,7 +749,7 @@ module.exports = grammar({
     ),
 
     // Lambda: constraints|params| -> rtype throws body
-    // CR claude for eric: [bug] lambda has no precedence, and the seven lambda
+    // CR claude for claude: [bug] lambda has no precedence, and the seven lambda
     // conflicts let the GLR parser keep both readings. Whenever a token follows the
     // lambda (`;`, `,`, `)`), a body whose top operator is binary is cut at that
     // operator: `|acc, x| acc + x;` parses as `(|acc, x| acc) + x`, while the real
@@ -851,7 +851,7 @@ module.exports = grammar({
     // Non-string values that can appear after the colon in type ascription.
     // Strings are handled separately in type_ascription to share nodes with
     // expression contexts, enabling GLR to resolve struct/map ambiguity.
-    // CR claude for eric: [bug] Every `T:` ascription admits `_bare_value` and the
+    // CR claude for claude: [bug] Every `T:` ascription admits `_bare_value` and the
     // `_value_extension` run. Their characters include `+ / =` (base64 for `bytes:`)
     // and `-` before a digit, so an operator glued to a typed literal is swallowed as
     // value text. `i64:4/i64:2`, `i64:1+i64:2` and `i64:1==i64:2` give ERROR nodes,
@@ -899,7 +899,7 @@ module.exports = grammar({
       prec.left('multiplicative', seq($._expression, '*?', $._expression)),
       prec.left('multiplicative', seq($._expression, '/?', $._expression)),
       prec.left('multiplicative', seq($._expression, '%?', $._expression)),
-      // CR claude for eric: [bug] binary_expression has no `~!` (BinOp::StrictSample,
+      // CR claude for claude: [bug] binary_expression has no `~!` (BinOp::StrictSample,
       // precedence 0 like `~`), so tree-sitter splits it into `~` and a unary `!` and
       // reads `t ~! x + 1` as `t ~ ((!x) + 1)` with no ERROR node: every tree-sitter
       // editor shows the wrong structure, and highlights.scm and graphix-mode.el cannot
@@ -1290,7 +1290,7 @@ module.exports = grammar({
     ),
 
     // Variant
-    // CR claude for eric: [bug] Every payload variant parses as a call, `` `A(5) `` as
+    // CR claude for claude: [bug] Every payload variant parses as a call, `` `A(5) `` as
     // (apply (variant) (apply_args 5)), so this rule's payload branch (1229) never
     // matches. tuple_ref (1239) takes `$.number`, so in `t.0.1` the float `0.1` wins
     // and one tuple_ref stands where the parser builds two. by_ref (980) puts 'unary'
@@ -1358,7 +1358,7 @@ module.exports = grammar({
     )),
 
     // Identifiers
-    // CR claude for eric: [bug] identifier and type_identifier (1320) are ASCII-only,
+    // CR claude for claude: [bug] identifier and type_identifier (1320) are ASCII-only,
     // but the parser's ident() starts a value name with any non-uppercase letter and a
     // type name with any uppercase one (parser/mod.rs:136, 389-403), so `let café = 1`
     // is an ERROR in every tree-sitter editor. The scanner's base64 tokens, BARE_VALUE
@@ -1389,7 +1389,7 @@ module.exports = grammar({
     // same relaxation as the reference parser: reserved-ness protects
     // bindings and type names, and a field is neither. Aliased so the
     // node stays an `identifier` for highlighting and queries.
-    // CR claude for eric: [bug] The grammar rejects four things the parser accepts.
+    // CR claude for claude: [bug] The grammar rejects four things the parser accepts.
     // This list lacks seqq, trait, impl, pub, self, super and package, so `{seqq: 1, b:
     // 2}` and `s.seqq` are ERROR. `identifier` and `type_identifier` (1285, 1320) are
     // ASCII-only, while the parser takes any non-uppercase letter to start a value name

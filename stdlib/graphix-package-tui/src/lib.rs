@@ -396,7 +396,7 @@ fn into_borrowed_lines<'a>(lines: &'a [Line<'static>]) -> Vec<Line<'a>> {
 
 #[async_trait]
 trait TuiWidget {
-    // CR claude for eric: [structure] No widget reads the crossterm `Event`. The
+    // CR claude for claude: [structure] No widget reads the crossterm `Event`. The
     // routing widgets pass it on, InputHandlerW queues it beside the Value and reads it
     // only in a `debug!` (input_handler.rs:404), and eleven leaf widgets plus EmptyW
     // implement `handle_event` as an empty stub. Take only the Value, give the method a
@@ -543,7 +543,7 @@ impl EvalCachedAsync for SuspendEv {
             if held.lock().is_some() {
                 return Value::Bool(true);
             }
-            // CR claude for eric: [bug] A receiver still parked here is read as 'no
+            // CR claude for claude: [bug] A receiver still parked here is read as 'no
             // display'. But the display takes it (726) only after the shell has built
             // the display from the program's first value and its task has run
             // `with_ctx`, so a suspend asked in the program's first cycles fails with
@@ -669,7 +669,7 @@ impl<X: GXExt> Tui<X> {
             };
             // A display that dies takes the program with it: the shell
             // waits on the stop signal, and nothing else would send it.
-            // CR claude for eric: [bug] A panic anywhere in this task (a widget's draw,
+            // CR claude for claude: [bug] A panic anywhere in this task (a widget's draw,
             // handle_update or compile, or a ratatui assert) unwinds it and tokio drops
             // it. This fire never runs, and the Stop parked in libstate's TuiControl
             // (line 646) is never dropped either, so the shell's read_line waits
@@ -755,7 +755,7 @@ async fn run<X: GXExt>(
         Some(rx) => rx,
         None => mpsc::unbounded().1,
     };
-    // CR claude for eric: [bug] While the display owns the terminal, anything written
+    // CR claude for claude: [bug] While the display owns the terminal, anything written
     // to stderr lands in the alternate screen at ratatui's cursor. That includes every
     // unhandled error and hot-operator failure (report_failure!,
     // graphix-compiler/src/node/error.rs:567-573) and the warnings of a compile at run
@@ -813,7 +813,7 @@ async fn display<X: GXExt>(
     let event = get_id(&env, &["tui", "event"].into())?;
     let mut mouse: TRef<X, bool> =
         TRef::new(gx.compile_ref(get_id(&env, &["tui", "mouse"].into())?).await?)?;
-    // CR claude for eric: [bug] Nothing turns on bracketed paste (crossterm's
+    // CR claude for claude: [bug] Nothing turns on bracketed paste (crossterm's
     // EnableBracketedPaste; ratatui's init does not either). So a terminal never
     // brackets a paste, and the `Paste(string)` event in input_handler.gxi and
     // book/src/ui/tui/input.md never arrives. Instead a paste comes in as one key event
@@ -833,7 +833,7 @@ async fn display<X: GXExt>(
     let mut liveness = interval(Duration::from_secs(1));
     liveness.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let notify = loop {
-        // CR claude for eric: [perf] The loop draws the whole tree before every
+        // CR claude for claude: [perf] The loop draws the whole tree before every
         // message, and the shell hands a cycle's batch over one update at a time
         // (graphix-shell/src/lib.rs:477). So a cycle that changes N refs renders N full
         // frames, and N-1 of them show a half-applied cycle the program never produced
@@ -851,7 +851,7 @@ async fn display<X: GXExt>(
                 }
             })?;
         }
-        // CR claude for eric: [bug] Nothing restores the terminal when the process gets
+        // CR claude for claude: [bug] Nothing restores the terminal when the process gets
         // SIGTERM or SIGHUP. This select has no signal branch and the shell handles
         // only SIGINT (graphix-shell/src/lib.rs:449). So `kill <pid>`, `timeout`, or a
         // parent's `sys::process::kill(#grace: ..)` (SIGTERM first) leaves the terminal
@@ -893,7 +893,7 @@ async fn display<X: GXExt>(
                     if let Some(true) = mouse.t {
                         set_mouse(false)
                     }
-                    // CR claude for eric: [bug] Suspending hands the child a hidden
+                    // CR claude for claude: [bug] Suspending hands the child a hidden
                     // cursor. Every draw hides it, because no widget sets a cursor
                     // position. ratatui::restore() only leaves raw mode and the
                     // alternate screen, and the show comes from the Terminal's Drop,
@@ -920,7 +920,7 @@ async fn display<X: GXExt>(
                 }
             } => {
                 suspended = None;
-                // CR claude for eric: [bug] Every `ratatui::try_init` wraps the current
+                // CR claude for claude: [bug] Every `ratatui::try_init` wraps the current
                 // panic hook in a new one that calls `restore()`. The display calls it
                 // here at each resume and at each start (730, every REPL display
                 // included), so hooks pile up for the life of the process, and any
@@ -972,7 +972,7 @@ async fn display<X: GXExt>(
     Ok(notify)
 }
 
-// CR claude for eric: [risk] TUITYP is a process-wide `TypeRef`. Its write-once
+// CR claude for claude: [risk] TUITYP is a process-wide `TypeRef`. Its write-once
 // resolution cell is filled, weakly, by the first runtime that checks it, and it is
 // never re-resolved (TypeRef::resolve_in, graphix-types/src/typ/mod.rs:627-649). So a
 // second runtime in the process is checked against the first one's `tui::Tui`. Once the

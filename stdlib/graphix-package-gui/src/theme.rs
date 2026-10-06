@@ -581,7 +581,7 @@ impl RuleSpec {
         if let Some(r) = self.radius {
             s.radius = r.into();
         }
-        // CR claude for eric: [readability] RuleStyle's width becomes
+        // CR claude for claude: [readability] RuleStyle's width becomes
         // FillMode::Percent: the share of the container's length the line covers, 0 to
         // 100. It is not the rule's thickness, which is the widget's own #height/#width
         // (vertical_rule(#width) is thickness). rule_style(#width: 3.0) therefore draws

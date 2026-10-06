@@ -266,7 +266,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// Prefer this over `helper()` + `ins().call()`: cranelift's
     /// verifier rejects a mismatched call as a whole-function failure,
     /// so the region would silently node-walk instead of failing a test.
-    // CR claude for eric: [doc-drift] This note is stale: a mismatched call does not
+    // CR claude for claude: [doc-drift] This note is stale: a mismatched call does not
     // make the region node-walk. cranelift's verifier is on by default, a verifier
     // error fails the link, and a failed link panics (jit.rs:1187). What call_helper
     // actually adds is the debug assert that names the helper at emission. Dozens of
@@ -309,7 +309,7 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
         match word {
             None => init,
             Some(SelWord::Sure(addr)) => first(self, addr),
-            // CR claude for eric: [structure] This null-guarded diamond (branch on base
+            // CR claude for claude: [structure] This null-guarded diamond (branch on base
             // != 0, compute from addr, merge with a fallback) is written out six times:
             // here, open_slot_tables (body.rs:428-450), emit_slot_truncates
             // (body.rs:580-618, no result), SlotFlags::new (scaffold.rs:484-497),
@@ -907,7 +907,7 @@ pub(super) fn pending_exit_block(b: &mut FunctionBuilder, ctx: &LowerCtx) -> Blo
 /// pending flag, drop the in-flight owned set, and jump to
 /// `pending_exit` (so `FusedKernel::update` returns `None`). Terminates the
 /// block.
-// CR claude for eric: [doc-drift] This is the kernel's abort path (an interrupt at a
+// CR claude for claude: [doc-drift] This is the kernel's abort path (an interrupt at a
 // loop head, or a forked loop's abort), not a bottom. FusedKernel::update sees
 // KERNEL_ABORT, discards the out words and rides its resident (kernel.rs:460), as the
 // node-walk's interrupted dispatch does (node/lambda.rs:747). The doc above ('bottom

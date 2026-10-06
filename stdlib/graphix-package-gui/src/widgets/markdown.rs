@@ -94,7 +94,7 @@ impl<X: GXExt> super::GuiWidget<X> for MarkdownW<X> {
     }
 
     fn view(&self) -> IcedElement<'_> {
-        // CR claude for eric: [bug] Any text size reaches cosmic-text unchecked. A size
+        // CR claude for claude: [bug] Any text size reaches cosmic-text unchecked. A size
         // of 0, or a positive one that becomes 0 as f32 (1e-50), trips its "line height
         // cannot be 0" / "font size cannot be 0" asserts on the main thread, and the
         // program exits; a negative size hangs layout forever in
@@ -107,7 +107,7 @@ impl<X: GXExt> super::GuiWidget<X> for MarkdownW<X> {
         // test; md_drop renders at 16 and then dies when the program writes 0).
         // (gui-widgets-a-02)
         let text_size = self.text_size.t.flatten().unwrap_or(16.0) as f32;
-        // CR claude for eric: [bug] view() never reads self.spacing, so
+        // CR claude for claude: [bug] view() never reads self.spacing, so
         // Settings::spacing stays at with_text_size's text_size * 0.875 and the
         // documented #spacing (book/src/ui/gui/markdown.md:20) does nothing. The Style
         // comes from iced_core::Theme::Dark, so links are drawn in Dark's primary

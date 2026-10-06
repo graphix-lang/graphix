@@ -8,7 +8,7 @@ use netidx::publisher::Value;
 use netidx_derive::FromValue;
 use tokio::try_join;
 
-// CR claude for eric: [structure] make_handle picks a branch with is_svg() and then
+// CR claude for claude: [structure] make_handle picks a branch with is_svg() and then
 // calls to_handle or to_svg_handle (types.rs:355-382). This dispatch never reaches
 // to_handle's Svg arm or to_svg_handle's Bytes and Rgba arms, and each of those builds
 // an empty Handle::from_path(""). view() also builds a from_path("") image on every
@@ -74,7 +74,7 @@ impl<X: GXExt> GuiWidget<X> for ImageW<X> {
         v: &Value,
     ) -> Result<bool> {
         let mut changed = false;
-        // CR claude for eric: [bug] Every delivery of the source rebuilds the handle,
+        // CR claude for claude: [bug] Every delivery of the source rebuilds the handle,
         // and iced gives each Bytes or Rgba handle a fresh unique id, so its id-keyed
         // raster cache misses even when the value is unchanged:
         // ``image(&`Bytes(state.logo))`` delivers the same bytes again on every change

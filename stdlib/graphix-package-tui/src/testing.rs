@@ -321,7 +321,7 @@ impl TuiTestHarness {
 
 /// Deliver a batch's updates; false when it held none (the runtime sends
 /// a batch every cycle, empty or not).
-// CR claude for eric: [test-gap] The harness says it builds and drives the tree the way
+// CR claude for claude: [test-gap] The harness says it builds and drives the tree the way
 // the runtime does, but it differs from the display in four ways that hide bugs from
 // tests. An update to the root expression goes to `handle_update` instead of rebuilding
 // the tree as display does (lib.rs:804-808), so a program whose root re-fires (a

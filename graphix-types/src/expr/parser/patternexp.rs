@@ -195,7 +195,7 @@ where
                 match pat {
                     Some(pat) => Ok(Field::Named(name, pat, at)),
                     None if is_reserved_binding(&name) => {
-                        // CR claude for eric: [bug] This refusal notes no reason, so
+                        // CR claude for claude: [bug] This refusal notes no reason, so
                         // wherever another branch gets further its message is lost. In
                         // a select arm, `select s { {type, x} => x }` reports only "the
                         // parser could not continue past this point", while `let {type,
@@ -254,7 +254,7 @@ where
 {
     (choice((raw_string(), interpolated())), position()).then(|(e, end): (Expr, _)| {
         match &e.kind {
-            // CR claude for eric: [bug] A string pattern keeps the literal's Value and
+            // CR claude for claude: [bug] A string pattern keeps the literal's Value and
             // drops its StrForm, and StructurePattern::Literal has no place for one, so
             // `graphix fmt` prints a raw or template string pattern as an escaped
             // quoted string. The ornament walk (graphix-types/src/expr/format.rs:360)

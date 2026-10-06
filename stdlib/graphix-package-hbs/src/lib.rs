@@ -95,7 +95,7 @@ fn fc_render(args: &[Value]) -> Option<Value> {
                     .with(
                         &key,
                         || build_registry(*strict, partials, template),
-                        // CR claude for eric: [bug] Handlebars::render has no depth
+                        // CR claude for claude: [bug] Handlebars::render has no depth
                         // bound. handlebars only refuses a partial that includes itself
                         // while it is the current template, so these all recurse until
                         // the worker's stack overflows, and the whole process aborts
@@ -135,7 +135,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for HbsRenderEv {
         Ok(())
     }
 
-    // CR claude for eric: [bug] This hook refuses a #partials that is not a struct, map
+    // CR claude for claude: [bug] This hook refuses a #partials that is not a struct, map
     // or null, and data that is not a struct or map. The check (--check, the LSP) never
     // runs typecheck1, and the signature's 'a and 'b admit anything, so the editor
     // shows no error and the build refuses; graphix-fuzz check reports this as a

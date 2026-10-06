@@ -8,7 +8,7 @@ use crate::{
     typ::Type,
 };
 use anyhow::{Result, anyhow};
-// CR claude for eric: [style] MemFlags is imported here yet spelled
+// CR claude for claude: [style] MemFlags is imported here yet spelled
 // cranelift_codegen::ir::MemFlags at 218 and 226, Endianness is spelled out at 219,
 // 227, 489 and 495, and 194 writes anyhow::anyhow! despite the anyhow import; nodes.rs
 // writes smallvec::SmallVec/smallvec! 15 times with no import. clif_size (463) and

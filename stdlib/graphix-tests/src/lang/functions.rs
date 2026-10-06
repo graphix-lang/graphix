@@ -13,7 +13,7 @@ const LAMBDA: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for eric: [doc-drift] The note "ASPIRE: Jit — the body does not fuse into a
+// CR claude for claude: [doc-drift] The note "ASPIRE: Jit — the body does not fuse into a
 // kernel yet" is false here and above fused_arith (343), fused_tail_loop (361),
 // fused_mandelbrot (433), lazy_no_annotations (465), dyncall_hof (496),
 // nested_optional0 (684) and arg_update_after_bind (728): each body builds its kernel,
@@ -36,7 +36,7 @@ const FIRST_CLASS_LAMBDAS: &str = r#"
 
 // A monomorphic fn-typed param: `f(y) + 1` with `f: fn<'a: Number>` is
 // ill-typed (concrete arithmetic on an arbitrary rigid 'a).
-// CR claude for eric: [doc-drift] This comment describes the fixture this test
+// CR claude for claude: [doc-drift] This comment describes the fixture this test
 // replaced, and its claim is now false. Under the rank-2 rule a call copies the
 // formal's own quantifier, so `let g = |f: fn<'a: Number>(x: 'a) -> 'a, y| f(y) + 1;
 // g(|x| x, 1)` checks and yields 2. Delete the comment; if that rank-2 case matters,
@@ -842,7 +842,7 @@ run!(abandoned_kernel_closure, ABANDONED_KERNEL_CLOSURE, |v: Result<&Value>| mat
 // consuming path, never the whole kernel.
 
 // A fold whose init bottoms never dispatches; the independent tail fires.
-// CR claude for eric: [doc-drift] The comment above is false: this first fold returns 7
+// CR claude for claude: [doc-drift] The comment above is false: this first fold returns 7
 // in both engines, because its callback never reads acc (as fold_tainted_init_recovers
 // asserts), so it does dispatch. The comment at line 844 describes a callback consuming
 // a bottom acc, but UNUSED_BOTTOM_COMPOSITE_WITH_HOF has no fold.
@@ -1194,7 +1194,7 @@ run!(
     graphix_package_core::testing::FuseExpect::None
 );
 
-// CR claude for eric: [test-gap] This fixture is not Graphix: `sync`, `let mut`, `for`
+// CR claude for claude: [test-gap] This fixture is not Graphix: `sync`, `let mut`, `for`
 // and `=` assignment do not parse. The program fails at the parser, `matches!(v,
 // Err(_))` accepts that, and so the test cannot fail whatever the checker does. Use the
 // corpus form, `array::fold(array::map([f64:23.5, i64:2, i64:3], |x| x * i64:2), i64:0,
@@ -1490,7 +1490,7 @@ run!(
 
 // A tail-jump arg that bottoms every pass rides its previous value: the
 // loop keeps acc=0 and reaches the base.
-// CR claude for eric: [doc-drift] The comment and the test name say a bottomed tail
+// CR claude for claude: [doc-drift] The comment and the test name say a bottomed tail
 // argument rides its previous value, but CLAUDE.md says a bottom input never rides. The
 // 0.0 comes from the base arm `0 => 0.0`, which never reads acc, so this test cannot
 // tell riding from not consuming. Rename it (e.g. tail_arg_bottom_unread_by_base) and
@@ -1994,7 +1994,7 @@ run!(null_callee_is_bottom, NULL_CALLEE_IS_BOTTOM, |v: Result<&Value>| {
 // for a non-tail call: the loop does not keep the previous value. `obs`
 // is written only by a value, so it stays null while the result is
 // bottom.
-// CR claude for eric: [risk] This fixture orders its events with wall-clock timers and
+// CR claude for claude: [risk] This fixture orders its events with wall-clock timers and
 // passes only while t1 (30 ms) lands at least three cycles before t2 (60 ms). The
 // runtime puts every completed timer into one cycle (graphix-rt/src/gx.rs:1029). So if
 // the runtime thread stalls across the 30 ms gap (a loaded parallel run; par and

@@ -228,7 +228,7 @@ fn vendor(ws: &Path) {
         // vendor.py writes .cargo/config.toml into the workspace root,
         // but tests write their own per-package configs. Remove it so
         // we don't leave the workspace pointing at vendored sources.
-        // CR claude for eric: [bug] vendor.py never writes .cargo/config.toml: its main
+        // CR claude for claude: [bug] vendor.py never writes .cargo/config.toml: its main
         // only creates .cargo/ and prints the snippet. So this line deletes the
         // developer's own <ws>/.cargo/config.toml, which git cannot restore because
         // .gitignore excludes .cargo, whenever the release gate reaches
@@ -777,7 +777,7 @@ krb5_iov = [\"graphix-package-sys?/krb5_iov\", \"graphix-package-http?/krb5_iov\
             .filter_map(|v| v.as_str())
             .map(String::from)
             .collect();
-        // CR claude for eric: [test-gap] This pin only checks that each
+        // CR claude for claude: [test-gap] This pin only checks that each
         // DEFAULT_PACKAGES name has a shell feature, while is_stdlib_package
         // (lib.rs:240) routes add, remove and migration by this hand-copied list. A
         // stdlib crate added to graphix-shell/Cargo.toml but not to the list is routed

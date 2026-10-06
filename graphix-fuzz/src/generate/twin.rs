@@ -37,7 +37,7 @@ pub struct TwinShape {
 
 const FIELDS: [&str; 3] = ["a", "b", "c"];
 
-// CR claude for eric: [doc-drift] The comment in this function says an overflow bottoms
+// CR claude for claude: [doc-drift] The comment in this function says an overflow bottoms
 // on both twins alike, but unchecked i64 arithmetic wraps: `i64:9223372036854775807 +
 // i64:1` is `-9223372036854775808` in both engines. Twin fields also stay far from
 // overflow. The only invariant worth keeping is that both twins evaluate the identical
@@ -83,7 +83,7 @@ fn gen_select_body(
 
 /// Generate one twin module + its dispatch plan. `nfields` state
 /// fields, 2 or 3 twin routes, 1-3 dispatch epochs.
-// CR claude for eric: [test-gap] Every twin route writes the whole St with `*st <-
+// CR claude for claude: [test-gap] Every twin route writes the whole St with `*st <-
 // {..}` or a capture, through a `&St` parameter, a capture or a nested call. The main
 // generator's references (gen_ref_stmts in funcs.rs, exprs.rs:664) are `&v`, `&literal`
 // or `&(expr)` over scalars. So no generated program takes a place reference (`&s.f`,

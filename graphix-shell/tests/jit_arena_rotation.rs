@@ -57,7 +57,7 @@ fn exhausted_arena_rotates() {
         log.contains("JIT code arena exhausted: retired generation"),
         "a 192KB arena never rotated:\n{log}"
     );
-    // CR claude for eric: [test-gap] No code writes 'rebuilt without fusion' any more,
+    // CR claude for claude: [test-gap] No code writes 'rebuilt without fusion' any more,
     // so this assertion cannot fail; a link that outgrows a fresh arena now panics,
     // which the status assertion above catches. The pin also covers only the cold link.
     // The warm start's rotation has none, although Jit::load_wrapped takes a page of

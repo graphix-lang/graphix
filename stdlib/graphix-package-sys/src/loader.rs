@@ -96,7 +96,7 @@ impl ModuleResolver for NetidxResolver {
                 source: Source::Netidx(p.clone()),
                 text,
             };
-            // CR claude for eric: [bug] The netidx loader lays modules out differently
+            // CR claude for claude: [bug] The netidx loader lays modules out differently
             // from files. It has three gaps: - This line tries only `{base}/{name}.gx`,
             // never `{base}/{name}/mod.gx`. - `for_source` below puts a module's
             // submodules under the module's own path (`/s/m.gx` looks for
@@ -128,7 +128,7 @@ impl ModuleResolver for NetidxResolver {
                     return Resolution::TryNextMethod;
                 }
             };
-            // CR claude for eric: [bug] Every failure to fetch the .gxi becomes "no
+            // CR claude for claude: [bug] Every failure to fetch the .gxi becomes "no
             // interface": a non-string value, a publisher that exited but is still
             // listed, a --resolve-timeout expiry, a denial. The module then compiles
             // without its interface, so items it hides are visible and its signatures

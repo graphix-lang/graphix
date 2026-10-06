@@ -105,7 +105,7 @@ pub fn window_event(
         WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
             events.push(Event::Window(window::Event::Rescaled(*scale_factor as f32)));
         }
-        // CR claude for eric: [bug] winit's ModifiersChanged lands in this arm, so iced
+        // CR claude for claude: [bug] winit's ModifiersChanged lands in this arm, so iced
         // never gets keyboard::Event::ModifiersChanged. event_loop.rs:159 only stamps
         // KeyPressed.modifiers, and iced 0.14's text_input, scrollable, slider and
         // pick_list never read that field: they keep their own modifier state, which

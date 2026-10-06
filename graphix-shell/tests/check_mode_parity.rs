@@ -8,7 +8,7 @@ use graphix_rt::NoExt;
 use graphix_shell::{Mode, ShellBuilder};
 use std::path::Path;
 
-// CR claude for eric: [test-gap] This comparison cannot fail. Mode::Check runs
+// CR claude for claude: [test-gap] This comparison cannot fail. Mode::Check runs
 // GXRt::check with CFlag::CheckOnly, which returns after typecheck0
 // (graphix-compiler/src/lib.rs:1958) before anything reads ctx.fusion.enabled, and the
 // package root always compiles with fusion off, so both sides run the same code:

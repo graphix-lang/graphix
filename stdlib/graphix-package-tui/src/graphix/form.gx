@@ -20,7 +20,7 @@ let form = |
   let focus = 0;
   focus <- fields ~ 0;
   let handle = |e: input_handler::Event| input_handler::on_press(e, |k| select k.code {
-    // CR claude for eric: [bug] Only the left operand is sampled, so `% n` makes `n` a
+    // CR claude for claude: [bug] Only the left operand is sampled, so `% n` makes `n` a
     // trigger of this arm and of the BackTab/Up arm below, and `n` fires on every
     // `fields` delivery. The handler keeps its last arm between keys. So after
     // Tab/Down/BackTab/Up, a re-seed writes the focus sampled at that key right after
@@ -42,7 +42,7 @@ let form = |
       };
       `Stop
     },
-    // CR claude for eric: [bug] With no fields this arm never answers. vals[0] does not
+    // CR claude for claude: [bug] With no fields this arm never answers. vals[0] does not
     // exist, so line_edit::handle's `e ~ *st` waits forever, and the handler produces
     // nothing for any key the form does not take itself. InputHandlerW
     // (tui/src/input_handler.rs:399-460) sends the next event only after an answer, so

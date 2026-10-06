@@ -60,7 +60,7 @@ fn src_head(src: Option<&Type>, env: &Env) -> Option<Type> {
         cur = match &cur {
             Type::TVar(_) | Type::App(..) => cur.deref_cloned()?,
             Type::Ref(_) => cur.lookup_ref(env).ok()?,
-            // CR claude for eric: [bug] src_head returns None for every union, so
+            // CR claude for claude: [bug] src_head returns None for every union, so
             // whenever the source is a union the cast loses which kind of collection
             // the value is. A list typed `[List<i64>, null]` (what `list::tail`
             // returns) reaches the Array arm as an array, and its cons cells are cast
@@ -252,7 +252,7 @@ impl Type {
         ensure_sufficient(|| match self {
             Type::ByRef(..) => true,
             Type::Fn(_) | Type::Abstract { .. } => false,
-            // CR claude for eric: [bug] When an App's constructor is still an open
+            // CR claude for claude: [bug] When an App's constructor is still an open
             // variable, it dereferences to itself: with_deref hands back the App when
             // app_filled is None. This arm then calls holds_ref_int on the same App
             // forever, and ensure_sufficient keeps adding stack segments until memory
@@ -358,7 +358,7 @@ impl Type {
                 if s.contains(Typ::get(v)) {
                     return Ok(None);
                 }
-                // CR claude for eric: [bug] An error value that reaches this line
+                // CR claude for claude: [bug] An error value that reaches this line
                 // converts through netidx Value::cast, which maps every Value::Error to
                 // Bool(false).cast(t). So cast<i64> of an error is 0, cast<bool> is
                 // false, cast<null> is null, and the Array arm's wrap gives [0], while
@@ -667,7 +667,7 @@ impl Type {
                     Ok(t) => t,
                     Err(_) => return Err(self.cast_fail("undefined type", v)),
                 };
-                // CR claude for eric: [bug] The key includes the reference's params.
+                // CR claude for claude: [bug] The key includes the reference's params.
                 // The Array, List and Error arms wrap a value of the wrong shape by
                 // casting the same value to the element type, so a typedef whose params
                 // grow as it recurses (`type W<'a> = [Array<W<Array<'a>>>, null]`)
@@ -775,7 +775,7 @@ impl Type {
             // `hist` is the current path, not a visited set: a repeat
             // on the path is a name expanding without consuming value
             // structure; a repeat off the path is union backtracking.
-            // CR claude for eric: [perf] Each Type::Ref a runtime match reaches goes
+            // CR claude for claude: [perf] Each Type::Ref a runtime match reaches goes
             // through the committing lookup_ref: resolve the cell, fill a `known` map,
             // replace_tvars and check_contains each declared parameter bound,
             // replace_tvars the body and hash a RefKey into `hist`. This happens for

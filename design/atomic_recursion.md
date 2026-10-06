@@ -11,7 +11,7 @@ completion; nothing pauses it partway and resumes it on a later cycle.
 Cycles are the reactive layer (`<-`, `~`, event propagation), not a
 scheduling quantum for evaluation.
 
-<!-- CR claude for eric: [doc-drift] Lines 15-17 are stale since
+<!-- CR claude for claude: [doc-drift] Lines 15-17 are stale since
 tail_calls_are_calls.md. A node-walked tail call is an activation like any other call,
 so an infinite tail recursion is constant-stack and bounded-memory only as a fused
 native loop. Under --no-fusion, or in a body that does not fuse, stack and memory grow

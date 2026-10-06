@@ -186,7 +186,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
             }
         }
     }
-    // CR claude for eric: [bug] A fork attribute stops the other attributes on its
+    // CR claude for claude: [bug] A fork attribute stops the other attributes on its
     // expression from being checked. This branch returns before `def_asserts` are
     // registered, so `let rec f = #[serial] #[tail_recursive] |n: i64, acc: i64| ..`
     // compiles even with a non-tail self-call. A fix here also needs annotated_lambda
@@ -202,7 +202,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
             return compile_inner(ctx, flags, spec, scope, top_id, statement);
         }
         let node = compile_kind(ctx, flags, &spec, scope, top_id, statement)?;
-        // CR claude for eric: [bug] The wrapper gets the decorated spec itself, so it
+        // CR claude for claude: [bug] The wrapper gets the decorated spec itself, so it
         // shares the child's id and carries the child's other attributes. #[native] is
         // then dispatched on the ForkControl, which never emits, and is refused ("fork
         // control runs its child under flags of its own") even though the child fused.
@@ -220,7 +220,7 @@ fn compile_inner<R: Rt, E: UserEvent>(
         let Some(id) = annotated_lambda(&node) else {
             bailat!(spec, "#[{}] annotates a function definition", def_asserts[0].name());
         };
-        // CR claude for eric: [bug] This records the assertion under CFlag::CheckOnly
+        // CR claude for claude: [bug] This records the assertion under CFlag::CheckOnly
         // too. A check returns before analysis::analyze (lib.rs:1958), and
         // check_def_assertions is the only thing that removes an entry, so a checked
         // assertion is never retired. The language server checks every edit with
@@ -359,7 +359,7 @@ fn compile_kind<R: Rt, E: UserEvent>(
             scope,
             top_id,
         ),
-        // CR claude for eric: [bug] Every Constant is typed
+        // CR claude for claude: [bug] Every Constant is typed
         // Type::Primitive(Typ::get(v)), but the literal parser (netidx's parse_value,
         // graphix-types/src/expr/parser/mod.rs:660) also yields `error:<v>` and
         // `abstract:<base64>` values. So `error:"boom"`, exactly how the shell prints

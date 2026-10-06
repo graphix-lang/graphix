@@ -57,7 +57,7 @@ pub fn run(args: Args) -> Result<()> {
     for path in &args.files {
         let res = (|| -> Result<bool> {
             let text = fs::read_to_string(path)?;
-            // CR claude for eric: [bug] The CLI discovers the config from the canonical
+            // CR claude for claude: [bug] The CLI discovers the config from the canonical
             // path, the LSP (graphix-lsp/src/handlers/formatting.rs:42) from the path
             // as opened, and gxfmt from the path as given, so a symlinked source is
             // laid out by the config above its target here and by the one above the
@@ -76,7 +76,7 @@ pub fn run(args: Args) -> Result<()> {
                 io::stdout().write_all(formatted.as_bytes())?;
                 return Ok(false);
             }
-            // CR claude for eric: [risk] format_source emits LF, so a CRLF file always
+            // CR claude for claude: [risk] format_source emits LF, so a CRLF file always
             // counts as changed. `graphix fmt --check` lists every file of a CRLF
             // checkout (core.autocrlf without this repo's eol=lf) without saying why,
             // and `graphix fmt` silently rewrites the line endings. format_stdin's

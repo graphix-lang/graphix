@@ -40,7 +40,7 @@ pub(crate) mod queuefn;
 /// The success member `T` of a `Result<T, E>` return type, in either the
 /// named form or the expanded `[T, Error<E>]` form. Shape only; the
 /// typecheck-time validation is [`extract_cast_type`].
-// CR claude for eric: [bug] The checker can bind 'b to a union that holds an error
+// CR claude for claude: [bug] The checker can bind 'b to a union that holds an error
 // member: `[T, Error<E>]` under a `Result<T, E>` annotation, `[error, T]` under a
 // select with an `error as e` arm. This function returns that union whole, so the read
 // casts data into an error: `Error<E>` wraps any value E admits, and `error` takes any
@@ -66,7 +66,7 @@ pub fn cast_target(rtype: &Type) -> Option<Type> {
     })
 }
 
-// CR claude for eric: [structure] json::read, toml::read, pack::read and sqlite::query
+// CR claude for claude: [structure] json::read, toml::read, pack::read and sqlite::query
 // all wrap this the same way. Each has a cast_typ field set in init and again in
 // typecheck1, a typecheck0 override equal to the EvalCachedAsync default, and a
 // map_value that casts or returns a per-crate 'no concrete return type' error.
@@ -198,7 +198,7 @@ macro_rules! impl_no_pack {
 /// whose identity is determined by `Arc::as_ptr(&self.inner)`.
 #[macro_export]
 macro_rules! impl_abstract_arc {
-    // CR claude for eric: [dead] This raw-UUID arm has no caller: the six uses (db
+    // CR claude for claude: [dead] This raw-UUID arm has no caller: the six uses (db
     // cursor, tree and txn, sqlite) all take the path form, and ../netidx has none. It
     // repeats the @identity arm's PartialEq/Eq/PartialOrd/Ord/Hash/impl_no_pack bodies,
     // and it registers the wrapper under a caller-chosen UUID instead of
@@ -290,7 +290,7 @@ pub use memo::FastMemo;
 
 /// Check if a Value is a struct-shaped array: non-empty, every element is
 /// a 2-element array with a string first element, keys sorted ascending.
-// CR claude for eric: [bug] is_struct decides from the value alone, but a struct, an
+// CR claude for claude: [bug] is_struct decides from the value alone, but a struct, an
 // Array<(string, T)> and an array of one-payload variants share one encoding. So json
 // and toml write_str/write_bytes and hbs::render write one type as an object or as an
 // array depending on its contents. `[("a", 1), ("b", 2)]` writes `{"a":1,"b":2}` and
@@ -484,7 +484,7 @@ impl CachedVals {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> bool {
-        // CR claude for eric: [bug] This answers true for a FreshBottom while the slot
+        // CR claude for claude: [bug] This answers true for a FreshBottom while the slot
         // keeps its old value. rand (graphix-package-rand/src/lib.rs:70), range
         // (Seq::update, line 1984), WatchStream (sys/src/watch.rs:625), the db
         // subscription accessors (db/src/subscribe.rs:320), the bench builtins and
@@ -514,7 +514,7 @@ impl CachedVals {
             if tag.is_bottom() {
                 self.1[i] = Tag::STALE_BOTTOM;
             } else {
-                // CR claude for eric: [perf] Every update stores a fresh clone of each
+                // CR claude for claude: [perf] Every update stores a fresh clone of each
                 // argument that is not bottom, stale ones included. So in a quiet cycle
                 // every builtin call bumps and drops the refcount of each string, bytes
                 // or array argument just to store the value its slot already holds. A
@@ -628,7 +628,7 @@ pub fn sort_values(
         v.clone().cast(Typ::F64).unwrap_or_else(|| v.clone())
     }
     let mut buf: LPooled<Vec<Value>> = vals.collect();
-    // CR claude for eric: [bug] A user `impl Ord` that is not a total order
+    // CR claude for claude: [bug] A user `impl Ord` that is not a total order
     // (antisymmetric but intransitive, which the checker accepts) makes these std sorts
     // panic with "does not correctly implement a total order", and nothing contains it.
     // array::sort and list::sort kill the runtime in both engines: in a kernel,
@@ -853,7 +853,7 @@ impl<T> CachedArgs<T> {
             }
             Some(t) if t.is_fired() => match ev.eval(ctx, cached) {
                 Some(v) => last_result.set(TagValue::fired(v)),
-                // CR claude for eric: [bug] When eval returns None on a fired join,
+                // CR claude for claude: [bug] When eval returns None on a fired join,
                 // this arm keeps the previous result as STALE, and the wake re-eval
                 // below does the same. FastFn's doc, the kernel trampoline
                 // (graphix-compiler/src/fusion/emit_helpers.rs:598) and the book's
@@ -967,7 +967,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         self.cached.image_encode(buf)?;
         self.id.encode(buf)?;
         self.top_id.encode(buf)?;
-        // CR claude for eric: [risk] `running` is true only while a spawned eval is in
+        // CR claude for claude: [risk] `running` is true only while a spawned eval is in
         // flight, state an image cannot carry, yet it is written here while a non-empty
         // `queued` is refused. A restored `true` has no task behind it, so no reply
         // ever clears it and every later request queues forever. Images are written
@@ -1014,7 +1014,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         {
             self.running = true;
             let id = self.id;
-            // CR claude for eric: [bug] If `T::eval` panics, this spawn never answers.
+            // CR claude for claude: [bug] If `T::eval` panics, this spawn never answers.
             // tokio turns the panic into a JoinError, and graphix-rt/src/gx.rs:1098
             // (and 1029/1034/1104) drops it. So `running` stays true, every later call
             // is pushed onto `queued` and never run, and a seq/seqq step waiting on the
@@ -1029,7 +1029,7 @@ impl<R: Rt, E: UserEvent, T: EvalCachedAsync> Apply<R, E> for CachedArgsAsync<T>
         }
         match res {
             Some(v) => self.out.set(TagValue::fired(v)),
-            // CR claude for eric: [bug] `bottomed` is set only when an argument
+            // CR claude for claude: [bug] `bottomed` is set only when an argument
             // triggers (the `cached.update` test above), and `bottom_null` leaves `out`
             // holding the last reply. So on every later cycle where the argument is a
             // standing bottom, `out.ride()` below re-delivers the pre-bottom reply as a
@@ -1299,7 +1299,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Take {
         }
     }
 
-    // CR claude for eric: [bug] sleep() clears the configured #n together with the
+    // CR claude for claude: [bug] sleep() clears the configured #n together with the
     // running count, and update reloads n only from a FIRED #n (line 1147). A level #n
     // (a let, a parameter, a callee's argument) is therefore lost for good once the arm
     // sleeps: take passes nothing ever again, and Skip (1215, 1234) passes everything.
@@ -1423,7 +1423,7 @@ struct SumEv;
 unit_image_state!(SumEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
-    // CR claude for eric: [bug] sum, product, min, max, and, or and mean are declared
+    // CR claude for claude: [bug] sum, product, min, max, and, or and mean are declared
     // Sync here and at lines 1306, 1350, 1381, 1411, 1436 and 2238. Each is a pure
     // function of its slots with no state of its own. CachedArgs re-runs eval at a wake
     // only for Stateless builtins (line 785), so when an arm wakes after its inputs
@@ -1439,7 +1439,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for SumEv {
     const NAME: &str = "core_sum";
 
     fn eval(&mut self, _ctx: &mut ExecCtx<'_, R, E>, from: &CachedVals) -> Option<Value> {
-        // CR claude for eric: [bug] When every argument flattens to nothing (an empty
+        // CR claude for claude: [bug] When every argument flattens to nothing (an empty
         // array), this fold returns None, and so do the same folds in ProductEv and
         // DivideEv. CachedArgs::update_inner answers a fired None by riding its last
         // result (line 779). So an array that becomes empty keeps reporting the
@@ -1682,7 +1682,7 @@ fn fc_shr(args: &[Value]) -> Option<Value> {
     int_shift!(&args[0], &args[1], wrapping_shr)
 }
 
-// CR claude for eric: [structure] Twelve fast-fn builtins in this file repeat one shell
+// CR claude for claude: [structure] Twelve fast-fn builtins in this file repeat one shell
 // (unit struct, unit_image_state!, an EvalCached impl whose eval is fast_eval of the
 // fast fn, a CachedArgs alias): IsErr, ToError, All, BitAnd, BitOr, BitXor, BitNot,
 // Shl, Shr, ArrayLen, MapLen and MapUnion; math.rs's three macros and str's split_fn!
@@ -2160,7 +2160,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Seq {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for eric: [bug] range never checks `self.args.any_bottom()` after
+        // CR claude for claude: [bug] range never checks `self.args.any_bottom()` after
         // `update`, so a bottom reaches its match. R3 and ruled delta 13 in
         // design/dense_delivery.md say a bottomed argument bottoms the invocation. An
         // argument not delivered yet falls to the `_` arm: `range(0, j)` with `j`
@@ -2417,7 +2417,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Count {
     }
 
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for eric: [bug] sleep() restarts the count but keeps `out`. When a
+        // CR claude for claude: [bug] sleep() restarts the count but keeps `out`. When a
         // re-selected arm's input does not fire at the wake, the arm emits the previous
         // activation's count, and the next fire counts 1, so the arm shows 2 and then
         // 1. Once, Take, Skip, Uniq and Hold do the same in their sleep: a woken
@@ -2625,7 +2625,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for Dbg {
         Ok(Box::new(Dbg { spec, dest, typ, buf: buf_, out: TagValue::phantom() }))
     }
 
-    // CR claude for eric: [bug] dbg is an effect but is declared Stateless(None), as
+    // CR claude for claude: [bug] dbg is an effect but is declared Stateless(None), as
     // are core_log (line 2522) and sys_time_now (sys/src/time.rs:394).
     // arm_sleeps_on_deselect counts Stateless as pure, so an arm holding only such a
     // call skips sleep, and each re-selection enters it as a birth where the standing
@@ -2792,7 +2792,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Log {
             return self.out.ride();
         };
         self.buf.clear();
-        // CR claude for eric: [bug] `self.scope` is the scope init receives, the
+        // CR claude for claude: [bug] `self.scope` is the scope init receives, the
         // builtin definition's own body inside core, so every log line from every call
         // site starts with the same `core::#fn<id>: ` (core::#fn4611686018427387938
         // here), which says nothing about where it came from. Dbg keeps the call site's
@@ -2822,7 +2822,7 @@ macro_rules! printfn {
         }
 
         impl<R: Rt, E: UserEvent> BuiltIn<R, E> for $type {
-            // CR claude for eric: [perf] print and println are declared Sync, while dbg
+            // CR claude for claude: [perf] print and println are declared Sync, while dbg
             // and log, which have the same shape (a #dest config, a scratch buffer,
             // emit_line), are Stateless(None), and design/strict_fusion.md lists print
             // among the effects kept Stateless(None) so a tail loop that prints stays
@@ -2959,7 +2959,7 @@ type MapLen = CachedArgs<MapLenEv>;
 fn fc_map_union(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
         (Value::Map(a), Value::Map(b)) => {
-            // CR claude for eric: [bug] chunkmap's Map::union does not always pass f
+            // CR claude for claude: [bug] chunkmap's Map::union does not always pass f
             // its values in (self, other) order. When `a` is not taller than `b`,
             // Tree::union (chunkmap avl.rs:1278-1281) calls merge_root_to(&t1, &t0), so
             // f gets (k, b's value, a's value) and this closure keeps a's value. Which

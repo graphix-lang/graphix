@@ -75,7 +75,7 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
         if let Some(s) = self.style.t {
             p = p.style(s.0);
         }
-        // CR claude for eric: [bug] Wrapping is set whenever `trim` has a value, and
+        // CR claude for claude: [bug] Wrapping is set whenever `trim` has a value, and
         // `#trim: &bool` defaults to `&true`, so every paragraph wraps. ratatui applies
         // `scroll.x` only on its non-wrapping path, so the `scroll.x` that
         // paragraph.gxi documents as "in chars" does nothing with either trim value,
@@ -89,7 +89,7 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
             p = p.wrap(Wrap { trim });
         }
         if let Some(s) = self.scroll.t {
-            // CR claude for eric: [bug] scroll.y and scroll.x count content lines and
+            // CR claude for claude: [bug] scroll.y and scroll.x count content lines and
             // chars, not terminal cells. clamp_u16 caps them at VISUAL_DIMENSION_CAP
             // (1024), so a paragraph longer than about 1024 lines cannot be scrolled
             // past line 1024: `#scroll: &{x: 0, y: 1500}` over 2000 lines shows

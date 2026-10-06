@@ -425,7 +425,7 @@ pub(super) fn gen_module(
                 gxi.push_str(decl);
             }
             gx.push_str(body);
-            // CR claude for eric: [bug] Only the last of these three registrations can
+            // CR claude for claude: [bug] Only the last of these three registrations can
             // ever be called. GenCtx::visible_entries (mod.rs:283), which
             // fns_returning, vars_of and poly_fns all go through, keeps one entry per
             // name, so every generated csize call passes an Array<string> and the Map

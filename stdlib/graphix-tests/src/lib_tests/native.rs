@@ -169,7 +169,7 @@ async fn native_structwith_string_field_ok() {
 
 // A connect inside a map callback.
 #[tokio::test]
-// CR claude for eric: [readability] This test asserts the 'did not fully fuse' compile
+// CR claude for claude: [readability] This test asserts the 'did not fully fuse' compile
 // error, so its name says the opposite of what it pins; call it
 // native_connect_in_callback_is_error. The must-reject tests at lines 22-66 (and
 // neg.rs:26) assert only `r.is_err()`, which a parse error or eval's own 5 s no-result

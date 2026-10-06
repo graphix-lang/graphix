@@ -111,7 +111,7 @@ impl ServerState {
             Some(idxs) if !idxs.is_empty() => {
                 idxs.iter().map(|i| self.workspace.projects[*i].root.clone()).collect()
             }
-            // CR claude for eric: [bug] A `.gxi` that no project contains becomes its
+            // CR claude for claude: [bug] A `.gxi` that no project contains becomes its
             // own root here, and `check` hands it to `RootFile::load`, which parses the
             // interface as a program. A valid interface then gets a parse error ("`///`
             // is a doc comment, legal only in a .gxi interface file"), and hover and
@@ -174,7 +174,7 @@ impl ServerState {
     /// Disk changed: the project graph may have, and every edited root
     /// may read the file.
     pub fn saved(&mut self) {
-        // CR claude for eric: [bug] This rescan can turn a root into a module, for
+        // CR claude for claude: [bug] This rescan can turn a root into a module, for
         // example when a save adds `mod helper;` to main.gx. Nothing then drops the old
         // root's `checked`, `warnings` and `diagnosed` entries, because
         // `close_document` only visits the roots `roots_of` names now. So the
@@ -214,7 +214,7 @@ impl ServerState {
             }
             Err(e) => Some(self.diagnostic(&e, root)),
         };
-        // CR claude for eric: [bug] A publish replaces the client's whole list for a
+        // CR claude for claude: [bug] A publish replaces the client's whole list for a
         // file, but `now` holds only this root's diagnostics. A file two projects share
         // (gui/icon.gx is in 51) therefore shows whichever root published last.
         // `cleared`, here and in close_document (line 155), empties a file another root
@@ -262,7 +262,7 @@ impl ServerState {
     fn diagnostic(&self, err: &anyhow::Error, root: &Path) -> (Uri, Diagnostic) {
         let loc = error_location(err);
         let path = loc.file.unwrap_or_else(|| root.to_path_buf());
-        // CR claude for eric: [bug] path_to_uri also returns None for absolute paths.
+        // CR claude for claude: [bug] path_to_uri also returns None for absolute paths.
         // So this expect kills the server (main-thread panic, exit 101) on the first
         // failed check whose error file or root path holds [ ] ^ | \ or is not UTF-8.
         // PATH_ENCODE (uri.rs:13) is the WHATWG path set, but lsp_types 0.97's Uri is
@@ -279,7 +279,7 @@ impl ServerState {
             start: self.encode(text, at),
             end: self.encode(text, loc.end.unwrap_or_else(|| extent(text, at))),
         };
-        // CR claude for eric: [bug] `documents` is keyed by the URI string the client
+        // CR claude for claude: [bug] `documents` is keyed by the URI string the client
         // sent, but this `uri` is rebuilt by `path_to_uri`. That function leaves `( ) !
         // $ & ' * + , ; = : @` unencoded, while VS Code (ide/editors/vscode)
         // percent-encodes them. For a file under e.g. `proj (copy)/` the lookup misses,

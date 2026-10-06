@@ -1,4 +1,4 @@
-// CR claude for eric: [bug] input_handler is typed `throws 'e` with the handler's
+// CR claude for claude: [bug] input_handler is typed `throws 'e` with the handler's
 // errors, but the TUI calls the handler through a Callable compiled under Scope::root()
 // (graphix-rt/src/gx.rs:944), so a `?` in the handler finds no handler and is only
 // logged as unhandled. The checker treats a catch around input_handler(..) as covering

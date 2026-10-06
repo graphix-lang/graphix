@@ -303,7 +303,7 @@ run!(
     "#
 );
 
-// CR claude for eric: [test-gap] map::fold and the Map impl of Collection::fold both
+// CR claude for claude: [test-gap] map::fold and the Map impl of Collection::fold both
 // run the 'map_fold intrinsic (map mod.gx:13; core mod.gx:38 and 52), so a == b checks
 // only the trait's wrapper callback, not the fold itself.
 // collection_bodies_filter_array likewise compares two MapOps of one MapQ node. These

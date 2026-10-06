@@ -2,7 +2,7 @@ use super::GuiTestHarness;
 use crate::widgets::chart::pad_range;
 use anyhow::Result;
 
-// CR claude for eric: [test-gap] auto_range is a copy of compute_ranges' min/max fold,
+// CR claude for claude: [test-gap] auto_range is a copy of compute_ranges' min/max fold,
 // so the six auto_range_* tests check this copy and pad_range, not the code that draws.
 // No test reaches compute_time_ranges or compute_3d_ranges, and compute_ranges is
 // reached only through the two tests that call Program::draw on numeric lines. The

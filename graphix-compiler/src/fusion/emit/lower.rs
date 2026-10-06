@@ -143,7 +143,7 @@ pub(super) fn compile_into_function<'a>(
         v
     };
 
-    // CR claude for eric: [bug] The loop head is built whenever has_tail_loop is set
+    // CR claude for claude: [bug] The loop head is built whenever has_tail_loop is set
     // (analysis.rs:672, pure && structural_tail_loop, where MapQ/FoldQ count as pure).
     // But every word the body claims on the site channel is one word that every pass of
     // the loop reads and overwrites: a collection loop's prev-length/entered word, a
@@ -292,7 +292,7 @@ pub(super) struct EmittedBody {
 /// the callee body is defined and read by every caller to size the
 /// block it supplies. A caller with no layout is on a recursive
 /// back-edge and passes 0.
-// CR claude for eric: [doc-drift] This doc says a caller with no layout is on a
+// CR claude for claude: [doc-drift] This doc says a caller with no layout is on a
 // recursive back-edge and passes 0, and so do lower.rs:93-94, 291-293, 441-442,
 // kernel_abi.rs:835-837, body.rs:419, 569, 650, 660 and scaffold.rs:464, 547. A missing
 // layout is a self-call, which roots a per-activation child block
@@ -311,7 +311,7 @@ pub(crate) struct SiteLayout {
 /// A per-slot state word's address. `Guarded` words ride a base
 /// that is 0 on recursive back-edges; the consumer takes the
 /// no-memory path when the base is null.
-// CR claude for eric: [readability] SelWord, slot_select_word and the sel_sites
+// CR claude for claude: [readability] SelWord, slot_select_word and the sel_sites
 // parameters are named for the selection memory strict fusion deleted (strict_fusion.md
 // lists SelWord claims as deleted). The words they carry are prev-length words,
 // first-call words and in-loop call-site block anchors. The comments at body.rs:357,

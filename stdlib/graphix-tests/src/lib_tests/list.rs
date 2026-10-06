@@ -30,7 +30,7 @@ const LIST_SINGLETON: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for eric: [doc-drift] The 34 `// ASPIRE: Jit ..` and `// None: ..` lines in
+// CR claude for claude: [doc-drift] The 34 `// ASPIRE: Jit ..` and `// None: ..` lines in
 // list.rs, array.rs and core.rs sit on fixtures annotated FuseExpect::Jit, so each
 // comment contradicts its annotation. Some are also false: this body fuses whole (one
 // region, both fast calls), and `all` (core.rs:158) has a fast-call entry (fc_all),
@@ -73,7 +73,7 @@ const LIST_TAIL_NONEMPTY: &str = r#"
 "#;
 
 // ASPIRE: Jit — composite/value cross-kernel call args.
-// CR claude for eric: [structure] list_tail_nonempty and list_uncons_nonempty (91)
+// CR claude for claude: [structure] list_tail_nonempty and list_uncons_nonempty (91)
 // match the cons-cell layout `[2, [3, []]]`, which design/list_native.md says is
 // private and free to change. A change of representation would break them even though
 // no program behaves differently. Assert through the API instead:
@@ -484,7 +484,7 @@ run!(list_find_miss, LIST_FIND_MISS, |v: Result<&Value>| {
 
 // A heterogeneous list with a Fn member flowing through find into
 // Number-constrained arith is rejected.
-// CR claude for eric: [test-gap] The comment says the Fn member reaches the fold's
+// CR claude for claude: [test-gap] The comment says the Fn member reaches the fold's
 // Number-constrained `acc + x`. In fact the program is refused earlier, at the find
 // callback's `x > 10` ('cannot compare [i64, null, fn(..)] with i64'). Since
 // `matches!(v, Err(_))` accepts any error, the fold's check could regress with this

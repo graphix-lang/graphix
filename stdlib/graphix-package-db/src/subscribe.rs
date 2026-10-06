@@ -166,7 +166,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         from: &mut [Node<R, E>],
     ) -> &TagValue {
         // from[0] = optional prefix (null = no prefix), from[1] = tree
-        // CR claude for eric: [bug] The prefix is read with seam_tick and never kept. A
+        // CR claude for claude: [bug] The prefix is read with seam_tick and never kept. A
         // prefix that fires before the tree is thrown away by the early return below,
         // and a tree that fires without the prefix firing subscribes with the empty
         // prefix. A constant #prefix fires only at init, while db::open and db::tree
@@ -184,7 +184,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         if let Some(v) = tree_changed {
             self.tree_val = Some(v);
         }
-        // CR claude for eric: [bug] seam_tick reads a bottomed tree or prefix as no
+        // CR claude for claude: [bug] seam_tick reads a bottomed tree or prefix as no
         // event, so when the tree goes bottom the old watch keeps running and the last
         // Subscription rides; the accessors below keep their bind id when `sub` goes
         // bottom (CachedVals keeps the value) and never consult any_bottom. Both keep
@@ -215,7 +215,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                 abort.abort();
             }
             let jh = tokio::task::spawn(async move {
-                // CR claude for eric: [bug] The sled subscriber is registered only when
+                // CR claude for claude: [bug] The sled subscriber is registered only when
                 // a tokio worker first polls this task, but the Subscription value
                 // fires in this cycle (line 218). A write the program issues on that
                 // fire can reach sled first, and its event never arrives. In the shell,
@@ -231,7 +231,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
                     if let Some(ev) = decode_sled_event(key_typ, first) {
                         events.push(ev);
                     }
-                    // CR claude for eric: [bug] A chunk is whatever sled had ready when
+                    // CR claude for claude: [bug] A chunk is whatever sled had ready when
                     // this task woke, and the runtime delivers one chunk per bind id
                     // per cycle. So one atomic db::batch or txn::commit reaches
                     // on_insert spread over many cycles: a 2000-insert commit took 51
@@ -265,7 +265,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for DbSubscribe {
         self.out.ride()
     }
 
-    // CR claude for eric: [bug] sleep aborts the watch task and forgets tree_val, and
+    // CR claude for claude: [bug] sleep aborts the watch task and forgets tree_val, and
     // the accessors' sleep below drops their bind id. Both re-establish only on a FIRED
     // argument, but at a wake the arm's arguments arrive stale. So a subscription, or
     // an on_insert/on_remove accessor, in a select arm that sleeps once never delivers

@@ -127,7 +127,7 @@ fn every_span_reads_back_as_its_node() {
         (f, text)
     });
     for (file, text) in texts.chain([fixture]) {
-        // CR claude for eric: [test-gap] A file that does not parse is skipped without
+        // CR claude for claude: [test-gap] A file that does not parse is skipped without
         // a word, and the floors cannot notice: files.len() counts files found, not
         // files parsed. All 344 corpus files parse and all 122 examples type-check
         // today, so the skip tolerates nothing real and can only hide a parser

@@ -302,7 +302,7 @@ impl LoopFrame {
             cx.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, self.i, self.entered);
         let new = cx.b.ins().uextend(types::I64, new);
         let init = cx.init_flag();
-        // CR claude for eric: [bug] The slot's init view reaches only constants, the
+        // CR claude for claude: [bug] The slot's init view reaches only constants, the
         // builtin stale mask and the callee first-call word. A read of a local bound
         // outside the loop keeps its STALE disc: a capture, a kernel param or an outer
         // let, read through emit_ref_node or as a capture in marshal_args. A new fold
@@ -518,7 +518,7 @@ impl SlotFlags {
     /// available (a state word, a call-site word, or in a loop the
     /// enclosing slot's chain word); a nested loop without a chain word
     /// falls back to the conservative source-or-slot rule.
-    // CR claude for eric: [structure] apply borrows the SlotFlags, so nothing stops a
+    // CR claude for claude: [structure] apply borrows the SlotFlags, so nothing stops a
     // second application, which would compare against the len + 1 the first one just
     // stored and miss a resize. Take self: SlotFlags is not Copy, so reusing it would
     // then fail to compile. finish_loop_result (node/collection.rs:607) only forwards
@@ -753,7 +753,7 @@ fn emit_slots(
     sel_sites: &[ExprId],
     iteration: impl Iteration,
 ) -> Result<Sunk> {
-    // CR claude for eric: [bug] Under a tainted source this runs `len` iterations over
+    // CR claude for claude: [bug] Under a tainted source this runs `len` iterations over
     // the source's placeholder. emit_fold_loop (line 1160) does the same, and so does
     // emit_init_loop, which clamps only an oversize count (795). The node-walk builds
     // no slot under a bottom source and runs exactly the slots it kept

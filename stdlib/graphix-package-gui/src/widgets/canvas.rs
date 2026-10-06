@@ -21,7 +21,7 @@ impl FromValue for PointV {
             y: f32,
         }
         let Fields { x, y } = v.cast_to()?;
-        // CR claude for eric: [bug] PointV accepts NaN and infinite coordinates. So do
+        // CR claude for claude: [bug] PointV accepts NaN and infinite coordinates. So do
         // the other f32 fields of CanvasShape, PathSegment and StrokeV (radius, width,
         // angles), and draw_shape passes them to iced unchecked. A shape such as `x: v
         // / total * 300.0` while `total` is 0.0 panics when the canvas draws: in a

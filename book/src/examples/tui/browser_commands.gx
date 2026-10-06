@@ -52,7 +52,7 @@ let handle_normal_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
     },
     `Char(":") => {
         command <- "";
-        // CR claude for eric: [bug] Writing `error:""` does not clear the status. Line
+        // CR claude for claude: [bug] Writing `error:""` does not clear the status. Line
         // 34 interpolates the error value itself, so after the first ':' the
         // normal-mode bottom title shows a red `error:""` where it used to be blank.
         // Keep the status a string (`let command_error = ""`, `catch(e) command_error

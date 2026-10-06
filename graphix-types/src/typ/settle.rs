@@ -262,7 +262,7 @@ impl FnType {
             out.dedup();
             edges.push(out);
         }
-        // CR claude for eric: [bug] visit recurses once per cell along a dependency
+        // CR claude for claude: [bug] visit recurses once per cell along a dependency
         // chain, and it is the only recursion in this file outside
         // crate::stack::ensure_sufficient, so the program alone sets its depth. A
         // function that declares 30000 chained bounds ('a0: Array<'a1>, ..., with every

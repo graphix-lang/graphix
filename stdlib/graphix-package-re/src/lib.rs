@@ -22,7 +22,7 @@ fn with_regex(pat: &ArcStr, f: impl FnOnce(&Regex) -> Value) -> Value {
     PATTERNS.with(|c| {
         c.borrow_mut()
             .with(pat, || Ok(Regex::new(pat)?), f)
-            // CR claude for eric: [bug] The ReError text is `{e:?}` of an
+            // CR claude for claude: [bug] The ReError text is `{e:?}` of an
             // anyhow::Error. anyhow's Debug appends the backtrace it captured whenever
             // RUST_BACKTRACE or RUST_LIB_BACKTRACE is set, so the string a program
             // reads depends on the environment and on the engine: under

@@ -390,7 +390,7 @@ fn freeze_for_abi_d_inner(t: &Type, seen: Option<&Seen>) -> Result<Type, FreezeE
                 {
                     return Ok(Type::Primitive(*p));
                 }
-                // CR claude for eric: [perf] A two-member primitive union with null
+                // CR claude for claude: [perf] A two-member primitive union with null
                 // freezes only when the other member is a string or a register scalar.
                 // So [duration, null] (and datetime, bytes, decimal or a varint with
                 // null) is Unsupported, while the wider [duration, i64, null] freezes
@@ -731,7 +731,7 @@ pub fn scalar_prim_of_value(v: &Value) -> Option<PrimType> {
 /// the disc's tag byte); the kinds differ in entry binding and body
 /// emission, not on the wire.
 #[derive(Debug, Clone, Copy)]
-// CR claude for eric: [structure] AbiParamKind is ParamKind with the payloads stripped,
+// CR claude for claude: [structure] AbiParamKind is ParamKind with the payloads stripped,
 // kept in step by hand through ParamKind::abi() (line 682). Its three users
 // (emit/jit.rs:637, emit/body.rs:100, emit/lower.rs:103) only turn it into a LocalKind
 // or a payload CLIF type. Delete it and give AbiParamDesc the &ParamKind (matching

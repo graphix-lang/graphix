@@ -217,7 +217,7 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     for _ in 0..n_epochs {
         let mut ep = Vec::new();
         for (name, ty) in &inputs {
-            // CR claude for eric: [test-gap] in0 is always pushed because `ep` is still
+            // CR claude for claude: [test-gap] in0 is always pushed because `ep` is still
             // empty when it is drawn, so every epoch injects in0 and in1 never fires
             // without it. mutate_schedule never changes an epoch's set of inputs, so
             // mutants cannot make an in1-only epoch either: `gen 2000 11 --reactive`
@@ -450,7 +450,7 @@ fn sample_chain(
 /// parity, so epochs flip which arm is live, and the `once(...)` arm is
 /// async, which keeps the select on the node-walk. The live arm's
 /// builtin variant carries a per-epoch bottoming arg.
-// CR claude for eric: [doc-drift] The doc says the `once(..)` arm is async, but
+// CR claude for claude: [doc-drift] The doc says the `once(..)` arm is async, but
 // `core_once` is `Effect::Sync` (stdlib/graphix-package-core/src/lib.rs:1056). The
 // select node-walks because a Sync builtin does not fuse, and the arm exercises once's
 // restart in its own sleep(), not an async output cleared on sleep. Line 499 says the
@@ -564,7 +564,7 @@ fn dyn_reload(
     let srcs_name = ctx.fresh();
     stmts.push(format!("let {srcs_name} = [{}]", srcs.join(", ")));
     let status = ctx.fresh();
-    // CR claude for eric: [bug] `sandbox whitelist [core]` leaves out the array, str
+    // CR claude for claude: [bug] `sandbox whitelist [core]` leaves out the array, str
     // and map packages. So every block source built above fails to load with
     // `array::len not defined` (about half of all sources; each one calls array::len),
     // and so does any organic body that draws str::len or map::len. The select below
@@ -797,7 +797,7 @@ fn ceremony(
         head.push_str(&format!("; flush({})", run_event(ctx, stmts, &mut body, rng)));
     }
     let done = ctx.fresh();
-    // CR claude for eric: [test-gap] This is the generator's only seq: a top-level `let
+    // CR claude for claude: [test-gap] This is the generator's only seq: a top-level `let
     // vN = seq|seqq <input or burst>[; abort(..)][; flush(..)] { .. }`. It never draws
     // `seq let pat = trigger`, a triggerless `seq { .. }`, a seq inside a lambda
     // (per-instance machines in imaged instance bodies) or a seq inside a select arm

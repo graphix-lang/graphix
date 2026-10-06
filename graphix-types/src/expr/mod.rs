@@ -530,7 +530,7 @@ pub struct TryWithExpr {
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
 pub struct SeqMachineExpr {
-    // CR claude for eric: [structure] `id` and `SeqCaptureExpr::machine` (line 560) are
+    // CR claude for claude: [structure] `id` and `SeqCaptureExpr::machine` (line 560) are
     // the seq's `spec.id.inner()` (seq.rs:230, :833) held as bare u64s, and so are the
     // node fields and the analysis map that pair them (seq_machine.rs:95, :440;
     // analysis.rs:49). That skips the typed-id rule and image relocation: an image
@@ -953,7 +953,7 @@ impl ExprKind {
 pub enum Source {
     File(PathBuf),
     Netidx(Path),
-    // CR claude for eric: [structure] Internal carries a VFS module's bare leaf name
+    // CR claude for claude: [structure] Internal carries a VFS module's bare leaf name
     // (graphix-types/src/expr/resolver.rs:233) or an entire program's text (the shell's
     // embedded main program, graphix-shell/src/lib.rs:247, which GX::load_exprs parses
     // at graphix-rt/src/gx.rs:761; the fuzzer), and Display prints both as `module
@@ -983,7 +983,7 @@ impl fmt::Display for Source {
 }
 
 impl Source {
-    // CR claude for eric: [dead] `has_filename`, `is_file` (line 979) and
+    // CR claude for claude: [dead] `has_filename`, `is_file` (line 979) and
     // `UseItem::leading_keyword` (line 293) have no callers in this workspace or in
     // ../netidx; delete them. `UseItem::plain` (line 283) is used only by a parser test
     // (parser/test.rs:983) and belongs under #[cfg(test)]. (t-expr-core-06)
@@ -1320,7 +1320,7 @@ impl PartialOrd for Expr {
     }
 }
 
-// CR claude for eric: [bug] Expr's PartialEq, PartialOrd and Debug recurse through the
+// CR claude for claude: [bug] Expr's PartialEq, PartialOrd and Debug recurse through the
 // derived ExprKind impls with no ensure_sufficient (Display, fold and Drop have one),
 // so each call goes as deep as the AST. format_source compares the reparse with the
 // original using `!=` (format.rs:328). The two parses share no Arcs, so triomphe's
@@ -1352,7 +1352,7 @@ impl Expr {
     /// Whether `other` is a clone of this expression: the same id,
     /// origin and position over equal syntax (shared children compare
     /// by pointer).
-    // CR claude for eric: [bug] same_tree compares `kind ==`, and Expr equality looks
+    // CR claude for claude: [bug] same_tree compares `kind ==`, and Expr equality looks
     // at kind only at every level (not by pointer, as the doc says). So it ignores
     // `dec` and every child's id and dec, but the codec writes `dec`, and expr_key
     // makes a decorated clone a ref to an undecorated twin with the same id.

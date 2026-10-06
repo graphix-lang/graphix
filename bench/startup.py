@@ -12,7 +12,7 @@ import time
 def measure(binary, source):
     start = time.perf_counter_ns()
     subprocess.run(
-        # CR claude for eric: [test-gap] `--check` runs the check alone (no elaboration,
+        # CR claude for claude: [test-gap] `--check` runs the check alone (no elaboration,
         # no fusion, `#[native]` never verified), so this harness times parse and
         # typecheck only and the generated `#[native] f(0)` asserts nothing: a fusion or
         # elaboration startup regression shows no change. design/jit_startup.md:126 and

@@ -110,7 +110,7 @@ impl_helper_arg! {
     i8 => &[AbiTy::I8s];
     f64 => &[AbiTy::F64];
     f32 => &[AbiTy::F32];
-    // CR claude for eric: [risk] design/unified_value_abi.md says helpers take handle
+    // CR claude for claude: [risk] design/unified_value_abi.md says helpers take handle
     // words as u64, because a typed ArcStr/ValArray parameter holding the 0 sentinel is
     // UB at the boundary. This impl lets graphix_value_buf_push_string (344),
     // graphix_arcstr_clone (1018) and graphix_string_buf_push_arcstr (1055) take a
@@ -123,7 +123,7 @@ impl_helper_arg! {
     // throughout: 727, 1001, 1018, 1048, 1602 and 1616 return a typed ArcStr, while
     // 859, 890, 951 and 1025 return bits. (f-helpers-07)
     arcstr::ArcStr => &[AbiTy::I64];
-    // CR claude for eric: [structure] A borrowing helper takes the same owning TagValue
+    // CR claude for claude: [structure] A borrowing helper takes the same owning TagValue
     // as a consuming one. So whether a helper borrows or consumes is recorded only in
     // doc comments and in the `std::mem::forget` that each of about twenty readers must
     // remember. One missing forget is a double free on every fused use. A panic inside
@@ -389,7 +389,7 @@ unsafe fn graphix_valarray_drop(bits: u64) {
 
 /// Extend `buf` with a list value's elements, consuming it; a non-list
 /// value pushes as one element, as `ListFlatMap::finish` does.
-// CR claude for eric: [structure] The doc above names `ListFlatMap::finish`, which
+// CR claude for claude: [structure] The doc above names `ListFlatMap::finish`, which
 // exists nowhere. The rule is Flavor::extend (node/collection.rs:1639): this helper
 // restates its List arm and graphix_value_buf_extend_from_array (304) restates its
 // Array arm, so any change to how flat_map flattens must be made in two places to keep
@@ -606,7 +606,7 @@ unsafe fn graphix_typedcall(
 ///
 /// SAFETY: `args` is `n` valid clean `Value`s on the call site's stack,
 /// viewed and never owned; the site releases what it owned afterwards.
-// CR claude for eric: [risk] This is the only panic catch in the helpers.
+// CR claude for claude: [risk] This is the only panic catch in the helpers.
 // graphix_value_eq, graphix_map_ref and graphix_valarray_into_cmap also run Graphix
 // code: Value eq/cmp on an abstract value calls its Eq/Ord impl through the hooks
 // FusedKernel::update loans (node/coretraits.rs dispatch_eq, dispatch_cmp). A panic in
@@ -663,7 +663,7 @@ unsafe fn fast_dispatch(
 
 /// Unchecked value arithmetic through netidx's operators. An Error
 /// result becomes bottom, as the node-walk's BinOp does; consumes both.
-// CR claude for eric: [dead] value_arith_op and graphix_value_{add,sub,mul,div,rem} are
+// CR claude for claude: [dead] value_arith_op and graphix_value_{add,sub,mul,div,rem} are
 // reached only from emit_arith_node's datetime/duration branch (emit/nodes.rs:212), and
 // that branch cannot run. Arithmetic is `'a: Number + Singleton`, and Number holds
 // neither datetime nor duration, so `let d = duration:1.s; d + d` is refused at the
@@ -740,7 +740,7 @@ safe fn graphix_value_into_array_borrowed(v: TagValue) -> u64 {
 /// Drop an owned Value. Disc 0 is never a real Value, so the pending
 /// sentinel is rejected before an invalid `Value` materializes.
 safe fn graphix_value_drop(tv: TagValue) {
-    // CR claude for eric: [risk] If this assert fires, the unwind drops the still-owned
+    // CR claude for claude: [risk] If this assert fires, the unwind drops the still-owned
     // `tv` before the nounwind abort. TagValue::drop transmutes [0, payload] into a
     // Value, and no variant has discriminant 0, so the check that diagnoses a leaked
     // pending sentinel ends in undefined behaviour instead of the clean abort. Put the
@@ -854,7 +854,7 @@ safe fn graphix_value_checked_rem(l: TagValue, r: TagValue) -> TagValue {
 }
 
 /// Value equality; consumes both operands.
-// CR claude for eric: [perf] graphix_value_eq, graphix_bytes_index (799),
+// CR claude for claude: [perf] graphix_value_eq, graphix_bytes_index (799),
 // graphix_map_ref (808) and graphix_array_slice (814) consume their operands. So emit/
 // first clones every borrowed operand (emit_owned_value_operand_node at
 // emit/nodes.rs:375, via graphix_value_clone or graphix_valarray_clone at
@@ -946,7 +946,7 @@ safe fn graphix_variant_payload_string(v: TagValue, payload_idx: usize) -> u64 {
 /// A variant payload slot's words, borrowed: valid while the parent
 /// variant is alive, never passed to a consuming or dropping helper. A
 /// shape mismatch yields `Value::Null`.
-// CR claude for eric: [risk] `safe` makes this a safe `pub extern "C" fn`, reachable as
+// CR claude for claude: [risk] `safe` makes this a safe `pub extern "C" fn`, reachable as
 // graphix_compiler::fusion::emit_helpers::graphix_variant_payload_borrowed. Its result
 // is an owning TagValue that aliases the parent's slot through ptr::read, with no
 // reference taken. Safe code that drops the result releases a reference it never held:
@@ -1584,7 +1584,7 @@ unsafe fn graphix_slot_state_table(
     leaf: *const SiteLeaf,
 ) -> *mut u64 {
     let len = len as usize;
-    // CR claude for eric: [risk] In a forked chunk, the chain levels at the outlined
+    // CR claude for claude: [risk] In a forked chunk, the chain levels at the outlined
     // loop's own depth (sized by its len) are shared by all chunks. They are safe only
     // because emit_slot_truncates sized them before the fork with the same (len, valid)
     // the chunk passes, so this check takes the read-only path. If the preheader misses

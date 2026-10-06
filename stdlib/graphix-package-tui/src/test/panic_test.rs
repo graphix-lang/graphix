@@ -2,7 +2,7 @@
 //! that, unclamped, would trigger an assert in ratatui or a downstream
 //! cast. A failure means a clamp is still missing.
 
-// CR claude for eric: [test-gap] These tests assert only that render() returns. For
+// CR claude for claude: [test-gap] These tests assert only that render() returns. For
 // fields read through netidx's wrapping casts (list selected/scroll, tabs selected,
 // table selected, sparkline max; see tui-widgets-12), ratatui accepts the wrapped
 // value, so the tests pass with no clamp in place, contrary to the module doc. On a

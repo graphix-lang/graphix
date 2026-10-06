@@ -19,7 +19,7 @@ impl<R: Rt, E: UserEvent> BuiltIn<R, E> for ExampleBuiltin {
     const NAME: &str = "{{name}}_example";
     // Override to `Sync` only if every output lands on the same cycle
     // as the input that triggered it.
-    // CR claude for eric: [doc-drift] The comment above sends a same-cycle builtin to
+    // CR claude for claude: [doc-drift] The comment above sends a same-cycle builtin to
     // Sync, but effects.rs and book/src/packages/creating.md reserve Sync for builtins
     // that keep cross-invocation state; a pure builtin is Stateless, the only class
     // that fuses. Both examples are pure (this one computes core's is_err,
@@ -75,7 +75,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ExampleBuiltin {
                 self.out.set(TagValue::fired(v))
             }
             TagView::Stale(_) => self.out.ride(),
-            // CR claude for eric: [doc-drift] The template every new package starts
+            // CR claude for claude: [doc-drift] The template every new package starts
             // from presents the bottom ride as policy: a bottom input returns
             // `bottom_null` and keeps the pre-bottom result in `out` "for later stale
             // re-surfacing" through `Stale(_) => self.out.ride()`, where

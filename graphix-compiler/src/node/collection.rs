@@ -203,7 +203,7 @@ pub(crate) fn split_pair(value: &Value) -> Option<(Value, Value)> {
 /// malformed pair is logged and skipped. Key order reads the core-trait
 /// hooks, so the caller runs this under them.
 pub(crate) fn pairs_to_map<'a>(pairs: impl IntoIterator<Item = &'a Value>) -> Value {
-    // CR claude for eric: [bug] CMap::from_iter is chunkmap's insert_many: a stable
+    // CR claude for claude: [bug] CMap::from_iter is chunkmap's insert_many: a stable
     // sort, then dedup_by, which keeps the FIRST pair of each equal key. So map::map
     // and map::filter_map keep the first of colliding output keys, while a map literal
     // and map::insert keep the last: map::map({"a" => 1, "b" => 2}, |(k, v)| (1, k)) is
@@ -327,7 +327,7 @@ impl MapCollection for IndexRange {
 
 /// A slot's last production.
 #[derive(Debug, Default)]
-// CR claude for eric: [dead] SlotState::Empty is never observed: set() never writes it,
+// CR claude for claude: [dead] SlotState::Empty is never observed: set() never writes it,
 // and every read follows a run of every slot (an interrupt returns ride() before any
 // read). So once poisoned is false every slot holds a value: the all(value().is_some())
 // tests at 1100 and 1109 are always true and the else at 1112-1114 is dead, as are
@@ -464,7 +464,7 @@ impl CallKind {
         ctx: &ExecCtx<'_, R, E>,
         prototype: &Node<R, E>,
     ) -> Self {
-        // CR claude for eric: [bug] When resolve_trait_call has lowered the prototype
+        // CR claude for claude: [bug] When resolve_trait_call has lowered the prototype
         // (a core trait, or a user trait over a union element type), it views as its
         // lowered block and has no static_target. So this returns Slot(None), and every
         // slot calls through the callback parameter. That parameter is bound to the
@@ -888,7 +888,7 @@ fn update_slots<R: Rt, E: UserEvent>(
 ) -> Option<Option<Tag>> {
     let (standing, fresh) = slots.split_at_mut(old_len.min(slots.len()));
     let n = standing.len();
-    // CR claude for eric: [bug] The standing slots fork here on cost alone, and the
+    // CR claude for claude: [bug] The standing slots fork here on cost alone, and the
     // fresh ones fork through site.fresh.run below. Nothing tells the collection that
     // its callback reaches an ordered or opaque call, so slots that share one queuefn
     // queue push into it and pop from it in thread order. That breaks the rule
@@ -968,7 +968,7 @@ fn ranges(n: usize, grain: usize) -> LPooled<Vec<(usize, usize)>> {
 /// ahead of their first updates, where `site` says the builds pay for
 /// it; a slot built in order binds at its first update. `call` is a
 /// slot's call.
-// CR claude for eric: [perf] build_fresh runs on every update with a valid source, as
+// CR claude for claude: [perf] build_fresh runs on every update with a valid source, as
 // does CallKind::slot (a lambda_defs lookup and a Value clone, 1035/1437), though both
 // matter only when slots were added. With nothing fresh, its apply_deferred still
 // drains pending_refs, and a hashbrown drain rewrites every control byte of a table
@@ -1100,7 +1100,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 // Elements move only on a fire, in a frame (a rebound loop
                 // variable arrives stale) or past a sleep; a fresh slot
                 // always takes its element.
-                // CR claude for eric: [doc-drift] The comment above says elements also
+                // CR claude for claude: [doc-drift] The comment above says elements also
                 // move 'in a frame (a rebound loop variable arrives stale)', but the
                 // node-walk has no frames (design/tail_calls_are_calls.md) and moved is
                 // src_trig || woke; FoldQ's copy at 1447 says the same. Drop the frame
@@ -1117,7 +1117,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
                 // whether or not a slot fires, and so do moved elements
                 // under a result that reads them.
                 let back = std::mem::take(&mut self.src_bottom);
-                // CR claude for eric: [bug] MapQ and FoldQ each carry a copy of the
+                // CR claude for claude: [bug] MapQ and FoldQ each carry a copy of the
                 // source/resize/deliver prologue (1018-1059, 1420-1456), and the firing
                 // rules after it have drifted from each other and from the JIT's exact
                 // SlotFlags rule, which fires on any resize and treats a source back
@@ -1220,7 +1220,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for MapQ<R, E, C> {
         &self.base.typ
     }
 
-    // CR claude for eric: [bug] MapQ::refs, and FoldQ::refs at line 1571, report the
+    // CR claude for claude: [bug] MapQ::refs, and FoldQ::refs at line 1571, report the
     // source and the prototype but not the slots, whose call sites hold the bound
     // instances. When the callback is chosen at run time, or the callback calls a
     // function chosen at run time, the prototype never binds. What the slot instances
@@ -1549,7 +1549,7 @@ impl<R: Rt, E: UserEvent, C: MapCollection> Update<R, E> for FoldQ<R, E, C> {
         }
         if self.slots.is_empty() && source_ok {
             return match init.tag() {
-                // CR claude for eric: [bug] When the init is bottom, a fired empty
+                // CR claude for claude: [bug] When the init is bottom, a fired empty
                 // source does not fire the fold. This arm takes its trigger from the
                 // init alone. The value arm below joins in the source's tag
                 // (`tag.join(t)`), and the kernel fires on a fired empty source
@@ -1763,7 +1763,7 @@ impl Flavor {
     /// Emit the loop source as the scaffold's ValArray. Returns the
     /// source's (disc, payload), whose disc drives the firing wrap,
     /// plus the loop's [`scaffold::ArraySrc`].
-    // CR claude for eric: [structure] The fused-loop emission (514-648 and 1649-2072,
+    // CR claude for claude: [structure] The fused-loop emission (514-648 and 1649-2072,
     // about 550 lines: CallbackParam, the emit_*_kind gates,
     // Flavor::emit_source/emit_result, emit_flattened_source) is the only cranelift
     // code under node/; other nodes' emit_clif delegate to fusion/emit. Moving it

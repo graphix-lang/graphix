@@ -89,7 +89,7 @@ async fn checkbox_renders() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-// CR claude for eric: [test-gap] The ten *_with_reactive_* tests bind a constant
+// CR claude for claude: [test-gap] The ten *_with_reactive_* tests bind a constant
 // reference, view, drain and view again. Nothing writes the referent, nothing is
 // asserted, and drain()'s changed flag is dropped, so a widget whose handle_update
 // ignored its reference would pass them all. checkbox_with_reactive_ref/_value (:92,

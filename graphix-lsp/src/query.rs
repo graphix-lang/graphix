@@ -142,7 +142,7 @@ impl<'a> Query<'a> {
     /// The target under the cursor and the name it is written by.
     fn target(&self) -> Option<(Target, CompactString)> {
         let Checked { env, ide } = self.checked;
-        // CR claude for eric: [bug] `on` takes a reference or a type reference when the
+        // CR claude for claude: [bug] `on` takes a reference or a type reference when the
         // cursor is on any segment of its written path, and the caller answers with the
         // item, so on `util` in `util::bump` hover shows `util::bump: fn(n: i64) ->
         // i64`, definition goes to `let bump` and references lists bump's uses; a type

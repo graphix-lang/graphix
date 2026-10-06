@@ -41,7 +41,7 @@ fn fmt_naked_capped(f: &mut dyn fmt::Write, v: &Value, mut cap: usize) -> fmt::R
                     Value::Array(a) => {
                         write!(f, "[")?;
                         stack.push(W::S("]"));
-                        // CR claude for eric: [perf] The cap counts values written, but
+                        // CR claude for claude: [perf] The cap counts values written, but
                         // each visited array pushes all of its elements here, and each
                         // map collects and pushes all of its pairs (54-63), before the
                         // cap applies. So NakedPrefix walks and allocates in proportion
@@ -151,7 +151,7 @@ impl<'a> TVal<'a> {
         match (&self.typ, &self.v) {
             (
                 Type::Primitive(_)
-                // CR claude for eric: [bug] Every typed print of an abstract value
+                // CR claude for claude: [bug] Every typed print of an abstract value
                 // loses the payload's type here. GxAbstract's Debug prints the payload
                 // with fmt_naked, so a struct payload prints as its pair array, a tuple
                 // as an array, a variant as [tag, args] (a nullary one as a quoted
@@ -189,7 +189,7 @@ impl<'a> TVal<'a> {
                     Err(e) => return write!(f, "error, {e:?}"),
                     Ok(typ) => typ,
                 };
-                // CR claude for eric: [bug] The path key is the definition alone, while
+                // CR claude for claude: [bug] The path key is the definition alone, while
                 // cast_int and is_a_int key on ref_key(tr), the definition plus its
                 // parameters. Under O<O<X>> with `type O<'a> = ['a, null]` (core's
                 // Option included), the inner O<X> meets the same value under the same

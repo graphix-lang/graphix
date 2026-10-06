@@ -69,7 +69,7 @@ pub(crate) fn emit_builtin_call_node<R: Rt, E: UserEvent>(
         (16 * args.len().max(1)) as u32,
         3,
     ));
-    // CR claude for eric: [structure] Which helper releases an owned value of each kind
+    // CR claude for claude: [structure] Which helper releases an owned value of each kind
     // is decided in four places: these helper-name tuples, CallArgDrop with
     // marshal_args and emit_call_arg_drops (call.rs:308-315, 692-707, 909-934),
     // emit_discard_result (flow.rs:414-447) and emit_drop_local (call.rs:938-964). The
@@ -347,7 +347,7 @@ impl<R: Rt, E: UserEvent> LambdaCallSlot<'_, R, E> {
 /// of its own.
 fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
     let word = match cx.env.loop_depth {
-        // CR claude for eric: [bug] In a callee body claim_state_word is None, so a
+        // CR claude for claude: [bug] In a callee body claim_state_word is None, so a
         // self-call hands the new activation this activation's own init flag. A
         // recursion depth first reached after init (by growth, or by regrowth after a
         // shrink) therefore runs with no init view, and the native tail loop does the
@@ -367,7 +367,7 @@ fn emit_callee_context_word(cx: &mut BodyCx, site: ExprId) -> ClifValue {
         }),
         _ => cx.slot_select_word(site),
     };
-    // CR claude for eric: [bug] The callee's context word carries only bit 0 (init |
+    // CR claude for claude: [bug] The callee's context word carries only bit 0 (init |
     // first call), never bit 1 (wake), so inside every cross-kernel callee `genuine =
     // init & !wake` (line 151) is just `init`. Under an arm wake init is forced to 1,
     // the fastcall stale mask is zeroed, and a builtin over standing args returns

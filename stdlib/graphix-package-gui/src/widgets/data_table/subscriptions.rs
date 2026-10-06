@@ -77,7 +77,7 @@ pub(super) struct SharedCellsInner {
     pub(super) routing: IntMap<SubId, SubRoles>,
     /// Sparkline history per `(row_path, col_name)`; keyed by identity
     /// so it survives row reordering.
-    // CR claude for eric: [bug] Nothing ever removes an entry or ages one against now.
+    // CR claude for claude: [bug] Nothing ever removes an entry or ages one against now.
     // The history_seconds cutoff runs only when that cell gets a new point, yet
     // compute_sparkline_bounds (render.rs:565) unions every history ever kept. So a row
     // that left the table, or scrolled out of the subscription window with a spike in
@@ -214,7 +214,7 @@ pub(super) fn spawn_dispatch_task<X: GXExt>(
                                             .entry(key)
                                             .or_insert_with(LPooled::take);
                                         history.push_back((now, f));
-                                        // CR claude for eric: [risk] parse_column_type
+                                        // CR claude for claude: [risk] parse_column_type
                                         // (types.rs:235) accepts any finite positive
                                         // history_seconds, but this subtraction panics
                                         // from about 9.2e18 s (Instant underflow), and
@@ -302,7 +302,7 @@ impl<X: GXExt> DataTableW<X> {
     /// task panics on an immediately-ready future.
     pub(super) fn apply_table_sync(&mut self) -> LPooled<Vec<ArcStr>> {
         let mut pending: LPooled<Vec<ArcStr>> = LPooled::take();
-        // CR claude for eric: [bug] Every #table update drops every subscription here,
+        // CR claude for claude: [bug] Every #table update drops every subscription here,
         // even an identical table or one with one more row. Lines 282-284 then zero
         // first_row/first_col and clear `editing`. data_table.md promises the update is
         // "reconciled against the current subscription set". As a result, every visible
@@ -522,7 +522,7 @@ impl<X: GXExt> DataTableW<X> {
             if !Path::is_absolute(row_path) {
                 continue;
             }
-            // CR claude for eric: [bug] A sort column subscribes <row>/<col> for every
+            // CR claude for claude: [bug] A sort column subscribes <row>/<col> for every
             // absolute row whatever the column's source is, and render, sort_value_for,
             // raw_value_for and auto-fit all read that `cells` entry before the source.
             // So a column with a string or Map source shows, sorts by and passes to
@@ -618,7 +618,7 @@ impl<X: GXExt> DataTableW<X> {
                 if !Path::is_absolute(row_path) {
                     continue;
                 }
-                // CR claude for eric: [bug] already_subbed counts a row as
+                // CR claude for claude: [bug] already_subbed counts a row as
                 // grid-subscribed when `cells` has an entry for each subscribed
                 // displayed column, but subscribe_sort_column, which apply_table_sync
                 // runs first, also fills `cells`, with a SortMarker role only. When
@@ -771,7 +771,7 @@ impl<X: GXExt> DataTableW<X> {
             }
         }
         let mut indices: LPooled<Vec<usize>> = (0..n).collect();
-        // CR claude for eric: [bug] This comparator is not a total order. A NaN cell
+        // CR claude for claude: [bug] This comparator is not a total order. A NaN cell
         // displays as "NaN", which parses, and it then compares Equal to every number.
         // A digit-leading string such as "5 KB" sorts lexically between numbers whose
         // numeric order disagrees ("10" < "5 KB" < "9" < "10"). On 21 or more rows
@@ -788,7 +788,7 @@ impl<X: GXExt> DataTableW<X> {
             for (idx, sb) in self.sort_by.iter().enumerate() {
                 let va = keys[a * n_keys + idx].as_str();
                 let vb = keys[b * n_keys + idx].as_str();
-                // CR claude for eric: [bug] This comparator is not a total order, so
+                // CR claude for claude: [bug] This comparator is not a total order, so
                 // sort_by on more than 20 rows panics with "user-provided comparison
                 // function does not correctly implement a total order". An f64 NaN cell
                 // displays as "NaN", parses back to NaN and compares Equal to every

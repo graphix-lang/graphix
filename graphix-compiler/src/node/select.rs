@@ -244,7 +244,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
     /// that matches anything or by the union of what the irrefutable
     /// atoms, `null` (its type's one value), bool literals, literal pools
     /// and slice ladders cover.
-    // CR claude for eric: [structure] Three walks decide what an arm covers, each with
+    // CR claude for claude: [structure] Three walks decide what an arm covers, each with
     // its own rules: this one (mtypes, the itype pre-check, a pool of refutable atoms
     // only, ladders), check_dead_arms at :379 (null and bool literals, a pool of every
     // unguarded atom, ladders) and the narrowing in typecheck0_with at :1254
@@ -278,7 +278,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                 None if wild => wildcard = true,
                 None => {
                     for (sp, at) in pat.atoms() {
-                        // CR claude for eric: [bug] Coverage pools only refutable
+                        // CR claude for claude: [bug] Coverage pools only refutable
                         // atoms, but check_dead_arms (line 478) pools every unguarded
                         // atom, so the two checks disagree. A composite pattern whose
                         // only heads are payload-less variants, such as `(b, `B)`, is
@@ -502,7 +502,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
                     }
                     _ => (),
                 }
-                // CR claude for eric: [bug] A refutable arm that repeats earlier
+                // CR claude for claude: [bug] A refutable arm that repeats earlier
                 // unguarded arms, or is covered by them, is never reported. This walk
                 // removes from `atype` only irrefutable atoms, null, a true/false pair
                 // and completed pools, so `0 => 1, 0 => 2, _ => 3`, `true => 1, true =>
@@ -620,7 +620,7 @@ fn deselect<R: Rt, E: UserEvent>(
     if sleep {
         super::deselecting_arm(true, || body.sleep(ctx));
     }
-    // CR claude for eric: [structure] This closure is arm_refs (:590) written out
+    // CR claude for claude: [structure] This closure is arm_refs (:590) written out
     // again, and Select::refs (:1086-1089) writes it out a third time (the body's refs,
     // then bound_by spelled out). Pass the whole arm here and call arm_refs in both
     // places, so an arm's reads are collected one way for the tracker's build, its
@@ -707,7 +707,7 @@ fn pooled_leaves(
             | StructPatternNode::Struct { .. } => {
                 return crate::stack::ensure_sufficient(|| children(env, sp, t, out));
             }
-            // CR claude for eric: [bug] A nested or-pattern stops the leaf walk here,
+            // CR claude for claude: [bug] A nested or-pattern stops the leaf walk here,
             // and is_refutable(Or) keeps the arm out of the irrefutable atoms, so
             // nested alternation never counts toward coverage. `select (true, 3) {
             // (true | false, n) => n }` is refused with "missing match cases: no
@@ -851,7 +851,7 @@ impl LiteralPool {
         sp: &StructPatternNode,
     ) -> Result<Option<Type>> {
         let Some(shape) = Shape::of(sp) else { return Ok(None) };
-        // CR claude for eric: [bug] The pool credits an atom by its structure alone and
+        // CR claude for claude: [bug] The pool credits an atom by its structure alone and
         // never reads the arm's explicit type predicate. So `(bool, i64) as (true, x)`
         // and `(bool, string) as (false, x)` complete `(bool, [i64, string])`, though
         // `(false, 5)` and `(true, "s")` match neither arm. check_coverage then accepts
@@ -871,7 +871,7 @@ impl LiteralPool {
             }
         };
         let g = &mut self.groups[i];
-        // CR claude for eric: [bug] Leaves are compared by index, but an index is not a
+        // CR claude for claude: [bug] Leaves are compared by index, but an index is not a
         // position. pooled_leaves (:642) descends into a nested tuple or struct only
         // where the arm's own pattern does, so `((true, _), _)` has leaves at 0.0, 0.1,
         // 1 and `(_, (false, _))` has them at 0, 1.0, 1.1. This count check is the only
@@ -962,7 +962,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         } = self;
         let LazyArmFacts { tracked, sleep_on_deselect, shallow } =
             arm_facts.as_mut().expect("arm facts built above");
-        // CR claude for eric: [bug] The wake bit is taken before the bottom-scrutinee
+        // CR claude for claude: [bug] The wake bit is taken before the bottom-scrutinee
         // and `ChainOut::Undet` early returns, so a select whose wake cycle is a no-arm
         // window loses its wake. When the scrutinee or guard comes back with the same
         // arm, the same-arm path runs it with init and wake_init false while the arm's
@@ -994,7 +994,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                         && pat.guard.is_some()
                         && pat.shape_matches(&ctx.env, shallow.as_ref(), v) =>
                 {
-                    // CR claude for eric: [bug] The guard tick delivers the arm's binds
+                    // CR claude for claude: [bug] The guard tick delivers the arm's binds
                     // with bind_event, which writes the store as well as the overlay.
                     // unbind_event below removes only the overlay, so an untaken
                     // guarded arm's binds keep every scrutinee value its shape admits,
@@ -1021,7 +1021,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
         // emission is decided by the consulted set below.
         let pat_up = guard_tags.iter().any(|t| t.is_some_and(|t| t.triggers()));
         // A bottom scrutinee bottoms the select; it consults no guards.
-        // CR claude for eric: [bug] This return, and the ChainOut::Undet return below,
+        // CR claude for claude: [bug] This return, and the ChainOut::Undet return below,
         // leave the selected arm selected and awake, but it is neither updated nor
         // slept. TrackedFires catches up the arm's free inputs, but anything that lands
         // inside the arm during the window is lost for good. A timer tick is lost, so
@@ -1125,7 +1125,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 // birth and gets `init` only.
                 let (init, wake) = (ctx.event.init, ctx.event.wake_init);
                 ctx.event.init = true;
-                // CR claude for eric: [readability] The comment at :1007-1009 misstates
+                // CR claude for claude: [readability] The comment at :1007-1009 misstates
                 // this rule. Every arm that sleeps on deselect enters under the wake
                 // view, including on its first selection, when it has never slept. A
                 // pure arm enters under `init` alone at every selection, not only at
@@ -1144,7 +1144,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Select<R, E> {
                 planes.emit(t, v)
             }
             // No arm matches: the select has no value.
-            // CR claude for eric: [test-gap] Since exhaustiveness is enforced, only a
+            // CR claude for claude: [test-gap] Since exhaustiveness is enforced, only a
             // checker bug can leave no arm matching, yet that case is silent. The
             // select goes bottom here, the JIT's last-arm fall-through
             // (fusion/emit/select.rs:853) jumps to the same bottom, nothing is logged,
@@ -1394,7 +1394,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // earlier unguarded irrefutable atom. The `any_as_tvar` view
             // keeps a `_` slot from short-circuiting the walk.
             let narrowed = pat.type_predicate.any_as_tvar();
-            // CR claude for eric: [bug] An or-arm's payload binds share one cell that
+            // CR claude for claude: [bug] An or-arm's payload binds share one cell that
             // pattern compile already unified: pattern.rs:139 compares two open cells,
             // so the exactly-equal-types check always passes. Here that cell takes the
             // first alternative's member type, and later alternatives only have to fit
@@ -1437,7 +1437,7 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             }
             wrap!(n, child(n, ctx))?;
             rtypes.push(n.typ());
-            // CR claude for eric: [bug] Later arms' binds are narrowed only by earlier
+            // CR claude for claude: [bug] Later arms' binds are narrowed only by earlier
             // irrefutable atoms. check_coverage and check_dead_arms also count a `null`
             // literal, a true/false pair, a completed literal pool and a complete slice
             // ladder as covering their member. So a bind keeps a member the dead-arm

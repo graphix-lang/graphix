@@ -136,7 +136,7 @@ fn leaf_bind<R: Rt, E: UserEvent>(
         BindMode::Reuse(map) => match map.get(name) {
             Some((id, t0)) => {
                 let id = *id;
-                // CR claude for eric: [bug] Under an inferred predicate, this two-way
+                // CR claude for claude: [bug] Under an inferred predicate, this two-way
                 // contains binds the open cells inside both alternatives' inferred
                 // types. For a reused capture that binding is the only lasting effect,
                 // because PatternNode::compile retypes captures and bind_captures types
@@ -219,7 +219,7 @@ impl StructPatternNode {
         crate::stack::ensure_sufficient(|| self.captures_inner(env, typ, out))
     }
 
-    // CR claude for eric: [structure] captures_inner and realign_inner (:284) derive
+    // CR claude for claude: [structure] captures_inner and realign_inner (:284) derive
     // the type at each child position with the same code: alt_types for an or,
     // struct_fields for a struct, with_deref for variant and tuple payloads and slice
     // elements, rep for an abstract. They differ only in what they do with each child
@@ -443,7 +443,7 @@ impl StructPatternNode {
         let all = bind_all(ctx, cx, all, typ, &mut mode)?;
         let rest = rest.as_ref().map(|n| leaf_bind(ctx, cx, n, typ, &mut mode, false));
         let rest = rest.transpose()?;
-        // CR claude for eric: [bug] Every element compiles against one element type.
+        // CR claude for claude: [bug] Every element compiles against one element type.
         // Under an inferred predicate, that type is infer_slice's union of all the
         // element patterns (graphix-types/src/expr/pattern.rs:201). A `_` element makes
         // it Any, so every bind beside it is Any: `[x, _] => x + 1` over Array<i64> is
@@ -472,7 +472,7 @@ impl StructPatternNode {
         // an alias of an alias expands to its body: typedefs are
         // contractive, so the chain ends
         let mut type_predicate = type_predicate.clone();
-        // CR claude for eric: [bug] This chase calls lookup_ref while the statement
+        // CR claude for claude: [bug] This chase calls lookup_ref while the statement
         // list is still compiling. Its second step fills the write-once cell of the ref
         // inside the alias's body, and every expansion of the alias shares that cell.
         // When a later sibling declares that name and an outer definition of it is
@@ -520,7 +520,7 @@ impl StructPatternNode {
                 // Each alternative compiles against its own member of an
                 // inferred predicate; under an explicit `T as p1 | p2`
                 // every alternative checks against T.
-                // CR claude for eric: [bug] A slice's element type is the union of
+                // CR claude for claude: [bug] A slice's element type is the union of
                 // every element's inferred type (infer_slice). Through compile_slice
                 // (:421), this pairs an or-pattern's alternatives with that union's
                 // members whenever the counts happen to agree, and captures (:215) and
@@ -556,7 +556,7 @@ impl StructPatternNode {
                     })
                     .collect::<Result<Box<[Self]>>>()?;
                 for i in 1..compiled.len() {
-                    // CR claude for eric: [bug] An alternative that matches_anything()
+                    // CR claude for claude: [bug] An alternative that matches_anything()
                     // only covers its own member of the inferred Set, but this refuses
                     // every later alternative whatever its member. So `(x, _) | (x, _,
                     // _)` over `[(i64, i64), (i64, i64, i64)]` is refused, while the
@@ -696,7 +696,7 @@ impl StructPatternNode {
                     )
                 };
                 let (atyp, rep) = r.instantiate(id);
-                // CR claude for eric: [bug] This arm only checks that the predicate
+                // CR claude for claude: [bug] This arm only checks that the predicate
                 // contains the abstract type. The tuple, variant and struct arms also
                 // require the predicate to be their constructor. Because is_refutable
                 // ignores the tag test, `let Box(x): [Box, i64] = v`, `|Box(x): [Box,
@@ -873,7 +873,7 @@ impl StructPatternNode {
             // the first matching alternative delivers the shared ids
             Self::Or { alts } => {
                 for a in alts.iter() {
-                    // CR claude for eric: [bug] An or-arm picks its alternative by
+                    // CR claude for claude: [bug] An or-arm picks its alternative by
                     // structure alone, here and in is_match; emit_or_chain in
                     // fusion/emit/select.rs does the same. But the check types each
                     // alternative's binds against its own member of the union. A value
@@ -1298,7 +1298,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // an explicit predicate on an abstract type is a nominal tag
         // test; parameters are not carried at runtime, so `Box<i64> as b`
         // also matches a `Box<string>`
-        // CR claude for eric: [bug] The comment above is false for a Graphix abstract:
+        // CR claude for claude: [bug] The comment above is false for a Graphix abstract:
         // the box carries its params and Type::is_a compares them
         // (graphix-types/src/typ/cast.rs:672; pin abstract_test_matches_parameters,
         // stdlib/graphix-tests/src/lang/traits.rs:1410).
@@ -1314,7 +1314,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // a test where the scrutinee can hold another instantiation of the same
         // Rust-backed type, or have the Rust value report its params. Then delete this
         // comment. probe: design/review-2026-10-05/repro/x-unsafe-05.gx (x-unsafe-05)
-        // CR claude for eric: [doc-drift] The comment above is wrong for a
+        // CR claude for claude: [doc-drift] The comment above is wrong for a
         // Graphix-minted abstract. GxAbstract carries its params and Type::is_a
         // compares them (graphix-types/src/typ/cast.rs:672-681), so with `type Box<'a>
         // = Abstract<'a>` and `let b: Any = Box(s)` over a string `s`, `select b {
@@ -1326,7 +1326,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
         // Counter`) and at `x + 1` (u64 plus i64), and :98 and :101 leave params out of
         // GxAbstract and Type::Abstract. (x-typecheck-patterns-13)
         match &type_predicate {
-            // CR claude for eric: [bug] Only a top-level Fn is refused here. A Fn
+            // CR claude for claude: [bug] Only a top-level Fn is refused here. A Fn
             // inside a tuple, struct, array, union member or typedef body passes, and
             // at run time Type::is_a (graphix-types/src/typ/cast.rs:786) accepts any
             // lambda for it. So `(fn(x: string) -> string, i64) as (f, n)` matches a

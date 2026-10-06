@@ -444,7 +444,7 @@ impl ImageDecoder {
 
     /// The image every offset in the session refers into. Set before
     /// anything decodes; the session keeps it for what decodes later.
-    // CR claude for eric: [risk] decode_at's unsafe slice (line 1022) is sound only
+    // CR claude for claude: [risk] decode_at's unsafe slice (line 1022) is sound only
     // while nothing replaces `image` during a session, but `set_image` is a safe pub fn
     // reachable mid-session through the pub `image::decoding(|d| ..)`; a codec that
     // calls it there frees the bytes decode_at is reading when the decoder held the
@@ -1018,7 +1018,7 @@ pub fn decode_at<T>(
             .and_then(|at| usize::try_from(*at).ok())
             .filter(|at| *at < d.image.len())?;
         let built = d.built;
-        // CR claude for eric: [bug] This guard refuses re-entry of `ord` only when
+        // CR claude for claude: [bug] This guard refuses re-entry of `ord` only when
         // `prev == built`, i.e. only when nothing was entered since this ordinal's last
         // entry. But enter() (l.396) does `self.built += 1` on every call, so a corrupt
         // image whose misframed decode enters at least one object per round (the Type
@@ -1193,7 +1193,7 @@ pub fn enter(obj: Obj) -> Result<(), PackError> {
 /// Read an object written by [`object_encode`]: a reference clones the
 /// store's object or decodes its definition with `full`; a definition
 /// decodes `contents` and enters it.
-// CR claude for eric: [structure] tvar_decode (1362), cell_decode (1393),
+// CR claude for claude: [structure] tvar_decode (1362), cell_decode (1393),
 // refcell_decode (667), resolved_read (725) and dynscope_decode
 // (graphix-compiler/src/image/mod.rs:127) each repeat this function's REF/DEF dispatch:
 // with_slice, the tag match, built or decode_at, UnknownTag. The first three differ
@@ -1262,7 +1262,7 @@ pub(crate) fn shared_key(
     }
     let start = out.len();
     crate::stack::ensure_sufficient(|| walk(out));
-    // CR claude for eric: [bug] Each memo entry keeps the node's whole key, its
+    // CR claude for claude: [bug] Each memo entry keeps the node's whole key, its
     // children's bytes included, and a hit copies that whole key into the parent. So a
     // chain of depth d costs d^2/2 bytes and time, and the "linear" claim in
     // design/program_image.md does not hold. Fusion freezes a fresh deep copy of each

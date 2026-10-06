@@ -88,7 +88,7 @@ impl GuiTestHarness {
 
     /// Drain all pending reactive updates into the widget tree.
     /// Returns true if any updates were processed.
-    // CR claude for eric: [structure] drain waits for a quiet window (100 ms with no
+    // CR claude for claude: [structure] drain waits for a quiet window (100 ms with no
     // batch, 50 ms after the last), where the TUI harness drains to
     // GXHandle::wait_idle: each drain here sleeps 50-100 ms against wait_idle's 3-6 ms,
     // and viewport_metrics_update_on_resize spends 2.1 s in its 20 drains. Under a
@@ -182,7 +182,7 @@ impl GuiTestHarness {
                 }
                 // Host-handled in production; tests call the widget
                 // helpers directly.
-                // CR claude for eric: [test-gap] The comment above is wrong. Production
+                // CR claude for claude: [test-gap] The comment above is wrong. Production
                 // does not handle ColumnResize* in the host: event_loop.rs:406-414
                 // sends them to on_message like every other message, and
                 // DataTableW::on_message (data_table/mod.rs:524-539) turns a move into
@@ -212,7 +212,7 @@ impl GuiTestHarness {
     }
 
     /// Call `view()` on the widget.
-    // CR claude for eric: [test-gap] Every *_renders test in canvas_test.rs and
+    // CR claude for claude: [test-gap] Every *_renders test in canvas_test.rs and
     // chart_test.rs calls this and drops the element, and
     // InteractionHarness::process_events (:438) builds and updates a UserInterface but
     // never draws. So canvas.rs draw_shape never runs for any shape, and the
@@ -475,7 +475,7 @@ impl InteractionHarness {
 
     /// Build a UserInterface, feed events, and return the messages the
     /// widgets produced.
-    // CR claude for eric: [test-gap] This rebuilds the event loop's frame by hand, and
+    // CR claude for claude: [test-gap] This rebuilds the event loop's frame by hand, and
     // dispatch_calls copies its message drain (already differing: it drops the
     // ColumnResize messages the loop passes to the widget), so no test drives
     // about_to_wait. The loop's departures from iced's protocol therefore cannot fail.
@@ -497,7 +497,7 @@ impl InteractionHarness {
         let cursor = mouse::Cursor::Available(self.cursor_position);
         let (_state, _statuses) =
             ui.update(events, cursor, &mut self.renderer, &mut clipboard, &mut messages);
-        // CR claude for eric: [test-gap] Apart from two direct Program::draw calls in
+        // CR claude for claude: [test-gap] Apart from two direct Program::draw calls in
         // chart_test, no GUI test draws: this loop lays out and routes events but never
         // calls `ui.draw`, and the *_renders tests in canvas_test, chart_test and
         // widgets_test only build the element tree (for a chart or canvas, just
@@ -572,7 +572,7 @@ impl InteractionHarness {
         all
     }
 
-    // CR claude for eric: [dead] click_center, click_at, InteractionHarness::viewport
+    // CR claude for claude: [dead] click_center, click_at, InteractionHarness::viewport
     // (478) and InteractionHarness::before_view (473) have no callers, nor does
     // DataTableW::dt_snapshot_value_at (widgets/data_table/test_access.rs:150), which
     // copies data_table_snapshot's cell lookup; each is hidden by #[allow(dead_code)].

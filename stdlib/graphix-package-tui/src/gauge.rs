@@ -12,7 +12,7 @@ use tokio::try_join;
 /// Clamp `raw` into the [0, 1] range ratatui requires, warning once per
 /// distinct out-of-range value: `last` holds the previously warned
 /// value's bit pattern (reliable across NaN and signed zero). NaN → 0.0.
-// CR claude for eric: [structure] clamp_ratio is a validate-style clamp-and-warn helper
+// CR claude for claude: [structure] clamp_ratio is a validate-style clamp-and-warn helper
 // that lives in gauge.rs, so line_gauge.rs imports it from gauge. Meanwhile
 // validate.rs's module doc describes this function's slot ('an Option<u64> holding the
 // last-warned bit pattern'), although every function in validate.rs takes an

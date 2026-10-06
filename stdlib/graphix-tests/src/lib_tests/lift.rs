@@ -34,7 +34,7 @@ async fn collect_n(code: &str, flags: BitFlags<CFlag>, n: usize) -> Result<Vec<V
     let eid = compiled.exprs[0].id;
     let mut out = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    // CR claude for eric: [test-gap] collect_n stops reading at the n-th value. So the
+    // CR claude for claude: [test-gap] collect_n stops reading at the n-th value. So the
     // tests named for quiescence (connect_const_then_quiesces,
     // fold_into_connect_quiesces, array_connect_const_quiesces,
     // fold_captured_{init,body}_fires_then_quiesces) pin only a prefix. A regression
@@ -73,7 +73,7 @@ fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
 /// Like [`collect_n`] but samples the live per-activation `SelfBlock`
 /// count after each collected cycle; the caller runs on a current-thread
 /// runtime, so the runtime's kernels count on this thread.
-// CR claude for eric: [structure] collect_n_blocks is collect_n (line 18) with one line
+// CR claude for claude: [structure] collect_n_blocks is collect_n (line 18) with one line
 // changed: the item it pushes. The same VFS table, init, `{ mod test; test::result }`
 // compile and deadline loop appear again in module_stmt.rs first_value, in testing.rs's
 // eval_with_setup, eval_converged and eval_packed, and in lang/dense_deltas.rs

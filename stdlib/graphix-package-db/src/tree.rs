@@ -20,7 +20,7 @@ use crate::encoding::{
     ENCODE_MANY_POOL, decode_key, decode_value, encode_key, encode_value, parse_batch_ops,
 };
 
-// CR claude for eric: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
+// CR claude for claude: [bug] DbValue has no Drop, so the last Arc<sled::Db> dies
 // wherever its last Value does, usually in GX::update_nodes on the runtime thread.
 // TreeInner's sled::Tree, CursorInner's sled::Iter and the subscription task's
 // Arc<TreeInner> work the same way. sled's TreeInner::drop then flushes the log in a
@@ -193,7 +193,7 @@ pub(crate) fn extract_key_typ_from_rtype(resolved_typ: Option<&FnType>) -> Optio
     tree_params_of_result_type(&ft.rtype).and_then(|params| prim_typ(&params[0]))
 }
 
-// CR claude for eric: [bug] The type metadata stored on disk and compared on every open
+// CR claude for claude: [bug] The type metadata stored on disk and compared on every open
 // is the type printer's single-line text. A typedef nested in the type prints as its
 // name, so Tree<string, Array<Rec>> stores "Array<Rec>" and a program whose Rec differs
 // opens the tree without the DbErr the book and mod.gxi promise; the values come back
@@ -280,7 +280,7 @@ impl EvalCachedAsync for DbOpenEv {
 
     fn eval(path: Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            // CR claude for eric: [bug] Every delivery calls sled::open, and sled holds
+            // CR claude for claude: [bug] Every delivery calls sled::open, and sled holds
             // an exclusive lock on the database while any handle lives, so opening a
             // path this process already has open fails with 'could not acquire lock ...
             // WouldBlock'. That includes this call when its path re-fires with the same
@@ -399,7 +399,7 @@ impl EvalCachedAsync for DbDropTreeEv {
 
     fn eval((db, name): Self::Args) -> impl Future<Output = Value> + Send {
         async move {
-            // CR claude for eric: [bug] drop_tree drops the sled tree but leaves the
+            // CR claude for claude: [bug] drop_tree drops the sled tree but leaves the
             // name's entry in META_TREE. Afterwards get_type still reports the dead
             // tree's types. db::tree also refuses to recreate the name with any other
             // types ("tree 'x' has type Tree<string, i64> but was opened as Tree<i64,
@@ -541,7 +541,7 @@ impl EvalCachedAsync for DbTreeEv {
                 let meta = db.open_tree(&META_TREE)?;
                 match name {
                     Some(name) => {
-                        // CR claude for eric: [bug] This check misses sled's own
+                        // CR claude for claude: [bug] This check misses sled's own
                         // "__sled__default". db.open_tree resolves that name to the
                         // default tree's data under a metadata key of its own, so the
                         // default tree reopens with any types (txn.rs:298-301 has the
@@ -579,7 +579,7 @@ impl EvalCachedAsync for DbTreeEv {
             .await
             {
                 Err(e) => errf!("DbErr", "task panicked: {e}"),
-                // CR claude for eric: [bug] `{e:?}` on an anyhow::Error appends a
+                // CR claude for claude: [bug] `{e:?}` on an anyhow::Error appends a
                 // 'Stack backtrace:' block whenever RUST_BACKTRACE or
                 // RUST_LIB_BACKTRACE is set, so the DbErr string a program receives,
                 // and may show or compare, changes with the environment and carries a
@@ -640,7 +640,7 @@ impl EvalCachedAsync for DbInsertEv {
         let tree = get_tree_inner(cached, 0)?;
         let key_val = cached.0.get(1)?.as_ref()?;
         let key = encode_key(tree.key_typ, key_val)?;
-        // CR claude for eric: [bug] When encode_key or encode_value fails, prepare_args
+        // CR claude for claude: [bug] When encode_key or encode_value fails, prepare_args
         // returns None and CachedArgsAsync queues nothing, so the call never replies:
         // no value and no DbErr. An abstract value cannot be packed, yet Tree<string,
         // db::Db> passes 'v: Concrete, and db::insert(t, "k", db) stays silent; every
@@ -915,7 +915,7 @@ pub(crate) type DbPopMax = CachedArgsAsync<DbPopMaxEv>;
 #[derive(Debug, Default)]
 pub(crate) struct DbGetLtEv;
 
-// CR claude for eric: [structure] 17 of this file's 27 builtins are three shapes
+// CR claude for claude: [structure] 17 of this file's 27 builtins are three shapes
 // written out one by one: db only (flush, generate_id, tree_names, size_on_disk,
 // was_recovered, checksum), tree only (first, last, pop_min, pop_max, len, is_empty)
 // and tree plus key (get, remove, contains_key, get_lt, get_gt); this one and DbGetGtEv

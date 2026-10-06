@@ -71,7 +71,7 @@ const MAP_CHANGE_PRESENT: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for eric: [doc-drift] The `ASPIRE: Jit — the body does not fuse into a
+// CR claude for claude: [doc-drift] The `ASPIRE: Jit — the body does not fuse into a
 // kernel yet` line above is false here: this body fuses whole today (it compiles under
 // `#[native]`), and so do map.rs:87, 101, 117 and str.rs:317, 335. In typecheck.rs (27,
 // 62, 75, 87, 139, 151, 243) the bodies call json::read or pack::read, which are async
@@ -289,7 +289,7 @@ const MAP_MAP_KEY_COLLISION: &str = r#"
   (map::len(collided), map::get(collided, "same"))
 }
 "#;
-// CR claude for eric: [test-gap] The predicate accepts 1 or 2. run! checks each mode
+// CR claude for claude: [test-gap] The predicate accepts 1 or 2. run! checks each mode
 // against the predicate separately and never compares one mode's value with another's,
 // so this test cannot see the engines disagree, which is what the comment above says it
 // pins. For loose predicates like this one, CLAUDE.md's 'asserting equal values' for

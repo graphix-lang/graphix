@@ -53,7 +53,7 @@ impl<X: GXExt> KeyboardAreaW<X> {
 
 /// Convert an iced keyboard event to a graphix Value struct:
 /// `{key: string, modifiers: {shift: bool, ctrl: bool, alt: bool, logo: bool}, text: string, repeat: bool}`
-// CR claude for eric: [structure] KeyboardArea hands its callbacks the whole
+// CR claude for claude: [structure] KeyboardArea hands its callbacks the whole
 // keyboard::Event, so this function has to rule out ModifiersChanged with
 // unreachable!(), even though iced_keyboard_area.rs:139-149 calls it only for
 // KeyPressed and KeyReleased. Passing key, modifiers, text and repeat from those two

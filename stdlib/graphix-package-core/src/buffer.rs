@@ -184,7 +184,7 @@ fn variant_tag(v: &Value) -> Option<(&ArcStr, &[Value])> {
     }
 }
 
-// CR claude for eric: [bug] encode_spec reads every payload with get_as_unchecked,
+// CR claude for claude: [bug] encode_spec reads every payload with get_as_unchecked,
 // trusting the SAFETY claim that the checker guarantees each tag's payload type, and
 // that claim does not hold today. Two programs that pass --check put an i64 under
 // `Bytes: one writes through a reference widened to &Any, the other uses a nested
@@ -332,7 +332,7 @@ pub(crate) struct DecodeEv;
 crate::unit_image_state!(DecodeEv);
 
 impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
-    // CR claude for eric: [bug] core_buffer_decode is Stateless(None), but its eval
+    // CR claude for claude: [bug] core_buffer_decode is Stateless(None), but its eval
     // writes every target with set_var. An arm holding it is judged pure, so each
     // re-selection runs it as a birth with the standing buf and spec read FIRED. In an
     // arm that sleeps, CachedArgs re-runs a stateless eval at the wake. Either way
@@ -363,7 +363,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for DecodeEv {
         for elem in spec.iter() {
             let (tag, args) = variant_tag(elem)?;
             match &**tag {
-                // CR claude for eric: [structure] The 18 decode_fixed! arms repeat the
+                // CR claude for claude: [structure] The 18 decode_fixed! arms repeat the
                 // same six context arguments: 216 lines where one line per tag would
                 // do. Define the macro inside eval after the locals, or call a fn
                 // fixed<const N: usize>(.., from: fn([u8; N]) -> Value) that takes the

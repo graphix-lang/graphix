@@ -73,7 +73,7 @@ pub fn set_stack_budget(bytes: usize) {
 /// the one exit for both the node-walk and the kernel stack check.
 #[doc(hidden)]
 pub fn budget_abort() {
-    // CR claude for eric: [bug] A budget abort is reported only here, and the shell
+    // CR claude for claude: [bug] A budget abort is reported only here, and the shell
     // writes the log only under --log-dir with RUST_LOG set. The user sees "Error:
     // runtime did not respond" (graphix-rt/src/lib.rs:681, a request pending when the
     // run loop stopped) or "Error: graphix runtime is dead"
@@ -348,7 +348,7 @@ impl Control {
         self.stack_budget.store(bytes, Ordering::Relaxed)
     }
 
-    // CR claude for eric: [doc-drift] The interrupt is cleared when the next cycle
+    // CR claude for claude: [doc-drift] The interrupt is cleared when the next cycle
     // starts (graphix-rt/src/gx.rs:495), not at the end of this one, so an interrupt
     // sent while the runtime is idle is dropped. stack_budget's doc (lines 321-322)
     // makes the budget per thread, but grow_exceeds_budget (line 103) charges every
@@ -420,7 +420,7 @@ pub struct InterruptScope {
 }
 
 impl InterruptScope {
-    // CR claude for eric: [risk] This fn is safe, but InterruptScope has no lifetime,
+    // CR claude for claude: [risk] This fn is safe, but InterruptScope has no lifetime,
     // so safe code can free the Control while CURRENT still points at it in three ways:
     // return the scope past its control, mem::forget the scope, or drop two nested
     // scopes out of order (the inner one then restores a pointer to the outer's

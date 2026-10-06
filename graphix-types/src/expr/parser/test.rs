@@ -2280,7 +2280,7 @@ fn a_prefix_trigger_leaves_the_body_alone() {
         let ExprKind::Seq { trigger: Some(t), body, .. } = &e.kind else {
             panic!("{e:?}")
         };
-        // CR claude for eric: [test-gap] This prints the trigger alone, so the seq
+        // CR claude for claude: [test-gap] This prints the trigger alone, so the seq
         // around it is never printed and parsed back. Printed whole, each of these four
         // comes out as `seq (*r) { a }`, because reads_bare in print.rs has no arm for
         // `*` `!` `-` `&`; the reparse keeps the parens as ExplicitParens, so `graphix

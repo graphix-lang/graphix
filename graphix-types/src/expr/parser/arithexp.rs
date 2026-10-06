@@ -217,7 +217,7 @@ parser! {
                         let base = base.ending(end);
                         // The iterative postfix loop escapes `grow`'s depth
                         // counter, but the fold builds an N-deep AST.
-                        // CR claude for eric: [bug] This cap counts only this run of
+                        // CR claude for claude: [bug] This cap counts only this run of
                         // postfix ops. A parenthesized base followed by any op other
                         // than ?/$ loses its parens in the fold below, so it joins the
                         // run. `(t.0 x501).0 x500` therefore parses and typechecks. But

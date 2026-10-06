@@ -37,7 +37,7 @@ pub enum BinOp {
     Mod,
 }
 
-// CR claude for eric: [structure] symbol() repeats five of expr::BinOp::token()'s
+// CR claude for claude: [structure] symbol() repeats five of expr::BinOp::token()'s
 // strings. Its only use is arith_rule's message (line 741), which rebuilds the checked
 // token by appending "?". arith_op!'s $name is already the matching expr::BinOp variant
 // (Add, CheckedAdd, ..), and arith_rule uses op for nothing but that message. Pass
@@ -289,7 +289,7 @@ macro_rules! compare_op {
                 self.resident.set(TagValue::tagged(v, tag))
             }
 
-            // CR claude for eric: [structure] typecheck0 and typecheck1 here are
+            // CR claude for claude: [structure] typecheck0 and typecheck1 here are
             // repeated word for word in bool_op! (lines 342-360) and arith_op!
             // (795-817), and typecheck0_instance is repeated in bool_op!. Arith's
             // typecheck0_instance differs only by its settle tail. Move the three into
@@ -843,7 +843,7 @@ pub(crate) fn arith_rule(
     // A declared `'a: Number` formal is rigid while its def gate is
     // open: `x + f64:0.` must reject, not bind 'a.
     let Some(t) = operand_type(env, lt, rt)? else {
-        // CR claude for eric: [doc-drift] This refusal and arith_rule's doc comment
+        // CR claude for claude: [doc-drift] This refusal and arith_rule's doc comment
         // (line 724) give arithmetic as `fn('a: Number, 'a) -> 'a`, which is neither
         // the rule nor a parseable fn type. CLAUDE.md and the book
         // (core/reading_types.md:281) give `fn<'a: Number + Singleton>(x: 'a, y: 'a) ->

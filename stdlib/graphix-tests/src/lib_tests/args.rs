@@ -42,7 +42,7 @@ fn map_get<'a>(m: &'a CMap<Value, Value, 32>, key: &str) -> Option<&'a Value> {
     m.get(&Value::String(ArcStr::from(key)))
 }
 
-// CR claude for eric: [style] The five args fixtures (lines 47, 87, 119, 173, 216) open
+// CR claude for claude: [style] The five args fixtures (lines 47, 87, 119, 173, 216) open
 // with use args::*; and call everything as args::..., so the glob imports nothing they
 // use: delete it. The use sys::fs::{self, *} in the tempdir.rs and file_handle.rs
 // fixtures never uses self; import the names called instead, per the graphix-lang

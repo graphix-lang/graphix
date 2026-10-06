@@ -86,7 +86,7 @@ async fn abort_bypasses_try(fusion_disabled: bool) -> Result<()> {
 
 // The event is an initial step: a timer in it starts with each run.
 async fn abort_timer_starts_with_the_run(fusion_disabled: bool) -> Result<()> {
-    // CR claude for eric: [test-gap] This test and abort_reads_the_trigger below pass
+    // CR claude for claude: [test-gap] This test and abort_reads_the_trigger below pass
     // under the semantics they exist to exclude. Here run 1 is aborted and run 2
     // finishes in 80 ms whether the 140 ms timer restarts per run or starts once at
     // init: both print [9]. In abort_reads_the_trigger `go` fires only at ticks 1 and

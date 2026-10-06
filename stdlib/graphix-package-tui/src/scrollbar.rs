@@ -157,7 +157,7 @@ impl<X: GXExt> ScrollbarW<X> {
             .context("scrollbar tref viewport_length")?;
         // The draw loop re-applies the same clamp each frame and warns
         // there, so this one uses a throwaway dedup slot.
-        // CR claude for eric: [bug] An omitted content_length leaves
+        // CR claude for claude: [bug] An omitted content_length leaves
         // `ScrollbarState::new(50)`, so the thumb is drawn as if 50 rows of content
         // existed: one line on a 24-row terminal gets an 8-cell thumb, and so do the
         // book's scroll_basic.gx and scroll_list.gx (probe:

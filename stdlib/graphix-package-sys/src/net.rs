@@ -129,7 +129,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                 }
                 Some(path) => {
                     let net = NetState::get(ctx);
-                    // CR claude for eric: [perf] Write gets its Dval through
+                    // CR claude for claude: [perf] Write gets its Dval through
                     // NetState::subscribe with self.id. That registers the shared
                     // update channel and a pump route for the id (netstate.rs:408-410),
                     // yet Write never refs the id and never reads it. Every update of
@@ -160,7 +160,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
                             let old = old.clone();
                             NetState::get(ctx).unsubscribe(old, self.id);
                         }
-                        // CR claude for eric: [bug] When the path first arrives, this
+                        // CR claude for claude: [bug] When the path first arrives, this
                         // drains the queue into the new Dval, and then line 158 writes
                         // the standing `val` again. Unless `val` fired this cycle, the
                         // queue's last entry already is that value. A value that fired
@@ -199,7 +199,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Write {
         self.dv = Either::Right(vec![])
     }
 
-    // CR claude for eric: [bug] This sleep unsubscribes and empties `dv`, but Write has
+    // CR claude for claude: [bug] This sleep unsubscribes and empties `dv`, but Write has
     // no `slept` bit, and update re-subscribes only when the path fires (line 114). If
     // the path is bound outside the arm, a woken arm reads it stale, so every later
     // write is pushed onto the queue (line 105) and never sent. The queue grows without
@@ -348,7 +348,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Subscribe {
         // updates arrive on our BindId via the NetState pump; the pump
         // already translated Unsubscribed to the error value
         let res = self.cur.as_ref().and_then(|_| {
-            // CR claude for eric: [bug] Every delivered value is cast to the success
+            // CR claude for claude: [bug] Every delivered value is cast to the success
             // type here, errors included, and RpcCall::update does the same at line
             // 461. So the pump's unsubscribed error (netstate.rs:47) and every call
             // failure (a handler's error reply, an unknown argument name, the 10 s
@@ -698,7 +698,7 @@ fn extract_publish_cast_type(resolved: Option<&FnType>) -> Option<Type> {
     resolved.args.first().and_then(|a| match &a.typ {
         Type::Fn(cb_ft) if !cb_ft.args.is_empty() => {
             let t = &cb_ft.args[0].typ;
-            // CR claude for eric: [structure] This decides whether t can be a cast
+            // CR claude for claude: [structure] This decides whether t can be a cast
             // target by printing it and looking for a quote. That allocates a String
             // per typecheck and depends on printer details: without DerefTVars a TVar
             // prints as its name whether bound or not, and ⊥ prints as _ and passes.
@@ -859,7 +859,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
                 }
                 publish!(path, v)
             }
-            // CR claude for eric: [bug] A path fire while `v` is bottom matches neither
+            // CR claude for claude: [bug] A path fire while `v` is bottom matches neither
             // arm: the arm above needs a value and this one needs a fire of `v`. So
             // `current` keeps the old path's Val. When `v` fires again, this arm calls
             // update_val on that Val, so the value is published at the old path, and
@@ -878,7 +878,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Publish<R, E> {
             if let Some(mut cbt) = ctx.event.take_custom(&self.wid) {
                 if let Some(w) = (&mut *cbt as &mut dyn Any).downcast_mut::<NetWrite>() {
                     let req = &mut w.0;
-                    // CR claude for eric: [bug] When the cast to the on_write parameter
+                    // CR claude for claude: [bug] When the cast to the on_write parameter
                     // type fails, cast_value returns an InvalidCast error value, and it
                     // is stored in `x` and delivered to the callback anyway, so a
                     // parameter typed i64 (annotated or inferred) holds an error. Any
@@ -966,7 +966,7 @@ pub(crate) struct PublishRpc<R: Rt, E: UserEvent> {
     pid: BindId,
     x: BindId,
     queue: VecDeque<server::RpcCall>,
-    // CR claude for eric: [dead] argbuf is scratch: set! extends, sorts and drains it
+    // CR claude for claude: [dead] argbuf is scratch: set! extends, sorts and drains it
     // within one expansion (lines 1177-1182), so it is empty between updates. The
     // !self.argbuf.is_empty() guard in image_encode (line 1085) never fires and the
     // clear in sleep (line 1286) does nothing, and both suggest state that does not

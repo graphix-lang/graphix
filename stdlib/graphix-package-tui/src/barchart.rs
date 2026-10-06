@@ -328,7 +328,7 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
                 gap,
             ));
         }
-        // CR claude for eric: [bug] ratatui-widgets 0.3.0's BarChart overflows on
+        // CR claude for claude: [bug] ratatui-widgets 0.3.0's BarChart overflows on
         // values that draw passes to it unchecked. A bar value above u64::MAX / (8 *
         // chart height, or width for horizontal bars), which is 1e17 on 24 rows,
         // overflows `value * height * 8` (its barchart.rs:456). A group whose `n *

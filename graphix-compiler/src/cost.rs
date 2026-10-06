@@ -46,7 +46,7 @@ pub struct Calibration {
     shift: u32,
 }
 
-// CR claude for eric: [perf] T_BUCKET = 6 puts T in bucket 6. The smallest per-slot
+// CR claude for claude: [perf] T_BUCKET = 6 puts T in bucket 6. The smallest per-slot
 // estimate a histogram can give is then floor(0) = 2^shift, between T/128 and T/64
 // (2048 ticks at T = 143552), and any cheaper slot is rounded up to it.
 // ProbeSite::grain forks once est * n >= 2T, and a LoopSite never checks a loop's
@@ -73,7 +73,7 @@ pub fn calibration() -> Option<&'static Calibration> {
     if let Some(c) = CALIBRATION.get() {
         return Some(c);
     }
-    // CR claude for eric: [perf] calibration() starts measuring at the first plan of
+    // CR claude for claude: [perf] calibration() starts measuring at the first plan of
     // any site and returns None for at least 18 ms (nine 2 ms sleeps); every site that
     // plans in that window runs in order. A kernel loop plans once per run, so a
     // program whose first cycle is one big fused loop never forks under Auto.
@@ -102,7 +102,7 @@ pub fn calibration() -> Option<&'static Calibration> {
 fn calibrate() -> Calibration {
     let pool = crate::branch::eval_pool();
     let mut wakes = [0u64; 9];
-    // CR claude for eric: [perf] T is measured once per process (a OnceLock) from nine
+    // CR claude for claude: [perf] T is measured once per process (a OnceLock) from nine
     // pool wakes, keeping the lower quartile, and nothing checks that the pool is idle
     // while it samples. Forced work can hold the workers through that window:
     // #[parallel] forks before any calibration exists, and so does a Force runtime in
@@ -281,7 +281,7 @@ impl ForkSite {
         }
     }
 
-    // CR claude for eric: [perf] Under Auto, a wide run of statements that only ride is
+    // CR claude for claude: [perf] Under Auto, a wide run of statements that only ride is
     // forked on every cycle. Meter::time counts a quiet update like any other, so once
     // a run's quiet walk reaches 2T the site turns Measured. This plan then forks every
     // unsampled update and wakes the pool, whose idle workers spin, for work that fired

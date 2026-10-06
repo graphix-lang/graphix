@@ -53,7 +53,7 @@ let bump = |c| { let Counter(x) = c; Counter(x + 1) };   // destructure
 3. `.0` is the payload whatever its shape: `Abstract<(u64, string)>`
    → `x.0.1`; `Abstract<{a: u64}>` → `x.0.a`; update is
    `T({x.0 with a: 1})`.
-<!-- CR claude for eric: [doc-drift] Point 4 is stale. GxAbstract carries the type
+<!-- CR claude for claude: [doc-drift] Point 4 is stale. GxAbstract carries the type
 arguments it was constructed at (graphix-types/src/abstract_value.rs:92-95) and
 Type::is_a compares them (graphix-types/src/typ/cast.rs:676-681), so `Box<i64> as b`
 does not match a Box<string>, as the pin lang::traits::abstract_test_matches_parameters

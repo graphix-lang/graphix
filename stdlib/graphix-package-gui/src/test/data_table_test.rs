@@ -598,7 +598,7 @@ let result = data_table(
 async fn sort_subscribes_newly_visible_rows() -> Result<()> {
     // cpu = row index; the window is 30 rows, so a descending sort shows
     // mostly rows outside the initial subscription set.
-    // CR claude for eric: [test-gap] This test cannot fail on the property it names.
+    // CR claude for claude: [test-gap] This test cannot fail on the property it names.
     // Its only column, cpu, is also the sort column, so subscribe_sort_column puts
     // (row, cpu) into `cells` for all 40 rows; update_subscriptions then finds every
     // row already subscribed and never calls subscribe_row, and data_table_snapshot
@@ -618,7 +618,7 @@ async fn sort_subscribes_newly_visible_rows() -> Result<()> {
         }
         rows.push_str(&format!("\"/local/dt_sub_resort/r{i}\""));
     }
-    // CR claude for eric: [test-gap] This test cannot fail. cpu is both the only column
+    // CR claude for claude: [test-gap] This test cannot fail. cpu is both the only column
     // and the sort column, and subscribe_sort_column (subscriptions.rs:479) subscribes
     // every absolute row and indexes it in `cells`, so all 40 rows show values whatever
     // update_subscriptions does with the visible window. Emptying update_subscriptions
@@ -827,7 +827,7 @@ let result = data_table(
 /// A numeric edit buffer commits as an i64, not a string.
 #[tokio::test(flavor = "current_thread")]
 async fn on_edit_text_column_parses_number() -> Result<()> {
-    // CR claude for eric: [test-gap] This test cannot tell an i64 commit from a string
+    // CR claude for claude: [test-gap] This test cannot tell an i64 commit from a string
     // commit: interpolation prints the string "42" and the i64 42 the same way, so
     // `log` reads "r0/c0=42" even if parse_or_quote always returns a string. Record the
     // value itself, as button_column_passes_typed_raw_value does (`let got: Any =
@@ -854,7 +854,7 @@ let result = data_table(
     h.dt_mut().handle_cell_edit_submit();
     h.drain().await?;
     let log = h.get_watched("test::log");
-    // CR claude for eric: [test-gap] This assertion cannot tell a typed commit from a
+    // CR claude for claude: [test-gap] This assertion cannot tell a typed commit from a
     // string. The callback interpolates `value` into `log`, and "[value]" renders
     // String("42") and I64(42) alike (probe: `let s: Any = "42"; let n: Any = 42; "[s]"
     // == "[n]"` is true), so the test passes even if parse_or_quote (types.rs:472)
@@ -1363,7 +1363,7 @@ let result = data_table(
 /// and spaced past subscriber setup.
 #[tokio::test(flavor = "current_thread")]
 async fn sparkline_accumulates() -> Result<()> {
-    // CR claude for eric: [risk] This test races its one-shot timers against harness
+    // CR claude for claude: [risk] This test races its one-shot timers against harness
     // setup. The timers start at the program's first cycle, but the table subscribes
     // only after GuiTestHarness::new has received the initial value and compiled the
     // widget, and BEGIN_WITH_LAST delivers only the value current then. If setup takes

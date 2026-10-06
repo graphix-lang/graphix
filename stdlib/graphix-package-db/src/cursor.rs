@@ -49,7 +49,7 @@ impl EvalCachedAsync for DbCursorNewEv {
         Some((prefix_val, tree))
     }
 
-    // CR claude for eric: [structure] cursor::new and cursor::range (221-240) only
+    // CR claude for claude: [structure] cursor::new and cursor::range (221-240) only
     // build a sled::Iter, which does no I/O (sled's range stores the bounds; reads
     // happen in next()), yet both are async builtins that hop through spawn_blocking.
     // The cursor arrives a cycle late, and the JoinError arm (71, 236) can put a DbErr

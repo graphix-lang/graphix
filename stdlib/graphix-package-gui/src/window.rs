@@ -229,7 +229,7 @@ impl<X: GXExt> TrackedWindow<X> {
         }
     }
 
-    // CR claude for eric: [bug] cursor() always returns Cursor::Available.
+    // CR claude for claude: [bug] cursor() always returns Cursor::Available.
     // cursor_position starts at Point::ORIGIN (line 105) and only a CursorMoved writes
     // it (event_loop.rs:191-196), while iced_winit returns Unavailable until the
     // pointer enters and again after CursorLeft. Effects: a mouse_area covering (0,0)

@@ -146,7 +146,7 @@ impl fmt::Display for ArgKey {
 /// The call's argument nodes, keyed for signature lookups but iterating
 /// in source order. Order is load-bearing: args form a sequential scope
 /// chain, so `update` must evaluate them left to right.
-// CR claude for eric: [doc-drift] The doc above is stale. A let is no longer legal in
+// CR claude for claude: [doc-drift] The doc above is stale. A let is no longer legal in
 // argument position (`f(#n: let y = 1, y)` is refused: "a let binding is not an
 // expression"), compile_apply_args compiles every argument in one scope, and
 // update_args forks the arguments under Plan::Fork, merging the parts in order. Say
@@ -191,7 +191,7 @@ fn printed_deref(t: &Type) -> String {
     crate::format_with_flags(crate::PrintFlag::DerefTVars, || t.to_string())
 }
 
-// CR claude for eric: [readability] This function's doc sits at lines 178-181, directly
+// CR claude for claude: [readability] This function's doc sits at lines 178-181, directly
 // above printed_deref's own doc. rustdoc and editor hovers therefore give printed_deref
 // both paragraphs and this function none. Move those four lines here. (c-callsite-09)
 fn recheck_builtin<R: Rt, E: UserEvent>(
@@ -257,7 +257,7 @@ fn quantified_formal(
     let deref = typ.with_deref(|t| t.cloned());
     let expanded = match &deref {
         Some(Type::Fn(_)) => deref.clone(),
-        // CR claude for eric: [bug] This expands the formal one typedef level only, so
+        // CR claude for claude: [bug] This expands the formal one typedef level only, so
         // an alias of an alias is missed. With `type G = F`, where F is the pinned
         // `fn<'b: Number>(x: 'b) -> 'b`, G expands to the Ref F, quantified_formal
         // returns None, and the argument is checked with 'b open, while each call in
@@ -347,7 +347,7 @@ fn typecheck_arg<R: Rt, E: UserEvent>(
             wrap!(n, n.typecheck0(ctx))?;
             typ.contains(&ctx.env, n.typ())
         }
-        // CR claude for eric: [bug] This branch lets the argument alias the rigid
+        // CR claude for claude: [bug] This branch lets the argument alias the rigid
         // quantifier 'b to a cell the argument does not own. The pre-unify and
         // check_contains_rigid alias any open non-rigid cell to 'b, including an
         // environment cell: a top-level `let st = never()` that the callback writes, or
@@ -515,7 +515,7 @@ impl Widening {
             }
             if !new.contains_with_flags(probe, env, &old)? {
                 self.deferred.push((key.clone(), formal.clone()));
-                // CR claude for eric: [bug] When one variable the argument holds is
+                // CR claude for claude: [bug] When one variable the argument holds is
                 // neither wider nor narrower, this return throws away the variables
                 // already pushed to `wider`. The argument then waits with them still at
                 // their old binding, and the deferred re-check fails even after a later
@@ -647,7 +647,7 @@ impl<R: Rt, E: UserEvent> Callee<R, E> {
 pub struct CallSite<R: Rt, E: UserEvent> {
     pub(super) slept: WakeBit,
     pub(super) spec: TArc<Expr>,
-    // CR claude for eric: [perf] A CallSite holds two FnTypes inline, this one and
+    // CR claude for claude: [perf] A CallSite holds two FnTypes inline, this one and
     // static_target's, 240 bytes each beside rtype's 64. So every call site, and every
     // collection slot's synthesized one, is about 890 bytes: 5.3 MB of the 69 MB peak
     // for 6000 trivial array::init/array::map slots (massif, --no-fusion). Both are set
@@ -665,7 +665,7 @@ pub struct CallSite<R: Rt, E: UserEvent> {
     pub(crate) static_target: Option<StaticCallTarget>,
     /// A trait call over a union self type lowered to a select, one
     /// static call per member; once set every `Update` method delegates.
-    // CR claude for eric: [structure] A lowered site keeps its dead call beside the
+    // CR claude for claude: [structure] A lowered site keeps its dead call beside the
     // lowered node (a Nop fnode, args whose nodes are gone, callee, static_target,
     // ftype), so each Update method must check `lowered` before touching the call, and
     // so must code that downcasts to CallSite (fusion/mod.rs:1004). image_encode does
@@ -784,7 +784,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// Signature-order `Ref` Nodes, one per formal, with labeled defaults
     /// resolved. `None` until bound. [`Self::arg_positional`] /
     /// [`Self::arg_named`] give the source-order view.
-    // CR claude for eric: [dead] arg_refs() has no caller in the workspace or in
+    // CR claude for claude: [dead] arg_refs() has no caller in the workspace or in
     // ../netidx; callers read arguments through arg_positional, arg_named and
     // resolved_apply. Delete it and its doc. (c-callsite-12)
     pub fn arg_refs(&self) -> Option<&[Node<R, E>]> {
@@ -838,7 +838,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
 
     /// Build the site's argument references for `f`, compiling the
     /// defaults it omits; `defaults` collects what those read.
-    // CR claude for eric: [structure] A default's life is spread over fill_omitted (a
+    // CR claude for claude: [structure] A default's life is spread over fill_omitted (a
     // Nop placeholder), check_omitted_defaults and checked_default (compiled, checked,
     // discarded), prepare_bind (compiled again at the static bind and at every run-time
     // bind), typecheck_static_defaults, prime_bound, update_args and
@@ -917,7 +917,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             compile(ctx, flags, expr.clone(), &local_scope, self.top_id)
         })?;
         node.refs(defaults);
-        // CR claude for eric: [bug] The default is compiled under
+        // CR claude for claude: [bug] The default is compiled under
         // `with_restored(f.env)`, but this `typecheck0` and the `check_contains` below
         // run after the closure returns, in the call site's lexical env. Its
         // `typecheck1` in `typecheck_static_defaults` also runs in the site's env. A
@@ -937,7 +937,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 .as_ref()
                 .and_then(|ft| ft.args.iter().find(|a| a.label() == Some(name)));
             match site_arg {
-                // CR claude for eric: [bug] The omitted default is checked against the
+                // CR claude for claude: [bug] The omitted default is checked against the
                 // site's view of the labeled parameter, but its value only ever reaches
                 // the callee's own parameter, and behind a fn-typed parameter the check
                 // cannot see the callee at all. `let h = |f: fn(?#n: i64, x: i64) ->
@@ -952,7 +952,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                 // (the `h(g)` argument), so the check and the build agree. probe:
                 // design/review-2026-10-05/repro/c-callsite-07.gx (c-callsite-07)
                 Some(sarg) => sarg.typ.check_contains(&ctx.env, node.typ()),
-                // CR claude for eric: [bug] When the site's fn type does not name this
+                // CR claude for claude: [bug] When the site's fn type does not name this
                 // label (a value passed as `fn(y: string) -> bool`), the default is
                 // checked against nothing. prepare_bind then types the argument by the
                 // default, and the instance, typed by substitution, runs x: string
@@ -990,7 +990,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         ftype: &FnType,
         check: bool,
     ) -> Result<()> {
-        // CR claude for eric: [bug] This returns early when the callee's `throws` is an
+        // CR claude for claude: [bug] This returns early when the callee's `throws` is an
         // open cell. In a definition's check that is always true for a call through a
         // `fn(..) throws 'e` parameter, and for `array::map(xs, f)` over one. So
         // nothing joins the enclosing catch or the gate's inferred throws: a catch
@@ -1032,7 +1032,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         }
         let mut flags = self.flags;
         flags.remove(CFlag::WarnUnhandled);
-        // CR claude for eric: [bug] Under a restored registration image an interface
+        // CR claude for claude: [bug] Under a restored registration image an interface
         // `val`'s type has no lambda ids. The image writes only a function type's own
         // id (graphix-types/src/typ/fntyp.rs:1501), and a `val` gets its ids only from
         // the links check_sig's `contains` makes. So for a call through any package
@@ -1104,7 +1104,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let mut apply =
             self.init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))?;
-        // CR claude for eric: [bug] A failed typecheck0 here, and a failed typecheck1
+        // CR claude for claude: [bug] A failed typecheck0 here, and a failed typecheck1
         // at 1196, is only logged: the instance is installed and dispatched anyway,
         // though design/parallel_compile.md says an instance whose signature its
         // definition's does not hold is refused. Any checker gap that lets a mistyped
@@ -1319,7 +1319,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
     /// `fv`) as a run-time bind, a compile task of its own, leaving it
     /// `DynamicBound`: the outer variables its compiled defaults read,
     /// for [`Self::prime_bound`].
-    // CR claude for eric: [perf] The node-walk keeps about 21 KB per instance of a
+    // CR claude for claude: [perf] The node-walk keeps about 21 KB per instance of a
     // 22-node body (about 1 KB per node) and still holds it after the cycle. Since
     // every call is a retained activation, this footprint sets how far a node-walked
     // program can go. Probe: design/review-2026-10-05/repro/c-cost-misc-06.gx under
@@ -1345,7 +1345,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         // boundary will drain.
         let defaults = super::with_runtime_settles(ctx, |ctx| {
             let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
-            // CR claude for eric: [bug] The defaults setup_dynamic_bind compiles for
+            // CR claude for claude: [bug] The defaults setup_dynamic_bind compiles for
             // the omitted labeled arguments get only typecheck0. Unlike the static
             // binds (typecheck_static_defaults), this run-time bind never runs
             // typecheck1 on them. Trait dispatch happens only in typecheck1
@@ -1594,7 +1594,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         let fv = match target {
             Some(fv) => fv,
             None => {
-                // CR claude for eric: [bug] Only two calls are resolved here: one whose
+                // CR claude for claude: [bug] Only two calls are resolved here: one whose
                 // function node is the dispatcher Ref itself, and one through a HOF
                 // parameter that register_fn_params mapped. A Ref to a binding that
                 // only holds a dispatcher falls through to `return Ok(())`. An impl
@@ -1807,7 +1807,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
         };
         let root = if woke { QuietAtRoot::Stand } else { QuietAtRoot::Skip };
         let mut out = ArgsOut::default();
-        // CR claude for eric: [bug] update_args runs every entry of self.args, compiled
+        // CR claude for claude: [bug] update_args runs every entry of self.args, compiled
         // defaults included, before rebind decides whether this dispatch binds. A
         // Prebound callee's prime_bound then updates the same default nodes again, and
         // a DynamicUnbound self-call's bind throws away the defaults compiled at
@@ -1836,7 +1836,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             let tag = tv.tag();
             (tag, (!static_callee && !tag.is_bottom()).then(|| tv.value_cloned()))
         };
-        // CR claude for eric: [bug] While a dynamic callee is bottom, this branch
+        // CR claude for claude: [bug] While a dynamic callee is bottom, this branch
         // returns without updating or sleeping the bound instance. The instance
         // therefore misses every argument fire and every `<-` that lands in the window.
         // When the same function value returns, rebind sees the same def, the formals
@@ -2076,7 +2076,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
             }
         };
         drop(dec);
-        // CR claude for eric: [bug] apply_deferred runs before `decoded?`, so a decode
+        // CR claude for claude: [bug] apply_deferred runs before `decoded?`, so a decode
         // that fails part-way registers the references its dropped nodes recorded.
         // Those nodes are never deleted, so the registrations are never released, and
         // the fallback's fresh instance registers its own beside them. The rule in
@@ -2123,7 +2123,7 @@ impl<R: Rt, E: UserEvent> CallSite<R, E> {
                             Box::new(GXLambda::image_decode(ctx, buf)?);
                         Callee::Static { apply, first_update: bool::decode(buf)? }
                     }
-                    // CR claude for eric: [bug] An imaged callee registers none of its
+                    // CR claude for claude: [bug] An imaged callee registers none of its
                     // body's reads with the runtime. They are registered only when
                     // `materialize` decodes the body at the site's first dispatch,
                     // while a cold compile registers them before the first cycle. So a
@@ -2426,7 +2426,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
         // a lambda argument learns its parameters' types from the formal
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
-                // CR claude for eric: [risk] The formals taken from the table row can
+                // CR claude for claude: [risk] The formals taken from the table row can
                 // hold cells nothing here decides: for `filter(v, |zz| zz > 0)` the
                 // callback formal is `fn(zz: '_N) -> '_M`, pre_unify_arg fixes only the
                 // lambda's parameters, and the full check's `formal.contains(arg)`
@@ -2531,7 +2531,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for CallSite<R, E> {
             .iter_mut()
             .filter_map(|(k, a)| a.node.as_mut().map(|n| (k, n)))
             .collect();
-        // CR claude for eric: [doc-drift] ArgMap is an IndexMap, so the comment's 'the
+        // CR claude for claude: [doc-drift] ArgMap is an IndexMap, so the comment's 'the
         // map is hash-ordered' is false. The arguments already iterate in a fixed
         // order: written arguments in source order, then defaults in formal order. The
         // collect and sort only move positional arguments ahead of labeled ones. Drop
@@ -2639,7 +2639,7 @@ pub(crate) enum Feeds<'a> {
 struct ArgsOut {
     fired: bool,
     prods: SmallVec<[(BindId, TagValue); 4]>,
-    // CR claude for eric: [perf] update_call (line 1601) builds an ArgsOut on every
+    // CR claude for claude: [perf] update_call (line 1601) builds an ArgsOut on every
     // update, and this LPooled field costs a pool take and a return each time. The take
     // is a TLS access, a RefCell borrow, a pool map probe and a Vec pop; the return is
     // the same with a clear and a push. This happens in every cycle of the walk,
@@ -2708,7 +2708,7 @@ fn update_args_in_order<R: Rt, E: UserEvent>(
         let tv = timed(&mut meter, i, || node.update(ctx));
         let fired = tv.tag().triggers();
         out.fired |= fired;
-        // CR claude for eric: [perf] may_bind is true on every update of a callee that
+        // CR claude for claude: [perf] may_bind is true on every update of a callee that
         // is not Static, so every quiet argument's TagValue is cloned into prods, which
         // only a fresh bind reads (line 1630). Every collection slot's call is
         // DynamicBound after its first dispatch, so each slot update pays a Value clone

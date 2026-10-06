@@ -405,7 +405,7 @@ impl ImageSourceV {
                 if pixels.is_empty() {
                     return Ok(None);
                 }
-                // CR claude for eric: [risk] Nothing checks width and height against
+                // CR claude for claude: [risk] Nothing checks width and height against
                 // pixels.len() before this call. winit computes width * height in u32,
                 // so an icon like `Rgba({width: u32:65536, height: u32:65536, pixels:
                 // ..})` overflows. In a dev build that panics on the GUI main thread,

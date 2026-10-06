@@ -111,7 +111,7 @@ impl NetHandles {
 
 impl NetHandles {
     fn get_or_materialize(&self, cfg: NetConfig) -> Result<&Handles> {
-        // CR claude for eric: [risk] get_or_materialize reads the OnceLock, builds the
+        // CR claude for claude: [risk] get_or_materialize reads the OnceLock, builds the
         // handles outside it and sets it afterwards. Callers that first touch the
         // network at the same time therefore each build a universe, and all but one are
         // dropped. With GRAPHIX_PAR=force and --no-netidx, sys::net::publish mapped
@@ -300,7 +300,7 @@ impl NetState {
                                     // coalesce per SubId (last wins) — the same channel can be
                                     // registered on a shared Dval more than once — then fan out
                                     // to every registered reader.
-                                    // CR claude for eric: [bug] This map keeps only the
+                                    // CR claude for claude: [bug] This map keeps only the
                                     // last update per SubId in each netidx batch, so a
                                     // subscription silently drops every intermediate
                                     // value that arrives in the same batch. netidx
@@ -389,7 +389,7 @@ impl NetState {
         // FLUSHER: commit the publish batch when pinged, coalescing
         // pings that arrive while a commit is in flight.
         {
-            // CR claude for eric: [risk] The flusher holds st2, an Arc of the Inner
+            // CR claude for claude: [risk] The flusher holds st2, an Arc of the Inner
             // that owns flush_tx, and loops until flush_rx closes, so Inner is never
             // dropped. After the runtime goes away, these all live until the tokio
             // runtime shuts down: the flusher and graveyard tasks, the cached rpc
@@ -445,7 +445,7 @@ impl NetState {
         id: BindId,
     ) -> Result<Dval> {
         let updates_tx = self.0.netidx_updates_tx.clone();
-        // CR claude for eric: [bug] Every subscription registers the one shared channel
+        // CR claude for claude: [bug] Every subscription registers the one shared channel
         // with BEGIN_WITH_LAST. When the path's Dval is already subscribed, netidx
         // sends `last` again (NO_SPURIOUS unset,
         // ../netidx/netidx/src/subscriber/connection.rs:377), and the pump fans it out
@@ -541,7 +541,7 @@ impl NetState {
             clients.retain(|(_, _, last)| {
                 now.saturating_duration_since(*last) < Duration::from_secs(60)
             });
-            // CR claude for eric: [bug] This keeps reusing one netidx client Proc per
+            // CR claude for claude: [bug] This keeps reusing one netidx client Proc per
             // path until no call has used the path for 60 s. That Proc reads the
             // procedure's argument names only once (a OnceCell in client::Proc::call,
             // netidx-protocols rpc.rs:498-534) and refuses any later call that names an

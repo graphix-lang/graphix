@@ -274,7 +274,7 @@ pub struct FnType {
     /// order. Syntax only (the constraint types live in the cells), but
     /// the declaration site is what stops a self-referential constraint
     /// from regressing. Excluded from Eq/Ord/Hash.
-    // CR claude for eric: [doc-drift] This doc is wrong: the list is not just syntax,
+    // CR claude for claude: [doc-drift] This doc is wrong: the list is not just syntax,
     // and it is not outside identity. constraint_view keeps only the conjuncts of the
     // cells it names, so Eq and Ord depend on it. fresh_quantifiers, inner_quantifiers,
     // has_open_quantifier and callsite.rs quantified_formal read it to decide which
@@ -533,7 +533,7 @@ impl FnType {
     /// Read-only walk over args, vargs, rtype, throws in that order.
     /// Cell constraints are not visited; see
     /// [`Self::for_each_sig_constraint`].
-    // CR claude for eric: [doc-drift] The doc links [`Self::for_each_sig_constraint`],
+    // CR claude for claude: [doc-drift] The doc links [`Self::for_each_sig_constraint`],
     // which does not exist; the walk that visits the signature cells' conjuncts is
     // for_each_part (line 564). Point the link there: the choice between this walk and
     // for_each_part is what decides whether a new walk sees quantifier bounds.
@@ -958,7 +958,7 @@ impl FnType {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
-        // CR claude for eric: [bug] An open quantifier of `self` (`fn<'b: Number>`)
+        // CR claude for claude: [bug] An open quantifier of `self` (`fn<'b: Number>`)
         // binds here like any cell. Only `quantified_formal` (node/callsite.rs:244)
         // holds it rigid, and only for a formal whose whole type is the quantified
         // function. Every other position accepts a monomorphic function, yet each call
@@ -1069,7 +1069,7 @@ impl FnType {
                 impl_args.len()
             );
         }
-        // CR claude for eric: [bug] This pairs the signature's arguments with the
+        // CR claude for claude: [bug] This pairs the signature's arguments with the
         // implementation's by index, so an interface `val` refuses an implementation
         // that writes its labeled arguments in another order ("argument 0 kind
         // mismatch"). Labels bind by name everywhere else: `align` (contains,
@@ -1117,7 +1117,7 @@ impl FnType {
         // Every declared bound must be among the impl cell's whole
         // conjunction, compared by meaning (refs are scoped
         // independently on each side).
-        // CR claude for eric: [bug] impl_tvs holds only the tvars written at the top of
+        // CR claude for claude: [bug] impl_tvs holds only the tvars written at the top of
         // the implementation's type: sig_tvars collects by name and never enters a
         // binding. An unannotated parameter's cell is bound (`x: '_1 := Array<'_3>`)
         // and tvar_map keys '_3, so neither loop below sees the Number + Singleton
@@ -1213,7 +1213,7 @@ impl FnType {
         Ok(())
     }
 
-    // CR claude for eric: [structure] This is cow_walk written out by hand. It rebuilds
+    // CR claude for claude: [structure] This is cow_walk written out by hand. It rebuilds
     // every field, in a different order from the canonical args, vargs, rtype, throws,
     // and allocates a new args slice even when nothing changes. `let mut copies =
     // LPooled::take(); self.cow_walk(|t| t.scope_refs_int(scope, &mut
@@ -1489,7 +1489,7 @@ mod tests {
 impl FnType {
     // The constraints wire slot is a derived view of the cells: decode
     // re-seeds its entries onto the cells (`add_cell_constraint` dedups).
-    // CR claude for eric: [dead] The constraints slot carries nothing either decoder
+    // CR claude for claude: [dead] The constraints slot carries nothing either decoder
     // needs. Under an image, each cell is a shared object whose definition already
     // holds its conjuncts (image/mod.rs cell_encode). Under the syntax codec, each TVar
     // occurrence writes its cell's conjuncts inline, and the slot's own TVars decode to

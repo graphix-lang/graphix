@@ -123,7 +123,7 @@ struct GuiHandler<X: GXExt> {
     gpu: Option<GpuState>,
     rt: tokio::runtime::Handle,
     stop: Option<Stop>,
-    // CR claude for eric: [structure] Per-window state lives in four maps that must
+    // CR claude for claude: [structure] Per-window state lives in four maps that must
     // agree: windows and win_to_bid, plus surfaces and ui_caches keyed by WindowId.
     // CloseRequested and reconcile_windows each repeat the four-map removal, Stop
     // clears them all, and reconcile_windows takes nine parameters to borrow the
@@ -261,7 +261,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     if let Some(tw) = self.windows.get_mut(&bid) {
                         if tw.size.t.as_ref() != Some(&sz) {
                             tw.last_set_size = Some(sz);
-                            // CR claude for eric: [bug] This writes the cell the `&`
+                            // CR claude for claude: [bug] This writes the cell the `&`
                             // minted, not what the reference names. For `window(#size:
                             // &sz, ..)` that cell only mirrors `sz`, and `*w.size`
                             // reads `sz` through the byref chain, so after an OS resize
@@ -372,7 +372,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                 }
                 let theme = tw.iced_theme();
                 let style = Style { text_color: theme.palette().text };
-                // CR claude for eric: [bug] This frame never passes
+                // CR claude for claude: [bug] This frame never passes
                 // window::Event::RedrawRequested(now) to ui.update before ui.draw. iced
                 // 0.14 widgets set the status they draw with only on that event, and
                 // view() rebuilds them every frame, so the status is always None. So
@@ -398,7 +398,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                         let view = frame
                             .texture
                             .create_view(&wgpu::TextureViewDescriptor::default());
-                        // CR claude for eric: [bug] present(None) makes iced_wgpu load
+                        // CR claude for claude: [bug] present(None) makes iced_wgpu load
                         // the freshly acquired surface texture (LoadOp::Load), which
                         // wgpu zero-fills, so the theme's background is never painted.
                         // Every window is black whatever its theme or palette
@@ -462,7 +462,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
                     }
                 }
                 other => {
-                    // CR claude for eric: [bug] Every non-Call message goes to every
+                    // CR claude for claude: [bug] Every non-Call message goes to every
                     // window's content. The data-table messages (CellClick, CellEdit,
                     // CellEditInput, CellEditSubmit, CellEditCancel, TableKey, Scroll,
                     // ColumnResizeStart; widgets/mod.rs:105-126) name no widget, so
@@ -487,7 +487,7 @@ impl<X: GXExt> ApplicationHandler<ToGui> for GuiHandler<X> {
             }
         }
 
-        // CR claude for eric: [bug] The windows are drawn before the messages are
+        // CR claude for claude: [bug] The windows are drawn before the messages are
         // drained. A message that on_message applies sets needs_redraw (line 410) but
         // schedules no wake: wake comes only from deferred_until and next_redraw. The
         // loop goes back to ControlFlow::Wait with the window dirty, so the change
@@ -518,7 +518,7 @@ pub(crate) fn run<X: GXExt>(
     stop: Stop,
     rt: tokio::runtime::Handle,
 ) {
-    // CR claude for eric: [bug] Every GUI session builds a new winit EventLoop here,
+    // CR claude for claude: [bug] Every GUI session builds a new winit EventLoop here,
     // but winit allows only one per process. build() sets a process-wide flag before it
     // touches the platform and never clears it, so every later build returns
     // RecreationAttempt. In the REPL, a second GUI (after the first window closes, or
@@ -626,7 +626,7 @@ fn reconcile_windows<X: GXExt>(
     }
 
     for &bid in new_bids.iter() {
-        // CR claude for eric: [bug] A window the user closed is missing from `windows`
+        // CR claude for claude: [bug] A window the user closed is missing from `windows`
         // as well, because CloseRequested (line 203) removes it only from the loop's
         // maps. The program's root array still lists it, and the program is never told.
         // So the next root update, whatever causes it, reopens every window the user
@@ -640,7 +640,7 @@ fn reconcile_windows<X: GXExt>(
         }
         let wref =
             rt.block_on(gx.compile_ref(bid)).context("compile_ref for window bind id")?;
-        // CR claude for eric: [bug] If a window's value is still bottom when the root
+        // CR claude for claude: [bug] If a window's value is still bottom when the root
         // array fires, the window is lost for good. Its Ref is dropped here, and `[&w]`
         // does not fire again when `w` arrives, because a reference fires its id only
         // at init. Nothing retries it, so unless the root array changes for another

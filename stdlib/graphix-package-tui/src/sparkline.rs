@@ -40,7 +40,7 @@ impl FromValue for SparklineBarV {
                     value: Option<f64>,
                 }
                 let Fields { style, value } = v.cast_to()?;
-                // CR claude for eric: [bug] `v as u64` here and at line 47 truncates
+                // CR claude for claude: [bug] `v as u64` here and at line 47 truncates
                 // each value before ratatui scales it with integer math (`value *
                 // height * 8 / max`, ratatui-widgets sparkline.rs:392). Data in [0, 1)
                 // becomes 0, so `sparkline(&[0.2, 0.5, 0.9, 0.4])` draws nothing, and

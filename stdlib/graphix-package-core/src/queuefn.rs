@@ -94,7 +94,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         if !delta.is_empty() {
             let count_write = {
                 let mut s = self.state.lock();
-                // CR claude for eric: [bug] The immediate path inserts its args
+                // CR claude for claude: [bug] The immediate path inserts its args
                 // straight into ctx.event.variables. A popped invocation that set_var
                 // delivered to the same binds this cycle gets overwritten. This happens
                 // when the trigger fires again in the cycle after a pop that emptied
@@ -130,7 +130,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
                 ctx.rt.set_var(bid, Value::I64(depth));
             }
         }
-        // CR claude for eric: [bug] When the wrapped call delivers a bottom, seam_tick
+        // CR claude for claude: [bug] When the wrapped call delivers a bottom, seam_tick
         // reads it as "no tick" here and the wrapper rides its previous result STALE. A
         // consumer that fires on another input then pairs the old result with the new
         // input: `(qparse(s$), s)` prints (5, "x") where `parse(s$)` is bottom. This
@@ -166,7 +166,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for WrapperApply<R, E> {
         self.pred.refs(refs)
     }
 
-    // CR claude for eric: [bug] A deleted wrapper site leaves its QueueEntry values in
+    // CR claude for claude: [bug] A deleted wrapper site leaves its QueueEntry values in
     // the shared queue. A later #trigger pops one, set_var writes binds nobody reads
     // (the value stays in the store), f never runs, the release is lost, and #count
     // keeps counting the dead entry. When array::map shrinks while removed slots hold
@@ -276,7 +276,7 @@ impl<R: Rt, E: UserEvent> QueueFn<R, E> {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("queuefn: fn type not resolved"))?;
         let id = LambdaId::new();
-        // CR claude for eric: [bug] The wrapper is built from f's type alone. This
+        // CR claude for claude: [bug] The wrapper is built from f's type alone. This
         // argspec makes every labeled formal ArgKind::Labeled, so f's defaults are
         // lost. build_wrapper_apply (line 460) binds only ftyp.args, so
         // WrapperApply::update (line 89) silently drops f's variadic arguments, both on
@@ -393,7 +393,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
         // from[0] = #count (a ref, possibly null)
         // from[1] = #trigger
         // from[2] = f
-        // CR claude for eric: [bug] #count gets its own set_var for every depth change,
+        // CR claude for claude: [bug] #count gets its own set_var for every depth change,
         // from each push (lines 107-121) and each pop, and the runtime delivers only
         // one write to a variable per cycle. So a burst that queues N calls reaches the
         // reader one step per cycle, and the count peaks after the queue has already
@@ -414,7 +414,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
             let new_ref = match &v {
                 Value::U64(b) => {
                     let outer = BindId::from(*b);
-                    // CR claude for eric: [bug] This resolves a reference only through
+                    // CR claude for claude: [bug] This resolves a reference only through
                     // `byref_chain`, but a place reference (`&s.f`, `&a[i]`) is
                     // registered with `Rt::set_ref_path`, so `#count: &st.depth` writes
                     // the place's mirror cell, which no reader goes through, and
@@ -504,7 +504,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for QueueFn<R, E> {
 
     fn refs(&self, _refs: &mut Refs) {}
 
-    // CR claude for eric: [bug] A deleted queuefn leaves behind what it built.
+    // CR claude for claude: [bug] A deleted queuefn leaves behind what it built.
     // build_lambda's ctx.wrap_lambda (line 305) puts the wrapper def, which holds a
     // clone of the env, in ctx.lambda_defs, and nothing removes it (Lambda::delete
     // removes its own def). fid's store entry (line 376, holding f) is never

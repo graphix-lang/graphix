@@ -51,7 +51,7 @@ fn is_echain_shape(fields: &[(ArcStr, Type, WrittenAt)]) -> bool {
 pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     let pos: Value =
         [(literal!("column"), spec.pos.column), (literal!("line"), spec.pos.line)].into();
-    // CR claude for eric: [perf] Every raise runs is_a over the whole cause chain (a
+    // CR claude for claude: [perf] Every raise runs is_a over the whole cause chain (a
     // lookup_ref of ErrChain, Ori and Pos at each level) after allocating a fresh TVar
     // and TypeRef. Raising a chain of depth D therefore costs O(D), and rethrowing one
     // chain at each of N levels costs O(N²) inside one cycle. Probe:
@@ -61,7 +61,7 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     // check already decides chain-ness from the type, by field names (fix_echain_typ).
     // Decide it from the site's checked type, or test only the top-level shape here.
     // (c-error-op-03)
-    // CR claude for eric: [bug] Whether a `?` chains its payload or wraps it is decided
+    // CR claude for claude: [bug] Whether a `?` chains its payload or wraps it is decided
     // twice: here by value (is_a, which checks every field type) and in fix_echain_typ
     // by type (a struct with these four field names counts as a chain, an alias is
     // expanded one level only, a union is wrapped whole). Where the two disagree, the
@@ -82,7 +82,7 @@ pub(crate) fn wrap_error(env: &Env, spec: &Expr, e: Value) -> Value {
     [
         (literal!("cause"), cause),
         (literal!("error"), error),
-        // CR claude for eric: [bug] `spec.ori.to_value()` puts `text`, the whole source
+        // CR claude for claude: [bug] `spec.ori.to_value()` puts `text`, the whole source
         // file, into every link of the ErrChain, and `parent` adds the text of each
         // including file. So the book's display idioms `catch(e) error_display <-
         // "[e]"` (book/src/core/error.md:40) and `println("could not run: [e]")`
@@ -122,7 +122,7 @@ pub struct Catch<R: Rt, E: UserEvent> {
 /// A seq machine's handler, or a `try` body arm's jump: the action run
 /// once every error of a failure has arrived.
 #[derive(Debug)]
-// CR claude for eric: [readability] This struct is a catch's failure action: a seq
+// CR claude for claude: [readability] This struct is a catch's failure action: a seq
 // machine's handler, or a try arm's jump to its with branch. NodeView::SeqAbort and
 // NodeTag::SeqAbort, however, carry the abort(..) node, SeqAbortEvent (line 1043).
 // fusion/mod.rs:650-661 and node_shape.rs:309-325 use c.seq_abort and
@@ -180,7 +180,7 @@ pub(crate) fn join_raised(env: &Env, catch: BindId, etyp: &Type) -> Result<()> {
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    // CR claude for eric: [bug] join_raised widens the catch's bind without any check.
+    // CR claude for claude: [bug] join_raised widens the catch's bind without any check.
     // It also runs for raises compiled after the catch was checked and its handler
     // typed and fused: a dynamic module's body, checked at load under the enclosing
     // catch, and a later REPL input under the session scope. The ascription's coverage
@@ -390,7 +390,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
                 self.received = self.received.wrapping_add(1);
                 abort.pending = true;
             }
-            // CR claude for eric: [bug] A try's jump runs here once its own handler has
+            // CR claude for claude: [bug] A try's jump runs here once its own handler has
             // drained, with no check that the machine was aborted meanwhile. A try-body
             // step that raises two errors in one cycle gets the second one a cycle
             // later (deliver_error's set_var fallback). An abort(..) firing during that
@@ -415,7 +415,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Catch<R, E> {
         TagValue::phantom_ref()
     }
 
-    // CR claude for eric: [bug] Catch::delete never unbinds the error binding that
+    // CR claude for claude: [bug] Catch::delete never unbinds the error binding that
     // Catch::compile made with env.bind_variable. Every deleted catch (a collection
     // slot, an activation, a rebound callee) leaves its Bind in env.by_id and its scope
     // in env.binds for the rest of the run. Other deletes skip their release the same
@@ -552,7 +552,7 @@ impl Strip {
     ) -> Result<Self> {
         let err = Type::Error(Arc::new(Type::empty_tvar()));
         let null = Type::Primitive(Typ::Null.into());
-        // CR claude for eric: [bug] An unbound operand cell passes this probe without
+        // CR claude for claude: [bug] An unbound operand cell passes this probe without
         // being bound. So `let f = |x| x?` takes the error form, its result is x's own
         // cell, and the raised type (line 1365) is that cell minus itself, the empty
         // set, which fix_echain_typ reports as "expected error not []" (line 619)
@@ -566,7 +566,7 @@ impl Strip {
         // as a cycle, while `|x: 'a| -> 'a 1` gets the plain mismatch. probe:
         // design/review-2026-10-05/repro/x-typecheck-generics-F2.gx
         // (x-typecheck-generics-F2)
-        // CR claude for eric: [bug] This probe binds nothing and answers true for an
+        // CR claude for claude: [bug] This probe binds nothing and answers true for an
         // open or declared cell. So at the definition's check, `x$` over an untyped or
         // `'a` parameter becomes Strip::Error, its type is the operand's own cell (f:
         // fn(x: 'a) -> 'a), and 'a gets no constraint. An instance then recomputes the
@@ -676,7 +676,7 @@ macro_rules! report_failure {
     ($msg:expr) => {{
         let msg: &str = $msg;
         log::error!("{msg}");
-        // CR claude for eric: [bug] This eprintln! writes every unhandled `?` error (in
+        // CR claude for claude: [bug] This eprintln! writes every unhandled `?` error (in
         // both engines) and every node-walk unchecked-arith failure to stderr. In a TUI
         // program stderr is the terminal ratatui draws on. The text lands at the
         // cursor, a message that runs past the bottom row scrolls the alternate screen,
@@ -749,7 +749,7 @@ fn fix_echain_typ<R: Rt, E: UserEvent>(
             }
         },
         Some(Type::Error(et)) => et.with_deref(|et| match et {
-            // CR claude for eric: [bug] `?` refuses any operand whose error payload is
+            // CR claude for claude: [bug] `?` refuses any operand whose error payload is
             // a type variable. `|r: Result<i64, 'e>| -> i64 r?` stops here with `type
             // must be known`, although the type is written out and `r$` checks. A bound
             // that rules out a chain (`'e: [`A, `B]`) and `|e| error(e)?` are refused
@@ -858,7 +858,7 @@ impl<R: Rt, E: UserEvent> Qop<R, E> {
     ) -> Result<Node<R, E>> {
         let n = compile(ctx, flags, e.clone(), scope, top_id)?;
         let handler = scope.dynamic.handler();
-        // CR claude for eric: [bug] This warns on every compile of a ? under a scope
+        // CR claude for claude: [bug] This warns on every compile of a ? under a scope
         // with no catch, and an instance compiles under its call site's handlers. So
         // the run repeats, once per instance, a warning the call site already gave
         // (raise_throws in callsite.rs), and --check never shows these copies. Under

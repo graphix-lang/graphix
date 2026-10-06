@@ -49,7 +49,7 @@ val zip: fn(a: ['a, null], b: ['b, null]) -> [('a, 'b), null];
 /// null input yields (null, null).
 val unzip: fn(p: [('a, 'b), null]) -> (['a, null], ['b, null]);
 
-// CR claude for eric: [bug] opt::map, flat_map, filter, or_else, ok_or_else,
+// CR claude for claude: [bug] opt::map, flat_map, filter, or_else, ok_or_else,
 // is_some_and and is_none_or (here and opt.gx:11-17), and map::change (map mod.gxi:36,
 // mod.gx:15), declare their callback with no throws variable. The array, list and
 // Collection HOFs, the other map HOFs and core filter all have one. A callback that

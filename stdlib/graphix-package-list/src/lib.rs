@@ -364,7 +364,7 @@ impl<R: Rt, E: UserEvent> EvalCached<R, E> for FromArrayEv {
 
 type FromArray = CachedArgs<FromArrayEv>;
 
-// CR claude for eric: [perf] concat copies every list, the last included: the loop
+// CR claude for claude: [perf] concat copies every list, the last included: the loop
 // walks them all into buf and from_iter_back rebuilds every cell, so nothing is shared
 // with the last list and the cost is O(total size), not "O(n) in the total size of all
 // lists except the last" (list/mod.gxi:47). concat([<1>], long) is linear in long (18
@@ -571,7 +571,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         ctx: &mut ExecCtx<'_, R, E>,
         from: &mut [Node<R, E>],
     ) -> &TagValue {
-        // CR claude for eric: [structure] iter and iterq are written six times (array,
+        // CR claude for claude: [structure] iter and iterq are written six times (array,
         // list, map), and the copies have drifted. Only array polls ctx.interrupted()
         // in its set_var loop, so an interrupt or Ctrl-C cannot cut short a list or map
         // iter cycle. Probe: design/review-2026-10-05/repro/x-dup-05.gx. After a SIGINT
@@ -580,7 +580,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterBI {
         // an unpooled Vec<Value>, where it could queue the list's remaining tail, and
         // only ListIterQ checks is_list. One Iter/IterQ pair over an element source
         // would end the drift. (x-dup-05)
-        // CR claude for eric: [structure] array (array/src/lib.rs:491-664), list
+        // CR claude for claude: [structure] array (array/src/lib.rs:491-664), list
         // (523-687 here) and map (map/src/lib.rs:106-299) each hand-write iter and
         // iterq, six copies of two builtins that differ only in how they enumerate
         // elements, and they have drifted: only array's loops poll `ctx.interrupted()`,
@@ -678,7 +678,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for ListIterQ {
         }
         if let Some(list) = seam_tick(from[1].update(ctx)).map(|tv| tv.value_cloned()) {
             if is_list(&list) {
-                // CR claude for eric: [perf] Each fire copies the whole list into an
+                // CR claude for claude: [perf] Each fire copies the whole list into an
                 // unpooled Vec<Value>, cloning every element, before the first is
                 // emitted. A list's tail is O(1) (list::split), and array::iterq queues
                 // the ValArray it is given without copying. Queueing the unconsumed

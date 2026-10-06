@@ -92,7 +92,7 @@ pub trait At {
 }
 
 impl At for anyhow::Error {
-    // CR claude for eric: [readability] This adds a frame even when the error's latest
+    // CR claude for claude: [readability] This adds a frame even when the error's latest
     // frame is the same expression, which happens often. The walkers wrap a child's
     // error with the child's spec (`wrap!(n, pass(n, ctx))`, `wrap!(self.n,
     // child(..))`), and Connect, the arithmetic ops and lambdas also wrap their own

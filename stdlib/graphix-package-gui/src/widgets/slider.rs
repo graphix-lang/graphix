@@ -193,7 +193,7 @@ macro_rules! slider_widget {
             }
 
             fn view(&self) -> IcedElement<'_> {
-                // CR claude for eric: [bug] value, min and max here, and the step at
+                // CR claude for claude: [bug] value, min and max here, and the step at
                 // line 214, are cast to f32. So iced's Slider and VerticalSlider run
                 // over f32 even though they accept f64, and every value on_change
                 // delivers is rounded to f32. A 0.05 step from 0 reaches the program as
@@ -223,7 +223,7 @@ macro_rules! slider_widget {
                         }
                         None => Message::Nop,
                     });
-                // CR claude for eric: [bug] A null `#step` sets no step, so iced's
+                // CR claude for claude: [bug] A null `#step` sets no step, so iced's
                 // default step of 1.0 applies: a slider over 0..1 without `#step` can
                 // only send 0 or 1, but book/src/ui/gui/slider.md says null means
                 // continuous. A step of 0 or NaN reaches iced unchecked and makes every

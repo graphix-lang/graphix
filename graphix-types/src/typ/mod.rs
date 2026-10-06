@@ -257,7 +257,7 @@ impl AbstractId {
     /// The identity of the abstract type `name` defined in `scope`:
     /// the low 64 bits of [`abstract_uuid`] of its canonical path.
     pub fn of(scope: &ModPath, name: &str) -> Self {
-        // CR claude for eric: [bug] This hashes the lexical scope text. For a type
+        // CR claude for claude: [bug] This hashes the lexical scope text. For a type
         // declared in a function body, that text holds minted ids (`#fn<LambdaId>`,
         // `#do<ExprId>`), so the identity is not one per declaration. Every instance of
         // an enclosing function recompiles the inner lambda literal with a fresh
@@ -426,7 +426,7 @@ impl ResolvedRef {
     }
 }
 
-// CR claude for eric: [doc-drift] This doc says pos, ori and the resolution cell are
+// CR claude for claude: [doc-drift] This doc says pos, ori and the resolution cell are
 // not part of the packed form. Under an image session the codec below (451-511) writes
 // all three and content_key (799-814) keys them, so a restored ref keeps its resolution
 // and never re-resolves. Only the syntax codec leaves them out. Say that here.
@@ -576,7 +576,7 @@ impl TypeRef {
         if r.params.len() != self.params.len() {
             return None;
         }
-        // CR claude for eric: [structure] This zip of a definition's parameters with a
+        // CR claude for claude: [structure] This zip of a definition's parameters with a
         // ref's arguments into a name-to-type map is written four times: here, in
         // reaches_unguarded (1911-1915), in lookup_ref_with (1976-1979) and in fntyp.rs
         // param_bounds_of (1533-1537), where it is a plain heap AHashMap per ref. The
@@ -611,7 +611,7 @@ impl TypeRef {
     /// Do two same-named refs mean the same definition? True unless
     /// both cells are filled with different definitions, in which case
     /// the name-equality fast paths must fall through to expansion.
-    // CR claude for eric: [bug] lambda.rs:1808 moves a def's thrown types into its
+    // CR claude for claude: [bug] lambda.rs:1808 moves a def's thrown types into its
     // scope and keeps their cells. After that, two refs with one scope and name can
     // mean different definitions, and this test cannot tell them apart. An empty or
     // dead cell agrees with anything, and same_def compares definitions with Type::eq,
@@ -646,7 +646,7 @@ impl TypeRef {
         env.resolve_visible(&self.scope, &self.name, crate::env::NameNs::Type, |s, n| {
             env.typedefs.get(s).and_then(|m| m.get(n)).map(|d| d.def.clone())
         })
-        // CR claude for eric: [bug] This turns every structural error from
+        // CR claude for claude: [bug] This turns every structural error from
         // resolve_visible (an ambiguous glob, `super` past the root, a missing module
         // in a path) into a log::warn and None. The callers then report
         // UnresolvableRef, so `let x: T = 1` under two globs that both provide T says
@@ -754,7 +754,7 @@ pub enum Type {
     Bottom,
     Any,
     Primitive(BitFlags<Typ>),
-    // CR claude for eric: [perf] TypeRef sits inline here and is 60 bytes: two
+    // CR claude for claude: [perf] TypeRef sits inline here and is 60 bytes: two
     // ModPaths, a fat params Arc, an Option<SourcePosition>, the origin and the
     // resolution cell. So every Type is 64 bytes where every other variant fits in 40.
     // FnType, which holds three Types, is 240 bytes instead of 168, and a struct field
@@ -1190,7 +1190,7 @@ impl PackTrait for Type {
         }
     }
 
-    // CR claude for eric: [bug] Outside an image session this decode recurses once per
+    // CR claude for claude: [bug] Outside an image session this decode recurses once per
     // nesting level (shape_decode -> Arc<Type>::decode -> decode) with no
     // ensure_sufficient and no depth bound, and outside bytes reach it. GxAbstract
     // packs its params. Once a program has built any abstract value (gui::color
@@ -1778,7 +1778,7 @@ impl Type {
                 {
                     continue;
                 }
-                // CR claude for eric: [bug] This committing contains runs on the real
+                // CR claude for claude: [bug] This committing contains runs on the real
                 // receiver whatever the caller's flags. app_contains (contains.rs:1308,
                 // 1318) also calls app_split_for from a probe, so a probe that recovers
                 // a constructor binds the receiver's open cells. The binding stays when
@@ -1839,7 +1839,7 @@ impl Type {
         let a = actual.deref_cloned();
         match (&d, &a) {
             (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
-            // CR claude for eric: [bug] For a union formal this commits the argument's
+            // CR claude for claude: [bug] For a union formal this commits the argument's
             // still-open cell to the first member, in canonical order, that admits it
             // (contains -> set_commit). It does so before the argument has typechecked.
             // So an inline array, list or map literal whose elements fit a later member
@@ -1975,7 +1975,7 @@ impl Type {
         })
     }
 
-    // CR claude for eric: [readability] These six lines are seed_refs' doc, but they
+    // CR claude for claude: [readability] These six lines are seed_refs' doc, but they
     // sit above unresolved_names and become the first paragraph of its doc. That
     // paragraph says it fills every resolution cell, yet unresolved_names never writes
     // one (it asks names_something), and seed_refs at 1835 is left undocumented. Move
@@ -2079,7 +2079,7 @@ impl Type {
                 Type::App(c, a) => {
                     Type::app_filled(c, a).is_some_and(|f| go(&f, env, def, depth))
                 }
-                // CR claude for eric: [bug] This walk answers "guarded" whenever it
+                // CR claude for claude: [bug] This walk answers "guarded" whenever it
                 // cannot see the rest of the path: past UNGUARDED_DEPTH expansions
                 // (this guard falls through to `_ => false`) and at a name not defined
                 // yet (the `else { return false }` below), and nothing checks the
@@ -2095,7 +2095,7 @@ impl Type {
                 // (x-typecheck-patterns-05)
                 Type::Ref(tr) if depth < UNGUARDED_DEPTH => {
                     let Some(r) = tr.resolve_pure(env) else { return false };
-                    // CR claude for eric: [bug] This decides whether a ref returns to
+                    // CR claude for claude: [bug] This decides whether a ref returns to
                     // the definition being registered by the name as written. So an
                     // import that renames the type never matches: `use self::T as V;
                     // type T = [i64, V]`, or a rename anywhere in a cycle. The walk
@@ -2155,7 +2155,7 @@ impl Type {
                             }
                         }
                     }
-                    // CR claude for eric: [readability] UnresolvableRef keeps only name
+                    // CR claude for claude: [readability] UnresolvableRef keeps only name
                     // and scope, dropping the written pos and ori destructured above.
                     // Its Display prints the raw lookup scope: "undefined type Foo in "
                     // at top level, "in #sel4611686018427393579" in a select arm, "in
@@ -2348,7 +2348,7 @@ impl Type {
     /// A trait named as a parameter's type (`fn(s: Read)`) becomes a
     /// fresh bounded quantifier `fn<'s: Read>(s: 's)` named `#s`; a
     /// trait anywhere else is an error. Returns the rewritten type.
-    // CR claude for eric: [bug] No bound reaches this check: lambda constraints
+    // CR claude for claude: [bug] No bound reaches this check: lambda constraints
     // (node/lambda.rs:1406) and typedef parameter bounds (env.rs:1423) are only scoped,
     // and holes() and rewrite_trait_args_inner skip a Fn type's quantifier conjuncts.
     // So `'a: Array<'_>` is accepted at the definition and every use fails with a
@@ -2422,7 +2422,7 @@ impl Type {
                 changed |= !rtype.ptr_eq_shallow(&ft.rtype);
                 let throws = ft.throws.rewrite_trait_args_int(env)?;
                 changed |= !throws.ptr_eq_shallow(&ft.throws);
-                // CR claude for eric: [bug] The element made here for a `'c:
+                // CR claude for claude: [bug] The element made here for a `'c:
                 // Collection` quantifier, like Type::trait_param's anonymous element
                 // for a `c: Collection` parameter (line 2168), never joins the fn
                 // type's `quantifiers`, so shared_call and instantiate copy `'c`/`#c`
@@ -2471,7 +2471,7 @@ impl Type {
         }
     }
 
-    // CR claude for eric: [structure] ptr_eq_shallow is not a pointer test. Its general
+    // CR claude for claude: [structure] ptr_eq_shallow is not a pointer test. Its general
     // arm is Type::eq, and the TVar arm repeats it, so two distinct open cells, or two
     // refs with different resolution cells, compare equal. rewrite_trait_args uses it
     // to decide whether a child changed. A rewrite whose result differs from its input

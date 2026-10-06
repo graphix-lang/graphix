@@ -42,7 +42,7 @@ pub(crate) struct ChartW<X: GXExt> {
     height: TRef<X, LengthV>,
     style: TRef<X, OptChartStyle>,
     /// Set to true when data changes; draw() clears the cache and resets.
-    // CR claude for eric: [bug] `dirty` resets only the geometry cache. The rest of
+    // CR claude for claude: [bug] `dirty` resets only the geometry cache. The rest of
     // `ChartState` is iced tree state that iced keeps by position: x_view/y_view, the
     // 3D yaw/pitch/scale offsets, the snap point and the drag. So a chart compiled into
     // the slot of a panned chart is drawn through the old chart's view

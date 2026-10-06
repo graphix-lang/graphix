@@ -12,7 +12,7 @@ use std::{future::Future, pin::Pin};
 use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 
 /// Compile an optional callable ref during widget construction.
-// CR claude for eric: [structure] Every gui and tui widget names each property six or
+// CR claude for claude: [structure] Every gui and tui widget names each property six or
 // more times: its field, the FromValue Fields struct, the destructure, the try_join! of
 // compile_ref, TRef::new(..).context(..), and the .update(id, v).context(..) chain in
 // handle_update. Across the two crates that is about 260 TRef constructions, 335
@@ -22,7 +22,7 @@ use crate::types::{HAlignV, LengthV, PaddingV, VAlignV};
 // Type` list per widget and generates the decode, the joined compile_refs, the TRefs
 // and the update chain. context_menu.rs:84-118 and menu_bar.rs:195-230 also repeat one
 // menu-item update loop, which should be a single shared function. (x-dup-14)
-// CR claude for eric: [structure] These four macros each pair a Ref with state derived
+// CR claude for claude: [structure] These four macros each pair a Ref with state derived
 // from it, and the pairing is still copied by hand. menu_bar.rs:62-69 repeats
 // compile_callable!, data_table/mod.rs:133-140 repeats it with null meaning no handler,
 // data_table's update_cb! (mod.rs:347-355) skips update_callable's is_for check and so
@@ -198,7 +198,7 @@ pub trait GuiWidget<X: GXExt>: Send + 'static {
 
     /// Child widgets that `on_message` and `before_view` forward to.
     /// Leaf widgets return `&mut []` (the default); containers override.
-    // CR claude for eric: [bug] Children are one slice, so a widget with two child
+    // CR claude for claude: [bug] Children are one slice, so a widget with two child
     // groups cannot list them all: TableW forwards on_message to its headers and cells
     // by hand but not before_view, and TooltipW lists `child` and never `tip`. A
     // data_table in a table cell or header therefore never runs before_view, so a live
@@ -377,7 +377,7 @@ macro_rules! flex_widget {
                     .context(concat!($label, " update height"))?.is_some();
                 changed |= self.$align.update(id, v)
                     .context(concat!($label, " update ", stringify!($align)))?.is_some();
-                // CR claude for eric: [bug] This recompiles every child whenever the
+                // CR claude for claude: [bug] This recompiles every child whenever the
                 // children ref fires, even when the delivered array equals the one
                 // already compiled. A place reference re-fires its value on every write
                 // to its root (graphix-compiler/src/node/bind.rs:977), so
@@ -391,7 +391,7 @@ macro_rules! flex_widget {
                 // under stdlib/graphix-package-gui/tests/ and run cargo test -p
                 // graphix-package-gui --test review_gui_widgets_b_01).
                 // (gui-widgets-b-01)
-                // CR claude for eric: [bug] This recompiles every child whenever the
+                // CR claude for claude: [bug] This recompiles every child whenever the
                 // children ref fires, even when the new array equals
                 // `children_ref.last` or only a sibling changed. `select page` re-emits
                 // the identical array when Home is clicked on Home, and appending one

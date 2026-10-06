@@ -10,7 +10,7 @@ mod icon;
 // user input: Text, Toggle, Combo, Spin. Each cell is published with
 // an #on_write handler so edits round-trip through netidx.
 
-// CR claude for eric: [structure] Lines 13-63 are eight copies of one publish block
+// CR claude for claude: [structure] Lines 13-63 are eight copies of one publish block
 // (two hosts times four fields) plus eight state lets, differing only in host and
 // field. A new host or column means four or eight more copies, and a typo in one path
 // or variable silently publishes the wrong cell. data_table_basic.gx and

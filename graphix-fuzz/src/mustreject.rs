@@ -185,7 +185,7 @@ fn nth_stmt(root: &Expr, i: usize) -> Option<&Expr> {
 }
 
 /// Every mutant of `body` the families take, up to `cap` per family.
-// CR claude for eric: [test-gap] Every family takes the first `cap` qualifying sites in
+// CR claude for claude: [test-gap] Every family takes the first `cap` qualifying sites in
 // preorder or statement order, so a long subject's probes cluster at its start and its
 // later consumers are never mutated; subjects are deterministic, so a re-run probes the
 // same sites. On the 22nd program of `graphix-fuzz gen 40 23` (over 540 nodes)
@@ -452,7 +452,7 @@ fn rigid_probe(l: &LambdaExpr) -> Option<Expr> {
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     let ExprKind::Block { exprs: stmts } = &root.kind else { return };
     let sizes = mutate::sizes(root);
-    // CR claude for eric: [structure] This statement walk (`offset = 1; at = offset;
+    // CR claude for claude: [structure] This statement walk (`offset = 1; at = offset;
     // offset += sizes[at]`) is written out again in labels_default, retype,
     // widen_through_let and mono_reuse (typemorph builds the same list as `offsets`).
     // The reached-uses loop (uses_reached over later statements, stopping at
@@ -936,7 +936,7 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
         });
         if mentions {
             sites.push(k);
-            // CR claude for eric: [bug] Only a `let` whose pattern is a bare name adds
+            // CR claude for claude: [bug] Only a `let` whose pattern is a bare name adds
             // its name to `affected`. A destructuring let built from `v` (`let (p, q) =
             // (w, 2)`) therefore leaves `p` and `q` untracked. A later `p + 1` is where
             // `v`'s new type is refused first, which the family's rule says is right,
@@ -1106,7 +1106,7 @@ fn mono_reuse(
         .to_expr_nopos();
         let cand = mutate::replace(root, at + 1, &wrapped);
         let (ja, jb) = (*ja, *jb);
-        // CR claude for eric: [bug] The right sites are only the definition, ja and jb.
+        // CR claude for claude: [bug] The right sites are only the definition, ja and jb.
         // But every value use of the wrapped `f` shares its cells, so the checker
         // refuses at the first use that conflicts with an earlier one. `firsts` drops
         // some uses between ja and jb: one whose first parameter is not a single
@@ -1162,7 +1162,7 @@ fn variant_widen(
             break;
         }
         let ExprKind::Select(SelectExpr { arg, arms }) = &e.kind else { continue };
-        // CR claude for eric: [bug] covers_all checks only for a top-level bind or `_`
+        // CR claude for claude: [bug] covers_all checks only for a top-level bind or `_`
         // (or a type test), so an or-arm with a `_` alternative (`` `A | _ ``) is not
         // seen as a catch-all: the widened scrutinee is still covered, the mutant is
         // rightly accepted, and it is filed as a LEAK, which also takes variant-widen's

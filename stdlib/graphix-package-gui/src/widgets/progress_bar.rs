@@ -68,7 +68,7 @@ impl<X: GXExt> GuiWidget<X> for ProgressBarW<X> {
         let val = self.value.t.unwrap_or(0.0) as f32;
         let min = self.min.t.unwrap_or(0.0) as f32;
         let max = self.max.t.unwrap_or(100.0) as f32;
-        // CR claude for eric: [bug] iced's ProgressBar::new clamps the value with
+        // CR claude for claude: [bug] iced's ProgressBar::new clamps the value with
         // f32::clamp, which panics when min > max or when either bound is NaN. Nothing
         // checks the range before this call. iced's Slider clamps by hand, so slider
         // survives the same range. The panic happens in view() on the main thread and

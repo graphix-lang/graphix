@@ -343,7 +343,7 @@ let y = super::x + 1
 );
 
 // A gxi signature spells a type through a `use … as` alias.
-// CR claude for eric: [readability] The section comment at line 280 ("Resolution is a
+// CR claude for claude: [readability] The section comment at line 280 ("Resolution is a
 // pure function of (module, name)...") describes the finding1_* tests starting here,
 // but the module_check_* tests now sit between it and them. The names
 // finding1_sig_alias, finding1_private_type_in_body, finding1_imported_body_annotation
@@ -434,7 +434,7 @@ async fn use_in_value_position_is_compile_error() {
         "{i64:1; use array::iter}",
         "array::len(use array::iter)",
     ] {
-        // CR claude for eric: [test-gap] eval also returns Err when a program compiles
+        // CR claude for claude: [test-gap] eval also returns Err when a program compiles
         // and produces nothing for 5 s, so `is_err()` cannot tell the intended refusal
         // from a `use` compiled to a bottom value again; `{let tag = never(); tag}`
         // passes it. The same holds for use_value_soundness_witness_rejected and

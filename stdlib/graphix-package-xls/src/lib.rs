@@ -57,7 +57,7 @@ fn parse_sheet<RS: std::io::Read + std::io::Seek + Clone>(rs: RS, sheet: &str) -
         Err(e) => return errf!("XlsErr", "{e}"),
     };
     let mut rows: LPooled<Vec<Value>> = LPooled::take();
-    // CR claude for eric: [bug] calamine's worksheet_range covers only the non-empty
+    // CR claude for claude: [bug] calamine's worksheet_range covers only the non-empty
     // cells (Range::from_sparse for xlsx/xls/xlsb, get_range for ods), and
     // range.start() is dropped here. So rows[0][0] is the first used row and the first
     // used column of the whole sheet, not A1, and the caller cannot learn the offset. A

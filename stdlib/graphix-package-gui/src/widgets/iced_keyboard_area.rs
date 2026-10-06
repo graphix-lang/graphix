@@ -14,7 +14,7 @@ use super::{Message, Renderer};
 ///
 /// Gains focus on mouse click inside bounds, loses focus on click
 /// outside. Participates in tab-order focus traversal.
-// CR claude for eric: [doc-drift] This area takes keys only after a left click inside
+// CR claude for claude: [doc-drift] This area takes keys only after a left click inside
 // it (update, lines 113-120), and nothing in the GUI runs a focus operation, so the doc
 // comment's "Participates in tab-order focus traversal" is false: Tab focuses nothing.
 // keyboard_area.md never mentions focus, and its example, a whole-window area reading
@@ -145,7 +145,7 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
         }
 
         match event {
-            // CR claude for eric: [bug] A focused area publishes and captures every
+            // CR claude for claude: [bug] A focused area publishes and captures every
             // press and release it has a closure for, whether anything uses the key or
             // not, so an enclosing keyboard_area never sees it. keyboard_area.gx always
             // installs both closures through its `|_| null` defaults. So an inner

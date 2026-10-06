@@ -206,7 +206,7 @@ fn feature_report(progs: &[String], ok: &[bool]) {
         ("variant", "`"),
         ("connect", "<-"),
         ("cast", "cast<"),
-        // CR claude for eric: [test-gap] `&` also matches the `&&` operator: in `gen
+        // CR claude for claude: [test-gap] `&` also matches the `&&` operator: in `gen
         // 2000 7`, 842 programs contain `&` but only 620 contain a reference, so this
         // row overstates ref coverage. FEATURES is shared by gen-check and
         // reactive-check. So every gen-check run reports `reactive` as absent ("arm not
@@ -419,7 +419,7 @@ async fn main() -> Result<()> {
                             );
                             let _ = std::fs::write(p, body);
                         }
-                        // CR claude for eric: [structure] This reject-bucket key (last
+                        // CR claude for claude: [structure] This reject-bucket key (last
                         // non-blank line, trimmed, truncate(120)) is copied in
                         // reactive-check, and the default corpus directory is computed
                         // twice (generate/fuzz and soak). String::truncate panics when
@@ -474,7 +474,7 @@ async fn main() -> Result<()> {
             // records every pin's verdict, each untrusted one retried
             // alone (rebuild afterward: the compare reads the embedded copy)
             let r = regress(true).await;
-            // CR claude for eric: [bug] These rows come from r.verdicts, which has no
+            // CR claude for claude: [bug] These rows come from r.verdicts, which has no
             // entry for a pin that regressed. The file is written before r.regressions
             // is checked, so blessing while any pin regresses deletes that pin's row,
             // and every later regress reports it as unrecorded. fusecheck --bless
@@ -531,7 +531,7 @@ async fn main() -> Result<()> {
                     let b = vm_rss_kb(pid);
                     let _ = child.kill();
                     let _ = child.wait();
-                    // CR claude for eric: [bug] A dead child only leaves this mode's
+                    // CR claude for claude: [bug] A dead child only leaves this mode's
                     // slope at 0, because the `continue` is in the mode loop. The
                     // witness is still scored and printed as a measurement. A shell
                     // whose fused mode segfaults on every witness, or one that compiles
@@ -1100,7 +1100,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                // CR claude for eric: [bug] `check` prints AGREE for every None, but
+                // CR claude for claude: [bug] `check` prints AGREE for every None, but
                 // check_verdict also returns None without comparing values in two
                 // cases. One is an Excluded-tier program: anything naming rand::,
                 // sys::time, sys::net or the rest of oracle_tier's list, so every probe
@@ -1156,7 +1156,7 @@ fn vm_rss_kb(pid: u32) -> Option<u64> {
 
 /// Long-running leak witnesses for `leakcheck`. The control rows keep
 /// the gate honest: a shared baseline drift fails nothing.
-// CR claude for eric: [test-gap] No witness drives a fused select's or-arm, whose owned
+// CR claude for claude: [test-gap] No witness drives a fused select's or-arm, whose owned
 // binds are forwarded through the or-chain's done block
 // (graphix-compiler/src/fusion/emit/select.rs:1868-1888), or a guard that goes bottom
 // with owned binds in scope (the ubdrop edge, select.rs:814-819); every guard below is

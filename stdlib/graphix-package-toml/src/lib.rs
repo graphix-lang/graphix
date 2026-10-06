@@ -117,7 +117,7 @@ enum ReadInput {
     Bytes(Bytes),
 }
 
-// CR claude for eric: [structure] JsonReadEv, TomlReadEv, PackReadEv and sqlite's
+// CR claude for claude: [structure] JsonReadEv, TomlReadEv, PackReadEv and sqlite's
 // SqliteQueryEv repeat the same init, typecheck1 and map_value around `cast_typ`,
 // differing only in the error tag, and each overrides typecheck0 with the trait
 // default's own body. json and toml also copy ReadInput and prepare_args, and each

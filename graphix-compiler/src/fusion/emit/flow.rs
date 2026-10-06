@@ -315,7 +315,7 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
         let arg = cs
             .arg_positional(i)
             .ok_or_else(|| anyhow!("emit_clif: self tail-call arg {i} missing"))?;
-        // CR claude for eric: [bug] A scalar argument fed to a value-shaped formal
+        // CR claude for claude: [bug] A scalar argument fed to a value-shaped formal
         // ([f64, null], [bool, null], [i32, null], [i64, f64]) reaches
         // emit_tail_rebind_jump raw. body.rs:112 clones it as a Value or def_vars it
         // into the I64 payload word, and nothing calls scalar_to_payload_i64; only
@@ -339,7 +339,7 @@ fn emit_self_tail_call<R: Rt, E: UserEvent>(
 /// them.
 /// Bind `value` as a local of the binding's type `typ`, in that type's
 /// representation: every read of the local sees the binding's type.
-// CR claude for eric: [doc-drift] Two docs are stacked on this function, and the first
+// CR claude for claude: [doc-drift] Two docs are stacked on this function, and the first
 // is wrong. The local is not bound by the value's runtime shape but by the binding's
 // type `typ`: `ak` comes from `typ`, and a value-shaped value is widened to it by
 // widen_result_to_value. Keep one doc: "Bind `value` as a local of the binding's type
@@ -594,7 +594,7 @@ fn emit_qop_always_bad<R: Rt, E: UserEvent>(
     let deliverable = cx.b.ins().band(is_err, fresh);
     let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
     emit_qop_error_disposal(cx, sink, deliverable, clean, cv.payload, inner_owned)?;
-    // CR claude for eric: [bug] This placeholder is Value-shaped (an i64 zero payload)
+    // CR claude for claude: [bug] This placeholder is Value-shaped (an i64 zero payload)
     // whatever the qop's own type. That type is a bottom-fed cell that takes its
     // consumer's type (f64, i32, bool), and consumers read the shape from
     // abi_kind(node.typ()). So `v * 2.0 + error(`Boom)?` emits `fadd.f64 v15, v72` with

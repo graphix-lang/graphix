@@ -2,7 +2,7 @@ use anyhow::Result;
 use graphix_package_core::run;
 use netidx::subscriber::Value;
 
-// CR claude for eric: [risk] certs/server.pem is signed for 730 days (certs/gen.sh:21)
+// CR claude for claude: [risk] certs/server.pem is signed for 730 days (certs/gen.sh:21)
 // and expires 2028-03-31 23:14:33 GMT. The CA runs to 2046, and nothing regenerates
 // server.pem. From then on every mode of https_round_trip here, and of tls_round_trip
 // and socket_union_dispatch in tls.rs, fails with `timeout after 30s waiting for
@@ -16,7 +16,7 @@ fn cert_dir() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/certs").replace('\\', "/")
 }
 
-// CR claude for eric: [test-gap] All five http tests send one request to a synchronous
+// CR claude for claude: [test-gap] All five http tests send one request to a synchronous
 // handler that reads req.method, the one shape under which the server's reply-pairing,
 // wedge, restart and TLS-accept bugs cannot show. Add pins for: two sequential requests
 // through a handler with two async lookups (each body must match its path), concurrent

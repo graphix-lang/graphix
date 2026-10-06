@@ -54,7 +54,7 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
     }
 }
 
-// CR claude for eric: [risk] The doc comment on ClipboardBuiltin says
+// CR claude for claude: [risk] The doc comment on ClipboardBuiltin says
 // arboard::Clipboard is !Send, but arboard 3.6 asserts Clipboard: Send + Sync. This
 // opens and drops an instance on every call. Without the wayland-data-control feature
 // arboard always uses X11 on Linux, and dropping the last instance destroys the

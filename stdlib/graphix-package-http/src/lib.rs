@@ -38,7 +38,7 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-// CR claude for eric: [structure] ClientValue (41-77) and ServerValue (101-137)
+// CR claude for claude: [structure] ClientValue (41-77) and ServerValue (101-137)
 // hand-write the PartialEq/Eq/PartialOrd/Ord/Hash-by-Arc-identity impls plus
 // impl_no_pack!/abstract_wrapper! that impl_abstract_arc!(T, static W = "path")
 // (graphix-package-core/src/lib.rs:175) generates, as the db and sqlite handles already
@@ -350,7 +350,7 @@ impl EvalCachedAsync for HttpRequestEv {
         prepare_request_args(cached)
     }
 
-    // CR claude for eric: [structure] HttpRequestEv::eval and HttpRequestBinEv::eval
+    // CR claude for claude: [structure] HttpRequestEv::eval and HttpRequestBinEv::eval
     // (388-411) differ only in the body conversion and text() vs bytes(): the
     // send_request call, status, url, headers and both error mappings are written
     // twice. Fold them into one helper that takes the body conversion and the body
@@ -509,7 +509,7 @@ async fn handle_http_request(
 ) -> std::result::Result<hyper::Response<Full<Bytes>>, std::convert::Infallible> {
     use http_body_util::BodyExt;
     let (parts, body) = req.into_parts();
-    // CR claude for eric: [bug] A body read error becomes an empty body (498) and a
+    // CR claude for claude: [bug] A body read error becomes an empty body (498) and a
     // non-UTF-8 body becomes null (504-511), and the request is dispatched either way:
     // a POST that declares 100 bytes, sends 5 and closes runs the handler with body
     // null and is answered 200, and a binary upload cannot be received at all.
@@ -521,7 +521,7 @@ async fn handle_http_request(
     // null]), decode header values lossily, and return HTTPError for an invalid
     // outgoing header. probe: design/review-2026-10-05/repro/http-sqlite-db1-14.gx
     // (http-sqlite-db1-14)
-    // CR claude for eric: [risk] Every request body is read whole, with no size limit,
+    // CR claude for claude: [risk] Every request body is read whole, with no size limit,
     // before the handler runs. There is no Content-Length check and no
     // http_body_util::Limited, and serve has no option for a limit, so a Graphix
     // handler cannot refuse an upload. The bytes are then copied into an ArcStr while
@@ -666,7 +666,7 @@ async fn serve_loop(
         };
         let io = match &tls {
             None => MaybeTls::Plain(stream),
-            // CR claude for eric: [bug] The TLS handshake is awaited here, inside the
+            // CR claude for claude: [bug] The TLS handshake is awaited here, inside the
             // accept loop and with no timeout, so no other connection is accepted until
             // it finishes. One peer that opens a TCP connection to an HTTPS server and
             // sends nothing stalls every other client until it disconnects; plain HTTP
@@ -684,7 +684,7 @@ async fn serve_loop(
         };
         let io = hyper_util::rt::TokioIo::new(io);
         let tx = tx.clone();
-        // CR claude for eric: [bug] Each connection is a detached task that holds this
+        // CR claude for claude: [bug] Each connection is a detached task that holds this
         // server's id and sender. The abort() on restart (773), delete (911), sleep
         // (924) and in ServerHandle::drop (97) stops only the accept loop, so open
         // keep-alive connections outlive the server. After a sleep or a delete, their
@@ -709,7 +709,7 @@ async fn serve_loop(
     }
 }
 
-// CR claude for eric: [structure] HttpServe is PublishRpc
+// CR claude for claude: [structure] HttpServe is PublishRpc
 // (graphix-package-sys/src/net.rs:872-1290) under another name: the same handler built
 // by genn::bind/reference/apply in init, the same pid write, the same take_custom ->
 // queue -> ready dispatch -> seam_tick reply loop, the same delete, and a sleep that
@@ -836,7 +836,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
             ctx.event.variables.insert(self.pid, TagValue::fired(v));
         }
         let mut server_result = None;
-        // CR claude for eric: [bug] Each start error in this block (781-832) returns
+        // CR claude for claude: [bug] Each start error in this block (781-832) returns
         // before the request intake (850) and the handler update (866), so that cycle's
         // work is lost. A request delivered in that cycle is cleared with the event,
         // and its client gets 500. An async reply the handler is waiting for (a db or
@@ -846,7 +846,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
         // old listener is still open). Keep the error in a local, fall through, and set
         // `out` once at the end. probe: GRAPHIX_PAR=off graphix --no-cache
         // design/review-2026-10-05/repro/http-sqlite-db1-07.gx (http-sqlite-db1-07)
-        // CR claude for eric: [bug] A wake never restarts the server that sleep()
+        // CR claude for claude: [bug] A wake never restarts the server that sleep()
         // aborted (line 920). This condition only looks at argument fires, and at a
         // wake an argument bound outside the arm is delivered stale. So an http::serve
         // in a select arm whose addr/cert/key/max_connections are all variables stays
@@ -880,7 +880,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     }
                 };
                 let max_conn = match &maxv {
-                    // CR claude for eric: [bug] Any positive `n` is accepted here, but
+                    // CR claude for claude: [bug] Any positive `n` is accepted here, but
                     // `tokio::sync::Semaphore::new` (line 841) asserts `n <=
                     // Semaphore::MAX_PERMITS` (2^61 - 1 on 64-bit). So
                     // `#max_connections: 2305843009213693952` panics the runtime
@@ -898,7 +898,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                     }
                     _ => 768,
                 };
-                // CR claude for eric: [bug] Restarting on the same address fails. The
+                // CR claude for claude: [bug] Restarting on the same address fails. The
                 // abort() above (773-775) only schedules the old serve_loop's
                 // cancellation, and that future owns the old TcpListener until a worker
                 // drops it later, so this bind meets a listening socket and returns
@@ -964,7 +964,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for HttpServe<R, E> {
                 self.queue.push_back((request, reply));
             }
         }
-        // CR claude for eric: [bug] `ready` is cleared when a request goes to the
+        // CR claude for claude: [bug] `ready` is cleared when a request goes to the
         // handler and set again only when the handler's output fires (871). Some
         // handlers never fire for a request: one that raises with `?` (the error goes
         // to the serve site's catch through `throws 'e`), or one that is bottom for it

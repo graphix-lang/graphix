@@ -7,7 +7,7 @@ use graphix_compiler::expr::parser;
 
 /// Small enough that an unguarded destructor at DEPTH aborts.
 const STACK: usize = 512 * 1024;
-// CR claude for eric: [perf] The parse is this test's real cost. One paren level takes
+// CR claude for claude: [perf] The parse is this test's real cost. One paren level takes
 // about 145 KB of stack in the dev/test profile (a parse-only `graphix fmt` peaks at
 // 21.5 MB for 1 level and 69.4 MB for 331), so 50,000 levels map roughly 7 GB of
 // stacker segments in one test. Only the drop is under test: build the deep Expr

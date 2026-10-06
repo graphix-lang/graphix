@@ -69,7 +69,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 |---|---|
 | `netidx_extraction.md` | the core is network-free; `sys::net` owns netidx |
 | `graphix_fuzz.md` | the differential fuzzer: trace oracle, schedules, routes, twins, HDD, typemorph |
-<!-- CR claude for eric: [doc-drift] must_reject.md numbers eight families, and
+<!-- CR claude for claude: [doc-drift] must_reject.md numbers eight families, and
 graphix-fuzz/src/mustreject.rs:26-37 has ten `Family` ids, not seven. The fuzzer docs
 have drifted too. graphix_fuzz.md, the doc CLAUDE.md points at for the fuzzer, never
 describes the forked pair (`Pair::Par`, the `par`/`jit_par` runs, the

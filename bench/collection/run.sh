@@ -13,7 +13,7 @@
 #   graphix     path to the graphix binary (default: target/release/graphix
 #               or $GRAPHIX if set)
 
-# CR claude for eric: [structure] This script is bench/run.sh minus the fork-mode note
+# CR claude for claude: [structure] This script is bench/run.sh minus the fork-mode note
 # that only bench/run.sh got (its usage line still says bench/run.sh), so the next
 # change to timing or parsing will land in one copy only. Let bench/run.sh take the
 # corpus directory, and delete this copy. Both copies and bench/par.sh default to
@@ -24,7 +24,7 @@ set -u
 iters=${1:-3}
 graphix=${2:-${GRAPHIX:-target/release/graphix}}
 timeout_s=120
-# CR claude for eric: [structure] This script is bench/run.sh minus the fork-mode note
+# CR claude for claude: [structure] This script is bench/run.sh minus the fork-mode note
 # in its header: every other line is the same, including the usage line that names
 # bench/run.sh. Only this line ties it to its corpus, so each change to the runs, flags
 # or result parsing (as --no-netidx was) must be made in both, and the header has

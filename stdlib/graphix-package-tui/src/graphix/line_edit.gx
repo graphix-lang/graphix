@@ -1,6 +1,6 @@
 let state = |initial: string| -> State {
     value: initial,
-    // CR claude for eric: [bug] The cursor is a char position (one step per `Char,
+    // CR claude for claude: [bug] The cursor is a char position (one step per `Char,
     // sliced with str::sub's char indexes), but it is set and bounded by str::len,
     // which counts bytes. The same mistake is in step's Backspace, Delete, Right and
     // End arms and in view's mask and cursor cell. On text holding a non-ASCII char the
@@ -18,7 +18,7 @@ let state = |initial: string| -> State {
 let step = |st: State, e: input_handler::Event| -> [State, null] select e {
     `Key(k) => select k.kind {
         `Press => select k.code {
-            // CR claude for eric: [bug] This arm inserts every Char key, whatever
+            // CR claude for claude: [bug] This arm inserts every Char key, whatever
             // k.modifiers holds. crossterm reports Ctrl+U as Char("u") with [`Control]
             // and Alt+B as Char("b") with [`Alt], and only Ctrl+C is taken in Rust
             // (tui/src/lib.rs:676). So a chord types its letter into the field: form.gx

@@ -134,7 +134,7 @@ val text_column: fn(
 - **`#on_header_click`** -- Fired when the user clicks a data
   column's header label. Receives the column name.
 
-<!-- CR claude for eric: [doc-drift] on_update fires only for cells that hold a Grid
+<!-- CR claude for claude: [doc-drift] on_update fires only for cells that hold a Grid
 subscription, i.e. rows within ROW_BUFFER (50) of the visible window. It also fires
 again with an unchanged value when a row scrolls back in (BEGIN_WITH_LAST). So 'every
 cell', and the aggregate use in data_table_calculated.gx, hold only for tables that fit

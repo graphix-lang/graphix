@@ -413,7 +413,7 @@ async fn program_image_restores_fork_control() -> Result<()> {
     let last = cold_values.last().expect("the program produced its tuple");
     assert_eq!(format!("{last}"), "[[i64:24], [i64:12, i64:15]]");
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
-    // CR claude for eric: [test-gap] This pin cannot fail: fork control never changes a
+    // CR claude for claude: [test-gap] This pin cannot fail: fork control never changes a
     // value, and it checks only the output flag and that cold and warm values agree, so
     // a restore that drops every ForkControl still passes. Every decorated `let` here
     // is at top level, which restores; a `#[serial]`/`#[parallel]` let inside a
@@ -631,7 +631,7 @@ async fn a_bad_registration_image_runs_cold() -> Result<()> {
         b.advance(8);
         b.get_u64() as usize
     };
-    // CR claude for eric: [test-gap] The splice grows the image by 8 bytes but leaves
+    // CR claude for claude: [test-gap] The splice grows the image by 8 bytes but leaves
     // the header's counts_at, so the decoder reads the 20 id-count varints 8 bytes
     // early. It refuses at registration.rs:336 (19 bytes left over) before it reaches
     // the instance table. The `n.min(table.len() / 2)` guard at registration.rs:353,

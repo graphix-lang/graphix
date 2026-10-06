@@ -245,7 +245,7 @@ run!(place_key_evaluated_once, PLACE_KEY_EVALUATED_ONCE, |v: Result<&Value>| {
 // An undetermined key is a bottom reference: a write through it lands
 // nowhere; when the key returns the reference retargets (and, as at
 // every retarget, the pending write lands there).
-// CR claude for eric: [risk] place_bottom_key, place_removed_element,
+// CR claude for claude: [risk] place_bottom_key, place_removed_element,
 // place_through_deref, place_through_bottom_deref, deref_moved_to_undelivered and
 // place_payload order their phases with one-shot timers 30-40 ms apart. The run loop
 // (graphix-rt/src/gx.rs `run`) puts every finished task into one cycle, so if the

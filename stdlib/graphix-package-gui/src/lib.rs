@@ -139,7 +139,7 @@ graphix_derive::defpackage! {
             && !typ.all_bottom()
             && typ != Type::Any
         {
-            // CR claude for eric: [bug] GUITYP.contains commits bindings, so a root of
+            // CR claude for claude: [bug] GUITYP.contains commits bindings, so a root of
             // type Array<'_> whose element is still an open type variable (`[]`,
             // `[never()]`, `array::map([], |x| x)`, `let z = []; z`) passes: the check
             // binds the element to &gui::Window and claims the value as a GUI. With a

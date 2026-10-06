@@ -67,7 +67,7 @@ fn html_args_from_bad_value_returns_none() {
 
 // These share the real system clipboard; run with --test-threads=1.
 
-// CR claude for eric: [test-gap] These four ignored tests call arboard directly, so
+// CR claude for claude: [test-gap] These four ignored tests call arboard directly, so
 // they test the third-party crate; graphix's clipboard builtins (ClipboardBuiltin,
 // with_clipboard, the nine ops and their ClipboardError mapping) have no test. They
 // also share the system clipboard and need --test-threads=1, which CLAUDE.md says never
@@ -75,7 +75,7 @@ fn html_args_from_bad_value_returns_none() {
 // clipboard_write_read_text's set and get. Replace them with one ignored test, with a
 // reason, that writes and reads back through the graphix builtins in a single program.
 // (tests-ui.r2-15)
-// CR claude for eric: [dead] These four #[ignore] tests call arboard directly and
+// CR claude for claude: [dead] These four #[ignore] tests call arboard directly and
 // exercise no graphix code. A plain ignore runs in no gate, and the comment asks for
 // --test-threads=1, which the project never relies on: delete them. What goes unpinned
 // is the graphix side. image_args_from_value (clipboard.rs:300) accepts pixels whose

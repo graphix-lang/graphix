@@ -18,7 +18,7 @@ const FIRST_CYCLE_WEDGE: &str = "{ let rec f = |v: i64| -> i64 f(v + i64:1); f(i
 
 /// Wedges only after producing a few values, so the wedge lands while
 /// the input loop is live.
-// CR claude for eric: [test-gap] This program never wedges. Each `s <- fold(..)` lands
+// CR claude for claude: [test-gap] This program never wedges. Each `s <- fold(..)` lands
 // next cycle and adds one activation, so every cycle completes and it keeps printing
 // `0` (about 1500 lines in 7 s) in both engines. A script that is not wedged exits on
 // the first SIGINT through the input loop's ctrl_c path whether or not the interrupt

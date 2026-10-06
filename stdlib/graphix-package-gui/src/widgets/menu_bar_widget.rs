@@ -45,7 +45,7 @@ const ITEM_PADDING: Padding = Padding { top: 6.0, right: 20.0, bottom: 6.0, left
 const DIVIDER_HEIGHT: f32 = 9.0;
 const MIN_ITEM_WIDTH: f32 = 180.0;
 
-// CR claude for eric: [bug] MenuOverlay has no mouse_interaction, so iced gives the
+// CR claude for claude: [bug] MenuOverlay has no mouse_interaction, so iced gives the
 // layer under an open menu the real cursor, and update captures a press only on an
 // enabled action. A click on a disabled item or a divider therefore reaches whatever
 // lies under the menu. Over a button in a context menu, the button's on_press runs,
@@ -355,7 +355,7 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar {
             *child = layout::Node::new(Size::new(s.width, max_height))
                 .move_to(child.bounds().position());
         }
-        // CR claude for eric: [bug] Only `Length::Fill` is honored here:
+        // CR claude for claude: [bug] Only `Length::Fill` is honored here:
         // `menu::bar(#width: &`Fixed(600.0), menus)` or a FillPortion lays out a bar as
         // wide as its labels while `size()` reports the requested length. The label
         // widths above (line 332) and the item widths in MenuOverlay::layout (line 61)

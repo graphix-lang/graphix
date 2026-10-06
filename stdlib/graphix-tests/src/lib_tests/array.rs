@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::ArcStr;
-// CR claude for eric: [style] array.rs, core.rs and list.rs spell out
+// CR claude for claude: [style] array.rs, core.rs and list.rs spell out
 // `graphix_package_core::testing::FuseExpect::` 145 times, and graphix-tests does the
 // same in 42 other files. Import it once with `use graphix_package_core::{run,
 // testing::FuseExpect};`, as lift.rs and lang/fusion.rs do. The `use sys::*;` in
@@ -537,7 +537,7 @@ run!(array_flat_map_may_bottom, ARRAY_FLAT_MAP_MAY_BOTTOM, |v: Result<&Value>| {
 
 // A scalar `array::fold` result flowing into a `connect` sets `s` once
 // and quiesces.
-// CR claude for eric: [test-gap] This fixture only checks s's initial 0, which a
+// CR claude for claude: [test-gap] This fixture only checks s's initial 0, which a
 // connect that never writes also gives, so 'sets s once and quiesces' is not tested
 // here. Its stream twin, lift.rs fold_into_connect_quiesces, cannot see a spin either,
 // because collect_n (lift.rs:18) returns after n values. `{ let a = [1, 2, 3]; let s =

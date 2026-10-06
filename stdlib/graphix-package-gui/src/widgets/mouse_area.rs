@@ -147,7 +147,7 @@ impl<X: GXExt> GuiWidget<X> for MouseAreaW<X> {
         Ok(changed)
     }
 
-    // CR claude for eric: [bug] mouse_area.gx defaults all five handlers to `|_| null`,
+    // CR claude for claude: [bug] mouse_area.gx defaults all five handlers to `|_| null`,
     // so view installs every one of them whatever the program asked for. Each cursor
     // move over the area then sends a `Message::Call` carrying a fresh {x, y} struct
     // and runs a runtime cycle for a no-op: ten moves over an on_press-only area made

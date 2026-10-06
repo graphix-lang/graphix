@@ -74,7 +74,7 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
         if let Some(opts) =
             self.options.update(id, v).context("combo_box update options")?
         {
-            // CR claude for eric: [bug] Every fire of `options` replaces the iced
+            // CR claude for claude: [bug] Every fire of `options` replaces the iced
             // State, which holds the text being typed and the filtered list. A re-fire
             // with unchanged contents (from a timer, a recomputed array or a struct
             // field that re-fires) therefore erases what the user is typing and resets
@@ -110,7 +110,7 @@ impl<X: GXExt> GuiWidget<X> for ComboBoxW<X> {
     fn view(&self) -> IcedElement<'_> {
         let selected = self.selected.t.as_ref().and_then(|o| o.as_ref());
         let placeholder = self.placeholder.t.as_deref().unwrap_or("");
-        // CR claude for eric: [doc-drift] combo_box.md says a disabled combo box cannot
+        // CR claude for claude: [doc-drift] combo_box.md says a disabled combo box cannot
         // be interacted with, but this code only turns the selection into Message::Nop.
         // iced's ComboBox always wires on_input, so a disabled box still takes focus
         // and typing, opens its list and silently drops the pick, with no disabled

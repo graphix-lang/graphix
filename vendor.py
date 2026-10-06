@@ -68,7 +68,7 @@ def resolve_deps(deps, ws_deps, crate_dir):
             if ws_val is None:
                 print(f"  warning: {name} not in workspace deps", file=sys.stderr)
                 continue
-            # CR claude for eric: [bug] This replaces a member's `{ workspace = true,
+            # CR claude for claude: [bug] This replaces a member's `{ workspace = true,
             # ... }` with the workspace entry and drops the member's own keys. Cargo
             # adds the member's `features` to the workspace's and takes `optional` from
             # the member. As a result, the vendored netidx-tpm loses

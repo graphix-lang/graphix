@@ -142,7 +142,7 @@ is insufficient; the forced recompute republishes `p2` at the present
 
 ## Mechanics
 
-<!-- CR claude for eric: [doc-drift] The tracker lives in node/wake.rs, where Select and
+<!-- CR claude for claude: [doc-drift] The tracker lives in node/wake.rs, where Select and
 the seq machine share it, not in node/select.rs. The per_arm bullet below says pattern
 binds are dropped through Env::is_pattern_bind. In fact wake.rs:45-49 routes them into
 `consumes` through Env::pattern_inputs (the facet rule at :58-80), and nothing calls

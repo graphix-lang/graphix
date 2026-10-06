@@ -59,7 +59,7 @@ fn strip_header(s: &str) -> String {
     let mut lines = s.lines().peekable();
     while let Some(l) = lines.peek() {
         let t = l.trim_start();
-        // CR claude for eric: [test-gap] strip_header keeps only the schedule-v1 and
+        // CR claude for claude: [test-gap] strip_header keeps only the schedule-v1 and
         // expect-reject lines, so a `// callable-v1:` header is stripped from every
         // pin. findings/callable-route-aug2026/02_dispatch_route_matrix.gx therefore
         // embeds as a bare body. regress synthesizes no driver and never calls

@@ -10,7 +10,7 @@ Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_
 `graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
 `graphix-compiler/src/expr/parser/test.rs` (`seq_parses`, `try_with_parses`,
-<!-- CR claude for eric: [doc-drift] `seq_do_statement_list_is_capped` was deleted along
+<!-- CR claude for claude: [doc-drift] `seq_do_statement_list_is_capped` was deleted along
 with `do` (4e254894), so this pin points at nothing. Two other pins are dead.
 env_independent_typerefs.md pins `check_mode_parity` in graphix-fuzz/src/lib.rs, which
 never existed; the gate is graphix-shell/tests/check_mode_parity.rs
@@ -458,7 +458,7 @@ double delivery because the try consumed the original. No `finally`:
 success cleanup is the next statement, failure cleanup is the with
 body. `with(_)` is accepted.
 
-<!-- CR claude for eric: [doc-drift] This sentence is stale: the join cell takes the try
+<!-- CR claude for claude: [doc-drift] This sentence is stale: the join cell takes the try
 body's type, so `seq { let v = try { x? } with(e) { "s" }; v }` over an i64 `x` is
 refused at the generated `seqj.. <- seqv..`, and only a single-name `let v: [i64,
 string] = try ..` annotation widens it, as §6.1 (line 297) says. The §6.1 skeleton's

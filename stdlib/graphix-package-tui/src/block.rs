@@ -118,7 +118,7 @@ pub(super) struct BlockW<X: GXExt> {
     last_size: SizeV,
 }
 
-// CR claude for eric: [structure] Each property is written out about ten times: its id
+// CR claude for claude: [structure] Each property is written out about ten times: its id
 // in `Fields`, the destructure, the `try_join!` call and its result tuple,
 // `TRef::new(..).context(..)`, the `Self` literal, a destructure and
 // `update(..).context(..)` in `handle_update`, and a destructure and `if let

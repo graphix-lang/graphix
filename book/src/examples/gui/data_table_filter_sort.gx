@@ -7,7 +7,7 @@ use gui::{
   text::text,
   text_input::text_input
 };
-// CR claude for eric: [readability] Unused import: the file calls array::filter
+// CR claude for claude: [readability] Unused import: the file calls array::filter
 // qualified (lines 47 and 69) and never a bare filter, so this line only shadows core's
 // filter. Three more examples import names they never use. gui/text.gx:1 imports style,
 // but line 16's `style:` is a struct field. gui/rule.gx:5 imports rule's self, but
@@ -41,7 +41,7 @@ let raw_tbl = sys::net::list_table("/local/graphix/data_table_filter")$;
 let pattern = "";
 let mode: [`Include, `Exclude] = `Include;
 
-// CR claude for eric: [bug] `tbl` has two writers. This let keeps tracking `raw_tbl`,
+// CR claude for claude: [bug] `tbl` has two writers. This let keeps tracking `raw_tbl`,
 // and the connect below lands the filtered table a cycle later. So every time
 // list_table refires while a pattern is set, `tbl` (and the data_table holding `&tbl`)
 // gets every row for one cycle before the filtered rows replace it. Derive it instead,

@@ -413,7 +413,7 @@ pub(crate) fn node_const_value<R: Rt, E: UserEvent>(node: &Node<R, E>) -> Option
     crate::stack::ensure_sufficient(|| node_const_value_inner(node))
 }
 
-// CR claude for eric: [perf] Variant and Struct nodes do not fold here. So a constant
+// CR claude for claude: [perf] Variant and Struct nodes do not fold here. So a constant
 // map literal with a variant or struct key or value (`` {`A => 1, `B => 2} ``, `{"a" =>
 // {x: 1}}`, `` {"a" => `A} ``) is "non-constant" to emit_map_new_node, the only way a
 // map literal emits, and its whole region node-walks. `|k: i64| #[native] (k, {`A => 1,
@@ -720,7 +720,7 @@ fn expand_ref_d_inner<'a>(
     if let Some(k) = nkey
         && !frame.poisoned
     {
-        // CR claude for eric: [bug] This memo is keyed by `norm_key(typ)`, an
+        // CR claude for claude: [bug] This memo is keyed by `norm_key(typ)`, an
         // allocation address, but `NodeEntry` does not keep `typ` alive. A typedef body
         // built by `lookup_ref` (line 750) is recorded here and then dropped at line
         // 754 once something under it expands. The next same-size instantiation in this
@@ -1240,7 +1240,7 @@ fn self_calls_abi_consistent<R: Rt, E: UserEvent>(
             return;
         }
         for (i, formal_kt) in formal_slot_types_by_position.iter() {
-            // CR claude for eric: [bug] `i` is the formal's index among all formals
+            // CR claude for claude: [bug] `i` is the formal's index among all formals
             // (`by_position`, line 1091), but `arg_positional` counts positional
             // arguments only, and labeled formals come first. For `|#k: i64, n: i64|`
             // this reads `n`'s argument for `k` and finds nothing for `n`, so every

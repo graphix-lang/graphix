@@ -151,7 +151,7 @@ impl<X: GXExt> MenuBarW<X> {
 }
 
 /// Convert a compiled `MenuItemKind` into the descriptor needed by the iced widget.
-// CR claude for eric: [perf] Both menu views call this on every frame, and a frame
+// CR claude for claude: [perf] Both menu views call this on every frame, and a frame
 // follows every window event, mouse moves included. Each call copies the label into a
 // new String and clones the ShortcutV with its display String, and MenuBarW::view
 // copies each group label too (line 235). Descriptors that borrow from the widget (`&'a
@@ -200,7 +200,7 @@ impl<X: GXExt> super::GuiWidget<X> for MenuBarW<X> {
                     .context("menu group items recompile")?;
                 changed = true;
             }
-            // CR claude for eric: [structure] This per-item update (the label, shortcut
+            // CR claude for claude: [structure] This per-item update (the label, shortcut
             // and disabled TRefs and the on_click recompile) is a copy of
             // context_menu.rs:83-114, and the items_ref recompile just above it is a
             // copy of context_menu.rs:76-82. A method on MenuItemKind, and one for a

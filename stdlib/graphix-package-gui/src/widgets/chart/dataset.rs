@@ -203,7 +203,7 @@ pub fn chart_mode<X: GXExt>(datasets: &[DatasetEntry<X>]) -> ChartMode {
             }
         }
     }
-    // CR claude for eric: [bug] Numeric and datetime XY, candlestick and error-bar data
+    // CR claude for claude: [bug] Numeric and datetime XY, candlestick and error-bar data
     // all set has_other, so mixing them is never reported. The first non-empty dataset
     // picks Numeric or TimeSeries and draw_chart_body silently skips the rest: a
     // numeric line next to a datetime line draws one series and logs nothing. A real

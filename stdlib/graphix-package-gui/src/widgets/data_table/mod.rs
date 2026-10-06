@@ -332,7 +332,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 self.sort_by.iter().map(|s| s.column.clone()).collect();
             self.sort_by = parse_sort_by(v);
             self.apply_sort_by_change(&old_cols);
-            // CR claude for eric: [bug] resort_by_column permutes row_paths in place,
+            // CR claude for claude: [bug] resort_by_column permutes row_paths in place,
             // and the Table's own row order lives only in table_ref.last, so nothing
             // restores it when sort_by becomes []. The third header click of the book's
             // absent/ascending/descending cycle leaves the rows in descending order
@@ -443,7 +443,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
             self.resort_by_column();
             changed = true;
         }
-        // CR claude for eric: [test-gap] No test reaches this branch: every data_table
+        // CR claude for claude: [test-gap] No test reaches this branch: every data_table
         // test builds `tbl` once and none flips a column's source between `Netidx` and
         // a stored value, so apply_table_sync's column reuse by name,
         // compile_pending_columns for a new column and the teardown of removed rows'
@@ -463,7 +463,7 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 self.resort_by_column();
             }
         }
-        // CR claude for eric: [perf] Every ToGui::Update reaches every widget of every
+        // CR claude for claude: [perf] Every ToGui::Update reaches every widget of every
         // window (event_loop.rs:280-284), and this call reconciles subscriptions for
         // each one, whatever its id. A clock label's tick or a keystroke elsewhere in
         // the UI costs a walk of every routing entry (one per absolute row once a sort

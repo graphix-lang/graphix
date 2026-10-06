@@ -119,7 +119,7 @@ impl fmt::Debug for GxAbstract {
     }
 }
 
-// CR claude for eric: [bug] eq here, cmp below, the derived Pack above and the drop of
+// CR claude for claude: [bug] eq here, cmp below, the derived Pack above and the drop of
 // a GxAbstract each re-enter netidx's Value walk once per abstract nesting level with
 // no ensure_sufficient, so a nested nominal value recurses on the thread stack. `a ==
 // b` over two 1000-deep `type N = Abstract<[`Nil, `Cons(i64, N)]>` lists aborts the
@@ -166,7 +166,7 @@ impl Ord for GxAbstract {
 
 // Only the id: `eq` may consult a user `Eq` impl, which no hash of the
 // payload can agree with.
-// CR claude for eric: [perf] Every value of one abstract type hashes to its id alone,
+// CR claude for claude: [perf] Every value of one abstract type hashes to its id alone,
 // so a hash container of them is one bucket: array::dedup's AHashSet<Value>
 // (stdlib/graphix-package-array/src/lib.rs:198) makes n²/2 eq calls over them, each a
 // Graphix call under a user Eq, where array/mod.gxi:65 promises O(N). In a debug build,

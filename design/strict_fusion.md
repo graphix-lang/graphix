@@ -145,7 +145,7 @@ words per-slot and per-activation multiplicity
 activations. No replay caches (every word a kernel keeps is semantic),
 no selection memory, no inner
 `Apply`s or `Node`s beyond its input feeders. The runtime loans an
-<!-- CR claude for eric: [doc-drift] This list is stale: kernels are also loaned the
+<!-- CR claude for claude: [doc-drift] This list is stale: kernels are also loaned the
 fork mode through `PAR_LOAN` (fusion/par_loop.rs:50), a fifth loan that CLAUDE.md
 already lists. Further down, 'fusion is an embedder switch (UIs run with it off)' is
 wrong: the shell fuses every program unless `--no-fusion` is given or the host is

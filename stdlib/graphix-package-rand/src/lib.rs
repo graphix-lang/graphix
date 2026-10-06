@@ -60,7 +60,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
                 match ($start, $end) {
                     $(
                         (Value::$typ(start), Value::$typ(end)) if start < end => {
-                            // CR claude for eric: [bug] rand's `random_range` unwraps
+                            // CR claude for claude: [bug] rand's `random_range` unwraps
                             // `Err(NonFinite)`. The `start < end` guard above lets
                             // through a float range with an infinite bound or a width
                             // that overflows (`#start: 0.0 - 1e308, #end: 1e308`), so a
@@ -82,7 +82,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Rand {
         let res = if up {
             match &self.args.0[..] {
                 [Some(start), Some(end), Some(_)] => gen_cases!(
-                    // CR claude for eric: [bug] This list leaves out U8, I8, U16 and
+                    // CR claude for claude: [bug] This list leaves out U8, I8, U16 and
                     // I16, which the signature's `'a: [Int, Float]` (graphix/mod.gx:1,
                     // mod.gxi:4) admits. So `rand::rand(#start: u8:0, #end: u8:10,
                     // #clock: 1)` typechecks and then never fires, in both engines, and

@@ -293,7 +293,7 @@ run!(catch_block_scope, CATCH_BLOCK_SCOPE, |v: Result<&Value>| matches!(
 
 // A catch covering a lambda body's `?` keeps those errors out of the
 // lambda's inferred throws.
-// CR claude for eric: [test-gap] Nothing in this fixture observes f's throws. An
+// CR claude for claude: [test-gap] Nothing in this fixture observes f's throws. An
 // uncovered `?` only logs, so with the catch deleted the program still compiles and
 // yields 1, and a regression that leaked covered errors into the lambda's inferred
 // throws would still pass. Ascribe the lambda and call through it: `let g: fn(i: i64)
@@ -508,7 +508,7 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
         a[10]?
     }"#;
     let r = graphix_package_core::testing::eval(src, crate::TEST_REGISTER).await;
-    // CR claude for eric: [test-gap] is_err() also holds if the narrow catch is
+    // CR claude for claude: [test-gap] is_err() also holds if the narrow catch is
     // accepted. Its handler is never(e) and a[10]? raises, so the block never produces
     // a value, eval returns its 5 s timeout error, and the test passes. The same
     // program with catch(e: Error<Any>) compiles and prints nothing. Assert on the

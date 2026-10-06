@@ -154,7 +154,7 @@ run!(datetime_arith11, DATETIME_ARITH11, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// CR claude for eric: [test-gap] arith12 to arith16 annotate `x: duration` over
+// CR claude for claude: [test-gap] arith12 to arith16 annotate `x: duration` over
 // `datetime OP i64`, and the annotation alone refuses them ('duration does not contain
 // datetime'). They would still pass if the operator rule started accepting datetime
 // arithmetic with an integer. arith18's comment says duration is not a Number, but the

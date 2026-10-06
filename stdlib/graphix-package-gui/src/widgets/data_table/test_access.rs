@@ -44,7 +44,7 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Inject a sparkline point directly, bypassing netidx; decimates
     /// like the runtime path.
-    // CR claude for eric: [structure] Push, history_seconds trim and decimate are
+    // CR claude for claude: [structure] Push, history_seconds trim and decimate are
     // written out three times: the dispatch task (subscriptions.rs:206-217),
     // push_defaults_to_sparklines (:664-671), and this test-only copy, which has no
     // trim. sparkline_decimation_caps_length and

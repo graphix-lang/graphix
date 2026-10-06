@@ -44,7 +44,7 @@ fn example_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-// CR claude for eric: [test-gap] Mode::Check is the check alone (CFlag::CheckOnly): the
+// CR claude for claude: [test-gap] Mode::Check is the check alone (CFlag::CheckOnly): the
 // examples get typecheck0 and its settle but no elaboration, analysis or fusion, and no
 // other test builds them. An example that elaboration refuses after the check accepted
 // it (a type-system bug by CLAUDE.md), or one whose fusion link panics, ships with this
@@ -64,7 +64,7 @@ async fn examples_compile() -> Result<()> {
     let failures: Vec<String> = stream::iter(files)
         .map(|f| async move {
             let base = f.parent().expect("example has a parent dir").to_path_buf();
-            // CR claude for eric: [risk] This shell uses the developer's real image
+            // CR claude for claude: [risk] This shell uses the developer's real image
             // cache, as do those in check_mode_parity, check_numeric_singleton,
             // check_runs_analyze, check_whole_script and the deep_nesting children.
             // init_limit_logs, swallowed_error_logs, interrupt_wedge and
@@ -79,7 +79,7 @@ async fn examples_compile() -> Result<()> {
             // (tests-shell-compiler-11)
             let r = ShellBuilder::<NoExt>::default()
                 .module_resolvers(vec![FilesResolver::new(base, None)])
-                // CR claude for eric: [test-gap] Mode::Check runs the check alone
+                // CR claude for claude: [test-gap] Mode::Check runs the check alone
                 // (CFlag::CheckOnly), with no elaboration and no fusion. So an example
                 // that elaboration refuses, or a failing def assertion, still passes.
                 // bench/*.gx and bench/collection/*.gx are only parsed

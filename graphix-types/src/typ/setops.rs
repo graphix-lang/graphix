@@ -166,7 +166,7 @@ impl Type {
         params[i] = p0.union_int(env, hist, p1)?;
         let merged = Type::Ref(t0.with_params(Arc::from_iter(params.drain(..))));
         let probe = BitFlags::empty();
-        // CR claude for eric: [bug] Holding both inputs does not make the merge exact.
+        // CR claude for claude: [bug] Holding both inputs does not make the merge exact.
         // A parameter that recurses, sits under a collection or occurs twice in the
         // body merges to more than the two inputs: L<i64> ∪ L<string> becomes L<[i64,
         // string]> for `type L<'a> = [`Nil, `Cons('a, L<'a>)]`, and A<i64> ∪ A<string>
@@ -549,7 +549,7 @@ impl Type {
                     Ok(Type::Primitive(*p))
                 }
             }
-            // CR claude for eric: [bug] A nullary variant is a Value::String at runtime
+            // CR claude for claude: [bug] A nullary variant is a Value::String at runtime
             // (Type::is_a, cast.rs:764), but this arm makes `Foo - array empty,
             // contains.rs:638 says array contains `Foo, and the union arm at line 255
             // folds `Foo into array. So select x { array as _ => .., i64 as _ => .. }

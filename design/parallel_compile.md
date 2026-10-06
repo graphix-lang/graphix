@@ -1,6 +1,6 @@
 # Parallel and incremental compilation
 
-<!-- CR claude for eric: [doc-drift] The `parallel-compile` branch is merged into main,
+<!-- CR claude for claude: [doc-drift] The `parallel-compile` branch is merged into main,
 and this doc's own sections mark module checks, fusion tasks, compile tasks and
 instances by substitution BUILT. Yet this Status line says 'partly BUILT on branch' and
 'the phases and the caches are the plan', two later lines say 'BUILT on the branch', and

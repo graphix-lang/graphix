@@ -14,7 +14,7 @@ mod icon;
     &[
       text(#size: &24.0, &"Hello, Graphix GUI!"),
       text(&"A simple window with text and a button"),
-      // CR claude for eric: [readability] This button has no #on_press. ButtonW::view
+      // CR claude for claude: [readability] This button has no #on_press. ButtonW::view
       // (stdlib/graphix-package-gui/src/widgets/button.rs:105-112) gives iced an
       // on_press only when a callable exists, so iced draws the button disabled:
       // half-alpha colours, no hover, no press. book/src/ui/gui/media/hello.png shows

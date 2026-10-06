@@ -9,7 +9,7 @@ pub(crate) const VISUAL_DIMENSION_CAP: i64 = 1024;
 
 /// Clamp an `i64` into `[0, VISUAL_DIMENSION_CAP]`. ratatui's layout
 /// arithmetic overflows u16 well before `u16::MAX`.
-// CR claude for eric: [structure] clamp_u16 caps at VISUAL_DIMENSION_CAP (1024), not at
+// CR claude for claude: [structure] clamp_u16 caps at VISUAL_DIMENSION_CAP (1024), not at
 // u16::MAX as its name and its call sites suggest; name it for what it bounds
 // (clamp_visual_size). Every clamp here, and gauge.rs's clamp_ratio, threads a `last`
 // slot only because the widgets clamp in draw. Draw runs after every update, every

@@ -4,7 +4,7 @@ use anyhow::Result;
 use graphix_package_core::{run, testing::eval};
 use netidx::publisher::Value;
 
-// CR claude for eric: [test-gap] This fixture and RECTYPES2 (line 216) fail in the
+// CR claude for claude: [test-gap] This fixture and RECTYPES2 (line 216) fail in the
 // parser, so their `Err(_)` predicates pass before any type rule runs. `{ "foo" + 1 }`
 // is a one-element block, and `List` is a reserved type name, so `type List<'a> = ..`
 // does not parse. Neither test can fail on what it names. Drop the braces here, rename
@@ -118,7 +118,7 @@ const EXPLICIT_TYPE_VARS2: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for eric: [doc-drift] The ASPIRE comment above says the body does not fuse,
+// CR claude for claude: [doc-drift] The ASPIRE comment above says the body does not fuse,
 // but this fixture asserts FuseExpect::Jit and its body fuses whole (graphix-fuzz run:
 // fused=1; the only failure is the harness's module statement). typed_arrays0 (line
 // 139) is the same. The same sentence sits above 76 FuseExpect::Jit fixtures across
@@ -244,7 +244,7 @@ run!(rectypes2, RECTYPES2, |v: Result<&Value>| match v {
     _ => false,
 }; graphix_package_core::testing::FuseExpect::None);
 
-// CR claude for eric: [bug] This test pins acceptance of an unsound typedef. 'c is
+// CR claude for claude: [bug] This test pins acceptance of an unsound typedef. 'c is
 // declared nowhere: Env::deftype (graphix-types/src/env.rs:1451) refuses only
 // declared-but-unused variables, and every expansion of T gives 'c a fresh cell. So a
 // function stored at c: i64 can be called with a string. `let t: T<i64, i64> = { foo:
@@ -337,7 +337,7 @@ const MIXED_OPERAND_ACCEPT: &str = r#"
 
 // `|a, b| a + b` aliases both formals into one cell, so an i64 x f64
 // call rejects.
-// CR claude for eric: [readability] `mixed_operand_accept`, `obs4_def_fact_accepts`
+// CR claude for claude: [readability] `mixed_operand_accept`, `obs4_def_fact_accepts`
 // (357) and `promo_obligation_f64_ok` (383) all assert a refusal, and 'obs4' and
 // 'promo' are campaign labels. The last two pin that the refusal happens at the
 // definition: a body checked per call would type at an f64 call. Their failure
@@ -874,7 +874,7 @@ run!(
 
 // Unifying an inferred `List<'a>` against a value whose deep tail is a
 // Fn rejects at every depth.
-// CR claude for eric: [test-gap] This test cannot fail. `list::find` takes the native
+// CR claude for claude: [test-gap] This test cannot fail. `list::find` takes the native
 // `List<'a>`, and a `Cons variant is never a List, so every source is refused whatever
 // its tail holds. The Fn-free control `{let l = `Cons(i64:0, `Nil); list::find(l, |x|
 // true)}` gets the same "List<'a> does not contain `Cons(..)" refusal. The rule it is

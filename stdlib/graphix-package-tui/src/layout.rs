@@ -239,7 +239,7 @@ impl<X: GXExt> TuiWidget for LayoutW<X> {
         if let Some(Some(f)) = flex.t {
             layout = layout.flex(f.0);
         }
-        // CR claude for eric: [bug] ratatui's `margin(m)` sets both axes, so applying
+        // CR claude for claude: [bug] ratatui's `margin(m)` sets both axes, so applying
         // it between the two per-axis margins makes `#margin` override
         // `#horizontal_margin` but not `#vertical_margin`. Probe:
         // `layout(#horizontal_margin: &10, #margin: &1, #vertical_margin: &3, ..)` puts

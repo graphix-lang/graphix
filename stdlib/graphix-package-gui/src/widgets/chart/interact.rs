@@ -37,7 +37,7 @@ pub struct ChartState {
     pub cursor: Option<Point>,
     pub x_view: Option<(f64, f64)>,
     pub y_view: Option<(f64, f64)>,
-    // CR claude for eric: [structure] drag_origin, drag_x_view, drag_y_view, drag_yaw
+    // CR claude for claude: [structure] drag_origin, drag_x_view, drag_y_view, drag_yaw
     // and drag_pitch are set and cleared together, which the types do not say.
     // handle_drag therefore re-checks `(Some(base_yaw), Some(base_pitch))`, a state
     // that cannot arise. One `drag: Option<Drag { origin, x_view, y_view, yaw, pitch
@@ -153,7 +153,7 @@ impl ChartState {
                         return Some(Action::capture());
                     }
                 }
-                // CR claude for eric: [bug] Every press is recorded as a click, and any
+                // CR claude for claude: [bug] Every press is recorded as a click, and any
                 // press within 400 ms of the previous one counts as a double-click
                 // wherever it lands. So a second quick pan resets the view and starts
                 // no drag. WheelScrolled (111-127) also clears the cache and captures
@@ -325,7 +325,7 @@ fn data_to_pixel(x: f64, y: f64, info: &PlotInfo) -> Point {
 }
 
 /// Try to improve the current best snap with a candidate point.
-// CR claude for eric: [perf] try_snap takes the tooltip value as a String that is
+// CR claude for claude: [perf] try_snap takes the tooltip value as a String that is
 // already formatted. So find_nearest_point formats one for every data point, plus a
 // "Series N" label for every dataset, on every CursorMoved, and throws away all but the
 // winner. On a 100k-point series that is about 50 ms of formatting per mouse move: a
@@ -487,7 +487,7 @@ fn find_nearest_point<X: GXExt>(
                     if idx >= bd.0.len() {
                         continue;
                     }
-                    // CR claude for eric: [bug] idx is a slot in the merged category
+                    // CR claude for claude: [bug] idx is a slot in the merged category
                     // list draw.rs builds (all series, first-seen order, repeats
                     // merged), but this reads each series' own idx-th entry. Histogram
                     // draws a series' bar at its category's slot and sums repeated

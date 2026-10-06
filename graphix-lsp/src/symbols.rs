@@ -104,7 +104,7 @@ impl ServerState {
                     kind: s.kind,
                     tags: None,
                     deprecated: None,
-                    // CR claude for eric: [bug] `range` ends where the name ends, but
+                    // CR claude for claude: [bug] `range` ends where the name ends, but
                     // LSP's `range` encloses the whole declaration and clients use it
                     // to find the symbol the cursor is in, so outline follow,
                     // breadcrumbs and sticky scroll never place a cursor inside a
@@ -144,7 +144,7 @@ impl ServerState {
                     Err(_) => continue,
                 },
             };
-            // CR claude for eric: [perf] Every workspace/symbol request reads and
+            // CR claude for claude: [perf] Every workspace/symbol request reads and
             // parses each file it searches and filters by the query only afterwards,
             // though scan has already parsed every file, keyed by mtime, for its
             // mod_decls. Over netidx-admin's 36 files that is ~0.27 s a request with

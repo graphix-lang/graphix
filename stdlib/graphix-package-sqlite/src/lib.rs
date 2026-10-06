@@ -12,7 +12,7 @@ use graphix_package_core::{
 };
 use netidx_value::{ValArray, Value};
 use poolshark::local::LPooled;
-// CR claude for eric: [style] The connection's lock is a std::sync::Mutex taken with
+// CR claude for claude: [style] The connection's lock is a std::sync::Mutex taken with
 // lock().unwrap() (lines 75 and 349), where parking_lot::Mutex is the house default. A
 // panic under the lock would poison the connection for good, and every later call would
 // fail as "spawn_blocking failed". The comment's reason for std (concurrent
@@ -51,7 +51,7 @@ fn sqlite_to_value(v: rusqlite::types::ValueRef<'_>) -> Value {
         rusqlite::types::ValueRef::Integer(i) => Value::I64(i),
         rusqlite::types::ValueRef::Real(f) => Value::F64(f),
         rusqlite::types::ValueRef::Text(s) => {
-            // CR claude for eric: [bug] A TEXT value that is not valid UTF-8 (another
+            // CR claude for claude: [bug] A TEXT value that is not valid UTF-8 (another
             // writer's Latin-1, CAST(blob AS TEXT), char() of a surrogate) reads as ""
             // with no error. The program gets a wrong value, and writing the row back
             // erases the stored bytes. Core's bytes_to_string answers `EncodingError`
@@ -266,7 +266,7 @@ impl EvalCachedAsync for SqliteQueryEv {
                     Ok(s) => s,
                     Err(e) => return errf!("SqliteError", "{e}"),
                 };
-                // CR claude for eric: [bug] column_count and column_name are read from
+                // CR claude for claude: [bug] column_count and column_name are read from
                 // the cached statement before it steps, and SQLite re-prepares a cached
                 // statement on its first step after a schema change, so rows come back
                 // with the new columns under the old labels: after DROP COLUMN b; ADD

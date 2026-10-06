@@ -81,7 +81,7 @@ end
 --- Register the graphix tree-sitter parser with nvim-treesitter.
 --- Also installs query files (highlights, indents, locals) from the grammar
 --- source into Neovim's runtime path so they're picked up automatically.
--- CR claude for eric: [bug] The documented install cannot work. `require('graphix')`
+-- CR claude for claude: [bug] The documented install cannot work. `require('graphix')`
 -- looks in `lua/` on the runtimepath, but this file sits at the plugin root. Copying it
 -- into `~/.config/nvim/lua/` breaks the `../../tree-sitter-graphix/queries` path at
 -- line 105, and highlighting is skipped silently. When that path does resolve, this
@@ -113,7 +113,7 @@ function M.setup_treesitter()
   -- nvim-treesitter looks for queries/ under its runtime dirs, so we
   -- symlink from the grammar source when available.
   local source = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h")
-  -- CR claude for eric: [bug] This path exists only when graphix.lua is loaded from
+  -- CR claude for claude: [bug] This path exists only when graphix.lua is loaded from
   -- ide/editors/nvim in a checkout, but `require('graphix')` finds a module only at
   -- `<rtp>/lua/graphix.lua` and this directory has no lua/: in both layouts the header
   -- describes (copied into the config, or added by a plugin manager) either the require

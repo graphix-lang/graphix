@@ -83,7 +83,7 @@ fn build_clap_arg(spec: &Arg) -> clap::Arg {
     arg
 }
 
-// CR claude for eric: [bug] The spec reaches clap unchecked, and clap checks a command
+// CR claude for claude: [bug] The spec reaches clap unchecked, and clap checks a command
 // only under debug assertions. In a debug build, the runtime panics ("Error: runtime
 // did not respond", exit 1) when a spec claims -h or help (clap's own help flag), gives
 // two args the same short, writes a short as "-p", or names a subcommand help. A

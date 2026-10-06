@@ -16,7 +16,7 @@ fn assert_tree_type(v: &Value, expected_key: &str, expected_val: &str) {
     }
 }
 
-// CR claude for eric: [test-gap] In db_open, `db::flush(db$)$;` is a discarded
+// CR claude for claude: [test-gap] In db_open, `db::flush(db$)$;` is a discarded
 // statement whose error `$` drops, and `is_err(db)` fires as soon as open completes. So
 // 'expected open+flush to succeed' cannot fail on flush; flush is only covered by
 // db_introspection, where a failure shows up as a timeout. Return the flush result,

@@ -29,7 +29,7 @@ fn merged_keys<K: Hash + Eq + Clone>(
 pub struct TrackedMap<K: Hash + Eq + Clone + Debug, V: Clone + Debug> {
     map: Map<K, V>,
     /// The keys written since the fork; `None` outside one.
-    // CR claude for eric: [perf] Each fork's touched log is a plain Vec. It allocates
+    // CR claude for claude: [perf] Each fork's touched log is a plain Vec. It allocates
     // at the fork's first write and grows by one entry per write, repeats included
     // (TrackedSet's at line 175 does the same), and compile tasks fork per statement
     // and per static bind. remove_many, clear and retain (lines 93-130, 229-248) also
@@ -150,7 +150,7 @@ impl<K: Hash + Eq + Clone + Debug, V: Clone + Debug> TrackedMap<K, V> {
 
     /// Write back what `fork` wrote. A map written nowhere since the
     /// fork takes the fork's whole.
-    // CR claude for eric: [risk] join writes back the fork's value of every key it
+    // CR claude for claude: [risk] join writes back the fork's value of every key it
     // touched, so it matches serial order only while sibling forks touch disjoint keys.
     // A breach is silent: two siblings calling register_impl on one trait keep only the
     // later impl, because impls holds the whole list per key. design/parallel_eval.md

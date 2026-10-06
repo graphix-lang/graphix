@@ -55,7 +55,7 @@ best() {
 
 printf '%-18s %14s %14s %12s\n' "bench" "jit(s)" "node-walk(s)" "speedup"
 printf '%-18s %14s %14s %12s\n' "-----" "------" "------------" "-------"
-# CR claude for eric: [bug] This glob also picks up the par_*.gx benches written for
+# CR claude for claude: [bug] This glob also picks up the par_*.gx benches written for
 # par.sh, and the loop runs each of them under --no-fusion as well. par_mandel's
 # node-walk holds 22.8M retained `iterate` activations in its first cycle at about 27 KB
 # each (~620 GB), so that pass can never finish. Under a 6 GB cap it is OOM-killed after

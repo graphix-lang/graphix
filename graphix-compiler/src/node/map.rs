@@ -115,7 +115,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Map<R, E> {
         Ok(())
     }
 
-    // CR claude for eric: [structure] This re-implements by hand what gather and
+    // CR claude for claude: [structure] This re-implements by hand what gather and
     // gathered! do for Struct, Tuple and Variant: update every child, join the tags,
     // apply the dense gate. The keys-then-values order is walked in four more places
     // (each, refs, node_shape.rs:337, fusion/mod.rs:728). Unlike the other literals it
@@ -258,7 +258,7 @@ impl<R: Rt, E: UserEvent> MapRef<R, E> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.key, child(&mut self.key, ctx))?;
-        // CR claude for eric: [bug] Map containment is covariant in the key, so this
+        // CR claude for claude: [bug] Map containment is covariant in the key, so this
         // check requires the key's type to contain the map's key type. As a result a
         // key narrower than the map's key is refused, and a wider one is accepted. `let
         // m = {`Red => "r", `Green => "g"}; m{`Red}` is refused (Map<`Red, ..> does not

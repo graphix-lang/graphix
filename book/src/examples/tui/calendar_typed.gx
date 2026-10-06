@@ -3,7 +3,7 @@ use tui::{style, calendar::{Date, calendar, calendar_event, date}};
 type EventType = [`Meeting, `Deadline, `Holiday, `Birthday];
 type CalendarEntry = {date: Date, event_type: EventType};
 
-// CR claude for eric: [readability] EventType, CalendarEntry and entries are never
+// CR claude for claude: [readability] EventType, CalendarEntry and entries are never
 // read. Lines 13-17 rebuild the same four dates with hand-picked colours, so the book
 // section 'Color-coded Events by Type' (book/src/ui/tui/calendar.md:65) colours nothing
 // by type. Annotate `entries: Array<CalendarEntry>` and derive the events from it:
@@ -21,7 +21,7 @@ let entries = [
     {date: date(2024, 5, 25), event_type: `Birthday}
 ];
 
-// CR claude for eric: [readability] EventType, CalendarEntry and `entries` are never
+// CR claude for claude: [readability] EventType, CalendarEntry and `entries` are never
 // read. These four hand-written events hard-code their colors and repeat the dates in
 // entries, so the book's 'Color-coded Events by Type' section
 // (ui/tui/calendar.md:65-68) never derives a color from the type. Annotate `let

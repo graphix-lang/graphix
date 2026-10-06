@@ -220,7 +220,7 @@ fn cell_constraints_ok(
     t: &Type,
 ) -> Result<bool> {
     for c in tv.cell_constraints().iter() {
-        // CR claude for eric: [bug] This probe admits an open cell inside `t`
+        // CR claude for claude: [bug] This probe admits an open cell inside `t`
         // (`Array<i64> ⊇ Array<'y>` holds with `'y` free). The bind that follows
         // installs `t` without giving `'y` its part of the conjunct, because
         // `TVar::bind` passes down only Concrete, Singleton and OneNumber, so `'y`
@@ -258,7 +258,7 @@ impl OpenPair {
         if t0.is_rigid() && t1.is_rigid() {
             return OpenPair::Distinct;
         }
-        // CR claude for eric: [bug] With exactly one rigid side this picks a name alias
+        // CR claude for claude: [bug] With exactly one rigid side this picks a name alias
         // by `frozen` alone. A declared variable written once in its signature is
         // unfrozen, so AliasLeft (t0 rigid) or AliasRight (t1 rigid) points it at the
         // other cell through merge_into's Merge::Name path, which has no rigid-survivor
@@ -367,7 +367,7 @@ fn link_equal_inner(t0: &Type, t1: &Type, commit: bool) -> bool {
         (Type::App(c0, a0), Type::App(c1, a1)) => {
             link_equal(c0, c1, commit) && link_equal(a0, a1, commit)
         }
-        // CR claude for eric: [bug] A bound variable against a non-variable lands in
+        // CR claude for claude: [bug] A bound variable against a non-variable lands in
         // this arm, but union_identical accepts that pair through the binding
         // (setops.rs:80) and Fn equality counts distinct open cells as equal, so
         // identical_linked answers identical and welds nothing. A union member that is
@@ -475,7 +475,7 @@ impl Type {
         if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
-    // CR claude for eric: [readability] When a trait bound refuses a type, the error is
+    // CR claude for claude: [readability] When a trait bound refuses a type, the error is
     // a bare mismatch against the bounded cell. With no `impl Show for i64`,
     // `Show::show(2)` gives "type mismatch 'self: unbound within Show does not contain
     // i64", which never says that i64 lacks an impl. When the impl exists in a sibling
@@ -653,7 +653,7 @@ impl Type {
             }
             (t0 @ Self::Ref(TypeRef { .. }), t1)
             | (t0, t1 @ Self::Ref(TypeRef { .. })) => {
-                // CR claude for eric: [bug] This memo keys a reference on its
+                // CR claude for claude: [bug] This memo keys a reference on its
                 // definition and its params. A typedef whose params grow as it recurses
                 // never meets a repeated pair, so comparing two different
                 // instantiations of it unfolds forever. Example: `type N<'a> = [null,
@@ -665,7 +665,7 @@ impl Type {
                 // in Env::deftype makes this memo sound but does not bound it, and
                 // nothing here plays the role of fusion's MAX_FREEZE_EXPANSIONS; probe:
                 // design/review-2026-10-05/repro/t-contains-09.gx (t-contains-09)
-                // CR claude for eric: [bug] This memo never ends a walk through a
+                // CR claude for claude: [bug] This memo never ends a walk through a
                 // recursive typedef whose self-reference is a union member (`[T<'a>,
                 // null]`, ErrChain's `cause`) once the refs' params hold type
                 // variables. `[T<P>, null] ⊇ T<Q>` and `T<P> ⊇ {..}` are keyed by the
@@ -813,7 +813,7 @@ impl Type {
                 e.contains_int(flags, env, hist, &Type::Any)
             }
             (Self::Error(e0), Self::Error(e1)) => e0.contains_int(flags, env, hist, e1),
-            // CR claude for eric: [dead] This arm and the pointer-equality arms at 691
+            // CR claude for claude: [dead] This arm and the pointer-equality arms at 691
             // (Struct), 704 (Variant) and 815 (Set) never fire. contains_dispatch is
             // reached only from contains_int_inner, after same_content (453) has
             // already returned true for every pair whose Tuple, Struct, Variant, Set or
@@ -940,7 +940,7 @@ impl Type {
                     {
                         return Ok(true);
                     }
-                    // CR claude for eric: [bug] Under Commit this admits `t0 ⊇ 'r`
+                    // CR claude for claude: [bug] Under Commit this admits `t0 ⊇ 'r`
                     // (rigid, open 'r) on a probe of one conjunct and records nothing,
                     // so t0's open cells stay free and a later check binds them to
                     // anything. Take `id = |a: Array<'e>| -> Array<'e> a`. Then `'r:
@@ -1042,7 +1042,7 @@ impl Type {
                         continue;
                     }
                     let mut covered = false;
-                    // CR claude for eric: [bug] This loop commits the first
+                    // CR claude for claude: [bug] This loop commits the first
                     // non-variable member that covers an rhs member before the residue
                     // reaches the bare variable. So `['b, Array<'b>] ⊇ [Array<i64>,
                     // Array<Array<i64>>]` binds 'b := i64 through `Array<'b> ⊇
@@ -1106,7 +1106,7 @@ impl Type {
                 .map(|t1| t0.contains_int(flags, env, hist, t1))
                 .collect::<Result<AndAc>>()?
                 .0),
-            // CR claude for eric: [bug] `[i64, 'y] ⊇ 'y` with 'y open binds 'y := i64.
+            // CR claude for claude: [bug] `[i64, 'y] ⊇ 'y` with 'y open binds 'y := i64.
             // The TVar arms skip it because 'y occurs in the set, this arm has no
             // identity pre-pass (the Set ⊇ Set arms have one), and set_commit tries the
             // structural member i64 before the free 'y. An identical struct member
@@ -1124,7 +1124,7 @@ impl Type {
                 }
                 match t {
                     // Prims first: the narrowest TVar bindings.
-                    // CR claude for eric: [bug] When a union with a bare open member is
+                    // CR claude for claude: [bug] When a union with a bare open member is
                     // checked against a multi-bit primitive, this arm commits the bits
                     // one at a time. The first bit that no concrete member covers binds
                     // the open member ('a := i64), the next bit is admitted by nothing,
@@ -1143,7 +1143,7 @@ impl Type {
                         for p in t.iter_prims() {
                             all &= Self::set_admits(s, env, hist, &p)?;
                         }
-                        // CR claude for eric: [bug] This pre-pass commits the
+                        // CR claude for claude: [bug] This pre-pass commits the
                         // primitives one at a time. The first primitive no concrete
                         // member covers binds the bare free member to itself. The next
                         // one is not admitted by that binding, and the arm returns
@@ -1325,7 +1325,7 @@ impl Type {
                 Ok(true)
             }
             (None, None) => {
-                // CR claude for eric: [bug] When two open rigid cells' bounds reach
+                // CR claude for claude: [bug] When two open rigid cells' bounds reach
                 // each other (`'b: Array<'a>`, or `'b: 'a`), this occurs check fires
                 // before OpenPair::Distinct is consulted. refuse() then answers true,
                 // so the def gate accepts a value of either quantifier as the other.
@@ -1506,7 +1506,7 @@ impl Type {
                 }
             }
             if !full {
-                // CR claude for eric: [bug] Distribution allows only one position to
+                // CR claude for claude: [bug] Distribution allows only one position to
                 // differ, so a set listing every combination of two unions, [(`L, `L),
                 // (`L, `N), (`N, `L), (`N, `N)], is held not to contain ([`L, `N], [`L,
                 // `N]). Select::check_coverage runs this check before the literal pool,
@@ -1613,7 +1613,7 @@ impl Type {
         env: &Env,
         hist: &mut ContainsHist,
     ) -> Result<bool> {
-        // CR claude for eric: [bug] Under a plain Commit (no RigidCheck) a rigid
+        // CR claude for claude: [bug] Under a plain Commit (no RigidCheck) a rigid
         // constructor variable takes this path: cell_constraints_ok passes, the bind is
         // skipped, and Ok(true) comes back. So inside a `'c: Collection` body,
         // `Array<i64> ⊇ 'c<i64>` holds without binding 'c, and so do `List<i64> ⊇
@@ -1683,7 +1683,7 @@ impl Type {
                 }
                 Ok(true)
             }
-            // CR claude for eric: [bug] This arm lets a union satisfy a trait whenever
+            // CR claude for claude: [bug] This arm lets a union satisfy a trait whenever
             // every member has an impl, whatever the trait's methods take. So
             // `Comb::comb(x, y)` with `comb: fn(self, other: self)` and x, y: [A, B]
             // passes `--check`. The build then lowers the call through
@@ -1767,7 +1767,7 @@ impl Type {
     }
 }
 
-// CR claude for eric: [test-gap] These three tests are the only direct pins of
+// CR claude for claude: [test-gap] These three tests are the only direct pins of
 // Type::contains. No graphix-tests pin covers the rules broken by the accepted
 // ill-typed repros in design/review-2026-10-05/repro: the ByRef arm's covariance
 // (c-node-mod-01; reference_variable_does_not_widen pins only callsite.rs::Widening

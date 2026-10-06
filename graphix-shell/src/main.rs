@@ -220,7 +220,7 @@ struct Params {
     #[arg(long = "expand")]
     expand: bool,
     /// run the program in the specified file instead of starting the REPL
-    // CR claude for eric: [bug] A standalone binary (graphix package build-standalone)
+    // CR claude for claude: [bug] A standalone binary (graphix package build-standalone)
     // is this main with a package whose main_program() is Some, and lib.rs:245 runs the
     // embedded program only in Mode::Repl, so this positional takes the app's first
     // argument as a script: `myapp input.csv` compiles the CSV as Graphix, `myapp
@@ -430,7 +430,7 @@ fn tokio_main(
                 #[cfg(not(feature = "sys"))]
                 Some(_) => bail!("netidx: sources require the sys feature"),
                 None => {
-                    // CR claude for eric: [readability] canonicalize()? has no context,
+                    // CR claude for claude: [readability] canonicalize()? has no context,
                     // so `graphix nosuchfile.gx` (and --check) prints only 'Error: No
                     // such file or directory (os error 2)'; name the path with
                     // `.with_context(..)`. The netidx: error at line 405 carries 34
@@ -445,7 +445,7 @@ fn tokio_main(
                     // graphix-shell/src/AGENTS.md is a hand-written note from the
                     // initial commit sitting beside the generated root AGENTS.md.
                     // (shell-18)
-                    // CR claude for eric: [readability] canonicalize's io error carries
+                    // CR claude for claude: [readability] canonicalize's io error carries
                     // no path, so `graphix nosuch.gx` and `graphix --check nosuch.gx`
                     // print only "Error: No such file or directory (os error 2)".
                     // `graphix somedir` with no main.gx inside prints the same thing,
@@ -504,7 +504,7 @@ fn main() -> Result<()> {
         }
         None => (),
     }
-    // CR claude for eric: [bug] This loads the netidx config before any flag is read,
+    // CR claude for claude: [bug] This loads the netidx config before any flag is read,
     // so every run resolves it, --check and --no-netidx included. With no netidx
     // config, Config::local_only daemonizes a machine-local resolver (a re-exec of this
     // binary on 127.0.0.1:59200) that outlives the run, and without --no-netidx

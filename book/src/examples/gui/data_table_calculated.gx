@@ -37,7 +37,7 @@ let data: Map<string, Map<string, i64>> = {};
 // widens each bare-string entry into the union element type before
 // concat. Without the explicit return type, inference leaves the
 // resulting array as `Array<string>` and fails to fit ColumnSpec.
-// CR claude for eric: [doc-drift] The comment is false: the annotated let widens on its
+// CR claude for claude: [doc-drift] The comment is false: the annotated let widens on its
 // own. `let widened: Array<[string, ColumnSpec]> = raw_tbl.columns;` checks and builds,
 // and so does the map without `-> [string, ColumnSpec]`; only dropping the annotation
 // is refused. The comment also says concat where the code uses push. The book includes

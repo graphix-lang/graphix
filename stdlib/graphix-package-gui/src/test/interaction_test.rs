@@ -84,7 +84,7 @@ async fn checkbox_toggle_produces_call() -> Result<()> {
     );
     let mut h = InteractionHarness::new(&code).await?;
     let msgs = h.click(WIDGET_HIT);
-    // CR claude for eric: [test-gap] These predicates accept any Bool (here and in
+    // CR claude for claude: [test-gap] These predicates accept any Bool (here and in
     // toggler_toggle_produces_call), and radio_on_select, text_input_on_input and
     // text_editor_on_edit accept any String, so a wrapper that sends the old value
     // (false, "none", "") instead of the new one (true, "option_a", "a") passes.
@@ -339,7 +339,7 @@ async fn pick_list_on_select_produces_call() -> Result<()> {
     );
     // The dropdown is an overlay, which the headless UserInterface does
     // not route clicks to; this pins only that clicking does not panic.
-    // CR claude for eric: [test-gap] The comment above is stale, and the test checks
+    // CR claude for claude: [test-gap] The comment above is stale, and the test checks
     // nothing its name promises. on_edit_combo_column (data_table_test.rs:946-963)
     // opens the same iced PickList overlay with one click in this harness and selects
     // an option with a second. Making PickListW's on_select closure
@@ -432,7 +432,7 @@ async fn combo_box_on_select_produces_call() -> Result<()> {
     // Suggestions are an overlay, as for pick_list.
     let mut h = InteractionHarness::with_viewport(&code, Size::new(300.0, 200.0)).await?;
     let _ = h.view();
-    // CR claude for eric: [test-gap] This test clicks and returns Ok without looking at
+    // CR claude for claude: [test-gap] This test clicks and returns Ok without looking at
     // any message, so it cannot fail. It should pick an option (type and press Enter,
     // or click the overlay) and expect the on_select Call. No canvas_test case draws
     // either: view() never calls Program::draw, so draw_shape (canvas.rs:213-338) runs

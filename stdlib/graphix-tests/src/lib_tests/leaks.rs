@@ -226,7 +226,7 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
             }"#,
         )
         .await?;
-        // CR claude for eric: [test-gap] The fixture maps a successful compile to
+        // CR claude for claude: [test-gap] The fixture maps a successful compile to
         // `error("compiled")`, and this wait accepts any error. So if the module source
         // ever compiled, the test would measure the success path and still pass, though
         // it is named for failed compiles. Make the null arm `never()` (the wait then

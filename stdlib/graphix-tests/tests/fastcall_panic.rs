@@ -75,7 +75,7 @@ async fn fast_fn_panic_fails_the_runtime_in_both_engines() -> Result<()> {
     let interp = values_until_death(CFlag::FusionDisabled.into()).await?;
     let jit = values_until_death(BitFlags::empty()).await?;
     assert_eq!(interp, [Value::I64(2), Value::I64(3)]);
-    // CR claude for eric: [test-gap] The jit run is only compared with the node-walk.
+    // CR claude for claude: [test-gap] The jit run is only compared with the node-walk.
     // If `probe(x) + 1` stopped fusing, both runs would node-walk and agree, and the
     // JIT's own panic path would go untested: fast_dispatch's catch_unwind into
     // KERNEL_PANIC, resumed in FusedKernel::update (fusion/kernel.rs:454). Reset the

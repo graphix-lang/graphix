@@ -105,7 +105,7 @@ impl<X: GXExt> GuiWidget<X> for RadioW<X> {
         } else {
             self.on_select_callable.as_ref().map(|c| c.id())
         };
-        // CR claude for eric: [bug] Until `value` arrives the radio stays clickable,
+        // CR claude for claude: [bug] Until `value` arrives the radio stays clickable,
         // and a click sends null to on_select, whose parameter the checker typed from
         // the value (`'a`). GXHandle::call checks only the arity, so the null lands in
         // a typed slot. `|x| chosen <- x` with `chosen: i64` then stores null in an

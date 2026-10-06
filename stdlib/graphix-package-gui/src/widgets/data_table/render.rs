@@ -362,7 +362,7 @@ impl<X: GXExt> DataTableW<X> {
                 .into();
             header_row = header_row.push(cell);
         }
-        // CR claude for eric: [dead] Dead: this binding; `let _ = row_idx;` below
+        // CR claude for claude: [dead] Dead: this binding; `let _ = row_idx;` below
         // (row_idx is used); render_cell's `_can_select` (its one caller passes false);
         // handle_column_resize_start's `_cursor_x` (fed by the only read of
         // MessageShell::cursor_position, mod.rs:525); and test_access.rs's
@@ -490,7 +490,7 @@ impl<X: GXExt> DataTableW<X> {
     fn wrap_resize_drag<'a>(&'a self, content: IcedElement<'a>) -> IcedElement<'a> {
         widget::MouseArea::<'_, Message, GraphixTheme, Renderer>::new(content)
             .on_move(|pt| Message::ColumnResizeMove(pt.x))
-            // CR claude for eric: [bug] A column-resize drag ends only through this
+            // CR claude for claude: [bug] A column-resize drag ends only through this
             // on_release. iced's MouseArea publishes on_release and on_move only while
             // the cursor is over its bounds, so a left release past the table's edge,
             // onto a sibling widget, or outside the window never sends ColumnResizeEnd.
@@ -536,7 +536,7 @@ impl<X: GXExt> DataTableW<X> {
                         Key::Named(keyboard::key::Named::Escape) => {
                             Message::TableKey(TableKeyAction::Escape)
                         }
-                        // CR claude for eric: [bug] Every key this mapper does not use
+                        // CR claude for claude: [bug] Every key this mapper does not use
                         // becomes Message::Nop, and KeyboardArea captures every key it
                         // maps (iced_keyboard_area.rs:139-143). So once the table has
                         // been clicked, an enclosing keyboard_area, such as one

@@ -12,7 +12,7 @@ enum CompletionContext<'a> {
 }
 
 impl<'a> CompletionContext<'a> {
-    // CR claude for eric: [bug] from_str never returns ArgLbl. The '(' that sets fend
+    // CR claude for claude: [bug] from_str never returns ArgLbl. The '(' that sets fend
     // (line 23) also ends the scan in the same iteration, where prev is fend + 1, so
     // s.get(prev..fend) is None. As a result `str::join(#se` + Tab returns Err and
     // offers nothing, and complete()'s ArgLbl arm (line 117) is dead. prev also starts

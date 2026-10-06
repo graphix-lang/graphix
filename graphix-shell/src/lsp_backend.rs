@@ -54,7 +54,7 @@ async fn build_backend(roots: Vec<PathBuf>) -> Result<StdArc<dyn LspBackend>> {
     let root = graphix_package::root_module_source(&root_mods);
     let mut resolvers: Vec<ResolverRef> = vec![VfsResolver::new(vfs)];
     // The stdlib layer, shared by every per-project check.
-    // CR claude for eric: [bug] base_resolvers holds only the stdlib VFS. GX::new adds
+    // CR claude for claude: [bug] base_resolvers holds only the stdlib VFS. GX::new adds
     // the GRAPHIX_MODPATH entries, or $XDG_DATA_HOME/graphix, only to the runtime's own
     // chain (graphix-rt/src/gx.rs:251-266), and every LSP check replaces that chain
     // with resolvers_for (gx.rs:799-802). So a module the CLI finds through

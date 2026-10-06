@@ -119,7 +119,7 @@ impl Type {
                         // element (or its merge result) can enable a new
                         // merge.
                         let mut incoming = t;
-                        // CR claude for eric: [perf] Each incoming member is tried
+                        // CR claude for claude: [perf] Each incoming member is tried
                         // against every kept one, so normalizing an N-member union
                         // costs N² merge attempts. A flat seq's pc is an (N+1)-tag
                         // union that its idle select normalizes in check_dead_arms, so
@@ -150,7 +150,7 @@ impl Type {
                 }
                 true
             };
-        // CR claude for eric: [bug] The merge is greedy in arrival order and the sort
+        // CR claude for claude: [bug] The merge is greedy in arrival order and the sort
         // comes after it, so one member set has several normal forms. [(i64, bool),
         // (string, bool), (i64, f64)] gives [(i64, f64), ([i64, string], bool)], the
         // same members in another order give [(i64, [f64, bool]), (string, bool)], and
@@ -462,7 +462,7 @@ impl Type {
 
     fn merge_inner(&self, t: &Self) -> Option<Self> {
         // Equality modulo set-flattening at a nested position.
-        // CR claude for eric: [bug] flat_eq compares with `==`, and TVar equality
+        // CR claude for claude: [bug] flat_eq compares with `==`, and TVar equality
         // treats two distinct unbound cells as equal. So merge_one_differing and the
         // Array/List/Map/Error arms fold `Array<'a> ∪ Array<'b>` into `Array<'b>` and
         // `(i64, 'a) ∪ (string, 'b)` into `([i64, string], 'b)`, dropping a cell that
@@ -567,7 +567,7 @@ impl Type {
                     None
                 }
             }
-            // CR claude for eric: [bug] Two fn types merge only when `==`, and `==`
+            // CR claude for claude: [bug] Two fn types merge only when `==`, and `==`
             // never equates a bound cell with its binding, though the TVar arms below
             // look through it. So `|x: i64| x * 2` and `|x: i64| -> i64 x + 1`, both
             // fn(x: i64) -> i64, stay two union members, and a call through `select b {

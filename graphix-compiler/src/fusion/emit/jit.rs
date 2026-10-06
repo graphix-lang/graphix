@@ -4,7 +4,7 @@
 //! current module [`Generation`], cold and warm alike; [`WrappedKernel`]
 //! and the wrapper-seam value packing ([`pack_value_to_u64`]).
 
-// CR claude for eric: [doc-drift] The module doc above, emit/mod.rs:7-8 and CacheKey's
+// CR claude for claude: [doc-drift] The module doc above, emit/mod.rs:7-8 and CacheKey's
 // doc (735) make `Jit` the emitter and the owner of the `by_kernel` cache, but
 // `Emission` (its `Names` and `Caches`) emits and caches, and `Jit` only compiles and
 // installs at link. emit/mod.rs:13-17 gives the calling convention as (disc, payload)
@@ -945,7 +945,7 @@ impl Emission {
             layout_ids.into_iter().map(|(l, id)| (id, l)).collect();
         by_id.sort_unstable_by_key(|(id, _)| *id);
         for (id, l) in by_id.drain(..) {
-            // CR claude for eric: [perf] This interns the task's layout lists before
+            // CR claude for claude: [perf] This interns the task's layout lists before
             // `same` exists, so each list still names the task's own copies of kernels
             // the parent already has. A task body with an external call site (layout !=
             // 0) is rekeyed to a layout no parent region produces, so it is never
@@ -1182,7 +1182,7 @@ impl Jit {
             .spawn(move || backend_all(&*isa, work));
         match compiled {
             Ok(compiled) => self.in_flight = Some(InFlight { pending, compiled }),
-            // CR claude for eric: [bug] By the time the spawn fails, take_functions has
+            // CR claude for claude: [bug] By the time the spawn fails, take_functions has
             // already moved every Function out of `pending` into `work`, and the failed
             // spawn dropped `work` along with its closure. This fallback therefore
             // compiles the Function::new() placeholders. Cranelift panics on them
@@ -1374,7 +1374,7 @@ impl Jit {
              kernel drops) and reinstalling in a fresh module",
             self.retired
         );
-        // CR claude for eric: [risk] If this reinstall fails too, the fresh generation
+        // CR claude for claude: [risk] If this reinstall fails too, the fresh generation
         // stays current with the failed install's declared and defined functions and
         // constant symbols still in it, which the Generation doc says cannot happen
         // ('never finalized again'). The next finalize_definitions here would relocate
@@ -1398,7 +1398,7 @@ impl Jit {
         own_site: Option<SiteLayout>,
         state_self_blocks: Vec<kernel_abi::SelfBlock>,
     ) -> Result<WrappedKernel> {
-        // CR claude for eric: [perf] A warm start installs and finalizes each restored
+        // CR claude for claude: [perf] A warm start installs and finalizes each restored
         // region on its own: FusedKernel and SlotShare image_decode call this once per
         // region, and so does every lazily decoded body. cranelift-jit's arena never
         // extends a finalized segment, so each region costs at least a page of arena
@@ -1421,7 +1421,7 @@ impl Jit {
     }
 }
 
-// CR claude for eric: [dead] state_words, slot_table_words and state_self_blocks are
+// CR claude for claude: [dead] state_words, slot_table_words and state_self_blocks are
 // written (1517-1519, 1547-1549) and never read. A callee body claims only through its
 // site block, and the region parent's values go straight into its WrappedKernel, so the
 // fields and their 'filled in phase 2' docs send a reader after nothing, and rustc does
@@ -1553,7 +1553,7 @@ fn compile_region_inner(
     let parent_fid = em.names.local(&parent_sig);
     funcids.push((parent_key, (parent_fid, parent_sig)));
     for (key, k) in callees {
-        // CR claude for eric: [bug] A callee body can miss `by_kernel` here only
+        // CR claude for claude: [bug] A callee body can miss `by_kernel` here only
         // because its layout differs: any body with a lambda call keys on this region's
         // whole callee list. Phase 2 then emits it from this region's instance
         // (`emitters`) against `k`. `k` is the signature `build_lambda_kernel` cached
@@ -1898,7 +1898,7 @@ pub fn pack_value_to_u64(v: &Value, prim: PrimType) -> Option<u64> {
     if kernel_abi::scalar_prim_of_value(v) != Some(prim) {
         return None;
     }
-    // CR claude for eric: [structure] This match repeats value_words' scalar widening
+    // CR claude for claude: [structure] This match repeats value_words' scalar widening
     // (tval.rs:108-117: sign-extend, zero-extend, float bits), and the two must agree.
     // Kernel constants (scalar.rs:247) and the runtime's scalar staging (kernel.rs:265)
     // use this table, while every other seam uses value_words, whose doc points back

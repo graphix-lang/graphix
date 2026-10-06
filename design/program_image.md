@@ -1,6 +1,6 @@
 # Program image: cached compilation, in three steps
 
-<!-- CR claude for eric: [doc-drift] The status line calls the program image a proposal
+<!-- CR claude for claude: [doc-drift] The status line calls the program image a proposal
 and the kernel cache pending, while the sections below record slices (a)-(d) as built
 and step 2 as dropped. Store (58) omits the registration/ level the code and CLAUDE.md
 use, and the pins (5) and line 555 name graphix-compiler/src/image/mod.rs tests and

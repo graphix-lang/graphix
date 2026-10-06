@@ -137,7 +137,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     /// Whether an input the initializer's fire can come through was
     /// delivered fired this cycle, live or as a wake catch-up, and not
     /// by a wake's constants.
-    // CR claude for eric: [bug] Only Bind::update marks a wake's constant fire in
+    // CR claude for claude: [bug] Only Bind::update marks a wake's constant fire in
     // wake_phantoms, so this test cannot see the same fire when another republisher
     // passes it on. CallSite::publish_production and the formal loop in
     // GXLambda::update publish a formal FIRED, and PatternNode::bind_event publishes a
@@ -150,7 +150,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
     // design/review-2026-10-05/repro/c-bind-02.gx (expected (2, 2, 2) at the wake,
     // observed (2, 0, 0)). (c-bind-02)
     fn input_fired(&self, ctx: &ExecCtx<'_, R, E>) -> bool {
-        // CR claude for eric: [perf] input_fired builds a fresh Refs and walks the
+        // CR claude for claude: [perf] input_fired builds a fresh Refs and walks the
         // whole initializer at every wake (each woken arm, each seq step entry).
         // CallSite::refs descends into callee instance bodies (callsite.rs:2228), so a
         // let over a call walks the callee's whole instance tree, and every let inside
@@ -162,7 +162,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         // probe: design/review-2026-10-05/repro/c-bind-12.gx (c-bind-12)
         let mut refs = Refs::default();
         self.node.refs(&mut refs);
-        // CR claude for eric: [bug] input_fired decides from the initializer's refs,
+        // CR claude for claude: [bug] input_fired decides from the initializer's refs,
         // not from its production: any triggering ref delivered with a tag that
         // triggers() counts, a fresh bottom included, even where it cannot reach the
         // value this cycle (an untaken select arm, an earlier block statement). The
@@ -238,7 +238,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
                         let _generic = AtLevel::enter(Level::GENERIC);
                         pat.infer_type_predicate(&ctx.env, &scope.lexical)?
                     };
-                    // CR claude for eric: [bug] The shape check compares the pattern's
+                    // CR claude for claude: [bug] The shape check compares the pattern's
                     // un-completed predicate ({x: 'a} for {x, ..}) with the value's
                     // type, so `let p = {x: 1, y: 2}; let {x, ..} = p` is refused with
                     // "match error { x: i64, y: i64 } can't be matched by { x: '_N:
@@ -299,7 +299,7 @@ impl<R: Rt, E: UserEvent> Bind<R, E> {
         }
         // Keyed by (scope, name), not BindId: sig and impl get different
         // ids for one builtin binding. A later `let` of the name shadows it.
-        // CR claude for eric: [bug] Only a single-name `let` updates
+        // CR claude for claude: [bug] Only a single-name `let` updates
         // `builtin_bindings`: a destructuring `let` (tuple, struct, variant, `name@`
         // capture) that rebinds a builtin-bound name in the same scope leaves the old
         // `(scope, name)` entry, and the fast-call lowering (fusion/lowering.rs:273),
@@ -405,7 +405,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         let woke = self.slept.take();
         // At a wake the initializer's constants fire; the fire is the wake's,
         // not an event's, unless one of its inputs fired too.
-        // CR claude for eric: [structure] Whether a fire is the wake's own is a
+        // CR claude for claude: [structure] Whether a fire is the wake's own is a
         // property of the delivery. It is kept instead in Event::wake_phantoms, a side
         // set that only this let writes (line 365) and reads (input_fired), re-derived
         // for each let by a ref walk. Every other republisher passes the wake's
@@ -426,7 +426,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for Bind<R, E> {
         // persists in the store. A connect target's value is its last
         // write: a wake's fire republishes nothing over it, nor does a
         // standing bottom (`let x = never()`).
-        // CR claude for eric: [bug] This hold-back is decided once for the whole
+        // CR claude for claude: [bug] This hold-back is decided once for the whole
         // pattern. When any id the pattern binds is a `<-` target, no id is published
         // at the wake, so a destructuring let's non-target siblings keep their
         // pre-sleep value instead of the recompute. wake_catchup.md exempts only `<-`
@@ -1248,7 +1248,7 @@ impl<R: Rt, E: UserEvent> ByRef<R, E> {
         let id = BindId::new();
         // A place reference types as a reference to the element and
         // still mints a cell so embedders keep reading the mirror.
-        // CR claude for eric: [bug] Nothing here marks the referent (the `Ref`'s
+        // CR claude for claude: [bug] Nothing here marks the referent (the `Ref`'s
         // binding, or the place's root) as a `<-` target; mark_connect_target's only
         // caller is Connect::compile. So a binding written only through `*r <- v` (or
         // by a builtin through the reference) is in neither connect_targets nor
@@ -1420,7 +1420,7 @@ impl<R: Rt, E: UserEvent> Update<R, E> for ByRef<R, E> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R, E>) {
-        // CR claude for eric: [bug] ByRef::delete never calls
+        // CR claude for claude: [bug] ByRef::delete never calls
         // `ctx.rt.store_remove(&self.id)`. The entry that `publish` and `bottom_mirror`
         // wrote under the cell id outlives the node and pins the last value it
         // mirrored. A let's pattern removes its entry at delete (pattern.rs:1068).
@@ -1534,7 +1534,7 @@ impl<R: Rt, E: UserEvent> Deref<R, E> {
         let (id, path) = ref_target(ctx, cell);
         match &mut self.addr {
             Some((cur, p)) if *cur == id => {
-                // CR claude for eric: [bug] When the root stays the same and only the
+                // CR claude for claude: [bug] When the root stays the same and only the
                 // path changes (a moving place reference whose key moved), this returns
                 // moved=false. update() then delivers the element at the new path under
                 // the reference's and the root's tags, which are STALE when neither

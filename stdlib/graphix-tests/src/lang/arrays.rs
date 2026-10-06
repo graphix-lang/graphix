@@ -227,7 +227,7 @@ const ARRAY_INDEXING6: &str = r#"
 "#;
 
 // ASPIRE: Jit — the body does not fuse into a kernel yet.
-// CR claude for eric: [doc-drift] The 'ASPIRE: Jit' comment above, like every one in
+// CR claude for claude: [doc-drift] The 'ASPIRE: Jit' comment above, like every one in
 // this unit's files, sits over a fixture that already asserts FuseExpect::Jit, and most
 // of them are wrong. Eight of these bodies fuse whole today (graphix-fuzz run shows
 // only the module statements failing): arrays.rs 292, 421, 453 and 459, errors.rs:20,
@@ -420,7 +420,7 @@ const FOLD_OVER_OVERSIZE_INIT_BOTTOMS: &str = r#"
 }
 "#;
 
-// CR claude for eric: [test-gap] run! stops at the first update, which is 1 (from n =
+// CR claude for claude: [test-gap] run! stops at the first update, which is 1 (from n =
 // 0). The comment above is about the second cycle, where the oversize init must bottom
 // the fold. With n = [0, 1] the program emits 1 then 2 and this predicate still passes.
 // So an oversize init that yields [] or a truncated array instead of bottom would go

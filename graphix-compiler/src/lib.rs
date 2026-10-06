@@ -145,7 +145,7 @@ pub static CBATCH_POOL: LazyLock<Pool<Vec<(BindId, Box<dyn CustomBuiltinType>)>>
 /// for later cycles.
 #[derive(Debug)]
 pub struct Event<E: UserEvent> {
-    // CR claude for eric: [structure] `init` and `wake_init` are two bools for three
+    // CR claude for claude: [structure] `init` and `wake_init` are two bools for three
     // views (ordinary cycle, birth, wake); `wake_init` without `init` means nothing and
     // is never built. Every view change saves and restores them by hand, eight times
     // (select.rs:1010, seq_machine.rs:299, callsite.rs:1242 and 1667, collection.rs:975
@@ -222,7 +222,7 @@ impl<E: UserEvent> Event<E> {
         *init = false;
         *wake_init = false;
         wake_phantoms.clear();
-        // CR claude for eric: [perf] The overlay keeps the capacity of the cycle that
+        // CR claude for claude: [perf] The overlay keeps the capacity of the cycle that
         // delivered the most. A hashbrown clear of a non-empty table memsets every
         // control byte and scans every bucket, so after one big fire every later cycle
         // that delivers anything pays O(peak). Probe, --no-fusion, beside a 100us timer
@@ -347,7 +347,7 @@ impl<R: Rt, E: UserEvent> Node<R, E> {
         stack::ensure_sufficient(|| self.0.delete(ctx))
     }
 
-    // CR claude for eric: [bug] Node has no inherent typecheck0_instance, so every
+    // CR claude for claude: [bug] Node has no inherent typecheck0_instance, so every
     // child.typecheck0_instance call (op.rs:283, callsite.rs:2169, node/mod.rs:319, and
     // lambda.rs:782 for the body) reaches the trait through DerefMut with no
     // stack::ensure_sufficient. Checking an instance body is therefore a recursion as
@@ -619,7 +619,7 @@ pub enum NodeView<'a, R: Rt, E: UserEvent> {
 }
 
 /// A regular graph node, as opposed to a function application (Apply).
-// CR claude for eric: [structure] Node has no child enumeration, unlike Expr's
+// CR claude for claude: [structure] Node has no child enumeration, unlike Expr's
 // for_each_child/map_children. Every Update impl lists its children again by hand in
 // refs, delete, sleep, fuse, typecheck0/1 and the image codecs (Not and Neg in
 // node/op.rs, and Qop and OrNever in node/error.rs, are line-for-line copies), so a
@@ -869,7 +869,7 @@ impl<R: Rt, E: UserEvent> Attribute<R, E> for Native {
 
     fn check(ctx: &CompileCtx<R, E>, attr: &Attr, node: &Node<R, E>) -> Result<()> {
         <Self as Attribute<R, E>>::check_target(attr, node)?;
-        // CR claude for eric: [bug] Any FusedKernel passes here, including one that
+        // CR claude for claude: [bug] Any FusedKernel passes here, including one that
         // try_fuse_feeding_args built around arguments left on the node-walk. So
         // `#[native] f(throttle(i64:5))` compiles, while `#[native] throttle(i64:5)`
         // and `#[native] { let a = throttle(i64:5); f(a) }` are refused. Feeding only
@@ -1168,7 +1168,7 @@ pub struct CompileCtx<R: Rt, E: UserEvent> {
     /// Each seq block's lowering, by its expression and lexical scope: a
     /// definition's body lowers once, so every compile of it has the same
     /// expression ids.
-    // CR claude for eric: [bug] Nothing removes an entry from lowered_seqs, and the
+    // CR claude for claude: [bug] Nothing removes an entry from lowered_seqs, and the
     // key's scope is minted fresh on many compiles: a try/with body scope is named by
     // ExprId::new() (node/seq_machine.rs:195), and a lambda literal's body scope by a
     // new LambdaId (node/lambda.rs:1326). So a seq inside a try/with body, or inside a
@@ -1310,7 +1310,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
             rec_defs: self.rec_defs.clone(),
             def_gate_params: self.def_gate_params.clone(),
             def_gate_depth: self.def_gate_depth,
-            // CR claude for eric: [perf] Every statically resolved call site forks the
+            // CR claude for claude: [perf] Every statically resolved call site forks the
             // context (callsite.rs:1287), and each fork copies resolving_lambdas whole:
             // an IntMap holding an FnType by value for every instantiation still
             // resolving. The forks nest along a static call chain and each lives until
@@ -1426,7 +1426,7 @@ impl<R: Rt, E: UserEvent> CompileCtx<R, E> {
 
     /// Record `id` as a `<-` target, of this batch and for good.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) {
-        // CR claude for eric: [bug] At run time this set only grows. Every instance
+        // CR claude for claude: [bug] At run time this set only grows. Every instance
         // built after the batch (a collection slot, an activation, a seq machine's pc
         // and result) inserts its fresh `<-` target ids here. Bind::delete prunes
         // connect_targets and bind_to_lambda but not this set, and only the embedder's
@@ -1659,7 +1659,7 @@ impl<'a, R: Rt, E: UserEvent> ExecCtx<'a, R, E> {
     /// Drop a reference `top_id` holds to `id`: one not replayed yet is
     /// cancelled, any other unregistered.
     pub fn unref_var(&mut self, id: BindId, top_id: ExprId) {
-        // CR claude for eric: [perf] In a forked branch whose compile view has not
+        // CR claude for claude: [perf] In a forked branch whose compile view has not
         // forked yet, `get_mut` here goes through CxView::deref_mut. That boxes a whole
         // CompileCtx::fork() (env, tracked maps, fusion), which the merge then joins
         // back, only to find pending_refs empty: fork_each and fork_join assert that
@@ -2199,7 +2199,7 @@ fn check_and_fuse_inner<R: Rt, E: UserEvent>(
     info!("typecheck time {:?}", st.elapsed());
     analysis::analyze(node, ctx)?;
     ctx.env.seed_typedef_refs();
-    // CR claude for eric: [risk] check_and_fuse takes `flags` but decides fusion from
+    // CR claude for claude: [risk] check_and_fuse takes `flags` but decides fusion from
     // ctx.fusion.enabled, which only compile_top sets from its own flags.
     // compile_callable (begin_runtime_node, then check_and_fuse) inherits whatever the
     // last compile_top left. After a warm start no compile_top has run, so the field is
@@ -2275,7 +2275,7 @@ pub(crate) fn check_pending_imports<R: Rt, E: UserEvent>(
             continue;
         };
         if !ctx.env.import_target_exists(e) {
-            // CR claude for eric: [readability] This error and bind_sig's
+            // CR claude for claude: [readability] This error and bind_sig's
             // (graphix-compiler/src/node/module.rs:177) use ParserContext only to carry
             // a position, and its Display prints "parse error at …". So `let x =
             // 1;\nuse array::nosuch;\n1` reports "parse error at line: 2, column: 1 …
@@ -2366,7 +2366,7 @@ pub fn record_expr_types<R: Rt, E: UserEvent>(
 
 /// The registries a compile or a registration read writes, as they were
 /// before it, so a failure puts them back.
-// CR claude for eric: [structure] Saved is the only list of the tracked registries that
+// CR claude for claude: [structure] Saved is the only list of the tracked registries that
 // the compiler does not check. fork, join and ExecState::new are struct literals or
 // destructures, but Saved is written by hand, and it has drifted: it omits
 // lowered_seqs, which fork and join treat as program state. A failed compile (a REPL
@@ -2512,7 +2512,7 @@ fn abandon_stmt<R: Rt, E: UserEvent>(
     saved: Saved,
     e: anyhow::Error,
 ) -> anyhow::Error {
-    // CR claude for eric: [risk] This drops the deferred references before deleting the
+    // CR claude for claude: [risk] This drops the deferred references before deleting the
     // node, and check_and_fuse has already dropped them on Err (line 1934). The failed
     // statement's references therefore reach rt.unref_var as pairs the runtime never
     // registered, instead of cancelling in pending_refs. Module::compile_source and

@@ -342,7 +342,7 @@ arguments, `MapQ` slots. `ParMode` (`Off`/`Auto`/`Force`) is on
   machine itself are ordered in the block plan: the abort must fail the
   guards before the machine updates.
 
-<!-- CR claude for eric: [doc-drift] §4.3 and §5 describe a cost model other than the
+<!-- CR claude for claude: [doc-drift] §4.3 and §5 describe a cost model other than the
 one in cost.rs. :247-250 and :362-363 have a cycle-level histogram decide whether to
 enter the pool; none exists, and the pool is entered at the fork (§4.5). :351 and :358
 put bucket 0 near 16 ns; T_BUCKET = 6 puts it at T/128-T/64, about 0.3-1.1 us on this
@@ -400,7 +400,7 @@ direction is safe: the child is already parallel inside. True work
 accounting (each branch summing its leaves' time) is possible later if
 the wall-time bias turns out to cost.
 
-<!-- CR claude for eric: [doc-drift] The next line says fork plans are imaged; §3.3 and
+<!-- CR claude for claude: [doc-drift] The next line says fork plans are imaged; §3.3 and
 Block::image_encode (graphix-compiler/src/node/mod.rs:1154) say they are not, and a warm
 start replans. §8 (lines 663-667 and 681-683) says the join asserts disjoint keys under
 GRAPHIX_PAR_AUDIT, and that a hook site built in a branch joins the registry at the
@@ -683,7 +683,7 @@ that safe: they are independent.
 - **Two shared resources keep their locks:** the JIT (a kernel install,
   C/fusion/emit/jit.rs:1263) and the image decoder
   (C/node/callsite.rs:1768). Both are taken once per first use.
-<!-- CR claude for eric: [doc-drift] Stale against the code: no join asserts disjoint
+<!-- CR claude for claude: [doc-drift] Stale against the code: no join asserts disjoint
 keys under GRAPHIX_PAR_AUDIT, which only audits a branch's reads (branch.rs:783). The
 C/lib.rs:1163 citation for fork/join above is also stale (they are at 1230 and 1264).
 parallel_compile.md:180 puts `fusion` in ExecCtx's runtime half, but it is

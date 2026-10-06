@@ -661,7 +661,7 @@ where
     // it waits a cycle, queued where serial evaluation would queue it
     let mut delivered: LPooled<IntSet<BindId>> = LPooled::take();
     let mut out = Vec::with_capacity(branches.len());
-    // CR claude for eric: [bug] Every id that a later sibling also delivered is
+    // CR claude for claude: [bug] Every id that a later sibling also delivered is
     // requeued as a SetVar for the next cycle, and fork_join does the same at line 770.
     // That matches serial evaluation only for error-handler ids, which is
     // deliver_error's occupied case. Module::update primes a loaded body's external
@@ -728,7 +728,7 @@ pub(crate) fn compile_each<R, E, P, F>(
 /// Run `a` and `b` as two branches forked from `ctx` and merge them back,
 /// `a`'s first: neither sees what the other did, and `ctx` ends as the
 /// serial evaluation of `a` then `b` would leave it.
-// CR claude for eric: [structure] fork_join is fork_each for two parts written again.
+// CR claude for claude: [structure] fork_join is fork_each for two parts written again.
 // It repeats the per-branch ForkCx/ForkRt/Event and ExecCtx, forked() and Live, the
 // stolen side's InterruptScope and tokio enter, the audit, and the in-order merge. The
 // merge's rule (a later part's delivery of an id an earlier part delivered waits a
@@ -831,7 +831,7 @@ fn audit<R: Rt, E: UserEvent>(
 /// one per core), shared by every runtime in the process.
 pub fn eval_pool() -> &'static rayon::ThreadPool {
     static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
-        // CR claude for eric: [bug] When GRAPHIX_EVAL_THREADS is unset this passes
+        // CR claude for claude: [bug] When GRAPHIX_EVAL_THREADS is unset this passes
         // num_threads(0), and rayon resolves 0 through RAYON_NUM_THREADS. The
         // evaluation pool therefore follows the compile pool's setting, so "one per
         // core" above and design/parallel_eval.md §9 ("does not govern evaluation") are
@@ -871,7 +871,7 @@ pub(crate) fn saturated() -> bool {
 }
 
 /// `n` parts forked: each calls [`Live::done`] when it finishes.
-// CR claude for eric: [risk] Live::start adds every part to the process-wide LIVE_PARTS
+// CR claude for claude: [risk] Live::start adds every part to the process-wide LIVE_PARTS
 // before the parts run. Each part calls done() only after its closure returns (lines
 // 649, 706, 752, 760; fusion/par_loop.rs:210), so a part that panics never gives its
 // count back. The panic ends only its runtime's tokio task, while the pool and the

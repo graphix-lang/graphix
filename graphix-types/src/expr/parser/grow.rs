@@ -26,7 +26,7 @@ pub fn max_nesting() -> usize {
 /// Raise or lower [`max_nesting`]. Process-global. The limit also bounds
 /// the unguarded recursions downstream (derived `Drop` glue on a deep
 /// `Type`); raising it past what they survive trades an error for an abort.
-// CR claude for eric: [doc-drift] The doc above says the limit bounds the unguarded
+// CR claude for claude: [doc-drift] The doc above says the limit bounds the unguarded
 // recursions downstream and gives derived Drop glue on a deep Type as the example.
 // Type's Drop is guarded now (typ/mod.rs:1309). The limit does not bound AST depth
 // either: each operator or postfix fold is capped separately and folds nest inside
@@ -167,7 +167,7 @@ impl std::fmt::Display for ParseFailure {
 
 /// The source line at `pos` with a caret under its column, the line
 /// windowed around the caret when it is long.
-// CR claude for eric: [readability] A file ends with a newline, so a parse that fails
+// CR claude for claude: [readability] A file ends with a newline, so a parse that fails
 // at end of input is at line N+1, column 1, which `text.lines().nth(..)` does not have,
 // and the report shows no source line or caret: `let x = 1;\nlet y = (x + 2\n` gives
 // only "Parse error at line: 3, column: 1 / Unexpected end of input". Show the last
@@ -228,7 +228,7 @@ pub(super) fn parsing<T, E: std::fmt::Display>(
         let err_pos = ERROR_POS.with(|p| p.get()).unwrap_or_default();
         let furthest = FURTHEST.with(|p| p.get()).unwrap_or(err_pos);
         // a refusal is the failure only when no branch got past it
-        // CR claude for eric: [bug] A nesting refusal is reported only when no branch
+        // CR claude for claude: [bug] A nesting refusal is reported only when no branch
         // got past it. On a nested call (`f(f(f(..`) some branch peeks a column past
         // the knot GrowStack refused, so from 333 levels on the user gets 'the parser
         // could not continue past this point' with no word of the limit, while parens,

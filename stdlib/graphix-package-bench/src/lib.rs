@@ -104,7 +104,7 @@ pub mod auto_pixel;
 pub use auto_iterate::FusedIterateAuto;
 pub use auto_pixel::FusedPixelAuto;
 
-// CR claude for eric: [dead] Nothing in this workspace or ../netidx calls
+// CR claude for claude: [dead] Nothing in this workspace or ../netidx calls
 // bench::mandelbrot_iterate, iterate_auto or pixel_auto. Even so, the shell's default
 // `all` feature compiles this package and registers it in every session and image, and
 // every change to the BuiltIn, Apply or image traits has to edit it. Its docs name

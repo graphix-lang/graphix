@@ -299,7 +299,7 @@ differential run that adjudicates a LEAK.
 
 ## Integration
 
-<!-- CR claude for eric: [doc-drift] Four statements disagree with the code. Here and at
+<!-- CR claude for claude: [doc-drift] Four statements disagree with the code. Here and at
 lines 45-48: an accepted must-accept probe is not a base for must-reject probes, since
 typemorph_subject runs must_reject on the subject's body only
 (graphix-fuzz/src/lib.rs:2916). Lines 52-55: the type map is keyed by body span, not by

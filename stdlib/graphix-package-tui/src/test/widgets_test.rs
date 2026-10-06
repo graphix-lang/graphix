@@ -3,7 +3,7 @@
 //! through `TuiTestHarness`, so a ratatui panic on default inputs
 //! surfaces here. Content assertions only where output is stable.
 
-// CR claude for eric: [test-gap] The module doc above promises a smoke test for every
+// CR claude for claude: [test-gap] The module doc above promises a smoke test for every
 // widget, but tui::form and tui::browser have none. form has real key handling:
 // Tab/Down and BackTab/Up move focus, Enter calls on_submit with every field in order,
 // Esc calls on_cancel, and a new fields delivery re-seeds. Only netidx-admin's tui
@@ -503,7 +503,7 @@ let result = input_handler(#handle: &modal, &input_handler(#handle: &inner, &par
     Ok(())
 }
 
-// CR claude for eric: [test-gap] No test in this crate or in stdlib/graphix-tests runs
+// CR claude for claude: [test-gap] No test in this crate or in stdlib/graphix-tests runs
 // tui::browser or tui::form (the book's browser examples are only compile-checked by
 // graphix-shell/tests/examples_compile.rs), and both line_edit tests type ASCII only.
 // Confirmed bugs in all three pass cargo test: #selected_path never fires without

@@ -13,7 +13,7 @@ pub(crate) fn encode_value(v: &Value) -> Option<GPooled<Vec<u8>>> {
     let len = v.encoded_len();
     let mut buf = ENCODE_POOL.take();
     buf.reserve(len);
-    // CR claude for eric: [bug] The Pack error is dropped here. Every prepare_args that
+    // CR claude for claude: [bug] The Pack error is dropped here. Every prepare_args that
     // calls encode_value or encode_key (insert, batch, compare_and_swap,
     // get/contains_key/remove on such a key, and the txn twins) reads the None as "do
     // not fire". `'v: Concrete` admits Rust-backed abstract types whose Pack is
@@ -119,7 +119,7 @@ pub(crate) fn encode_key(key_typ: Option<Typ>, v: &Value) -> Option<GPooled<Vec<
             }
             _ => None,
         },
-        // CR claude for eric: [bug] Every key type other than string, bytes and the
+        // CR claude for claude: [bug] Every key type other than string, bytes and the
         // integers falls through to Pack here, and Pack's byte order is not the
         // language's order: negative f64/f32 sort after the positives and in reverse,
         // pre-1970 datetimes sort last, true sorts before false, decimals sort by scale

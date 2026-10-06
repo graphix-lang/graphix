@@ -43,7 +43,7 @@ impl EvalCachedAsync for IoReadEv {
                 None => return errf!("IOError", "stream unavailable"),
             };
             let mut buf: LPooled<Vec<u8>> = LPooled::take();
-            // CR claude for eric: [bug] This allocates and zeroes n bytes before
+            // CR claude for claude: [bug] This allocates and zeroes n bytes before
             // reading, and read_exact does the same at line 227, so the caller's n sets
             // the allocation whatever the stream holds. n = u64:4611686018427387904
             // aborts the process (SIGABRT, "memory allocation of ... bytes failed"). n
@@ -91,7 +91,7 @@ async fn line_reader(
             match s.read(&mut chunk).await {
                 // EOF. A trailing fragment with no newline is NOT a
                 // line and is dropped, exactly as `tail` would.
-                // CR claude for eric: [risk] The rationale above is false: `printf
+                // CR claude for claude: [risk] The rationale above is false: `printf
                 // 'a\nb' | tail -n 1` prints b. The reader stops at EOF and does not
                 // follow the stream, so the held fragment is the stream's real last
                 // line, and it is lost. A file without a trailing newline, or a child
@@ -114,7 +114,7 @@ async fn line_reader(
         let mut out = LBATCH.take();
         let mut lines: LPooled<Vec<Value>> = LPooled::take();
         let mut start = 0;
-        // CR claude for eric: [perf] Each read starts the newline search over at offset
+        // CR claude for claude: [perf] Each read starts the newline search over at offset
         // 0 of `held`, rescanning the partial line already known to hold no '\n'. One
         // S-byte line therefore costs about S²/128K compares: a single 32 MiB line took
         // 2.4 s through lines_batched (16 MiB 0.9 s, 8 MiB 0.17 s), against 0.05 s for
@@ -205,7 +205,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         // One reader per instance, started by the first stream that
         // arrives. A stream is consumed as it is read, so re-arming on a
         // later delivery of the same handle would race the reader.
-        // CR claude for eric: [bug] The `started` latch runs one detached reader for
+        // CR claude for claude: [bug] The `started` latch runs one detached reader for
         // the first stream and ignores every later delivery. When the argument becomes
         // a different stream (a reconnect, a restarted child, a rotated file), this
         // call keeps delivering the old stream's lines and never reads the new one. No
@@ -234,7 +234,7 @@ impl<R: Rt, E: UserEvent, const BATCHED: bool> Apply<R, E> for IoLines<BATCHED> 
         }
     }
 
-    // CR claude for eric: [bug] delete only unrefs the id: the line_reader task that
+    // CR claude for claude: [bug] delete only unrefs the id: the line_reader task that
     // update spawned keeps the stream and reads it into the dead id until EOF, holding
     // the stream's lock, its watch channel and a store entry. A fresh instance on the
     // same stream (a regrown collection slot, a replaced dynamic callee, a re-reached

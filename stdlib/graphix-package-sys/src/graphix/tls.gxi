@@ -11,7 +11,7 @@ impl Write for TlsStream;
 impl Close for TlsStream;
 impl Socket for TlsStream;
 
-// CR claude for eric: [doc-drift] "A failed upgrade leaves it untouched" holds only for
+// CR claude for claude: [doc-drift] "A failed upgrade leaves it untouched" holds only for
 // failures before the handshake (bad CA PEM, bad CA, bad hostname: tls.rs:49-79). A
 // handshake failure has already moved the socket into `connector.connect` (tls.rs:80),
 // which drops it. The caller's TcpStream then reads IOError "stream unavailable". The

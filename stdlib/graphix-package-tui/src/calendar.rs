@@ -24,7 +24,7 @@ use tokio::try_join;
 /// panicking on user input that came from unchecked arithmetic.
 fn coerce_date(year: i64, month: i64, day: i64) -> (Date, Option<(i64, i64, i64)>) {
     let mut clamped = false;
-    // CR claude for eric: [bug] The year is clamped only to i32, but `time` holds years
+    // CR claude for claude: [bug] The year is clamped only to i32, but `time` holds years
     // -9999..=9999 only. A year past that falls through to the 1970-01-01 fallback with
     // `clamped` still false, so date(20000, 6, 15) shows January 1970 and logs nothing.
     // A valid date in December 9999 or January -9999 makes ratatui's Monthly step past
@@ -216,7 +216,7 @@ impl<X: GXExt> TuiWidget for CalendarW<X> {
             show_weekday,
             default_style,
         } = self;
-        // CR claude for eric: [bug] display_date.t.unwrap() panics when the date has no
+        // CR claude for claude: [bug] display_date.t.unwrap() panics when the date has no
         // value yet. TRef::new leaves t as None when the referent has not produced by
         // the time the widget is built (a date loaded by a seq, from a file or the
         // network, or never()), and the first frame is drawn before the date arrives.

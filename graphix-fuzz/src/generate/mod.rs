@@ -345,7 +345,7 @@ pub fn gen_program_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, GenStats) {
     let mut stats = GenStats::default();
     let mut files: Vec<(String, String)> = Vec::new();
     let stmts = gen_slots(&mut ctx, rng, cfg, &mut stats, Some(&mut files));
-    // CR claude for eric: [test-gap] The oracle compares only the root's fires and
+    // CR claude for claude: [test-gap] The oracle compares only the root's fires and
     // stdout, and this tail type is drawn without regard to the statements, so most
     // generated lets are never observed. A liveness scan of `graphix-fuzz gen 400 7`
     // finds about 85% of lets unread by the tail, and about 60% of programs read no let
@@ -413,7 +413,7 @@ fn gen_slots(
         } else if chance(rng, cfg.p_catch) {
             let n = stmts.len();
             let acc = format!("cerr{n}");
-            // CR claude for eric: [test-gap] This sink never receives an error, and
+            // CR claude for claude: [test-gap] This sink never receives an error, and
             // nothing reads it. Every `?` the static generator emits sits in its own `{
             // catch(e) dflt; x? }` (exprs.rs:523, funcs.rs:423), and `cerrN` never
             // enters the vocabulary. Inside that wrapper a raise only makes the block

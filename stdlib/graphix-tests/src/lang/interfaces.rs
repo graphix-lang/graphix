@@ -305,7 +305,7 @@ run!(
 ; graphix_package_core::testing::FuseExpect::Jit);
 
 // Error: missing concrete definition for an abstract type.
-// CR claude for eric: [test-gap] The comment above claims a refusal the design does not
+// CR claude for claude: [test-gap] The comment above claims a refusal the design does not
 // have. A gxi `type T;` with nothing in the gx is the Rust-backed row of
 // design/nominal_abstract_types.md (sys's `type File;` is one), and it compiles. This
 // test fails only because `val x: T` mismatches `let x = 42`, which

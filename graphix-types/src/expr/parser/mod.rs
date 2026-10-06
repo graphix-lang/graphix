@@ -79,7 +79,7 @@ pub static GRAPHIX_ESC: LazyLock<Escape> = LazyLock::new(|| {
     const NAMED: [(char, &str); 4] = [('\n', "n"), ('\r', "r"), ('\t', "t"), ('\0', "0")];
     let esc: SmallVec<[char; 8]> =
         GRAPHIX_MUST_ESC.into_iter().chain(NAMED.map(|(c, _)| c)).collect();
-    // CR claude for eric: [bug] The generic arm here escapes every other control
+    // CR claude for claude: [bug] The generic arm here escapes every other control
     // character as `\u{hex}`. The string parser (netidx_value::parser::escaped_string,
     // called from interpolateexp.rs) accepts only n, r, t, 0 and the must-escape
     // characters after `\`, so a string literal or string pattern holding a raw BEL or
@@ -114,7 +114,7 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
         "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "mut",
     ];
-    // CR claude for eric: [bug] `Error` and `Abstract` are compiler-known type names
+    // CR claude for claude: [bug] `Error` and `Abstract` are compiler-known type names
     // that typ() matches as keywords (typexp.rs:427, 429), but they are missing from
     // this list. typname() therefore accepts `type Error = ..` and `type Abstract =
     // ..`, and the bare name can never be used afterwards. `let e: Error = ..` fails at
@@ -247,7 +247,7 @@ where
     I::Error: ParseError<I::Token, I::Range, I::Position>,
     I::Range: Range,
 {
-    // CR claude for eric: [bug] Only `\n` ends the line, so on CRLF input the `\r`
+    // CR claude for claude: [bug] Only `\n` ends the line, so on CRLF input the `\r`
     // becomes the last character of every `//` comment's and `///` doc's text. graphix
     // fmt then writes comment and doc lines with CRLF and code lines with LF, mixed
     // endings in one file, and the Doc text shown on hover keeps the `\r`. Stop at `\r`
@@ -258,7 +258,7 @@ where
 
 // One own-line `//` comment line, text kept verbatim. `///` is left for
 // `doc_comment`.
-// CR claude for eric: [doc-drift] Despite "own-line" here and at line 292, comment_line
+// CR claude for claude: [doc-drift] Despite "own-line" here and at line 292, comment_line
 // runs wherever leading_decorations does: at every expression start, whatever precedes
 // it on the line. The trailing comment the book calls a parse error
 // (book/src/core/let_binds.md:64-65, `x + 1; // no`) parses whenever a statement
@@ -411,7 +411,7 @@ where
         }
     }
     spaces()
-        // CR claude for eric: [bug] string("///") is not under attempt. So in a .gxi, a
+        // CR claude for claude: [bug] string("///") is not under attempt. So in a .gxi, a
         // `//` line below an item's `///` docs matches `//`, commits, and fails at the
         // space with a bare "Unexpected ` `" and no reason (sig_item and trait_method
         // read `//` lines only above the docs). Separately, comment_line (line 242)
@@ -578,7 +578,7 @@ where
     attempt(spaces().with(token(','))).skip(spaces())
 }
 
-// CR claude for eric: [readability] semisep and csep (line 524) begin with spaces(), so
+// CR claude for claude: [readability] semisep and csep (line 524) begin with spaces(), so
 // when whitespace separates an item from the next token, the `;` or `,` they expected
 // never reaches the report. `let x = 1\nlet y = 2;` (or `let x = 1 let y = 2;`) gives
 // "Unexpected `l` / Expected whitespace or end of input", and a select missing the
@@ -717,7 +717,7 @@ where
             grow((
                 position(),
                 not_followed_by(token('"')),
-                // CR claude for eric: [bug] An overflowing float literal parses to inf:
+                // CR claude for claude: [bug] An overflowing float literal parses to inf:
                 // flt reads `1e400`, `f64:1e309` or `f32:1e40` with str::parse and gets
                 // ±inf, while an out-of-range integer (`u8:300`) is refused here.
                 // Literal (print.rs:353) prints a non-finite f64 through fmt_ext as

@@ -6,7 +6,7 @@
 // per-element node-graph overhead), so the ratio here is the floor, not
 // the headline. (Non-tail recursion like fib WOULD overflow the
 // interpreter's native stack — that's a separate limitation.)
-// CR claude for eric: [doc-drift] The node-walk has no tail loop
+// CR claude for claude: [doc-drift] The node-walk has no tail loop
 // (design/tail_calls_are_calls.md). It dispatches one retained activation per
 // iteration, 100k here, and GXLambda::tail_loop gates only the JIT's native loop. Deep
 // non-tail recursion does not overflow either: `1 + f(n - 1)` at depth 20000 returns

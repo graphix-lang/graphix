@@ -53,7 +53,7 @@ pub(crate) fn compile_use_item(
         let scope_l = &scope.lexical;
         match anchor {
             None => bail!("a glob needs a path prefix"),
-            // CR claude for eric: [bug] Splitting one `super::*` into a glob source per
+            // CR claude for claude: [bug] Splitting one `super::*` into a glob source per
             // chain level makes Env::lookup_at (graphix-types/src/env.rs:714) treat the
             // levels as rival globs. Any name declared at two levels, which is ordinary
             // shadowing, is then reported as ambiguous, even though `use super::x`
@@ -139,7 +139,7 @@ pub(crate) fn compile_use_items(
     if reexport {
         bail!("re-exports (`pub use`) are not yet supported")
     }
-    // CR claude for eric: [bug] Each item is installed in UseItem::sorted order before
+    // CR claude for claude: [bug] Each item is installed in UseItem::sorted order before
     // the next item's prefix resolves through the scope's imports. So alphabetical
     // order decides whether a sibling sees a rename (or glob) that rebinds the
     // statement's root: `{ use a::{b, c as a}; b }` takes b from `a`, while `{ use
@@ -359,7 +359,7 @@ fn export_sig(env: &mut Env, inner_env: &Env, scope: &Scope, sig: &Sig) {
             copy_sig!(binds);
             copy_sig!(typedefs);
             copy_sig!(traits);
-            // CR claude for eric: [bug] This publishes the rep of every abstract
+            // CR claude for claude: [bug] This publishes the rep of every abstract
             // typedef with a body under a re-exported `mod sub;`. A gxi body is already
             // public from bind_sig, so the only reps this changes are an interface-less
             // descendant's own `type T = Abstract<..>`. As a result, a parent gxi that
@@ -427,7 +427,7 @@ fn check_sig<R: Rt, E: UserEvent>(
             for id in ids.drain(..) {
                 let Some(inner) = ctx.env.by_id.get(&id) else { continue };
                 let name = inner.name.clone();
-                // CR claude for eric: [bug] Every top-level `let` of a name is paired
+                // CR claude for claude: [bug] Every top-level `let` of a name is paired
                 // with the interface `val` of that name. So a body that shadows an
                 // exported name (`let x = ..; let x = ..`) proxies both bindings to the
                 // one exported id. The export then carries whichever binding fired
@@ -444,7 +444,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                 let Some(proxy_bind) = ctx.env.by_id.get(proxy_id) else { continue };
                 let typ = if single.is_some() { bind.typ() } else { &inner.typ };
                 proxy_bind.typ.unbind_tvars();
-                // CR claude for eric: [bug] check_sig attaches no site to any of its
+                // CR claude for claude: [bug] check_sig attaches no site to any of its
                 // errors: this val mismatch, the typedef bails (440-480), the trait
                 // bail (563) and "sig item .. is missing an implementation" (589). So
                 // every interface conformance error is placed at the parent's `mod m`
@@ -580,7 +580,7 @@ fn check_sig<R: Rt, E: UserEvent>(
                             .trait_def(trait_id)
                             .cloned()
                             .expect("bound by bind_sig");
-                        // CR claude for eric: [bug] An implementation fulfils this
+                        // CR claude for claude: [bug] An implementation fulfils this
                         // declaration whenever its head merely overlaps it
                         // (register_impl pairs by heads_overlap). The declared method
                         // bindings are then proxied here without comparing the
@@ -828,7 +828,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
     ) -> Result<Node<R, E>> {
         let task = crate::typ::tvar::new_task();
         let _task = crate::typ::tvar::InTask::enter(task);
-        // CR claude for eric: [perf] The module keeps a whole clone of ctx.env, but
+        // CR claude for claude: [perf] The module keeps a whole clone of ctx.env, but
         // only its lexical fields are ever read: with_restored_mut swaps them,
         // export_sig reads them, the image writes them with lexical_encode, and a warm
         // start runs on a lexical-only decode. The clone's global maps (by_id, names,
@@ -888,7 +888,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         };
         let pending = mem::take(&mut ctx.pending_imports);
         let census = ctx.attr_census.lock().len();
-        // CR claude for eric: [bug] The loaded body compiles and checks here without
+        // CR claude for claude: [bug] The loaded body compiles and checks here without
         // entering Level::TOP, so every cell it creates takes the thread's default
         // Level::GENERIC (tvar.rs:141); only compile_top and check_and_fuse enter TOP.
         // A top-level `let z = never()` is then a scheme cell, tvar::lower claims
@@ -900,7 +900,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         // "an instance at ... of a definition typed ..." error. Enter
         // `AtLevel::enter(Level::TOP)` around the compile and check, as compile_top
         // does. probe: design/review-2026-10-05/repro/t-tvar-04.gx (t-tvar-04)
-        // CR claude for eric: [bug] A loaded body never gets its check's
+        // CR claude for claude: [bug] A loaded body never gets its check's
         // statement-boundary checks: neither drain_pending_settles nor
         // check_pending_names runs here. With two or more statements (the one-statement
         // path drains, after typecheck1), a catch(e: T) that does not cover its region
@@ -912,7 +912,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
         // should drain after check_body and before typecheck1, in a settle frame of the
         // load's own, followed by the name check. probe:
         // design/review-2026-10-05/repro/c-module-traits-02.gx (c-module-traits-02)
-        // CR claude for eric: [bug] A reload accepts a hidden abstract type (`type C;`
+        // CR claude for claude: [bug] A reload accepts a hidden abstract type (`type C;`
         // in the sig) whose `Abstract<..>` differs from the previous load's. AbstractId
         // comes from the path alone, so a value the consumer minted under the old
         // source reaches the new code, which treats its payload as the new type. The
@@ -964,7 +964,7 @@ impl<R: Rt, E: UserEvent> Module<R, E> {
                 exprs.iter(),
             )
         });
-        // CR claude for eric: [bug] This restores builtins_allowed before check_body,
+        // CR claude for claude: [bug] This restores builtins_allowed before check_body,
         // so the sandbox flag only covers the loaded source's top-level statements.
         // Every lambda body and labeled default is compiled later with builtins
         // allowed: at its definition check (Lambda::typecheck0), in check_defaults,

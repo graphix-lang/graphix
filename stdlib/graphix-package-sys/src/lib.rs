@@ -187,7 +187,7 @@ pub trait StreamMark: 'static + Send + Sync {
 }
 
 pub struct Stream<K: StreamMark> {
-    // CR claude for eric: [bug] One lock guards the whole stream, and every read holds
+    // CR claude for claude: [bug] One lock guards the whole stream, and every read holds
     // it across its await: the lines reader at io.rs:79-81, and read and read_exact at
     // io.rs:40-47 and 221-230. So on a TcpStream or TlsStream, a pending read blocks
     // write, write_exact, flush, close, shutdown, peer_addr and local_addr until the
@@ -209,7 +209,7 @@ impl<K: StreamMark> Stream<K> {
     /// A handle of this kind onto an EXISTING stream. `tls::connect`
     /// mints one: the TLS session and the TCP handle it was built
     /// from are the same socket, and both handles see it.
-    // CR claude for eric: [doc-drift] The doc above is false: tls::connect does not
+    // CR claude for claude: [doc-drift] The doc above is false: tls::connect does not
     // share the TCP handle's socket. It takes the StreamKind out of that handle and
     // wraps the session in a fresh one through wrap_tls (Stream::new), leaving the TCP
     // handle empty. from_inner's only caller is Stream::new (line 196), in this repo
@@ -608,7 +608,7 @@ impl<R: Rt, E: UserEvent> Apply<R, E> for Exit {
             use std::io::Write;
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
-            // CR claude for eric: [bug] This exits inside a cycle, so the shell's
+            // CR claude for claude: [bug] This exits inside a cycle, so the shell's
             // orderly end (graphix-shell/src/lib.rs:542-547) never runs. A TUI program
             // that ends with sys::exit leaves the terminal in the alternate screen,
             // with the cursor hidden and in raw mode; tui::exit restores it but takes

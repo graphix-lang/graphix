@@ -550,7 +550,7 @@ pub(crate) fn record_decode(buf: &mut impl Buf) -> Result<Arc<BodyRecord>, PackE
             let mut bytes = vec![0u8; n];
             buf.copy_to_slice(&mut bytes);
             let align = decode_varint(buf)?;
-            // CR claude for eric: [risk] A decoded relocation's offset, kind and
+            // CR claude for claude: [risk] A decoded relocation's offset, kind and
             // addend, and the record's align, reach cranelift-jit unchecked.
             // perform_relocations only debug_asserts offset < size before writing, so
             // an offset past the code is an out-of-bounds write in release. A bad

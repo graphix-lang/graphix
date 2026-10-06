@@ -198,7 +198,7 @@ run!(
 // resolve by the element type.
 run!(
     trait_method_as_callback,
-    // CR claude for eric: [test-gap] This predicate checks only the length, so dispatch
+    // CR claude for claude: [test-gap] This predicate checks only the length, so dispatch
     // to the wrong impl, or the wrong strings, passes in every mode, and run! never
     // compares the modes. Every engine produces ["int 1", "int 2"] (graphix-fuzz run),
     // so assert that. Separately, the comment at 166 opens with the `[⊥, Counter]`

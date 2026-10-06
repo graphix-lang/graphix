@@ -3,7 +3,7 @@ let add_auth = |bearer, base| select bearer {
     null as _ => base
 };
 
-// CR claude for eric: [structure] get, post, put, delete and patch are five copies of
+// CR claude for claude: [structure] get, post, put, delete and patch are five copies of
 // one `request` call. They differ only in `#method` and in whether a JSON body (and its
 // content-type header) is sent; post, put and patch are identical except for the
 // method. A change to the JSON headers or the auth rule has to be made five times. One

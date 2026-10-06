@@ -127,7 +127,7 @@ directory:
 | macOS | `~/Library/Application Support/graphix/packages.toml` |
 | Windows | `%APPDATA%\graphix\packages.toml` |
 
-<!-- CR claude for eric: [doc-drift] This section shows the pre-v2 format (a bare
+<!-- CR claude for claude: [doc-drift] This section shows the pre-v2 format (a bare
 [packages] table), but parse_packages reads any file without [stdlib] as legacy and
 migrate_old marks every stdlib package the file does not name as removed, so a file
 written from this example rebuilds a binary with core alone (probe: put this example in

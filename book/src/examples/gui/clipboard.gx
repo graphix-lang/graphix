@@ -22,7 +22,7 @@ let col = column(
             #padding: &`All(10.0),
             &text(&"Copy to clipboard")
         ),
-        // CR claude for eric: [bug] The on_press handler below pastes the previous
+        // CR claude for claude: [bug] The on_press handler below pastes the previous
         // read. read_text is async and re-delivers its last reply while a press's read
         // is in flight, so `c ~ clipboard::read_text(c)$` writes the reply to the
         // previous press, and the new reply fires with no `c` fire to sample it. Every

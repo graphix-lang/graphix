@@ -103,7 +103,7 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
             shell,
             viewport,
         );
-        // CR claude for eric: [bug] This sets `open` on every right-click over the
+        // CR claude for claude: [bug] This sets `open` on every right-click over the
         // child, even when this menu cannot show. That happens in three cases: an inner
         // context_menu already captured the click (there is no
         // `shell.is_event_captured()` check here, unlike iced_keyboard_area.rs:133), a
@@ -117,7 +117,7 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
         // (`nested_inner_item_reopens_outer`: choose Rename, and the outer "New folder"
         // menu is then open at the same spot). (gui-widgets-a-08)
         let state = tree.state.downcast_mut::<State>();
-        // CR claude for eric: [doc-drift] menu.md says a shortcut triggers its action
+        // CR claude for claude: [doc-drift] menu.md says a shortcut triggers its action
         // globally within the window, and book/src/examples/gui/context_menu.gx shows
         // Ctrl+C and Ctrl+V. This match has no shortcut arm, though. Only
         // MenuOverlay::update matches shortcuts, and that overlay exists only while the
@@ -185,7 +185,7 @@ impl<'a> Widget<Message, GraphixTheme, Renderer> for OwnedContextMenu<'a> {
         }
         Some(overlay::Element::new(Box::new(MenuOverlay {
             menu: &self.desc,
-            // CR claude for eric: [bug] overlay() drops `translation`. Inside a
+            // CR claude for claude: [bug] overlay() drops `translation`. Inside a
             // scrollable, `state.position` is in content coordinates, because iced
             // gives children the cursor plus the scroll offset and expects overlays to
             // add `translation`, as pick_list and tooltip do. So the menu opens at the
