@@ -8,10 +8,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -119,6 +115,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -144,10 +144,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -308,21 +304,6 @@
     }
   },
   {
-    "type": "abstract_type",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": false,
-      "required": true,
-      "types": [
-        {
-          "type": "type_identifier",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "any",
     "named": true,
     "fields": {},
@@ -359,6 +340,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -380,10 +365,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -517,10 +498,6 @@
       "multiple": true,
       "required": true,
       "types": [
-        {
-          "type": "abstract_type",
-          "named": true
-        },
         {
           "type": "applied_type",
           "named": true
@@ -740,6 +717,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -761,10 +742,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -950,6 +927,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -971,10 +952,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -1167,6 +1144,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -1188,10 +1169,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -1354,6 +1331,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -1375,10 +1356,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -1513,10 +1490,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -1628,6 +1601,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -1649,10 +1626,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -1826,6 +1799,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -1850,7 +1827,190 @@
           "named": true
         },
         {
-          "type": "do_block",
+          "type": "impl_def",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "map",
+          "named": true
+        },
+        {
+          "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
+          "named": true
+        },
+        {
+          "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qop",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "reference",
+          "named": true
+        },
+        {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "seq_block",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "struct",
+          "named": true
+        },
+        {
+          "type": "struct_ref",
+          "named": true
+        },
+        {
+          "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
+          "named": true
+        },
+        {
+          "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "try_with",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "tuple_ref",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "type_def",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "use",
+          "named": true
+        },
+        {
+          "type": "variant",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
+          "type": "any",
+          "named": true
+        },
+        {
+          "type": "apply",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "array_ref",
+          "named": true
+        },
+        {
+          "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "block",
+          "named": true
+        },
+        {
+          "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
+          "named": true
+        },
+        {
+          "type": "catch_stmt",
+          "named": true
+        },
+        {
+          "type": "connect",
+          "named": true
+        },
+        {
+          "type": "deref",
           "named": true
         },
         {
@@ -2033,6 +2193,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -2054,10 +2218,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -2192,10 +2352,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -2279,10 +2435,6 @@
           "named": true
         },
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "any",
           "named": true
         },
@@ -2315,6 +2467,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -2340,10 +2496,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -2576,6 +2728,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -2597,10 +2753,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -2731,10 +2883,6 @@
       "required": false,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -2856,6 +3004,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -2877,10 +3029,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -3046,21 +3194,6 @@
     }
   },
   {
-    "type": "constraints_clause",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "constraint",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "construct_path",
     "named": true,
     "fields": {},
@@ -3116,190 +3249,7 @@
           "named": true
         },
         {
-          "type": "builtin_ref",
-          "named": true
-        },
-        {
-          "type": "by_ref",
-          "named": true
-        },
-        {
-          "type": "cast",
-          "named": true
-        },
-        {
-          "type": "catch_stmt",
-          "named": true
-        },
-        {
-          "type": "connect",
-          "named": true
-        },
-        {
-          "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
-          "named": true
-        },
-        {
-          "type": "impl_def",
-          "named": true
-        },
-        {
-          "type": "lambda",
-          "named": true
-        },
-        {
-          "type": "let_binding",
-          "named": true
-        },
-        {
-          "type": "list",
-          "named": true
-        },
-        {
-          "type": "literal",
-          "named": true
-        },
-        {
-          "type": "map",
-          "named": true
-        },
-        {
-          "type": "map_ref",
-          "named": true
-        },
-        {
-          "type": "module",
-          "named": true
-        },
-        {
-          "type": "never",
-          "named": true
-        },
-        {
-          "type": "or_never",
-          "named": true
-        },
-        {
-          "type": "parenthesized_expression",
-          "named": true
-        },
-        {
-          "type": "qop",
-          "named": true
-        },
-        {
-          "type": "raw_string",
-          "named": true
-        },
-        {
-          "type": "reference",
-          "named": true
-        },
-        {
-          "type": "select",
-          "named": true
-        },
-        {
-          "type": "seq_block",
-          "named": true
-        },
-        {
-          "type": "string",
-          "named": true
-        },
-        {
-          "type": "struct",
-          "named": true
-        },
-        {
-          "type": "struct_ref",
-          "named": true
-        },
-        {
-          "type": "struct_with",
-          "named": true
-        },
-        {
-          "type": "trait_def",
-          "named": true
-        },
-        {
-          "type": "triple_string",
-          "named": true
-        },
-        {
-          "type": "try_with",
-          "named": true
-        },
-        {
-          "type": "tuple",
-          "named": true
-        },
-        {
-          "type": "tuple_ref",
-          "named": true
-        },
-        {
-          "type": "type_ascription",
-          "named": true
-        },
-        {
-          "type": "type_def",
-          "named": true
-        },
-        {
-          "type": "unary_expression",
-          "named": true
-        },
-        {
-          "type": "use",
-          "named": true
-        },
-        {
-          "type": "variant",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "do_block",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "abstract_construct",
-          "named": true
-        },
-        {
-          "type": "any",
-          "named": true
-        },
-        {
-          "type": "apply",
-          "named": true
-        },
-        {
-          "type": "array",
-          "named": true
-        },
-        {
-          "type": "array_ref",
-          "named": true
-        },
-        {
-          "type": "array_slice",
-          "named": true
-        },
-        {
-          "type": "binary_expression",
+          "type": "block",
           "named": true
         },
         {
@@ -3324,10 +3274,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -3462,10 +3408,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -3544,10 +3486,6 @@
       "multiple": true,
       "required": true,
       "types": [
-        {
-          "type": "abstract_type",
-          "named": true
-        },
         {
           "type": "applied_type",
           "named": true
@@ -3689,10 +3627,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -3773,12 +3707,8 @@
     "fields": {},
     "children": {
       "multiple": true,
-      "required": false,
+      "required": true,
       "types": [
-        {
-          "type": "abstract_type",
-          "named": true
-        },
         {
           "type": "applied_type",
           "named": true
@@ -3793,10 +3723,6 @@
         },
         {
           "type": "constraint",
-          "named": true
-        },
-        {
-          "type": "constraints_clause",
           "named": true
         },
         {
@@ -3874,10 +3800,6 @@
         "multiple": false,
         "required": true,
         "types": [
-          {
-            "type": "abstract_type",
-            "named": true
-          },
           {
             "type": "applied_type",
             "named": true
@@ -4015,6 +3937,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -4036,10 +3962,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -4208,10 +4130,6 @@
           "named": true
         },
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "any",
           "named": true
         },
@@ -4244,6 +4162,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -4269,10 +4191,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -4471,10 +4389,6 @@
           "named": true
         },
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "any",
           "named": true
         },
@@ -4507,6 +4421,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -4532,10 +4450,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -4753,10 +4667,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -4877,10 +4787,6 @@
         "required": false,
         "types": [
           {
-            "type": "abstract_type",
-            "named": true
-          },
-          {
             "type": "applied_type",
             "named": true
           },
@@ -4987,6 +4893,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -5008,10 +4918,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -5175,6 +5081,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -5196,10 +5106,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -5468,6 +5374,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -5489,10 +5399,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -5654,6 +5560,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -5675,10 +5585,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -5842,6 +5748,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -5863,10 +5773,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -6001,10 +5907,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -6116,6 +6018,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -6137,10 +6043,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -6281,16 +6183,6 @@
     "type": "module",
     "named": true,
     "fields": {
-      "body": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "module_body",
-            "named": true
-          }
-        ]
-      },
       "name": {
         "multiple": false,
         "required": true,
@@ -6358,6 +6250,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -6379,10 +6275,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -6507,203 +6399,6 @@
           }
         ]
       }
-    },
-    "children": {
-      "multiple": false,
-      "required": false,
-      "types": [
-        {
-          "type": "signature",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "module_body",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "abstract_construct",
-          "named": true
-        },
-        {
-          "type": "any",
-          "named": true
-        },
-        {
-          "type": "apply",
-          "named": true
-        },
-        {
-          "type": "array",
-          "named": true
-        },
-        {
-          "type": "array_ref",
-          "named": true
-        },
-        {
-          "type": "array_slice",
-          "named": true
-        },
-        {
-          "type": "binary_expression",
-          "named": true
-        },
-        {
-          "type": "builtin_ref",
-          "named": true
-        },
-        {
-          "type": "by_ref",
-          "named": true
-        },
-        {
-          "type": "cast",
-          "named": true
-        },
-        {
-          "type": "catch_stmt",
-          "named": true
-        },
-        {
-          "type": "connect",
-          "named": true
-        },
-        {
-          "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
-          "named": true
-        },
-        {
-          "type": "impl_def",
-          "named": true
-        },
-        {
-          "type": "lambda",
-          "named": true
-        },
-        {
-          "type": "let_binding",
-          "named": true
-        },
-        {
-          "type": "list",
-          "named": true
-        },
-        {
-          "type": "literal",
-          "named": true
-        },
-        {
-          "type": "map",
-          "named": true
-        },
-        {
-          "type": "map_ref",
-          "named": true
-        },
-        {
-          "type": "module",
-          "named": true
-        },
-        {
-          "type": "never",
-          "named": true
-        },
-        {
-          "type": "or_never",
-          "named": true
-        },
-        {
-          "type": "parenthesized_expression",
-          "named": true
-        },
-        {
-          "type": "qop",
-          "named": true
-        },
-        {
-          "type": "raw_string",
-          "named": true
-        },
-        {
-          "type": "reference",
-          "named": true
-        },
-        {
-          "type": "select",
-          "named": true
-        },
-        {
-          "type": "seq_block",
-          "named": true
-        },
-        {
-          "type": "string",
-          "named": true
-        },
-        {
-          "type": "struct",
-          "named": true
-        },
-        {
-          "type": "struct_ref",
-          "named": true
-        },
-        {
-          "type": "struct_with",
-          "named": true
-        },
-        {
-          "type": "trait_def",
-          "named": true
-        },
-        {
-          "type": "triple_string",
-          "named": true
-        },
-        {
-          "type": "try_with",
-          "named": true
-        },
-        {
-          "type": "tuple",
-          "named": true
-        },
-        {
-          "type": "tuple_ref",
-          "named": true
-        },
-        {
-          "type": "type_ascription",
-          "named": true
-        },
-        {
-          "type": "type_def",
-          "named": true
-        },
-        {
-          "type": "unary_expression",
-          "named": true
-        },
-        {
-          "type": "use",
-          "named": true
-        },
-        {
-          "type": "variant",
-          "named": true
-        }
-      ]
     }
   },
   {
@@ -6742,10 +6437,6 @@
           "named": true
         },
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "any",
           "named": true
         },
@@ -6778,6 +6469,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -6803,10 +6498,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -7030,15 +6721,15 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
         {
           "type": "cast",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -7188,6 +6879,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -7209,10 +6904,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -7347,10 +7038,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -7434,10 +7121,6 @@
           "named": true
         },
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "any",
           "named": true
         },
@@ -7470,6 +7153,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -7495,10 +7182,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -7756,15 +7439,15 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
         {
           "type": "cast",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -7957,6 +7640,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -7978,10 +7665,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -8169,6 +7852,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -8190,10 +7877,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -8355,6 +8038,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -8376,10 +8063,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -8551,6 +8234,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -8572,10 +8259,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -8705,10 +8388,6 @@
         "required": false,
         "types": [
           {
-            "type": "abstract_type",
-            "named": true
-          },
-          {
             "type": "applied_type",
             "named": true
           },
@@ -8812,6 +8491,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -8833,10 +8516,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -8985,10 +8664,6 @@
         "required": true,
         "types": [
           {
-            "type": "abstract_type",
-            "named": true
-          },
-          {
             "type": "applied_type",
             "named": true
           },
@@ -9093,10 +8768,6 @@
         "multiple": false,
         "required": true,
         "types": [
-          {
-            "type": "abstract_type",
-            "named": true
-          },
           {
             "type": "applied_type",
             "named": true
@@ -9311,10 +8982,6 @@
             "named": true
           },
           {
-            "type": "abstract_type",
-            "named": true
-          },
-          {
             "type": "applied_type",
             "named": true
           },
@@ -9435,21 +9102,6 @@
     }
   },
   {
-    "type": "signature",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "sig_item",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "slice_prefix_pattern",
     "named": true,
     "fields": {
@@ -9555,6 +9207,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -9576,10 +9232,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -9798,6 +9450,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -9819,10 +9475,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -10150,10 +9802,6 @@
         "required": true,
         "types": [
           {
-            "type": "abstract_type",
-            "named": true
-          },
-          {
             "type": "applied_type",
             "named": true
           },
@@ -10262,6 +9910,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -10283,10 +9935,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -10516,6 +10164,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -10537,10 +10189,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -10675,10 +10323,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -10757,10 +10401,6 @@
       "multiple": true,
       "required": true,
       "types": [
-        {
-          "type": "abstract_type",
-          "named": true
-        },
         {
           "type": "applied_type",
           "named": true
@@ -10903,6 +10543,10 @@
             "named": true
           },
           {
+            "type": "block",
+            "named": true
+          },
+          {
             "type": "builtin_ref",
             "named": true
           },
@@ -10924,10 +10568,6 @@
           },
           {
             "type": "deref",
-            "named": true
-          },
-          {
-            "type": "do_block",
             "named": true
           },
           {
@@ -11067,10 +10707,6 @@
         "required": true,
         "types": [
           {
-            "type": "abstract_type",
-            "named": true
-          },
-          {
             "type": "applied_type",
             "named": true
           },
@@ -11203,10 +10839,6 @@
           "named": true
         },
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "any",
           "named": true
         },
@@ -11239,6 +10871,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -11264,10 +10900,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -11490,6 +11122,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -11511,10 +11147,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -11790,10 +11422,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -11872,10 +11500,6 @@
       "multiple": true,
       "required": true,
       "types": [
-        {
-          "type": "abstract_type",
-          "named": true
-        },
         {
           "type": "applied_type",
           "named": true
@@ -12013,10 +11637,6 @@
             "named": true
           },
           {
-            "type": "abstract_type",
-            "named": true
-          },
-          {
             "type": "applied_type",
             "named": true
           },
@@ -12106,10 +11726,6 @@
       "multiple": true,
       "required": true,
       "types": [
-        {
-          "type": "abstract_type",
-          "named": true
-        },
         {
           "type": "applied_type",
           "named": true
@@ -12267,6 +11883,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -12288,10 +11908,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -12426,10 +12042,6 @@
       "required": false,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -12537,6 +12149,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -12558,10 +12174,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -12809,10 +12421,6 @@
       "required": true,
       "types": [
         {
-          "type": "abstract_type",
-          "named": true
-        },
-        {
           "type": "applied_type",
           "named": true
         },
@@ -12924,6 +12532,10 @@
           "named": true
         },
         {
+          "type": "block",
+          "named": true
+        },
+        {
           "type": "builtin_ref",
           "named": true
         },
@@ -12945,10 +12557,6 @@
         },
         {
           "type": "deref",
-          "named": true
-        },
-        {
-          "type": "do_block",
           "named": true
         },
         {
@@ -13139,10 +12747,6 @@
       "multiple": true,
       "required": false,
       "types": [
-        {
-          "type": "abstract_type",
-          "named": true
-        },
         {
           "type": "applied_type",
           "named": true
@@ -13556,10 +13160,6 @@
     "named": true
   },
   {
-    "type": "ok",
-    "named": false
-  },
-  {
     "type": "package",
     "named": false
   },
@@ -13682,10 +13282,6 @@
   {
     "type": "value_string_content",
     "named": true
-  },
-  {
-    "type": "where",
-    "named": false
   },
   {
     "type": "whitelist",

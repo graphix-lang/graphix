@@ -51,7 +51,7 @@ module.exports = grammar({
     // `seq {x}`: a punned struct literal as trigger, or a body with no
     // trigger; the trigger reading dies when no body follows.
     [$._binding_name, $._field_name],
-    [$._seq_item, $.do_block],
+    [$._seq_item, $.block],
     [$.boolean, $._field_name],
     [$.null, $._field_name],
     [$._expression, $.apply],
@@ -111,11 +111,8 @@ module.exports = grammar({
     // separated by `;`. Tree-sitter is file-extension-agnostic; a file
     // is parsed as whichever shape matches its contents.
     //
-    // Doc-comment prefixes (`///`) are allowed on every kind of top-
-    // level item (sig and impl alike) so multi-line doc comments before
-    // a `let`, `mod`, `type`, or `use` parse correctly even though the
-    // language compiler only accepts them in `.gxi` files. Tree-sitter
-    // is permissive on syntax; semantics are the compiler's job.
+    // Doc comments (`///`) attach to interface items and trait
+    // methods only, as in the compiler.
     source_file: $ => choice(
       seq(
         optional($._expression),
@@ -201,37 +198,9 @@ module.exports = grammar({
     ),
 
     // Module and use
-    // CR claude for claude: [dead] The grammar still accepts syntax the parser rejects:
-    // inline module bodies and signatures (`mod m { .. }`, `mod m: { .. } { .. }`,
-    // 214-220, 238-245, 264-269), `where` clauses (540-543), `ok` as null (1053), `?T`
-    // (567), fn types without `-> T` (504), `?#` and `#foo x` lambda params (735-756),
-    // `@name` vargs other than `@args` (536, 748), `\x41`/`\u{..}` escapes (1088-1089,
-    // 1130-1131) and a leading `/` on paths (388, 1145). Editors color rejected code as
-    // valid, and indents.scm and graphix-mode.el still name module_body and signature.
-    // `~!` has no rule beside `~` (842), so `a ~! b == c` parses as `a ~ ((!b) == c)`.
-    // Delete the dead alternatives together with their query references, and add the
-    // `~!` rule. (ide-tooling.r2-13)
     module: $ => choice(
       // Bodyless module declaration: mod name
       seq('mod', field('name', $._binding_name)),
-      // Static module: mod name { ... }
-      // CR claude for claude: [dead] This branch, with module_body (238) and signature
-      // (264), accepts inline `mod m { .. }` and `mod m: {..} {..}`, which the parser
-      // refuses, and so do fn-type `where` clauses (constraints_clause 540, plus the
-      // `where` captures in highlights.scm and graphix-mode.el), `?T` (abstract_type
-      // 567), `?#x` and `#x pat` lambda params (736-737, 751), fn types without `-> T`
-      // (504), `@name` vargs for names other than `args` (536, 748), `ok` as null
-      // (1053), a leading `/` on paths (388, 1145) and a leading `+` on numbers. Each
-      // shows as well-formed Graphix in the editor while `graphix --check` refuses it;
-      // delete the productions and their captures. do_block (971) is named after the
-      // removed `do`, and the comment at 121-125 says `///` before a `let` parses,
-      // which gives an ERROR. (ide-tooling-12)
-      seq(
-        'mod',
-        field('name', $._binding_name),
-        optional($.signature),
-        field('body', $.module_body),
-      ),
       // Dynamic module: mod name dynamic { sandbox ...; sig { ... }; source expr }
       seq(
         'mod',
@@ -249,15 +218,6 @@ module.exports = grammar({
       ),
     ),
 
-    module_body: $ => seq(
-      '{',
-      optional(seq(
-        $._expression,
-        repeat(seq(';', optional($._expression))),
-      )),
-      '}',
-    ),
-
     sandbox: $ => choice(
       seq('sandbox', 'unrestricted'),
       seq('sandbox', 'blacklist', '[', commaSep1($.module_path), ']'),
@@ -272,13 +232,6 @@ module.exports = grammar({
         repeat(seq(';', $.sig_item)),
         optional(';'),
       )),
-      '}',
-    ),
-
-    signature: $ => seq(
-      ':',
-      '{',
-      repeat($.sig_item),
       '}',
     ),
 
@@ -399,7 +352,6 @@ module.exports = grammar({
     // as one ERROR. Inlined, both continuations shift the `::` first
     // and the next token (name vs `{` vs `*`) decides deterministically.
     use_path: $ => seq(
-      optional('/'),
       $._use_segment,
       repeat(seq('::', $._use_segment)),
       optional(choice(
@@ -464,7 +416,6 @@ module.exports = grammar({
       $.function_type,
       $.ref_type,
       $.by_ref_type,
-      $.abstract_type,
       $.error_type,
       $.parenthesized_type,
       $.applied_type,
@@ -524,9 +475,9 @@ module.exports = grammar({
       '(',
       optional($.fn_type_args),
       ')',
-      optional(seq('->', $._type)),
+      '->',
+      $._type,
       optional($.throws_clause),
-      optional($.constraints_clause),
     )),
 
     // Allow either: positional/labeled args (optionally followed by a
@@ -556,14 +507,9 @@ module.exports = grammar({
     // colon disambiguates from a bare type expression.
     fn_type_arg_name: $ => seq($._binding_name, ':'),
 
-    fn_type_varg: $ => seq('@', $._binding_name, ':', $._type),
+    fn_type_varg: $ => seq('@', alias('args', $.identifier), ':', $._type),
 
     throws_clause: $ => seq('throws', $._type),
-
-    constraints_clause: $ => prec.left(seq(
-      'where',
-      commaSep1($.constraint),
-    )),
 
     constraint: $ => seq($.type_variable, ':', $.trait_bound),
 
@@ -586,8 +532,6 @@ module.exports = grammar({
     type_arguments: $ => seq('<', commaSep1($._type), '>'),
 
     by_ref_type: $ => seq('&', optional('mut'), $._type),
-
-    abstract_type: $ => seq('?', $.type_identifier),
 
     // Error<T> wraps any type, not just a string literal — e.g.
     // `Error<'e>`, `Error<`Tag(string)>`, etc.
@@ -754,11 +698,8 @@ module.exports = grammar({
     lambda_param: $ => choice(
       // Variadic param: @args
       $.variadic_param,
-      // Labeled param with optional pattern: #foo or #foo x or #foo: Type or #foo: Type = default
-      seq(
-        $.labeled_param,
-        optional($.structure_pattern),
-      ),
+      // Labeled param: #foo, #foo: Type, #foo = default, #foo: Type = default
+      $.labeled_param,
       // Simple pattern: x or x: Type
       seq(
         $.structure_pattern,
@@ -768,10 +709,9 @@ module.exports = grammar({
       seq($.self_param, optional(seq(':', $._type))),
     ),
 
-    variadic_param: $ => seq('@', $._binding_name, optional(seq(':', $._type))),
+    variadic_param: $ => seq('@', alias('args', $.identifier), optional(seq(':', $._type))),
 
     labeled_param: $ => prec.left(seq(
-      optional('?'),
       '#',
       $._binding_name,
       optional(seq(':', $._type)),
@@ -809,7 +749,7 @@ module.exports = grammar({
       $.any,
       $.cast,
       $.never,
-      $.do_block,
+      $.block,
     ),
 
     // Type ascription: Type:literal (e.g., i8:0, duration:0.5s, bytes:AQID==)
@@ -1008,12 +948,12 @@ module.exports = grammar({
       ')',
     ),
 
-    // Do block
-    do_block: $ => seq(
+    // A block: statements separated by `;`; one `;` at least, so `{a}`
+    // stays a punned struct
+    block: $ => seq(
       '{',
       repeat1(seq($._expression, ';')),
-      $._expression,
-      optional(';'),
+      optional($._expression),
       '}',
     ),
 
@@ -1076,9 +1016,9 @@ module.exports = grammar({
       // two dots, so postfix chains lex cleanly.
       /\d+(\.\d+)?[smhd]/,
       // Scientific notation
-      /[+-]?\d+(\.\d+)?[eE][+-]?\d+/,
+      /-?\d+(\.\d+)?[eE][+-]?\d+/,
       // Floats (require at least one digit after decimal to avoid consuming '..' operator)
-      /[+-]?\d+\.\d+/,
+      /-?\d+\.\d+/,
       // Hexadecimal
       /0x[0-9a-fA-F]+/,
       // Binary
@@ -1086,12 +1026,12 @@ module.exports = grammar({
       // Octal
       /0o[0-7]+/,
       // Integers (last to avoid matching prefixes of above)
-      /[+-]?\d+/,
+      /-?\d+/,
     ))),
 
     boolean: $ => choice('true', 'false'),
 
-    null: $ => choice('null', 'ok'),
+    null: $ => 'null',
 
     // Strings (including interpolated strings)
     // Interpolating string: [expr] is interpolation.
@@ -1122,14 +1062,7 @@ module.exports = grammar({
       '"',
     )),
 
-    escape_sequence: $ => token.immediate(seq(
-      '\\',
-      choice(
-        /[\\\"nrt0\[\]]/,
-        /x[0-9a-fA-F]{2}/,
-        /u\{[0-9a-fA-F]+\}/,
-      ),
-    )),
+    escape_sequence: $ => token.immediate(seq('\\', /[\\\"nrt0\[\]]/)),
 
     interpolation: $ => seq(
       '[',
@@ -1164,14 +1097,7 @@ module.exports = grammar({
       ']',
     ),
 
-    template_escape: $ => token.immediate(seq(
-      '\\',
-      choice(
-        /[\\"nrt0]/,
-        /x[0-9a-fA-F]{2}/,
-        /u\{[0-9a-fA-F]+\}/,
-      ),
-    )),
+    template_escape: $ => token.immediate(seq('\\', /[\\"nrt0]/)),
 
     // Reference
     reference: $ => $.module_path,
@@ -1183,7 +1109,6 @@ module.exports = grammar({
     // (design/module_system.md): `self::x`, `super::super::x`,
     // `package::a::b`. Positional rules live in the real parser.
     module_path: $ => seq(
-      optional('/'),
       choice(
         seq(
           choice('self', 'package', seq('super', repeat(seq('::', 'super')))),

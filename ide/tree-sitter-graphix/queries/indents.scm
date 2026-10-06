@@ -1,7 +1,7 @@
 ; Indent on opening brackets
 [
-  (module_body)
-  (do_block)
+  (sig_block)
+  (block)
   (select)
   (seq_block)
   (struct)
@@ -10,7 +10,6 @@
   (tuple)
   (struct_type)
   (tuple_type)
-  (signature)
   (apply_args)
   (lambda)
 ] @indent

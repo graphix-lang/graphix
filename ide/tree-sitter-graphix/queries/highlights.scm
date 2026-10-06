@@ -36,7 +36,6 @@
   "never"
   "any"
   "with"
-  "where"
   "throws"
   "as"
 ] @keyword

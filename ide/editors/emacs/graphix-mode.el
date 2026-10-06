@@ -88,9 +88,9 @@
 
 (defvar graphix-font-lock-keywords
   (let ((keywords '("let" "rec" "mod" "use" "type" "fn" "select" "if" "try"
-                     "catch" "cast" "any" "with" "where" "throws" "as"
+                     "catch" "cast" "any" "with" "throws" "as"
                      "seq" "seqq" "until" "abort"))
-        (builtins '("true" "false" "null" "ok"))
+        (builtins '("true" "false" "null"))
         (types '("bool" "string" "bytes" "i8" "u8" "i16" "u16"
                  "i32" "u32" "v32" "z32" "i64" "u64" "v64" "z64"
                  "f32" "f64" "decimal" "datetime" "duration"
@@ -149,7 +149,7 @@ Falls back to this mode when tree-sitter is not available.
      :language 'graphix
      :feature 'keyword
      '(["mod" "use" "let" "rec" "type" "fn" "select" "seq" "seqq" "until" "abort" "flush" "if" "catch"
-        "cast" "any" "with" "where" "throws" "as"] @font-lock-keyword-face)
+        "cast" "any" "with" "throws" "as"] @font-lock-keyword-face)
 
      ;; Level 1: strings
      :language 'graphix
@@ -256,8 +256,8 @@ Falls back to this mode when tree-sitter is not available.
        ((node-is "}") parent-bol 0)
        ((node-is "]") parent-bol 0)
        ((node-is ")") parent-bol 0)
-       ((parent-is "module_body") parent-bol ,graphix-indent-offset)
-       ((parent-is "do_block") parent-bol ,graphix-indent-offset)
+       ((parent-is "sig_block") parent-bol ,graphix-indent-offset)
+       ((parent-is "block") parent-bol ,graphix-indent-offset)
        ((parent-is "select") parent-bol ,graphix-indent-offset)
        ((parent-is "struct") parent-bol ,graphix-indent-offset)
        ((parent-is "map") parent-bol ,graphix-indent-offset)
@@ -265,7 +265,6 @@ Falls back to this mode when tree-sitter is not available.
        ((parent-is "tuple") parent-bol ,graphix-indent-offset)
        ((parent-is "struct_type") parent-bol ,graphix-indent-offset)
        ((parent-is "tuple_type") parent-bol ,graphix-indent-offset)
-       ((parent-is "signature") parent-bol ,graphix-indent-offset)
        ((parent-is "apply_args") parent-bol ,graphix-indent-offset)
        ((parent-is "lambda") parent-bol ,graphix-indent-offset)
        ((parent-is "match_arm") parent-bol ,graphix-indent-offset)
@@ -321,7 +320,7 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
     (setq-local treesit-thing-settings
                 `((graphix
                    (sentence ,(rx (or "let_binding" "type_def" "use" "connect")))
-                   (sexp ,(rx (or "module" "lambda" "do_block" "select" "if"
+                   (sexp ,(rx (or "module" "lambda" "block" "select" "if"
                                   "try_catch" "apply" "struct" "map" "array"
                                   "tuple" "reference" "number" "string"
                                   "boolean" "null"))))))
