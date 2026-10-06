@@ -4,7 +4,8 @@
 //! or its rigid consumer is. Families 1 (monomorphic reuse), 2 (rigid
 //! variables), 3 (a shared variable at a call), 4 (widening into a rigid
 //! consumer), 5 (variant widening), 6 (retyping a let), 7 (labels), 8
-//! (a function bound) and 9 (writable references).
+//! (a function bound), 9 (writable references) and 10 (one runtime
+//! form).
 
 use crate::{mutate, typemorph};
 use ahash::{AHashMap, AHashSet};
@@ -36,6 +37,7 @@ pub enum Family {
     FunctionBound,
     RefWrite,
     RefWiden,
+    SameForm,
 }
 
 impl std::fmt::Display for Family {
@@ -53,6 +55,7 @@ impl std::fmt::Display for Family {
             Family::FunctionBound => "function-bound",
             Family::RefWrite => "ref-write",
             Family::RefWiden => "ref-widen",
+            Family::SameForm => "same-form",
         })
     }
 }
@@ -203,7 +206,57 @@ pub fn probes(body: &str, types: &TypeMap, cap: usize) -> Vec<RejectProbe> {
     retype(&root, &pre, types, cap, &mut out);
     function_bound(&root, &pre, types, cap, &mut out);
     references(&root, types, cap, &mut out);
+    same_form(&root, &pre, cap, &mut out);
     out
+}
+
+/// Family 10. A select with an arm `string as x` gets its scrutinee
+/// widened by `` `TmSame `` (and a final `_ => never()` arm when it has
+/// none, so the select stays exhaustive): a bare variant and a string have
+/// one runtime form, so no arm may tell them apart. Right site: the select.
+fn same_form(root: &Expr, pre: &[Expr], cap: usize, out: &mut Vec<RejectProbe>) {
+    let mut taken = 0usize;
+    for (i, e) in pre.iter().enumerate() {
+        if taken >= cap {
+            break;
+        }
+        let ExprKind::Select(se) = &e.kind else { continue };
+        let tests_string = se.arms.iter().any(|(p, _)| {
+            matches!(&p.type_predicate, Some(Type::Primitive(t)) if t.contains(Typ::String))
+        });
+        if !tests_string || binds_outward(&se.arg) {
+            continue;
+        }
+        let tag =
+            ExprKind::Variant { tag: ArcStr::from("TmSame"), args: Arc::from_iter([]) }
+                .to_expr_nopos();
+        let mut arms = se.arms.to_vec();
+        let wild = arms.last().is_some_and(|(p, _)| {
+            p.guard.is_none()
+                && p.type_predicate.is_none()
+                && matches!(p.structure_predicate, StructurePattern::Ignore)
+        });
+        if !wild {
+            let ignore = Pattern {
+                type_predicate: None,
+                structure_predicate: StructurePattern::Ignore,
+                guard: None,
+            };
+            let never =
+                ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
+            arms.push((ignore, never));
+        }
+        let sel = ExprKind::Select(SelectExpr {
+            arg: Arc::new(widen(&se.arg, tag)),
+            arms: Arc::from_iter(arms),
+        })
+        .to_expr(e.pos);
+        let cand = mutate::replace(root, i, &sel);
+        out.extend(finish(Family::SameForm, i, &cand, |_, pre| {
+            vec![pre.get(i).and_then(span)]
+        }));
+        taken += 1;
+    }
 }
 
 /// Family 9. A statement `let r = &mut x` over a binding `x`. (a) When a

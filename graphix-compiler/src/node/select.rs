@@ -1412,6 +1412,20 @@ impl<R: Rt, E: UserEvent> Select<R, E> {
             // design/review-2026-10-05/repro/c-pattern-03.gx (c-pattern-03)
             ntype.contains(&ctx.env, &narrowed)?;
             pat.bind_captures(&ctx.env, &narrowed)?;
+            // a runtime test can't tell apart two types with one runtime form
+            if checking
+                && let Ok(rest) = ntype.diff(&ctx.env, &pat.type_predicate)
+                && let Some((a, b)) = pat.type_predicate.rep_collision(&ctx.env, &rest)
+            {
+                let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
+                return Err(format_with_flags(PrintFlag::DerefTVars, || {
+                    anyhow!(
+                        "this pattern can't tell {a} from {b}: both have the same \
+                         runtime form; wrap them in distinct variants"
+                    )
+                }))
+                .at(n.spec());
+            }
             // The guard typechecks after the narrowing so it sees the
             // arm's binds at their settled type; it must be bool.
             if let Some(guard) = &mut pat.guard {

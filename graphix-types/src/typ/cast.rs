@@ -1,7 +1,9 @@
 use crate::{
     AbstractTypeRegistry, CAST_ERR_TAG,
     env::Env,
-    errf, list,
+    errf,
+    expr::WrittenAt,
+    list,
     stack::ensure_sufficient,
     typ::{Type, TypeRef, tval::NakedPrefix},
 };
@@ -863,7 +865,7 @@ impl Type {
                 Value::Error(v) => e.is_a_int(env, hist, flags, v),
                 _ => false,
             },
-            // CR claude for eric: [bug] A reference type test matches any u64 or v64
+            // XCR claude for eric: [bug] A reference type test matches any u64 or v64
             // and never sees the referent, yet the select narrows the arm's bind to
             // `&T` and subtracts `&T` from the later arms (setops.rs:574;
             // pattern.rs:1215 admits the predicate). Over `r: [&string, &i64]`,
@@ -877,6 +879,13 @@ impl Type {
             // scrutinee that mixes references with u64/v64. probe:
             // design/review-2026-10-05/repro/x-typecheck-patterns-01.gx
             // (x-typecheck-patterns-01)
+            // 2026-10-06 claude: refused now by the one-runtime-form rule
+            // (Type::rep_collision, checked per arm in Select::typecheck0_with): a
+            // reference collides with u64/v64 and with a reference to another type, so
+            // `&string as s` over [&string, &i64] and `u64 as n` over [&i64, u64] are
+            // refused. A reference test that can't be mistaken, like `&T as r` over [&T,
+            // null], stays legal. Pinned by lang::select::same_form_references_refused
+            // and must-reject family 10.
             Type::ByRef(..) => matches!(v, Value::U64(_) | Value::V64(_)),
             Type::Tuple(ts) => match v {
                 Value::Array(elts) => {
@@ -1147,4 +1156,193 @@ fn flatten_union_members(
             Some(())
         }
     })
+}
+
+/// What a runtime test sees of `t` at its head: cells, filled
+/// applications and typedefs expanded; `None` for what it can't see into
+/// (an open cell, `Any`, a constructor), which takes any value.
+fn rep_head(env: &Env, t: &Type) -> Option<Type> {
+    ensure_sufficient(|| match t {
+        Type::TVar(_) => t.deref_cloned().and_then(|t| rep_head(env, &t)),
+        Type::App(c, a) => Type::app_filled(c, a).and_then(|t| rep_head(env, &t)),
+        Type::Ref(_) => t.lookup_ref(env).ok().and_then(|t| rep_head(env, &t)),
+        Type::Any
+        | Type::Hole
+        | Type::Concrete
+        | Type::Function
+        | Type::Singleton
+        | Type::OneNumber => None,
+        t => Some(t.clone()),
+    })
+}
+
+/// The primitive tags a value of the (non-primitive) head `t` has.
+fn rep_prims(t: &Type) -> BitFlags<Typ> {
+    match t {
+        Type::Variant(_, a, _) if a.is_empty() => Typ::String.into(),
+        Type::ByRef(..) => Typ::U64 | Typ::V64,
+        Type::Map { .. } => Typ::Map.into(),
+        Type::Error(_) => Typ::Error.into(),
+        t if ArrView::of(t).is_some() => Typ::Array.into(),
+        _ => BitFlags::empty(),
+    }
+}
+
+/// The array a value of `t` is, when it is one.
+enum ArrView {
+    Exact(LPooled<Vec<Type>>),
+    Of(Type),
+    List(Type),
+}
+
+impl ArrView {
+    fn of(t: &Type) -> Option<Self> {
+        let name =
+            |n: &ArcStr| Type::Variant(n.clone(), Arc::from_iter([]), WrittenAt::NOWHERE);
+        Some(match t {
+            Type::Tuple(ts) => ArrView::Exact(ts.iter().cloned().collect()),
+            Type::Struct(fs) => ArrView::Exact(
+                fs.iter()
+                    .map(|(n, t, _)| Type::Tuple(Arc::from_iter([name(n), t.clone()])))
+                    .collect(),
+            ),
+            Type::Variant(tag, args, _) if !args.is_empty() => ArrView::Exact(
+                std::iter::once(name(tag)).chain(args.iter().cloned()).collect(),
+            ),
+            Type::Array(e) => ArrView::Of((**e).clone()),
+            Type::List(e) => ArrView::List((**e).clone()),
+            _ => return None,
+        })
+    }
+}
+
+/// Pairs already on the walk; a finite witness never revisits one.
+type RepSeen = AHashSet<(Type, Type)>;
+
+fn revisits(seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
+    (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_)))
+        && !seen.insert((a.clone(), b.clone()))
+}
+
+fn rep_overlaps(env: &Env, seen: &mut RepSeen, a: &Type, b: &Type) -> bool {
+    ensure_sufficient(|| {
+        if revisits(seen, a, b) {
+            return false;
+        }
+        let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
+            return true;
+        };
+        match (&a, &b) {
+            (Type::Bottom, _) | (_, Type::Bottom) => false,
+            (Type::Set(ts), _) => ts.iter().any(|t| rep_overlaps(env, seen, t, &b)),
+            (_, Type::Set(ts)) => ts.iter().any(|t| rep_overlaps(env, seen, &a, t)),
+            (Type::Primitive(p), Type::Primitive(q)) => p.intersects(*q),
+            (Type::Primitive(p), t) | (t, Type::Primitive(p)) => {
+                p.intersects(rep_prims(t))
+            }
+            (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
+                if xa.is_empty() && ya.is_empty() =>
+            {
+                x == y
+            }
+            (Type::ByRef(..), Type::ByRef(..))
+            | (Type::Fn(_), Type::Fn(_))
+            | (Type::Map { .. }, Type::Map { .. }) => true,
+            (Type::Error(x), Type::Error(y)) => rep_overlaps(env, seen, x, y),
+            (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) => x == y,
+            (a, b) => match (ArrView::of(a), ArrView::of(b)) {
+                (Some(x), Some(y)) => arr_overlaps(env, seen, x, y),
+                _ => false,
+            },
+        }
+    })
+}
+
+fn arr_overlaps(env: &Env, seen: &mut RepSeen, a: ArrView, b: ArrView) -> bool {
+    use ArrView::*;
+    let list = |seen: &mut RepSeen, x: &[Type], e: &Type| {
+        x.is_empty()
+            || (x.len() == 2
+                && rep_overlaps(env, seen, &x[0], e)
+                && rep_overlaps(env, seen, &x[1], &Type::List(Arc::new(e.clone()))))
+    };
+    match (a, b) {
+        (Exact(x), Exact(y)) => {
+            x.len() == y.len()
+                && x.iter().zip(y.iter()).all(|(x, y)| rep_overlaps(env, seen, x, y))
+        }
+        (Exact(x), Of(e)) | (Of(e), Exact(x)) => {
+            x.iter().all(|t| rep_overlaps(env, seen, t, &e))
+        }
+        (Exact(x), List(e)) | (List(e), Exact(x)) => list(seen, &x, &e),
+        (Of(_) | List(_), Of(_) | List(_)) => true,
+    }
+}
+
+fn rep_collision(
+    env: &Env,
+    seen: &mut RepSeen,
+    a: &Type,
+    b: &Type,
+) -> Option<(Type, Type)> {
+    ensure_sufficient(|| {
+        if revisits(seen, a, b) {
+            return None;
+        }
+        let (Some(a), Some(b)) = (rep_head(env, a), rep_head(env, b)) else {
+            return None;
+        };
+        let mut pairs = |xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
+            xs.map(|(x, y)| rep_collision(env, seen, x, y))
+                .find(Option::is_some)
+                .flatten()
+        };
+        match (&a, &b) {
+            (Type::Bottom, _) | (_, Type::Bottom) => None,
+            (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, &b))),
+            (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (&a, t))),
+            (Type::Primitive(_), Type::Primitive(_)) => None,
+            (Type::Array(x), Type::Array(y))
+            | (Type::List(x), Type::List(y))
+            | (Type::Error(x), Type::Error(y)) => {
+                pairs(&mut std::iter::once((&**x, &**y)))
+            }
+            (Type::Map { key: k0, value: v0 }, Type::Map { key: k1, value: v1 }) => {
+                pairs(&mut [(&**k0, &**k1), (&**v0, &**v1)].into_iter())
+            }
+            (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
+                pairs(&mut x.iter().zip(y.iter()))
+            }
+            (Type::Struct(x), Type::Struct(y))
+                if x.len() == y.len()
+                    && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
+            {
+                pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
+            }
+            (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
+                if x == y && xa.len() == ya.len() =>
+            {
+                pairs(&mut xa.iter().zip(ya.iter()))
+            }
+            (Type::Abstract { id: x, .. }, Type::Abstract { id: y, .. }) if x == y => {
+                None
+            }
+            (Type::ByRef(_, x), Type::ByRef(_, y)) if x == y => None,
+            (Type::Fn(x), Type::Fn(y)) if x == y => None,
+            (a, b) => rep_overlaps(env, &mut RepSeen::default(), a, b)
+                .then(|| (a.clone(), b.clone())),
+        }
+    })
+}
+
+impl Type {
+    /// Two parts, one of `self` and one of `t`, that are different types
+    /// with one runtime form: a value of either passes a runtime test for
+    /// the other (a tuple, struct, list or payload variant and an array; a
+    /// bare variant and a string; a reference and a number or another
+    /// reference; two function types). A test that tells them apart can't
+    /// tell such a value's type.
+    pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<(Type, Type)> {
+        rep_collision(env, &mut RepSeen::default(), self, t)
+    }
 }

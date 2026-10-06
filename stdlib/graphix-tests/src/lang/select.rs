@@ -1627,16 +1627,16 @@ run!(
     shallow_mixed_union_dispatch,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(3241))),
     "/test.gx" => r#"
-        type V = [`Pair(i64, i64), `One(i64), `Nil, string, Array<i64>];
+        type V = [`Pair(i64, i64), `One(i64), `Nil, f64, Array<i64>];
         let score = |v: V| -> i64 select v {
             `Pair(a, b) => a + b,
             `One(x) => x * 10,
             `Nil => 1000,
-            string as s => str::len(s) * 100,
+            f64 as f => cast<i64>(f)$ * 100,
             Array<i64> as a => array::len(a) * 1000
         };
         let result = score(`Pair(20, 1)) + score(`One(2))
-            + score(`Nil) + score("xx") + score([1, 2])
+            + score(`Nil) + score(2.0) + score([1, 2])
     "#;
     graphix_package_core::testing::FuseExpect::Jit
 );
@@ -2788,7 +2788,8 @@ run!(list_element_test_residual_mixed, LIST_ELEMENT_TEST_RESIDUAL_MIXED, |v: Res
     matches!(v, Ok(Value::String(s)) if &**s == "1")
 });
 
-// Each array or list member of a scrutinee has its own length ladder.
+// An empty array and an empty list are one runtime value, so a select
+// can't tell an array member from a list member.
 const ARRAY_LIST_LADDERS: &str = r#"
 {
   let v: [Array<i64>, List<i64>] = [<4, 5>];
@@ -2796,9 +2797,82 @@ const ARRAY_LIST_LADDERS: &str = r#"
 }
 "#;
 
-run!(array_list_ladders, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
+run!(array_list_ladders_refused, ARRAY_LIST_LADDERS, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// Two members with one runtime form can't be told apart by any test:
+// a tuple and an array, a bare variant and a string, two references,
+// and a union trait dispatch over such members.
+const SAME_FORM_TUPLE_ARRAY: &str = r#"
+{
+  let f = |x: [(i64, string), Array<[i64, string]>]| select x {
+    (i64, string) as t => 1,
+    Array<[i64, string]> as a => 2
+  };
+  f((1, "a"))
+}
+"#;
+
+run!(same_form_tuple_array_refused, SAME_FORM_TUPLE_ARRAY, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const SAME_FORM_TAG_STRING: &str = r#"
+{
+  let f = |x: [string, `A]| select x { `A => 1, s => 2 };
+  f("A")
+}
+"#;
+
+run!(same_form_tag_string_refused, SAME_FORM_TAG_STRING, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const SAME_FORM_REFERENCES: &str = r#"
+{
+  let b = 42;
+  let f = |r: [&string, &i64]| select r { &string as s => 1, r => 2 };
+  f(&b)
+}
+"#;
+
+run!(same_form_references_refused, SAME_FORM_REFERENCES, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const SAME_FORM_TRAIT_DISPATCH: &str = r#"
+{
+  trait Show { val show: fn(self) -> string };
+  impl Show for string { let show = |s| "string" };
+  impl Show for `A { let show = |a| "tag" };
+  let d = |x: [string, `A]| Show::show(x);
+  d("A")
+}
+"#;
+
+run!(same_form_trait_dispatch_refused, SAME_FORM_TRAIT_DISPATCH, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// Members that share a constructor are told apart by their parts, and
+// an empty array of either element type is both.
+const SAME_FORM_DISTINCT_PARTS: &str = r#"
+{
+  let f = |x: [Array<i64>, Array<string>, `A(i64), `B(i64), (bool, i64)]| select x {
+    Array<i64> as a => 1,
+    Array<string> as a => 2,
+    `A(n) => 3,
+    `B(n) => 4,
+    (bool, i64) as t => 5
+  };
+  f(`B(1))
+}
+"#;
+
+run!(same_form_distinct_parts, SAME_FORM_DISTINCT_PARTS, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(4)))
-});
+}; graphix_package_core::testing::FuseExpect::None);
 
 // An or-arm narrows what the later arms see, per alternative.
 const OR_ARM_NARROWS: &str = r#"

@@ -1461,6 +1461,11 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     // distinct representations. probe:
     // design/review-2026-10-05/repro/x-typecheck-patterns-04.gx
     // (x-typecheck-patterns-04)
+    // 2026-10-06 claude: selects and union trait dispatch are done: an arm that would
+    // tell apart two types with one runtime form is refused (Type::rep_collision in
+    // Select::typecheck0_with; pins lang::select::same_form_*, must-reject family 10).
+    // `==` and map keys over such a union are not: "A" == `A is still true. The probe's
+    // f, g, h, l and d are refused.
     pub(super) fn shape_matches(
         &self,
         env: &Env,

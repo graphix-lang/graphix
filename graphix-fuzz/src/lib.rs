@@ -5702,6 +5702,10 @@ mod tests {
             ),
             ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-write#"),
             ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-widen#"),
+            (
+                "{ let s: [string, null] = \"a\"; select s { null as _ => 0, string as v => 1 } }",
+                "same-form#",
+            ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");

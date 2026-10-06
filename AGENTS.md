@@ -857,6 +857,13 @@ cycle, across workers; the compiler never pins threads.
   a scrutinee its shape covers; set coverage distributes over product
   heads (`` [`P(A), `P(B)] ⊇ `P([A, B]) ``); a probe in progress for the
   same scrutinee ref claims nothing on re-entry.
+- **One runtime form** (`Type::rep_collision`): no select arm, and so no
+  union trait dispatch, may tell apart two types that share a runtime
+  form: a tuple, struct, list or payload variant and an array (an empty
+  array and an empty list are one value), a bare variant and a string, a
+  reference and a number or another reference, two function types.
+  Checked per arm, after its narrowing, in the definition's check;
+  members that share a constructor are told apart by their parts.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
   inferred predicate a capture is a type variable that
   `PatternNode::bind_captures` binds, after the select narrows the arm,

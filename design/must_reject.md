@@ -203,6 +203,13 @@ Rule: `&mut T ⊇ &mut U` only when `T = U` (`contains.rs`). Right site:
 the let. Built (`ref-write`, `ref-widen`); the generator's `&mut`
 writes are the sites (`generate/funcs.rs`).
 
+**10. One runtime form.** Site: a select with an arm `string as x`.
+Mutation: the scrutinee widened by `` `TmSame `` (and a final `_ =>
+never()` arm when the select has none). Rule: no arm may tell apart two
+types with one runtime form, here a bare variant and a string
+(`Type::rep_collision`, checked per arm in `Select::typecheck0_with`).
+Right site: the select. Built (`same-form`).
+
 ## Labeled and optional arguments across the fuzzer
 
 Family 7 needs call sites to work on, and today the generators have
