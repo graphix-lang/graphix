@@ -260,6 +260,9 @@ Falls back to this mode when tree-sitter is not available.
        ((parent-is "sig_block") parent-bol ,graphix-indent-offset)
        ((parent-is "block") parent-bol ,graphix-indent-offset)
        ((parent-is "select") parent-bol ,graphix-indent-offset)
+       ((parent-is "seq_block") parent-bol ,graphix-indent-offset)
+       ((parent-is "try_with") parent-bol ,graphix-indent-offset)
+       ((parent-is "list") parent-bol ,graphix-indent-offset)
        ((parent-is "struct") parent-bol ,graphix-indent-offset)
        ((parent-is "map") parent-bol ,graphix-indent-offset)
        ((parent-is "array") parent-bol ,graphix-indent-offset)
@@ -296,6 +299,7 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
     :syntax-table graphix-mode-syntax-table
     (unless (treesit-ready-p 'graphix)
       (error "Graphix tree-sitter grammar not available; install with M-x graphix-ts-mode-install-grammar"))
+    (treesit-parser-create 'graphix)
 
     ;; Comments
     (setq-local comment-start "// ")
@@ -317,27 +321,16 @@ Install the grammar with \\[graphix-ts-mode-install-grammar].
 
     ;; Navigation
     (setq-local treesit-defun-type-regexp
-                (rx (or "module" "lambda" "let_binding" "type_def")))
+                (rx bos (or "module" "lambda" "let_binding" "type_def") eos))
     (setq-local treesit-thing-settings
                 `((graphix
-                   (sentence ,(rx (or "let_binding" "type_def" "use" "connect")))
-                   (sexp ,(rx (or "module" "lambda" "block" "select" "if"
-                                  "try_catch" "apply" "struct" "map" "array"
-                                  "tuple" "reference" "number" "string"
-                                  "boolean" "null"))))))
+                   (sentence ,(rx bos (or "let_binding" "type_def" "use" "connect") eos))
+                   (sexp ,(rx bos (or "module" "lambda" "block" "select" "seq_block"
+                                      "try_with" "apply" "struct" "map" "array"
+                                      "list" "tuple" "reference" "number" "string"
+                                      "boolean" "null")
+                              eos)))))
 
-    ;; CR claude for claude: [bug] Nothing in graphix-ts-mode calls (treesit-parser-create
-    ;; 'graphix), and treesit-major-mode-setup does not create a parser. So once the
-    ;; grammar is installed (line 332 then remaps every .gx buffer here), Emacs 31.1
-    ;; shows no highlighting: font-lock signals (wrong-type-argument treesit-parser-p
-    ;; nil). TAB signals (wrong-type-argument treesit-node-p nil). Create the parser
-    ;; right after the treesit-ready-p check. That fix exposes two more problems. First,
-    ;; the defun/sentence/sexp regexps above are unanchored: "module" matches
-    ;; module_path, so C-M-a from the end of `y + h(x)` stops at the `y` reference
-    ;; instead of `let y`; anchor them with (rx bos (or ...) eos), and drop try_catch
-    ;; and if, which are not node types. Second, the indent rules have no seq_block,
-    ;; try_with or list entry, so a seq body stays at column 0. probe:
-    ;; design/review-2026-10-05/repro/ide-tooling.r2-02.sh (ide-tooling.r2-02)
     (treesit-major-mode-setup))
 
   ;; Auto-remap to tree-sitter mode when grammar is available
