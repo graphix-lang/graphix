@@ -813,14 +813,8 @@ module.exports = grammar({
       prec.left('multiplicative', seq($._expression, '*?', $._expression)),
       prec.left('multiplicative', seq($._expression, '/?', $._expression)),
       prec.left('multiplicative', seq($._expression, '%?', $._expression)),
-      // CR claude for claude: [bug] binary_expression has no `~!` (BinOp::StrictSample,
-      // precedence 0 like `~`), so tree-sitter splits it into `~` and a unary `!` and
-      // reads `t ~! x + 1` as `t ~ ((!x) + 1)` with no ERROR node: every tree-sitter
-      // editor shows the wrong structure, and highlights.scm and graphix-mode.el cannot
-      // capture the operator. Add a `~!` arm at 'sample' precedence and the token to
-      // both operator lists. probe: design/review-2026-10-05/repro/ide-tooling-08.gx
-      // (ide-tooling-08)
       prec.left('sample', seq($._expression, '~', $._expression)),
+      prec.left('sample', seq($._expression, '~!', $._expression)),
     ),
 
     unary_expression: $ => prec('unary', choice(

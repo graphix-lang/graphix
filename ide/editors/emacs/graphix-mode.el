@@ -234,7 +234,7 @@ Falls back to this mode when tree-sitter is not available.
      :language 'graphix
      :feature 'operator
      '(["+" "-" "*" "/" "%" "==" "!=" "<" ">" "<=" ">=" "&&" "||"
-        "!" "~" "?" "$" "&" "<-" "=>" "=" "->" ":" "::" "." "," ";" "@" "`" "#"]
+        "!" "~" "~!" "?" "$" "&" "<-" "=>" "=" "->" ":" "::" "." "," ";" "@" "`" "#"]
        @font-lock-operator-face)
 
      ;; Level 4: brackets
