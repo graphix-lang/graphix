@@ -7,59 +7,34 @@ enum TokenType {
   RAW_STRING,
   TRIPLE_CONTENT,
   LIST_CLOSE,
+  UNIT_EXTENSION,
   ERROR_SENTINEL,
 };
 
-static bool is_value_char(int32_t c) {
+static bool is_ident_char(int32_t c) {
   return (c >= 'A' && c <= 'Z') ||
          (c >= 'a' && c <= 'z') ||
          (c >= '0' && c <= '9') ||
-         c == '_' || c == '=' || c == '+' || c == '/';
+         c == '_';
 }
 
-// Consume a run of value characters [A-Za-z0-9_=+/].
-// Returns the number of characters consumed.
-static int consume_value_chars(TSLexer *lexer) {
-  int count = 0;
+// A base64 character, as a `bytes:` value holds them.
+static bool is_value_char(int32_t c) {
+  return is_ident_char(c) || c == '=' || c == '+' || c == '/';
+}
+
+static void consume_value_chars(TSLexer *lexer) {
   while (is_value_char(lexer->lookahead)) {
     lexer->advance(lexer, false);
-    count++;
   }
-  return count;
 }
 
-// The VALUE_EXTENSION consume loop, shared with the raw-string probe's
-// fallback (a non-raw `r` is a valid extension prefix already consumed).
+// The VALUE_EXTENSION run: the rest of a `bytes:` value after its leading
+// literal. Shared with the raw-string probe's fallback (a non-raw `r` is
+// a valid extension prefix already consumed).
 static void scan_value_extension_tail(TSLexer *lexer) {
-  while (true) {
-    int32_t c = lexer->lookahead;
-    if (is_value_char(c)) {
-      lexer->advance(lexer, false);
-      lexer->mark_end(lexer);
-    } else if (c == '.') {
-      lexer->advance(lexer, false);
-      if (lexer->lookahead == '.') {
-        break;
-      }
-      lexer->mark_end(lexer);
-    } else if (c == '-') {
-      lexer->advance(lexer, false);
-      if (lexer->lookahead >= '0' && lexer->lookahead <= '9') {
-        lexer->mark_end(lexer);
-      } else {
-        break;
-      }
-    } else if (c == ':') {
-      lexer->advance(lexer, false);
-      if (lexer->lookahead >= '0' && lexer->lookahead <= '9') {
-        lexer->mark_end(lexer);
-      } else {
-        break;
-      }
-    } else {
-      break;
-    }
-  }
+  consume_value_chars(lexer);
+  lexer->mark_end(lexer);
 }
 
 // BARE_VALUE pattern 3 with the first ident char already consumed:
@@ -74,13 +49,32 @@ static bool scan_bare_ident_tail(TSLexer *lexer) {
       lexer->result_symbol = BARE_VALUE;
       return true;
     }
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-        (c >= '0' && c <= '9') || c == '_') {
+    if (is_ident_char(c)) {
       lexer->advance(lexer, false);
     } else {
       return false;
     }
   }
+}
+
+// A literal's unit in a non-bytes ascription: letters (`ms`, `s`),
+// optionally after one dot (`500.ms`), or a lone trailing dot (`0.`)
+// that does not begin a `..` range.
+static bool scan_unit_extension(TSLexer *lexer) {
+  bool any = false;
+  if (lexer->lookahead == '.') {
+    lexer->advance(lexer, false);
+    if (lexer->lookahead == '.') return false;
+    any = true;
+  }
+  while (lexer->lookahead >= 'a' && lexer->lookahead <= 'z') {
+    lexer->advance(lexer, false);
+    any = true;
+  }
+  if (!any) return false;
+  lexer->mark_end(lexer);
+  lexer->result_symbol = UNIT_EXTENSION;
+  return true;
 }
 
 void *tree_sitter_graphix_external_scanner_create(void) {
@@ -225,17 +219,18 @@ bool tree_sitter_graphix_external_scanner_scan(
     // No whitespace, not `r` — fall through to the other symbols.
   }
 
+  if (valid_symbols[UNIT_EXTENSION] && scan_unit_extension(lexer)) {
+    return true;
+  }
+
   if (valid_symbols[VALUE_EXTENSION]) {
-    // Greedily consume adjacent value characters after a literal in type
-    // ascription context. This runs BEFORE whitespace is consumed, so if
-    // the first character is not a valid value char we return false, letting
-    // the parser skip the optional and continue with other branches (e.g.,
-    // struct_field in GLR mode).
-    //
-    // We must check the first character before committing — returning true
-    // with zero length would kill GLR branches that don't expect this token.
-    int32_t first = lexer->lookahead;
-    if (!is_value_char(first) && first != '.' && first != '-' && first != ':') {
+    // Greedily consume adjacent base64 characters after a literal in a
+    // `bytes:` value. This runs BEFORE whitespace is consumed, so if the
+    // first character is not a value char we return false, letting the
+    // parser skip the optional and continue with other branches (e.g.,
+    // struct_field in GLR mode). Refusing rather than returning a
+    // zero-length token keeps GLR branches that don't expect this token.
+    if (!is_value_char(lexer->lookahead)) {
       return false;
     }
 
@@ -275,41 +270,9 @@ bool tree_sitter_graphix_external_scanner_scan(
     }
 
     // Pattern 3: starts with ident char, must contain = + / somewhere
-    // CR claude for claude: [structure] After its first advance, this pattern (283-302)
-    // is scan_bare_ident_tail (67-84) line for line, so a change to one, such as
-    // limiting bare values to `bytes:`, misses the other and the raw-string fallback
-    // (215) lexes differently; the body can be `lexer->advance(lexer, false); return
-    // scan_bare_ident_tail(lexer);`. The ident-char test is written out three times
-    // (77-78, 278-280, 294-295), and consume_value_chars returns a count no caller
-    // reads. The comment at 235-236 says the VALUE_EXTENSION branch never returns a
-    // zero-length token, but a first char of '.', '-' or ':' with nothing valid after
-    // it (`a[i64:1..i64:3]`, `i64:1-x`) returns true at zero length; both parse
-    // correctly, so the comment is what is wrong. (ide-tooling-16)
-    if ((first >= 'a' && first <= 'z') ||
-        (first >= '0' && first <= '9') ||
-        first == '_') {
-      // Advance through leading ident chars looking for a special char.
-      // If the scanner returns false, tree-sitter restores the lexer state.
+    if (is_ident_char(first)) {
       lexer->advance(lexer, false);
-      while (true) {
-        int32_t c = lexer->lookahead;
-        if (c == '=' || c == '+' || c == '/') {
-          // Found special char — commit everything so far and continue
-          lexer->advance(lexer, false);
-          consume_value_chars(lexer);
-          lexer->mark_end(lexer);
-          lexer->result_symbol = BARE_VALUE;
-          return true;
-        }
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '_') {
-          lexer->advance(lexer, false);
-        } else {
-          // Reached non-value char without finding = + /
-          // Not a bare_value — return false (lexer restores state)
-          return false;
-        }
-      }
+      return scan_bare_ident_tail(lexer);
     }
 
     return false;

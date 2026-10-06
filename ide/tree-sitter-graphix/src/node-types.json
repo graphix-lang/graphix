@@ -11608,6 +11608,10 @@
           "named": true
         },
         {
+          "type": "type_identifier",
+          "named": true
+        },
+        {
           "type": "value_string",
           "named": true
         }

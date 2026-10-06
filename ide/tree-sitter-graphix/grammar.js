@@ -26,6 +26,7 @@ module.exports = grammar({
                          // comparison `>`, so `[<1 != 2>]` needs no shift/reduce
                          // choice on `>` (static precedence resolved it toward the
                          // comparison and equality-tailed last elements errored)
+    $._unit_extension,   // a unit after a literal in a non-bytes ascription (`500.ms`)
     $._error_sentinel,   // never used in grammar; valid only during error recovery
   ],
 
@@ -59,9 +60,9 @@ module.exports = grammar({
     [$.union_type, $.array_pattern],
     [$.array_pattern, $.slice_prefix_pattern],
     [$.list_pattern, $.list_prefix_pattern],
-    [$.primitive_type, $.null],
-    [$.primitive_type, $._field_name],
-    [$.primitive_type, $._binding_name],
+    [$._scalar_primitive, $.null],
+    [$._scalar_primitive, $._field_name],
+    [$._scalar_primitive, $._binding_name],
     [$._binding_name, $.type_ascription],
     [$._field_name, $.type_ascription],
     [$.connect],
@@ -431,8 +432,10 @@ module.exports = grammar({
 
     parenthesized_type: $ => seq('(', $._type, ')'),
 
-    primitive_type: $ => choice(
-      'bool', 'string', 'bytes', 'null',
+    primitive_type: $ => choice('bytes', $._scalar_primitive),
+
+    _scalar_primitive: $ => choice(
+      'bool', 'string', 'null',
       'i8', 'u8', 'i16', 'u16',
       'i32', 'u32', 'v32', 'z32',
       'i64', 'u64', 'v64', 'z64',
@@ -751,43 +754,45 @@ module.exports = grammar({
     ),
 
     // Type ascription: Type:literal (e.g., i8:0, duration:0.5s, bytes:AQID==)
-    // Note: type comes FIRST, then colon, then value.
-    // Allows both identifier (for non-keyword types like 'error') and
-    // primitive_type (for keyword types like 'i8', 'f32', 'datetime').
-    type_ascription: $ => seq(
-      choice($.identifier, $.primitive_type),
-      ':',
-      choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
+    // Note: type comes FIRST, then colon, then value. The head is an
+    // identifier (non-keyword types like 'error') or a primitive type
+    // keyword. Only `bytes:` takes a base64 value: elsewhere the value
+    // ends with the literal and its unit, so `i64:4/i64:2` is a division.
+    type_ascription: $ => choice(
+      seq(
+        choice($.identifier, alias($._scalar_primitive, $.primitive_type)),
+        ':',
+        choice($._typed_value, $.string, $.triple_string, $.value_string, $.raw_string),
+      ),
+      seq(
+        alias('bytes', $.primitive_type),
+        ':',
+        optional(choice($._bytes_value, $.string, $.value_string, $.raw_string)),
+      ),
     ),
 
     // Non-string values that can appear after the colon in type ascription.
     // Strings are handled separately in type_ascription to share nodes with
     // expression contexts, enabling GLR to resolve struct/map ambiguity.
-    // CR claude for claude: [bug] Every `T:` ascription admits `_bare_value` and the
-    // `_value_extension` run. Their characters include `+ / =` (base64 for `bytes:`)
-    // and `-` before a digit, so an operator glued to a typed literal is swallowed as
-    // value text. `i64:4/i64:2`, `i64:1+i64:2` and `i64:1==i64:2` give ERROR nodes,
-    // while `i64:1+x` and `i64:5-3` reduce to one `type_ascription` that drops the
-    // operator and operand. The real parser stops at the end of the number, and the
-    // committed fuzz pin
-    // graphix-fuzz/findings/bottom-scrutinee-jun2026/02_inline_bottom_scrutinee.gx
-    // errors at `i64:1/i64:0`. Admit the bare value and the `+ / =` run only after
-    // `bytes:`, and give other ascriptions a unit-only extension (`1.5s`, `500.ms`).
-    // Probe: design/review-2026-10-05/repro/ide-tooling.r2-09.gx. (ide-tooling.r2-09)
     _typed_value: $ => choice(
       // Nested type ascription (e.g., error:i8:0)
       $.type_ascription,
-      // Literal followed by optional external scanner that greedily consumes
-      // adjacent value characters (letters, digits, +, /, =, ., -). The scanner
-      // returns false when there's nothing to consume, which lets the parser
-      // skip the optional. Because external tokens are tried BEFORE internal
-      // tokens, the scanner effectively resolves the shift-reduce conflict
-      // at runtime: match -> shift, no match -> reduce.
+      // A literal and its unit (`500.ms`, `1.5s`, a trailing-dot `0.`):
+      // the external scanner refuses when no unit is adjacent, which lets
+      // the parser skip the optional.
+      seq($.literal, optional($._unit_extension)),
+      // Values that look like names (`f64:inf`, `f64:NaN`)
+      $._binding_name,
+      $.type_identifier,
+    ),
+
+    // A `bytes:` value: base64.
+    _bytes_value: $ => choice(
+      // Literal followed by the adjacent base64 run (letters, digits, +, /, =)
       seq($.literal, optional($._value_extension)),
-      // Bare values like base64 bytes (e.g. AQID==, //8A==)
-      // External token so it's tried before line_comment can match //
+      // Bare base64 (e.g. AQID==, //8A==), external so it is tried
+      // before line_comment can match //
       $._bare_value,
-      // Fallback for values that look like identifiers
       $._binding_name,
     ),
 
@@ -1250,15 +1255,6 @@ module.exports = grammar({
     )),
 
     // Identifiers
-    // CR claude for claude: [bug] identifier and type_identifier (1320) are ASCII-only,
-    // but the parser's ident() starts a value name with any non-uppercase letter and a
-    // type name with any uppercase one (parser/mod.rs:136, 389-403), so `let café = 1`
-    // is an ERROR in every tree-sitter editor. The scanner's base64 tokens, BARE_VALUE
-    // pattern 3 (src/scanner.c:277-303) and VALUE_EXTENSION (228-246), follow every
-    // typed literal, not only `bytes:`: `i64:4/i64:2` and `i64:1+i64:2` give ERROR
-    // nodes, and `i64:1==x` and `f64:1.5/x` collapse into one type_ascription. An empty
-    // `bytes:` gives a MISSING or ERROR node. probe:
-    // design/review-2026-10-05/repro/ide-tooling-10.gx (ide-tooling-10)
     identifier: $ => /[\p{Ll}\p{Lt}\p{Lm}\p{Lo}_][\p{L}\p{N}_]*/,
 
     // Type-name keywords are legal BINDING names (2026-08-18): let,
