@@ -1179,6 +1179,16 @@ pub(crate) fn defer_settle<R: Rt, E: UserEvent>(
     }
 }
 
+/// Defer a judgment that only reads types to the check's settle of the
+/// current frame, a definition's body included: its open cells read as
+/// any type, and a later instance's types are its definition's.
+pub(crate) fn defer_judgment<R: Rt, E: UserEvent>(
+    ctx: &mut CompileCtx<R, E>,
+    judgment: crate::PendingSettle,
+) {
+    ctx.pending_settles.last_mut().expect("settle frame").push(judgment)
+}
+
 /// A statement's `typecheck1`, then the settles it deferred.
 fn typecheck1_settled<R: Rt, E: UserEvent>(
     n: &mut Node<R, E>,

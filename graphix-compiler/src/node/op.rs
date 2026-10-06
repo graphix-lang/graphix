@@ -322,7 +322,15 @@ macro_rules! compare_op {
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R, E>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
-                    Some(_) => Ok(()),
+                    Some(t) => {
+                        let judgment = crate::PendingSettle::SameForm {
+                            typ: t.clone(),
+                            what: crate::SameForm::Compared,
+                            spec: Arc::new(self.spec.clone()),
+                        };
+                        super::defer_judgment(ctx, judgment);
+                        Ok(())
+                    }
                     None => wrap!(
                         self,
                         $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {

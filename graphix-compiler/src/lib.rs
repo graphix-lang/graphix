@@ -1743,6 +1743,16 @@ pub(crate) enum PendingSettle {
     },
     /// `outer ⊇ inner`, judged once the frame's cells have settled.
     Contains { outer: Type, inner: Type, spec: Arc<Expr> },
+    /// A compared type, or a map's type, that must hold no union of two
+    /// members with one runtime form (only map keys for `Keys`).
+    SameForm { typ: Type, what: SameForm, spec: Arc<Expr> },
+}
+
+/// What a [`PendingSettle::SameForm`] judges.
+#[derive(Clone, Copy)]
+pub(crate) enum SameForm {
+    Compared,
+    Keys,
 }
 
 impl PendingSettle {
@@ -1797,6 +1807,12 @@ impl PendingSettle {
                 PendingSettle::Contains { outer, inner, spec } => {
                     (outer.check_contains(env, inner), spec)
                 }
+                PendingSettle::SameForm { typ, what, spec } => {
+                    (same_form(env, typ, *what), spec)
+                }
+                PendingSettle::Site { ftype, spec, .. } => {
+                    (same_form(env, &ftype.rtype, SameForm::Keys), spec)
+                }
                 _ => continue,
             };
             if let (Err(e), spec) = res {
@@ -1805,6 +1821,26 @@ impl PendingSettle {
         }
         Ok(())
     }
+}
+
+fn same_form(env: &Env, typ: &Type, what: SameForm) -> Result<()> {
+    let found = match what {
+        SameForm::Compared => typ.rep_ambiguity(env),
+        SameForm::Keys => typ.map_key_ambiguity(env),
+    };
+    let Some((a, b)) = found else { return Ok(()) };
+    let (a, b) = (a.resolve_tvars(), b.resolve_tvars());
+    format_with_flags(PrintFlag::DerefTVars, || match what {
+        SameForm::Compared => bail!(
+            "can't compare values of {}: {a} and {b} have the same runtime form; \
+             wrap them in distinct variants",
+            typ.resolve_tvars()
+        ),
+        SameForm::Keys => bail!(
+            "{a} and {b} can't share a map key type: they have the same runtime \
+             form; wrap them in distinct variants"
+        ),
+    })
 }
 
 /// A deferred import-existence check; see [`ExecCtx::pending_imports`].

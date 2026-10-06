@@ -72,9 +72,8 @@ val filter: fn(l: List<'a>, f: fn(x: 'a) -> bool throws 'e) -> List<'a> throws '
 /// Return a new list containing the non-null outputs of f.
 val filter_map: fn(l: List<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> List<'b> throws 'e;
 
-/// Return a new list where f is applied to each element. If f returns a
-/// list, its elements are inlined; otherwise the single value is kept.
-val flat_map: fn(l: List<'a>, f: fn(x: 'a) -> ['b, List<'b>] throws 'e) -> List<'b> throws 'e;
+/// Return the lists f returns for each element, concatenated in order.
+val flat_map: fn(l: List<'a>, f: fn(x: 'a) -> List<'b> throws 'e) -> List<'b> throws 'e;
 
 /// Fold the list from left to right: f(f(f(init, a0), a1), ...).
 val fold: fn(l: List<'a>, init: 'b, f: fn(acc: 'b, x: 'a) -> 'b throws 'e) -> 'b throws 'e;

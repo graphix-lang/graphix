@@ -2302,7 +2302,7 @@ const WRAPPED_POLY_REF_TWICE: &str = r#"
   let a = filter((array::flat_map), |x| true);
   let b = filter({ let z = 1; array::flat_map }, |x| true);
   let c = filter((array::flat_map), |x| true);
-  (a([1], |x| [x, x]), b(["s"], |x| x), c([2], |x| x))
+  (a([1], |x| [x, x]), b(["s"], |x| [x]), c([2], |x| [x]))
 }
 "#;
 
@@ -2315,7 +2315,7 @@ const FORWARDED_POLY_REF_TWICE: &str = r#"
   let t = array::flat_map;
   let a = filter((t), |x| true);
   let b = filter({ let z = 1; t }, |x| true);
-  (a([1], |x| [x, x]), b(["s"], |x| x))
+  (a([1], |x| [x, x]), b(["s"], |x| [x]))
 }
 "#;
 
@@ -2323,8 +2323,8 @@ run!(forwarded_poly_ref_twice, FORWARDED_POLY_REF_TWICE, |v: Result<&Value>| {
     format!("{}", v.unwrap()) == r#"[[i64:1, i64:1], ["s"]]"#
 });
 
-// `flat_map`'s callback returns `['b, Array<'b>]`: a declared callback
-// type that is that union at one type binds 'b member-wise.
+// `flat_map`'s callback returns the collection, never a bare element:
+// whether to splice is never decided by a value's shape.
 const FLAT_MAP_DECLARED_UNION: &str = r#"
 {
   let t: fn(a: Array<i64>, f: fn(x: i64) -> [i64, Array<i64>]) -> Array<i64> = array::flat_map;
@@ -2332,8 +2332,21 @@ const FLAT_MAP_DECLARED_UNION: &str = r#"
 }
 "#;
 
-run!(flat_map_declared_union, FLAT_MAP_DECLARED_UNION, |v: Result<&Value>| {
-    format!("{}", v.unwrap()) == "[i64:1, i64:2, i64:2]"
+run!(flat_map_bare_element_refused, FLAT_MAP_DECLARED_UNION, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("does not contain"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+// A tuple callback result is spliced as an array would never be: it is
+// refused, and the result is the arrays' concatenation.
+const FLAT_MAP_TUPLE_REFUSED: &str = r#"
+{
+  let r = array::flat_map([1, 2], |x| (x, x * 10));
+  r
+}
+"#;
+
+run!(flat_map_tuple_refused, FLAT_MAP_TUPLE_REFUSED, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("does not contain"))
 }; graphix_package_core::testing::FuseExpect::None);
 
 // A binding that is not generalized holds one instance: used twice, the
@@ -2343,7 +2356,7 @@ const MONOMORPHIC_FLAT_MAP_TWICE: &str = r#"
   let t = { let z = 1; array::flat_map };
   let a = filter(t, |x| true);
   let b = filter(t, |x| true);
-  (a([1], |x| [x, x]), b([2], |x| x))
+  (a([1], |x| [x, x]), b([2], |x| [x]))
 }
 "#;
 

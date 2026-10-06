@@ -1448,7 +1448,7 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     /// the arm's shallow discriminator. The checker narrows the arm's
     /// binds by exactly this, so a value that fails it is never
     /// delivered to them.
-    // CR claude for eric: [bug] This test cannot tell apart union members that share a
+    // XCR claude for eric: [bug] This test cannot tell apart union members that share a
     // runtime representation: a nullary variant `A is the string "A", and tuples,
     // structs, payload variants and List cells are all arrays. The checker keeps those
     // members apart and requires an arm for each. At run time the first arm whose shape
@@ -1466,6 +1466,10 @@ impl<R: Rt, E: UserEvent> PatternNode<R, E> {
     // Select::typecheck0_with; pins lang::select::same_form_*, must-reject family 10).
     // `==` and map keys over such a union are not: "A" == `A is still true. The probe's
     // f, g, h, l and d are refused.
+    // 2026-10-06 claude: `==`, the other comparisons and map keys are refused too
+    // (PendingSettle::SameForm: Type::rep_ambiguity over a compared type,
+    // Type::map_key_ambiguity over a map literal's type and every call's return type).
+    // Pinned by lang::select::same_form_compare_refused and same_form_map_key_refused.
     pub(super) fn shape_matches(
         &self,
         env: &Env,

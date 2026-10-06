@@ -12,10 +12,8 @@ val filter_map: fn(a: Array<'a>, f: fn(x: 'a) -> Option<'b> throws 'e) -> Array<
 /// corresponding element in a
 val map: fn(a: Array<'a>, f: fn(x: 'a) -> 'b throws 'e) -> Array<'b> throws 'e;
 
-/// return a new array where each element is the output of f applied to the
-/// corresponding element in a, except that if f returns an array then it's
-/// elements will be concatenated to the end of the output instead of nesting.
-val flat_map: fn(a: Array<'a>, f: fn(x: 'a) -> ['b, Array<'b>] throws 'e) -> Array<'b> throws 'e;
+/// return the arrays f returns for each element of a, concatenated in order.
+val flat_map: fn(a: Array<'a>, f: fn(x: 'a) -> Array<'b> throws 'e) -> Array<'b> throws 'e;
 
 /// return the result of f applied to the init and every element of a in
 /// sequence. f(f(f(init, a[0]), a[1]), ...)

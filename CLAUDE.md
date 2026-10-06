@@ -679,7 +679,11 @@ cycle, across workers; the compiler never pins threads.
   array and an empty list are one value), a bare variant and a string, a
   reference and a number or another reference, two function types.
   Checked per arm, after its narrowing, in the definition's check;
-  members that share a constructor are told apart by their parts.
+  members that share a constructor are told apart by their parts. A
+  compared type (`==` and the orderings) and a map key type may hold no
+  such pair anywhere (`Type::rep_ambiguity`, judged at the settle as
+  `PendingSettle::SameForm`). `flat_map`'s callback returns the
+  collection (`fn(x: 'a) -> Array<'b>`), so nothing splices by shape.
 - **`name@ pattern` captures** are typed from the SCRUTINEE: under an
   inferred predicate a capture is a type variable that
   `PatternNode::bind_captures` binds, after the select narrows the arm,

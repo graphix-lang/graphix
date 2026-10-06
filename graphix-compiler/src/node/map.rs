@@ -212,7 +212,14 @@ impl<R: Rt, E: UserEvent> Map<R, E> {
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
         let vtype = wrap!(self, Type::union(&ctx.env, &vts))?;
         let rtype = Type::Map { key: Arc::new(ktype), value: Arc::new(vtype) };
-        Ok(self.typ.check_contains(&ctx.env, &rtype)?)
+        self.typ.check_contains(&ctx.env, &rtype)?;
+        let judgment = crate::PendingSettle::SameForm {
+            typ: self.typ.clone(),
+            what: crate::SameForm::Keys,
+            spec: Arc::new(self.spec.clone()),
+        };
+        super::defer_judgment(ctx, judgment);
+        Ok(())
     }
 }
 

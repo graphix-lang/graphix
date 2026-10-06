@@ -1346,3 +1346,64 @@ impl Type {
         rep_collision(env, &mut RepSeen::default(), self, t)
     }
 }
+
+fn rep_ambiguity(
+    env: &Env,
+    seen: &mut AHashSet<Type>,
+    keys_only: bool,
+    t: &Type,
+) -> Option<(Type, Type)> {
+    ensure_sufficient(|| {
+        if matches!(t, Type::Ref(_)) && !seen.insert(t.clone()) {
+            return None;
+        }
+        let t = rep_head(env, t)?;
+        let mut parts = |ts: &mut dyn Iterator<Item = &Type>| {
+            ts.map(|t| rep_ambiguity(env, seen, keys_only, t))
+                .find(Option::is_some)
+                .flatten()
+        };
+        match &t {
+            Type::Set(ts) => {
+                if !keys_only {
+                    for (i, a) in ts.iter().enumerate() {
+                        for b in &ts[i + 1..] {
+                            if let Some(c) = a.rep_collision(env, b) {
+                                return Some(c);
+                            }
+                        }
+                    }
+                }
+                parts(&mut ts.iter())
+            }
+            Type::Map { key, value } => {
+                let keys = match keys_only {
+                    true => rep_ambiguity(env, &mut AHashSet::default(), false, key),
+                    false => None,
+                };
+                keys.or_else(|| parts(&mut [&**key, &**value].into_iter()))
+            }
+            Type::Array(e) | Type::List(e) | Type::Error(e) => {
+                parts(&mut std::iter::once(&**e))
+            }
+            Type::Tuple(ts) | Type::Variant(_, ts, _) => parts(&mut ts.iter()),
+            Type::Struct(fs) => parts(&mut fs.iter().map(|(_, t, _)| t)),
+            _ => None,
+        }
+    })
+}
+
+impl Type {
+    /// Two members of one union anywhere in this type (not under a
+    /// reference, a function or an abstract type) with one runtime form:
+    /// comparing values of this type can't tell them apart.
+    pub fn rep_ambiguity(&self, env: &Env) -> Option<(Type, Type)> {
+        rep_ambiguity(env, &mut AHashSet::default(), false, self)
+    }
+
+    /// [`Self::rep_ambiguity`] of every map key type this type holds:
+    /// a map can't tell such keys apart.
+    pub fn map_key_ambiguity(&self, env: &Env) -> Option<(Type, Type)> {
+        rep_ambiguity(env, &mut AHashSet::default(), true, self)
+    }
+}

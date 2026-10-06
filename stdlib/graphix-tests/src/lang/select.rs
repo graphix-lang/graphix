@@ -2855,6 +2855,32 @@ run!(same_form_trait_dispatch_refused, SAME_FORM_TRAIT_DISPATCH, |v: Result<&Val
     matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
 }; graphix_package_core::testing::FuseExpect::None);
 
+// A compared type and a map key type may hold no two members with one
+// runtime form: `"A" == `A` would be true, and they would be one key.
+const SAME_FORM_COMPARE: &str = r#"
+{
+  let x: [string, `A] = "A";
+  let y: [string, `A] = `A;
+  x == y
+}
+"#;
+
+run!(same_form_compare_refused, SAME_FORM_COMPARE, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; graphix_package_core::testing::FuseExpect::None);
+
+const SAME_FORM_MAP_KEY: &str = r#"
+{
+  let k: [string, `A] = `A;
+  let m = map::insert({"A" => 1}, k, 2);
+  map::len(m)
+}
+"#;
+
+run!(same_form_map_key_refused, SAME_FORM_MAP_KEY, |v: Result<&Value>| {
+    matches!(&v, Err(e) if format!("{e:#}").contains("same runtime form"))
+}; graphix_package_core::testing::FuseExpect::None);
+
 // Members that share a constructor are told apart by their parts, and
 // an empty array of either element type is both.
 const SAME_FORM_DISTINCT_PARTS: &str = r#"
