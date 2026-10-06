@@ -54,7 +54,6 @@ module.exports = grammar({
     [$._seq_item, $.do_block],
     [$.boolean, $._field_name],
     [$.null, $._field_name],
-    [$._expression, $.lambda],
     [$._expression, $.apply],
     [$._expression, $.array_ref, $.array_slice],
     [$._type, $.type_path],
@@ -67,24 +66,18 @@ module.exports = grammar({
     [$._binding_name, $.type_ascription],
     [$._field_name, $.type_ascription],
     [$.connect],
-    [$.lambda, $.map_ref],
-    [$.lambda, $.apply],
-    [$.lambda, $.array_ref, $.array_slice],
     [$.variant_type],
     [$.wildcard_type, $.structure_pattern],
 
     [$.struct_type, $.struct_pattern],
     [$.variant_type, $.variant_pattern],
     [$.variant_type_args, $.variant_pattern],
-    [$.lambda, $._primary_expression],
     // `apply` is both a top-level arithmetic expression and a postfix-chain
     // base (in `_primary_expression`), so an apply followed by e.g. `;` is
     // ambiguous until the next token; let the GLR parser keep both.
     [$._arithmetic_expression, $._primary_expression],
     [$._expression, $.or_never],
-    [$.lambda, $.or_never],
     [$._expression, $.qop],
-    [$.lambda, $.qop],
     [$.type_path, $.pattern_bind],
     [$.construct_path, $.module_path],
     [$.type_path, $.construct_path],
@@ -474,7 +467,16 @@ module.exports = grammar({
       $.abstract_type,
       $.error_type,
       $.parenthesized_type,
+      $.applied_type,
     ),
+
+    // a constructor variable or the receiver applied: `'c<'a>`, `self<'a>`
+    applied_type: $ => prec(1, seq(
+      choice($.type_variable, $.self_type),
+      '<',
+      $._type,
+      '>',
+    )),
 
     wildcard_type: $ => '_',
 
@@ -490,20 +492,6 @@ module.exports = grammar({
       'Any',
     ),
 
-    // CR claude for claude: [bug] The grammar has no type application. The real parser
-    // accepts `self<T>` as a fn-type receiver and in a type, and `'a<T>` in a type
-    // (graphix-types/src/expr/parser/typexp.rs fnpositional() and typ()), but here
-    // type_variable, self_type and the self_param receiver (line 525) take no argument.
-    // As a result, core's Collection trait (mod.gxi lines 54-81) parses with 18 ERROR
-    // nodes, all on its `self<..>` types. In the book's `|c: 'c<'a>| -> 'c<'a> map(c,
-    // ..)`, error recovery turns the lambda body into the builtin reference `'a`. An
-    // optional `<T>` on type_variable conflicts with builtin_ref in tree-sitter
-    // generate; a `_type` alternative `prec(1, seq(choice($.type_variable,
-    // $.self_type), '<', $._type, '>'))` plus an optional `<T>` after the receiver
-    // generates without conflicts and parses every tracked .gx/.gxi as before, with
-    // core mod.gxi now clean. The ts_expr/ts_pp proptests miss this because typexp() in
-    // graphix-types/src/expr/test.rs generates no Type::App and no self receiver.
-    // probe: design/review-2026-10-05/repro/ide-tooling-03.sh (ide-tooling-03)
     type_variable: $ => seq("'", $._binding_name),
 
     // the receiver type of a trait method signature
@@ -556,8 +544,8 @@ module.exports = grammar({
 
     fn_type_arg: $ => choice(
       seq(choice($.fn_type_label, $.fn_type_arg_name), $._type),
-      // a trait method's receiver: `fn(self, ..)`
-      $.self_param,
+      // a trait method's receiver: `fn(self, ..)` or `fn(self<'a>, ..)`
+      seq($.self_param, optional(seq('<', $._type, '>'))),
     ),
 
     self_param: $ => 'self',
@@ -749,21 +737,7 @@ module.exports = grammar({
     ),
 
     // Lambda: constraints|params| -> rtype throws body
-    // CR claude for claude: [bug] lambda has no precedence, and the seven lambda
-    // conflicts let the GLR parser keep both readings. Whenever a token follows the
-    // lambda (`;`, `,`, `)`), a body whose top operator is binary is cut at that
-    // operator: `|acc, x| acc + x;` parses as `(|acc, x| acc) + x`, while the real
-    // parser takes the whole expr() as the body (lambdaexp.rs:172-176). 69 lambdas in
-    // this repo and netidx-admin parse this way (`|e| e.kind == p`, `|x| x * 10`). The
-    // parameter after the operator falls outside locals.scm's (lambda) scope, so the
-    // tree-sitter highlighter colors it as a namespace, and selection by node sees the
-    // short extent. Wrapping the rule in prec.right(-1, ...), as let_binding and
-    // connect do, fixes all 69 and leaves the corpus's ERROR set unchanged; the
-    // generator then reports the seven lambda conflicts as unnecessary. ts_expr/ts_pp
-    // only look for ERROR nodes and there is no test/corpus, so nothing pins tree
-    // shapes. probe: design/review-2026-10-05/repro/ide-tooling.r2-05.sh
-    // (ide-tooling.r2-05)
-    lambda: $ => seq(
+    lambda: $ => prec.right(-1, seq(
       optional($.lambda_constraints),
       '|',
       optional($.lambda_params),
@@ -771,7 +745,7 @@ module.exports = grammar({
       optional(seq('->', $._type)),
       optional($.throws_clause),
       $._expression_inner,
-    ),
+    )),
 
     lambda_constraints: $ => commaSep1($.constraint),
 
